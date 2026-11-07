@@ -1,190 +1,99 @@
-import { describe, expect, it } from 'vitest';
-import {
-  nextMuxInputPort,
-  normalizeDynamicPorts,
-  visibleMuxInputPorts,
-  materializeMuxSpecForBindings,
-  muxHasSpareInput,
-  isNextMuxInputPort,
-  expandMuxForPort,
-} from '@/features/graph/dynamicPorts';
-import type { AcausalGraphSpec, GraphSpec } from '@/types/graph';
-import type { StudioTaskBindingSpec } from '@/types/workspace';
+import { afterEach, expect, it } from 'vitest';
+import { ComponentDefinitionSchema, GraphSpecSchema } from '@/generated/studioContracts';
+import { upsertRootTaskBinding } from '@/services/studioTaskBindings';
+import { useGraphStore } from '@/stores/graphStore';
+import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
+import { buildWorkspaceSnapshot, getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { visibleDynamicInputPorts } from './dynamicPorts';
+import type { GraphSpec } from '@/types/graph';
 
-function graph(inputPorts = ['in_0', 'in_1']): GraphSpec {
-  return {
-    nodes: {
-      mux: {
-        type: 'Mux',
-        params: { n_inputs: inputPorts.length },
-        input_ports: inputPorts,
-        output_ports: ['output'],
-      },
-      source: {
-        type: 'Gain',
-        params: {},
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
+const initialGraph = useGraphStore.getState();
+const initialWorkspace = useWorkspaceStore.getState();
+
+afterEach(() => {
+  useGraphStore.setState(initialGraph, true);
+  useWorkspaceStore.setState(initialWorkspace, true);
+});
+
+it('keeps an external component’s wired and task-bound ports through graph reload', () => {
+  const component = ComponentDefinitionSchema.parse({
+    name: 'example.Collector',
+    category: 'External',
+    description: '',
+    input_ports: ['signal-7'],
+    output_ports: ['value'],
+    default_params: { slots: 1 },
+    dynamic_port_policy: {
+      count_param: 'slots',
+      count_mode: 'integer',
+      direction: 'input',
+      fixed_output_ports: ['value'],
+      generated_name_template: 'signal-{index}',
+      generated_index_origin: 7,
+      dynamic_port_type: { dtype: 'vector' },
+      auto_resize_minimum: 1,
     },
+  });
+  const graph: GraphSpec = {
+    nodes: { source: { type: 'feedbax.Constant', params: {}, input_ports: [], output_ports: ['output'] } },
     wires: [],
     input_ports: [],
     output_ports: [],
     input_bindings: {},
     output_bindings: {},
   };
-}
+  const uiState = { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} };
+  const editor = useGraphStore.getState();
+  editor.setComponentRegistry([component]);
+  editor.hydrateGraph(graph, uiState, 'external');
+  useWorkspaceStore.getState().restoreWorkspace(buildWorkspaceSnapshot({
+    workspace: null, graph, uiState, trainingSpec: defaultTrainingSpec, taskSpec: defaultTaskSpec,
+    analysisSnapshot: null, projectName: 'External policy',
+  }));
+  editor.addNodeFromComponent(component, { x: 200, y: 100 });
+  const target = Object.keys(useGraphStore.getState().graph.nodes).find((id) => id !== 'source')!;
+  editor.onConnect({ source: 'source', sourceHandle: 'output', target, targetHandle: 'signal-7' });
+  const state = useGraphStore.getState();
+  expect(visibleDynamicInputPorts(state.graph, target, state._componentRegistry)?.nextPort)
+    .toBe('signal-8');
 
-function taskBindings(...ports: string[]): StudioTaskBindingSpec {
-  return {
-    schema_version: 'feedbax.spec.studio.task_bindings.v3',
-    exposed_data: ports.map((port) => ({
-      id: port,
-      label: port,
-      kind: 'signal',
-      role: 'model_input',
-      path: `inputs.${port}`,
-      bindable: true,
-      metadata: {},
-    })),
-    bindings: ports.map((port) => ({
-      id: `task:${port}->mux:${port}`,
-      source_data_id: port,
-      target_node_id: 'mux',
-      target_port: port,
-      role: 'model_input',
-      metadata: {},
-    })),
-    metadata: {},
-  };
-}
-
-describe('dynamic graph ports', () => {
-  it('does not apply causal mux affordances to an acausal active graph', () => {
-    const interior: AcausalGraphSpec = {
-      schema_id: 'feedbax.spec.acausal_graph',
-      schema_version: 'feedbax.spec.acausal_graph.v1',
-      physical_domain: 'translational',
-      nodes: { mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] } },
-      connections: [{ a: ['mass', 'left'], b: ['mass', 'right'] }],
-      solver: { solver_type: 'euler', dt: 0.01 },
-    };
-
-    expect(visibleMuxInputPorts(interior, 'mass')).toBeNull();
-    expect(materializeMuxSpecForBindings(interior, 'mass')).toBeNull();
-    expect(nextMuxInputPort(interior, 'mass')).toBeNull();
-    expect(muxHasSpareInput(interior, 'mass')).toBe(false);
-    expect(isNextMuxInputPort(interior, 'mass', 'in_0')).toBe(false);
-    expect(expandMuxForPort(interior, 'mass', 'in_0')).toBe(interior);
-    expect(normalizeDynamicPorts(interior)).toBe(interior);
+  const bound = upsertRootTaskBinding('inputs', target, 'signal-8');
+  expect(bound.ok).toBe(true);
+  const snapshot = editor.capturePersistedGraph();
+  editor.hydrateGraph(GraphSpecSchema.parse(JSON.parse(JSON.stringify(snapshot.graph))), snapshot.uiState, 'external');
+  expect(useGraphStore.getState().graph.nodes[target]).toMatchObject({
+    params: { slots: 2 }, input_ports: ['signal-7', 'signal-8'],
   });
+  const bindings = getTrainingScenario(useWorkspaceStore.getState().workspace)!.task_binding_spec!;
+  const edge = useGraphStore.getState().edges[0];
+  editor.onEdgesChange([{ type: 'remove', id: edge.id }], bindings);
+  expect(useGraphStore.getState().graph.nodes[target].input_ports).toEqual(['signal-7', 'signal-8']);
+  editor.resizeDynamicInputs({ ...bindings, bindings: [] });
+  expect(useGraphStore.getState().graph.nodes[target].input_ports).toEqual(['signal-7']);
+});
 
-  it('grows a mux to the highest wired input and shrinks trailing unused ports', () => {
-    const expanded = normalizeDynamicPorts({
-      ...graph(),
-      wires: [
-        {
-          source_node: 'source',
-          source_port: 'output',
-          target_node: 'mux',
-          target_port: 'in_2',
-        },
-      ],
-    });
-
-    expect(expanded.nodes.mux.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
-    expect(expanded.nodes.mux.params.n_inputs).toBe(3);
-
-    const shrunk = normalizeDynamicPorts({
-      ...expanded,
-      wires: [],
-    });
-
-    expect(shrunk.nodes.mux.input_ports).toEqual(['in_0', 'in_1']);
-    expect(shrunk.nodes.mux.params.n_inputs).toBe(2);
+it('edits configured port names and preserves canonical revision through save and reload', () => {
+  const component = ComponentDefinitionSchema.parse({
+    name: 'example.NamedAdapter', revision: 3, supported_revisions: [1, 2, 3],
+    category: 'External', description: '',
+    default_params: { input_port: 'value', output_port: 'result' },
+    input_ports: ['value'], output_ports: ['result'],
+    dynamic_port_policy: {
+      count_mode: 'names', input_name_params: ['input_port'], output_name_params: ['output_port'],
+    },
   });
-
-  it('keeps task-bound mux inputs materialized for rendering', () => {
-    const bindings = taskBindings('in_0', 'in_1', 'in_2');
-    const normalized = normalizeDynamicPorts(graph(), bindings);
-    const visible = visibleMuxInputPorts(graph(), 'mux', bindings);
-
-    expect(normalized.nodes.mux.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
-    expect(nextMuxInputPort(graph(), 'mux', bindings)).toBe('in_3');
-    expect(visible?.ports).toEqual(['in_0', 'in_1', 'in_2', 'in_3']);
-    expect(visible?.nextPort).toBe('in_3');
-  });
-
-  it('shows one extra mux input only when all current inputs are occupied', () => {
-    const base = graph();
-
-    expect(nextMuxInputPort(base, 'mux')).toBeNull();
-    expect(
-      nextMuxInputPort(
-        {
-          ...base,
-          wires: [
-            {
-              source_node: 'source',
-              source_port: 'output',
-              target_node: 'mux',
-              target_port: 'in_0',
-            },
-          ],
-        },
-        'mux',
-        taskBindings('in_1')
-      )
-    ).toBe('in_2');
-  });
-
-  it('normalizes many muxes with one wire-index pass', () => {
-    const muxCount = 140;
-    const wires: GraphSpec['wires'] = Array.from({ length: muxCount }, (_, index) => ({
-      source_node: 'source',
-      source_port: 'output',
-      target_node: `mux_${index}`,
-      target_port: 'in_2',
-    }));
-    const instrumentedWires = [...wires];
-    const originalIterator = instrumentedWires[Symbol.iterator].bind(instrumentedWires);
-    let wirePasses = 0;
-    Object.defineProperty(instrumentedWires, Symbol.iterator, {
-      value: function countedIterator() {
-        wirePasses += 1;
-        return originalIterator();
-      },
-    });
-    const largeGraph: GraphSpec = {
-      nodes: {
-        source: {
-          type: 'Gain',
-          params: {},
-          input_ports: ['input'],
-          output_ports: ['output'],
-        },
-        ...Object.fromEntries(
-          Array.from({ length: muxCount }, (_, index) => [
-            `mux_${index}`,
-            {
-              type: 'Mux',
-              params: { n_inputs: 2 },
-              input_ports: ['in_0', 'in_1'],
-              output_ports: ['output'],
-            },
-          ])
-        ),
-      },
-      wires: instrumentedWires,
-      input_ports: [],
-      output_ports: [],
-      input_bindings: {},
-      output_bindings: {},
-    };
-
-    const normalized = normalizeDynamicPorts(largeGraph);
-
-    expect(normalized.nodes.mux_139.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
-    expect(wirePasses).toBe(1);
+  const editor = useGraphStore.getState();
+  editor.setComponentRegistry([component]);
+  editor.hydrateGraph({ nodes: {}, wires: [], input_ports: [], output_ports: [], input_bindings: {}, output_bindings: {} },
+    { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} }, 'named');
+  editor.addNodeFromComponent(component, { x: 0, y: 0 });
+  editor.updateNodeParams('namedAdapter', 'input_port', 'signal');
+  editor.updateNodeParams('namedAdapter', 'output_port', 'response');
+  const saved = editor.capturePersistedGraph();
+  editor.hydrateGraph(GraphSpecSchema.parse(JSON.parse(JSON.stringify(saved.graph))), saved.uiState, 'named');
+  expect(useGraphStore.getState().graph.nodes.namedAdapter).toMatchObject({
+    type: 'example.NamedAdapter', revision: 3,
+    params: { input_port: 'signal', output_port: 'response' },
+    input_ports: ['signal'], output_ports: ['response'],
   });
 });

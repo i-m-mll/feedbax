@@ -10,17 +10,30 @@ with first-order activation dynamics integrated via Euler step.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Any
 
-import equinox as eqx
-from equinox import Module, field
-from equinox.nn import State, StateIndex
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from equinox.nn import State, StateIndex
+from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
-
+from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
+from typing import Annotated
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
+
+
+def scalar_muscle_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return scalar muscle force and activation prototypes."""
+
+    proto = jnp.zeros(())
+    return {"force": proto, "activation": proto}
 
 
 class ReluMuscle(Component):
@@ -38,8 +51,12 @@ class ReluMuscle(Component):
         dt: Euler integration timestep [s].
     """
 
-    input_ports = ("excitation",)
-    output_ports = ("force", "activation")
+    ports = Ports(
+        inputs={"excitation": PortType(dtype="scalar")},
+        outputs={"force": PortType(dtype="scalar"), "activation": PortType(dtype="scalar")},
+    )
+    config_bindings = (ConfigBinding(path="state_index.init", name="initial_activation"),)
+    component_options = ComponentOptions(output_prototype_fn=scalar_muscle_output_prototype)
 
     max_isometric_force: float
     tau_activation: float = 0.015
@@ -50,12 +67,12 @@ class ReluMuscle(Component):
 
     def __init__(
         self,
-        max_isometric_force: float = 500.0,
-        tau_activation: float = 0.015,
-        tau_deactivation: float = 0.05,
-        min_activation: float = 0.0,
-        dt: float = 0.01,
-        initial_activation: float = 0.0,
+        max_isometric_force: Annotated[float, Field(ge=0)] = 500.0,
+        tau_activation: Annotated[float, Field(ge=0)] = 0.015,
+        tau_deactivation: Annotated[float, Field(ge=0)] = 0.05,
+        min_activation: Annotated[float, Field(ge=0)] = 0.0,
+        dt: Annotated[float, Field(ge=0)] = 0.01,
+        initial_activation: Annotated[float, Field(ge=0)] = 0.0,
     ):
         """Initialize ReluMuscle.
 

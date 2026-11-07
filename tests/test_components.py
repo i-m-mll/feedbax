@@ -26,6 +26,77 @@ from feedbax.models.networks import LeakyRNNCell, recurrent_controller
 from feedbax.models.feedback import SimpleFeedback
 
 
+def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path):
+    from pathlib import Path
+
+    from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler.serialization import graph_to_spec
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+
+    registry = ComponentRegistry()
+    type_id = "feedbax.equinox.Conv2d"
+    repo_root = Path(__file__).resolve().parents[1]
+    assert {
+        "feedbax/components/equinox.py",
+        "feedbax/components/equinox_history.py",
+        "scripts/generate_eqx_components.py",
+    } <= set(registry.component_source_paths(repo_root)[type_id])
+    authored = GraphSpec(
+        nodes={
+            "conv": ComponentSpec(
+                type=type_id,
+                params={
+                    "in_channels": 1,
+                    "out_channels": 1,
+                    "kernel_size": [2, 2],
+                    "padding": [[1, 0], [0, 1]],
+                    "use_bias": False,
+                },
+            ),
+            "gain": ComponentSpec(type="Gain", params={"gain": 2.0}),
+        },
+        wires=[
+            WireSpec(
+                source_node="conv", source_port="output", target_node="gain", target_port="input"
+            )
+        ],
+        input_ports=["image"],
+        output_ports=["result"],
+        input_bindings={"image": ("conv", "input")},
+        output_bindings={"result": ("gain", "output")},
+    )
+    image = jnp.ones((1, 2, 2))
+
+    def build(spec):
+        return compile_graph(
+            GraphDocument(graph=spec),
+            registry,
+            input_prototypes={("conv", "input"): image},
+        ).graph
+
+    graph = build(authored)
+    trained = eqx.tree_at(
+        lambda model: model.nodes["conv"].layer.weight,
+        graph,
+        jnp.ones((1, 1, 2, 2)),
+    )
+    exported = graph_to_spec(trained, registry)
+    assert exported.nodes["conv"].type == type_id
+    assert exported.nodes["conv"].revision == 1
+    assert exported.nodes["conv"].params["padding"] == [[1, 0], [0, 1]]
+    assert "weight" not in exported.nodes["conv"].params
+    checkpoint = tmp_path / "learned.eqx"
+    eqx.tree_serialise_leaves(checkpoint, trained)
+    restored = eqx.tree_deserialise_leaves(
+        checkpoint, build(GraphSpec.model_validate_json(exported.model_dump_json()))
+    )
+    outputs, _ = restored(
+        {"image": image}, init_state_from_component(restored), key=jax.random.key(0)
+    )
+    assert jnp.array_equal(outputs["result"], jnp.asarray([[[4.0, 2.0], [8.0, 4.0]]]))
+
+
 def test_generated_equinox_components_default_trainable_leaves_to_float32():
     layer = graph_eqx.Linear(2, 3, key=jax.random.PRNGKey(0))
     gru = graph_eqx.GRUCell(2, 3, key=jax.random.PRNGKey(1))
@@ -152,7 +223,9 @@ def test_generated_mlp_exposes_live_per_neuron_activations():
 
     trained = _adam_step(component, forward)
     assert jnp.all(trained.activation.negative_slope > component.activation.negative_slope)
-    assert jnp.all(trained.final_activation.negative_slope > component.final_activation.negative_slope)
+    assert jnp.all(
+        trained.final_activation.negative_slope > component.final_activation.negative_slope
+    )
     assert forward(trained) < forward(component)
 
 
@@ -220,6 +293,15 @@ def test_generated_dropout_honors_training_and_inference_modes():
     inference_outputs, _ = inference(inputs, inference_state, key=jax.random.PRNGKey(1))
     assert jnp.allclose(inference_outputs["output"], inputs["input"])
 
+    edited = eqx.tree_at(lambda model: model.layer.p, training, 0.25)
+    edited = eqx.nn.inference_mode(edited)
+    config = edited.configuration()
+    assert config.p == 0.25
+    assert config.inference is True
+    restored = graph_eqx.Dropout.from_config(config)
+    restored_outputs, _ = restored(inputs, None, key=jax.random.key(2))
+    assert jnp.array_equal(restored_outputs["output"], inputs["input"])
+
 
 def test_generated_multihead_attention_forwards_dropout_key():
     component = graph_eqx.MultiheadAttention(
@@ -240,6 +322,12 @@ def test_generated_multihead_attention_forwards_dropout_key():
 
     assert outputs["output"].shape == (2, 2)
     assert new_state is state
+    edited = eqx.tree_at(lambda model: model.layer.dropout.p, component, 0.25)
+    config = edited.configuration()
+    assert config.dropout_p == 0.25
+    assert config.key_size == 2
+    rebuilt = graph_eqx.MultiheadAttention.from_config(config, key=jax.random.key(2))
+    assert rebuilt.layer.dropout.p == 0.25
 
 
 def test_runtime_neural_components_default_trainable_leaves_to_float32():
@@ -282,7 +370,7 @@ def test_runtime_linear_accepts_custom_activation_callable():
     def square(x):
         return x * x
 
-    linear = runtime_components.Linear(2, 2, activation=square, key=jax.random.PRNGKey(0))
+    linear = runtime_components.LinearLayer(2, 2, activation=square, key=jax.random.PRNGKey(0))
     state = init_state_from_component(linear)
     raw = linear.layer(jnp.array([2.0, 3.0], dtype=jnp.float32))
 
@@ -371,8 +459,13 @@ def test_recurrent_controller_lstm_matches_seeded_cell_encoder_and_readout():
     key = jax.random.key(0)
     key_cell, key_encoder, key_readout = jax.random.split(key, 3)
     net = recurrent_controller(
-        2, 3, out_size=1, encoding_size=4, hidden_type=eqx.nn.LSTMCell,
-        use_bias=False, key=key,
+        2,
+        3,
+        out_size=1,
+        encoding_size=4,
+        hidden_type=eqx.nn.LSTMCell,
+        use_bias=False,
+        key=key,
     )
     cell = eqx.nn.LSTMCell(4, 3, use_bias=False, key=key_cell)
     encoder = eqx.nn.Linear(2, 4, key=key_encoder)
@@ -512,6 +605,53 @@ def test_channel_delay():
     assert (out2["output"] == jnp.array([0.0, 0.0])).all()
     assert (out3["output"] == jnp.array([1.0, 1.0])).all()
 
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.runtime.channel import ChannelState
+
+    reset = ChannelState(
+        output=jnp.full(3, 2.0),
+        queue=(jnp.full(3, 2.0), jnp.full(3, 2.0)),
+        noise=None,
+    )
+    edited = eqx.tree_at(lambda node: node.state_index.init, channel, reset)
+    registry = ComponentRegistry()
+    type_id, params, _ = registry.serialize_component(edited)
+    assert params["init_value"] == 2.0
+    assert params["input_shape"] == [3]
+    rebuilt = registry.get(type_id).params.build(params)
+    assert eqx.tree_equal(rebuilt.state_index.init, reset)
+    reshaped = edited.change_input(jnp.zeros(4))
+    assert jnp.array_equal(reshaped.state_index.init.output, jnp.full(4, 2.0))
+
+    mixed = Channel(
+        delay=1,
+        noise_func=None,
+        input_proto=(jnp.zeros(1, dtype=jnp.float16), jnp.zeros(1, dtype=jnp.bfloat16)),
+        init_value=0.10279028117656708,
+    )
+    _, params, _ = registry.serialize_component(mixed)
+    rebuilt = registry.get(type_id).params.build(
+        {**params, "resolved_input_proto": mixed.input_proto}
+    )
+    assert eqx.tree_equal(rebuilt.state_index.init, mixed.state_index.init)
+
+    reset_gradient = jax.grad(
+        lambda initial: Channel(
+            delay=0, noise_func=None, input_proto=jnp.zeros(2), init_value=initial
+        ).state_index.init.output.sum()
+    )(jnp.asarray(0.5))
+    assert reset_gradient == 2.0
+
+    inconsistent = eqx.tree_at(
+        lambda node: node.state_index.init.queue[0], edited, jnp.array([2.0, 3.0, 2.0])
+    )
+    with pytest.raises(ValueError, match="reset payload cannot be reconstructed"):
+        registry.serialize_component(inconsistent)
+
+    stripped, _ = eqx.nn.make_with_state(Channel)(delay=2, noise_func=None)
+    with pytest.raises(ValueError, match="reset payload was stripped by make_with_state"):
+        registry.serialize_component(stripped)
+
 
 def test_simplefeedback_runs():
     key = jax.random.PRNGKey(0)
@@ -611,3 +751,34 @@ def test_simplefeedback_model_net_update_replaces_executable_graph_node():
         jnp.array_equal(updated_leaf, replacement_leaf)
         for updated_leaf, replacement_leaf in zip(updated_leaves, replacement_leaves)
     )
+
+
+def test_transform_export_reads_edited_reset_payload_and_rejects_stripped_defaults():
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.runtime.signal_transforms import NetworkConstantInput, NetworkValueParams
+
+    registry = ComponentRegistry()
+    original = NetworkConstantInput(
+        params=NetworkValueParams(active=True, scale=1.0, unit_spec=jnp.array([1.0, 2.0]))
+    )
+    edited = eqx.tree_at(
+        lambda node: (node.params_index.init.scale, node.params_index.init.unit_spec),
+        original,
+        (jnp.asarray(3.0), jnp.array([2.0, 4.0])),
+    )
+    type_id, values, revision = registry.serialize_component(edited)
+    assert type_id == "feedbax.NetworkConstantInput"
+    assert revision == 2
+    assert values["scale"] == 3.0
+    assert values["unit_spec"] == [2.0, 4.0]
+    restored = registry.get(type_id).params.build(values)
+    outputs, _ = restored(
+        {"input": jnp.array([1.0, -1.0])},
+        init_state_from_component(restored),
+        key=jax.random.PRNGKey(0),
+    )
+    assert jnp.array_equal(outputs["output"], jnp.array([7.0, 11.0]))
+
+    stripped, _ = eqx.nn.make_with_state(NetworkConstantInput)()
+    with pytest.raises(ValueError, match="reset payload was stripped by make_with_state"):
+        registry.serialize_component(stripped)

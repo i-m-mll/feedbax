@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, ClassVar, Mapping
 
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State
-import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
 from feedbax.runtime.graph import Component
 
 
@@ -103,8 +105,21 @@ class StateFeedbackSelector(Component):
     selected arrays are combined with optional target input.
     """
 
-    input_ports = ("state", "target")
-    output_ports = ("feedback",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={
+            "state": PortType(dtype="vector"),
+            "target": PortType(dtype="vector"),
+        },
+        outputs={"feedback": PortType(dtype="vector")},
+    )
+    component_options: ClassVar = ComponentOptions(
+        output_prototype_fn=lambda params, inputs: state_feedback_output_prototype(params, inputs)
+    )
+
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("state_slices_param", name="state_slices"),
+        ConfigBinding("channels_param", name="channels"),
+    )
 
     state_slices: tuple[tuple[str, _StateSlice], ...] = field(static=True)
     channels: tuple[StateFeedbackChannel, ...] = field(static=True)

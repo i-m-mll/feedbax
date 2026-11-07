@@ -57,6 +57,9 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.persistence import manifest_index
 from feedbax.persistence.manifest_index import rebuild_manifest_index
+from tests.support.evaluation_registry import (
+    evaluation_registry_fixture as evaluation_registry_fixture,
+)
 
 
 def _assert_tree_arrays_equal(left, right) -> None:

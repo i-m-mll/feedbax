@@ -10,7 +10,7 @@ import pytest
 from feedbax.runtime.signal_transforms import (
     AddNoise,
     AddNoiseParams,
-    ConstantInput,
+    ConstantInputTransform,
     ConstantInputParams,
 )
 from feedbax.models.feedback_impulse import feedback_impulse
@@ -117,7 +117,7 @@ class TestDynamicsMatrixPerturb:
     def test_mass_must_be_explicit_and_positive(self):
         with pytest.raises(ValueError, match="requires an explicit positive mass"):
             DynamicsMatrixPerturb()
-        with pytest.raises(ValueError, match="must be finite and positive"):
+        with pytest.raises(ValueError, match="(greater than 0|finite and positive)"):
             DynamicsMatrixPerturb(mass=0.0)
 
 
@@ -186,7 +186,10 @@ def test_nested_feedback_impulse_and_task_constant_input(feedback):
     )
     offsets = (jnp.array([0.0, 2.0]), jnp.array([3.0, 0.0]))
     graph = Graph(
-        nodes={"pulse": pulse, "constant": ConstantInput(ConstantInputParams(arrays=offsets))},
+        nodes={
+            "pulse": pulse,
+            "constant": ConstantInputTransform(ConstantInputParams(arrays=offsets)),
+        },
         wires=(Wire("pulse", "output", "constant", "input"),),
         input_ports=("input",),
         output_ports=("output",),

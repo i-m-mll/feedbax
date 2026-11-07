@@ -13,6 +13,12 @@ from feedbax.contracts.base import (
     StrictModel,
     canonical_json_bytes,
 )
+from feedbax.contracts.execution_schema import (
+    ATTEMPT_SCHEMA_ID,
+    ATTEMPT_SCHEMA_VERSION,
+    BACKEND_PLAN_SCHEMA_ID,
+    BACKEND_PLAN_SCHEMA_VERSION,
+)
 from feedbax.execution.records import Invocation
 
 if TYPE_CHECKING:
@@ -21,11 +27,6 @@ if TYPE_CHECKING:
         RealizedDriverCapabilities,
     )
 
-
-BACKEND_PLAN_SCHEMA_ID = "feedbax.orchestration.backend_plan"
-BACKEND_PLAN_SCHEMA_VERSION = "feedbax.orchestration.backend_plan.v1"
-ATTEMPT_SCHEMA_ID = "feedbax.manifest.attempt"
-ATTEMPT_SCHEMA_VERSION = "feedbax.manifest.attempt.v1"
 
 _OBSERVED_REALIZATION_KEYS = frozenset(
     {

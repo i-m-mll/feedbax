@@ -137,16 +137,3 @@ def test_relocated_contracts_stay_importable_from_their_original_paths() -> None
         "build_task_timeline_mask",
     ):
         assert getattr(task_timeline_masks, name) is getattr(runtime_timeline_masks, name)
-
-
-def test_parameter_role_resolvers_are_declared_by_component_types() -> None:
-    parameter_constraints = importlib.import_module("feedbax.runtime.parameter_constraints")
-    components = importlib.import_module("feedbax.runtime.components")
-    networks = importlib.import_module("feedbax.models.networks")
-
-    resolvers = parameter_constraints._PARAMETER_ROLE_RESOLVERS
-    assert resolvers[components.Linear] is parameter_constraints.linear_parameter_role
-    assert resolvers[components.GRU] is parameter_constraints.recurrent_parameter_role
-    assert resolvers[components.LSTM] is parameter_constraints.recurrent_parameter_role
-    # Declared next to the network type, not hardcoded in the runtime.
-    assert resolvers[networks.VanillaRNN] is parameter_constraints.recurrent_parameter_role

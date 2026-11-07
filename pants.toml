@@ -1,0 +1,14 @@
+[GLOBAL]
+pants_version = "2.33.0"
+backend_packages = ["pants.backend.python", "pants.backend.project_info"]
+pantsd = false
+
+[source]
+root_patterns = ["/"]
+
+[python]
+interpreter_constraints = [">=3.12"]
+
+[python-infer]
+init_files = "always"
+unowned_dependency_behavior = "warning"

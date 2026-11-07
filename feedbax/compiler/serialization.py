@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from hashlib import sha256
+import json
 from typing import Any, Literal, Mapping, Sequence, cast
 
 from jaxtyping import PRNGKeyArray
@@ -7,7 +10,14 @@ from jaxtyping import PRNGKeyArray
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.trial_history import trial_history_plan
-from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
+from feedbax.runtime.graph import (
+    AuthoredArrayEncoding,
+    Component,
+    ComponentBinding,
+    Graph,
+    GraphNode,
+    Wire,
+)
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
     derive_dynamic_port_layout,
@@ -25,8 +35,8 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
+from feedbax.component_registry.declarations import DeclaredComponent
 from feedbax.component_registry import (
-    DeclaredComponent,
     format_missing_interior_message,
     required_interior_domain,
 )
@@ -111,6 +121,52 @@ def _materialize_graph_component_params(
     return spec.model_copy(update={"nodes": nodes}), declarations_by_node
 
 
+def _array_encoding_slot(
+    params: dict[str, Any], path: tuple[str, ...]
+) -> tuple[Any, str | int] | None:
+    container: Any = params
+    for part in path[:-1]:
+        if isinstance(container, dict) and part in container:
+            container = container[part]
+        elif isinstance(container, list) and part.isdecimal() and int(part) < len(container):
+            container = container[int(part)]
+        else:
+            return None
+    part = path[-1]
+    if isinstance(container, dict) and part in container:
+        return container, part
+    if isinstance(container, list) and part.isdecimal() and int(part) < len(container):
+        return container, int(part)
+    return None
+
+
+def _serialized_value_digest(value: Any) -> bytes:
+    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).digest()
+
+
+def _capture_authored_arrays(
+    params: dict[str, Any], declarations: Mapping[tuple[str, ...], ArrayValueSpec]
+) -> tuple[AuthoredArrayEncoding, ...]:
+    encodings = []
+    for path, declaration in sorted(declarations.items()):
+        if (slot := _array_encoding_slot(params, path)) is not None:
+            container, key = slot
+            encodings.append(
+                AuthoredArrayEncoding(path, declaration, _serialized_value_digest(container[key]))
+            )
+    return tuple(encodings)
+
+
+def _restore_authored_arrays(
+    params: dict[str, Any], encodings: tuple[AuthoredArrayEncoding, ...]
+) -> None:
+    for encoding in encodings:
+        if (slot := _array_encoding_slot(params, encoding.path)) is not None:
+            container, key = slot
+            if _serialized_value_digest(container[key]) == encoding.baseline_sha256:
+                container[key] = encoding.declaration.model_dump(mode="json")
+
+
 def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpec:
     """Serialize a runtime graph through its component declarations."""
 
@@ -120,7 +176,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
     if registry is None:
         from feedbax.component_registry import ComponentRegistry
 
-        registry = ComponentRegistry(load_user_components=False)
+        registry = ComponentRegistry()
 
     nodes: dict[str, ComponentSpec] = {}
     subgraphs: dict[str, GraphSpec] = {}
@@ -136,22 +192,24 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 raise ValueError(
                     f"Runtime Graph node {name!r} is not bound to a declared composite type"
                 )
-            if binding.param_schema_version != meta.param_schema_version:
+            if binding.revision != meta.revision:
                 raise ValueError(
-                    f"Composite node {name!r} has unsupported bound parameter schema version "
-                    f"{binding.param_schema_version!r}"
+                    f"Composite node {name!r} has unsupported bound revision {binding.revision!r}"
                 )
             type_id = binding.type_id
             params = {}
-            param_schema_version = binding.param_schema_version
+            revision = binding.revision
             subgraphs[name] = graph_to_spec(component, registry)
         else:
-            type_id, params, param_schema_version = registry.serialize_component(
+            if not isinstance(component, Component):
+                raise ValueError(
+                    f"Graph node {name!r} ({type(component).__name__}) is Python-only: "
+                    "portable export requires a Component with a reconstructible configuration"
+                )
+            type_id, params, revision = registry.serialize_component(
                 component,
                 type_id=binding.type_id if binding is not None else None,
-                param_schema_version=(
-                    binding.param_schema_version if binding is not None else None
-                ),
+                revision=(binding.revision if binding is not None else None),
             )
 
         layout = registry.dynamic_port_layout(type_id, params)
@@ -167,12 +225,14 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 f"declared inputs={tuple(layout.input_ports)!r}, "
                 f"outputs={tuple(layout.output_ports)!r}"
             )
-        if binding is not None and binding.trainable_override is not None:
-            params = {**params, "trainable": binding.trainable_override}
+        if binding is not None:
+            _restore_authored_arrays(params, binding.authored_arrays)
+            if binding.trainable_override is not None:
+                params = {**params, "trainable": binding.trainable_override}
         nodes[name] = ComponentSpec(
             type=type_id,
             params=params,
-            param_schema_version=param_schema_version,
+            revision=revision,
             input_ports=list(component.input_ports),
             output_ports=list(component.output_ports),
         )
@@ -225,16 +285,16 @@ def _instantiate_graph(
     metadata_registry = component_registry
     spec, authored_array_values = _materialize_graph_component_params(spec)
 
-    nodes: dict[str, Component] = {}
+    nodes: dict[str, GraphNode] = {}
     component_bindings: dict[str, ComponentBinding] = {}
     for node_name, node_spec in spec.nodes.items():
         node_keys = keys_by_node.pop(node_name, {})
         node_type = node_spec.type
         node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
-        if node_spec.param_schema_version is not None:
+        if node_spec.revision is not None:
             component_bindings[node_name] = ComponentBinding(
                 type_id=node_type,
-                param_schema_version=node_spec.param_schema_version,
+                revision=node_spec.revision,
                 trainable_override=lowering_metadata.get("trainable"),
             )
         required_domain = required_interior_domain(node_type, metadata_registry)
@@ -261,9 +321,9 @@ def _instantiate_graph(
         if required_domain is not None:
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
-                if node_type == "Subgraph":
+                if node_type == "feedbax.Subgraph":
                     raise ValueError(f"Missing subgraph spec for '{node_name}'")
-                if node_type == "Network":
+                if node_type == "feedbax.Network":
                     raise ValueError(
                         f"Network node {node_name!r} has no subgraph. "
                         "Open it in Studio to generate the internal architecture, then save again."
@@ -284,7 +344,9 @@ def _instantiate_graph(
             )
             if required_domain != CAUSAL_DOMAIN_ID:
                 if node_keys:
-                    raise ValueError(f"Cannot supply initialization keys to acausal node {node_name!r}")
+                    raise ValueError(
+                        f"Cannot supply initialization keys to acausal node {node_name!r}"
+                    )
                 domain = builtin_domain_registry().get(required_domain)
                 if domain is None:
                     raise ValueError(
@@ -346,9 +408,6 @@ def _instantiate_graph(
                     for parameter, port in meta.compiler.build_output_prototypes.items()
                 },
             }
-        delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
-        if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
-            params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
         if node_keys:
             if (
                 node_keys.keys() != {()}
@@ -361,12 +420,23 @@ def _instantiate_graph(
             params = {**params, "key": node_keys[()]}
         elif meta is not None and "key" in meta.params.build_context_fields:
             params = {**params, "key": derive_key(construction_key, "construction", node_name)}
+        config = resolution.node_configs.get(node_name)
+        if config is not None:
+            config = config.model_copy(
+                update={
+                    name: _materialize_component_param_value(
+                        getattr(config, name), declarations={}, path=()
+                    )
+                    for name in type(config).model_fields
+                }
+            )
         component = build_component(
             node_name,
             node_type,
             params,
             component_registry=execution_registry,
             params_resolved=True,
+            config=config,
         )
         if (
             tuple(component.input_ports) != declared_input_ports
@@ -380,6 +450,13 @@ def _instantiate_graph(
                     f"outputs={tuple(component.output_ports)!r}; "
                     f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
                 )
+        if declarations := authored_array_values.get(node_name):
+            binding = component_bindings[node_name]
+            assert meta is not None
+            component_bindings[node_name] = replace(
+                binding,
+                authored_arrays=_capture_authored_arrays(meta.params.dump(component), declarations),
+            )
         nodes[node_name] = component
 
     if keys_by_node:
@@ -427,7 +504,7 @@ def _split_lowering_metadata(
     """Separate graph-level controls from the component's own parameters."""
     params = dict(node_spec.params)
     lowering_metadata = {}
-    if node_spec.type == "Sum" and "channel_adapter" in params:
+    if node_spec.type in ("Sum", "feedbax.Sum") and "channel_adapter" in params:
         lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
     if isinstance(params.get("trainable"), bool):
         declaration = component_registry.get(node_spec.type)

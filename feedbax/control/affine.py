@@ -2,16 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, ClassVar, Literal, Mapping
 
 import equinox as eqx
-from equinox import field
-from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
+from equinox import field
+from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.runtime.graph import Component
+
+
+class _AffineFeedbackControllerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    gain: Any = ConfigField(default=[[[1.0]]], json_schema_extra={"feedbax": {"type": "array"}})
+    bias: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "array"}})
+    feedforward: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "array"}})
+    schedule_policy: Literal["hold", "error"] = ConfigField(
+        default="hold"
+    )
 
 
 class AffineFeedbackController(Component):
@@ -26,8 +41,20 @@ class AffineFeedbackController(Component):
     last sample, ``hold`` reuses it and ``error`` raises on the next sample.
     """
 
-    input_ports = ("feedback", "reference", "feedforward")
-    output_ports = ("command",)
+    config: ClassVar[type[BaseModel]] = _AffineFeedbackControllerConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={
+            "feedback": PortType(dtype="vector"),
+            "reference": PortType(dtype="vector"),
+            "feedforward": PortType(dtype="vector"),
+        },
+        outputs={"command": PortType(dtype="vector")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        prototype_depends_on_connected_inputs=True,
+        output_prototype_fn=lambda params, inputs: affine_feedback_output_prototype(params, inputs),
+    )
 
     gain: Array
     bias: Array | None
@@ -41,10 +68,14 @@ class AffineFeedbackController(Component):
     def __init__(
         self,
         *,
-        gain: PyTree,
-        bias: PyTree | None = None,
-        feedforward: PyTree | None = None,
-        schedule_policy: str = "hold",
+        gain: PyTree = _AffineFeedbackControllerConfig.model_fields["gain"].default,
+        bias: PyTree | None = _AffineFeedbackControllerConfig.model_fields["bias"].default,
+        feedforward: PyTree | None = _AffineFeedbackControllerConfig.model_fields[
+            "feedforward"
+        ].default,
+        schedule_policy: str = _AffineFeedbackControllerConfig.model_fields[
+            "schedule_policy"
+        ].default,
     ):
         gain_array = jnp.asarray(gain)
         if gain_array.ndim not in (2, 3):
@@ -154,7 +185,7 @@ def affine_feedback_output_prototype(
     """Return output prototypes for an affine feedback controller spec."""
 
     if "feedback" not in inputs:
-        from feedbax.component_registry.declarations import MissingPrototypeInput
+        from feedbax.contracts.portable import MissingPrototypeInput
 
         raise MissingPrototypeInput("Affine feedback output requires input prototype 'feedback'.")
     controller = build_affine_feedback_controller(params)

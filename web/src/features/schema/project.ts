@@ -17,11 +17,7 @@ import type {
 } from '@/types/workspace';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import { validateInterventionSchema } from './interventions';
-import {
-  MUX_COMPONENT_TYPE,
-  muxInputIndex,
-  normalizeDynamicPorts,
-} from '@/features/graph/dynamicPorts';
+import { componentPortType, normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
 import { causalInputDrivers, inputDriverConflict } from '@/features/graph/inputDrivers';
 import { taskBindingId } from '@/features/scenario/taskBindings';
 
@@ -95,7 +91,7 @@ export function projectStudioSchema(
     };
   }
   const componentMap = new Map(components.map((component) => [component.name, component]));
-  const schemaGraph = normalizeDynamicPorts(graph, taskBindingSpec);
+  const schemaGraph = normalizeDynamicPorts(graph, componentMap, taskBindingSpec);
   const taskData = enumerateTaskData(taskBindingSpec);
   const ports = enumerateGraphPorts(schemaGraph, componentMap, taskBindingSpec, taskData);
   const portIndex = buildPortSchemaIndex(ports);
@@ -132,14 +128,14 @@ function validateMissingSubgraphs(
   for (const [nodeId, node] of Object.entries(graph.nodes)) {
     const component = componentMap.get(node.type);
     const requiresSubgraph =
-      node.type === 'Network' ||
-      node.type === 'Subgraph' ||
+      node.type === 'feedbax.Network' ||
+      node.type === 'feedbax.Subgraph' ||
       Boolean(component?.is_composite);
     if (!requiresSubgraph || graph.subgraphs?.[nodeId]) continue;
     issues.push({
       type: 'missing_subgraph',
       message:
-        node.type === 'Network'
+        node.type === 'feedbax.Network'
           ? `Network node '${nodeId}' has no subgraph. Open it in Studio to generate the internal architecture, then save again.`
           : `${node.type} node '${nodeId}' requires a subgraph, but none was provided`,
       severity: 'error',
@@ -290,7 +286,7 @@ function enumerateGraphPorts(
           node.params,
           port,
           'input',
-          componentInputPortType(node.type, port, component),
+          componentPortType(component, 'input', port),
           subgraph,
           componentMap
         )
@@ -304,13 +300,14 @@ function enumerateGraphPorts(
           node.params,
           port,
           'output',
-          component?.port_types?.outputs?.[port],
+          componentPortType(component, 'output', port),
           subgraph,
           componentMap
         )
       );
     }
   }
+  applyConcatenatedOutputShapes(ports, graph, componentMap, taskBindingSpec, taskData);
   const componentPortIndex = buildPortSchemaIndex(ports);
   for (const port of graph.input_ports) {
     ports.push(graphPortSchema(port, 'input', graph.input_bindings[port], componentPortIndex));
@@ -318,21 +315,7 @@ function enumerateGraphPorts(
   for (const port of graph.output_ports) {
     ports.push(graphPortSchema(port, 'output', graph.output_bindings[port], componentPortIndex));
   }
-  applyMuxOutputShapes(ports, graph, taskBindingSpec, taskData);
   return ports;
-}
-
-function componentInputPortType(
-  componentType: string,
-  port: string,
-  component?: ComponentDefinition
-): PortType | undefined {
-  const explicit = component?.port_types?.inputs?.[port];
-  if (explicit) return explicit;
-  if (componentType === MUX_COMPONENT_TYPE && muxInputIndex(port) !== null) {
-    return component?.port_types?.inputs?.in_0 ?? component?.port_types?.inputs?.in_1;
-  }
-  return undefined;
 }
 
 function componentPortSchema(
@@ -396,25 +379,25 @@ function componentPortDimension(
 ): { shape: number[]; metadata: Record<string, unknown> } | null {
   let dimensionParam: string | null = null;
   let dimension: number | null = null;
-  if (componentType === 'Network') {
+  if (componentType === 'feedbax.Network') {
     if (direction === 'output' && port === 'output') {
       dimensionParam = 'out_size';
     } else if (direction === 'output' && port === 'hidden') {
       dimensionParam = 'hidden_size';
     }
-  } else if (componentType === 'Linear' || componentType === 'MLP') {
+  } else if (componentType === 'feedbax.Linear' || componentType === 'feedbax.MLP') {
     if (direction === 'input' && port === 'input') dimensionParam = 'input_size';
     if (direction === 'output' && port === 'output') dimensionParam = 'output_size';
-  } else if (componentType === 'GRU' || componentType === 'LSTM') {
+  } else if (componentType === 'feedbax.GRU' || componentType === 'feedbax.LSTM') {
     if (direction === 'input' && port === 'input') dimensionParam = 'input_size';
     if (port === 'output' || port === 'hidden' || port === 'cell') dimensionParam = 'hidden_size';
-  } else if (['TwoLinkArm', 'PointMass', 'Mechanics'].includes(componentType) && port === 'force') {
+  } else if (['feedbax.TwoLinkArm', 'feedbax.PointMass', 'feedbax.Mechanics'].includes(componentType) && port === 'force') {
     dimension = 2;
-  } else if (componentType === 'Arm6MuscleRigidTendon') {
+  } else if (componentType === 'feedbax.Arm6MuscleRigidTendon') {
     if (port === 'excitation') dimension = 6;
     if (port === 'angles' || port === 'angular_velocities' || port === 'torques') dimension = 2;
     if (port === 'forces' || port === 'activations') dimension = 6;
-  } else if (componentType === 'PointMass8MuscleRelu') {
+  } else if (componentType === 'feedbax.PointMass8MuscleRelu') {
     if (port === 'excitation' || port === 'forces' || port === 'activations') {
       const nPairs = positiveIntParam(nodeParams, 'n_pairs');
       dimension = nPairs === null ? null : nPairs * 2;
@@ -545,9 +528,10 @@ function taskDataSampleShape(shape: unknown[] | null | undefined): unknown[] | n
   return [...shape];
 }
 
-function applyMuxOutputShapes(
+function applyConcatenatedOutputShapes(
   ports: PortSchema[],
   graph: GraphSpec,
+  componentMap: Map<string, ComponentDefinition>,
   taskBindingSpec?: StudioTaskBindingSpec | null,
   taskData: TaskDataSchema[] = []
 ): void {
@@ -570,12 +554,12 @@ function applyMuxOutputShapes(
   }
 
   for (const port of ports) {
-    if (port.component_type !== MUX_COMPONENT_TYPE || port.direction !== 'output' || port.port !== 'output') {
+    const nodeId = port.node_id;
+    if (port.direction !== 'output' || !nodeId) continue;
+    const node = graph.nodes[nodeId];
+    if (!node || componentMap.get(node.type)?.dynamic_port_policy?.concatenate_to_output !== port.port) {
       continue;
     }
-    const nodeId = port.node_id;
-    const node = nodeId ? graph.nodes[nodeId] : null;
-    if (!node || !nodeId) continue;
     const inputShapes = node.input_ports
       .map((inputPort) => compatibilityShape(inputSources.get(`${nodeId}.${inputPort}`)))
       .filter((shape): shape is unknown[] => Array.isArray(shape));
@@ -591,7 +575,7 @@ function applyMuxOutputShapes(
       origin: 'inferred_static',
       metadata: {
         ...port.value_schema.metadata,
-        dimension_source: 'mux_concat_inputs',
+        dimension_source: 'concatenated_inputs',
         input_shapes: inputShapes,
       },
     };

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { SampledTaskTrial } from '@/api/client';
 import {
   compactTimelineCues,
-  sampledPreviewTrialLabel,
   timelineCueOffset,
 } from '@/features/scenario/samplePreview';
 
@@ -23,10 +22,6 @@ const trial: SampledTaskTrial = {
 };
 
 describe('sample preview helpers', () => {
-  it('formats stable trial labels', () => {
-    expect(sampledPreviewTrialLabel(trial)).toBe('T1');
-  });
-
   it('converts timeline steps into clamped offsets', () => {
     expect(timelineCueOffset({ step: 5 }, 11)).toBe(0.5);
     expect(timelineCueOffset({ step: 99 }, 11)).toBe(1);

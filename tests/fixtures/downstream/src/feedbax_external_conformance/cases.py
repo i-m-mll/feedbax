@@ -18,7 +18,12 @@ import jax
 import jax.numpy as jnp
 from pydantic import ValidationError
 
-from feedbax import LowererRegistration, OrderedLowererRegistry, init_state_from_component
+from feedbax import (
+    Component,
+    LowererRegistration,
+    OrderedLowererRegistry,
+    init_state_from_component,
+)
 from feedbax.analysis import (
     EvaluationRowProjectionError,
     EvaluationRowProjectionErrorCode,
@@ -63,10 +68,12 @@ from feedbax.analysis.exact_parents import (
     migrate_staged_exact_parents,
 )
 from feedbax.component_registry import (
-    ComponentMigration,
-    ComponentMigrationPack,
+    ComponentPack,
     ComponentRegistry,
 )
+from feedbax.component_registry.history import Change, History, LegacyEndpoint
+from feedbax.contracts.portable import Ports
+from feedbax.contracts.component import PortType
 from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -277,7 +284,7 @@ def _fixture_plugin(
         declaration=PluginDeclaration(
             plugin_id=plugin_id,
             version="1",
-            downstream_protocol_version=1,
+            downstream_protocol_version=2,
             dependencies=dependencies,
             families=(FamilyRequirement(FIXTURE_RECORDS.family),),
         ),
@@ -332,7 +339,6 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
     state = asyncio.run(
         compose_application(
             entry_points=entry_points,
-            local_component_source=None,
         )
     )
     if tuple(sorted(item.plugin_id for item in state.provenance)) != tuple(
@@ -839,7 +845,6 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         asyncio.run(
             compose_application(
                 entry_points=(_RegistrationEntryPoint(failure),),
-                local_component_source=None,
             )
         )
     except BootstrapError as exc:
@@ -870,7 +875,6 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
     empty = asyncio.run(
         compose_application(
             entry_points=(_RegistrationEntryPoint(empty_provider),),
-            local_component_source=None,
         )
     )
     if empty.registry(FIXTURE_RECORDS).keys():
@@ -899,7 +903,6 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                     _RegistrationEntryPoint(second),
                     _RegistrationEntryPoint(first),
                 ),
-                local_component_source=None,
             )
         )
     except BootstrapError as exc:
@@ -926,7 +929,6 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
         asyncio.run(
             compose_application(
                 entry_points=(_RegistrationEntryPoint(missing),),
-                local_component_source=None,
             )
         )
     except BootstrapError as exc:
@@ -962,7 +964,6 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
     state = asyncio.run(
         compose_application(
             entry_points=entry_points,
-            local_component_source=None,
         )
     )
     registry = state.registry(COMPONENTS)
@@ -972,8 +973,8 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
     definition = next(
         item for item in registry.list_all() if item.name == EXTERNAL_DYNAMIC_COMPONENT
     )
-    if definition.schema_version != "feedbax.spec.component_definition.v3":
-        raise AssertionError("external component definition did not retain v3 identity")
+    if definition.schema_version != "feedbax.spec.component_definition.v4":
+        raise AssertionError("external component definition did not emit the current v4 format")
 
     graph_spec = GraphSpec(
         nodes={
@@ -1037,7 +1038,7 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
 
 def check_external_driver_plugin() -> bool:
     """Construct an installed external driver through unified plugin bootstrap."""
-    state = asyncio.run(compose_application(local_component_source=None))
+    state = asyncio.run(compose_application())
     driver = state.registry(DRIVERS).construct(
         "fixture:driver",
         DriverConstructionContext(configuration={"nested": {"source": "external-wheel"}}),
@@ -1050,72 +1051,60 @@ def check_external_driver_plugin() -> bool:
     return True
 
 
-def _component_registry(*, migration_first: bool) -> ComponentRegistry:
-    registry = ComponentRegistry(load_user_components=False)
+class CurrentScale(Component):
+    ports = Ports({"input": PortType(dtype="any")}, {"output": PortType(dtype="any")})
+    scale: float
+
+    def __init__(self, scale: float):
+        self.scale = scale
+
+    def __call__(self, inputs, state, *, key):
+        return {"output": inputs["input"] * self.scale}, state
+
+
+def _component_registry() -> ComponentRegistry:
+    registry = ComponentRegistry()
     if registry.get(_CUSTOM_COMPONENT) is not None:
         raise AssertionError("fixture component appeared through import-time discovery")
-    migration = ComponentMigration(
-        source_type=_LEGACY_COMPONENT,
-        target_type=_CUSTOM_COMPONENT,
-        owner="feedbax-external-conformance",
-        migration_id="feedbax-external-conformance.LegacyScale-to-CurrentScale.v1",
-        source_param_schema_version="legacy",
-        target_param_schema_version="1",
-        migrate_params=lambda params: {"scale": params["factor"]},
-    )
-    pack = ComponentMigrationPack(
-        owner="feedbax-external-conformance",
-        package="feedbax-external-conformance",
-        migrations=(migration,),
-    )
-    if migration_first:
-        registry.register_migration_pack(pack)
-    registry.register_component_type(
-        _CUSTOM_COMPONENT,
-        lambda params: dict(params),
-        owner="feedbax-external-conformance",
+    registry.ingest(
+        ComponentPack(
+            namespace="fixture",
+            components=(CurrentScale,),
+            histories={
+                CurrentScale: History(
+                    Change(
+                        2,
+                        renamed_from="LegacyScale",
+                        migrate=lambda params: {"scale": params["factor"]},
+                    ),
+                    legacy=(LegacyEndpoint(_LEGACY_COMPONENT, "legacy", 1),),
+                )
+            },
+        ),
         provenance="package:feedbax-external-conformance",
-        param_schema=[
-            {"name": "scale", "type": "float", "required": True},
-        ],
-        param_schema_version="1",
     )
-    if not migration_first:
-        registry.register_migration_pack(pack)
     return registry
 
 
 def check_component_registration_and_migration() -> bool:
-    """Prove explicit component registration and owner migration-pack behavior."""
-    for migration_first in (False, True):
-        registry = _component_registry(migration_first=migration_first)
-        resolved = registry.resolve_component_spec(
-            _LEGACY_COMPONENT,
-            {"factor": 3.0},
-            param_schema_version="legacy",
-        )
-        if (
-            resolved.type_id != _CUSTOM_COMPONENT
-            or resolved.params != {"scale": 3.0}
-            or resolved.param_schema_version != "1"
-        ):
-            raise AssertionError("component migration depends on registration order")
-        try:
-            registry.register_migration(
-                ComponentMigration(
-                    source_type=_LEGACY_COMPONENT,
-                    target_type=_CUSTOM_COMPONENT,
-                    owner="conflicting-owner",
-                    migration_id="conflicting.edge.v1",
-                    source_param_schema_version="legacy",
-                    target_param_schema_version="1",
-                )
-            )
-        except ValueError as exc:
-            if "already registered" not in str(exc):
-                raise
-        else:
-            raise AssertionError("conflicting component migration was accepted")
+    """Prove inferred current owners and exact external history routes."""
+    registry = _component_registry()
+    resolved = registry.resolve_component_spec(
+        _LEGACY_COMPONENT, {"factor": 3.0}, legacy_token="legacy"
+    )
+    if (
+        resolved.type_id != _CUSTOM_COMPONENT
+        or resolved.params != {"scale": 3.0}
+        or resolved.revision != 2
+    ):
+        raise AssertionError("external component history did not resolve to the current owner")
+    try:
+        registry.ingest(ComponentPack(namespace="fixture", components=(CurrentScale,)))
+    except ValueError as exc:
+        if "already registered" not in str(exc):
+            raise
+    else:
+        raise AssertionError("conflicting component owner was accepted")
     return True
 
 
@@ -1196,7 +1185,7 @@ def check_component_param_array_values() -> bool:
     graph_spec = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="StructuralLinearStateSpace",
+                type="feedbax.StructuralLinearStateSpace",
                 params={
                     "A": [[1.0, 0.0], [0.0, 1.0]],
                     "B": [[0.0], [0.0]],
@@ -1206,7 +1195,6 @@ def check_component_param_array_values() -> bool:
                     "pos_slice": [0, 1],
                     "vel_slice": [1, 2],
                 },
-                param_schema_version="feedbax.component.structural_linear_state_space.v1",
                 input_ports=["force", "epsilon"],
                 output_ports=["effector", "state"],
             )
@@ -1214,9 +1202,11 @@ def check_component_param_array_values() -> bool:
     )
     runtime = compile_graph(
         GraphDocument(graph=graph_spec),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     ).graph
-    if runtime.nodes["plant"].initial_delta_A != ((0.0, 0.5), (0.0, 0.0)):
+    plant = runtime.nodes["plant"]
+    initial = init_state_from_component(plant).get(plant.structural_params_index)
+    if initial.delta_A.tolist() != [[0.0, 0.5], [0.0, 0.0]]:
         raise AssertionError("GraphSpec did not materialize sparse component params")
     if graph_to_spec(runtime).nodes["plant"].params["delta_A"] != sparse.model_dump(mode="json"):
         raise AssertionError("runtime round-trip lost authored sparse array identity")
@@ -1439,9 +1429,7 @@ def check_resolved_evaluation_row_projection() -> bool:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         bootstrap_state = asyncio.run(
-            bootstrap_application(
-                new_registration_context(local_component_source=None), registrations=()
-            )
+            bootstrap_application(new_registration_context(), registrations=())
         )
         manifest_inputs = [_projection_input(root, target) for target in (0, 1)]
         inputs = resolve_analysis_inputs(
@@ -1665,9 +1653,7 @@ def check_figure_composition_public_contract() -> bool:
         stage = BundleStageSpec(name="figure", kind="figure", figure=leaf)
         bundle = AnalysisBundleSpec(name="figure-bundle", stages=[stage])
         registries = asyncio.run(
-            bootstrap_application(
-                new_registration_context(local_component_source=None), registrations=()
-            )
+            bootstrap_application(new_registration_context(), registrations=())
         ).bundle
         execution_root = root / "bundle-execution"
         execution = execute_staged_analysis_bundle(

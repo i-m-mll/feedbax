@@ -114,7 +114,7 @@ describe('scenario projection helpers', () => {
 const graph: GraphSpec = {
   nodes: {
     mechanics: {
-      type: 'TwoLinkArm',
+      type: 'feedbax.TwoLinkArm',
       params: { link_lengths: [0.3, 0.4] },
       input_ports: ['force'],
       output_ports: ['effector', 'state'],
@@ -164,7 +164,7 @@ const scenario: StudioScenarioSpec = {
 
 const components: ComponentDefinition[] = [
   {
-    name: 'TwoLinkArm',
+    name: 'feedbax.TwoLinkArm',
     category: 'Mechanics',
     description: 'Arm',
     param_schema: [
@@ -247,7 +247,7 @@ const components: ComponentDefinition[] = [
     },
   },
   {
-    name: 'SimpleReaches',
+    name: 'feedbax.SimpleReaches',
     category: 'Tasks',
     description: 'Reach task',
     param_schema: [
@@ -302,7 +302,7 @@ describe('resolved scene projection', () => {
   it('reports unavailable directed frame sources in acausal interiors', () => {
     const interior: AcausalGraphSpec = {
       schema_id: 'feedbax.spec.acausal_graph',
-      schema_version: 'feedbax.spec.acausal_graph.v1',
+      schema_version: 'feedbax.spec.acausal_graph.v2',
       physical_domain: 'translational',
       nodes: graph.nodes,
       connections: [],

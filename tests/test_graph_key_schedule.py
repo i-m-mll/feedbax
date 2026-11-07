@@ -41,11 +41,11 @@ def test_nested_noise_reset_keys_follow_producers() -> None:
     child = GraphSpec(
         nodes={
             "noise": ComponentSpec(
-                type="Noise", params={"std": 1.0, "shape": [4]}, output_ports=["output"]
+                type="feedbax.Noise", params={"std": 1.0, "shape": [4]}, output_ports=["output"]
             ),
             **{
                 name: ComponentSpec(
-                    type="Gain",
+                    type="feedbax.Gain",
                     params={"gain": 1.0},
                     input_ports=["input"],
                     output_ports=["output"],
@@ -76,7 +76,7 @@ def test_nested_noise_reset_keys_follow_producers() -> None:
     outputs = {f"{node}_{port}": (node, port) for node in siblings for port in child.output_ports}
     spec = GraphSpec(
         nodes={
-            name: ComponentSpec(type="Subgraph", output_ports=child.output_ports)
+            name: ComponentSpec(type="feedbax.Subgraph", output_ports=child.output_ports)
             for name in siblings
         },
         subgraphs=dict.fromkeys(siblings, child),
@@ -84,7 +84,7 @@ def test_nested_noise_reset_keys_follow_producers() -> None:
         output_bindings=outputs,
     )
     compiled = compile_graph(
-        GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
+        GraphDocument(graph=spec), ComponentRegistry()
     )
     # Both sides of the reset fix originally emitted this resolved identity.
     assert compiled.resolved.resolved_sha256 != (
@@ -128,7 +128,7 @@ def test_reordered_random_nodes_preserve_compiler_evidence_and_seeded_execution(
         spec = GraphSpec(
             nodes={
                 name: ComponentSpec(
-                    type="Noise", params={"std": 1.0, "shape": [4]}, output_ports=["output"]
+                    type="feedbax.Noise", params={"std": 1.0, "shape": [4]}, output_ports=["output"]
                 )
                 for name in names
             },
@@ -144,7 +144,7 @@ def test_reordered_random_nodes_preserve_compiler_evidence_and_seeded_execution(
         for _ in range(depth):
             bindings = {name: ("nested", name) for name in ("a", "z")}
             spec = GraphSpec(
-                nodes={"nested": ComponentSpec(type="Subgraph", output_ports=["a", "z"])},
+                nodes={"nested": ComponentSpec(type="feedbax.Subgraph", output_ports=["a", "z"])},
                 subgraphs={"nested": spec},
                 output_ports=["a", "z"],
                 output_bindings=bindings,
@@ -156,7 +156,7 @@ def test_reordered_random_nodes_preserve_compiler_evidence_and_seeded_execution(
                 output_bindings=bindings,
             )
         compiled.append(
-            compile_graph(GraphDocument(graph=spec), ComponentRegistry(load_user_components=False))
+            compile_graph(GraphDocument(graph=spec), ComponentRegistry())
         )
         direct.append(graph)
 
@@ -175,7 +175,7 @@ def test_reordered_random_nodes_preserve_compiler_evidence_and_seeded_execution(
 
 def test_construction_keys_are_scoped_and_support_explicit_overrides() -> None:
     linear = ComponentSpec(
-        type="Linear",
+        type="feedbax.Linear",
         params={"input_size": 3, "output_size": 2},
         input_ports=["input"],
         output_ports=["output"],
@@ -183,10 +183,10 @@ def test_construction_keys_are_scoped_and_support_explicit_overrides() -> None:
     inner = GraphSpec(nodes={"linear": linear})
     siblings = {"left": inner, "right": inner}
     spec = GraphSpec(
-        nodes={name: ComponentSpec(type="Subgraph") for name in siblings},
+        nodes={name: ComponentSpec(type="feedbax.Subgraph") for name in siblings},
         subgraphs=siblings,
     )
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     def build(spec, **kwargs):
         graph = compile_graph(GraphDocument(graph=spec), registry, **kwargs).graph
@@ -318,7 +318,7 @@ def test_branching_seeded_execution_and_cycle_diagnostics_ignore_hash_seed():
 
 
 def test_historical_compiler_evidence_requires_authored_document_recompilation():
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     compiled = compile_graph(GraphDocument(graph=GraphSpec()), registry)
     for model, current in (
         (ResolvedGraph, compiled.resolved),

@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.contracts.component import DynamicPortPolicy
+
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports
+from feedbax.contracts.component import PortType
+
 import sqlite3
 import threading
 from pathlib import Path
@@ -92,6 +99,7 @@ from feedbax.web.worker.app import (
     _run_training,
     _write_job_manifest,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.provider_contract]
 
@@ -120,7 +128,7 @@ def _minimal_graph_spec() -> dict:
     return {
         "nodes": {
             "gain": {
-                "type": "Gain",
+                "type": "feedbax.Gain",
                 "params": {"gain": 2.0},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -150,7 +158,7 @@ def _runtime_network_graph_spec() -> dict:
                 "output_ports": ["output", "hidden"],
             },
             "mechanics": {
-                "type": "PointMass",
+                "type": "feedbax.PointMass",
                 "params": {"dt": 0.02},
                 "input_ports": ["force"],
                 "output_ports": ["effector"],
@@ -232,7 +240,7 @@ def _schema_graph() -> GraphSpec:
     return GraphSpec(
         nodes={
             "network": {
-                "type": "Gain",
+                "type": "feedbax.Gain",
                 "params": {"gain": 1.0},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -850,21 +858,27 @@ def test_component_registry_snapshot_wraps_existing_registry(application_registr
     type_ids = {entry.type_id for entry in snapshot.entries}
 
     assert snapshot.kind == "components"
-    assert "feedbax.component.Gain" in type_ids
-    gain = next(entry for entry in snapshot.entries if entry.type_id == "feedbax.component.Gain")
+    assert "feedbax.Gain" in type_ids
+    gain = next(entry for entry in snapshot.entries if entry.type_id == "feedbax.Gain")
     assert gain.input_ports == ["input"]
     assert gain.output_ports == ["output"]
-    assert gain.component_type_id == "Gain"
+    assert gain.component_type_id == "feedbax.Gain"
     assert gain.owner == "feedbax"
     assert gain.package == "feedbax"
     assert gain.provenance == "feedbax"
     assert gain.provenance_kind == "feedbax"
-    assert gain.param_schema_version == "1"
-    assert gain.supported_param_schema_versions == ["1"]
+    assert gain.revision == 1
+    assert gain.supported_revisions == [1]
     assert gain.identity is not None
     assert gain.identity.stable
     assert gain.identity.owner == "feedbax"
-    assert gain.migrations == []
+    assert {
+        (edge.source_type, edge.source_token, edge.target_type, edge.target_revision)
+        for edge in gain.migrations
+    } == {
+        ("Gain", None, "feedbax.Gain", 1),
+        ("Gain", "1", "feedbax.Gain", 1),
+    }
 
 
 def test_studio_and_provider_expose_intervention_payloads(provider_client) -> None:
@@ -872,9 +886,9 @@ def test_studio_and_provider_expose_intervention_payloads(provider_client) -> No
     assert provider.status_code == 200
     entries = {item["component_type_id"]: item for item in provider.json()["entries"]}
     for name, payload, fields in (
-        ("NetworkClamp", "unit_spec", {"active", "unit_spec"}),
-        ("NetworkConstantInput", "unit_spec", {"active", "scale", "unit_spec"}),
-        ("ConstantInput", "arrays", {"active", "scale", "arrays"}),
+        ("feedbax.NetworkClamp", "unit_spec", {"active", "unit_spec"}),
+        ("feedbax.NetworkConstantInput", "unit_spec", {"active", "scale", "unit_spec"}),
+        ("feedbax.ConstantInput", "arrays", {"active", "scale", "arrays"}),
     ):
         studio = provider_client.get(f"/api/components/{name}")
         assert studio.status_code == 200
@@ -890,12 +904,14 @@ def test_studio_and_provider_expose_intervention_payloads(provider_client) -> No
         )
 
 
-def test_provider_rejects_an_intervention_vector_outside_its_declared_dtype(provider_client) -> None:
+def test_provider_rejects_an_intervention_vector_outside_its_declared_dtype(
+    provider_client,
+) -> None:
     graph = _minimal_graph_spec()
     graph["input_ports"] = ["input"]
     graph["input_bindings"] = {"input": ("gain", "input")}
     clamp = graph["nodes"]["gain"]
-    clamp["type"] = "NetworkClamp"
+    clamp["type"] = "feedbax.NetworkClamp"
     clamp["params"] = {"active": True, "unit_spec": [8.0, None]}
     response = provider_client.post("/api/provider/validate/graph", json={"spec": graph})
     assert response.status_code == 200
@@ -1164,7 +1180,7 @@ def test_graph_validation_rejects_runtime_network_authoring_payloads(
 def test_graph_validation_rejects_task_nodes(application_registry_bundle) -> None:
     graph = _minimal_graph_spec()
     graph["nodes"]["task"] = {
-        "type": "SimpleReaches",
+        "type": "feedbax.SimpleReaches",
         "params": {},
         "input_ports": [],
         "output_ports": ["inputs", "targets", "inits", "intervene"],
@@ -1180,13 +1196,13 @@ def test_graph_validation_rejects_degenerate_single_input_mux(application_regist
     graph = GraphSpec(
         nodes={
             "source": {
-                "type": "Constant",
+                "type": "feedbax.Constant",
                 "params": {"value": [1.0]},
                 "input_ports": [],
                 "output_ports": ["output"],
             },
             "mux": {
-                "type": "Mux",
+                "type": "feedbax.Mux",
                 "params": {"n_inputs": 2},
                 "input_ports": ["in_0", "in_1"],
                 "output_ports": ["output"],
@@ -1219,13 +1235,13 @@ def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch(
     graph = {
         "nodes": {
             "linear": {
-                "type": "Linear",
+                "type": "feedbax.Linear",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
             },
             "muscle": {
-                "type": "ReluMuscle",
+                "type": "feedbax.ReluMuscle",
                 "params": {},
                 "input_ports": ["excitation"],
                 "output_ports": ["force", "activation"],
@@ -1672,13 +1688,13 @@ def test_runtime_wrapper_normalization_does_not_mark_feedback_cut_recurrent() ->
                 "output_ports": ["output"],
             },
             "mechanics": {
-                "type": "PointMass",
+                "type": "feedbax.PointMass",
                 "params": {},
                 "input_ports": ["force"],
                 "output_ports": ["effector"],
             },
             "feedback": {
-                "type": "Channel",
+                "type": "feedbax.Channel",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -1718,13 +1734,13 @@ def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cu
     graph = GraphSpec(
         nodes={
             "a": {
-                "type": "Gain",
+                "type": "feedbax.Gain",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
             },
             "b": {
-                "type": "Gain",
+                "type": "feedbax.Gain",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -1781,7 +1797,7 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch(
     graph = GraphSpec(
         nodes={
             "mux": {
-                "type": "Mux",
+                "type": "feedbax.Mux",
                 "params": {"n_inputs": 2},
                 "input_ports": ["in_0", "in_1"],
                 "output_ports": ["output"],
@@ -1842,7 +1858,7 @@ def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch(
     graph = GraphSpec(
         nodes={
             "split": {
-                "type": "Demux",
+                "type": "feedbax.Demux",
                 "params": {"sizes": [2, 1, 3]},
                 "input_ports": ["input"],
                 "output_ports": ["out_0", "out_1"],
@@ -1872,21 +1888,29 @@ def test_studio_schema_materializes_external_dynamic_policy_without_type_branchi
     application_registry_bundle,
 ) -> None:
     components = application_registry_bundle.components
-    components.register_component_type(
-        "example.DynamicOutputs",
-        lambda params: params,
-        param_schema=[{"name": "items", "type": "array", "default": [1]}],
-        input_ports=["input"],
-        output_ports=["result_0"],
-        dynamic_port_policy={
-            "count_param": "items",
-            "count_mode": "sequence_length",
-            "direction": "output",
-            "fixed_input_ports": ["input"],
-            "generated_name_template": "result_{index}",
-            "dynamic_port_type": {"dtype": "vector"},
-        },
-    )
+
+    class DynamicOutputs(Component):
+        items: list[int]
+        ports = Ports(
+            {"input": PortType()},
+            {},
+            dynamic=DynamicPortPolicy(
+                count_param="items",
+                count_mode="sequence_length",
+                direction="output",
+                fixed_input_ports=("input",),
+                generated_name_template="result_{index}",
+                dynamic_port_type=PortType(dtype="vector"),
+            ),
+        )
+
+        def __init__(self, items: list[int] = [1]):
+            self.items = items
+
+        def __call__(self, inputs, state, *, key):
+            return {name: inputs["input"] for name in self.output_ports}, state
+
+    components.ingest(ComponentPack(namespace="example", components=(DynamicOutputs,)))
     graph = GraphSpec(
         nodes={
             "external": ComponentSpec(
@@ -1922,7 +1946,7 @@ def test_studio_schema_reports_invalid_dynamic_policy_parameter_as_typed_issue(
 ) -> None:
     graph = GraphSpec(
         nodes={
-            "mux": ComponentSpec(type="Mux", params={"n_inputs": True}),
+            "mux": ComponentSpec(type="feedbax.Mux", params={"n_inputs": True}),
         }
     )
     workspace = build_default_studio_workspace(label="Invalid dynamic")
@@ -1944,7 +1968,7 @@ def test_provider_validation_materializes_omitted_dynamic_ports(
     application_registry_bundle,
 ) -> None:
     graph = GraphSpec(
-        nodes={"mux": ComponentSpec(type="Mux", params={"n_inputs": 2})},
+        nodes={"mux": ComponentSpec(type="feedbax.Mux", params={"n_inputs": 2})},
         input_ports=["left", "right"],
         output_ports=["output"],
         input_bindings={"left": ("mux", "in_0"), "right": ("mux", "in_1")},
@@ -2031,7 +2055,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes(
     graph = GraphSpec(
         nodes={
             "mux": {
-                "type": "Mux",
+                "type": "feedbax.Mux",
                 "params": {"n_inputs": 2},
                 "input_ports": ["in_0", "in_1"],
                 "output_ports": ["output"],
@@ -2110,13 +2134,13 @@ def test_studio_schema_reports_derived_dimension_conflict(application_registry_b
     graph = GraphSpec(
         nodes={
             "mux": {
-                "type": "Mux",
+                "type": "feedbax.Mux",
                 "params": {"n_inputs": 2},
                 "input_ports": ["in_0", "in_1"],
                 "output_ports": ["output"],
             },
             "cell": {
-                "type": "GRU",
+                "type": "feedbax.GRU",
                 "params": {"input_size": 7, "hidden_size": 5},
                 "input_ports": ["input", "hidden"],
                 "output_ports": ["output", "hidden"],
@@ -2212,13 +2236,13 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
     child_graph = GraphSpec(
         nodes={
             "cell": {
-                "type": "GRU",
+                "type": "feedbax.GRU",
                 "params": {"input_size": 4, "hidden_size": 100},
                 "input_ports": ["input", "hidden"],
                 "output_ports": ["output", "hidden"],
             },
             "readout": {
-                "type": "Linear",
+                "type": "feedbax.Linear",
                 "params": {"input_size": 100, "output_size": 2},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -2240,7 +2264,7 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
     graph = GraphSpec(
         nodes={
             "task_mux": {
-                "type": "Mux",
+                "type": "feedbax.Mux",
                 "params": {"n_inputs": 3},
                 "input_ports": ["in_0", "in_1", "in_2"],
                 "output_ports": ["output"],
@@ -2442,7 +2466,7 @@ def test_studio_schema_enumeration_validates_task_binding_schema_mismatch(
     workspace = _schema_workspace()
     scenario = next(iter(workspace.scenarios.values()))
     graph = _schema_graph()
-    graph.nodes["network"].type = "Linear"
+    graph.nodes["network"].type = "feedbax.Linear"
     assert scenario.task_binding_spec is not None
     scenario.task_binding_spec.exposed_data[0].dtype = "scalar"
 
@@ -2517,7 +2541,7 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
     graph = GraphSpec(
         nodes={
             "field": {
-                "type": "FixedField",
+                "type": "feedbax.FixedField",
                 "params": {
                     "scale": 1.0,
                     "amplitude": 1.0,
@@ -2579,7 +2603,7 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
             "nodes": {
                 **occupied_payload["nodes"],
                 "params_source": {
-                    "type": "Constant",
+                    "type": "feedbax.Constant",
                     "params": {"value": {"active": True}},
                     "input_ports": [],
                     "output_ports": ["output"],

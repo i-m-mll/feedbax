@@ -39,7 +39,7 @@ def cde_controller(
         keys[("gru_gate",)] = gate_key
     graph = compile_graph(
         GraphDocument(graph=spec),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
         initialization_keys=keys,
     ).graph
     return eqx.tree_at(

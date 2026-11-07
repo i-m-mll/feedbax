@@ -8,15 +8,15 @@ from typing import Any, Callable
 import equinox as eqx
 import jax.numpy as jnp
 
-from feedbax.runtime.components import GRU, LSTM, Linear
+from feedbax.runtime.components import GRU, LSTM, LinearLayer
 from feedbax.contracts.graph import ParameterConstraintSpec
-from feedbax.runtime.graph import Component, Graph
+from feedbax.runtime.graph import Graph, GraphNode
 
 
 ConstraintLike = ParameterConstraintSpec | Mapping[str, Any]
 
 #: Resolve ``(array, getter)`` for one constrained parameter role of a component.
-ParameterRoleResolver = Callable[[Component, str], tuple[Any, Callable[[Any], Any]]]
+ParameterRoleResolver = Callable[[GraphNode, str], tuple[Any, Callable[[Any], Any]]]
 
 _PARAMETER_ROLE_RESOLVERS: dict[type, ParameterRoleResolver] = {}
 
@@ -50,7 +50,7 @@ def normalize_parameter_constraints(
     return tuple(_normalize_constraint(constraint) for constraint in constraints or ())
 
 
-def linear_parameter_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
+def linear_parameter_role(component: GraphNode, role: str) -> tuple[Any, Callable[[Any], Any]]:
     """Resolve a constrained parameter role on a ``Linear``-shaped component."""
 
     if role in {"weight", "linear.weight", "readout.weight"}:
@@ -59,12 +59,10 @@ def linear_parameter_role(component: Component, role: str) -> tuple[Any, Callabl
         if component.layer.bias is None:
             raise ValueError("Linear bias constraint requested for a bias-free component")
         return component.layer.bias, lambda node: node.layer.bias
-    raise ValueError(
-        f"Unsupported Linear parameter role {role!r}; expected 'weight' or 'bias'"
-    )
+    raise ValueError(f"Unsupported Linear parameter role {role!r}; expected 'weight' or 'bias'")
 
 
-def recurrent_parameter_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
+def recurrent_parameter_role(component: GraphNode, role: str) -> tuple[Any, Callable[[Any], Any]]:
     """Resolve a constrained parameter role on a cell-carrying recurrent component."""
 
     if role in {"input_kernel", "weight_ih"}:
@@ -77,15 +75,17 @@ def recurrent_parameter_role(component: Component, role: str) -> tuple[Any, Call
             raise ValueError(f"{type(component).__name__} bias constraint requested without bias")
         return bias, lambda node: node.cell.bias
     expected = "'input_kernel', 'hidden_kernel', or 'bias'"
-    raise ValueError(f"Unsupported {type(component).__name__} parameter role {role!r}; expected {expected}")
+    raise ValueError(
+        f"Unsupported {type(component).__name__} parameter role {role!r}; expected {expected}"
+    )
 
 
-register_parameter_role_resolver(Linear, linear_parameter_role)
+register_parameter_role_resolver(LinearLayer, linear_parameter_role)
 register_parameter_role_resolver(GRU, recurrent_parameter_role)
 register_parameter_role_resolver(LSTM, recurrent_parameter_role)
 
 
-def _resolve_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
+def _resolve_role(component: GraphNode, role: str) -> tuple[Any, Callable[[Any], Any]]:
     for component_type in type(component).__mro__:
         resolver = _PARAMETER_ROLE_RESOLVERS.get(component_type)
         if resolver is not None:
@@ -119,7 +119,7 @@ def apply_parameter_constraints(
     An explicit ``constraints`` sequence overrides declarations on this graph only.
     """
 
-    replacements: dict[str, Component] = {}
+    replacements: dict[str, GraphNode] = {}
     for name, node in graph.nodes.items():
         if isinstance(node, Graph):
             projected = apply_parameter_constraints(node)
@@ -143,7 +143,7 @@ def apply_parameter_constraints(
     return graph
 
 
-def project_component_parameters(model: Component) -> Component:
+def project_component_parameters(model: GraphNode) -> GraphNode:
     """Project parameters of a graph component, including its nested graphs."""
 
     if isinstance(model, Graph):

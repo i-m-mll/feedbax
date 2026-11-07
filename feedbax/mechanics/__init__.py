@@ -1,6 +1,5 @@
 from .mechanics import Mechanics, MechanicsState
 from .linear_state_space import (
-    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
     LinearStateSpace,
     LinearStateSpaceState,
     StructuralLinearDynamicsPerturbation,

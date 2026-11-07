@@ -23,7 +23,7 @@ vi.mock('@/api/client', async (importOriginal) => ({
 const compile = vi.mocked(compileGraphNode);
 const path = ['system'];
 const components = [{
-  name: "AcausalSystem",
+  name: "feedbax.AcausalSystem",
   category: "Mechanics",
   description: "Acausal interior",
   input_ports: [],
@@ -36,7 +36,7 @@ const components = [{
 function makeInterior(): AcausalGraphSpec {
   return {
     schema_id: 'feedbax.spec.acausal_graph',
-    schema_version: 'feedbax.spec.acausal_graph.v1',
+    schema_version: 'feedbax.spec.acausal_graph.v2',
     physical_domain: 'translational',
     nodes: {},
     connections: [],
@@ -44,7 +44,7 @@ function makeInterior(): AcausalGraphSpec {
   };
 }
 
-const acausalSystem = { type: 'AcausalSystem', params: {}, input_ports: [], output_ports: [] };
+const acausalSystem = { type: 'feedbax.AcausalSystem', params: {}, input_ports: [], output_ports: [] };
 
 function openDocument(id: string) {
   const graph = createBlankGraph();

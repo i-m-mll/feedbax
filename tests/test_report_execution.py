@@ -385,7 +385,7 @@ def test_authored_report_cli_prints_failed_manifest_payload(
     ) -> ReportRecipeResult:
         return ReportRecipeResult()
 
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     registries.report_recipes.register("testpkg.cli_failed_report", recipe)
 
     async def compose_application(**_kwargs):

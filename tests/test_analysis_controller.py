@@ -316,7 +316,7 @@ def test_graph_controller_accepts_recurrent_graph_spec():
     spec = GraphSpec(
         nodes={
             "sum": ComponentSpec(
-                type="Sum",
+                type="feedbax.Sum",
                 params={},
                 input_ports=["a", "b"],
                 output_ports=["output"],
@@ -344,7 +344,7 @@ def test_graph_controller_accepts_recurrent_graph_spec():
     controller = graph_controller(
         spec,
         key=jax.random.PRNGKey(0),
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         dtype=jnp.float32,
     )
     h1, output1 = controller.step(
@@ -364,9 +364,9 @@ def test_graph_controller_accepts_recurrent_graph_spec():
 def test_graph_controller_resets_from_static_inputs(entry):
     spec = GraphSpec(
         nodes={
-            "sum": ComponentSpec(type="Sum", input_ports=["a", "b"], output_ports=["output"]),
+            "sum": ComponentSpec(type="feedbax.Sum", input_ports=["a", "b"], output_ports=["output"]),
             "filter": ComponentSpec(
-                type="FirstOrderFilter",
+                type="feedbax.FirstOrderFilter",
                 params={"tau_rise": 0.05, "tau_decay": 0.05, "dt": 0.001},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -390,7 +390,7 @@ def test_graph_controller_resets_from_static_inputs(entry):
         input_bindings={"input": ("sum", "a")},
         output_bindings={"output": ("sum", "output"), "filtered": ("filter", "output")},
     )
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     key = jax.random.key(2)
     seed = jnp.array([3.0, 4.0], dtype=jnp.float32)
     static_inputs = {"seed": seed}
@@ -409,7 +409,7 @@ def test_graph_controller_resets_from_static_inputs(entry):
         spec = GraphSpec(
             nodes={
                 "child": ComponentSpec(
-                    type="Subgraph", input_ports=spec.input_ports, output_ports=spec.output_ports
+                    type="feedbax.Subgraph", input_ports=spec.input_ports, output_ports=spec.output_ports
                 )
             },
             subgraphs={"child": spec},

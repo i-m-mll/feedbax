@@ -88,7 +88,7 @@ def _graph() -> GraphSpec:
     return GraphSpec(
         nodes={
             "network": {
-                "type": "Gain",
+                "type": "feedbax.Gain",
                 "params": {"gain": 1.0},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -218,7 +218,7 @@ def _workspace_with_analysis_type(analysis_type: str):
 
 @pytest.fixture
 def registry_bundle():
-    return new_application_registry_bundle(local_component_source=None)
+    return new_application_registry_bundle()
 
 
 @pytest.fixture

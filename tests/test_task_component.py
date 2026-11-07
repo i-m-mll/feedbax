@@ -29,6 +29,7 @@ from feedbax.tasks import (
     TrialSpecDependency,
     eval_ensemble_on_trials,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 class DummyLoss(AbstractLoss):
@@ -502,7 +503,7 @@ def test_delayed_center_out_task_spec_materializes_from_compact_params(
 
     component = build_component(
         "task",
-        "DelayedReaches",
+        f"feedbax.{DelayedReaches.__name__}",
         params,
         component_registry=application_registry_bundle.components,
     )
@@ -512,7 +513,7 @@ def test_delayed_center_out_task_spec_materializes_from_compact_params(
     with pytest.raises(ValueError, match="epoch lengths must be integers"):
         build_component(
             "task",
-            "DelayedReaches",
+            f"feedbax.{DelayedReaches.__name__}",
             {**params, "epoch_len_ranges": [[2, 2.5]]},
             component_registry=application_registry_bundle.components,
         )

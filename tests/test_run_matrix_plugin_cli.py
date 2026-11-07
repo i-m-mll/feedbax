@@ -49,7 +49,7 @@ def _bootstrap_state(
                 PluginDeclaration(
                     f"tests.run_matrix.{evaluation_type}",
                     "1",
-                    1,
+                    2,
                     families=(FamilyRequirement("evaluation_recipes"),),
                 ),
                 register,
@@ -57,7 +57,7 @@ def _bootstrap_state(
         )
     return asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=registrations,
         )
     )
@@ -75,7 +75,7 @@ def _evaluation_matrix_payload(*row_ids: str) -> dict[str, object]:
 def test_legacy_analysis_recipe_hook_is_rejected_fail_closed() -> None:
     with pytest.raises(BootstrapError) as excinfo:
         PluginRegistration(
-            PluginDeclaration("tests.legacy_recipe", "1", 1),
+            PluginDeclaration("tests.legacy_recipe", "1", 2),
             object(),
         )
     assert excinfo.value.code is BootstrapErrorCode.INVALID_REGISTRATION

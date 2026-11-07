@@ -66,7 +66,7 @@ def _bootstrap_protocol(version: int) -> None:
     )
     asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(registration,),
         )
     )
@@ -82,8 +82,8 @@ def test_guaranteed_imports_resolve_from_named_public_namespaces() -> None:
 def test_policy_constants_bind_effective_release_and_numeric_window() -> None:
     assert DOWNSTREAM_INTERFACE_POLICY_ID == "feedbax.downstream-interface-stability.v1"
     assert DOWNSTREAM_POLICY_EFFECTIVE_RELEASE == "0.2.0"
-    assert DOWNSTREAM_PROTOCOL_MINIMUM == 1
-    assert DOWNSTREAM_PROTOCOL_CURRENT == 1
+    assert DOWNSTREAM_PROTOCOL_MINIMUM == 2
+    assert DOWNSTREAM_PROTOCOL_CURRENT == 2
 
 
 def test_driver_policy_schema_heads_match_reviewed_690_contract() -> None:
@@ -115,16 +115,16 @@ def test_persistence_policy_schema_heads_match_reviewed_b85_contract() -> None:
 
 
 def test_current_downstream_protocol_is_admitted_by_unified_bootstrap() -> None:
-    assert validate_downstream_protocol_version(DOWNSTREAM_PROTOCOL_CURRENT) == 1
+    assert validate_downstream_protocol_version(DOWNSTREAM_PROTOCOL_CURRENT) == 2
     _bootstrap_protocol(DOWNSTREAM_PROTOCOL_CURRENT)
 
 
 def test_minimum_downstream_protocol_is_admitted_by_unified_bootstrap() -> None:
-    assert validate_downstream_protocol_version(DOWNSTREAM_PROTOCOL_MINIMUM) == 1
+    assert validate_downstream_protocol_version(DOWNSTREAM_PROTOCOL_MINIMUM) == 2
     _bootstrap_protocol(DOWNSTREAM_PROTOCOL_MINIMUM)
 
 
-@pytest.mark.parametrize("version", [0, 2, True, "1", None])
+@pytest.mark.parametrize("version", [0, 1, 3, True, "2", None])
 def test_removed_future_or_nonnumeric_downstream_protocol_rejects(version: object) -> None:
     with pytest.raises(UnsupportedDownstreamProtocolVersion) as caught:
         validate_downstream_protocol_version(version)
@@ -132,9 +132,10 @@ def test_removed_future_or_nonnumeric_downstream_protocol_rejects(version: objec
     assert caught.value.requested_version == version
 
 
-def test_future_downstream_protocol_rejects_at_unified_bootstrap() -> None:
+@pytest.mark.parametrize("version", [1, DOWNSTREAM_PROTOCOL_CURRENT + 1])
+def test_unsupported_downstream_protocol_rejects_at_unified_bootstrap(version: int) -> None:
     with pytest.raises(UnsupportedDownstreamProtocolVersion) as caught:
-        _bootstrap_protocol(DOWNSTREAM_PROTOCOL_CURRENT + 1)
+        _bootstrap_protocol(version)
     assert caught.value.plugin_id == "tests.downstream_policy"
 
 
@@ -151,7 +152,7 @@ def test_string_only_plugin_declaration_v1_rejects_without_fallback() -> None:
     with pytest.raises(BootstrapError) as caught:
         asyncio.run(
             bootstrap_application(
-                new_registration_context(local_component_source=None),
+                new_registration_context(),
                 registrations=(registration,),
             )
         )
@@ -265,12 +266,14 @@ def test_ratified_rows_bind_v14_and_have_no_pending_coverage() -> None:
         assert rows[row_id]["coverage_status"] == "covered"
     assert "terminal-certification" not in rows
     assert "dynamic-component-definition" not in rows
-    assert "feedbax.manifest.training_run_certification.v1" in rows[
-        "orchestration-lifecycle"
-    ]["schemas"]["current"]
-    assert "feedbax.spec.component_definition.v3" in rows["component-registration"][
-        "schemas"
-    ]["current"]
+    assert (
+        "feedbax.manifest.training_run_certification.v1"
+        in rows["orchestration-lifecycle"]["schemas"]["current"]
+    )
+    assert (
+        "feedbax.spec.component_definition.v4"
+        in rows["component-registration"]["schemas"]["current"]
+    )
     assert "pending-final-sync" not in json.dumps(manifest)
 
     result_source = (fixture / "src/feedbax_external_conformance/result.py").read_text(
@@ -305,9 +308,7 @@ def test_policy_checker_rejects_v1_manifest_instead_of_inventing_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script = ROOT / "scripts" / "check_downstream_interface_policy.py"
-    spec = importlib.util.spec_from_file_location(
-        "check_downstream_interface_policy_v1", script
-    )
+    spec = importlib.util.spec_from_file_location("check_downstream_interface_policy_v1", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -336,20 +337,20 @@ def test_policy_checker_rejects_v1_manifest_instead_of_inventing_authority(
             "field 'Policy source head'",
         ),
         (
-            "| Result schema identity | `feedbax.external_conformance.result.v14` |",
+            "| Result schema identity | `feedbax.external_conformance.result.v15` |",
             "| Result schema identity | `feedbax.external_conformance.result.v13` |",
             "field 'Result schema identity'",
         ),
         (
             "| Runtime result evidence | No concrete conformance result artifact or execution "
             "receipt is pinned in this policy |",
-            "| Runtime result evidence | `feedbax.external_conformance.result.v14` |",
+            "| Runtime result evidence | `feedbax.external_conformance.result.v15` |",
             "field 'Runtime result evidence'",
         ),
         (
-            "that validated v14 result as an artifact",
+            "that validated v15 result as an artifact",
             "that validated v13 result as an artifact",
-            "current v14 result",
+            "current v15 result",
         ),
     ],
 )

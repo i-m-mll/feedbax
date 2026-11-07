@@ -66,7 +66,7 @@ def _descriptor_plugin() -> PluginRegistration:
         PluginDeclaration(
             "tests.external_descriptor",
             "1",
-            1,
+            2,
             families=(FamilyRequirement(TRAINING_PROGRAMS.family),),
         ),
         register,
@@ -76,7 +76,7 @@ def _descriptor_plugin() -> PluginRegistration:
 def test_external_plugin_uses_public_descriptor_row_lowerer_helper() -> None:
     state = asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(_descriptor_plugin(),),
         )
     )
@@ -105,7 +105,7 @@ def _finalizer_plugin(plugin_id: str) -> PluginRegistration:
         PluginDeclaration(
             plugin_id,
             "1",
-            1,
+            2,
             families=(FamilyRequirement(EVALUATION_PRODUCT_UNION_FINALIZERS.family),),
         ),
         lambda context: context.registry(EVALUATION_PRODUCT_UNION_FINALIZERS).register(
@@ -119,12 +119,12 @@ def _finalizer_plugin(plugin_id: str) -> PluginRegistration:
 def test_finalizer_family_is_isolated_and_collision_is_typed() -> None:
     populated = asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(_finalizer_plugin("tests.union.one"),),
         )
     )
     isolated = asyncio.run(
-        bootstrap_application(new_registration_context(local_component_source=None))
+        bootstrap_application(new_registration_context())
     )
 
     assert populated.registry(EVALUATION_PRODUCT_UNION_FINALIZERS).keys() == ("tests.union@v1",)
@@ -141,7 +141,7 @@ def test_finalizer_family_is_isolated_and_collision_is_typed() -> None:
     with pytest.raises(BootstrapError) as caught:
         asyncio.run(
             bootstrap_application(
-                new_registration_context(local_component_source=None),
+                new_registration_context(),
                 registrations=(
                     _finalizer_plugin("tests.union.one"),
                     _finalizer_plugin("tests.union.two"),

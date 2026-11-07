@@ -4,8 +4,8 @@
   "policy_id": "feedbax.downstream-interface-stability.v1",
   "effective_release": "0.2.0",
   "protocol": {
-    "current": 1,
-    "minimum": 1
+    "current": 2,
+    "minimum": 2
   },
   "guaranteed_rows": [
     {
@@ -322,16 +322,16 @@
         "current": [
           "feedbax.orchestration.driver-capabilities version 3",
           "feedbax.spec.deployment_policy.v2",
-      "feedbax.spec.run_assembly_request.v9",
-      "feedbax.orchestration.run_bundle.v14"
+          "feedbax.spec.run_assembly_request.v9",
+          "feedbax.orchestration.run_bundle.v14"
         ],
         "migrated": [
-      "feedbax.spec.deployment_policy.v1",
-      "feedbax.spec.run_assembly_request.v7",
-      "feedbax.spec.run_assembly_request.v8",
-      "feedbax.orchestration.run_bundle.v11",
-      "feedbax.orchestration.run_bundle.v12",
-      "feedbax.orchestration.run_bundle.v13"
+          "feedbax.spec.deployment_policy.v1",
+          "feedbax.spec.run_assembly_request.v7",
+          "feedbax.spec.run_assembly_request.v8",
+          "feedbax.orchestration.run_bundle.v11",
+          "feedbax.orchestration.run_bundle.v12",
+          "feedbax.orchestration.run_bundle.v13"
         ],
         "rejected": [
           "feedbax.orchestration.driver-capabilities version 1",
@@ -368,10 +368,10 @@
           {
             "namespace": "feedbax.orchestration.bundle",
             "public_names": [
-          "DeploymentPolicy",
-          "LaunchPolicy",
-          "LaunchRowGroup",
-          "RunBundle"
+              "DeploymentPolicy",
+              "LaunchPolicy",
+              "LaunchRowGroup",
+              "RunBundle"
             ]
           },
           {
@@ -439,7 +439,7 @@
           "migration": "legacy completed and cancelled manifests project deterministically",
           "rejection": "legacy failed and nonterminal manifests reject because terminal meaning is ambiguous",
           "evidence": [
-          "tests/test_material_dependencies.py"
+            "tests/test_material_dependencies.py"
           ]
         }
       ]
@@ -487,11 +487,12 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.spec.component_definition.v3"
+          "feedbax.spec.component_definition.v4"
         ],
         "migrated": [
           "feedbax.spec.component_definition.v1",
-          "feedbax.spec.component_definition.v2"
+          "feedbax.spec.component_definition.v2",
+          "feedbax.spec.component_definition.v3"
         ],
         "rejected": [
           "unknown"
@@ -503,13 +504,42 @@
           {
             "namespace": "feedbax.component_registry",
             "public_names": [
-              "ComponentBuilder",
-              "DeclaredComponent",
-              "declare_component",
               "ComponentResolution",
               "ComponentRegistry",
-              "ComponentMigration",
-              "ComponentMigrationPack"
+              "ComponentPack"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.portable",
+            "public_names": [
+              "ComponentOwner",
+              "Ports",
+              "ConfigBinding",
+              "ComponentOptions"
+            ]
+          },
+          {
+            "namespace": "feedbax",
+            "public_names": [
+              "GraphNode",
+              "Component",
+              "Channel",
+              "Gain",
+              "Input",
+              "Linear",
+              "Mux",
+              "Noise",
+              "StateFeedbackSelector",
+              "Subgraph",
+              "Sum"
+            ]
+          },
+          {
+            "namespace": "feedbax.component_registry.history",
+            "public_names": [
+              "History",
+              "Change",
+              "LegacyEndpoint"
             ]
           }
         ],
@@ -566,14 +596,15 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.spec.graph.v5",
+          "feedbax.spec.graph.v6",
           "feedbax.workspace_document version 1"
         ],
         "migrated": [
           "1.0.0",
           "feedbax.spec.graph.v2",
           "feedbax.spec.graph.v3",
-          "feedbax.spec.graph.v4"
+          "feedbax.spec.graph.v4",
+          "feedbax.spec.graph.v5"
         ],
         "rejected": [
           "unknown"
@@ -807,7 +838,7 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.external_conformance.result.v14"
+          "feedbax.external_conformance.result.v15"
         ],
         "migrated": [
           "feedbax.external_conformance.result.v1 to v2 normalization before rejection"

@@ -27,6 +27,7 @@ from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_re
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.integrations import provider as provider_module
 from feedbax.integrations.provider import provider_manifest, validate_analysis_spec
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _product(**updates: object) -> AnalysisDataProduct:

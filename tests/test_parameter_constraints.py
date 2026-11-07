@@ -42,7 +42,7 @@ def _linear_constraint_spec(mask) -> GraphSpec:
     return GraphSpec(
         nodes={
             "readout": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={"input_size": 2, "output_size": 2, "activation": "identity"},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -61,7 +61,7 @@ def _linear_constraint_spec(mask) -> GraphSpec:
 def test_graphspec_parameter_constraints_materialize_and_round_trip() -> None:
     spec = _linear_constraint_spec([[1, 0], [0, 1]])
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
 
     weight = graph.nodes["readout"].layer.weight
     assert weight[0, 1] == 0.0
@@ -72,9 +72,9 @@ def test_graphspec_parameter_constraints_materialize_and_round_trip() -> None:
 
 
 def test_remove_node_preserves_projection_for_surviving_nodes_across_round_trip() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     linear = ComponentSpec(
-        type="Linear",
+        type="feedbax.Linear",
         params={"input_size": 1, "output_size": 1, "initialization": "zeros"},
         input_ports=["input"],
         output_ports=["output"],
@@ -87,7 +87,11 @@ def test_remove_node_preserves_projection_for_surviving_nodes_across_round_trip(
     )
     original = spec_to_graph(
         GraphSpec(
-            nodes={"readout": linear, "readout_aux": linear, "child": ComponentSpec(type="Subgraph")},
+            nodes={
+                "readout": linear,
+                "readout_aux": linear,
+                "child": ComponentSpec(type="feedbax.Subgraph"),
+            },
             subgraphs={"child": child},
             parameter_constraints=[
                 ParameterConstraintSpec(node="readout", role="weight", mask=False, value=7.0),
@@ -130,7 +134,7 @@ def test_nested_parameter_constraints_survive_gradient_updates(entry_point: str)
     spec = GraphSpec(
         nodes={
             "readout": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={
                     "input_size": 2,
                     "output_size": 1,
@@ -152,7 +156,9 @@ def test_nested_parameter_constraints_survive_gradient_updates(entry_point: str)
     for name in ("inner", "outer"):
         spec = GraphSpec(
             nodes={
-                name: ComponentSpec(type="Subgraph", input_ports=["input"], output_ports=["output"])
+                name: ComponentSpec(
+                    type="feedbax.Subgraph", input_ports=["input"], output_ports=["output"]
+                )
             },
             subgraphs={name: spec},
             input_ports=["input"],
@@ -160,7 +166,7 @@ def test_nested_parameter_constraints_survive_gradient_updates(entry_point: str)
             input_bindings={"input": (name, "input")},
             output_bindings={"output": (name, "output")},
         )
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     key = jax.random.PRNGKey(0)
     inputs = jnp.ones(2)
     optimizer = optax.sgd(0.1)
@@ -226,7 +232,7 @@ def test_recurrent_input_kernel_constraints_use_stable_roles(
         GraphSpec(
             nodes={
                 "cell": ComponentSpec(
-                    type=component_type,
+                    type=f"feedbax.{component_type}",
                     params={"input_size": 2, "hidden_size": hidden_size},
                     input_ports=["input"],
                     output_ports=["output"],
@@ -236,7 +242,7 @@ def test_recurrent_input_kernel_constraints_use_stable_roles(
                 ParameterConstraintSpec(node="cell", role=role, mask=mask, value=0.0)
             ],
         ),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     )
 
     assert jnp.all(graph.nodes["cell"].cell.weight_ih[:, 1] == 0.0)
@@ -374,7 +380,7 @@ def test_network_template_population_constraints_materialize_without_recurrent_m
         ("readout", "weight"),
     ]
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     input_mask = population_input_kernel_mask(population, 2, gate_count=3)
     readout_mask = population_readout_kernel_mask(population, 2)
 
@@ -430,7 +436,7 @@ def test_population_constraints_project_after_synthetic_update() -> None:
             cell_type="LSTM",
             population_structure=population,
         ),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     )
     graph = eqx.tree_at(
         lambda g: g.nodes["cell"].cell.weight_ih,
@@ -459,15 +465,11 @@ def test_population_constraints_project_after_synthetic_update() -> None:
 
 def test_parameter_constraints_reject_incompatible_mask_shape() -> None:
     with pytest.raises(ValueError, match="mask shape"):
-        spec_to_graph(
-            _linear_constraint_spec([[1, 0, 1]]), ComponentRegistry(load_user_components=False)
-        )
+        spec_to_graph(_linear_constraint_spec([[1, 0, 1]]), ComponentRegistry())
 
 
 def test_apply_parameter_constraints_rejects_unsupported_role() -> None:
-    graph = spec_to_graph(
-        _linear_constraint_spec([[1, 1], [1, 1]]), ComponentRegistry(load_user_components=False)
-    )
+    graph = spec_to_graph(_linear_constraint_spec([[1, 1], [1, 1]]), ComponentRegistry())
     bad = ParameterConstraintSpec(node="readout", role="input_kernel", mask=[[1, 1], [1, 1]])
 
     with pytest.raises(ValueError, match="Unsupported Linear parameter role"):

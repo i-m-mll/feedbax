@@ -19,21 +19,26 @@ from typing import Any, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.execution_migrations import (
+    migrate_run_set_state_v5_to_v6,
+)
+from feedbax.contracts.execution_schema import (
+    EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
+    EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
+    RUN_SET_STATE_SCHEMA_ID,
+    RUN_SET_STATE_SCHEMA_VERSION,
+    RUN_SET_STATE_SCHEMA_VERSION_V1 as RUN_SET_STATE_SCHEMA_VERSION_V1,
+    RUN_SET_STATE_SCHEMA_VERSION_V2 as RUN_SET_STATE_SCHEMA_VERSION_V2,
+    RUN_SET_STATE_SCHEMA_VERSION_V3 as RUN_SET_STATE_SCHEMA_VERSION_V3,
+    RUN_SET_STATE_SCHEMA_VERSION_V4 as RUN_SET_STATE_SCHEMA_VERSION_V4,
+    RUN_SET_STATE_SCHEMA_VERSION_V5,
+)
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 from feedbax.orchestration.repo_realization import RepoRealizationPlan
 
 
-RUN_SET_STATE_SCHEMA_ID = "feedbax.orchestration.run_set_state"
-RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
-RUN_SET_STATE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_set_state.v2"
-RUN_SET_STATE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_set_state.v3"
-RUN_SET_STATE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_set_state.v4"
-RUN_SET_STATE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_set_state.v5"
-RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v6"
 PROCESS_IDENTITY_SCHEMA_ID = "feedbax.orchestration.process_identity"
 PROCESS_IDENTITY_SCHEMA_VERSION = "feedbax.orchestration.process_identity.v1"
-EMERGENCY_RUN_SET_RECORD_SCHEMA_ID = "feedbax.orchestration.emergency_run_set_record"
-EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION = "feedbax.orchestration.emergency_run_set_record.v1"
 REGISTRATION_HISTORY_SCHEMA_ID = "feedbax.orchestration.registration_history"
 REGISTRATION_HISTORY_SCHEMA_VERSION = "feedbax.orchestration.registration_history.v1"
 ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
@@ -285,24 +290,6 @@ class RunSetState(StrictModel):
         rows = dict(self.rows)
         rows[row_id] = row
         return self.model_copy(update={"rows": rows, "updated_at": utc_now()})
-
-
-def migrate_run_set_state_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
-    """Make every legacy PID explicitly non-authoritative.
-
-    Version 5 persisted only a numeric PID. The number remains diagnostic data,
-    while the new identity field is deliberately empty so recovery cannot adopt
-    or signal a process until a current driver proves run-owned identity.
-    """
-    migrated = dict(payload)
-    rows = {}
-    for row_id, row_value in dict(migrated.get("rows", {})).items():
-        row = dict(row_value)
-        row["process_identity"] = None
-        rows[row_id] = row
-    migrated["rows"] = rows
-    migrated["schema_version"] = RUN_SET_STATE_SCHEMA_VERSION
-    return migrated
 
 
 class RunSetStateStore:

@@ -83,6 +83,9 @@ from feedbax.contracts.staged_execution import (
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 from feedbax.persistence import manifest_index
 from feedbax.persistence.manifest_index import default_index_path
+from tests.support.evaluation_registry import (
+    evaluation_registry_fixture as evaluation_registry_fixture,
+)
 
 
 def _axis_matrix_payload(tmp_path: Path) -> dict:

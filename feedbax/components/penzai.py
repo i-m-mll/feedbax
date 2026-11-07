@@ -22,7 +22,10 @@ from equinox import Module, field
 from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import Component, GraphNode
+from feedbax.contracts.component import PortType, DynamicPortPolicy
+from feedbax.contracts.domain import PENZAI_DOMAIN_ID
+from feedbax.contracts.portable import Ports, ComponentOptions
 
 if TYPE_CHECKING:
     pass
@@ -348,7 +351,7 @@ class PenzaiStateManager(Module):
 # =============================================================================
 
 
-class PenzaiSubgraph(Component):
+class PenzaiSubgraph(GraphNode):
     """Component that wraps a Penzai model for use in feedbax Graphs.
 
     PenzaiSubgraph bridges the Penzai neural network framework with feedbax's
@@ -604,7 +607,9 @@ def _snapshot_builder_data(data: Mapping[str, Any], field: str) -> dict[str, Any
                 raise ValueError(f"{path} must be a finite number")
             return value
         if not (isinstance(value, Mapping) or value_type in (list, tuple)):
-            raise TypeError(f"{path} has unsupported Penzai builder data type {value_type.__name__}")
+            raise TypeError(
+                f"{path} has unsupported Penzai builder data type {value_type.__name__}"
+            )
 
         identity = id(value)
         if identity in active:
@@ -873,6 +878,49 @@ def build_penzai_subgraph(
     )
 
 
+class PenzaiAdapter(PenzaiSubgraph, Component):
+    """Wrap a registered Penzai model builder for portable inference."""
+
+    ports = Ports(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+        dynamic=DynamicPortPolicy(
+            count_mode="names",
+            input_name_params=("input_port",),
+            output_name_params=("output_port",),
+            dynamic_port_type=PortType(dtype="any"),
+        ),
+    )
+    component_options = ComponentOptions(interior_domain=PENZAI_DOMAIN_ID, template_kind="display")
+
+    def __init__(self, builder_name: str, input_port: str = "input", output_port: str = "output"):
+        if not builder_name:
+            raise ValueError("PenzaiAdapter requires 'builder_name' parameter")
+        _require_penzai()
+        try:
+            super().__init__(
+                pz_model=resolve_penzai_model(builder_name),
+                input_mapping=InputMapping.single(input_port),
+                output_mapping=OutputMapping.single(output_port),
+                builder_name=builder_name,
+            )
+        except UnsupportedPenzaiStateError as exc:
+            raise ValueError(
+                "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
+                + f"StateVariable leaves at {', '.join(exc.paths)}"
+            ) from exc
+
+    @property
+    def input_port(self):
+        (name,) = self.input_ports
+        return name
+
+    @property
+    def output_port(self):
+        (name,) = self.output_ports
+        return name
+
+
 # =============================================================================
 # Convenience exports
 # =============================================================================
@@ -881,6 +929,7 @@ def build_penzai_subgraph(
 __all__ = [
     # Core types
     "PenzaiSubgraph",
+    "PenzaiAdapter",
     "InputMapping",
     "OutputMapping",
     "PortSpec",

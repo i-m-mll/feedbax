@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -7,22 +9,32 @@ import pytest
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, build_default_studio_workspace
-from feedbax.runtime.components import Constant
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports, ComponentOptions
+from feedbax.contracts.component import PortType
 from feedbax.studio.schema import enumerate_studio_schema_registry
 
 
 @pytest.mark.parametrize("declared_size", [None, 4])
 def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_size) -> None:
-    components = ComponentRegistry(load_user_components=False)
-    components.register_component_type(
-        "VectorSource",
-        builder=lambda params: Constant(jnp.zeros(params["width"])),
-        param_schema=[{"name": "width", "type": "int", "default": 3}],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
-    )
+    components = ComponentRegistry()
+
+    class VectorSource(Component):
+        ports = Ports({}, {"output": PortType(dtype="any")})
+        component_options = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])}
+        )
+        width: int
+
+        def __init__(self, width: int = 3):
+            self.width = width
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": jnp.zeros(self.width)}, state
+
+    components.ingest(ComponentPack(namespace="test", components=(VectorSource,)))
     child = GraphSpec(
-        nodes={"source": ComponentSpec(type="VectorSource", output_ports=["output"])},
+        nodes={"source": ComponentSpec(type="test.VectorSource", output_ports=["output"])},
         output_ports=["output"],
         output_bindings={"output": ("source", "output")},
     )
@@ -31,9 +43,9 @@ def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_
         params["input_size"] = declared_size
     graph = GraphSpec(
         nodes={
-            "nested": ComponentSpec(type="Subgraph", output_ports=["output"]),
+            "nested": ComponentSpec(type="feedbax.Subgraph", output_ports=["output"]),
             "linear": ComponentSpec(
-                type="Linear", params=params, input_ports=["input"], output_ports=["output"]
+                type="feedbax.Linear", params=params, input_ports=["input"], output_ports=["output"]
             ),
         },
         subgraphs={"nested": child},
@@ -75,22 +87,24 @@ def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_
 @pytest.mark.parametrize(
     ("component_type", "nested"),
     [
-        ("DelayLine", False),
-        ("Channel", False),
-        ("FirstOrderFilter", False),
-        ("FirstOrderFilter", True),
+        ("feedbax.DelayLine", False),
+        ("feedbax.Channel", False),
+        ("feedbax.FirstOrderFilter", False),
+        ("feedbax.FirstOrderFilter", True),
     ],
 )
 def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) -> None:
     from feedbax.compiler.serialization import graph_to_spec
     from feedbax.runtime.graph import init_state_from_component
 
-    components = ComponentRegistry(load_user_components=False)
+    components = ComponentRegistry()
     leaf = GraphSpec(
         nodes={
-            "sum": ComponentSpec(type="Sum", input_ports=["a", "b"], output_ports=["output"]),
+            "sum": ComponentSpec(
+                type="feedbax.Sum", input_ports=["a", "b"], output_ports=["output"]
+            ),
             "reshape": ComponentSpec(
-                type="Reshape",
+                type="feedbax.Reshape",
                 params={"shape": [1, 3]},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -98,9 +112,9 @@ def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) 
             "stateful": ComponentSpec(
                 type=component_type,
                 params={"delay": 1, "add_noise": False}
-                if component_type == "Channel"
+                if component_type == "feedbax.Channel"
                 else {"delay": 1}
-                if component_type == "DelayLine"
+                if component_type == "feedbax.DelayLine"
                 else {"tau_rise": 0.05, "tau_decay": 0.05, "dt": 0.001},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -126,7 +140,7 @@ def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) 
         GraphSpec(
             nodes={
                 "nested": ComponentSpec(
-                    type="Subgraph", input_ports=["input"], output_ports=["output"]
+                    type="feedbax.Subgraph", input_ports=["input"], output_ports=["output"]
                 )
             },
             subgraphs={"nested": leaf},
@@ -164,22 +178,26 @@ def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) 
         serialized_leaf = spec.subgraphs["nested"] if nested else spec
         node = serialized_leaf.nodes["stateful"]
         assert node.params["input_dtype"] == "float16"
-        assert node.param_schema_version == "2"
+        assert node.revision == 2
 
 
 def test_stateful_prototype_declarations_and_schema_migration() -> None:
     from feedbax.compiler.prototypes import infer_node_input_prototypes, validate_or_add_input_shape
     from feedbax.runtime.components import DelayLine
 
-    components = ComponentRegistry(load_user_components=False)
-    for kind in ("DelayLine", "Channel", "FirstOrderFilter"):
+    components = ComponentRegistry()
+    for kind in ("feedbax.DelayLine", "feedbax.Channel", "feedbax.FirstOrderFilter"):
         old = {**components.get(kind).default_params, "input_shape": [3]}
         old.pop("input_dtype", None)
-        migrated = components.resolve_component_spec(kind, old, param_schema_version="1")
+        migrated = components.resolve_component_spec(
+            kind.removeprefix("feedbax."), old, legacy_token="1"
+        )
         assert {name: migrated.params[name] for name in old} == old
         assert migrated.params.get("input_dtype") is None
-        with pytest.raises(ValueError, match="version"):
-            components.resolve_component_spec(kind, old, param_schema_version="unknown")
+        with pytest.raises(ValueError, match="source_legacy_token"):
+            components.resolve_component_spec(
+                kind.removeprefix("feedbax."), old, legacy_token="unknown"
+            )
         meta = components.get(kind)
         assert meta.params.build(old).input_proto.dtype == DelayLine().input_proto.dtype
         normalized = validate_or_add_input_shape(
@@ -192,7 +210,7 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
                     params, jnp.zeros(3, dtype=jnp.float16), node_name="test", node_type=kind
                 )
         for tree in ([jnp.zeros(3)], {"x": jnp.zeros(3)}):
-            if kind == "Channel":
+            if kind == "feedbax.Channel":
                 assert validate_or_add_input_shape({}, tree, node_name="test", node_type=kind) == {}
                 with pytest.raises(ValueError, match="single-array"):
                     validate_or_add_input_shape(
@@ -204,9 +222,9 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
 
     spec = GraphSpec(
         nodes={
-            "source": ComponentSpec(type="Sum", input_ports=["a"], output_ports=["output"]),
+            "source": ComponentSpec(type="feedbax.Sum", input_ports=["a"], output_ports=["output"]),
             "target": ComponentSpec(
-                type="DelayLine",
+                type="feedbax.DelayLine",
                 params={"delay": 1},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -231,7 +249,7 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
 
 
 def test_direct_filter_preserves_structured_signal_dtypes() -> None:
-    from feedbax.runtime.filters import FirstOrderFilter
+    from feedbax.runtime.filters import LowPassFilter
     from feedbax.runtime.graph import init_state_from_component
 
     with jax.experimental.enable_x64():
@@ -240,7 +258,7 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
             "velocity": (jnp.zeros(1, dtype=jnp.float32),),
             "acceleration": jnp.zeros(1, dtype=jnp.float64),
         }
-        component = FirstOrderFilter(input_proto=prototype)
+        component = LowPassFilter(input_proto=prototype)
         state = init_state_from_component(component)
         values = jax.tree.map(
             lambda value: jnp.ones((3, *value.shape), dtype=value.dtype), prototype
@@ -265,31 +283,33 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
 def test_filter_rejects_non_real_floating_state_leaves(dtype) -> None:
-    from feedbax.runtime.filters import FirstOrderFilter
+    from feedbax.runtime.filters import LowPassFilter
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     invalid = jnp.zeros(2, dtype=dtype)
     for prototype in (invalid, {"valid": jnp.zeros(2), "invalid": (invalid,)}):
         with pytest.raises(
             ValueError, match="FirstOrderFilter requires real floating state leaves"
         ):
-            FirstOrderFilter(input_proto=prototype)
+            LowPassFilter(input_proto=prototype)
         with pytest.raises(
             ValueError, match="FirstOrderFilter requires real floating state leaves"
         ):
-            registry.get("FirstOrderFilter").output_prototype_fn({}, {"input": prototype})
+            registry.get("feedbax.FirstOrderFilter").output_prototype_fn({}, {"input": prototype})
 
 
 def test_integer_source_filter_is_rejected_during_compilation() -> None:
     from feedbax.compiler import GraphCompilationError
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
-            "source": ComponentSpec(type="Constant", params={"value": 1}, output_ports=["output"]),
+            "source": ComponentSpec(
+                type="feedbax.Constant", params={"value": 1}, output_ports=["output"]
+            ),
             "filter": ComponentSpec(
-                type="FirstOrderFilter",
-                params=registry.get("FirstOrderFilter").default_params,
+                type="feedbax.FirstOrderFilter",
+                params=registry.get("feedbax.FirstOrderFilter").default_params,
                 input_ports=["input"],
                 output_ports=["output"],
             ),
@@ -310,13 +330,12 @@ def test_integer_source_filter_is_rejected_during_compilation() -> None:
     ) as caught:
         compile_graph(GraphDocument(graph=spec), registry)
     assert caught.value.record.diagnostics[0].source_anchor.authored_path == "/graph/nodes/filter"
-    assert registry.get("FirstOrderFilter").param_schema_version == "2"
+    assert registry.get("feedbax.FirstOrderFilter").revision == 2
 
 
 @pytest.mark.parametrize("nested", [False, True])
 def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None:
     from pydantic import BaseModel, field_validator
-    from feedbax.runtime.components import Gain
     from feedbax.runtime.graph import init_state_from_component
 
     calls = {"source": 0, "relay": 0}
@@ -328,7 +347,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
         @classmethod
         def normalize_width(cls, value):
             calls["source"] += 1
-            return value + 1
+            return max(value, 3)
 
     class RelayParams(BaseModel):
         width: int
@@ -339,32 +358,53 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
             calls["relay"] += 1
             return value
 
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "NormalizedSource",
-        builder=lambda params: Constant(jnp.ones(params["width"])),
-        param_model=SourceParams,
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
-    )
-    registry.register_component_type(
-        "DerivedRelay",
-        builder=lambda params: Gain(gain=1.0),
-        param_model=RelayParams,
-        input_ports=["input"],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
-    )
+    registry = ComponentRegistry()
+
+    class NormalizedSource(Component):
+        config = SourceParams
+        ports = Ports({}, {"output": PortType(dtype="any")})
+        component_options = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])}
+        )
+        width: int
+
+        def __init__(self, width: int):
+            self.width = width
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": jnp.ones(self.width)}, state
+
+    registry.ingest(ComponentPack(namespace="test", components=(NormalizedSource,)))
+
+    class DerivedRelay(Component):
+        config = RelayParams
+        ports = Ports({"input": PortType(dtype="any")}, {"output": PortType(dtype="any")})
+        component_options = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])}
+        )
+        width: int
+
+        def __init__(self, width: int):
+            self.width = width
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": inputs["input"]}, state
+
+    registry.ingest(ComponentPack(namespace="test", components=(DerivedRelay,)))
+    typed = SourceParams(width=2)
+    direct = NormalizedSource.from_config(typed)
+    assert typed.width == direct.width == direct.configuration().width == 3
+    assert calls == {"source": 1, "relay": 0}
     leaf = GraphSpec(
         nodes={
             "source": ComponentSpec(
-                type="NormalizedSource", params={"width": 2}, output_ports=["output"]
+                type="test.NormalizedSource", params={"width": 2}, output_ports=["output"]
             ),
             "relay": ComponentSpec(
-                type="DerivedRelay", input_ports=["input"], output_ports=["output"]
+                type="test.DerivedRelay", input_ports=["input"], output_ports=["output"]
             ),
             "delay": ComponentSpec(
-                type="DelayLine",
+                type="feedbax.DelayLine",
                 params={"delay": 1},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -384,7 +424,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
     )
     spec = (
         GraphSpec(
-            nodes={"nested": ComponentSpec(type="Subgraph", output_ports=["output"])},
+            nodes={"nested": ComponentSpec(type="feedbax.Subgraph", output_ports=["output"])},
             subgraphs={"nested": leaf},
             output_ports=["output"],
             output_bindings={"output": ("nested", "output")},
@@ -409,6 +449,17 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
     _, outputs = jax.lax.scan(step, init_state_from_component(graph), None, length=3)
     assert outputs.shape == (3, 3)
     assert jnp.array_equal(outputs, jnp.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]))
+    from feedbax.compiler.serialization import graph_to_spec
+
+    saved = graph_to_spec(graph, registry)
+    saved_leaf = saved.subgraphs["nested"] if nested else saved
+    assert saved_leaf.nodes["source"].params["width"] == 3
+    rebuilt = compile_graph(
+        GraphDocument(graph=GraphSpec.model_validate_json(saved.model_dump_json())), registry
+    )
+    rebuilt_graph = rebuilt.graph.nodes["nested"] if nested else rebuilt.graph
+    assert rebuilt_graph.nodes["source"].width == 3
+    assert calls == {"source": 2, "relay": 2}
     calls.update(source=0, relay=0)
     studio = enumerate_studio_schema_registry(
         build_default_studio_workspace(label="Normalized parameters"),
@@ -424,7 +475,6 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
 def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
     from pydantic import BaseModel, field_validator
     from feedbax.compiler import GraphCompilationError
-    from feedbax.runtime.components import Gain
 
     class ContradictoryParams(BaseModel):
         width: int
@@ -432,21 +482,29 @@ def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
         @field_validator("width")
         @classmethod
         def normalize_width(cls, value):
-            return value + 1
+            return max(value, 4)
 
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "ContradictoryRelay",
-        builder=lambda params: Gain(gain=1.0),
-        param_model=ContradictoryParams,
-        input_ports=["input"],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
-    )
+    registry = ComponentRegistry()
+
+    class ContradictoryRelay(Component):
+        config = ContradictoryParams
+        ports = Ports({"input": PortType(dtype="any")}, {"output": PortType(dtype="any")})
+        component_options = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])}
+        )
+        width: int
+
+        def __init__(self, width: int):
+            self.width = width
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": inputs["input"]}, state
+
+    registry.ingest(ComponentPack(namespace="test", components=(ContradictoryRelay,)))
     spec = GraphSpec(
         nodes={
             "relay": ComponentSpec(
-                type="ContradictoryRelay", input_ports=["input"], output_ports=["output"]
+                type="test.ContradictoryRelay", input_ports=["input"], output_ports=["output"]
             )
         },
         input_ports=["input"],
@@ -464,7 +522,7 @@ def test_recurrent_constant_initializer_seeds_final_state_dtype_and_shape() -> N
     graph = GraphSpec(
         nodes={
             "delay": ComponentSpec(
-                type="DelayLine",
+                type="feedbax.DelayLine",
                 params={"delay": 1},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -485,9 +543,7 @@ def test_recurrent_constant_initializer_seeds_final_state_dtype_and_shape() -> N
             )
         ],
     )
-    compiled = compile_graph(
-        GraphDocument(graph=graph), ComponentRegistry(load_user_components=False)
-    )
+    compiled = compile_graph(GraphDocument(graph=graph), ComponentRegistry())
     params = compiled.resolved.graph.nodes["delay"].params
     assert params["input_shape"] == [3]
     assert params["input_dtype"] == "float16"
@@ -501,7 +557,7 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
         ConstantArrayValueSpec,
     )
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     value = ConstantArrayValueSpec(
         schema_id=ARRAY_VALUE_SCHEMA_ID,
         schema_version=ARRAY_VALUE_SCHEMA_VERSION,
@@ -514,15 +570,14 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
     graph = GraphSpec(
         nodes={
             "base": ComponentSpec(
-                type="Constant", params={"value": value}, output_ports=["output"]
+                type="feedbax.Constant", params={"value": value}, output_ports=["output"]
             ),
             "state": ComponentSpec(
-                type="Constant", params={"value": value}, output_ports=["output"]
+                type="feedbax.Constant", params={"value": value}, output_ports=["output"]
             ),
             "affine": ComponentSpec(
-                type="AffineValueComposer",
+                type="feedbax.AffineValueComposer",
                 params={
-                    "schema_version": "feedbax.component.affine_value_composer.v2",
                     "output_block_size": 1,
                     "feature_rules": [{"kind": "identity", "state_slice": [0, 1]}],
                 },
@@ -530,7 +585,7 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
                 output_ports=["value"],
             ),
             "delay": ComponentSpec(
-                type="DelayLine",
+                type="feedbax.DelayLine",
                 params={"delay": 1},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -557,7 +612,7 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
     from feedbax.runtime.graph import init_state_from_component
 
     linear = ComponentSpec(
-        type="Linear",
+        type="feedbax.Linear",
         params={"input_size": 2, "output_size": 3, "initialization": "zeros", "bias_init": 1.25},
         input_ports=["input"],
         output_ports=["output"],
@@ -574,12 +629,12 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
         spec = GraphSpec(
             nodes={
                 source: ComponentSpec(
-                    type="Subgraph", input_ports=["input"], output_ports=["output"]
+                    type="feedbax.Subgraph", input_ports=["input"], output_ports=["output"]
                 )
                 if nested
                 else linear,
                 "delay": ComponentSpec(
-                    type="DelayLine",
+                    type="feedbax.DelayLine",
                     params={"delay": 1},
                     input_ports=["input"],
                     output_ports=["output"],
@@ -599,9 +654,7 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
             output_ports=["output"],
             output_bindings={"output": ("delay", "output")},
         )
-        compiled = compile_graph(
-            GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
-        )
+        compiled = compile_graph(GraphDocument(graph=spec), ComponentRegistry())
         assert compiled.resolved.graph.nodes["delay"].params["input_shape"] == [3]
         graph = compiled.graph
 
@@ -635,7 +688,7 @@ def test_invalid_derived_rules_reject_in_compilation_and_studio(rule_patch, shap
     graph = GraphSpec(
         nodes={
             "linear": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={"input_size": 2, "output_size": 3},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -646,7 +699,7 @@ def test_invalid_derived_rules_reject_in_compilation_and_studio(rule_patch, shap
         input_bindings={"input": ("linear", "input")},
     )
     prototypes = {} if shape is None else {("__graph__", "input"): jnp.zeros(shape)}
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     with pytest.raises(GraphCompilationError) as caught:
         compile_graph(GraphDocument(graph=graph), registry, prototypes)
     assert reason in caught.value.record.diagnostics[0].observed_condition

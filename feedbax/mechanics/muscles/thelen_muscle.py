@@ -16,15 +16,22 @@ References:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from numbers import Number
 from operator import index
+from typing import Any
 
+import jax
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
-import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports, ComponentOptions
+from typing import Annotated
+from pydantic import Field
 
 
 def thelen_muscle_shape(n_muscles: int) -> tuple[int, ...]:
@@ -51,6 +58,18 @@ def require_thelen_input_shape(
         )
 
 
+def thelen_muscle_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Publish all four Thelen port shapes from the declared muscle count."""
+    shape = thelen_muscle_shape(params["n_muscles"])
+    for port in RigidTendonHillMuscleThelen.input_ports:
+        if port in inputs:
+            require_thelen_input_shape(inputs[port], shape, port=port)
+    proto = jnp.zeros(shape)
+    return dict.fromkeys(RigidTendonHillMuscleThelen.output_ports, proto)
+
+
 class RigidTendonHillMuscleThelen(Component):
     """Thelen 2003 rigid tendon model with pre-computed FV constants.
 
@@ -70,8 +89,17 @@ class RigidTendonHillMuscleThelen(Component):
         dt: Euler integration timestep [s].
     """
 
-    input_ports = ("excitation", "musculotendon_length", "musculotendon_velocity")
-    output_ports = ("force", "activation", "fiber_length", "fiber_velocity")
+    ports = Ports(
+        inputs={
+            name: PortType(dtype="any")
+            for name in ("excitation", "musculotendon_length", "musculotendon_velocity")
+        },
+        outputs={
+            name: PortType(dtype="any")
+            for name in ("force", "activation", "fiber_length", "fiber_velocity")
+        },
+    )
+    component_options = ComponentOptions(output_prototype_fn=thelen_muscle_output_prototype)
 
     max_isometric_force: float
     optimal_muscle_length: float
@@ -106,16 +134,16 @@ class RigidTendonHillMuscleThelen(Component):
 
     def __init__(
         self,
-        max_isometric_force: float = 500.0,
-        optimal_muscle_length: float = 0.1,
-        tendon_slack_length: float = 0.1,
+        max_isometric_force: Annotated[float, Field(ge=0)] = 500.0,
+        optimal_muscle_length: Annotated[float, Field(ge=0)] = 0.1,
+        tendon_slack_length: Annotated[float, Field(ge=0)] = 0.1,
         vmax_factor: float = 10.0,
-        min_activation: float = 0.001,
-        tau_activation: float = 0.015,
-        tau_deactivation: float = 0.05,
-        dt: float = 0.01,
-        initial_activation: float = 0.001,
-        n_muscles: int = 1,
+        min_activation: Annotated[float, Field(ge=0)] = 0.001,
+        tau_activation: Annotated[float, Field(ge=0)] = 0.015,
+        tau_deactivation: Annotated[float, Field(ge=0)] = 0.05,
+        dt: Annotated[float, Field(ge=0)] = 0.01,
+        initial_activation: Annotated[float, Field(ge=0)] = 0.001,
+        n_muscles: Annotated[int, Field(ge=1)] = 1,
     ):
         """Initialize Thelen rigid tendon muscle.
 
@@ -157,16 +185,9 @@ class RigidTendonHillMuscleThelen(Component):
         self.vmax = vmax_factor * optimal_muscle_length
         self.ce_0 = 3.0 * self.vmax
         self.ce_1 = self.ce_Af * self.vmax
-        self.ce_2 = (
-            3.0 * self.ce_Af * self.vmax * self.ce_fmlen
-            - 3.0 * self.ce_Af * self.vmax
-        )
-        self.ce_3 = (
-            8.0 * self.ce_Af * self.ce_fmlen + 8.0 * self.ce_fmlen
-        )
-        self.ce_4 = (
-            self.ce_Af * self.ce_fmlen * self.vmax - self.ce_1
-        )
+        self.ce_2 = 3.0 * self.ce_Af * self.vmax * self.ce_fmlen - 3.0 * self.ce_Af * self.vmax
+        self.ce_3 = 8.0 * self.ce_Af * self.ce_fmlen + 8.0 * self.ce_fmlen
+        self.ce_4 = self.ce_Af * self.ce_fmlen * self.vmax - self.ce_1
         self.ce_5 = 8.0 * (self.ce_Af + 1.0)
 
         if jnp.ndim(initial_activation) != 0:
@@ -179,9 +200,13 @@ class RigidTendonHillMuscleThelen(Component):
         """Return the shared initializer as a scalar for GraphSpec export."""
         initial = self.state_index.init.reshape(-1)
         value = initial[0]
-        if initial.size > 1 and not bool(jnp.all(initial == value)):
+        if (
+            initial.size > 1
+            and not isinstance(value, jax.core.Tracer)
+            and not bool(jnp.all(initial == value))
+        ):
             raise ValueError("GraphSpec requires the same initial_activation for every muscle")
-        return float(value)
+        return value
 
     def __call__(
         self,
@@ -235,10 +260,7 @@ class RigidTendonHillMuscleThelen(Component):
         muscle_vel = mt_velocity
 
         # --- Force-length (active): Gaussian ---
-        flce = jnp.exp(
-            -((muscle_len / self.optimal_muscle_length) - 1.0) ** 2
-            / self.ce_gamma
-        )
+        flce = jnp.exp(-(((muscle_len / self.optimal_muscle_length) - 1.0) ** 2) / self.ce_gamma)
 
         # --- Force-length (passive): exponential ---
         # l0_pe = optimal_muscle_length (normalized slack muscle length = 1.0)

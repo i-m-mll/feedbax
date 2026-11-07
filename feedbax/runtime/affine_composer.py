@@ -3,29 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, ClassVar
 
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State
-import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
 from feedbax.runtime.graph import Component
+from feedbax.runtime.prototypes import _required_input
 
-
-AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 = "feedbax.component.affine_value_composer.v1"
-AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = "feedbax.component.affine_value_composer.v2"
-AFFINE_VALUE_COMPOSER_FEATURE_RULES = frozenset(
-    {"identity", "target_relative_difference"}
-)
+AFFINE_VALUE_COMPOSER_FEATURE_RULES = frozenset({"identity", "target_relative_difference"})
 
 
 def _as_array_param(value: PyTree, shape: tuple[int, ...], name: str) -> Array:
     array = jnp.asarray(value, dtype=jnp.float32)
     if array.shape != shape:
-        raise ValueError(
-            f"AffineValueComposer {name} must have shape {shape}; got {array.shape}"
-        )
+        raise ValueError(f"AffineValueComposer {name} must have shape {shape}; got {array.shape}")
     return array
 
 
@@ -45,9 +43,7 @@ def _as_slice(raw: Any, *, name: str) -> tuple[int, int]:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"AffineValueComposer {name} entries must be integers") from exc
     if result[0] < 0 or result[1] <= result[0]:
-        raise ValueError(
-            f"AffineValueComposer {name} must satisfy 0 <= start < stop; got {result}"
-        )
+        raise ValueError(f"AffineValueComposer {name} must satisfy 0 <= start < stop; got {result}")
     return result
 
 
@@ -98,10 +94,7 @@ def _slice_size(slice_spec: tuple[int, int]) -> int:
 def feature_dim_for_rules(feature_rules: Sequence[Mapping[str, Any]]) -> int:
     """Return the concatenated feature width for normalized or raw feature rules."""
 
-    return sum(
-        _slice_size(rule["state_slice"])
-        for rule in _normalize_feature_rules(feature_rules)
-    )
+    return sum(_slice_size(rule["state_slice"]) for rule in _normalize_feature_rules(feature_rules))
 
 
 def _validate_slice_bounds(
@@ -207,9 +200,7 @@ def affine_value_composer_output_prototype(
     state = _require_vector(inputs["state"], name="state prototype")
     target = inputs.get("target")
     target_size = (
-        None
-        if target is None
-        else int(_require_vector(target, name="target prototype").shape[-1])
+        None if target is None else int(_require_vector(target, name="target prototype").shape[-1])
     )
     output_block_size = int(params.get("output_block_size", 1))
     if int(base.shape[-1]) != output_block_size:
@@ -235,6 +226,30 @@ def affine_value_composer_output_prototype(
     return {"value": base}
 
 
+def affine_composer_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    for port in ("base", "state"):
+        _required_input(inputs, port, component="AffineValueComposer")
+    return affine_value_composer_output_prototype(params, inputs)
+
+
+class _AffineValueComposerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    output_block_size: int = ConfigField(
+        default=1, ge=1
+    )
+    feature_rules: Any = ConfigField(
+        default=[{"kind": "identity", "state_slice": [0, 1]}],
+        description="Ordered identity and target-relative difference rules.",
+        json_schema_extra={"feedbax": {"type": "object"}},
+    )
+    gain_init: Any = ConfigField(default=[[0.0]], json_schema_extra={"feedbax": {"type": "array"}})
+    bias_init: Any = ConfigField(default=[0.0], json_schema_extra={"feedbax": {"type": "array"}})
+    use_bias: bool = ConfigField(default=True)
+
+
 class AffineValueComposer(Component):
     """Compose ``base + gain @ features(state, target) + bias``.
 
@@ -248,8 +263,25 @@ class AffineValueComposer(Component):
     component-parameter lane.
     """
 
-    input_ports = ("base", "state", "target", "gain", "bias")
-    output_ports = ("value",)
+    config: ClassVar[type[BaseModel]] = _AffineValueComposerConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={
+            "base": PortType(dtype="vector"),
+            "state": PortType(dtype="vector"),
+            "target": PortType(dtype="vector"),
+            "gain": PortType(dtype="array"),
+            "bias": PortType(dtype="vector"),
+        },
+        outputs={"value": PortType(dtype="vector")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=affine_composer_output_prototype
+    )
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("gain", name="gain_init"),
+        ConfigBinding("bias", name="bias_init"),
+    )
 
     output_block_size: int = field(static=True)
     feature_rules: tuple[dict[str, Any], ...] = field(static=True)
@@ -260,11 +292,15 @@ class AffineValueComposer(Component):
     def __init__(
         self,
         *,
-        output_block_size: int,
-        feature_rules: Sequence[Mapping[str, Any]],
-        gain_init: PyTree | None = None,
-        bias_init: PyTree | None = None,
-        use_bias: bool = True,
+        output_block_size: int = _AffineValueComposerConfig.model_fields[
+            "output_block_size"
+        ].default,
+        feature_rules: Sequence[Mapping[str, Any]] = _AffineValueComposerConfig.model_fields[
+            "feature_rules"
+        ].default,
+        gain_init: PyTree | None = _AffineValueComposerConfig.model_fields["gain_init"].default,
+        bias_init: PyTree | None = _AffineValueComposerConfig.model_fields["bias_init"].default,
+        use_bias: bool = _AffineValueComposerConfig.model_fields["use_bias"].default,
     ) -> None:
         output_block_size = int(output_block_size)
         if output_block_size <= 0:

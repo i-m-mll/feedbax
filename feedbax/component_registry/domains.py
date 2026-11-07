@@ -15,7 +15,6 @@ from feedbax.contracts.domain import (
     DomainTheme,
 )
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID
-from feedbax.compiler.penzai_compiler import PENZAI_COMPILER_ID
 
 
 class DomainRegistry:
@@ -47,6 +46,9 @@ class DomainRegistry:
 
 def builtin_domain_registry() -> DomainRegistry:
     """Build the Feedbax builtin domain registry."""
+
+    from feedbax.compiler.penzai_compiler import PENZAI_COMPILER_ID
+
     registry = DomainRegistry()
     registry.register(
         DomainMeta(

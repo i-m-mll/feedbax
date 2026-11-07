@@ -26,7 +26,7 @@ from tests.test_solver_checkpoint_continuation import _assert_same_arrays
 def _nonlinear_graph():
     nodes = {
         name: ComponentSpec(
-            type=type_,
+            type=f"feedbax.{type_}",
             params=params,
             input_ports=["input", "hidden"] if name == "rnn" else ["input"],
             output_ports=["output", "hidden"] if name == "rnn" else ["output"],
@@ -67,7 +67,7 @@ def _initial_slots(kind, *, seed):
     key = jax.random.PRNGKey(seed)
     if kind == "graph":
         graph = compile_graph(
-            GraphDocument(graph=_nonlinear_graph()), ComponentRegistry(load_user_components=False)
+            GraphDocument(graph=_nonlinear_graph()), ComponentRegistry()
         ).graph
         model = graph.prepare()
     else:

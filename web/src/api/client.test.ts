@@ -90,7 +90,9 @@ describe('graph API save concurrency', () => {
     expect(response.metadata.save_revision).toBe(5);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(options.headers).toMatchObject({ 'If-Match': '4' });
+    const headers = new Headers(options.headers);
+    expect(headers.get('If-Match')).toBe('4');
+    expect(headers.get('Content-Type')).toBe('application/json');
     const body = JSON.parse(options.body as string);
     expect(body).toMatchObject({
       schema_id: 'feedbax.spec.studio.persistence_document',

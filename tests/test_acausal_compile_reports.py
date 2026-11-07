@@ -31,7 +31,7 @@ pytestmark = pytest.mark.feedbax_contract
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _report(graph: AcausalGraphSpec) -> DomainCompileReport:
@@ -46,16 +46,16 @@ def _msd_interior() -> AcausalGraphSpec:
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
-            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="feedbax.LinearDamper", params={"damping": 0.5}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "pos", "quantity": "position"},
             ),
         },
@@ -200,8 +200,8 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             AcausalGraphSpec(
                 physical_domain="translational",
                 nodes={
-                    "a": ComponentSpec(type="BoundaryPort", params={"port_name": "flange"}),
-                    "b": ComponentSpec(type="BoundaryPort", params={"port_name": "flange"}),
+                    "a": ComponentSpec(type="feedbax.BoundaryPort", params={"port_name": "flange"}),
+                    "b": ComponentSpec(type="feedbax.BoundaryPort", params={"port_name": "flange"}),
                 },
                 connections=[],
                 solver={"solver_type": "euler", "dt": 0.001},
@@ -212,7 +212,11 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             "acausal.dangling_conserving_port",
             AcausalGraphSpec(
                 physical_domain="translational",
-                nodes={"free": ComponentSpec(type="BoundaryPort", params={"port_name": "flange"})},
+                nodes={
+                    "free": ComponentSpec(
+                        type="feedbax.BoundaryPort", params={"port_name": "flange"}
+                    )
+                },
                 connections=[],
                 solver={"solver_type": "euler", "dt": 0.001},
             ),
@@ -224,7 +228,7 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
                 physical_domain="translational",
                 nodes={
                     "act": ComponentSpec(
-                        type="ActuationInput",
+                        type="feedbax.ActuationInput",
                         params={"source_kind": "torque", "port_name": "u"},
                     )
                 },
@@ -239,7 +243,7 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
                 physical_domain="translational",
                 nodes={
                     "act": ComponentSpec(
-                        type="ActuationInput",
+                        type="feedbax.ActuationInput",
                         params={"source_kind": "torque", "port_name": "u"},
                     )
                 },
@@ -252,7 +256,7 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             "acausal.unbalanced",
             AcausalGraphSpec(
                 physical_domain="translational",
-                nodes={"spring": ComponentSpec(type="LinearSpring")},
+                nodes={"spring": ComponentSpec(type="feedbax.LinearSpring")},
                 connections=[],
                 solver={"solver_type": "euler", "dt": 0.001},
             ),
@@ -263,8 +267,10 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             AcausalGraphSpec(
                 physical_domain="translational",
                 nodes={
-                    "mass": ComponentSpec(type="Mass"),
-                    "act": ComponentSpec(type="ActuationInput", params={"source_kind": "force"}),
+                    "mass": ComponentSpec(type="feedbax.Mass"),
+                    "act": ComponentSpec(
+                        type="feedbax.ActuationInput", params={"source_kind": "force"}
+                    ),
                 },
                 connections=[{"a": ("act", "flange"), "b": ("mass", "flange")}],
                 solver={"solver_type": "euler", "dt": 0.001},
@@ -276,12 +282,12 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             AcausalGraphSpec(
                 physical_domain="translational",
                 nodes={
-                    "wall": ComponentSpec(type="Ground"),
+                    "wall": ComponentSpec(type="feedbax.Ground"),
                     "force_a": ComponentSpec(
-                        type="ActuationInput", params={"source_kind": "force"}
+                        type="feedbax.ActuationInput", params={"source_kind": "force"}
                     ),
                     "force_b": ComponentSpec(
-                        type="ActuationInput", params={"source_kind": "force"}
+                        type="feedbax.ActuationInput", params={"source_kind": "force"}
                     ),
                 },
                 connections=[
@@ -316,16 +322,16 @@ def test_acausal_diagnostic_catalog_messages_name_offenders(
 def test_nested_unbalanced_composite_reports_local_offender() -> None:
     local_bad = AcausalGraphSpec(
         physical_domain="translational",
-        nodes={"spring": ComponentSpec(type="LinearSpring")},
+        nodes={"spring": ComponentSpec(type="feedbax.LinearSpring")},
         connections=[],
         solver={"solver_type": "euler", "dt": 0.001},
     )
     parent = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "composite": ComponentSpec(type="AcausalSystem", input_ports=["flange"]),
-            "mass": ComponentSpec(type="Mass"),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "composite": ComponentSpec(type="feedbax.AcausalSystem", input_ports=["flange"]),
+            "mass": ComponentSpec(type="feedbax.Mass"),
         },
         connections=[
             {"a": ("wall", "flange"), "b": ("mass", "flange")},
@@ -391,7 +397,7 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
         update={
             "nodes": {
                 **interior.nodes,
-                "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
+                "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 2.0}),
             }
         }
     )

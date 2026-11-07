@@ -48,6 +48,7 @@ from feedbax.web.worker.app import WorkerStatus
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.identity import require_worker_job_id
 from feedbax.web.worker.transport import WorkerEndpoint
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def test_studio_training_assembly_spec_governs_worker_payload() -> None:
@@ -1095,7 +1096,7 @@ def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:
     app = worker_app.create_app()
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
-        assert app.state.bootstrap_state.bundle.components.get("Gain") is not None
+        assert app.state.bootstrap_state.bundle.components.get("feedbax.Gain") is not None
 
 
 def test_worker_rejects_start_while_job_running(monkeypatch) -> None:

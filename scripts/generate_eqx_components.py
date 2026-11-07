@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import inspect
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from types import UnionType
 from typing import Literal, Union, get_args, get_origin
@@ -45,6 +45,10 @@ class ComponentSpec:
     default_expressions: dict[str, str] = field(default_factory=dict)
     # Constructor seeds exposed as live properties: public name -> (layer attribute, type).
     layer_properties: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Constructor fields stored in a nested upstream layer.
+    storage_paths: dict[str, str] = field(default_factory=dict)
+    # Deprecated constructor aliases resolved into canonical upstream fields.
+    resolved_aliases: tuple[str, ...] = ()
     # How the wrapper calls the underlying layer.
     call_kind: Literal[
         "single_input",
@@ -140,6 +144,7 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     # === Normalization layers ===
     ComponentSpec(
         "LayerNorm",
+        resolved_aliases=("elementwise_affine",),
         category="norm",
         docstring="Layer normalization.",
     ),
@@ -226,6 +231,7 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     # === Attention ===
     ComponentSpec(
         "MultiheadAttention",
+        storage_paths={"dropout_p": "dropout.p", "inference": "dropout.inference"},
         input_ports=("query", "key_", "value"),
         output_ports=("output",),
         call_kind="multihead_attention",
@@ -251,6 +257,7 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     ),
     ComponentSpec(
         "Dropout",
+        resolved_aliases=("deterministic",),
         call_kind="single_input_keyed",
         key_handling="forwarded",
         category="other",
@@ -267,6 +274,123 @@ COMPONENT_SPECS: list[ComponentSpec] = [
         layer_properties={"init_alpha": ("negative_slope", "Array")},
     ),
 ]
+
+
+# Published revision-1 field evidence; independent of future constructor changes.
+LEGACY_CONFIG_FIELDS = {
+    "Linear": ("in_features", "out_features", "use_bias", "dtype"),
+    "Identity": (),
+    "Conv1d": (
+        "in_channels",
+        "out_channels",
+        "kernel_size",
+        "stride",
+        "padding",
+        "dilation",
+        "groups",
+        "use_bias",
+        "padding_mode",
+        "dtype",
+    ),
+    "Conv2d": (
+        "in_channels",
+        "out_channels",
+        "kernel_size",
+        "stride",
+        "padding",
+        "dilation",
+        "groups",
+        "use_bias",
+        "padding_mode",
+        "dtype",
+    ),
+    "Conv3d": (
+        "in_channels",
+        "out_channels",
+        "kernel_size",
+        "stride",
+        "padding",
+        "dilation",
+        "groups",
+        "use_bias",
+        "padding_mode",
+        "dtype",
+    ),
+    "ConvTranspose1d": (
+        "in_channels",
+        "out_channels",
+        "kernel_size",
+        "stride",
+        "output_padding",
+        "padding",
+        "dilation",
+        "groups",
+        "use_bias",
+        "padding_mode",
+        "dtype",
+    ),
+    "ConvTranspose2d": (
+        "in_channels",
+        "out_channels",
+        "kernel_size",
+        "stride",
+        "output_padding",
+        "padding",
+        "dilation",
+        "groups",
+        "use_bias",
+        "padding_mode",
+        "dtype",
+    ),
+    "ConvTranspose3d": (
+        "in_channels",
+        "out_channels",
+        "kernel_size",
+        "stride",
+        "output_padding",
+        "padding",
+        "dilation",
+        "groups",
+        "use_bias",
+        "padding_mode",
+        "dtype",
+    ),
+    "GRUCell": ("input_size", "hidden_size", "use_bias", "dtype"),
+    "LSTMCell": ("input_size", "hidden_size", "use_bias", "dtype"),
+    "LayerNorm": ("shape", "eps", "use_weight", "use_bias", "dtype", "elementwise_affine"),
+    "RMSNorm": ("shape", "eps", "use_weight", "use_bias", "dtype"),
+    "GroupNorm": ("groups", "channels", "eps", "channelwise_affine", "dtype"),
+    "MaxPool1d": ("kernel_size", "stride", "padding", "use_ceil"),
+    "MaxPool2d": ("kernel_size", "stride", "padding", "use_ceil"),
+    "MaxPool3d": ("kernel_size", "stride", "padding", "use_ceil"),
+    "AvgPool1d": ("kernel_size", "stride", "padding", "use_ceil"),
+    "AvgPool2d": ("kernel_size", "stride", "padding", "use_ceil"),
+    "AvgPool3d": ("kernel_size", "stride", "padding", "use_ceil"),
+    "AdaptiveMaxPool1d": ("target_shape",),
+    "AdaptiveMaxPool2d": ("target_shape",),
+    "AdaptiveMaxPool3d": ("target_shape",),
+    "AdaptiveAvgPool1d": ("target_shape",),
+    "AdaptiveAvgPool2d": ("target_shape",),
+    "AdaptiveAvgPool3d": ("target_shape",),
+    "MultiheadAttention": (
+        "num_heads",
+        "query_size",
+        "key_size",
+        "value_size",
+        "output_size",
+        "qk_size",
+        "vo_size",
+        "use_query_bias",
+        "use_key_bias",
+        "use_value_bias",
+        "use_output_bias",
+        "dropout_p",
+        "inference",
+        "dtype",
+    ),
+    "RotaryPositionalEmbedding": ("embedding_size", "theta", "dtype"),
+    "Dropout": ("p", "inference", "deterministic"),
+}
 
 
 def get_init_signature(eqx_class) -> inspect.Signature:
@@ -361,6 +485,16 @@ def default_for_param(spec: ComponentSpec, name: str, default) -> str:
         ) from exc
 
 
+def is_portable(spec: ComponentSpec) -> bool:
+    return not (spec.layer_properties or spec.call_kind == "batch_norm")
+
+
+def parameter_annotation(spec: ComponentSpec, name: str, param: inspect.Parameter) -> str:
+    if is_portable(spec) and name == "dtype":
+        return "str | None"
+    return format_type_annotation(param.annotation)
+
+
 def generate_component_class(spec: ComponentSpec) -> str:
     """Generate the Component wrapper class for a given spec."""
     eqx_class = getattr(nn, spec.eqx_class_name)
@@ -395,14 +529,14 @@ def generate_component_class(spec: ComponentSpec) -> str:
     init_params = ["self"]
 
     for name, param in positional_params:
-        type_hint = format_type_annotation(param.annotation)
+        type_hint = parameter_annotation(spec, name, param)
         if type_hint:
             init_params.append(f"{name}: {type_hint}")
         else:
             init_params.append(name)
 
     for name, param in keyword_params:
-        type_hint = format_type_annotation(param.annotation)
+        type_hint = parameter_annotation(spec, name, param)
         default = default_for_param(spec, name, param.default)
         if type_hint and default:
             init_params.append(f"{name}: {type_hint} = {default}")
@@ -420,7 +554,12 @@ def generate_component_class(spec: ComponentSpec) -> str:
 
     # Build the layer construction call
     layer_args = [name for name, _ in positional_params + keyword_params]
-    layer_call_args = ", ".join(f"{name}={name}" for name in layer_args)
+    layer_call_args = ", ".join(
+        f"{name}=_spatial_tuple({name})"
+        if "Sequence[" in format_type_annotation(dict(params)[name].annotation)
+        else f"{name}={name}"
+        for name in layer_args
+    )
     if has_key_param:
         if layer_call_args:
             layer_call_args += ", key=key"
@@ -438,13 +577,23 @@ def generate_component_class(spec: ComponentSpec) -> str:
     call_body = f"""
         return {call_helpers[spec.call_kind]}(self, inputs, state, key=key)"""
 
+    layer_properties = dict(spec.layer_properties)
+    if is_portable(spec):
+        upstream_fields = {item.name for item in fields(eqx_class)}
+        for name, param in positional_params + keyword_params:
+            if name in upstream_fields or name in spec.storage_paths:
+                layer_properties[name] = (
+                    spec.storage_paths.get(name, name),
+                    format_type_annotation(param.annotation) or "Any",
+                )
+
     # Generate fields only for parameters owned by the wrapper.
     attr_declarations = []
     init_body_assignments = []
     for name, param in positional_params + keyword_params:
-        if name in spec.layer_properties:
+        if name in layer_properties or name in spec.resolved_aliases:
             continue
-        type_hint = format_type_annotation(param.annotation) or "Any"
+        type_hint = parameter_annotation(spec, name, param) or "Any"
         attr_declarations.append(f"    {name}: {type_hint}")
         init_body_assignments.append(f"        self.{name} = {name}\n")
 
@@ -452,18 +601,47 @@ def generate_component_class(spec: ComponentSpec) -> str:
         f"\n    @property\n"
         f"    def {name}(self) -> {type_hint}:\n"
         f"        return self.layer.{layer_attr}\n"
-        for name, (layer_attr, type_hint) in spec.layer_properties.items()
+        for name, (layer_attr, type_hint) in layer_properties.items()
     )
+    for name in spec.resolved_aliases:
+        properties += f"\n    @property\n    def {name}(self) -> None:\n        return None\n"
     if spec.layer_properties:
         properties += (
             "\n    def __setstate__(self, state: _PickleState) -> None:\n"
             f"        _restore_wrapper_state(self, state, {tuple(spec.layer_properties)!r})\n"
         )
 
+    portable = is_portable(spec)
+    dtype_property = ""
+    if portable and any(name == "dtype" for name, _ in params):
+        dtype_property = """
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
+
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+"""
+    options = ""
+    if portable:
+        trainable = spec.category not in {"pool", "other"} and spec.eqx_class_name not in {
+            "Identity",
+            "RotaryPositionalEmbedding",
+        }
+        options = (
+            f"\n{spec.eqx_class_name}.component_options = _owner_options("
+            f"{spec.eqx_class_name}, has_key={has_key_param!r}, "
+            f"trainable={trainable!r})\n"
+        )
+
     # Build the class
     docstring = spec.docstring or f"Component wrapper for eqx.nn.{spec.eqx_class_name}."
-    input_ports_str = repr(spec.input_ports)
-    output_ports_str = repr(spec.output_ports)
+    if portable:
+        ports = (
+            f"    ports = Ports(inputs={dict.fromkeys(spec.input_ports)!r}, "
+            f"outputs={dict.fromkeys(spec.output_ports)!r})"
+        ).replace(": None", ": PortType(dtype='array')")
+    else:
+        ports = f"    input_ports = {spec.input_ports!r}\n    output_ports = {spec.output_ports!r}"
     contract_expr = (
         "{"
         f"'call_kind': {spec.call_kind!r}, "
@@ -473,11 +651,10 @@ def generate_component_class(spec: ComponentSpec) -> str:
     )
 
     class_code = f'''
-class {spec.eqx_class_name}(Component):
+class {spec.eqx_class_name}({"Component" if portable else "GraphNode"}):
     """{docstring}"""
 
-    input_ports = {input_ports_str}
-    output_ports = {output_ports_str}
+{ports}
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {contract_expr}
@@ -486,7 +663,7 @@ class {spec.eqx_class_name}(Component):
 {chr(10).join(attr_declarations) if attr_declarations else ""}
     def __init__({", ".join(init_params)}):
 {"".join(init_body_assignments)}        self.layer = eqx.nn.{spec.eqx_class_name}({layer_call_args})
-{properties}
+{properties}{dtype_property}
 
     def __call__(
         self,
@@ -496,7 +673,7 @@ class {spec.eqx_class_name}(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:{call_body}
 '''
-    return class_code
+    return class_code + options
 
 
 def generate_all_components() -> str:
@@ -520,16 +697,20 @@ To regenerate:
 
 from __future__ import annotations
 
-from collections.abc import Hashable
+from collections.abc import Hashable, Mapping
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, MissingPrototypeInput, Ports
 from feedbax.runtime.components import identity_activation, relu
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import Component, GraphNode
 
 
 EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
@@ -568,13 +749,43 @@ EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
         + "}\n"
     )
 
-    helpers = '''
+    helpers = """
+
+def _spatial_tuple(value: Any) -> Any:
+    return tuple(map(_spatial_tuple, value)) if isinstance(value, list) else value
+
+
+def _owner_options(
+    cls: type[Component], *, has_key: bool = False, trainable: bool = False,
+) -> ComponentOptions:
+    def output_prototype(params: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+        missing = set(cls.input_ports) - inputs.keys()
+        if missing:
+            raise MissingPrototypeInput(f"Missing input prototypes for {sorted(missing)}")
+        settings = {name: value for name, value in params.items() if name != "trainable"}
+        key = jax.random.key(0)
+        if has_key:
+            settings["key"] = key
+
+        def forward(values):
+            layer, state = eqx.nn.make_with_state(cls)(**settings)
+            return layer(values, state, key=key)[0]
+
+        return jax.eval_shape(forward, dict(inputs))
+
+    return ComponentOptions(
+        output_prototype_fn=output_prototype,
+        prototype_depends_on_connected_inputs=True,
+        build_context_fields=("key",) if has_key else (),
+        trainable_by_default=trainable,
+    )
+
 
 _PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
 
 
 def _restore_wrapper_state(
-    component: Component, state: _PickleState, former_fields: tuple[str, ...]
+    component: GraphNode, state: _PickleState, former_fields: tuple[str, ...]
 ) -> None:
     attrs, slots = state if isinstance(state, tuple) else (state, {})
     obsolete = ((attrs or {}).keys() | slots.keys()).intersection(former_fields)
@@ -591,7 +802,7 @@ def _restore_wrapper_state(
 
 
 def _call_single_input_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -602,7 +813,7 @@ def _call_single_input_layer(
 
 
 def _call_single_input_keyed_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -613,7 +824,7 @@ def _call_single_input_keyed_layer(
 
 
 def _call_batch_norm_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -624,7 +835,7 @@ def _call_batch_norm_layer(
 
 
 def _call_gru_cell_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -636,7 +847,7 @@ def _call_gru_cell_layer(
 
 
 def _call_lstm_cell_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -649,7 +860,7 @@ def _call_lstm_cell_layer(
 
 
 def _call_multihead_attention_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -662,7 +873,7 @@ def _call_multihead_attention_layer(
         key=key,
     )
     return {"output": output}, state
-'''
+"""
 
     # Generate classes grouped by category
     body_parts = []
@@ -678,6 +889,32 @@ def _call_multihead_attention_layer(
     return header + all_str + contracts + helpers + "".join(body_parts)
 
 
+def generate_histories() -> str:
+    """Render frozen legacy evidence beside the current wrapper owners."""
+    imports = ", ".join(LEGACY_CONFIG_FIELDS)
+    records = "\n".join(
+        f"    {name}: History(legacy=(LegacyEndpoint('feedbax.equinox.{name}', '1', 1, "
+        f"partial(_revision_one_fields, fields=frozenset({fields!r}))),)),"
+        for name, fields in LEGACY_CONFIG_FIELDS.items()
+    )
+    return f'''"""Generated frozen Equinox wire evidence; regenerate with generate_eqx_components.py."""
+
+from functools import partial
+
+from feedbax.component_registry.history import History, LegacyEndpoint
+from .equinox import {imports}
+
+
+def _revision_one_fields(params, *, fields):
+    return set(params) <= fields
+
+
+HISTORIES = {{
+{records}
+}}
+'''
+
+
 def main():
     """Generate and write the components file."""
     output_path = Path(__file__).parent.parent / "feedbax" / "components" / "equinox.py"
@@ -686,8 +923,10 @@ def main():
     content = generate_all_components()
 
     output_path.write_text(content)
+    history_path = output_path.with_name("equinox_history.py")
+    history_path.write_text(generate_histories())
     try:
-        subprocess.run(["ruff", "format", str(output_path)], check=True)
+        subprocess.run(["ruff", "format", str(output_path), str(history_path)], check=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         print(f"Warning: could not format generated file with ruff: {exc}")
     print(f"Written to: {output_path}")

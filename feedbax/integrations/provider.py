@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError as PydanticValidationError,
+)
 
 import feedbax.analysis as analysis_pkg
 from feedbax._delayed_reaches import (
@@ -80,6 +86,7 @@ from feedbax.contracts.parameter_contracts import (
 from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
 from feedbax.contracts.migrations import (
+    UnsupportedComponentMigration,
     UnsupportedSpecVersion,
     default_spec_registry,
     migrate_graph_spec,
@@ -146,8 +153,6 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
-
-TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
 
 class ProviderModel(BaseModel):
@@ -247,8 +252,8 @@ class RegistryEntry(ProviderModel):
     provenance: Optional[str] = None
     provenance_kind: Optional[str] = None
     component_type_id: Optional[str] = None
-    param_schema_version: Optional[str] = None
-    supported_param_schema_versions: list[str] = Field(default_factory=list)
+    revision: Optional[Annotated[StrictInt, Field(gt=0)]] = None
+    supported_revisions: list[Annotated[StrictInt, Field(gt=0)]] = Field(default_factory=list)
     identity: Optional[ComponentIdentity] = None
     migrations: list[ComponentMigrationInfo] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -933,7 +938,7 @@ def component_registry_snapshot(registry: Any) -> RegistrySnapshot:
     for definition in registry.list_all():
         entries.append(
             RegistryEntry(
-                type_id=f"feedbax.component.{definition.name}",
+                type_id=definition.name,
                 name=definition.name,
                 category=definition.category,
                 description=definition.description,
@@ -944,8 +949,8 @@ def component_registry_snapshot(registry: Any) -> RegistrySnapshot:
                     definition.identity.provenance_kind if definition.identity is not None else None
                 ),
                 component_type_id=definition.name,
-                param_schema_version=definition.param_schema_version,
-                supported_param_schema_versions=list(definition.supported_param_schema_versions),
+                revision=definition.revision,
+                supported_revisions=list(definition.supported_revisions),
                 identity=definition.identity,
                 migrations=list(definition.migrations),
                 version=feedbax_version(),
@@ -1099,19 +1104,39 @@ def _schema_issues_to_provider(
 
 
 def validate_graph_spec(
-    payload: dict[str, Any] | GraphSpec, *, component_registry: Any
+    payload: dict[str, Any] | GraphSpec,
+    *,
+    component_registry: Any,
+    historical_unversioned: bool = False,
 ) -> ProviderValidationResult:
     from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
     migration_records: list[ArtifactMigrationRecord] = []
     parsed: GraphSpec | None = None
     try:
-        migrated = migrate_graph_spec(payload)
+        migrated = migrate_graph_spec(
+            payload, component_registry=component_registry,
+            historical_unversioned=historical_unversioned,
+        )
         migration_records = migrated.migration_records
         parsed = GraphSpec.model_validate(migrated.payload)
         spec = normalize_graph_for_studio_authoring(
             materialize_additive_channel_adapters(parsed),
             component_registry=component_registry,
+            component_versions="historical" if historical_unversioned else None,
+        )
+    except UnsupportedComponentMigration as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="unsupported_component_migration",
+                    message=str(exc),
+                    location={"path": "/nodes"},
+                )
+            ],
+            migration_status="rejected",
+            migration_records=migration_records,
         )
     except UnsupportedSpecVersion as exc:
         return ProviderValidationResult(
@@ -1142,7 +1167,10 @@ def validate_graph_spec(
                     ValidationIssue(
                         type="graph_input_occupied",
                         message=str(conflict),
-                        location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+                        location={
+                            "path": conflict.authored_path,
+                            "occupied_by": conflict.occupied_by,
+                        },
                     )
                     for conflict in conflicts
                 ),
@@ -1150,11 +1178,13 @@ def validate_graph_spec(
                     type="invalid_additive_channel_adapter",
                     message=str(exc),
                     location={"path": "/additive_channel_adapters"},
-                )
+                ),
             ],
             migration_status="feedbax_migrated" if migration_records else "current",
             migration_records=migration_records,
         )
+
+    from feedbax.tasks.task import TaskComponent
 
     registry = component_registry
     errors: list[ValidationIssue] = []
@@ -1163,7 +1193,12 @@ def validate_graph_spec(
     def _validate_graph(graph: GraphSpec, prefix: str = "") -> None:
         for node_name, node_spec in graph.nodes.items():
             node_path = f"{prefix}/nodes/{node_name}"
-            if node_spec.type in TASK_COMPONENT_TYPES:
+            meta = registry.get(node_spec.type)
+            if (
+                meta is not None
+                and meta.owner_class is not None
+                and issubclass(meta.owner_class, TaskComponent)
+            ):
                 errors.append(
                     ValidationIssue(
                         type="task_node_not_allowed",
@@ -1175,7 +1210,6 @@ def validate_graph_spec(
                     )
                 )
                 continue
-            meta = registry.get(node_spec.type)
             if meta is None:
                 errors.append(
                     ValidationIssue(
@@ -1295,7 +1329,7 @@ def validate_graph_spec_manifest(
         manifest_obj = manifest
 
     try:
-        load_result = load_graph_spec_from_manifest(manifest_obj)
+        load_result = load_graph_spec_from_manifest(manifest_obj, component_registry=component_registry)
     except UnsupportedSpecVersion as exc:
         return ProviderValidationResult(
             valid=False,
@@ -1306,6 +1340,16 @@ def validate_graph_spec_manifest(
                     location={"path": "/graph_spec/schema_version"},
                 )
             ],
+            migration_status="rejected",
+        )
+    except UnsupportedComponentMigration as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[ValidationIssue(
+                type="unsupported_component_migration",
+                message=str(exc),
+                location={"path": "/graph_spec"},
+            )],
             migration_status="rejected",
         )
     except (TypeError, ValueError, FileNotFoundError) as exc:
@@ -1321,8 +1365,14 @@ def validate_graph_spec_manifest(
             migration_status="rejected",
         )
 
-    result = validate_graph_spec(load_result.payload, component_registry=component_registry)
-    if load_result.applied_migration_records:
+    result = validate_graph_spec(
+        load_result.payload,
+        component_registry=component_registry,
+        historical_unversioned=True,
+    )
+    if result.migration_status == "rejected":
+        migration_status = "rejected"
+    elif load_result.applied_migration_records:
         migration_status = "feedbax_migrated"
     elif load_result.downstream_migration_records:
         migration_status = "downstream_migrated"

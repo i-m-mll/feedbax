@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports
+
 import asyncio
 from dataclasses import FrozenInstanceError, dataclass
 import sys
@@ -9,7 +13,6 @@ import pytest
 from pydantic import BaseModel
 
 from feedbax.analysis.evaluation import EvaluationAuthoringSchema
-from feedbax.component_registry import declare_component
 from feedbax.plugins.application import (
     APPLICATION_REGISTRY_KEYS,
     COMPONENTS,
@@ -68,7 +71,7 @@ NAMES = RegistryKey(
 
 def _context() -> RegistrationContext:
     def factory() -> ExtendedBundle:
-        base = new_application_registry_bundle(local_component_source=None)
+        base = new_application_registry_bundle()
         return ExtendedBundle(**base.__dict__, names=NamesRegistry())
 
     return RegistrationContext(factory, (*APPLICATION_REGISTRY_KEYS, NAMES))
@@ -86,7 +89,7 @@ def _plugin(
         PluginDeclaration(
             plugin_id,
             "1",
-            1,
+            2,
             dependencies=dependencies,
             families=(FamilyRequirement(NAMES.family, family_version),),
         ),
@@ -134,7 +137,6 @@ def test_composer_discovers_provider_and_consumer_once_with_exact_state_lookup()
     state = asyncio.run(
         compose_application(
             entry_points=(_EntryPoint(consumer, loads), _EntryPoint(provider, loads)),
-            local_component_source=None,
         )
     )
 
@@ -188,7 +190,6 @@ def test_composer_rejects_conflicting_extension_family_providers_before_callback
         asyncio.run(
             compose_application(
                 entry_points=(_EntryPoint(first), _EntryPoint(second)),
-                local_component_source=None,
             )
         )
 
@@ -222,7 +223,6 @@ def test_composer_rejects_extension_factory_type_mismatch_and_seals_value() -> N
         asyncio.run(
             compose_application(
                 entry_points=(_EntryPoint(provider),),
-                local_component_source=None,
             )
         )
 
@@ -241,7 +241,6 @@ def test_composer_extension_provider_cannot_access_undeclared_core_family() -> N
         asyncio.run(
             compose_application(
                 entry_points=(_EntryPoint(provider),),
-                local_component_source=None,
             )
         )
 
@@ -269,7 +268,6 @@ def test_composer_extension_failure_rolls_back_seals_and_isolates_later_state() 
         asyncio.run(
             compose_application(
                 entry_points=(_EntryPoint(failing),),
-                local_component_source=None,
             )
         )
     assert retained[0].sealed
@@ -284,13 +282,11 @@ def test_composer_extension_failure_rolls_back_seals_and_isolates_later_state() 
     first = asyncio.run(
         compose_application(
             entry_points=(_EntryPoint(succeeding),),
-            local_component_source=None,
         )
     )
     second = asyncio.run(
         compose_application(
             entry_points=(_EntryPoint(succeeding),),
-            local_component_source=None,
         )
     )
     assert first.registry(NAMES) is not second.registry(NAMES)
@@ -323,7 +319,7 @@ def test_context_rejects_registry_key_with_wrong_runtime_type() -> None:
     wrong_key = RegistryKey("components", "components", dict)
     with pytest.raises(BootstrapError, match="is not dict"):
         RegistrationContext(
-            lambda: new_application_registry_bundle(local_component_source=None),
+            lambda: new_application_registry_bundle(),
             (wrong_key,),
         )
 
@@ -355,18 +351,30 @@ def test_failed_registration_never_publishes_partial_state() -> None:
 
 
 def test_failed_bootstrap_seals_plugin_retained_registry() -> None:
+    class Late(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
+    class Retained(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     retained = []
 
     def retain(context: RegistrationContext) -> None:
         registry = context.registry(COMPONENTS)
         retained.append(registry)
-        registry.register_component_type("pkg.Retained", lambda _params: object())
+        registry.ingest(ComponentPack(namespace="pkg", components=(Retained,)))
 
     retain_plugin = PluginRegistration(
         PluginDeclaration(
             "pkg.retain",
             "1",
-            1,
+            2,
             families=(FamilyRequirement(COMPONENTS.family),),
         ),
         retain,
@@ -383,12 +391,12 @@ def test_failed_bootstrap_seals_plugin_retained_registry() -> None:
         )
 
     with pytest.raises(RuntimeError, match="component registry is sealed"):
-        retained[0].register_component_type("pkg.Late", lambda _params: object())
+        retained[0].ingest(ComponentPack(namespace="pkg", components=(Late,)))
 
 
 def test_plugin_can_only_access_declared_families() -> None:
     plugin = PluginRegistration(
-        PluginDeclaration("pkg.undeclared", "1", 1),
+        PluginDeclaration("pkg.undeclared", "1", 2),
         lambda context: context.registry(NAMES).register("hidden"),
     )
     with pytest.raises(BootstrapError) as caught:
@@ -398,7 +406,7 @@ def test_plugin_can_only_access_declared_families() -> None:
 
 def test_declaration_rejects_malformed_nested_members() -> None:
     with pytest.raises(BootstrapError) as caught:
-        PluginDeclaration("pkg.bad", "1", 1, dependencies=(object(),))  # type: ignore[arg-type]
+        PluginDeclaration("pkg.bad", "1", 2, dependencies=(object(),))  # type: ignore[arg-type]
     assert caught.value.code is BootstrapErrorCode.INVALID_REGISTRATION
 
 
@@ -599,9 +607,15 @@ def test_duplicate_dependency_declaration_is_invalid() -> None:
 
 
 def test_published_concrete_registries_are_sealed() -> None:
+    class X(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     state = asyncio.run(bootstrap_application(_context(), registrations=()))
     with pytest.raises(RuntimeError, match="component registry is sealed"):
-        state.bundle.components.register_component_type("pkg.X", lambda _params: object())
+        state.bundle.components.ingest(ComponentPack(namespace="pkg", components=(X,)))
     with pytest.raises(RuntimeError, match="experiment registry is sealed"):
         state.bundle.experiment_packages.register_package(
             "pkg", __import__("types"), (), "analysis", "training", "config"
@@ -615,18 +629,16 @@ def test_published_concrete_registries_are_sealed() -> None:
 
 
 def test_published_registry_metadata_is_detached() -> None:
+    class Snapshot(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     class Params(BaseModel):
         value: int = 1
 
-    component_meta = declare_component(
-        name="pkg.Snapshot",
-        category="Original",
-        description="snapshot",
-        param_schema=[],
-        input_ports=[],
-        output_ports=[],
-        builder=lambda _params: object(),
-    )
+    component_meta = Snapshot
     routing = {"paths": ["original"]}
     template = SimpleNamespace(name="pkg.template", metadata={"values": ["original"]})
     piece = SimpleNamespace(name="pkg.piece", style={"values": ["original"]})
@@ -638,7 +650,9 @@ def test_published_registry_metadata_is_detached() -> None:
     )
 
     def register(context: RegistrationContext) -> None:
-        context.registry(COMPONENTS).register(component_meta)
+        context.registry(COMPONENTS).ingest(
+            ComponentPack(namespace="pkg", components=(component_meta,))
+        )
         context.registry(EXPERIMENT_PACKAGES).register_package(
             "pkg", __import__("types"), (), "analysis", "training", "config", routing
         )
@@ -650,7 +664,7 @@ def test_published_registry_metadata_is_detached() -> None:
         PluginDeclaration(
             "pkg.snapshots",
             "1",
-            1,
+            2,
             families=tuple(
                 FamilyRequirement(key.family)
                 for key in (COMPONENTS, EXPERIMENT_PACKAGES, FIGURES, EVALUATION_RECIPES)
@@ -660,8 +674,6 @@ def test_published_registry_metadata_is_detached() -> None:
     )
     state = asyncio.run(bootstrap_application(_context(), registrations=(plugin,)))
 
-    with pytest.raises(FrozenInstanceError):
-        component_meta.category = "mutated-input"
     routing["paths"].append("mutated-input")
     template.metadata["values"].append("mutated-input")
     piece.style["values"].append("mutated-input")
@@ -681,7 +693,7 @@ def test_published_registry_metadata_is_detached() -> None:
     assert returned_schema is not None
     returned_schema.axis_profiles[0]["condition"] = ("mutated-output",)
 
-    assert state.bundle.components.get("pkg.Snapshot").category == "Original"
+    assert state.bundle.components.get("pkg.Snapshot").category == "pkg"
     assert state.bundle.experiment_packages.get_figure_routing("pkg") == {"paths": ["original"]}
     assert state.bundle.figures.template("pkg.template").metadata == {"values": ["original"]}
     assert state.bundle.figures.piece("pkg.piece").style == {"values": ["original"]}
@@ -691,15 +703,21 @@ def test_published_registry_metadata_is_detached() -> None:
 
 
 def test_component_and_plugin_namespace_collisions_are_typed() -> None:
+    class Gain(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     component_plugin = PluginRegistration(
         PluginDeclaration(
             "pkg.component",
             "1",
-            1,
+            2,
             families=(FamilyRequirement(COMPONENTS.family),),
         ),
-        lambda context: context.registry(COMPONENTS).register_component_type(
-            "Gain", lambda _params: object()
+        lambda context: context.registry(COMPONENTS).ingest(
+            ComponentPack(namespace="feedbax", components=(Gain,))
         ),
     )
     with pytest.raises(BootstrapError) as component_error:
@@ -711,7 +729,7 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
             PluginDeclaration(
                 plugin_id,
                 "1",
-                1,
+                2,
                 families=(FamilyRequirement(EXPERIMENT_PACKAGES.family),),
             ),
             lambda context: context.registry(EXPERIMENT_PACKAGES).register_package(

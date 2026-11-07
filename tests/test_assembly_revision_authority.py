@@ -338,7 +338,7 @@ def test_stage_engine_refuses_before_reserving_the_run_set_root(
         fixture.request,
         context=fixture.context,
         registry=fixture.registry,
-        driver_registry=new_application_registry_bundle(local_component_source=None).drivers,
+        driver_registry=new_application_registry_bundle().drivers,
         driver_context=lambda _bundle: pytest.fail("driver constructed before the gate refused"),
         run_set_id=run_set_id,
     )

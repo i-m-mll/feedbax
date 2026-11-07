@@ -45,13 +45,13 @@ function AnalysisShortcutHarness() {
 const graph: GraphSpec = {
   nodes: {
     a: {
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
     },
     b: {
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
@@ -191,17 +191,17 @@ describe('AnalysisPanel interaction ownership', () => {
       .toEqual([expect.objectContaining({ id: bindingId })]);
   });
 
-  it('preserves explicit analysis deletion through the inspector Remove control', async () => {
+  it('honors cancellation and confirmation when removing an analysis node', async () => {
     const node = addSelectedAnalysisNode();
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     const user = userEvent.setup();
     const { getByRole } = render(<AnalysisShortcutHarness />);
 
-    await user.click(getByRole('button', { name: 'Remove' }));
+    const remove = getByRole('button', { name: 'Remove' });
+    await user.click(remove);
+    expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeDefined();
 
-    expect(confirm).toHaveBeenCalledWith(
-      'Delete this analysis node and its connected wires? This cannot currently be undone.',
-    );
+    await user.click(remove);
     expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeUndefined();
   });
 

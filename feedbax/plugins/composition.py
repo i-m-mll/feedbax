@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from pathlib import Path
 from typing import Any, TypeVar
 
 from .application import APPLICATION_REGISTRY_KEYS, new_application_registry_bundle
@@ -95,13 +94,12 @@ async def compose_application(
     *,
     modules: Sequence[str] = (),
     entry_points: Iterable[Any] | None = None,
-    local_component_source: Path | None = Path.home() / ".feedbax" / "components",
 ) -> BootstrapState:
     """Discover and bootstrap one isolated application registry state."""
     sources = discover_plugin_registrations(entry_points=entry_points, modules=modules)
     family_providers = _extension_family_providers(sources)
     context = RegistrationContext(
-        lambda: new_application_registry_bundle(local_component_source=local_component_source),
+        new_application_registry_bundle,
         APPLICATION_REGISTRY_KEYS,
         registry_families=family_providers,
     )
@@ -115,11 +113,7 @@ async def bootstrap_and_dispatch(
     dispatch: Callable[[BootstrapState], T],
     *,
     modules: Sequence[str] = (),
-    local_component_source: Path | None = Path.home() / ".feedbax" / "components",
 ) -> T:
     """Bootstrap once, then invoke a synchronous process dispatcher."""
-    state = await compose_application(
-        modules=modules,
-        local_component_source=local_component_source,
-    )
+    state = await compose_application(modules=modules)
     return dispatch(state)

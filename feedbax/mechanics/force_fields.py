@@ -4,17 +4,27 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, ClassVar, Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import equinox as eqx
-from equinox import field
-from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
+from equinox import field
+from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.contracts.component import PortType
 from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import (
+    ConfigBinding,
+    Ports,
+    ComponentOptions,
+    default_configuration,
+    MissingPrototypeInput,
+)
 from feedbax.runtime.signal_transforms import (
     TransformParams,
     _bool_param,
@@ -25,18 +35,15 @@ from feedbax.runtime.signal_transforms import (
 )
 
 
-THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
-THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2 = "feedbax.component.threshold_latched_force.v2"
-THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v3"
-
-
 class CurlFieldParams(TransformParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
 
 
 class FixedFieldParams(TransformParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
-    field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
+    field: Array = field(
+        default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32), converter=jnp.asarray
+    )
 
 
 class ThresholdLatchedForceParams(TransformParams):
@@ -216,6 +223,13 @@ class ThresholdLatchState(eqx.Module):
     forward: Array
 
 
+def _delta_matrix(value):
+    matrix = jnp.asarray(value)
+    if matrix.shape != (2, 4):
+        raise ValueError("delta_A must have shape (2, 4)")
+    return matrix
+
+
 class DynamicsMatrixPerturbParams(TransformParams):
     """Parameters for ``DynamicsMatrixPerturb``.
 
@@ -230,20 +244,53 @@ class DynamicsMatrixPerturbParams(TransformParams):
             velocity row's added derivative. Defaults to a 2D zero matrix.
     """
 
-    delta_A: Array = field(default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32))
+    delta_A: Array = field(
+        default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32), converter=_delta_matrix
+    )
+
+
+def force_passthrough_output_prototype(
+    _params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the incoming force prototype for force-passthrough interventions."""
+    if "force" not in inputs:
+        raise MissingPrototypeInput(
+            "force passthrough output prototype requires input prototype 'force'"
+        )
+    return {"force": inputs["force"]}
+
+
+class CurlFieldConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scale: float = 1.0
+    amplitude: float = 1.0
+    active: bool = False
 
 
 class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
 
-    input_ports = ("effector", "force", "params_override")
-    output_ports = ("force",)
+    config: ClassVar = CurlFieldConfig
+    config_bindings: ClassVar = (
+        ConfigBinding("params_index.init", group=CurlFieldParams, argument="params"),
+    )
+    ports: ClassVar = Ports(
+        inputs={
+            "effector": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options: ClassVar = ComponentOptions(
+        output_prototype_fn=force_passthrough_output_prototype
+    )
 
     params_index: StateIndex
 
     def __init__(self, params: Optional[CurlFieldParams] = None):
         if params is None:
-            params = CurlFieldParams(active=False)
+            params = self.config_bindings[0].materialize(default_configuration(type(self)))
         self.params_index = StateIndex(_strong_typed(params))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -262,17 +309,32 @@ class CurlField(Component):
         return {"force": new_force}, state
 
 
+class FixedFieldConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scale: float = 1.0
+    amplitude: float = 1.0
+    field: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = (0.0, 0.0)
+    active: bool = False
+
+
 class FixedField(Component):
     """Adds a fixed force vector to a force signal."""
 
-    input_ports = ("force", "params_override")
-    output_ports = ("force",)
+    config = FixedFieldConfig
+    config_bindings = (
+        ConfigBinding("params_index.init", group=FixedFieldParams, argument="params"),
+    )
+    ports = Ports(
+        inputs={"force": PortType(dtype="vector"), "params_override": PortType(dtype="object")},
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options = ComponentOptions(output_prototype_fn=force_passthrough_output_prototype)
 
     params_index: StateIndex
 
     def __init__(self, params: Optional[FixedFieldParams] = None):
         if params is None:
-            params = FixedFieldParams(active=False)
+            params = self.config_bindings[0].materialize(default_configuration(type(self)))
         self.params_index = StateIndex(_strong_typed(params))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -290,6 +352,19 @@ class FixedField(Component):
         return {"force": new_force}, state
 
 
+class ThresholdLatchedForceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    state_selector: dict[str, Any] = {"kind": "fixed", "path": ["pos", 0]}
+    direction: Literal["increasing", "decreasing"] = "increasing"
+    dt: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 0.01
+    scale: float = 1.0
+    active: bool = False
+    threshold: float = 0.0
+    force: list[float] = [0.0, 0.0]
+    lateral_force: float = 0.0
+    ramp_duration: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
+
+
 class ThresholdLatchedForce(Component):
     """Add force after a selected runtime state crosses a threshold.
 
@@ -302,8 +377,22 @@ class ThresholdLatchedForce(Component):
     when the intervention starts inactive. Activation requires a usable frame.
     """
 
-    input_ports = ("state", "target", "force", "params_override")
-    output_ports = ("force",)
+    config: ClassVar = ThresholdLatchedForceConfig
+    config_bindings: ClassVar = (
+        ConfigBinding("params_index.init", group=ThresholdLatchedForceParams, argument="params"),
+    )
+    ports: ClassVar = Ports(
+        inputs={
+            "state": PortType(dtype="state"),
+            "target": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options: ClassVar = ComponentOptions(
+        output_prototype_fn=force_passthrough_output_prototype
+    )
 
     params_index: StateIndex
     latch_index: StateIndex
@@ -314,17 +403,30 @@ class ThresholdLatchedForce(Component):
     def __init__(
         self,
         *,
-        state_selector: ThresholdStateSelector | Mapping[str, Any],
-        direction: Literal["increasing", "decreasing"],
-        dt: float,
+        state_selector: ThresholdStateSelector | Mapping[str, Any] | None = None,
+        direction: Literal["increasing", "decreasing"] | None = None,
+        dt: float | None = None,
         params: Optional[ThresholdLatchedForceParams] = None,
     ):
-        if direction not in ("increasing", "decreasing"):
-            raise ValueError("direction must be 'increasing' or 'decreasing'")
+        authored = {}
+        if state_selector is not None:
+            authored["state_selector"] = _parse_threshold_state_selector(state_selector).to_param()
+        if direction is not None:
+            authored["direction"] = direction
+        if dt is not None:
+            authored["dt"] = dt
+        config = default_configuration(type(self), **authored)
+        state_selector, direction, dt = config.state_selector, config.direction, config.dt
         if params is None:
-            params = ThresholdLatchedForceParams(active=False)
-        if float(jnp.asarray(params.ramp_duration)) < 0:
-            raise ValueError("ramp_duration must be non-negative")
+            params = self.config_bindings[0].materialize(config)
+        params = eqx.tree_at(
+            lambda item: item.ramp_duration,
+            params,
+            eqx.error_if(
+                params.ramp_duration, params.ramp_duration < 0, "ramp_duration must be non-negative"
+            ),
+        )
+        params = eqx.tree_at(lambda item: item.force, params, jnp.asarray(params.force))
         self.params_index = StateIndex(_strong_typed(params))
         self.latch_index = StateIndex(
             ThresholdLatchState(
@@ -423,20 +525,22 @@ class ThresholdLatchedForce(Component):
         )
         return {"force": new_force}, state
 
-    def to_params(self) -> dict[str, Any]:
-        """Return the versioned GraphSpec parameters for this component."""
 
-        return {
-            "state_selector": self.state_selector.to_param(),
-            "direction": self.direction,
-            "threshold": float(self.params_index.init.threshold),
-            "force": jnp.asarray(self.params_index.init.force).tolist(),
-            "lateral_force": float(self.params_index.init.lateral_force),
-            "ramp_duration": float(self.params_index.init.ramp_duration),
-            "scale": float(self.params_index.init.scale),
-            "active": bool(self.params_index.init.active),
-            "dt": self.dt,
-        }
+class DynamicsMatrixPerturbConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scale: float = 1.0
+    delta_A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = (
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    )
+    active: bool = False
+    mass: float = Field(gt=0, allow_inf_nan=False)
+
+    @field_validator("delta_A")
+    @classmethod
+    def validate_delta_shape(cls, value):
+        _delta_matrix(value)
+        return value
 
 
 class DynamicsMatrixPerturb(Component):
@@ -461,8 +565,19 @@ class DynamicsMatrixPerturb(Component):
             (typically ``1.0``).
     """
 
-    input_ports = ("effector", "force", "params_override")
-    output_ports = ("force",)
+    config = DynamicsMatrixPerturbConfig
+    config_bindings = (
+        ConfigBinding("params_index.init", group=DynamicsMatrixPerturbParams, argument="params"),
+    )
+    ports = Ports(
+        inputs={
+            "effector": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options = ComponentOptions(output_prototype_fn=force_passthrough_output_prototype)
 
     params_index: StateIndex
     mass: float = field(static=True)
@@ -478,7 +593,9 @@ class DynamicsMatrixPerturb(Component):
                 "the wired plant; pass mass=<plant mass> at graph construction."
             )
         if params is None:
-            params = DynamicsMatrixPerturbParams(active=False)
+            params = self.config_bindings[0].materialize(
+                default_configuration(type(self), mass=mass)
+            )
         self.params_index = StateIndex(_strong_typed(params))
         self.mass = require_positive_finite("DynamicsMatrixPerturb.mass", mass)
 

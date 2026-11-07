@@ -16,7 +16,7 @@ from feedbax.acausal import (
     PositionSensor,
     PrescribedMotion,
 )
-from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry import ComponentPack, ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
@@ -32,17 +32,19 @@ pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_con
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 @pytest.mark.parametrize("grounded", [True, False], ids=["ground", "second-motion-source"])
 def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: bool) -> None:
-    motion = ComponentSpec(type="ActuationInput", params={"source_kind": "prescribed_motion"})
+    motion = ComponentSpec(
+        type="feedbax.ActuationInput", params={"source_kind": "prescribed_motion"}
+    )
     other = (
-        ComponentSpec(type="Ground")
+        ComponentSpec(type="feedbax.Ground")
         if grounded
         else ComponentSpec(
-            type="ActuationInput",
+            type="feedbax.ActuationInput",
             params={"source_kind": "prescribed_motion", "port_name": "other"},
         )
     )
@@ -55,7 +57,7 @@ def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: boo
         nodes={
             "motion": motion,
             "other": other,
-            "sense": ComponentSpec(type="SensorOutput", params={"quantity": "position"}),
+            "sense": ComponentSpec(type="feedbax.SensorOutput", params={"quantity": "position"}),
         },
         connections=[{"a": a, "b": b} for a, b in connections],
         solver={"solver_type": "euler", "dt": 0.01},
@@ -65,7 +67,9 @@ def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: boo
         spec, node_path=["plant"], component_registry=registry
     )
     assert report.status == "error"
-    code = "acausal.grounded_prescribed_coordinate" if grounded else "acausal.parallel_across_sources"
+    code = (
+        "acausal.grounded_prescribed_coordinate" if grounded else "acausal.parallel_across_sources"
+    )
     diagnostic = next(d for d in report.diagnostics if d.code == code)
     assert diagnostic.severity == "error"
     assert set(diagnostic.node_ids) == {"motion", "other"}
@@ -84,23 +88,28 @@ def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: boo
         )
 
 
-def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None:
+def test_registered_custom_mass_preserves_independent_prescribed_inputs() -> None:
+    class CustomMass(Mass):
+        pass
+
     nodes = {
-        "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
-        "velocity": ComponentSpec(type="SensorOutput", params={"quantity": "velocity"}),
+        "mass": ComponentSpec(type="test.CustomMass", params={"mass": 2.0}),
+        "velocity": ComponentSpec(type="feedbax.SensorOutput", params={"quantity": "velocity"}),
     }
     connections = [{"a": ("velocity", "flange"), "b": ("mass", "flange")}]
     for side, stiffness in (("left", 2.0), ("right", 3.0)):
         spring = f"{side}_spring"
         nodes[side] = ComponentSpec(
-            type="ActuationInput",
+            type="feedbax.ActuationInput",
             params={"source_kind": "prescribed_motion", "port_name": side},
         )
-        nodes[spring] = ComponentSpec(type="LinearSpring", params={"stiffness": stiffness})
-        connections.extend([
-            {"a": (side, "flange"), "b": (spring, "flange_a")},
-            {"a": (spring, "flange_b"), "b": ("mass", "flange")},
-        ])
+        nodes[spring] = ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": stiffness})
+        connections.extend(
+            [
+                {"a": (side, "flange"), "b": (spring, "flange_a")},
+                {"a": (spring, "flange_b"), "b": ("mass", "flange")},
+            ]
+        )
     spec = AcausalGraphSpec(
         physical_domain="translational",
         nodes=nodes,
@@ -108,6 +117,7 @@ def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None
         solver={"solver_type": "euler", "dt": 0.1},
     )
     registry = _registry()
+    registry.ingest(ComponentPack(namespace="test", components=(CustomMass,)))
     report = compile_acausal_authoring_report(
         spec, node_path=["plant"], component_registry=registry
     )
@@ -126,16 +136,16 @@ def _msd_interior() -> AcausalGraphSpec:
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
-            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="feedbax.LinearDamper", params={"damping": 0.5}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "pos", "quantity": "position"},
             ),
         },
@@ -155,7 +165,7 @@ def _acausal_graph_spec(interior: AcausalGraphSpec) -> GraphSpec:
     return GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 input_ports=["u"],
                 output_ports=["pos"],
             )
@@ -179,15 +189,15 @@ def test_driven_massless_spring_endpoint_is_rejected_before_stepping() -> None:
     spec = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass"),
-            "support": ComponentSpec(type="LinearSpring"),
-            "spring": ComponentSpec(type="LinearSpring"),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass"),
+            "support": ComponentSpec(type="feedbax.LinearSpring"),
+            "spring": ComponentSpec(type="feedbax.LinearSpring"),
             "drive": ComponentSpec(
-                type="ActuationInput", params={"port_name": "u", "source_kind": "force"}
+                type="feedbax.ActuationInput", params={"port_name": "u", "source_kind": "force"}
             ),
             "sense": ComponentSpec(
-                type="SensorOutput", params={"port_name": "pos", "quantity": "position"}
+                type="feedbax.SensorOutput", params={"port_name": "pos", "quantity": "position"}
             ),
         },
         connections=[{"a": a, "b": b} for a, b in connections],
@@ -196,7 +206,8 @@ def test_driven_massless_spring_endpoint_is_rejected_before_stepping() -> None:
     registry = _registry()
     with pytest.raises(GraphCompilationError, match="require inertia"):
         spec_to_graph(
-            _acausal_graph_spec(spec), registry,
+            _acausal_graph_spec(spec),
+            registry,
             input_prototypes={("__graph__", "u"): jnp.zeros(1)},
         )
     with pytest.raises(ValueError, match="require inertia"):
@@ -227,7 +238,7 @@ def _prescribed_motion_graph(*, bind_input: bool = True) -> GraphSpec:
     return GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 input_ports=["motion"],
                 output_ports=["velocity"],
             ),
@@ -240,14 +251,16 @@ def _prescribed_motion_graph(*, bind_input: bool = True) -> GraphSpec:
             "plant": AcausalGraphSpec(
                 physical_domain="translational",
                 nodes={
-                    "wall": ComponentSpec(type="Ground"),
-                    "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+                    "wall": ComponentSpec(type="feedbax.Ground"),
+                    "spring": ComponentSpec(
+                        type="feedbax.LinearSpring", params={"stiffness": 10.0}
+                    ),
                     "drive": ComponentSpec(
-                        type="ActuationInput",
+                        type="feedbax.ActuationInput",
                         params={"port_name": "motion", "source_kind": "prescribed_motion"},
                     ),
                     "sense": ComponentSpec(
-                        type="SensorOutput",
+                        type="feedbax.SensorOutput",
                         params={"port_name": "velocity", "quantity": "velocity"},
                     ),
                 },
@@ -347,7 +360,7 @@ def _planar_arm_spec(
     solver: SolverConfigSpec | None = None,
     bind_input: bool = False,
 ) -> GraphSpec:
-    template = registry.get("TwoLinkArm6Muscle")
+    template = registry.get("feedbax.TwoLinkArm6Muscle")
     assert template is not None
     interior = template.template_graph
     assert isinstance(interior, AcausalGraphSpec)
@@ -356,7 +369,7 @@ def _planar_arm_spec(
     return GraphSpec(
         nodes={
             "arm": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 input_ports=["excitation"],
                 output_ports=["state"],
             ),
@@ -384,9 +397,12 @@ def test_planar_tsit5_step_matches_direct_diffrax_after_document_roundtrip() -> 
     executable = compile_graph(document, registry)
     resolved_interior = executable.resolved.graph.subgraphs["arm"]
     assert resolved_interior.solver == solver
-    assert compile_acausal_authoring_report(
-        resolved_interior, node_path=["arm"], component_registry=registry
-    ).status == "ok"
+    assert (
+        compile_acausal_authoring_report(
+            resolved_interior, node_path=["arm"], component_registry=registry
+        ).status
+        == "ok"
+    )
 
     graph = executable.graph
     arm = graph.nodes["arm"]
@@ -555,10 +571,10 @@ def test_nested_acausal_boundary_ports_flatten_like_flat_spec() -> None:
     nested = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
-            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
-            "free": ComponentSpec(type="BoundaryPort", params={"port_name": "flange"}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="feedbax.LinearDamper", params={"damping": 0.5}),
+            "free": ComponentSpec(type="feedbax.BoundaryPort", params={"port_name": "flange"}),
         },
         connections=[
             {"a": ("wall", "flange"), "b": ("spring", "flange_a")},
@@ -571,14 +587,14 @@ def test_nested_acausal_boundary_ports_flatten_like_flat_spec() -> None:
     nested_interior = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "actuator": ComponentSpec(type="AcausalSystem", input_ports=["flange"]),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
+            "actuator": ComponentSpec(type="feedbax.AcausalSystem", input_ports=["flange"]),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "pos", "quantity": "position"},
             ),
         },
@@ -602,7 +618,7 @@ def test_nested_acausal_boundary_ports_flatten_like_flat_spec() -> None:
 
 def test_missing_acausal_interior_raises_domain_named_error() -> None:
     spec = GraphSpec(
-        nodes={"plant": ComponentSpec(type="AcausalSystem")},
+        nodes={"plant": ComponentSpec(type="feedbax.AcausalSystem")},
     )
 
     with pytest.raises(ValueError, match="feedbax.domain.acausal"):
@@ -653,25 +669,25 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
 
     spec = AcausalGraphSpec(
         schema_id="feedbax.spec.acausal_graph",
-        schema_version="feedbax.spec.acausal_graph.v1",
         physical_domain="rotational",
         nodes={
-            "a": ComponentSpec(type="Inertia", params={"inertia": 2.0}),
-            "b": ComponentSpec(type="Inertia", params={"inertia": 3.0}),
-            "gear": ComponentSpec(type="GearRatio", params={"ratio": 2.0}),
-            "wall": ComponentSpec(type="RotationalGround"),
-            "spring": ComponentSpec(type="TorsionalSpring", params={"stiffness": 4.0}),
+            "a": ComponentSpec(type="feedbax.Inertia", params={"inertia": 2.0}),
+            "b": ComponentSpec(type="feedbax.Inertia", params={"inertia": 3.0}),
+            "gear": ComponentSpec(type="feedbax.GearRatio", params={"ratio": 2.0}),
+            "wall": ComponentSpec(type="feedbax.RotationalGround"),
+            "spring": ComponentSpec(type="feedbax.TorsionalSpring", params={"stiffness": 4.0}),
             "drive": ComponentSpec(
-                type="ActuationInput", params={"port_name": "u", "source_kind": "torque"}
+                type="feedbax.ActuationInput", params={"port_name": "u", "source_kind": "torque"}
             ),
             "angle": ComponentSpec(
-                type="SensorOutput", params={"port_name": "qb", "quantity": "angle"}
+                type="feedbax.SensorOutput", params={"port_name": "qb", "quantity": "angle"}
             ),
             "velocity": ComponentSpec(
-                type="SensorOutput", params={"port_name": "vb", "quantity": "angular_velocity"}
+                type="feedbax.SensorOutput",
+                params={"port_name": "vb", "quantity": "angular_velocity"},
             ),
             "torque": ComponentSpec(
-                type="SensorOutput", params={"port_name": "tb", "quantity": "torque"}
+                type="feedbax.SensorOutput", params={"port_name": "tb", "quantity": "torque"}
             ),
         },
         connections=[
@@ -708,8 +724,12 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
             physical_domain="rotational",
             nodes={
                 "gear": spec.nodes["gear"],
-                "left": ComponentSpec(type="BoundaryPort", params={"port_name": "flange_a"}),
-                "right": ComponentSpec(type="BoundaryPort", params={"port_name": "flange_b"}),
+                "left": ComponentSpec(
+                    type="feedbax.BoundaryPort", params={"port_name": "flange_a"}
+                ),
+                "right": ComponentSpec(
+                    type="feedbax.BoundaryPort", params={"port_name": "flange_b"}
+                ),
             },
             connections=[
                 {"a": ("left", "flange"), "b": ("gear", "flange_a")},
@@ -722,7 +742,7 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
                 "nodes": {
                     **spec.nodes,
                     "gear": ComponentSpec(
-                        type="AcausalSystem", input_ports=["flange_a", "flange_b"]
+                        type="feedbax.AcausalSystem", input_ports=["flange_a", "flange_b"]
                     ),
                 },
                 "subgraphs": {"gear": inner},
@@ -731,6 +751,9 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
     import json
 
     payload = json.loads(spec.model_dump_json())
+    payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
+    for nested_payload in (payload.get("subgraphs") or {}).values():
+        nested_payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
     loaded = AcausalGraphSpec.model_validate(migrate_acausal_graph_spec(payload).payload)
     report = compile_acausal_authoring_report(
         loaded, node_path=["plant"], component_registry=_registry()
@@ -752,8 +775,8 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
         update={
             "nodes": {
                 **loaded.nodes,
-                "a": ComponentSpec(type="AngleSensor"),
-                "b": ComponentSpec(type="AngleSensor"),
+                "a": ComponentSpec(type="feedbax.AngleSensor"),
+                "b": ComponentSpec(type="feedbax.AngleSensor"),
             }
         }
     )
@@ -767,7 +790,7 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
 def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
     spec = AcausalGraphSpec(
         physical_domain="rotational",
-        nodes={"gear": ComponentSpec(type="GearRatio", params={"ratio": 0.0})},
+        nodes={"gear": ComponentSpec(type="feedbax.GearRatio", params={"ratio": 0.0})},
         solver={"solver_type": "euler", "dt": 0.01},
     )
     report = compile_acausal_authoring_report(
@@ -785,12 +808,14 @@ def test_persisted_direct_element_signal_input_binds_with_adapters(with_adapter)
     from feedbax.contracts.migrations import migrate_acausal_graph_spec
 
     nodes = {
-        "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
-        "wall": ComponentSpec(type="Ground"),
-        "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 1.0}),
-        "muscle": ComponentSpec(type="RigidTendonHillMuscle", params={"max_isometric_force": 10.0}),
+        "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 2.0}),
+        "wall": ComponentSpec(type="feedbax.Ground"),
+        "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 1.0}),
+        "muscle": ComponentSpec(
+            type="feedbax.RigidTendonHillMuscle", params={"max_isometric_force": 10.0}
+        ),
         "velocity": ComponentSpec(
-            type="SensorOutput", params={"port_name": "v", "quantity": "velocity"}
+            type="feedbax.SensorOutput", params={"port_name": "v", "quantity": "velocity"}
         ),
     }
     connections = [
@@ -805,7 +830,7 @@ def test_persisted_direct_element_signal_input_binds_with_adapters(with_adapter)
     if with_adapter:
         # Authored adapters precede direct signal inputs, even against lexical order.
         nodes["adapter"] = ComponentSpec(
-            type="ActuationInput", params={"port_name": "z_drive", "source_kind": "force"}
+            type="feedbax.ActuationInput", params={"port_name": "z_drive", "source_kind": "force"}
         )
         connections.append({"a": ("adapter", "flange"), "b": ("mass", "flange")})
     spec = AcausalGraphSpec(

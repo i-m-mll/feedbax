@@ -16,10 +16,10 @@ from pydantic import TypeAdapter
 import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.component_registry import ComponentRegistry, register_cde_templates
+from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.cde_templates import cde_template_pack
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.compiler.templates import network_template_graph, recurrent_node_output_initializer
-from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.compiler.serialization import graph_to_spec, prototypes_from_task_bindings
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.graph import (
@@ -53,7 +53,7 @@ from feedbax.orchestration.events import run_event_from_legacy_worker_event
 from feedbax.web.services.training_service import TrainingService
 
 
-def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
+def _linear_graph_spec(component_type: str = "feedbax.Linear", output_size: int = 1) -> dict:
     return GraphSpec(
         nodes={
             "readout": ComponentSpec(
@@ -76,16 +76,16 @@ def _acausal_training_graph_spec() -> dict:
     interior = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
-            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="feedbax.LinearDamper", params={"damping": 0.5}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "output", "quantity": "position"},
             ),
         },
@@ -102,7 +102,7 @@ def _acausal_training_graph_spec() -> dict:
     return GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 input_ports=["u"],
                 output_ports=["output"],
             )
@@ -272,7 +272,7 @@ def _mux_graph_spec() -> dict:
     return GraphSpec(
         nodes={
             "mux": ComponentSpec(
-                type="Mux",
+                type="feedbax.Mux",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
@@ -383,7 +383,7 @@ def test_build_optimizer_omits_clip_when_grad_clip_is_none() -> None:
 
 def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -399,7 +399,7 @@ def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:
 
 def test_compile_training_run_dry_runs_acausal_graph_node() -> None:
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_acausal_training_graph_spec(),
         training_spec=_training_spec(n_batches=1),
         task_spec={"type": "Generic", "params": {}},
@@ -419,7 +419,7 @@ def test_compile_training_run_uses_array_leaf_trainability_for_network_template(
     ).model_dump(mode="json", exclude_none=True)
 
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -442,7 +442,7 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
     ).model_dump(mode="json", exclude_none=True)
 
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -462,18 +462,18 @@ def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
     graph_spec = GraphSpec(
         nodes={
             "encoder": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 0, "noise_std": 0.25},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
             "total": ComponentSpec(
-                type="Sum",
+                type="feedbax.Sum",
                 input_ports=["a", "b"],
                 output_ports=["output"],
             ),
             "delay": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 1, "noise_std": 0.25},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -535,7 +535,7 @@ def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
         }
     )
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -569,8 +569,8 @@ def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
 
 
 def test_compile_training_run_dry_runs_cde_templates() -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
+    registry = ComponentRegistry()
+    registry.ingest(cde_template_pack(), provenance="test-cde-pack")
     training_spec = _training_spec(
         loss={
             "type": "TargetStateLoss",
@@ -582,11 +582,11 @@ def test_compile_training_run_dry_runs_cde_templates() -> None:
         }
     )
 
-    for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
-        meta = registry.get(template_name)
+    for template_name in ("CDEStandard", "CDEDecay", "CDEAntiNF", "CDEHybridV9b"):
+        meta = registry.get(f"feedbax.{template_name}")
         assert meta is not None
         compiled = compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=meta.template_graph.model_dump(mode="json", exclude_none=True),
             training_spec=training_spec,
             task_spec={"type": "Generic", "params": {}},
@@ -600,7 +600,7 @@ def test_compile_training_run_dry_runs_cde_templates() -> None:
 def test_run_training_graph_trains_tiny_full_graph(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -795,7 +795,7 @@ def test_run_training_graph_removes_checkpoint_after_post_serialization_failure(
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -835,7 +835,7 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -907,7 +907,7 @@ def test_studio_update_reproduces_v4_seeded_training(fixture, expected_losses, e
         ).model_dump(mode="json", exclude_none=True)
         binding = _network_task_binding_spec()
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -953,7 +953,7 @@ def _checkpoint_steps(manifest_payload: dict, root: Path) -> list[int]:
 def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1024,7 +1024,7 @@ def test_run_training_graph_emits_selector_keyed_live_trajectory_tracks(
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(output_size=2),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1068,7 +1068,7 @@ def test_run_training_graph_stop_preserves_committed_checkpoint(
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
 
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1119,7 +1119,7 @@ def test_run_training_graph_projects_parameter_constraints_after_update(
         ParameterConstraintSpec(node="readout", role="weight", mask=[[0]], value=0.0)
     ]
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1144,9 +1144,9 @@ def test_run_training_graph_projects_parameter_constraints_after_update(
 @pytest.mark.parametrize(
     ("wrapper_type", "freeze_wrapper", "freeze_child"),
     [
-        pytest.param("Subgraph", False, False, id="generic-wrapper"),
-        pytest.param("Subgraph", True, False, id="frozen-wrapper"),
-        pytest.param("Recurrent Controller", False, True, id="named-wrapper"),
+        pytest.param("feedbax.Subgraph", False, False, id="generic-wrapper"),
+        pytest.param("feedbax.Subgraph", True, False, id="frozen-wrapper"),
+        pytest.param("feedbax.RecurrentController", False, True, id="named-wrapper"),
     ],
 )
 def test_nested_trainability_matches_flat_training(
@@ -1162,7 +1162,7 @@ def test_nested_trainability_matches_flat_training(
 
     def linear(**params) -> ComponentSpec:
         return ComponentSpec(
-            type="Linear",
+            type="feedbax.Linear",
             params={"input_size": 1, "output_size": 1, "use_bias": False, **params},
             input_ports=["input"],
             output_ports=["output"],
@@ -1218,7 +1218,7 @@ def test_nested_trainability_matches_flat_training(
         )
         return bindings
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     nested_bindings = task_bindings("wrapper")
     authored = compile_graph(
         GraphDocument(graph=nested_spec),
@@ -1312,34 +1312,6 @@ def test_nested_trainability_matches_flat_training(
         }
 
 
-def test_compile_training_run_fails_unsupported_display_only_component() -> None:
-    graph_spec = GraphSpec(
-        nodes={
-            "readout": ComponentSpec(
-                type="MomentArmProjection",
-                params={"n_muscles": 1, "n_joints": 1},
-                input_ports=["forces", "angles", "angular_velocities"],
-                output_ports=["torques", "musculotendon_lengths", "musculotendon_velocities"],
-            )
-        },
-        output_ports=["output"],
-        output_bindings={"output": ("readout", "torques")},
-    ).model_dump(mode="json", exclude_none=True)
-    task_binding_spec = _task_binding_spec()
-    task_binding_spec["bindings"][0]["id"] = "task:model_input->readout:forces"
-    task_binding_spec["bindings"][0]["target_port"] = "forces"
-
-    with pytest.raises(ValueError, match="unsupported executable component"):
-        compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
-            graph_spec=graph_spec,
-            training_spec=_training_spec(),
-            task_spec={"type": "Generic", "params": {}},
-            task_binding_spec=task_binding_spec,
-            cfg=_cfg(),
-        )
-
-
 def test_compile_training_run_rejects_network_without_subgraph_during_validation() -> None:
     graph_spec = GraphSpec(
         nodes={
@@ -1356,7 +1328,7 @@ def test_compile_training_run_rejects_network_without_subgraph_during_validation
 
     with pytest.raises(ValueError, match="missing_subgraph"):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=graph_spec,
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1394,7 +1366,7 @@ def test_compile_training_run_rejects_task_binding_to_occupied_port() -> None:
 
     with pytest.raises(ValueError, match="task_binding_target_occupied"):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=graph_spec,
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1407,7 +1379,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     graph_spec = GraphSpec(
         nodes={
             "delay": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 2, "add_noise": False},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -1450,7 +1422,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     }
 
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1466,13 +1438,10 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
 
 def test_worker_materializes_task_binding_fed_mux_prototypes_after_normalization() -> None:
     graph_spec = GraphSpec.model_validate(_mux_graph_spec())
-    task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
-        StudioTaskBindingSpec.model_validate(_mux_task_binding_spec()),
-        graph_spec,
-    )
+    task_binding_spec = StudioTaskBindingSpec.model_validate(_mux_task_binding_spec())
 
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1501,7 +1470,7 @@ def test_worker_request_materializes_omitted_dynamic_ports_from_bootstrap_regist
         graph_spec=graph_spec.model_dump(mode="json", exclude_none=True),
     )
     state = BootstrapState(
-        bundle=new_application_registry_bundle(local_component_source=None),
+        bundle=new_application_registry_bundle(),
         provenance=(),
     )
 
@@ -1519,7 +1488,7 @@ def test_worker_rejects_degenerate_single_input_mux_before_materialization() -> 
 
     with pytest.raises(ValueError, match=r"Mux 'mux' needs at least two connected inputs"):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=_mux_graph_spec(),
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1531,7 +1500,7 @@ def test_worker_rejects_degenerate_single_input_mux_before_materialization() -> 
 def test_compile_training_run_rejects_batch_size_larger_than_one() -> None:
     with pytest.raises(ValueError, match="supports batch_size=1") as excinfo:
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=_linear_graph_spec(),
             training_spec=_training_spec(batch_size=2),
             task_spec={"type": "Generic", "params": {}},
@@ -1553,7 +1522,7 @@ def test_compile_training_run_rejects_unsupported_retention_modes(mode: str) -> 
 
     with pytest.raises(ValueError, match="not supported by the current graph worker"):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=graph_spec,
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1570,7 +1539,7 @@ def test_compile_training_run_rejects_window_retention_without_size() -> None:
 
     with pytest.raises(ValueError, match="positive window_size"):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=graph_spec,
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1588,7 +1557,7 @@ def test_compile_training_run_rejects_unsupported_task_data_value_spec_mode() ->
 
     with pytest.raises(ValueError, match="unsupported value_spec mode='reference'"):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=_linear_graph_spec(),
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1609,7 +1578,7 @@ def test_compile_training_run_rejects_unsupported_task_data_function() -> None:
         match="unsupported value_spec function_id='unsupported_function'",
     ):
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=_linear_graph_spec(),
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1632,7 +1601,7 @@ def test_worker_trains_on_named_timeline_segment(tmp_path: Path, monkeypatch) ->
         shape=["time", 3],
     )
     compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         graph_spec=graph_spec,
         training_spec=_training_spec(
             n_batches=1,
@@ -1762,7 +1731,7 @@ def test_compile_training_run_rejects_a_path_that_shadows_task_data_identity() -
 
     with pytest.raises(GraphCompilationError) as caught:
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=_linear_graph_spec(),
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
@@ -1781,7 +1750,7 @@ def test_compile_training_run_rejects_bound_task_data_without_value_spec() -> No
 
     with pytest.raises(GraphCompilationError) as exc_info:
         compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=ComponentRegistry(),
             graph_spec=_linear_graph_spec(),
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},

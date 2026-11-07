@@ -102,12 +102,17 @@ def test_api_components_include_acausal_elements_and_boundary_adapters() -> None
             ComponentDefinition.model_validate(raw) for raw in response.json()["data"]["components"]
         ]
     }
-    expected_names = {element_type.__name__ for element_type in ELEMENT_TYPES} | {
-        "ActuationInput",
-        "SensorOutput",
-        "BoundaryPort",
+    expected_names = {f"feedbax.{element_type.__name__}" for element_type in ELEMENT_TYPES} | {
+        "feedbax.ActuationInput",
+        "feedbax.SensorOutput",
+        "feedbax.BoundaryPort",
     }
     assert expected_names <= set(definitions)
+    assert definitions["feedbax.AcausalSystem"].is_composite
+    for definition in definitions.values():
+        if definition.is_composite:
+            assert definition.param_schema == []
+            assert definition.default_params == {}
 
     for name in expected_names:
         definition = definitions[name]
@@ -122,8 +127,8 @@ def test_api_components_include_acausal_elements_and_boundary_adapters() -> None
 
 @pytest.mark.parametrize("element_type", ELEMENT_TYPES)
 def test_acausal_element_param_schemas_match_constructors(element_type: type[Any]) -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    meta = registry.get(element_type.__name__)
+    registry = ComponentRegistry()
+    meta = registry.get(f"feedbax.{element_type.__name__}")
 
     assert meta is not None
     assert meta.domain == ACAUSAL_DOMAIN_ID
@@ -134,11 +139,32 @@ def test_acausal_element_param_schemas_match_constructors(element_type: type[Any
     assert all(port.kind == "conserving" for port in meta.port_types.inputs.values())
 
 
+def test_physical_owner_validation_and_domain_variants_share_scientific_storage() -> None:
+    from pydantic import ValidationError
+    from feedbax.acausal.translational import MechanicsMass
+    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
+
+    registry = ComponentRegistry()
+    for cls, domain in ((Mass, ACAUSAL_DOMAIN_ID), (MechanicsMass, MECHANICS_DOMAIN_ID)):
+        owner = registry.resolve_component_spec(cls.__name__, {}, legacy_token="1")
+        assert owner.type_id == f"feedbax.{cls.__name__}"
+        assert owner.revision == 1
+        assert owner.meta.domain == domain
+        with pytest.raises(ValidationError):
+            cls("mass", mass=-1.0)
+        with pytest.raises(ValueError):
+            owner.meta.params.require({"mass": -1.0})
+        element = cls("mass", mass=2.0)
+        element.params["mass.mass"] = 3.0
+        assert element.configuration().mass == 3.0
+        assert element.ports["flange"].through_var == "force"
+
+
 def test_component_definition_v1_migration_defaults_legacy_ports_to_signal() -> None:
     payload = {
         "schema_id": COMPONENT_DEFINITION_SCHEMA_ID,
         "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-        "name": "LegacyGain",
+        "name": "Gain",
         "category": "Math",
         "description": "Legacy signal-only component.",
         "input_ports": ["input"],
@@ -163,19 +189,19 @@ def test_derived_acausal_interface_orders_adapters_by_order_then_port_name() -> 
     graph = _acausal_graph(
         {
             "late": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "z", "order": 2},
             ),
             "alpha": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "a", "order": 1},
             ),
             "beta": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "b", "order": 1},
             ),
             "early": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "a", "order": 1},
             ),
         }
@@ -190,8 +216,8 @@ def test_derived_acausal_interface_orders_adapters_by_order_then_port_name() -> 
 def test_derived_acausal_interface_rejects_duplicate_adapter_names() -> None:
     graph = _acausal_graph(
         {
-            "one": ComponentSpec(type="ActuationInput", params={"port_name": "u"}),
-            "two": ComponentSpec(type="ActuationInput", params={"port_name": "u"}),
+            "one": ComponentSpec(type="feedbax.ActuationInput", params={"port_name": "u"}),
+            "two": ComponentSpec(type="feedbax.ActuationInput", params={"port_name": "u"}),
         }
     )
 
@@ -203,7 +229,7 @@ def test_acausal_system_outer_ports_recomputed_from_interior_adapters() -> None:
     graph = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 params={},
                 input_ports=["stale_input"],
                 output_ports=["stale_output"],
@@ -213,11 +239,11 @@ def test_acausal_system_outer_ports_recomputed_from_interior_adapters() -> None:
             "plant": _acausal_graph(
                 {
                     "act": ComponentSpec(
-                        type="ActuationInput",
+                        type="feedbax.ActuationInput",
                         params={"port_name": "force_cmd", "order": 0},
                     ),
                     "sense": ComponentSpec(
-                        type="SensorOutput",
+                        type="feedbax.SensorOutput",
                         params={"port_name": "position", "order": 0},
                     ),
                 }
@@ -235,18 +261,18 @@ def test_nested_acausal_composite_exposes_boundary_port_names() -> None:
     inner = _acausal_graph(
         {
             "right": ComponentSpec(
-                type="BoundaryPort",
+                type="feedbax.BoundaryPort",
                 params={"port_name": "right", "order": 1},
             ),
             "left": ComponentSpec(
-                type="BoundaryPort",
+                type="feedbax.BoundaryPort",
                 params={"port_name": "left", "order": 0},
             ),
         }
     )
     outer = AcausalGraphSpec(
         physical_domain="translational",
-        nodes={"nested": ComponentSpec(type="AcausalSystem", input_ports=["stale"])},
+        nodes={"nested": ComponentSpec(type="feedbax.AcausalSystem", input_ports=["stale"])},
         connections=[],
         solver={"solver_type": "euler", "dt": 0.001},
         subgraphs={"nested": inner},
@@ -259,7 +285,7 @@ def test_nested_acausal_composite_exposes_boundary_port_names() -> None:
 
 
 def test_non_causal_domain_component_cannot_be_built_by_causal_builder() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     with pytest.raises(ValueError, match=ACAUSAL_DOMAIN_ID):
-        build_component("mass", "Mass", {}, component_registry=registry)
+        build_component("mass", "feedbax.Mass", {}, component_registry=registry)

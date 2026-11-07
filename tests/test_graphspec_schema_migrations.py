@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import ClassVar
+from copy import deepcopy
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +12,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
     ACAUSAL_GRAPH_SCHEMA_VERSION,
+    ACAUSAL_GRAPH_SCHEMA_VERSION_V1,
     AcausalConnectionSpec,
     AcausalGraphSpec,
 )
@@ -18,6 +22,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
+    GRAPH_SPEC_SCHEMA_VERSION_V5,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION_V2,
@@ -47,11 +52,13 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.migrations import (
     SpecMigrationResult,
     UnsupportedSpecVersion,
+    UnsupportedComponentMigration,
     migrate_graph_project_payload,
     migrate_graph_spec,
     migrate_structured_spec_payload,
 )
 from feedbax.integrations.provider import validate_graph_spec_manifest, validate_spec
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [
     pytest.mark.feedbax_contract,
@@ -59,16 +66,18 @@ pytestmark = [
     pytest.mark.migration_contract,
 ]
 
-GRAPH_V1_TO_V5_MIGRATIONS = [
+GRAPH_V1_TO_V6_MIGRATIONS = [
     "graph-spec-legacy-v1-to-v2",
     "graph-spec-v2-to-v3-derived-dimensions",
     "graph-spec-v3-to-v4-discriminated-subgraphs",
     "graph-spec-v4-to-v5-component-param-array-values",
+    "graph-spec-v5-to-v6-component-revisions",
 ]
-GRAPH_V2_TO_V5_MIGRATIONS = [
+GRAPH_V2_TO_V6_MIGRATIONS = [
     "graph-spec-v2-to-v3-derived-dimensions",
     "graph-spec-v3-to-v4-discriminated-subgraphs",
     "graph-spec-v4-to-v5-component-param-array-values",
+    "graph-spec-v5-to-v6-component-revisions",
 ]
 
 
@@ -218,7 +227,7 @@ def test_graph_project_round_trips_with_acausal_interior() -> None:
         metadata=GraphMetadata(name="mixed", created_at=now, updated_at=now),
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 params={"dt": 0.001},
                 input_ports=["input"],
                 output_ports=["state"],
@@ -256,7 +265,9 @@ def test_graph_project_migration_accepts_v3_payload_with_acausal_v1_subgraph() -
                 }
             },
             "wires": [],
-            "subgraphs": {"plant": _acausal_graph_payload()},
+            "subgraphs": {
+                "plant": _acausal_graph_payload(schema_version=ACAUSAL_GRAPH_SCHEMA_VERSION_V1)
+            },
         },
     }
 
@@ -266,6 +277,132 @@ def test_graph_project_migration_accepts_v3_payload_with_acausal_v1_subgraph() -
     assert migrated["graph"]["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
     assert isinstance(project.graph.subgraphs["plant"], AcausalGraphSpec)
     assert project.graph.subgraphs["plant"].connections[0].a == ("ground", "p")
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_path, historical):
+    import json
+
+    from feedbax.component_registry import ComponentPack
+    from feedbax.component_registry.history import Change, History, LegacyEndpoint
+    from feedbax.contracts.portable import Ports
+    from feedbax.runtime.graph import Component
+    from feedbax.web.services.graph_service import GraphService
+
+    class ReaderOwner(Component):
+        value: int = 0
+        ports: ClassVar = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
+    from feedbax.acausal.translational import Mass
+
+    class ReaderMass(Mass):
+        def __init__(self, name: str, value: int = 0):
+            super().__init__(name=name)
+            self.value = value
+
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            namespace="reader",
+            components=(
+                ReaderOwner,
+                ReaderMass,
+            ),
+            histories={
+                owner: History(
+                    Change(2, migrate=lambda params: {"value": params["value"] + 1}),
+                    legacy=(
+                        LegacyEndpoint(
+                            f"reader.{owner.__name__}",
+                            "1",
+                            1,
+                            matches_unversioned=lambda params: True,
+                        ),
+                    ),
+                )
+                for owner in (ReaderOwner, ReaderMass)
+            },
+        )
+    )
+    source_version = ACAUSAL_GRAPH_SCHEMA_VERSION_V1 if historical else ACAUSAL_GRAPH_SCHEMA_VERSION
+    node = {"type": "reader.ReaderOwner", "params": {"value": 0}}
+    physical_node = {"type": "reader.ReaderMass", "params": {"value": 0}}
+    inner = {
+        "schema_id": ACAUSAL_GRAPH_SCHEMA_ID,
+        "physical_domain": "translational",
+        "nodes": {"owner": physical_node},
+        "solver": {"solver_type": "euler", "dt": 0.001},
+    }
+    acausal = {
+        **inner,
+        "schema_version": source_version,
+        "nodes": {"owner": physical_node, "child": {"type": "feedbax.AcausalSystem"}},
+        "subgraphs": {"child": inner},
+    }
+    direct = migrate_structured_spec_payload(
+        "AcausalGraphSpec", acausal, component_registry=registry
+    )
+    causal = {
+        "schema_id": GRAPH_SPEC_SCHEMA_ID,
+        "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V5 if historical else GRAPH_SPEC_SCHEMA_VERSION,
+        "nodes": {
+            "owner": node,
+            "plant": {"type": "feedbax.AcausalSystem"},
+        },
+        "subgraphs": {"plant": acausal},
+    }
+    project = {
+        "metadata": {
+            "name": "reader",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        },
+        "graph": causal,
+    }
+    project_path = tmp_path / "reader.json"
+    project_path.write_text(json.dumps(project))
+    loaded_project = (
+        GraphService(storage_dir=tmp_path).get_graph("reader", component_registry=registry).project
+    )
+    manifest = GraphSpecManifest(
+        id="feedbax-graph-spec:reader",
+        graph_spec=SpecPayload(kind="GraphSpec", inline=causal),
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(manifest.model_dump_json())
+    loaded_manifest = load_graph_spec_from_manifest(manifest_path, component_registry=registry)
+    expected = {"type": "reader.ReaderMass", "params": {"value": 1}, "revision": 2}
+    for graph in (
+        direct.payload,
+        loaded_manifest.payload["subgraphs"]["plant"],
+        loaded_project.graph.subgraphs["plant"].model_dump(mode="json"),
+    ):
+        assert graph["schema_version"] == ACAUSAL_GRAPH_SCHEMA_VERSION
+        assert {key: graph["nodes"]["owner"][key] for key in expected} == expected
+        nested = graph["subgraphs"]["child"]
+        assert nested["schema_version"] == ACAUSAL_GRAPH_SCHEMA_VERSION
+        assert {key: nested["nodes"]["owner"][key] for key in expected} == expected
+    assert loaded_project.graph.nodes["owner"].params == {"value": 1}
+    assert loaded_project.graph.nodes["owner"].revision == 2
+    assert loaded_manifest.payload["nodes"]["owner"]["params"] == {"value": 1}
+    assert node == {"type": "reader.ReaderOwner", "params": {"value": 0}}
+    if not historical:
+        authoring = migrate_structured_spec_payload(
+            "AcausalGraphSpec", acausal, component_registry=registry, assume_current=True
+        )
+        authored = AcausalGraphSpec.model_validate(authoring.payload)
+        assert authored.nodes["owner"].params == {"value": 0}
+        assert authored.nodes["owner"].revision == 2
+        authored_graph = GraphSpec.model_validate({**causal, "subgraphs": {"plant": authored}})
+        service = GraphService(storage_dir=tmp_path)
+        created = service.create_graph(authored_graph, component_registry=registry)
+        reloaded = service.get_graph(created.graph_id, component_registry=registry).project.graph
+        assert reloaded.nodes["owner"].params == {"value": 0}
+        assert reloaded.nodes["owner"].revision == 2
+        assert reloaded.subgraphs["plant"].nodes["owner"].params == {"value": 0}
 
 
 def test_unknown_acausal_graph_version_rejects_through_graph_migration() -> None:
@@ -300,7 +437,7 @@ def test_spec_to_graph_requires_acausal_system_interior() -> None:
     graph = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
             )
         }
     )
@@ -308,7 +445,7 @@ def test_spec_to_graph_requires_acausal_system_interior() -> None:
     with pytest.raises(ValueError, match="feedbax.domain.acausal"):
         compile_graph(
             GraphDocument(graph=graph),
-            ComponentRegistry(load_user_components=False),
+            ComponentRegistry(),
         )
 
 
@@ -347,13 +484,13 @@ def test_legacy_graph_spec_migration_records_builtin_rewrites() -> None:
     network = result.payload["nodes"]["network"]
     assert result.payload["schema_id"] == GRAPH_SPEC_SCHEMA_ID
     assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert network["type"] == "Network"
+    assert network["type"] == "feedbax.Subgraph"
     assert network["params"]["out_size"] == 2
     assert network["input_ports"] == ["input", "feedback"]
     assert result.payload["wires"][0]["source_port"] == "input"
     assert result.payload["wires"][0]["target_port"] == "input"
     assert result.payload["input_bindings"]["target"] == ("network", "input")
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V5_MIGRATIONS
+    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V6_MIGRATIONS
     assert result.migration_records[0].metadata["graph_path"] == "graph"
     assert result.payload["derived_dimensions"] == []
 
@@ -370,7 +507,7 @@ def test_graph_spec_v2_migration_adds_derived_dimensions_field() -> None:
 
     assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
     assert result.payload["derived_dimensions"] == []
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V5_MIGRATIONS
+    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V6_MIGRATIONS
 
 
 def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts() -> None:
@@ -395,7 +532,8 @@ def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts
                 },
             },
             "wires": [],
-        }
+        },
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V5,
     )
 
     assert result.payload["nodes"]["plant"]["params"]["delta_A"] == dense
@@ -403,46 +541,43 @@ def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts
 
 
 def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
-    result = migrate_graph_spec(
-        {
-            "metadata": _legacy_metadata(),
-            "nodes": {
-                "network": {
-                    "type": "SimpleStagedNetwork",
-                    "params": {"output_size": 2},
-                    "input_ports": ["target"],
-                    "output_ports": ["output"],
-                }
-            },
-            "subgraphs": {
-                "network": {
-                    "nodes": {
-                        "feedback": {
-                            "type": "FeedbackChannel",
-                            "params": {},
-                            "input_ports": ["input"],
-                            "output_ports": ["output"],
-                        }
+    payload = {
+        "metadata": _legacy_metadata(),
+        "nodes": {
+            "network": {
+                "type": "SimpleStagedNetwork",
+                "params": {"output_size": 2},
+                "input_ports": ["target"],
+                "output_ports": ["output"],
+            }
+        },
+        "subgraphs": {
+            "network": {
+                "nodes": {
+                    "feedback": {
+                        "type": "FeedbackChannel",
+                        "params": {},
+                        "input_ports": ["input"],
+                        "output_ports": ["output"],
                     }
                 }
-            },
-        }
-    )
+            }
+        },
+    }
+    with pytest.raises(UnsupportedComponentMigration, match="Ambiguous unversioned.*Channel"):
+        migrate_graph_spec(payload)
+    versioned = deepcopy(payload)
+    versioned["subgraphs"]["network"]["nodes"]["feedback"]["param_schema_version"] = "2"
+    result = migrate_graph_spec(versioned)
 
     nested = result.payload["subgraphs"]["network"]
     assert nested["schema_id"] == GRAPH_SPEC_SCHEMA_ID
     assert nested["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert nested["nodes"]["feedback"]["type"] == "Channel"
-    assert [record.metadata["graph_path"] for record in result.migration_records] == [
-        "graph",
-        "graph",
-        "graph",
-        "graph",
-        "graph.subgraphs['network']",
-        "graph.subgraphs['network']",
-        "graph.subgraphs['network']",
-        "graph.subgraphs['network']",
-    ]
+    assert nested["nodes"]["feedback"]["type"] == "feedbax.Channel"
+    assert [record.metadata["graph_path"] for record in result.migration_records] == (
+        ["graph"] * len(GRAPH_V1_TO_V6_MIGRATIONS)
+        + ["graph.subgraphs['network']"] * len(GRAPH_V1_TO_V6_MIGRATIONS)
+    )
 
 
 def test_unknown_graph_spec_schema_version_reports_available_migrations() -> None:
@@ -501,7 +636,7 @@ def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
         ).sha256
     )
     assert [record.migration_id for record in result.applied_migration_records] == (
-        GRAPH_V1_TO_V5_MIGRATIONS
+        GRAPH_V1_TO_V6_MIGRATIONS
     )
     assert result.migration_records == loaded_manifest.migration_records
 
@@ -571,7 +706,7 @@ def test_provider_validation_reports_manifest_migration_custody_states(
     assert migrated.migration_status == "feedbax_migrated"
     assert [
         record.migration_id for record in migrated.migration_records
-    ] == GRAPH_V1_TO_V5_MIGRATIONS
+    ] == GRAPH_V1_TO_V6_MIGRATIONS
     routed = validate_spec(
         "graph_manifest",
         GraphSpecManifest(
@@ -615,6 +750,25 @@ def test_provider_validation_reports_manifest_migration_custody_states(
     assert downstream.downstream_migration_records == [downstream_record]
 
 
+def test_manifest_validation_rejects_ambiguous_unversioned_component(
+    application_registry_bundle,
+) -> None:
+    payload = _current_graph_payload()
+    payload["nodes"] = {"linear": {"type": "Linear", "params": {"output_size": 2}}}
+    result = validate_graph_spec_manifest(
+        GraphSpecManifest(
+            id="feedbax-graph-spec:unversioned-component",
+            graph_spec=spec_payload("GraphSpec", payload),
+        ),
+        component_registry=application_registry_bundle.components,
+    )
+
+    assert not result.valid
+    assert result.migration_status == "rejected"
+    assert result.errors[0].type == "unsupported_component_migration"
+    assert "Ambiguous unversioned component parameters for 'Linear'" in result.errors[0].message
+
+
 def test_provider_validation_rejects_unsupported_manifest_graph_spec_version(
     application_registry_bundle,
 ) -> None:
@@ -656,7 +810,9 @@ def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.M
         output_bindings={"output": ("constant", "output")},
     ).model_dump(mode="json")
 
-    def fake_migrate_graph_spec(payload: GraphSpec) -> SpecMigrationResult:
+    def fake_migrate_graph_spec(
+        payload: GraphSpec, *, component_registry=None
+    ) -> SpecMigrationResult:
         nonlocal called
         called = True
         assert isinstance(payload, GraphSpec)
@@ -673,7 +829,7 @@ def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.M
 
     graph = compile_graph(
         GraphDocument(graph=GraphSpec()),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     ).graph
 
     assert called

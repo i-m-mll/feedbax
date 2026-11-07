@@ -32,6 +32,7 @@ from tests.support.fake_project_experiment.products import (
     QuillonOutputs,
     planned,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 @pytest.fixture

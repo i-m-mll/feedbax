@@ -81,6 +81,7 @@ from tests.support.fake_project_experiment import (
     envelope_path,
     write_repo,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 #: The two artifacts one produced analysis run retains, and what each decodes to.
 #: They differ in role and in payload schema, which is what makes "the selector

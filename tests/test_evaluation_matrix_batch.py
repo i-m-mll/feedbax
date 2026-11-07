@@ -60,6 +60,10 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.matrix_core import MatrixRow
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
+from tests.support.evaluation_registry import (
+    evaluation_registry_fixture as evaluation_registry_fixture,
+)
 
 
 EVALUATION_TYPE = "feedbax.test.batched_matrix"

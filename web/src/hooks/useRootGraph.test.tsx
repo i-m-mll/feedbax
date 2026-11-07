@@ -19,20 +19,20 @@ afterEach(() => {
 it('keeps root identity across acausal navigation and updates it for an interior edit', () => {
   const graph: GraphSpec = {
     schema_id: 'feedbax.spec.graph',
-    schema_version: 'feedbax.spec.graph.v5',
+    schema_version: 'feedbax.spec.graph.v6',
     nodes: {
       system: {
-        type: 'AcausalSystem', params: {}, input_ports: [], output_ports: [],
+        type: 'feedbax.AcausalSystem', params: {}, input_ports: [], output_ports: [],
       },
     },
     wires: [], input_ports: [], output_ports: [], input_bindings: {}, output_bindings: {},
     subgraphs: {
       system: {
         schema_id: 'feedbax.spec.acausal_graph',
-        schema_version: 'feedbax.spec.acausal_graph.v1',
+        schema_version: 'feedbax.spec.acausal_graph.v2',
         physical_domain: 'translational',
         nodes: {
-          mass: { type: 'Mass', params: { mass: 1 }, input_ports: [], output_ports: [] },
+          mass: { type: 'feedbax.Mass', params: { mass: 1 }, input_ports: [], output_ports: [] },
         },
         connections: [{ a: ['mass', 'left'], b: ['mass', 'right'] }],
         solver: { solver_type: 'euler', dt: 0.01 },
@@ -40,7 +40,7 @@ it('keeps root identity across acausal navigation and updates it for an interior
     },
   };
   useGraphStore.getState().setComponentRegistry([{
-    name: 'AcausalSystem', category: 'Mechanics', description: '',
+    name: 'feedbax.AcausalSystem', category: 'Mechanics', description: '',
     param_schema: [], input_ports: [], output_ports: [], default_params: {},
     is_composite: true, domain: 'feedbax.domain.causal',
     interior_domain: 'feedbax.domain.acausal',

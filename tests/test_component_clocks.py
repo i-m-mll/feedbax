@@ -46,22 +46,22 @@ def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> N
     with jax.experimental.enable_x64(x64):
         nodes = {
             "constant": ComponentSpec(
-                type="Constant",
+                type="feedbax.Constant",
                 params={"value": 0.5},
                 output_ports=["output"],
             ),
             "ramp": ComponentSpec(
-                type="Ramp",
+                type="feedbax.Ramp",
                 params={"slope": 4.0, "intercept": -1.0, "dt": 0.125},
                 output_ports=["output"],
             ),
             "sine": ComponentSpec(
-                type="Sine",
+                type="feedbax.Sine",
                 params={"amplitude": 2.0, "frequency": 1.0, "offset": 3.0, "dt": 0.25},
                 output_ports=["output"],
             ),
             "pulse": ComponentSpec(
-                type="Pulse",
+                type="feedbax.Pulse",
                 params={
                     "amplitude": 3.0,
                     "period": 0.1,
@@ -77,7 +77,7 @@ def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> N
             output_ports=list(nodes),
             output_bindings={name: (name, "output") for name in nodes},
         )
-        registry = ComponentRegistry(load_user_components=False)
+        registry = ComponentRegistry()
         graph = spec_to_graph(spec, registry)
         serialized = graph_to_spec(graph, registry)
         for name, node in nodes.items():
@@ -139,7 +139,7 @@ def test_affine_schedule_policy_applies_when_resuming_a_scanned_rollout(policy: 
     spec = GraphSpec(
         nodes={
             "controller": ComponentSpec(
-                type="AffineFeedbackController",
+                type="feedbax.AffineFeedbackController",
                 params={
                     "gain": [[[1.0]], [[2.0]], [[3.0]]],
                     "bias": [[1.0], [2.0]],
@@ -155,7 +155,7 @@ def test_affine_schedule_policy_applies_when_resuming_a_scanned_rollout(policy: 
         input_bindings={"feedback": ("controller", "feedback")},
         output_bindings={"command": ("controller", "command")},
     )
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     key = jax.random.key(0)
 
     first, state, _ = graph.rollout_with_trace(

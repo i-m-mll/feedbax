@@ -35,6 +35,7 @@ from feedbax.contracts.migrations import (
     migrate_evaluation_run_spec_payload,
     migrate_report_spec_payload,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 # Golden identities computed on the pre-change tree (feedbax develop a754fcbf),
 # before EvaluationRunSpec/ReportSpec carried in-document schema identity.

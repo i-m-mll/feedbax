@@ -8,10 +8,9 @@ separate backend-special model type.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any
 
 import jax.numpy as jnp
 
@@ -28,21 +27,6 @@ from feedbax.runtime.feedback import (
     feedback_node_names,
     feedback_wires,
 )
-
-
-TemplateKind = Literal["executable", "display"]
-
-
-@dataclass(frozen=True)
-class GraphTemplateMetadata:
-    """Metadata describing a built-in graph template."""
-
-    id: str
-    name: str
-    category: str
-    kind: TemplateKind
-    description: str
-    component_type: str | None = None
 
 
 def recurrent_zero_initializer(
@@ -178,7 +162,7 @@ def recurrent_controller_template_graph(
                 hidden_size=int(hidden_size),
                 input_size=hidden_input_size,
                 out_size=out_size,
-                cell_type=normalized_cell_type,
+                cell_type=f"feedbax.{normalized_cell_type}",
             )
         )
     now = datetime.now().isoformat()
@@ -190,13 +174,13 @@ def recurrent_controller_template_graph(
     }
     nodes = {
         "input_mux": ComponentSpec(
-            type="Mux",
+            type="feedbax.Mux",
             params={"n_inputs": 2, "dtype": dtype_name},
             input_ports=["in_0", "in_1"],
             output_ports=["output"],
         ),
         "cell": ComponentSpec(
-            type=normalized_cell_type,
+            type=f"feedbax.{normalized_cell_type}",
             params=resolved_cell_params,
             input_ports=["input", "hidden", "cell"]
             if normalized_cell_type == "LSTM"
@@ -210,7 +194,7 @@ def recurrent_controller_template_graph(
     cell_input_node = "input_mux"
     if encoding_size is not None:
         nodes["encoder"] = ComponentSpec(
-            type="Linear",
+            type="feedbax.Linear",
             params={
                 "input_size": int(input_size),
                 "output_size": int(encoding_size),
@@ -244,7 +228,7 @@ def recurrent_controller_template_graph(
     hidden_port = "hidden"
     if hidden_nonlinearity != "identity":
         nodes["hidden_activation"] = ComponentSpec(
-            type="Activation",
+            type="feedbax.Activation",
             params={"activation": hidden_nonlinearity},
             input_ports=["input"],
             output_ports=["output"],
@@ -261,7 +245,7 @@ def recurrent_controller_template_graph(
         hidden_port = "output"
     if hidden_noise_std not in (None, 0, 0.0):
         nodes["hidden_noise"] = ComponentSpec(
-            type="Channel",
+            type="feedbax.Channel",
             params={
                 "delay": 0,
                 "noise_model": "additive_gaussian",
@@ -287,7 +271,7 @@ def recurrent_controller_template_graph(
     if out_size is not None:
         output_node, output_port = "readout", "output"
         nodes[output_node] = ComponentSpec(
-            type="Linear",
+            type="feedbax.Linear",
             params={
                 "input_size": int(hidden_size),
                 "output_size": int(out_size),
@@ -302,7 +286,7 @@ def recurrent_controller_template_graph(
     elif out_nonlinearity != "identity":
         output_node, output_port = "output_activation", "output"
         nodes[output_node] = ComponentSpec(
-            type="Activation",
+            type="feedbax.Activation",
             params={"activation": out_nonlinearity},
             input_ports=["input"],
             output_ports=["output"],
@@ -385,21 +369,21 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
 
 def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
     """Build the portable SimpleFeedback preset with ordinary graph nodes."""
-    params = dict(params or {})
-    network_params = {"input_size": 8, **dict(params.get("network", {}))}
+    params = validate_authoring(SimpleFeedbackConfig, params or {}).model_dump()
+    network_params = dict(params["network"])
     net = network_template_graph(network_params)
-    mechanics_params = dict(params.get("mechanics", {"dt": 0.01}))
-    tau_rise = float(params.get("tau_rise", 0.0) or 0.0)
-    tau_decay = float(params.get("tau_decay", 0.0) or 0.0)
+    mechanics_params = dict(params["mechanics"])
+    tau_rise = float(params["tau_rise"] or 0.0)
+    tau_decay = float(params["tau_decay"] or 0.0)
     force_filter = tau_rise != 0.0 or tau_decay != 0.0
     ((selector, channel),) = feedback_node_names(1)
 
     def channel_spec(prefix: str, role: str, timing: str) -> ComponentSpec:
-        noise_std = float(params.get(f"{prefix}_noise_std", 0.0) or 0.0)
+        noise_std = float(params[f"{prefix}_noise_std"] or 0.0)
         return ComponentSpec(
-            type="Channel",
+            type="feedbax.Channel",
             params={
-                "delay": int(params.get(f"{prefix}_delay", 0)),
+                "delay": int(params[f"{prefix}_delay"]),
                 "noise_model": "additive_gaussian" if noise_std else "none",
                 "noise_std": noise_std,
                 "add_noise": bool(noise_std),
@@ -412,27 +396,27 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
 
     nodes = {
         selector: ComponentSpec(
-            type="SelectState",
-            params={"paths": list(params.get("feedback_paths", ["effector"]))},
+            type="feedbax.SelectState",
+            params={"paths": list(params["feedback_paths"])},
             input_ports=["state"],
             output_ports=["output"],
         ),
         channel: channel_spec("feedback", "sensory_feedback", "pre_controller"),
         "feedback_values": ComponentSpec(
-            type="AssembleFeedback",
+            type="feedbax.AssembleFeedback",
             params={"n_inputs": 1, "layout": None},
             input_ports=["in_0"],
             output_ports=["output"],
         ),
         "net": ComponentSpec(
-            type="Subgraph",
+            type="feedbax.Subgraph",
             params={},
             input_ports=net.input_ports,
             output_ports=net.output_ports,
         ),
         "efferent": channel_spec("motor", "motor_command", "post_controller"),
         "mechanics": ComponentSpec(
-            type=str(params.get("mechanics_type", "PointMass")),
+            type=str(params["mechanics_type"]),
             params=mechanics_params,
             input_ports=["force"],
             output_ports=["effector", "state"],
@@ -440,7 +424,7 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
     }
     if force_filter:
         nodes["force_filter"] = ComponentSpec(
-            type="FirstOrderFilter",
+            type="feedbax.FirstOrderFilter",
             params={
                 "tau_rise": tau_rise,
                 "tau_decay": tau_decay,
@@ -472,29 +456,7 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
     )
 
 
-BUILTIN_GRAPH_TEMPLATES: tuple[GraphTemplateMetadata, ...] = (
-    GraphTemplateMetadata(
-        id="feedbax.templates.recurrent_controller",
-        name="Recurrent Controller",
-        category="Neural Networks",
-        kind="executable",
-        description="Explicit Mux, recurrent cell, and readout controller graph.",
-        component_type="Subgraph",
-    ),
-    GraphTemplateMetadata(
-        id="feedbax.templates.simple_feedback",
-        name="Simple Feedback Loop",
-        category="Sensorimotor",
-        kind="executable",
-        description="Feedback channel, controller, efferent path, and mechanics loop.",
-        component_type="Subgraph",
-    ),
-)
-
-
 __all__ = [
-    "BUILTIN_GRAPH_TEMPLATES",
-    "GraphTemplateMetadata",
     "network_recurrent_wires",
     "network_template_graph",
     "recurrent_controller_template_graph",
@@ -503,3 +465,69 @@ __all__ = [
     "recurrent_zero_initializer",
     "simple_feedback_template_graph",
 ]
+
+
+from pydantic import BaseModel, ConfigDict, Field
+from feedbax.contracts.portable import (
+    GraphTemplate,
+    ComponentOptions,
+    expansion_configuration,
+    validate_authoring,
+)
+
+_RecurrentConfig = expansion_configuration(
+    recurrent_controller_template_graph, exclude=("population_structure",)
+)
+
+
+class RecurrentControllerConfig(_RecurrentConfig):
+    input_size: int = 6
+    hidden_size: int = 100
+    out_size: int | None = 2
+    out_nonlinearity: str = "tanh"
+
+
+class SimpleFeedbackConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    network: dict[str, Any] = Field(default_factory=lambda: {"input_size": 8})
+    mechanics: dict[str, Any] = Field(default_factory=lambda: {"dt": 0.01})
+    mechanics_type: str = "feedbax.PointMass"
+    tau_rise: float = 0.0
+    tau_decay: float = 0.0
+    feedback_noise_std: float = 0.0
+    motor_noise_std: float = 0.0
+    feedback_delay: int = 0
+    motor_delay: int = 0
+    feedback_paths: list[str] = Field(default_factory=lambda: ["effector"])
+
+
+class RecurrentController(GraphTemplate):
+    """Explicit Mux, recurrent cell, and readout controller graph."""
+
+    config = RecurrentControllerConfig
+    component_options = ComponentOptions(
+        is_composite=True,
+        trainable_by_default=True,
+        template_id="feedbax.templates.recurrent_controller",
+        template_kind="executable",
+    )
+
+    @classmethod
+    def expand(cls, config):
+        return recurrent_controller_template_graph(**config.model_dump())
+
+
+class SimpleFeedbackLoop(GraphTemplate):
+    """Feedback channel, controller, efferent path, and mechanics loop."""
+
+    config = SimpleFeedbackConfig
+    component_options = ComponentOptions(
+        is_composite=True,
+        trainable_by_default=True,
+        template_id="feedbax.templates.simple_feedback",
+        template_kind="executable",
+    )
+
+    @classmethod
+    def expand(cls, config):
+        return simple_feedback_template_graph(config.model_dump())

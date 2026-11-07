@@ -84,24 +84,24 @@ function endpointFromConnection(
 }
 
 function nodeLabel(nodeId: string, node: ComponentSpec): string {
-  if (node.type === 'Anchor') return 'Anchor';
-  if (node.type === 'PlanarLink') {
+  if (node.type === 'feedbax.Anchor') return 'Anchor';
+  if (node.type === 'feedbax.PlanarLink') {
     if (nodeId === 'upper') return 'upper-arm link';
     if (nodeId === 'forearm') return 'forearm link';
     return `${nodeId} link`;
   }
-  if (node.type === 'RevoluteJoint') return `${nodeId} joint`;
-  if (node.type === 'MusclePath') return nodeId.replace(/_/g, ' ');
-  if (node.type === 'PointMarker') return `${nodeId.replace(/_/g, ' ')} marker`;
+  if (node.type === 'feedbax.RevoluteJoint') return `${nodeId} joint`;
+  if (node.type === 'feedbax.MusclePath') return nodeId.replace(/_/g, ' ');
+  if (node.type === 'feedbax.PointMarker') return `${nodeId.replace(/_/g, ' ')} marker`;
   return nodeId;
 }
 
 function rowKind(node: ComponentSpec): AssemblyRowKind {
-  if (node.type === 'Anchor') return 'anchor';
-  if (node.type === 'PlanarLink') return 'link';
-  if (node.type === 'RevoluteJoint') return 'joint';
-  if (node.type === 'MusclePath') return 'muscle';
-  if (node.type === 'PointMarker') return 'marker';
+  if (node.type === 'feedbax.Anchor') return 'anchor';
+  if (node.type === 'feedbax.PlanarLink') return 'link';
+  if (node.type === 'feedbax.RevoluteJoint') return 'joint';
+  if (node.type === 'feedbax.MusclePath') return 'muscle';
+  if (node.type === 'feedbax.PointMarker') return 'marker';
   return 'adapter';
 }
 
@@ -115,10 +115,10 @@ function sortNodeIds(graph: AcausalGraphSpec, type: string): string[] {
 export function frameOptionsForGraph(graph: AcausalGraphSpec): AssemblyFrameOption[] {
   return Object.entries(graph.nodes ?? {})
     .flatMap(([nodeId, node]) => {
-      if (node.type === 'WorldFrame') {
+      if (node.type === 'feedbax.WorldFrame') {
         return [{ id: `${nodeId}.frame`, node_id: nodeId, port: 'frame', label: `${nodeId}.frame` }];
       }
-      if (node.type === 'PlanarLink') {
+      if (node.type === 'feedbax.PlanarLink') {
         return ['proximal', 'distal'].map((port) => ({
           id: `${nodeId}.${port}`,
           node_id: nodeId,
@@ -148,14 +148,14 @@ function childLinkForJoint(graph: AcausalGraphSpec, jointId: string): string | n
   const node = graph.nodes?.[jointId];
   const frame = frameParam(node, 'child_frame') ?? connectionFrame(graph, jointId, 'child');
   const parsed = frame ? parseFrameId(frame) : null;
-  return parsed && graph.nodes?.[parsed[0]]?.type === 'PlanarLink' ? parsed[0] : null;
+  return parsed && graph.nodes?.[parsed[0]]?.type === 'feedbax.PlanarLink' ? parsed[0] : null;
 }
 
 function parentLinkForJoint(graph: AcausalGraphSpec, jointId: string): string | null {
   const node = graph.nodes?.[jointId];
   const frame = frameParam(node, 'parent_frame') ?? connectionFrame(graph, jointId, 'parent');
   const parsed = frame ? parseFrameId(frame) : null;
-  return parsed && graph.nodes?.[parsed[0]]?.type === 'PlanarLink' ? parsed[0] : null;
+  return parsed && graph.nodes?.[parsed[0]]?.type === 'feedbax.PlanarLink' ? parsed[0] : null;
 }
 
 function diagnosticCodesByNode(diagnostics: DomainDiagnostic[]): Map<string, string[]> {
@@ -169,7 +169,7 @@ function diagnosticCodesByNode(diagnostics: DomainDiagnostic[]): Map<string, str
 }
 
 function muscleAttachmentCount(graph: AcausalGraphSpec, frameId: string): number {
-  return sortNodeIds(graph, 'MusclePath').filter((nodeId) => {
+  return sortNodeIds(graph, 'feedbax.MusclePath').filter((nodeId) => {
     const points = graph.nodes[nodeId].params?.path_points;
     return Array.isArray(points) && points.some((point) => {
       if (!point || typeof point !== 'object') return false;
@@ -218,7 +218,7 @@ export function projectMechanicsAssembly(
   const seen = new Set<string>();
   const jointsByParent = new Map<string, string[]>();
   const inboundJointByChild = new Map<string, string[]>();
-  for (const jointId of sortNodeIds(graph, 'RevoluteJoint')) {
+  for (const jointId of sortNodeIds(graph, 'feedbax.RevoluteJoint')) {
     const parentLink = parentLinkForJoint(graph, jointId);
     const childLink = childLinkForJoint(graph, jointId);
     if (parentLink) jointsByParent.set(parentLink, [...(jointsByParent.get(parentLink) ?? []), jointId]);
@@ -230,10 +230,10 @@ export function projectMechanicsAssembly(
     const node = graph.nodes[nodeId];
     if (!node) return;
     seen.add(nodeId);
-    const length = node.type === 'PlanarLink' && typeof node.params?.length === 'number'
+    const length = node.type === 'feedbax.PlanarLink' && typeof node.params?.length === 'number'
       ? node.params.length
       : null;
-    const sockets = node.type === 'RevoluteJoint'
+    const sockets = node.type === 'feedbax.RevoluteJoint'
       ? (['parent', 'child'] as const).map((kind) => {
           const connected = connectionFrame(graph, nodeId, kind);
           const declared = frameParam(node, `${kind}_frame`);
@@ -275,20 +275,20 @@ export function projectMechanicsAssembly(
     }
   };
 
-  const anchorIds = sortNodeIds(graph, 'Anchor');
+  const anchorIds = sortNodeIds(graph, 'feedbax.Anchor');
   for (const anchorId of anchorIds) {
     const anchor = graph.nodes[anchorId];
     const rootFrame = frameParam(anchor, 'frame') ?? connectionFrame(graph, anchorId, 'frame');
     addNodeRow(anchorId, 0, rootFrame);
     const root = rootFrame ? parseFrameId(rootFrame)?.[0] : null;
-    if (root && graph.nodes[root]?.type === 'PlanarLink') visitLink(root, 1);
+    if (root && graph.nodes[root]?.type === 'feedbax.PlanarLink') visitLink(root, 1);
   }
-  for (const linkId of sortNodeIds(graph, 'PlanarLink')) visitLink(linkId, rows.length ? 1 : 0);
+  for (const linkId of sortNodeIds(graph, 'feedbax.PlanarLink')) visitLink(linkId, rows.length ? 1 : 0);
 
-  for (const markerId of sortNodeIds(graph, 'PointMarker')) {
+  for (const markerId of sortNodeIds(graph, 'feedbax.PointMarker')) {
     addNodeRow(markerId, 1, frameParam(graph.nodes[markerId], 'frame'));
   }
-  for (const muscleId of sortNodeIds(graph, 'MusclePath')) {
+  for (const muscleId of sortNodeIds(graph, 'feedbax.MusclePath')) {
     addNodeRow(muscleId, 1);
   }
 
@@ -323,7 +323,7 @@ export function editLinkLength(
   length: number
 ): AssemblyEditResult {
   const node = graph.nodes?.[linkId];
-  if (!node || node.type !== 'PlanarLink' || !Number.isFinite(length) || length <= 0) {
+  if (!node || node.type !== 'feedbax.PlanarLink' || !Number.isFinite(length) || length <= 0) {
     return {
       ok: false,
       diagnostic: {
@@ -358,7 +358,7 @@ export function rebindJointFrame(
   const joint = graph.nodes?.[jointId];
   const frame = parseFrameId(frameId);
   const validFrame = frameOptionsForGraph(graph).some((option) => option.id === frameId);
-  if (!joint || joint.type !== 'RevoluteJoint' || !frame || !validFrame) {
+  if (!joint || joint.type !== 'feedbax.RevoluteJoint' || !frame || !validFrame) {
     return {
       ok: false,
       diagnostic: {

@@ -10,7 +10,7 @@ import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
-from typing import Literal, Optional, cast
+from typing import ClassVar, Literal, Optional, cast
 
 import equinox as eqx
 import jax
@@ -19,18 +19,27 @@ import jax.random as jr
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
-from feedbax.runtime.components import GRU, LSTM, named_activation, resolve_activation, tanh
-from feedbax.runtime.graph import Component, Graph
+from feedbax.contracts.component import PortType
+from feedbax.contracts.graph import ParameterConstraintSpec
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
+from feedbax.models.support import (
+    interleave_unequal,
+)
+from feedbax.runtime.components import (
+    GRU,
+    LSTM,
+    recurrent_output_prototype,
+    resolve_activation,
+    tanh,
+)
+from feedbax.runtime.graph import Component
 from feedbax.runtime.parameter_constraints import (
     recurrent_parameter_role,
     register_parameter_role_resolver,
 )
-from feedbax.models.support import (
-    identity_func,
-    interleave_unequal,
-)
-from feedbax.contracts.graph import ParameterConstraintSpec
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +317,10 @@ class PopulationStructure(Module):
 
 def validate_population_structure_spec(spec: Mapping[str, object]) -> dict[str, object]:
     """Validate a serialized population-structure spec against the schema registry."""
-    from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+    from feedbax.contracts.migrations import (
+        UnsupportedSpecVersion,
+        default_spec_registry,
+    )
 
     schema_id = spec.get("schema_id")
     if schema_id is not None and schema_id != POPULATION_STRUCTURE_SCHEMA_ID:
@@ -473,78 +485,6 @@ def lower_population_constraints(
     return tuple(constraints)
 
 
-def recurrent_controller(
-    input_size: int,
-    hidden_size: int,
-    *,
-    out_size: int | None = None,
-    encoding_size: int | None = None,
-    hidden_type: str | type[Module] = eqx.nn.GRUCell,
-    cell_params: Mapping[str, object] | None = None,
-    use_bias: bool = True,
-    hidden_nonlinearity: str | Callable = identity_func,
-    out_nonlinearity: str | Callable = identity_func,
-    hidden_noise_std: float | None = None,
-    population_structure: PopulationStructure | Mapping[str, object] | None = None,
-    dtype: object = jnp.float32,
-    key: PRNGKeyArray,
-) -> Graph:
-    """Compile a staged recurrent controller from the built-in graph template.
-
-    Choose a built-in cell by name or pass the GRU, LSTM, or LeakyRNNCell
-    constructor. Supply cell options through ``cell_params``. Omitting
-    ``out_size`` binds the controller output directly to the hidden signal,
-    with the requested output activation. For manual stepping, pass the
-    recurrent carry returned by :meth:`Graph.step` to the next step.
-    The carry includes the hidden signal after any activation and noise.
-    """
-    from feedbax.compiler.graph import GraphDocument, compile_graph
-    from feedbax.compiler.templates import recurrent_controller_template_graph
-    from feedbax.component_registry import ComponentRegistry
-
-    if isinstance(hidden_type, str):
-        cell_type = normalize_recurrent_cell_type(hidden_type)
-    elif hidden_type in (eqx.nn.GRUCell, GRU):
-        cell_type = "GRU"
-    elif hidden_type in (eqx.nn.LSTMCell, LSTM):
-        cell_type = "LSTM"
-    elif hidden_type in (LeakyRNNCell, VanillaRNN):
-        cell_type = "VanillaRNN"
-    else:
-        raise TypeError("hidden_type must be a built-in recurrent cell name or constructor")
-
-    def activation_name(value: str | Callable) -> str:
-        if value is identity_func:
-            return "identity"
-        if value is jnp.tanh:
-            return "tanh"
-        return named_activation(value)
-
-    spec = recurrent_controller_template_graph(
-        input_size=input_size,
-        hidden_size=hidden_size,
-        out_size=out_size,
-        encoding_size=encoding_size,
-        cell_type=cell_type,
-        cell_params={"use_bias": use_bias, **(cell_params or {})},
-        hidden_nonlinearity=activation_name(hidden_nonlinearity),
-        out_nonlinearity=activation_name(out_nonlinearity),
-        hidden_noise_std=hidden_noise_std,
-        encoder_use_bias=use_bias if population_structure is not None else True,
-        readout_use_bias=use_bias if population_structure is not None else True,
-        readout_initialization="zero_bias",
-        population_structure=population_structure,
-        dtype=jnp.dtype(dtype if dtype is not None else jnp.float32).name,
-    )
-    keys = dict(zip(("cell", "encoder", "readout"), jr.split(key, 3), strict=True))
-    registry = ComponentRegistry(load_user_components=False)
-    return compile_graph(
-        GraphDocument(graph=spec),
-        registry,
-        initialization_keys={name: keys[name] for name in keys if name in spec.nodes},
-    ).graph
-
-
 class LeakyRNNCell(Module):
     """Custom `RNNCell` with persistent, leaky state.
 
@@ -679,11 +619,44 @@ class VanillaRNNState(Module):
     output: Array
 
 
+class _VanillaRNNConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str = ConfigField(default="float32")
+    input_size: int = ConfigField(default=4, ge=1)
+    hidden_size: int = ConfigField(default=4, ge=1)
+    use_bias: bool = ConfigField(default=True)
+    use_noise: bool = ConfigField(default=False)
+    noise_strength: float = ConfigField(default=0.01, ge=0)
+    dt: float = ConfigField(default=1.0, ge=0)
+    tau: float = ConfigField(default=1.0, ge=0)
+    activation: Literal["tanh", "relu", "identity", "sigmoid", "softmax"] = ConfigField(
+        default="tanh"
+    )
+
+
 class VanillaRNN(Component):
     """Standalone vanilla RNN cell."""
 
-    input_ports = ("input", "hidden")
-    output_ports = ("output", "hidden")
+    config: ClassVar[type[BaseModel]] = _VanillaRNNConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=recurrent_output_prototype,
+        build_context_fields=("key",),
+        trainable_by_default=True,
+    )
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("activation_name", name="activation"),
+        ConfigBinding("cell.use_bias", name="use_bias"),
+        ConfigBinding("cell.use_noise", name="use_noise"),
+        ConfigBinding("cell.noise_strength", name="noise_strength"),
+        ConfigBinding("cell.dt", name="dt"),
+        ConfigBinding("cell.tau", name="tau"),
+    )
 
     cell: LeakyRNNCell
     input_size: int = field(static=True)
@@ -694,17 +667,17 @@ class VanillaRNN(Component):
 
     def __init__(
         self,
-        input_size: int,
-        hidden_size: int,
+        input_size: int = _VanillaRNNConfig.model_fields["input_size"].default,
+        hidden_size: int = _VanillaRNNConfig.model_fields["hidden_size"].default,
         *,
         activation_name: str = "tanh",
         nonlinearity: Callable | None = None,
-        use_bias: bool = True,
-        use_noise: bool = False,
-        noise_strength: float = 0.01,
-        dt: float = 1.0,
-        tau: float = 1.0,
-        dtype: object = jnp.float32,
+        use_bias: bool = _VanillaRNNConfig.model_fields["use_bias"].default,
+        use_noise: bool = _VanillaRNNConfig.model_fields["use_noise"].default,
+        noise_strength: float = _VanillaRNNConfig.model_fields["noise_strength"].default,
+        dt: float = _VanillaRNNConfig.model_fields["dt"].default,
+        tau: float = _VanillaRNNConfig.model_fields["tau"].default,
+        dtype: object = _VanillaRNNConfig.model_fields["dtype"].default,
         key: PRNGKeyArray | None = None,
     ):
         dtype = dtype or jnp.float32
@@ -742,8 +715,18 @@ class VanillaRNN(Component):
         )
         return {"output": new_hidden, "hidden": new_hidden}, state
 
+    @classmethod
+    def from_config(cls, config, **context):
+        values = config.model_dump(mode="python")
+        values["activation_name"] = values.pop("activation")
+        return cls(**values, **context)
+
 
 register_parameter_role_resolver(VanillaRNN, recurrent_parameter_role)
+
+RECURRENT_CELL_TYPE_ALIASES.update(
+    {f"feedbax.{owner.__name__}": owner.__name__ for owner in (GRU, LSTM, VanillaRNN)}
+)
 
 
 def n_layer_linear(
@@ -800,3 +783,6 @@ def gru_weight_idxs_func(
         }[label]
 
     return gru_weight_idxs
+
+
+from feedbax.models.controllers import recurrent_controller as recurrent_controller

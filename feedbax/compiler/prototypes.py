@@ -25,12 +25,12 @@ from feedbax.component_registry.prototypes import array_prototype, prototype_par
 
 
 STATEFUL_PROTOTYPE_TYPES = {
-    "BandPassFilter",
-    "Channel",
-    "DelayLine",
-    "FirstOrderFilter",
-    "HighPassFilter",
-    "RateLimiter",
+    "feedbax.BandPassFilter",
+    "feedbax.Channel",
+    "feedbax.DelayLine",
+    "feedbax.FirstOrderFilter",
+    "feedbax.HighPassFilter",
+    "feedbax.RateLimiter",
 }
 
 
@@ -181,7 +181,7 @@ def validate_or_add_input_shape(
             "Connect it to a source with a known output shape or provide input_shape."
         )
     if (
-        node_type == "Channel"
+        node_type == "feedbax.Channel"
         and not hasattr(proto, "shape")
         and all(next_params.get(field) is None for field in ("input_shape", "input_dtype"))
     ):
@@ -274,7 +274,7 @@ def output_prototypes_for_node(
     strict: bool = True,
 ) -> dict[str, Any]:
     if component_registry is None:
-        component_registry = ComponentRegistry(load_user_components=False)
+        component_registry = ComponentRegistry()
     node_type = node_spec.type
 
     required_domain = required_interior_domain(node_type, component_registry)
@@ -339,5 +339,5 @@ def infer_node_input_prototypes(
     return resolve_graph_parameters(
         spec.model_copy(update={"subgraphs": dict(subgraphs) or None}),
         external_input_prototypes,
-        component_registry or ComponentRegistry(load_user_components=False),
+        component_registry or ComponentRegistry(),
     ).node_inputs

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from feedbax.acausal._component import NonNegativeFloat
 from feedbax.acausal._scalar_mechanics import ROTATIONAL
 from feedbax.acausal.base import (
     AcausalElement,
@@ -29,6 +30,8 @@ from feedbax.acausal.base import (
     Domain,
 )
 from feedbax._acausal_payload import TORQUE_PAYLOAD
+from feedbax.contracts.portable import ComponentOptions
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 
 
 @dataclass
@@ -43,7 +46,9 @@ class Inertia(AcausalElement):
         d(angular_vel)/dt = net_torque / J
     """
 
-    def __init__(self, name: str, inertia: float = 1.0):
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
+    def __init__(self, name: str, inertia: NonNegativeFloat = 1.0):
         super().__init__(name=name)
         ROTATIONAL.inertia(self, inertia)
 
@@ -56,7 +61,9 @@ class TorsionalSpring(AcausalElement):
         flange_a, flange_b -- rotational.
     """
 
-    def __init__(self, name: str, stiffness: float = 1.0):
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
+    def __init__(self, name: str, stiffness: NonNegativeFloat = 1.0):
         super().__init__(name=name)
         ROTATIONAL.coupling(self, "stiffness", stiffness, ROTATIONAL.coordinate)
 
@@ -65,7 +72,9 @@ class TorsionalSpring(AcausalElement):
 class RotationalDamper(AcausalElement):
     """Rotational damper: ``tau = b * (omega_a - omega_b)``."""
 
-    def __init__(self, name: str, damping: float = 1.0):
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
+    def __init__(self, name: str, damping: NonNegativeFloat = 1.0):
         super().__init__(name=name)
         ROTATIONAL.coupling(self, "damping", damping, ROTATIONAL.velocity)
 
@@ -73,6 +82,8 @@ class RotationalDamper(AcausalElement):
 @dataclass
 class TorqueSource(AcausalElement):
     """External torque from the causal world."""
+
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = TORQUE_PAYLOAD
 
@@ -84,6 +95,8 @@ class TorqueSource(AcausalElement):
 @dataclass
 class RotationalGround(AcausalElement):
     """Fixed rotational reference (angle = 0, angular_vel = 0)."""
+
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
         super().__init__(name=name)
@@ -107,6 +120,8 @@ class GearRatio(AcausalElement):
         flange_a (input shaft), flange_b (output shaft) -- rotational.
     """
 
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
     def __init__(self, name: str, ratio: float = 1.0):
         super().__init__(name=name)
         for port_name in ("flange_a", "flange_b"):
@@ -124,6 +139,8 @@ class GearRatio(AcausalElement):
 class AngleSensor(AcausalElement):
     """Reads angle at a connection node."""
 
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
     def __init__(self, name: str):
         super().__init__(name=name)
         ROTATIONAL.sensor(self, ROTATIONAL.coordinate)
@@ -133,6 +150,8 @@ class AngleSensor(AcausalElement):
 class AngularVelocitySensor(AcausalElement):
     """Reads angular velocity at a connection node."""
 
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
     def __init__(self, name: str):
         super().__init__(name=name)
         ROTATIONAL.sensor(self, ROTATIONAL.velocity)
@@ -141,6 +160,8 @@ class AngularVelocitySensor(AcausalElement):
 @dataclass
 class TorqueSensor(AcausalElement):
     """Reads net torque at a connection node."""
+
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
         super().__init__(name=name)

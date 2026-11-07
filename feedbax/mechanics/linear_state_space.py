@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from equinox import Module, field
 from equinox.nn import State, StateIndex
@@ -10,20 +11,19 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
+from typing import Annotated
+from pydantic import Field
 from feedbax.runtime.state import CartesianState
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
-    ArrayValueSpec,
     SparseCooArrayValueSpec,
     SparseCooEntrySpec,
     materialize_array_value,
 )
-
-
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1 = "feedbax.component.structural_linear_state_space.v1"
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = "feedbax.component.structural_linear_state_space.v2"
 
 
 class StructuralLinearDynamicsPerturbation(Module):
@@ -125,6 +125,37 @@ class LinearStateSpaceState(Module):
     vector: Array
 
 
+def linear_state_space_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return LinearStateSpace effector/state prototypes from matrices and slices."""
+
+    a_matrix = jnp.asarray(params["A"])
+    b_matrix = jnp.asarray(params["B"])
+    state_dim = int(a_matrix.shape[0])
+    pos_start, pos_stop = (int(value) for value in params.get("pos_slice", [0, 2]))
+    vel_start, vel_stop = (int(value) for value in params.get("vel_slice", [2, 4]))
+    force_dim = int(b_matrix.shape[1]) if b_matrix.ndim == 2 else 0
+    return {
+        "effector": CartesianState(
+            pos=jnp.zeros((pos_stop - pos_start,), dtype=a_matrix.dtype),
+            vel=jnp.zeros((vel_stop - vel_start,), dtype=a_matrix.dtype),
+            force=jnp.zeros((force_dim,), dtype=a_matrix.dtype),
+        ),
+        "state": jnp.zeros((state_dim,), dtype=a_matrix.dtype),
+    }
+
+
+_DEFAULT_A = (
+    (1.0, 0.0, 0.01, 0.0),
+    (0.0, 1.0, 0.0, 0.01),
+    (0.0, 0.0, 1.0, 0.0),
+    (0.0, 0.0, 0.0, 1.0),
+)
+_DEFAULT_B = ((0.0, 0.0), (0.0, 0.0), (0.01, 0.0), (0.0, 0.01))
+
+
 class LinearStateSpace(Component):
     """Discrete linear state-space mechanics.
 
@@ -146,8 +177,12 @@ class LinearStateSpace(Component):
         vel_slice: Half-open slice selecting effector velocity from the state.
     """
 
-    input_ports = ("force", "epsilon")
-    output_ports = ("effector", "state")
+    ports = Ports(
+        inputs={"force": PortType(dtype="vector"), "epsilon": PortType(dtype="vector")},
+        outputs={"effector": PortType(dtype="state"), "state": PortType(dtype="vector")},
+    )
+    config_bindings = (ConfigBinding(path="state_index.init.vector", name="initial_state"),)
+    component_options = ComponentOptions(output_prototype_fn=linear_state_space_output_prototype)
 
     A: Array
     B: Array
@@ -155,16 +190,17 @@ class LinearStateSpace(Component):
     dt: float
     pos_slice: tuple[int, int] = field(static=True)
     vel_slice: tuple[int, int] = field(static=True)
-    initial_state: tuple[float, ...] = field(static=True)
     state_index: StateIndex
 
     def __init__(
         self,
-        A: Array,
-        B: Array,
-        B_w: Array | None = None,
-        dt: float = 1.0,
-        initial_state: Array | None = None,
+        A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_A,
+        B: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_B,
+        B_w: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = None,
+        dt: Annotated[float, Field(ge=0)] = 1.0,
+        initial_state: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "array"}})
+        ] = None,
         pos_slice: tuple[int, int] = (0, 2),
         vel_slice: tuple[int, int] = (2, 4),
     ):
@@ -194,7 +230,6 @@ class LinearStateSpace(Component):
             if vector.shape != (n_state,):
                 raise ValueError("initial_state must have shape [n_state].")
 
-        self.initial_state = tuple(float(x) for x in vector.tolist())
         self.state_index = StateIndex(LinearStateSpaceState(vector=vector))
 
     def _effector(self, vector: Array, force: Array) -> CartesianState:
@@ -253,6 +288,18 @@ class LinearStateSpace(Component):
         }
 
 
+_DEFAULT_DELTA_A = SparseCooArrayValueSpec(
+    schema_id=ARRAY_VALUE_SCHEMA_ID,
+    schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+    encoding="sparse_coo",
+    shape=(4, 4),
+    dtype="float32",
+    nonfinite="forbid",
+    fill=0.0,
+    entries=(),
+).model_dump(mode="json")
+
+
 class StructuralLinearStateSpace(LinearStateSpace):
     """Discrete linear mechanics with a task-selectable structural ``delta_A``.
 
@@ -262,26 +309,32 @@ class StructuralLinearStateSpace(LinearStateSpace):
     trial initial state.
     """
 
+    config_bindings = (
+        *LinearStateSpace.config_bindings,
+        ConfigBinding(
+            path="structural_params_index.init", group=StructuralLinearDynamicsPerturbation
+        ),
+    )
+
     structural_params_index: StateIndex
-    initial_delta_A: tuple[tuple[float, ...], ...] = field(static=True)
-    initial_delta_A_value_spec: ArrayValueSpec | None = field(static=True)
-    initial_scale: float = field(static=True)
-    initial_active: bool = field(static=True)
 
     def __init__(
         self,
-        A: Array,
-        B: Array,
+        A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_A,
+        B: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_B,
         *,
-        delta_A: Array,
-        authored_delta_A_value_spec: ArrayValueSpec | None = None,
-        B_w: Array | None = None,
-        dt: float = 1.0,
-        initial_state: Array | None = None,
+        delta_A: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "object"}})
+        ] = _DEFAULT_DELTA_A,
+        B_w: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = None,
+        dt: Annotated[float, Field(ge=0)] = 1.0,
+        initial_state: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "array"}})
+        ] = None,
         pos_slice: tuple[int, int] = (0, 2),
         vel_slice: tuple[int, int] = (2, 4),
-        scale: float | Array = 1.0,
-        active: bool | Array = False,
+        scale: float = 1.0,
+        active: bool = False,
     ):
         super().__init__(
             A=A,
@@ -292,6 +345,8 @@ class StructuralLinearStateSpace(LinearStateSpace):
             pos_slice=pos_slice,
             vel_slice=vel_slice,
         )
+        if isinstance(delta_A, Mapping):
+            delta_A = materialize_array_value(delta_A)
         params = StructuralLinearDynamicsPerturbation(
             delta_A=jnp.asarray(delta_A, dtype=self.A.dtype),
             scale=scale,
@@ -299,13 +354,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
         )
         if params.delta_A.shape != self.A.shape:
             raise ValueError("delta_A must have the same shape as A.")
-        self.initial_delta_A = tuple(
-            tuple(float(value) for value in row)
-            for row in params.delta_A.tolist()
-        )
-        self.initial_delta_A_value_spec = authored_delta_A_value_spec
-        self.initial_scale = float(params.scale)
-        self.initial_active = bool(params.active)
         self.structural_params_index = StateIndex(params)
 
     def __call__(
@@ -317,9 +365,7 @@ class StructuralLinearStateSpace(LinearStateSpace):
     ) -> tuple[dict[str, PyTree], State]:
         del key
         current: LinearStateSpaceState = state.get(self.state_index)
-        params: StructuralLinearDynamicsPerturbation = state.get(
-            self.structural_params_index
-        )
+        params: StructuralLinearDynamicsPerturbation = state.get(self.structural_params_index)
         force = jnp.asarray(inputs["force"], dtype=self.A.dtype)
         epsilon = jnp.asarray(
             inputs.get("epsilon", jnp.zeros((self.B_w.shape[1],), dtype=self.A.dtype)),

@@ -1510,6 +1510,7 @@ def migrate_spec_payload(
     *,
     path: str = "spec",
     registry: Any | None = None,
+    component_registry: Any | None = None,
     assume_current: bool = False,
 ) -> SpecPayload:
     """Accept or migrate one manifest-embedded structured spec payload.
@@ -1518,12 +1519,12 @@ def migrate_spec_payload(
     payload. If migration changes the inline payload, ``source_sha256`` retains
     the original inline hash for provenance.
     """
-    from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID
     from feedbax.contracts.migrations import (
         UnknownSpecFamily,
         UnsupportedSpecVersion,
         default_spec_registry,
         migrate_graph_spec,
+        migrate_acausal_graph_spec,
     )
 
     spec_payload_obj = (
@@ -1578,12 +1579,15 @@ def migrate_spec_payload(
 
     source_sha256 = _ensure_spec_payload_hash(spec_payload_obj, path=path)
     try:
-        if spec_payload_obj.kind == "GraphSpec" and expected_schema_id == GRAPH_SPEC_SCHEMA_ID:
-            result = migrate_graph_spec(
+        if spec_payload_obj.kind in {"GraphSpec", "AcausalGraphSpec"}:
+            migrate_graph = migrate_graph_spec if spec_payload_obj.kind == "GraphSpec" else migrate_acausal_graph_spec
+            result = migrate_graph(
                 spec_payload_obj.inline,
                 source_version=source_version,
                 path=path,
                 registry=active_registry,
+                component_registry=component_registry,
+                historical_unversioned=not assume_current,
             )
         else:
             result = active_registry.migrate(
@@ -1729,20 +1733,20 @@ def _is_spec_payload_data(value: Any) -> bool:
     return isinstance(value, dict) and "kind" in value and "inline" in value
 
 
-def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
+def _normalize_spec_payload_field(value: Any, *, path: str, component_registry: Any | None = None) -> Any:
     if value is None:
         return None
     if isinstance(value, list):
         return [
-            _normalize_spec_payload_field(item, path=f"{path}[{index}]")
+            _normalize_spec_payload_field(item, path=f"{path}[{index}]", component_registry=component_registry)
             for index, item in enumerate(value)
         ]
     if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
-        return migrate_spec_payload(value, path=path)
+        return migrate_spec_payload(value, path=path, component_registry=component_registry)
     return value
 
 
-def _normalize_manifest_data_spec_payloads(data: dict[str, Any]) -> dict[str, Any]:
+def _normalize_manifest_data_spec_payloads(data: dict[str, Any], *, component_registry: Any | None = None) -> dict[str, Any]:
     raw_kind = data.get("kind")
     if not isinstance(raw_kind, str):
         return data
@@ -1757,6 +1761,7 @@ def _normalize_manifest_data_spec_payloads(data: dict[str, Any]) -> dict[str, An
         normalized[field_name] = _normalize_spec_payload_field(
             normalized[field_name],
             path=field_name,
+            component_registry=component_registry,
         )
     return normalized
 
@@ -2123,14 +2128,14 @@ def write_manifest(
     return path
 
 
-def load_manifest_bytes(raw: bytes) -> AnyManifest:
+def load_manifest_bytes(raw: bytes, *, component_registry: Any | None = None) -> AnyManifest:
     """Parse one known Feedbax manifest from already-authenticated raw bytes."""
     data = strict_json_loads(raw, ref="manifest document")
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_analysis_run_manifest_data(data)
     data = _normalize_evaluation_run_manifest_data(data)
     data = _normalize_report_manifest_data(data)
-    data = _normalize_manifest_data_spec_payloads(data)
+    data = _normalize_manifest_data_spec_payloads(data, component_registry=component_registry)
     data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")
     if not isinstance(raw_kind, str):
@@ -2142,23 +2147,26 @@ def load_manifest_bytes(raw: bytes) -> AnyManifest:
     return model.model_validate(data)  # type: ignore[return-value]
 
 
-def load_manifest(path: Path | str) -> AnyManifest:
+def load_manifest(path: Path | str, *, component_registry: Any | None = None) -> AnyManifest:
     """Load a known Feedbax manifest from disk."""
-    return load_manifest_bytes(Path(path).read_bytes())
+    return load_manifest_bytes(Path(path).read_bytes(), component_registry=component_registry)
 
 
 def load_graph_spec_from_manifest(
     manifest: GraphSpecManifest | ModelArtifactManifest | Path | str,
     *,
     root: Path | str | None = None,
+    component_registry: Any | None = None,
 ) -> GraphSpecLoadResult:
     """Load a manifest-owned GraphSpec while preserving migration-record custody.
 
     Feedbax GraphSpec migration records stay on the manifest that directly owns
     the inline GraphSpec payload. Downstream legacy-conversion records already
     present on a model artifact remain distinct and are surfaced separately.
+    Supplying a component registry interprets persisted component revisions;
+    current-format nodes remain opaque without one.
     """
-    manifest_obj, manifest_path = _load_graph_spec_manifest_source(manifest)
+    manifest_obj, manifest_path = _load_graph_spec_manifest_source(manifest, component_registry=component_registry)
     base = (
         Path(root)
         if root is not None
@@ -2171,12 +2179,13 @@ def load_graph_spec_from_manifest(
             manifest_obj.graph_spec,
             existing_records=manifest_obj.migration_records,
             custody_manifest_kind="GraphSpecManifest",
+            component_registry=component_registry,
         )
 
     graph_spec = manifest_obj.graph_spec
     if isinstance(graph_spec, ParentRef):
-        referenced = _load_parent_graph_spec_manifest(graph_spec, base=base)
-        referenced_result = load_graph_spec_from_manifest(referenced, root=base)
+        referenced = _load_parent_graph_spec_manifest(graph_spec, base=base, component_registry=component_registry)
+        referenced_result = load_graph_spec_from_manifest(referenced, root=base, component_registry=component_registry)
         downstream_records = _append_unique_migration_records(
             referenced_result.downstream_migration_records,
             _downstream_migration_records(manifest_obj.migration_records),
@@ -2190,16 +2199,18 @@ def load_graph_spec_from_manifest(
         graph_spec,
         existing_records=manifest_obj.migration_records,
         custody_manifest_kind="ModelArtifactManifest",
+        component_registry=component_registry,
     )
 
 
 def _load_graph_spec_manifest_source(
     manifest: GraphSpecManifest | ModelArtifactManifest | Path | str,
+    *, component_registry: Any | None = None,
 ) -> tuple[GraphSpecManifest | ModelArtifactManifest, Path | None]:
     if isinstance(manifest, GraphSpecManifest | ModelArtifactManifest):
         return manifest, None
     path = Path(manifest)
-    loaded = load_manifest(path)
+    loaded = load_manifest(path, component_registry=component_registry)
     if not isinstance(loaded, GraphSpecManifest | ModelArtifactManifest):
         raise TypeError(
             f"Expected GraphSpecManifest or ModelArtifactManifest, got {type(loaded).__name__}."
@@ -2207,7 +2218,7 @@ def _load_graph_spec_manifest_source(
     return loaded, path
 
 
-def _load_parent_graph_spec_manifest(parent: ParentRef, *, base: Path) -> GraphSpecManifest:
+def _load_parent_graph_spec_manifest(parent: ParentRef, *, base: Path, component_registry: Any | None = None) -> GraphSpecManifest:
     if parent.uri is None:
         raise ValueError(
             f"Model artifact graph_spec parent {parent.id!r} has no URI; "
@@ -2216,7 +2227,7 @@ def _load_parent_graph_spec_manifest(parent: ParentRef, *, base: Path) -> GraphS
     path = Path(parent.uri)
     if not path.is_absolute():
         path = base / path
-    loaded = load_manifest(path)
+    loaded = load_manifest(path, component_registry=component_registry)
     if not isinstance(loaded, GraphSpecManifest):
         raise TypeError(
             f"Model artifact graph_spec parent {parent.id!r} resolved to "
@@ -2231,11 +2242,12 @@ def _migrate_manifest_graph_spec_payload(
     *,
     existing_records: list[ArtifactMigrationRecord],
     custody_manifest_kind: Literal["GraphSpecManifest", "ModelArtifactManifest"],
+    component_registry: Any | None = None,
 ) -> GraphSpecLoadResult:
     if payload.kind != "GraphSpec":
         raise TypeError(f"Expected GraphSpec payload, got {payload.kind!r}.")
 
-    migrated_payload = migrate_spec_payload(payload, path="graph_spec")
+    migrated_payload = migrate_spec_payload(payload, path="graph_spec", component_registry=component_registry)
     applied_records = [
         record for record in migrated_payload.migration_records if record.tool == "feedbax"
     ]

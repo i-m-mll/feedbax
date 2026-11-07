@@ -12,6 +12,9 @@ from typing import Any, Callable, Literal, Mapping, NamedTuple
 from feedbax.contracts.worker import ProgressCoordinate
 
 from feedbax import Component
+from feedbax.component_registry import ComponentPack
+from feedbax.contracts.portable import Ports
+from feedbax.contracts.component import DynamicPortPolicy, PortType
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.plugins import (
     ANALYSIS_RECIPES,
@@ -74,26 +77,37 @@ _FOUNDATION_PLUGIN_ID = "feedbax_external_conformance.foundation"
 _DEPENDENT_PLUGIN_ID = "feedbax_external_conformance.dependent"
 
 
+class FanInSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    channels: list[str] = ["left", "right"]
+
+
 class VariableFanIn(Component):
     """Small external runtime component with policy-derived input ports."""
 
-    output_ports = ("output",)
+    config = FanInSettings
+    ports = Ports(
+        {},
+        {"output": PortType(dtype="vector")},
+        dynamic=DynamicPortPolicy(
+            count_param="channels",
+            count_mode="sequence_length",
+            direction="input",
+            fixed_output_ports=("output",),
+            generated_name_template="source_{index}",
+            dynamic_port_type=PortType(dtype="vector"),
+        ),
+    )
 
-    n_inputs: int = eqx.field(static=True)
-    input_ports: tuple[str, ...] = eqx.field(static=True)
+    channels: tuple[str, ...] = eqx.field(static=True)
 
-    def __init__(self, n_inputs: int) -> None:
-        self.n_inputs = n_inputs
-        self.input_ports = tuple(f"source_{index}" for index in range(n_inputs))
+    def __init__(self, channels: list[str]) -> None:
+        self.channels = tuple(channels)
 
     def __call__(self, inputs, state, *, key):
         del key
         values = tuple(jnp.atleast_1d(inputs[name]) for name in self.input_ports)
         return {"output": jnp.concatenate(values)}, state
-
-
-def _build_variable_fan_in(params) -> VariableFanIn:
-    return VariableFanIn(len(params["channels"]))
 
 
 class FixtureOrchestrationDriver:
@@ -231,15 +245,17 @@ def _fixture_training_program() -> DeclaredTrainingProgram:
         package="feedbax-external-conformance",
         update_kernels_factory=synthetic_supervised_update_kernels,
         preparation_provider=_fixture_preparation,
-        row_lowerers=(TrainingRowLowererRegistration(
-            authored_schema_id="feedbax_external_conformance.training",
-            authored_schema_version="v1",
-            lowerer_id="feedbax_external_conformance.lowerer",
-            lowerer_version="v1",
-            implementation_sha256=FIXTURE_LOWERER_IMPLEMENTATION_SHA256,
-            lower=_fixture_lowerer,
-            owner="feedbax-external-conformance",
-        ),),
+        row_lowerers=(
+            TrainingRowLowererRegistration(
+                authored_schema_id="feedbax_external_conformance.training",
+                authored_schema_version="v1",
+                lowerer_id="feedbax_external_conformance.lowerer",
+                lowerer_version="v1",
+                implementation_sha256=FIXTURE_LOWERER_IMPLEMENTATION_SHA256,
+                lower=_fixture_lowerer,
+                owner="feedbax-external-conformance",
+            ),
+        ),
         authoring_hook=TrainingMethodAuthoringHook(
             lowerer_id="feedbax_external_conformance.authoring",
             lowerer_version="v1",
@@ -366,32 +382,8 @@ def _fixture_union(value):
 
 def _register_foundation(context: RegistrationContext) -> None:
     context.registry(FIXTURE_RECORDS).register("foundation")
-    context.registry(COMPONENTS).register_component_type(
-        EXTERNAL_DYNAMIC_COMPONENT,
-        _build_variable_fan_in,
-        category="External conformance",
-        description="External dynamic fan-in bootstrap proof.",
-        param_schema=[
-            {"name": "channels", "type": "array", "default": ["left", "right"]},
-        ],
-        input_ports=["source_0", "source_1"],
-        output_ports=["output"],
-        port_types={
-            "inputs": {
-                "source_0": {"dtype": "vector"},
-                "source_1": {"dtype": "vector"},
-            },
-            "outputs": {"output": {"dtype": "vector"}},
-        },
-        dynamic_port_policy={
-            "count_param": "channels",
-            "count_mode": "sequence_length",
-            "direction": "input",
-            "fixed_output_ports": ["output"],
-            "generated_name_template": "source_{index}",
-            "dynamic_port_type": {"dtype": "vector"},
-        },
-        owner="feedbax-external-conformance",
+    context.registry(COMPONENTS).ingest(
+        ComponentPack(namespace="feedbax_external_conformance", components=(VariableFanIn,)),
         provenance="package:feedbax-external-conformance",
     )
     context.registry(DRIVERS).register(_fixture_driver_registration())

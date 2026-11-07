@@ -8,6 +8,8 @@ import jax.numpy as jnp
 
 from feedbax.acausal.base import AcausalElement, AcausalEquation, AcausalPort, Domain
 from feedbax._acausal_payload import ACTIVATION_PAYLOAD
+from feedbax.contracts.portable import ComponentOptions
+from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 
 
 def _fqn(element: str, port: str, slot: str) -> str:
@@ -24,6 +26,8 @@ class RigidTendonHillMuscle(AcausalElement):
     causal activation signal input. C2 can replace it with a decomposed interior
     once multibody links, joints, and path geometry exist.
     """
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = ACTIVATION_PAYLOAD
 

@@ -20,7 +20,20 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
+from feedbax.contracts.component import PortType
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 from feedbax._acausal_payload import SourcePayload
+
+
+class AcausalSystemConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    dt: float = Field(default=0.01, gt=0, allow_inf_nan=False)
+    domain: Literal["translational", "rotational"] = "translational"
+
+
 from feedbax.mechanics.dae import DAEComponent
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import (
@@ -30,14 +43,14 @@ from feedbax.acausal.base import (
 )
 
 
-
-
 # ---------------------------------------------------------------------------
 # State / Params
 # ---------------------------------------------------------------------------
 
+
 class AcausalSystemState(Module):
     """Flat state vector for an assembled acausal system."""
+
     y: Float[Array, " n"]
 
 
@@ -47,6 +60,7 @@ class AcausalParams(Module):
     Attributes:
         values: Mapping of parameter names to scalar arrays.
     """
+
     values: dict[str, Array]
 
     def get(self, name: str) -> Scalar:
@@ -58,7 +72,8 @@ class AcausalParams(Module):
 # AcausalSystem
 # ---------------------------------------------------------------------------
 
-class AcausalSystem(DAEComponent[AcausalSystemState]):
+
+class AcausalSystem(DAEComponent[AcausalSystemState], ComponentOwner):
     """Assembled acausal system as a standard DAE component.
 
     Construction-time:
@@ -71,6 +86,29 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     Attributes:
         params: Trainable physical parameters (mass, stiffness, ...).
     """
+
+    config = AcausalSystemConfig
+    component_options = ComponentOptions(
+        is_composite=True,
+        interior_domain=ACAUSAL_DOMAIN_ID,
+        build_context_fields=(
+            "elements",
+            "connections",
+            "solver_type",
+            "root_finder",
+            "input_bindings",
+            "output_bindings",
+            "key",
+        ),
+    )
+    ports = Ports({"input": PortType(dtype="vector")}, {"state": PortType(dtype="state")})
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls(dt=config.dt, **context)
+
+    def configuration_values(self):
+        raise ValueError("AcausalSystem export requires its authoritative graph interior")
 
     # Override ClassVar with instance fields so each instance can differ.
     input_ports: tuple[str, ...]
@@ -88,7 +126,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         self,
         elements: dict[str, AcausalElement],
         connections: list[AcausalConnection],
-        dt: float = 0.01,
+        dt: float | None = None,
         solver_type: Type[dfx.AbstractSolver] | dfx.AbstractSolver = dfx.Euler,
         root_finder: Optional[optx.AbstractRootFinder] = None,
         *,
@@ -111,19 +149,20 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
             key: PRNG key (passed through to ``DAEComponent``).
         """
 
+        from feedbax.contracts.portable import default_configuration
+
+        config = default_configuration(type(self), **({} if dt is None else {"dt": dt}))
+        dt = config.dt
+
         # ---- Assembly ----------------------------------------------------
-        layout, vf_fn, params_dict, sensor_fn = assemble_system(
-            elements, connections
-        )
+        layout, vf_fn, params_dict, sensor_fn = assemble_system(elements, connections)
 
         self._layout = layout
         self._compiled_vf = vf_fn
         self._compiled_sensor_fn = sensor_fn
 
         # ---- Parameters --------------------------------------------------
-        param_values = {
-            name: jnp.zeros(()) + value for name, value in params_dict.items()
-        }
+        param_values = {name: jnp.zeros(()) + value for name, value in params_dict.items()}
         self.params = AcausalParams(values=param_values)
 
         # ---- Ports -------------------------------------------------------
@@ -174,9 +213,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         self.input_payloads = {
             port: element_payloads[element] for port, element in public_input_bindings.items()
         }
-        public_port_by_element = {
-            element: port for port, element in public_input_bindings.items()
-        }
+        public_port_by_element = {element: port for port, element in public_input_bindings.items()}
         self._input_slots = tuple(
             (public_port_by_element[element], slot)
             for element, slot in (layout._input_specs[variable] for variable in ordered_inputs)
@@ -262,9 +299,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
             outputs = {key: value for key, value in outputs.items() if key != "state"}
 
         dae_state = self.state_view(state)
-        sensor_outputs = self._compiled_sensor_fn(
-            dae_state.system.y, input_val, self.params.values
-        )
+        sensor_outputs = self._compiled_sensor_fn(dae_state.system.y, input_val, self.params.values)
         internal_outputs = {**outputs, **sensor_outputs}
         for public_port, sensor_element in self._output_bindings.items():
             if sensor_element in internal_outputs:

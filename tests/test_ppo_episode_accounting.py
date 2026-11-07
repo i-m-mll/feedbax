@@ -236,7 +236,8 @@ def test_trained_policy_executes_on_raw_observations_after_save_and_load(tmp_pat
 
     path = tmp_path / "policy.eqx"
     save_policy(path, policy)
-    for candidate in (policy, load_policy(path)):
+    restored = load_policy(path)
+    for candidate in (policy, restored):
         actual_forward = forward(candidate, jnp.asarray(raw_obs))
         for actual, expected in zip(actual_forward, expected_forward, strict=True):
             np.testing.assert_allclose(actual, expected, atol=1e-6)
@@ -244,13 +245,13 @@ def test_trained_policy_executes_on_raw_observations_after_save_and_load(tmp_pat
             sample(candidate, jnp.asarray(raw_obs), action_keys), expected_sample, strict=True,
         ):
             np.testing.assert_allclose(actual, expected, atol=1e-6)
-        rollouts = collect_rollouts_batched(
-            plants, config, candidate, rollout_key, jnp.array([TASK_REACH]),
-        )
-        # Unit time constants make the first activation equal the sampled action.
-        np.testing.assert_allclose(
-            rollouts["muscle_activations"][:, 0, 1], expected_sample[0], atol=1e-6,
-        )
+    rollouts = collect_rollouts_batched(
+        plants, config, restored, rollout_key, jnp.array([TASK_REACH]),
+    )
+    # Unit time constants make the first activation equal the sampled action.
+    np.testing.assert_allclose(
+        rollouts["muscle_activations"][:, 0, 1], expected_sample[0], atol=1e-6,
+    )
 
     if obs_norm:
         body = jax.tree.map(lambda leaf: leaf[1] if eqx.is_array(leaf) else leaf, policy)

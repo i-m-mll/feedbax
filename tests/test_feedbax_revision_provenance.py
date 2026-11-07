@@ -89,30 +89,6 @@ def clean_checkout(
     return package_root, head
 
 
-def test_resolve_feedbax_provenance_reports_clean_origin(
-    clean_checkout: tuple[Path, str],
-) -> None:
-    package_root, head = clean_checkout
-
-    provenance = resolve_feedbax_provenance()
-
-    assert provenance == FeedbaxProvenance(
-        source_path=package_root, revision=head, dirty=False
-    )
-
-
-def test_check_feedbax_provenance_accepts_matching_clean_pin(
-    clean_checkout: tuple[Path, str],
-) -> None:
-    _package_root, head = clean_checkout
-
-    result = check_feedbax_provenance(head)
-
-    assert result is not None
-    assert result.revision == head
-    assert result.dirty is False
-
-
 def test_check_feedbax_provenance_refuses_mismatch(
     clean_checkout: tuple[Path, str],
 ) -> None:
@@ -125,16 +101,6 @@ def test_check_feedbax_provenance_refuses_mismatch(
 
     assert head in str(excinfo.value)
     assert other_revision in str(excinfo.value)
-
-
-def test_check_feedbax_provenance_refuses_dirty_tree(
-    clean_checkout: tuple[Path, str],
-) -> None:
-    package_root, head = clean_checkout
-    (package_root / "__init__.py").write_text("# uncommitted edit\n")
-
-    with pytest.raises(FeedbaxRevisionError, match="uncommitted changes"):
-        check_feedbax_provenance(head)
 
 
 def test_checkout_revision_is_resolved_once_per_process(
@@ -176,7 +142,9 @@ def test_working_tree_cleanliness_is_never_memoized(
     so it is deliberately outside the memo that holds the resolved revision.
     """
     package_root, head = clean_checkout
-    assert resolve_feedbax_provenance().dirty is False
+    clean = FeedbaxProvenance(source_path=package_root, revision=head, dirty=False)
+    assert resolve_feedbax_provenance() == clean
+    assert check_feedbax_provenance(head) == clean
 
     (package_root / "__init__.py").write_text("# uncommitted edit\n")
 

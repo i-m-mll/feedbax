@@ -10,6 +10,7 @@ import jax.random as jr
 from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts._causal_inputs import InputDriverConflict
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.graph import (
@@ -283,11 +284,13 @@ def _require_version(family: str, value: str, current: str) -> str:
     return value
 
 
-def migrate_graph_spec(payload: GraphSpec | Mapping[str, Any]) -> Any:
+def migrate_graph_spec(
+    payload: GraphSpec | Mapping[str, Any], *, component_registry: Any | None = None
+) -> Any:
     """Call the public migration boundary without creating an import cycle."""
     from feedbax.contracts.migrations import migrate_graph_spec as migrate
 
-    return migrate(payload)
+    return migrate(payload, component_registry=component_registry)
 
 
 T = TypeVar("T")
@@ -460,14 +463,18 @@ def _resolved_digest(
     )
 
 
+_ComponentGraph = TypeVar("_ComponentGraph", GraphSpec, AcausalGraphSpec)
+
+
 def _map_component_nodes(
-    graph: GraphSpec,
+    graph: _ComponentGraph,
     operation: Callable[[str, ComponentSpec], ComponentSpec],
     *,
     document_sha256: str,
     path: str = "/graph",
+    migration_path: str = "graph",
     phase: CompilerPhase = CompilerPhase.TYPE_RESOLUTION,
-) -> GraphSpec:
+) -> _ComponentGraph:
     nodes: dict[str, ComponentSpec] = {}
     for node_id, node in graph.nodes.items():
         anchor = SemanticAnchor(
@@ -485,7 +492,7 @@ def _map_component_nodes(
             document_sha256=document_sha256,
             expected="the component has a registered canonical type and valid effective parameters",
             action="correct the component identity, version, or parameters at the authored node",
-            operation=lambda node_id=node_id, node=node: operation(node_id, node),
+            operation=lambda node=node: operation(migration_path, node),
         )
     subgraphs = {
         node_id: (
@@ -494,9 +501,10 @@ def _map_component_nodes(
                 operation,
                 document_sha256=document_sha256,
                 path=f"{path}/subgraphs/{_json_pointer_token(node_id)}",
+                migration_path=f"{migration_path}.subgraphs[{node_id!r}]",
                 phase=phase,
             )
-            if isinstance(subgraph, GraphSpec)
+            if isinstance(subgraph, (GraphSpec, AcausalGraphSpec))
             else subgraph
         )
         for node_id, subgraph in (graph.subgraphs or {}).items()
@@ -526,7 +534,7 @@ def compile_graph(
     )
 
     def parse_graph() -> tuple[Any, GraphSpec]:
-        migration = migrate_graph_spec(document.graph)
+        migration = migrate_graph_spec(document.graph, component_registry=component_registry)
         graph = GraphSpec.model_validate(migration.payload)
         if conflict := next(graph_input_driver_conflicts(graph, "/graph"), None):
             raise conflict
@@ -551,9 +559,16 @@ def compile_graph(
         action="replace the legacy wrapper with SelectState and Channel nodes",
         operation=lambda: lower_legacy_feedback(authored_graph),
     )
+    historical_paths = {
+        record.metadata.get("graph_path") for record in migration.migration_records
+    }
     typed_graph = _map_component_nodes(
         feedback_graph,
-        lambda node_id, node: resolve_component_node(node, component_registry),
+        lambda graph_path, node: resolve_component_node(
+            node,
+            component_registry,
+            historical_unversioned=graph_path in historical_paths,
+        ),
         document_sha256=document_sha256,
     )
 
@@ -564,9 +579,9 @@ def compile_graph(
             raise conflict
         graph = _map_component_nodes(
             lowered,
-            lambda node_id, node: (
+            lambda _graph_path, node: (
                 resolve_component_node(node, component_registry)
-                if node.param_schema_version is None
+                if node.revision is None
                 else node
             ),
             document_sha256=document_sha256,

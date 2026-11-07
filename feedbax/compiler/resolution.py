@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pydantic import BaseModel
 from typing import Any, Mapping
 
 import jax.numpy as jnp
@@ -56,6 +57,7 @@ class GraphParameterResolution:
     node_outputs: dict[tuple[str, str], Any]
     errors: tuple[ParameterResolutionError, ...]
     subgraphs: dict[str, GraphParameterResolution]
+    node_configs: dict[str, BaseModel]
 
     @property
     def graph_outputs(self) -> dict[str, Any]:
@@ -66,7 +68,9 @@ class GraphParameterResolution:
         }
 
 
-def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
+def resolve_component_node(
+    node: ComponentSpec, registry: Any, *, historical_unversioned: bool = False
+) -> ComponentSpec:
     from feedbax.compiler.serialization import _split_lowering_metadata
 
     resolver = getattr(registry, "resolve_component_spec", None)
@@ -76,21 +80,22 @@ def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
         and callable(should_resolve)
         and should_resolve(
             node.type,
-            param_schema_version=node.param_schema_version,
+            revision=node.revision,
         )
     ):
         params, lowering_metadata = _split_lowering_metadata(node, registry)
         resolution = resolver(
             node.type,
             params,
-            param_schema_version=node.param_schema_version,
+            revision=node.revision,
             complete_params=False,
+            historical_unversioned=historical_unversioned,
         )
         return node.model_copy(
             update={
                 "type": resolution.type_id,
                 "params": {**resolution.params, **lowering_metadata},
-                "param_schema_version": resolution.param_schema_version,
+                "revision": resolution.revision,
             }
         )
     if required_interior_domain(node.type, registry) is not None:
@@ -108,23 +113,24 @@ def _complete_component_node(
     node: ComponentSpec,
     registry: Any,
     meta: DeclaredComponent | None,
-) -> ComponentSpec:
+) -> tuple[ComponentSpec, BaseModel | None]:
     from feedbax.compiler.serialization import (
         _split_lowering_metadata,
         _validate_dynamic_component_ports,
     )
 
     if meta is None:
-        return node
+        return node, None
     params, lowering_metadata = _split_lowering_metadata(node, registry)
     if meta.is_composite:
-        return node.model_copy(update={"params": lowering_metadata})
+        return node.model_copy(update={"params": lowering_metadata}), None
     context = {
         key: value for key, value in params.items() if key in meta.params.build_context_fields
     }
-    effective = meta.params.require(
+    config = meta.params.require(
         {key: value for key, value in params.items() if key not in context}
-    ).model_dump(mode="python")
+    )
+    effective = config.model_dump(mode="json")
     params = {**effective, **context}
     inputs, outputs = _validate_dynamic_component_ports(
         node_name,
@@ -140,7 +146,7 @@ def _complete_component_node(
             "input_ports": list(inputs),
             "output_ports": list(outputs),
         }
-    )
+    ), config
 
 
 def _prototype_signature(proto: Any) -> Any:
@@ -178,6 +184,7 @@ class _Completion:
         self.metadata: dict[str, DeclaredComponent | None] = {}
         self.prototype_parameters: dict[str, InputPrototypeParameter] = {}
         self.completed: dict[str, ComponentSpec] = {}
+        self.configs: dict[str, BaseModel] = {}
         self.inputs: dict[tuple[str, str], Any] = {}
         self.outputs: dict[tuple[str, str], Any] = {}
         self.published: set[str] = set()
@@ -373,7 +380,7 @@ class _Completion:
             params = validate_or_add_input_shape(
                 params, prototype, node_name=name, node_type=node.type
             )
-        final = _complete_component_node(
+        final, config = _complete_component_node(
             name,
             node.model_copy(update={"params": params}),
             self.registry,
@@ -405,6 +412,10 @@ class _Completion:
             final = final.model_copy(
                 update={"params": {**final.params, prototype_parameter.parameter: value}}
             )
+        if config is not None:
+            if prototype_parameter is not None:
+                config = config.model_copy(update={prototype_parameter.parameter: value})
+            self.configs[name] = config
         self.completed[name] = final
         return True
 
@@ -414,7 +425,7 @@ class _Completion:
         node = self.completed[name]
         domain = required_interior_domain(node.type, self.registry)
         if domain is not None and name not in (self.graph.subgraphs or {}):
-            if node.type == "Network":
+            if node.type == "feedbax.Network":
                 raise ValueError(
                     f"Network node {name!r} requires a subgraph; no subgraph was provided. "
                     "Open it in Studio to generate the internal architecture, then save again."
@@ -578,7 +589,9 @@ class _Completion:
         graph = self.graph.model_copy(
             update={"nodes": {**self.nodes, **self.completed}, "subgraphs": subgraphs or None}
         )
-        return GraphParameterResolution(graph, self.inputs, self.outputs, tuple(errors), children)
+        return GraphParameterResolution(
+            graph, self.inputs, self.outputs, tuple(errors), children, self.configs
+        )
 
 
 def _token(value: str) -> str:
@@ -594,7 +607,7 @@ def resolve_graph_parameters(
     allow_incomplete: bool = False,
 ) -> GraphParameterResolution:
     """Complete each node once and infer solely from its final parameter meaning."""
-    registry = component_registry or ComponentRegistry(load_user_components=False)
+    registry = component_registry or ComponentRegistry()
     graph = graph if identities_resolved else materialize_additive_channel_adapters(graph)
     state = _Completion(graph, registry, "/graph", identities_resolved)
     while state.advance(input_prototypes):

@@ -2,7 +2,7 @@
 
 import '@testing-library/jest-dom/vitest';
 import { ReactFlowProvider, type NodeProps } from '@xyflow/react';
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { TapNode } from './TapNode';
 import type { TapNodeData } from '@/types/graph';
@@ -47,7 +47,6 @@ describe('TapNode', () => {
       true,
     );
 
-    expect(screen.getByTitle('probe')).toHaveTextContent('P');
     expect(document.querySelectorAll('.react-flow__handle')).toHaveLength(2);
   });
 });

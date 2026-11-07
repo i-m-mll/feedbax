@@ -46,6 +46,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.integrations.provider import provider_manifest
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> str:

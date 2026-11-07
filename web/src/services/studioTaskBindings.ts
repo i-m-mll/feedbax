@@ -8,7 +8,7 @@ import {
   taskBindingId,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
-import { isNextMuxInputPort } from '@/features/graph/dynamicPorts';
+import { visibleDynamicInputPorts } from '@/features/graph/dynamicPorts';
 import type { GraphSpec } from '@/types/graph';
 import type { StudioTaskBinding, StudioTaskBindingSpec } from '@/types/workspace';
 
@@ -90,8 +90,8 @@ export function upsertRootTaskBinding(
   const existing = spec.bindings.find((binding) => binding.id === id);
   if (existing) return { ok: true, binding: existing, spec, graph, created: false };
   const target = graph.nodes[targetNodeId];
-  if (!target || (!target.input_ports.includes(targetPort)
-    && !isNextMuxInputPort(graph, targetNodeId, targetPort, spec))) {
+  const dynamic = visibleDynamicInputPorts(graph, targetNodeId, graphState._componentRegistry, spec);
+  if (!target || !(dynamic?.ports ?? target.input_ports).includes(targetPort)) {
     return { ok: false, message: 'Task data must target an existing root input port.' };
   }
   if (targetInputOccupied(graph, spec, targetNodeId, targetPort)) {
@@ -107,6 +107,6 @@ export function upsertRootTaskBinding(
   };
   const nextSpec = { ...spec, bindings: [...spec.bindings, binding] };
   workspaceState.updateActiveScenarioTaskBindingSpec(nextSpec);
-  graphState.markDirty();
+  if (!graphState.resizeDynamicInputs(nextSpec)) graphState.markDirty();
   return { ok: true, binding, spec: nextSpec, graph, created: true };
 }

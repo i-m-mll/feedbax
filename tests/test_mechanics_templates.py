@@ -32,7 +32,7 @@ pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_con
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _rollout(system: AcausalSystem, inputs: dict[str, jax.Array], steps: int = 8) -> jax.Array:
@@ -48,10 +48,10 @@ def test_mechanics_templates_are_real_executable_acausal_graphs() -> None:
     registry = _registry()
 
     for name, inputs, outputs in (
-        ("PointMass", ("force",), ("position", "velocity")),
-        ("MassSpringDamper", ("force",), ("position", "velocity")),
-        ("PointMassWithMuscles", ("flexor", "extensor"), ("position", "velocity")),
-        ("TwoLinkArm6Muscle", ("excitation",), ("effector", "state")),
+        ("feedbax.PointMass", ("force",), ("position", "velocity")),
+        ("feedbax.MassSpringDamper", ("force",), ("position", "velocity")),
+        ("feedbax.PointMassWithMuscles", ("flexor", "extensor"), ("position", "velocity")),
+        ("feedbax.TwoLinkArm6Muscle", ("excitation",), ("effector", "state")),
     ):
         meta = registry.get(name)
         assert meta is not None
@@ -66,7 +66,7 @@ def test_mechanics_templates_are_real_executable_acausal_graphs() -> None:
 
 def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
     registry = _registry()
-    template = registry.get("TwoLinkArm6Muscle")
+    template = registry.get("feedbax.TwoLinkArm6Muscle")
     assert template is not None
     graph = template.template_graph
     assert isinstance(graph, AcausalGraphSpec)
@@ -82,7 +82,7 @@ def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
     compiled = compile_acausal_graph(graph, "arm", registry)
     direct = build_component(
         "direct",
-        "AnalyticalMusculoskeletalPlant",
+        "feedbax.AnalyticalMusculoskeletalPlant",
         {"dt": graph.solver.dt, "n_steps": 1},
         component_registry=registry,
     )
@@ -102,9 +102,9 @@ def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
 def test_multibody_registry_entries_declare_workspace_representations() -> None:
     registry = _registry()
     expected = {
-        "PlanarLink": "planar_chain",
-        "MusclePath": "muscle_path",
-        "PointMarker": "marker",
+        "feedbax.PlanarLink": "planar_chain",
+        "feedbax.MusclePath": "muscle_path",
+        "feedbax.PointMarker": "marker",
     }
     for name, archetype in expected.items():
         meta = registry.get(name)
@@ -115,7 +115,7 @@ def test_multibody_registry_entries_declare_workspace_representations() -> None:
 
 def test_mass_spring_damper_template_matches_hand_built_system() -> None:
     registry = _registry()
-    template = registry.get("MassSpringDamper")
+    template = registry.get("feedbax.MassSpringDamper")
     assert template is not None
     compiled = compile_acausal_graph(template.template_graph, "msd", registry)
     direct = AcausalSystem(
@@ -150,7 +150,7 @@ def test_mass_spring_damper_template_matches_hand_built_system() -> None:
 
 def test_preformed_muscle_leaf_activation_drives_conserving_force() -> None:
     registry = _registry()
-    template = registry.get("PointMassWithMuscles")
+    template = registry.get("feedbax.PointMassWithMuscles")
     assert template is not None
     system = compile_acausal_graph(template.template_graph, "muscled_point_mass", registry)
 
@@ -166,7 +166,7 @@ def test_analytical_musculoskeletal_plant_builds_and_steps_from_graph_spec() -> 
     spec = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AnalyticalMusculoskeletalPlant",
+                type="feedbax.AnalyticalMusculoskeletalPlant",
                 params={"dt": 0.01, "n_steps": 2},
                 input_ports=["excitation"],
                 output_ports=["effector", "state"],
@@ -192,7 +192,7 @@ def test_analytical_musculoskeletal_plant_builds_and_steps_from_graph_spec() -> 
         key=jax.random.PRNGKey(1),
     )
     assert "effector" in outputs
-    assert graph_to_spec(graph).nodes["plant"].type == "AnalyticalMusculoskeletalPlant"
+    assert graph_to_spec(graph).nodes["plant"].type == "feedbax.AnalyticalMusculoskeletalPlant"
 
 
 def test_registered_analytical_plant_projects_integrated_activations() -> None:
@@ -203,7 +203,7 @@ def test_registered_analytical_plant_projects_integrated_activations() -> None:
         spec = GraphSpec(
             nodes={
                 "plant": ComponentSpec(
-                    type="AnalyticalMusculoskeletalPlant",
+                    type="feedbax.AnalyticalMusculoskeletalPlant",
                     params={
                         "dt": 0.02,
                         "tau_act": 0.01,
@@ -270,4 +270,8 @@ def test_mechanics_domain_registry_entries_compile_or_template_build() -> None:
         )
         assert not any("unknown element type" in issue.reason for issue in report)
 
-    assert {"MassSpringDamper", "PointMassWithMuscles", "RigidTendonHillMuscle"} <= set(checked)
+    assert {
+        "feedbax.MassSpringDamper",
+        "feedbax.PointMassWithMuscles",
+        "feedbax.RigidTendonHillMuscle",
+    } <= set(checked)

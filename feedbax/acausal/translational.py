@@ -22,9 +22,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from feedbax.acausal._component import NonNegativeFloat
 from feedbax.acausal._scalar_mechanics import TRANSLATIONAL
 from feedbax.acausal.base import AcausalElement
 from feedbax._acausal_payload import FORCE_PAYLOAD, PRESCRIBED_MOTION_PAYLOAD
+from feedbax.contracts.portable import ComponentOptions
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 
 
 @dataclass
@@ -42,7 +45,9 @@ class Mass(AcausalElement):
     flange (computed by the assembly algorithm's force-balance step).
     """
 
-    def __init__(self, name: str, mass: float = 1.0):
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
+    def __init__(self, name: str, mass: NonNegativeFloat = 1.0):
         super().__init__(name=name)
         TRANSLATIONAL.inertia(self, mass)
 
@@ -61,7 +66,9 @@ class LinearSpring(AcausalElement):
         flange_a, flange_b -- translational.
     """
 
-    def __init__(self, name: str, stiffness: float = 1.0):
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
+    def __init__(self, name: str, stiffness: NonNegativeFloat = 1.0):
         super().__init__(name=name)
         TRANSLATIONAL.coupling(self, "stiffness", stiffness, TRANSLATIONAL.coordinate)
 
@@ -74,7 +81,9 @@ class LinearDamper(AcausalElement):
         flange_a, flange_b -- translational.
     """
 
-    def __init__(self, name: str, damping: float = 1.0):
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
+    def __init__(self, name: str, damping: NonNegativeFloat = 1.0):
         super().__init__(name=name)
         TRANSLATIONAL.coupling(self, "damping", damping, TRANSLATIONAL.velocity)
 
@@ -87,6 +96,8 @@ class ForceSource(AcausalElement):
         flange -- translational.  The through variable is set directly
         from the causal input array.
     """
+
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = FORCE_PAYLOAD
 
@@ -104,6 +115,8 @@ class Ground(AcausalElement):
         port become grounded (fixed at zero).
     """
 
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
     def __init__(self, name: str):
         super().__init__(name=name)
         TRANSLATIONAL.one_port(self, "ground")
@@ -118,6 +131,8 @@ class PrescribedMotion(AcausalElement):
         across variables become causal inputs (removed from the state
         vector).
     """
+
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = PRESCRIBED_MOTION_PAYLOAD
 
@@ -134,6 +149,8 @@ class PositionSensor(AcausalElement):
         flange -- translational.  This sensor contributes zero force.
     """
 
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
     def __init__(self, name: str):
         super().__init__(name=name)
         TRANSLATIONAL.sensor(self, TRANSLATIONAL.coordinate)
@@ -142,6 +159,8 @@ class PositionSensor(AcausalElement):
 @dataclass
 class VelocitySensor(AcausalElement):
     """Reads velocity at a connection node."""
+
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
         super().__init__(name=name)
@@ -152,6 +171,56 @@ class VelocitySensor(AcausalElement):
 class ForceSensor(AcausalElement):
     """Reads net force at a connection node."""
 
+    component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
+
     def __init__(self, name: str):
         super().__init__(name=name)
         TRANSLATIONAL.sensor(self, TRANSLATIONAL.effort)
+
+
+class MechanicsMass(Mass):
+    """Mass in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsLinearSpring(LinearSpring):
+    """LinearSpring in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsLinearDamper(LinearDamper):
+    """LinearDamper in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsForceSource(ForceSource):
+    """ForceSource in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsGround(Ground):
+    """Ground in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsPositionSensor(PositionSensor):
+    """PositionSensor in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsVelocitySensor(VelocitySensor):
+    """VelocitySensor in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
+
+class MechanicsForceSensor(ForceSensor):
+    """ForceSensor in a mechanics interior."""
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))

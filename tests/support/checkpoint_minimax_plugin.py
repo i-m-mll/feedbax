@@ -108,16 +108,14 @@ def checkpoint_minimax_method_program() -> DeclaredTrainingProgram[CheckpointMin
 
 
 def _register(context) -> None:
-    context.registry(TRAINING_PROGRAMS).register_program(
-        checkpoint_minimax_method_program()
-    )
+    context.registry(TRAINING_PROGRAMS).register_program(checkpoint_minimax_method_program())
 
 
 PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.checkpoint_minimax",
         "1.0",
-        1,
+        2,
         families=(FamilyRequirement("training_programs"),),
     ),
     _register,

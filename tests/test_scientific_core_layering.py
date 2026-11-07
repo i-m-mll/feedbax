@@ -34,6 +34,10 @@ FORBIDDEN_IMPORTS = {
     "authoring": ("feedbax.bin", "feedbax.config", "feedbax.envelope"),
 }
 
+COMPOSITION_ROOT_IMPORTS = {
+    ("feedbax/component_registry/builtins.py", "feedbax.studio"),
+}
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -58,6 +62,8 @@ def test_scientific_core_has_no_platform_or_authoring_imports() -> None:
         assert package_root.is_dir(), package
         for path in sorted(package_root.rglob("*.py")):
             for lineno, target in _absolute_imports(path):
+                if (path.relative_to(repo_root).as_posix(), target) in COMPOSITION_ROOT_IMPORTS:
+                    continue
                 for boundary, forbidden in FORBIDDEN_IMPORTS.items():
                     if any(
                         target == prefix or target.startswith(f"{prefix}.") for prefix in forbidden

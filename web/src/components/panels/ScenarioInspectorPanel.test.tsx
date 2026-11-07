@@ -12,11 +12,11 @@ afterEach(cleanup);
 it('renders conserving endpoints without causal temporality or tap actions', () => {
   const graph: AcausalGraphSpec = {
     schema_id: 'feedbax.spec.acausal_graph',
-    schema_version: 'feedbax.spec.acausal_graph.v1',
+    schema_version: 'feedbax.spec.acausal_graph.v2',
     physical_domain: 'translational',
     nodes: {
-      mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] },
-      spring: { type: 'Spring', params: {}, input_ports: [], output_ports: [] },
+      mass: { type: 'feedbax.Mass', params: {}, input_ports: [], output_ports: [] },
+      spring: { type: 'feedbax.Spring', params: {}, input_ports: [], output_ports: [] },
     },
     connections: [{ a: ['mass', 'flange'], b: ['spring', 'flange'] }],
     solver: { solver_type: 'euler', dt: 0.01 },

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import (
     ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
     ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
@@ -149,7 +150,7 @@ def test_create_graph_persists_default_workspace(tmp_path):
 
 def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_path):
     service = GraphService(storage_dir=tmp_path)
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = GraphSpec(
         nodes={
             "mux": ComponentSpec(type="Mux", params={"n_inputs": 3}),
@@ -178,6 +179,30 @@ def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_
     assert "/graph/nodes/mux" in reloaded.project.workspace_document.semantic_anchors
 
 
+def test_studio_save_stamps_nested_mechanics_without_completing_params(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    registry = ComponentRegistry()
+    interior = point_mass_template_graph()
+    interior.nodes["mass"].params.clear()
+    graph = GraphSpec(
+        nodes={"plant": ComponentSpec(type="feedbax.AcausalSystem")},
+        subgraphs={"plant": interior},
+    )
+
+    record = service.create_graph(graph, component_registry=registry)
+    saved = json.loads((tmp_path / f"{record.graph_id}.json").read_text())
+    saved_nodes = saved["graph"]["subgraphs"]["plant"]["nodes"]
+    assert saved_nodes["mass"]["type"] == "feedbax.MechanicsMass"
+    assert saved_nodes["mass"]["revision"] == 1
+    assert saved_nodes["mass"]["params"] == {}
+    assert saved_nodes["force"]["revision"] == 1
+    reloaded = service.get_graph(record.graph_id, component_registry=registry)
+    assert reloaded.project.graph == record.project.graph
+    assert reloaded.project.workspace_document.semantic_root == (
+        record.project.workspace_document.semantic_root
+    )
+
+
 def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):
     service = GraphService(storage_dir=tmp_path)
     declaration = {
@@ -204,6 +229,7 @@ def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):
     reloaded = service.get_graph(record.graph_id)
 
     assert reloaded.project.graph.nodes["fixture"].params["nested"]["matrix"] == declaration
+    assert reloaded.project.graph.nodes["fixture"].revision is None
     assert "graph" not in reloaded.project.workspace.scenarios["scenario:train"].model_fields_set
 
 
@@ -427,7 +453,8 @@ def test_legacy_project_load_does_not_generate_network_subgraph(tmp_path):
 
     assert record.project.graph.nodes["network"].type == "SimpleStagedNetwork"
     assert record.project.graph.nodes["network"].input_ports == ["target"]
-    assert record.project.graph.input_bindings == {"input": ("network", "target")}
+    assert record.project.graph.input_ports == ["target"]
+    assert record.project.graph.input_bindings == {"target": ("network", "target")}
     assert record.project.graph.subgraphs is None
     train_stage = next(stage for stage in record.project.workspace.stages if stage.kind == "train")
     assert (

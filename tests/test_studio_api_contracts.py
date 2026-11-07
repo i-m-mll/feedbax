@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.contracts.representation import RepresentationSpec
+
+from feedbax.runtime.components import Gain
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports
+from feedbax.studio.component_presentation import PresentationOverride
+
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -334,33 +342,42 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
 
 
 def test_component_api_serves_representation_contract() -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "ApiRepresentedGain",
-        lambda params: None,
-        category="Test",
-        description="API represented component fixture.",
-        param_schema=[{"name": "gain", "type": "float", "default": 1.0}],
-        input_ports=["input"],
-        output_ports=["output"],
-        representation={
-            "anchors": [
-                {
-                    "id": "endpoint",
-                    "semantic_role": "endpoint",
-                    "interaction_roles": ["selectable"],
-                    "binding": {"kind": "param_path", "path": "gain"},
-                }
-            ],
-            "elements": [
-                {
-                    "id": "glyph",
-                    "archetype": "marker",
-                    "anchors": ["endpoint"],
-                    "frame_provider": {"kind": "from_input_port", "input_port": "input"},
-                }
-            ],
-        },
+    class ApiRepresentedGain(Gain):
+        """API represented component fixture."""
+
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            namespace="example",
+            components=(ApiRepresentedGain,),
+            presentation={
+                ApiRepresentedGain: PresentationOverride(
+                    representation=RepresentationSpec.model_validate(
+                        {
+                            "anchors": [
+                                {
+                                    "id": "endpoint",
+                                    "semantic_role": "endpoint",
+                                    "interaction_roles": ["selectable"],
+                                    "binding": {"kind": "param_path", "path": "gain"},
+                                }
+                            ],
+                            "elements": [
+                                {
+                                    "id": "glyph",
+                                    "archetype": "marker",
+                                    "anchors": ["endpoint"],
+                                    "frame_provider": {
+                                        "kind": "from_input_port",
+                                        "input_port": "input",
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                )
+            },
+        )
     )
     app = create_app()
     with TestClient(app) as client:
@@ -374,7 +391,7 @@ def test_component_api_serves_representation_contract() -> None:
     assert response.status_code == 200
     contract = ComponentListResponse.model_validate(response.json())
     represented = next(
-        item for item in contract.data.components if item.name == "ApiRepresentedGain"
+        item for item in contract.data.components if item.name == "example.ApiRepresentedGain"
     )
     assert represented.representation is not None
     assert represented.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
@@ -387,8 +404,20 @@ def test_component_refresh_atomically_swaps_whole_bootstrap_state(
     app = create_app()
     with TestClient(app) as client:
         original = app.state.bootstrap_state
-        replacement_registry = ComponentRegistry(load_user_components=False)
-        replacement_registry.register_component_type("RefreshOnlyComponent", lambda _params: None)
+        replacement_registry = ComponentRegistry()
+
+        class RefreshOnlyComponent(Component):
+            ports = Ports({}, {})
+
+            def __call__(self, inputs, state, *, key):
+                return {}, state
+
+        replacement_registry.ingest(
+            ComponentPack(
+                namespace="example",
+                components=(RefreshOnlyComponent,),
+            )
+        )
         replacement_registry.seal()
         replacement = BootstrapState(
             replace(original.bundle, components=replacement_registry), original.provenance
@@ -476,7 +505,7 @@ def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
 def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
     client = TestClient(create_app())
     graph = GraphSpec(
-        nodes={"gain": ComponentSpec(type="Gain", input_ports=["input"])},
+        nodes={"gain": ComponentSpec(type="feedbax.Gain", input_ports=["input"])},
         input_ports=["command", "override"],
         input_bindings={"command": ("gain", "input"), "override": ("gain", "input")},
     )

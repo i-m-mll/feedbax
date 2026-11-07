@@ -351,7 +351,7 @@ def test_worker_http_has_one_truthful_external_service_variant() -> None:
 
 
 def test_builtin_registry_realizes_runpod_ownership_from_construction_context() -> None:
-    registry = new_application_registry_bundle(local_component_source=None).drivers
+    registry = new_application_registry_bundle().drivers
 
     external = registry.construct(
         "runpod",
@@ -383,7 +383,7 @@ def test_builtin_registry_realizes_runpod_ownership_from_construction_context() 
 
 
 def test_runpod_auto_teardown_false_realizes_owned_resource_preservation() -> None:
-    registry = new_application_registry_bundle(local_component_source=None).drivers
+    registry = new_application_registry_bundle().drivers
 
     driver = registry.construct(
         "runpod",
@@ -399,7 +399,7 @@ def test_runpod_auto_teardown_false_realizes_owned_resource_preservation() -> No
 
 
 def test_keep_alive_context_realizes_preservation_for_local_and_owned_runpod() -> None:
-    registry = new_application_registry_bundle(local_component_source=None).drivers
+    registry = new_application_registry_bundle().drivers
 
     local = registry.construct(
         "local",
@@ -422,7 +422,7 @@ def test_keep_alive_context_realizes_preservation_for_local_and_owned_runpod() -
 
 
 def test_preserved_runpod_realization_mechanically_prevents_provider_removal() -> None:
-    registry = new_application_registry_bundle(local_component_source=None).drivers
+    registry = new_application_registry_bundle().drivers
     driver = registry.construct(
         "runpod",
         DriverConstructionContext(
@@ -443,7 +443,7 @@ def test_preserved_runpod_realization_mechanically_prevents_provider_removal() -
 
 
 def test_preserved_local_realization_mechanically_prevents_process_stop() -> None:
-    registry = new_application_registry_bundle(local_component_source=None).drivers
+    registry = new_application_registry_bundle().drivers
     driver = registry.construct(
         "local",
         DriverConstructionContext(configuration={"preserve_owned_resources": True}),
@@ -534,8 +534,8 @@ def test_group_hooks_require_their_complete_callable_surface(
 
 
 def test_application_driver_registry_is_fresh_and_sealed_with_builtins() -> None:
-    first = new_application_registry_bundle(local_component_source=None)
-    second = new_application_registry_bundle(local_component_source=None)
+    first = new_application_registry_bundle()
+    second = new_application_registry_bundle()
 
     assert first.drivers is not second.drivers
     assert first.drivers.registered_names() == ("local", "runpod", "worker-http")
