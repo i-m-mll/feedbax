@@ -46,6 +46,20 @@ def _drop_label(params):
     return {name: value for name, value in params.items() if name != "label"}
 
 
+def _threshold_v3_evidence(params):
+    selector = params.get("state_selector")
+    return (
+        isinstance(selector, Mapping)
+        and "kind" in selector
+        and "lateral_force" in params
+        and "label" not in params
+    )
+
+
+def _curl_v2_evidence(params):
+    return set(params) <= {"scale", "active", "amplitude"}
+
+
 HISTORIES = {
     FixedField: History(
         Change(2, migrate=_drop_label),
@@ -65,7 +79,7 @@ HISTORIES = {
         Change(2, migrate=_drop_label),
         legacy=(
             LegacyEndpoint("CurlField", "1", 1, _has_legacy_label),
-            LegacyEndpoint("CurlField", "2", 2),
+            LegacyEndpoint("CurlField", "2", 2, _curl_v2_evidence),
         ),
     ),
     ThresholdLatchedForce: History(

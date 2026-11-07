@@ -51,6 +51,7 @@ def init_state_from_component(component: "Component") -> State:
 
     return State(component)
 
+
 class GraphNode(Module):
     """Executable graph node, without a promise of portable reconstruction."""
 
@@ -162,7 +163,11 @@ class Component(GraphNode):
         if ports is not None:
             validate_configuration(self)
         if ports is not None and ports.dynamic is not None:
-            names = (*ports.dynamic.input_name_params, *ports.dynamic.output_name_params) if ports.dynamic.count_mode == "names" else (ports.dynamic.count_param,)
+            names = (
+                (*ports.dynamic.input_name_params, *ports.dynamic.output_name_params)
+                if ports.dynamic.count_mode == "names"
+                else (ports.dynamic.count_param,)
+            )
             values = {}
             paths = configuration_paths(type(self))
             for name in names:
@@ -174,12 +179,17 @@ class Component(GraphNode):
             object.__setattr__(self, "input_ports", layout.input_ports)
             object.__setattr__(self, "output_ports", layout.output_ports)
 
+    def configuration_values(self):
+        """Read raw stored authored values; override for a non-field representation."""
+        from feedbax.contracts.portable import configuration_values
+
+        return configuration_values(self)
+
     def configuration(self):
         """Read effective construction values, including retained reset payloads."""
         from feedbax.contracts.portable import extract_configuration
 
         return extract_configuration(self)
-
 
 
 class RolloutStepContext(Module):
@@ -326,8 +336,12 @@ class Graph(GraphNode):
     input_ports: tuple[str, ...] = ()
     output_ports: tuple[str, ...] = ()
 
-    state_view_fn: Optional[Callable[[dict[str, PyTree]], PyTree]] = field(default=None, static=True)
-    state_consistency_fn: Optional[Callable[[Graph, State], State]] = field(default=None, static=True)
+    state_view_fn: Optional[Callable[[dict[str, PyTree]], PyTree]] = field(
+        default=None, static=True
+    )
+    state_consistency_fn: Optional[Callable[[Graph, State], State]] = field(
+        default=None, static=True
+    )
     checkpoint: bool = eqx.field(default=False, static=True)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
@@ -615,7 +629,9 @@ class Graph(GraphNode):
             raise TypeError("state_view_fn must be callable")
         return self._with_runtime_callback("state_view_fn", state_view_fn)
 
-    def with_state_consistency(self, state_consistency_fn: Callable[[Graph, State], State]) -> "Graph":
+    def with_state_consistency(
+        self, state_consistency_fn: Callable[[Graph, State], State]
+    ) -> "Graph":
         """Return a copy with a callback receiving the current graph and State."""
 
         if not callable(state_consistency_fn):
@@ -1649,7 +1665,9 @@ class Graph(GraphNode):
             (new_nodes, new_wires, new_input_bindings, new_output_bindings),
         )
         object.__setattr__(
-            graph, "component_bindings", {k: v for k, v in self.component_bindings.items() if k != name}
+            graph,
+            "component_bindings",
+            {k: v for k, v in self.component_bindings.items() if k != name},
         )
         object.__setattr__(
             graph,
