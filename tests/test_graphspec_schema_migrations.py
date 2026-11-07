@@ -436,16 +436,10 @@ def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
     assert nested["schema_id"] == GRAPH_SPEC_SCHEMA_ID
     assert nested["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
     assert nested["nodes"]["feedback"]["type"] == "Channel"
-    assert [record.metadata["graph_path"] for record in result.migration_records] == [
-        "graph",
-        "graph",
-        "graph",
-        "graph",
-        "graph.subgraphs['network']",
-        "graph.subgraphs['network']",
-        "graph.subgraphs['network']",
-        "graph.subgraphs['network']",
-    ]
+    assert [record.metadata["graph_path"] for record in result.migration_records] == (
+        ["graph"] * len(GRAPH_V1_TO_V6_MIGRATIONS)
+        + ["graph.subgraphs['network']"] * len(GRAPH_V1_TO_V6_MIGRATIONS)
+    )
 
 
 def test_unknown_graph_spec_schema_version_reports_available_migrations() -> None:
