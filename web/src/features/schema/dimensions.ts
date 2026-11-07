@@ -24,7 +24,7 @@ interface DimensionTarget {
 }
 
 const DIMENSION_TARGETS: Record<string, DimensionTarget[]> = {
-  Network: [
+  'feedbax.Network': [
     {
       port: 'input+feedback',
       direction: 'input',
@@ -34,21 +34,21 @@ const DIMENSION_TARGETS: Record<string, DimensionTarget[]> = {
     },
     { port: 'output', direction: 'output', param: 'out_size' },
   ],
-  Linear: [
+  'feedbax.Linear': [
     { port: 'input', direction: 'input', param: 'input_size' },
     { port: 'output', direction: 'output', param: 'output_size' },
   ],
-  MLP: [
+  'feedbax.MLP': [
     { port: 'input', direction: 'input', param: 'input_size' },
     { port: 'output', direction: 'output', param: 'output_size' },
   ],
-  GRU: [
+  'feedbax.GRU': [
     { port: 'input', direction: 'input', param: 'input_size' },
     { port: 'hidden', direction: 'input', param: 'hidden_size' },
     { port: 'output', direction: 'output', param: 'hidden_size' },
     { port: 'hidden', direction: 'output', param: 'hidden_size' },
   ],
-  LSTM: [
+  'feedbax.LSTM': [
     { port: 'input', direction: 'input', param: 'input_size' },
     { port: 'hidden', direction: 'input', param: 'hidden_size' },
     { port: 'output', direction: 'output', param: 'hidden_size' },

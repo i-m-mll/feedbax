@@ -15,7 +15,7 @@ const runtimeGraph: GraphSpec = {
       output_ports: ['output'],
     },
     task_mux: {
-      type: 'Mux',
+      type: 'feedbax.Mux',
       params: { n_inputs: 2 },
       input_ports: ['in_0', 'in_1'],
       output_ports: ['output'],
@@ -78,8 +78,8 @@ describe('graph authoring normalization', () => {
       schema_version: 'feedbax.spec.acausal_graph.v1',
       physical_domain: 'translational',
       nodes: {
-        mass: { type: 'Mass', params: { mass: 2 }, input_ports: [], output_ports: [] },
-        spring: { type: 'Spring', params: { stiffness: 4 }, input_ports: [], output_ports: [] },
+        mass: { type: 'feedbax.Mass', params: { mass: 2 }, input_ports: [], output_ports: [] },
+        spring: { type: 'feedbax.Spring', params: { stiffness: 4 }, input_ports: [], output_ports: [] },
       },
       connections: [{ a: ['mass', 'flange'], b: ['spring', 'flange'] }],
       solver: {
@@ -95,7 +95,7 @@ describe('graph authoring normalization', () => {
       subgraphs: { mechanics: interior },
     });
     expect(normalized.subgraphs?.mechanics).toBe(interior);
-    expect(normalized.input_ports).toEqual(['input']);
+    expect(normalized.input_ports).toEqual(['target']);
   });
 
   it('does not generate hidden network topology while normalizing legacy metadata', () => {
@@ -107,8 +107,8 @@ describe('graph authoring normalization', () => {
       input_ports: ['target', 'feedback'],
     });
     expect(normalized.wires[0].target_port).toBe('target');
-    expect(normalized.input_ports).toEqual(['input']);
-    expect(normalized.input_bindings).toEqual({ input: ['network', 'target'] });
+    expect(normalized.input_ports).toEqual(['target']);
+    expect(normalized.input_bindings).toEqual({ target: ['network', 'target'] });
     const child = normalized.subgraphs?.child;
     expect(isCausalGraphSpec(child)).toBe(true);
     if (!isCausalGraphSpec(child)) throw new Error('expected causal child subgraph');
@@ -116,7 +116,7 @@ describe('graph authoring normalization', () => {
       type: 'SimpleStagedNetwork',
       input_ports: ['target'],
     });
-    expect(child.input_bindings).toEqual({ input: ['inner', 'target'] });
+    expect(child.input_bindings).toEqual({ target: ['inner', 'target'] });
     expect(normalized.subgraphs?.network).toBeUndefined();
     expect(normalized.taps).toEqual([
       {
@@ -203,7 +203,7 @@ describe('graph authoring normalization', () => {
     const graph: GraphSpec = {
       nodes: {
         input_mux: {
-          type: 'Mux',
+          type: 'feedbax.Mux',
           params: { n_inputs: 2 },
           input_ports: ['in_0', 'in_1'],
           output_ports: ['output'],
@@ -253,7 +253,7 @@ describe('graph authoring normalization', () => {
     const legacyInner: GraphSpec = {
       nodes: {
         cell: {
-          type: 'GRU',
+          type: 'feedbax.GRU',
           params: { input_size: 4, hidden_size: 100 },
           input_ports: ['input', 'hidden'],
           output_ports: ['output', 'hidden'],
@@ -268,7 +268,7 @@ describe('graph authoring normalization', () => {
     const graph: GraphSpec = {
       nodes: {
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: {},
           input_ports: ['input', 'feedback'],
           output_ports: ['output'],
@@ -283,7 +283,7 @@ describe('graph authoring normalization', () => {
         network: {
           nodes: {
             model: {
-              type: 'Subgraph',
+              type: 'feedbax.Subgraph',
               params: {},
               input_ports: ['input', 'feedback'],
               output_ports: ['output'],
@@ -309,8 +309,8 @@ describe('graph authoring normalization', () => {
 
     expect(isCausalGraphSpec(subgraph)).toBe(true);
     if (!isCausalGraphSpec(subgraph)) throw new Error('expected causal network subgraph');
-    expect(subgraph.nodes.model?.type).toBe('Subgraph');
-    expect(subgraph.subgraphs?.model.nodes.cell.type).toBe('GRU');
+    expect(subgraph.nodes.model?.type).toBe('feedbax.Subgraph');
+    expect(subgraph.subgraphs?.model.nodes.cell.type).toBe('feedbax.GRU');
     expect(subgraph.output_bindings).toEqual({ output: ['model', 'output'] });
   });
 
@@ -318,19 +318,19 @@ describe('graph authoring normalization', () => {
     const graph: GraphSpec = {
       nodes: {
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: {},
           input_ports: ['input', 'feedback'],
           output_ports: ['output'],
         },
         mechanics: {
-          type: 'PointMass',
+          type: 'feedbax.PointMass',
           params: {},
           input_ports: ['force'],
           output_ports: ['effector'],
         },
         feedback: {
-          type: 'Channel',
+          type: 'feedbax.Channel',
           params: {},
           input_ports: ['input'],
           output_ports: ['output'],

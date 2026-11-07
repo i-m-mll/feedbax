@@ -40,7 +40,7 @@ const components: ComponentDefinition[] = [
     },
   },
   {
-    name: 'Mux',
+    name: 'feedbax.Mux',
     category: 'Test',
     description: '',
     param_schema: [],
@@ -64,7 +64,7 @@ const components: ComponentDefinition[] = [
     },
   },
   {
-    name: 'Network',
+    name: 'feedbax.Network',
     category: 'Test',
     description: '',
     param_schema: [],
@@ -78,7 +78,7 @@ const components: ComponentDefinition[] = [
     },
   },
   {
-    name: 'GRU',
+    name: 'feedbax.GRU',
     category: 'Test',
     description: '',
     param_schema: [],
@@ -92,7 +92,7 @@ const components: ComponentDefinition[] = [
     },
   },
   {
-    name: 'Arm6MuscleRigidTendon',
+    name: 'feedbax.Arm6MuscleRigidTendon',
     category: 'Test',
     description: '',
     param_schema: [],
@@ -175,7 +175,7 @@ describe('projectStudioSchema', () => {
       schema_version: 'feedbax.spec.acausal_graph.v1',
       physical_domain: 'translational',
       nodes: {
-        mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] },
+        mass: { type: 'feedbax.Mass', params: {}, input_ports: [], output_ports: [] },
       },
       connections: [{ a: ['mass', 'left'], b: ['mass', 'right'] }],
       solver: { solver_type: 'euler', dt: 0.01 },
@@ -276,7 +276,7 @@ describe('projectStudioSchema', () => {
       ...graph,
       nodes: {
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: { input_size: 4, hidden_size: 100, out_size: 2 },
           input_ports: ['input', 'hidden'],
           output_ports: ['output', 'hidden'],
@@ -359,7 +359,7 @@ describe('projectStudioSchema', () => {
         ...graph,
         nodes: {
           network: {
-            type: 'Network',
+            type: 'feedbax.Network',
             params: { input_size: 2, out_size: 6 },
             input_ports: ['input'],
             output_ports: ['output'],
@@ -492,7 +492,7 @@ describe('projectStudioSchema', () => {
         ...graph,
         nodes: {
           mux: {
-            type: 'Mux',
+            type: 'feedbax.Mux',
             params: { n_inputs: 2 },
             input_ports: ['in_0', 'in_1'],
             output_ports: ['output'],
@@ -563,7 +563,7 @@ describe('projectStudioSchema', () => {
         ...graph,
         nodes: {
           mux: {
-            type: 'Mux',
+            type: 'feedbax.Mux',
             params: { n_inputs: 2 },
             input_ports: ['in_0', 'in_1'],
             output_ports: ['output'],
@@ -630,19 +630,19 @@ describe('projectStudioSchema', () => {
       ...graph,
       nodes: {
         task_mux: {
-          type: 'Mux',
+          type: 'feedbax.Mux',
           params: { n_inputs: 2 },
           input_ports: ['in_0', 'in_1'],
           output_ports: ['output'],
         },
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: { input_size: 4, out_size: 2 },
           input_ports: ['input'],
           output_ports: ['output'],
         },
         arm: {
-          type: 'Arm6MuscleRigidTendon',
+          type: 'feedbax.Arm6MuscleRigidTendon',
           params: {},
           input_ports: ['excitation'],
           output_ports: ['forces'],
@@ -750,13 +750,13 @@ describe('projectStudioSchema', () => {
       ...graph,
       nodes: {
         cell: {
-          type: 'GRU',
+          type: 'feedbax.GRU',
           params: { input_size: 4, hidden_size: 100 },
           input_ports: ['input', 'hidden'],
           output_ports: ['output', 'hidden'],
         },
         readout: {
-          type: 'Linear',
+          type: 'feedbax.Linear',
           params: { input_size: 100, output_size: 2 },
           input_ports: ['input'],
           output_ports: ['output'],
@@ -779,13 +779,13 @@ describe('projectStudioSchema', () => {
       ...graph,
       nodes: {
         task_mux: {
-          type: 'Mux',
+          type: 'feedbax.Mux',
           params: { n_inputs: 3 },
           input_ports: ['in_0', 'in_1', 'in_2'],
           output_ports: ['output'],
         },
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: { input_size: 4, hidden_size: 100, out_size: 2 },
           input_ports: ['input', 'hidden'],
           output_ports: ['output', 'hidden'],
@@ -835,7 +835,7 @@ describe('projectStudioSchema', () => {
       ...graph,
       nodes: {
         cell: {
-          type: 'GRU',
+          type: 'feedbax.GRU',
           params: { input_size: 4, hidden_size: 100 },
           input_ports: ['input', 'hidden'],
           output_ports: ['output', 'hidden'],

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError as PydanticValidationError
 
 import feedbax.analysis as analysis_pkg
 from feedbax._delayed_reaches import (
@@ -248,8 +248,8 @@ class RegistryEntry(ProviderModel):
     provenance: Optional[str] = None
     provenance_kind: Optional[str] = None
     component_type_id: Optional[str] = None
-    param_schema_version: Optional[str] = None
-    supported_param_schema_versions: list[str] = Field(default_factory=list)
+    revision: Optional[Annotated[StrictInt, Field(gt=0)]] = None
+    supported_revisions: list[Annotated[StrictInt, Field(gt=0)]] = Field(default_factory=list)
     identity: Optional[ComponentIdentity] = None
     migrations: list[ComponentMigrationInfo] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -934,7 +934,7 @@ def component_registry_snapshot(registry: Any) -> RegistrySnapshot:
     for definition in registry.list_all():
         entries.append(
             RegistryEntry(
-                type_id=f"feedbax.component.{definition.name}",
+                type_id=definition.name,
                 name=definition.name,
                 category=definition.category,
                 description=definition.description,
@@ -945,8 +945,8 @@ def component_registry_snapshot(registry: Any) -> RegistrySnapshot:
                     definition.identity.provenance_kind if definition.identity is not None else None
                 ),
                 component_type_id=definition.name,
-                param_schema_version=definition.param_schema_version,
-                supported_param_schema_versions=list(definition.supported_param_schema_versions),
+                revision=definition.revision,
+                supported_revisions=list(definition.supported_revisions),
                 identity=definition.identity,
                 migrations=list(definition.migrations),
                 version=feedbax_version(),

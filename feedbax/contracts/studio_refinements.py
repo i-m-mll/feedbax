@@ -318,9 +318,19 @@ CROSS_FIELD_REFINEMENTS.update(
         ),
         "DynamicPortPolicy": (
             _typescript_refinement(
+                "dynamic-port.named-layout",
+                "Named dynamic ports require name parameters and cannot declare a count/generated layout",
+                "value.count_mode === 'names' && (value.count_param != null || value.direction != null || value.generated_name_template != null || !(value.input_name_params?.length || value.output_name_params?.length) || hasDuplicate(value.input_name_params ?? []) || hasDuplicate(value.output_name_params ?? []) || value.input_name_params?.some((name) => !name) || value.output_name_params?.some((name) => !name))",
+            ),
+            _typescript_refinement(
+                "dynamic-port.count-layout",
+                "Count-based dynamic ports require count, direction and template only",
+                "value.count_mode !== 'names' && (value.count_param == null || value.direction == null || value.generated_name_template == null || !!value.input_name_params?.length || !!value.output_name_params?.length)",
+            ),
+            _typescript_refinement(
                 "dynamic-port.generated-template",
                 "generated_name_template must contain only the {index} replacement field",
-                "!validGeneratedPortTemplate(value.generated_name_template)",
+                "value.count_mode !== 'names' && (value.generated_name_template == null || !validGeneratedPortTemplate(value.generated_name_template))",
             ),
             _typescript_refinement(
                 "dynamic-port.fixed-names",

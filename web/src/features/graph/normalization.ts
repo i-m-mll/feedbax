@@ -93,52 +93,10 @@ function migrateLegacyTaps(graph: GraphSpec): TapSpec[] {
 }
 
 export function normalizeGraphAuthoringTypes(graph: GraphSpec): GraphSpec {
-  const renamePort = (
-    nodeId: string,
-    port: string,
-    spec: ComponentSpec
-  ) => {
-    if (spec.type === 'Network' && port === 'target') {
-      return 'input';
-    }
-    return port;
-  };
-
-  const nodes = Object.fromEntries(
-    Object.entries(graph.nodes).map(([id, spec]) => {
-      let nextType = spec.type;
-      if (nextType === 'FeedbackChannel') nextType = 'Channel';
-      if (nextType === 'PenzaiSubgraph') nextType = 'PenzaiAdapter';
-      const nextParams = { ...spec.params };
-      const nextSpec: ComponentSpec = {
-        ...spec,
-        type: nextType,
-        params: nextParams,
-      };
-      return [id, nextSpec];
-    })
-  );
-  const wires = graph.wires.map((wire) => {
-    const sourceSpec = nodes[wire.source_node];
-    const targetSpec = nodes[wire.target_node];
-    const normalizedWire = {
-      ...wire,
-      source_port: sourceSpec ? renamePort(wire.source_node, wire.source_port, sourceSpec) : wire.source_port,
-      target_port: targetSpec ? renamePort(wire.target_node, wire.target_port, targetSpec) : wire.target_port,
-      temporality: wire.temporality,
-      recurrent_initializer: wire.recurrent_initializer,
-    };
-    return normalizedWire;
-  });
-  const input_bindings = Object.fromEntries(
-    Object.entries(graph.input_bindings).map(([name, binding]) => {
-      const [nodeId, port] = binding;
-      const spec = nodes[nodeId];
-      const nextPort = spec ? renamePort(nodeId, port, spec) : port;
-      return [name === 'target' ? 'input' : name, [nodeId, nextPort] as [string, string]];
-    })
-  );
-  const input_ports = graph.input_ports.map((port) => (port === 'target' ? 'input' : port));
+  const nodes = graph.nodes;
+  const wires = graph.wires;
+  const input_bindings = graph.input_bindings;
+  const input_ports = graph.input_ports;
   const subgraphs =
     graph.subgraphs
       ? Object.fromEntries(
@@ -185,7 +143,7 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
       binding.target_node_id === 'mux' &&
       !graph.nodes.mux &&
       graph.nodes.input_mux &&
-      graph.nodes.input_mux.type === 'Mux'
+      graph.nodes.input_mux.type === 'feedbax.Mux'
     ) {
       changed = true;
       return {
@@ -199,7 +157,7 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
       };
     }
     const target = graph.nodes[binding.target_node_id];
-    if (target?.type !== 'Network' || binding.target_port !== 'target') {
+    if (target?.type !== 'feedbax.Network' || binding.target_port !== 'target') {
       return binding;
     }
     changed = true;

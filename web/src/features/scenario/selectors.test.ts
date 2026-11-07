@@ -16,7 +16,7 @@ import type { StudioSchemaRegistry } from '@/types/workspace';
 function registry() {
   const graph = createBlankGraph();
   graph.nodes.mechanics = {
-    type: 'PointMass',
+    type: 'feedbax.PointMass',
     params: {},
     input_ports: ['force'],
     output_ports: ['effector'],
