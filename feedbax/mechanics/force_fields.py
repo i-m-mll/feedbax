@@ -223,6 +223,13 @@ class ThresholdLatchState(eqx.Module):
     forward: Array
 
 
+def _delta_matrix(value):
+    matrix = jnp.asarray(value)
+    if matrix.shape != (2, 4):
+        raise ValueError("delta_A must have shape (2, 4)")
+    return matrix
+
+
 class DynamicsMatrixPerturbParams(TransformParams):
     """Parameters for ``DynamicsMatrixPerturb``.
 
@@ -238,7 +245,7 @@ class DynamicsMatrixPerturbParams(TransformParams):
     """
 
     delta_A: Array = field(
-        default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32), converter=jnp.asarray
+        default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32), converter=_delta_matrix
     )
 
 
@@ -529,12 +536,10 @@ class DynamicsMatrixPerturbConfig(BaseModel):
     active: bool = False
     mass: float = Field(gt=0, allow_inf_nan=False)
 
-
     @field_validator("delta_A")
     @classmethod
     def validate_delta_shape(cls, value):
-        if jnp.asarray(value).shape != (2, 4):
-            raise ValueError("delta_A must have shape (2, 4)")
+        _delta_matrix(value)
         return value
 
 

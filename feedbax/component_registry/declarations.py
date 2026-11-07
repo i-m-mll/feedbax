@@ -206,31 +206,36 @@ class ComponentParamContract:
             )
         return result.value
 
+    def require_effective(self, params: Mapping[str, Any]) -> BaseModel:
+        from feedbax.contracts.portable import validate_effective
+
+        return validate_effective(self.model, params)
+
     def build(self, params: Mapping[str, Any]) -> "Component":
         context = {
             name: value for name, value in params.items() if name in self.build_context_fields
         }
         authored = {name: value for name, value in params.items() if name not in context}
         validated = self.require(authored)
-        values = validated.model_dump(mode="python")
-        values.update(context)
-        return self.build_resolved(values)
+        return self.runtime_type.from_config(validated, **context)
 
-    def build_resolved(self, params: Mapping[str, Any]) -> "Component":
+    def build_resolved(
+        self, params: Mapping[str, Any], *, config: BaseModel | None = None
+    ) -> "Component":
         """Construct canonical compiler parameters without reapplying their schema."""
         values = dict(params)
         context = {
-            name: values.pop(name)
-            for name in tuple(values)
-            if name in self.build_context_fields
+            name: values.pop(name) for name in tuple(values) if name in self.build_context_fields
         }
-        return self.runtime_type.from_config(self.model.model_construct(**values), **context)
+        return self.runtime_type.from_config(
+            config if config is not None else self.require_effective(values), **context
+        )
 
     def extract(self, component: "ComponentOwner") -> BaseModel:
         return component.configuration()
 
     def dump(self, component: "Component") -> dict[str, Any]:
-        return self.extract(component).model_dump(mode="json")
+        return self.extract(component).model_dump(mode="json", warnings="error")
 
 
 @dataclass(frozen=True)

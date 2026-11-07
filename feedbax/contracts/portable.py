@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from copy import copy
+from functools import lru_cache
+from types import UnionType
+from typing import Annotated, Union, get_args, get_origin
 import inspect
 from typing import Any, ClassVar, get_type_hints
 from abc import ABC, abstractmethod
@@ -100,12 +104,17 @@ def install_ports(cls):
     cls.output_ports = tuple(ports.outputs)
     if ports.dynamic is not None:
         from equinox import field
-        cls.__annotations__ = {**vars(cls).get("__annotations__", {}),
-                               "input_ports": tuple[str, ...], "output_ports": tuple[str, ...]}
+
+        cls.__annotations__ = {
+            **vars(cls).get("__annotations__", {}),
+            "input_ports": tuple[str, ...],
+            "output_ports": tuple[str, ...],
+        }
         cls.input_ports = field(default=tuple(ports.inputs), static=True, kw_only=True)
         cls.output_ports = field(default=tuple(ports.outputs), static=True, kw_only=True)
 
 
+@lru_cache(maxsize=None)
 def configuration_model(cls):
     if cls.config is not None:
         if not isinstance(cls.config, type) or not issubclass(cls.config, BaseModel):
@@ -177,6 +186,7 @@ def configuration_values(component):
             value = getattr(value, part)
             if part == "init":
                 from equinox.nn._stateful import _Sentinel
+
                 if isinstance(value, _Sentinel):
                     raise ValueError(
                         f"{cls.__name__} reset payload at {path!r} was stripped by make_with_state; preserve initial payloads for export"
@@ -186,15 +196,115 @@ def configuration_values(component):
 
 
 def validate_authoring(model, values):
-    """Validate portable JSON structure, including JSON arrays for typed tuples."""
+    """Normalize raw authoring to canonical values; normalizers must be idempotent."""
     import json
 
     return model.model_validate_json(json.dumps(json_value(values)))
 
 
+def _project_value(value, annotation):
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is Annotated:
+        return _project_value(value, args[0])
+    if value is None:
+        return None
+    if origin in (Union, UnionType):
+        candidates = [item for item in args if item is not type(None)]
+        candidate = next(
+            (item for item in candidates if isinstance(item, type) and isinstance(value, item)),
+            candidates[0],
+        )
+        return _project_value(value, candidate)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        raw = (
+            {name: getattr(value, name) for name in annotation.model_fields}
+            if isinstance(value, BaseModel)
+            else value
+        )
+        return project_configuration_values(raw, annotation)
+    if hasattr(value, "to_param"):
+        value = value.to_param()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if origin in (tuple, list):
+        if origin is tuple and len(args) > 1 and args[-1] is not Ellipsis:
+            return tuple(_project_value(item, kind) for item, kind in zip(value, args, strict=True))
+        items = [_project_value(item, args[0] if args else Any) for item in value]
+        return tuple(items) if origin is tuple else items
+    if origin in (dict, Mapping):
+        return {key: _project_value(item, args[1] if args else Any) for key, item in value.items()}
+    if isinstance(value, Mapping):
+        return {key: _project_value(item, Any) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = [_project_value(item, Any) for item in value]
+        return tuple(items) if isinstance(value, tuple) else items
+    return value
+
+
+def project_configuration_values(raw, model):
+    """Project effective storage into its typed serializer without authoring validators."""
+    return model.model_construct(
+        **{
+            name: _project_value(raw[name], field.annotation)
+            for name, field in model.model_fields.items()
+        }
+    )
+
+
 def extract_configuration(component):
-    return validate_authoring(
-        configuration_model(type(component)), component.configuration_values()
+    return project_configuration_values(
+        component.configuration_values(), configuration_model(type(component))
+    )
+
+
+def _structural_annotation(annotation):
+    origin, args = get_origin(annotation), get_args(annotation)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _effective_model(annotation)
+    if origin is Annotated:
+        from pydantic import BeforeValidator, AfterValidator, WrapValidator, PlainValidator
+
+        metadata = tuple(
+            item
+            for item in args[1:]
+            if not isinstance(
+                item, (BeforeValidator, AfterValidator, WrapValidator, PlainValidator)
+            )
+        )
+        base = _structural_annotation(args[0])
+        return Annotated[(base, *metadata)] if metadata else base
+    if origin in (Union, UnionType):
+        return Union[tuple(_structural_annotation(item) for item in args)]
+    if origin in (tuple, list, dict):
+        return origin[tuple(_structural_annotation(item) for item in args)]
+    return annotation
+
+
+@lru_cache(maxsize=None)
+def _effective_model(model):
+    from pydantic import BeforeValidator, AfterValidator, WrapValidator, PlainValidator
+
+    fields = {}
+    for name, field in model.model_fields.items():
+        structural = copy(field)
+        structural.metadata = [
+            item
+            for item in field.metadata
+            if not isinstance(
+                item, (BeforeValidator, AfterValidator, WrapValidator, PlainValidator)
+            )
+        ]
+        fields[name] = (_structural_annotation(field.annotation), structural)
+    return create_model(
+        f"{model.__name__}Effective", __config__=ConfigDict(extra="forbid", strict=True), **fields
+    )
+
+
+def validate_effective(model, values):
+    """Check effective wire structure and Field constraints without authoring decorators."""
+    checked = validate_authoring(_effective_model(model), values)
+    return project_configuration_values(
+        {name: getattr(checked, name) for name in model.model_fields}, model
     )
 
 
@@ -233,26 +343,20 @@ class ComponentOptions:
 
 
 def validate_configuration(component):
-    """Validate host-visible construction values without materializing traced arrays."""
+    """Check concrete effective fields; numerical owners enforce traced invariants."""
     import jax
+    import json
     from pydantic import TypeAdapter
 
-    cls = type(component)
-    model = configuration_model(cls)
-    values = {}
-    traced = False
+    model = _effective_model(configuration_model(type(component)))
     raw = component.configuration_values()
-    import json
-
     for name, field in model.model_fields.items():
         value = raw[name]
         if any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(value)):
-            traced = True
             continue
-        values[name] = json_value(value)
-        TypeAdapter(field.rebuild_annotation()).validate_json(json.dumps(values[name]), strict=True)
-    if not traced:
-        validate_authoring(model, values)
+        TypeAdapter(field.rebuild_annotation()).validate_json(
+            json.dumps(json_value(value)), strict=True
+        )
 
 
 class ComponentOwner:
@@ -265,6 +369,12 @@ class ComponentOwner:
 
     @classmethod
     def from_config(cls, config, **context):
+        """Materialize typed canonical values, or normalize raw authoring once."""
+        model = configuration_model(cls)
+        if not isinstance(config, model):
+            if isinstance(config, BaseModel):
+                raise TypeError(f"{cls.__name__}.from_config requires {model.__name__}")
+            config = validate_authoring(model, config)
         return cls(**materialize_configuration(cls, config), **context)
 
     @classmethod
@@ -322,17 +432,23 @@ def graph_port_contract(graph, *, registry=None) -> Ports:
                 result[public] = getattr(nested, direction)[port]
             else:
                 node = graph.nodes[node_id]
-                resolved = registry.resolve_component_spec(node.type, node.params, revision=node.revision, complete_params=False)
+                resolved = registry.resolve_component_spec(
+                    node.type, node.params, revision=node.revision, complete_params=False
+                )
                 types = getattr(resolved.meta.port_types, direction)
                 if port in types:
                     result[public] = types[port]
                 elif resolved.meta.dynamic_port_policy is not None:
                     result[public] = resolved.meta.dynamic_port_policy.dynamic_port_type
                 else:
-                    raise ValueError(f"Template boundary {public!r} references an untyped port {node.type}.{port}")
+                    raise ValueError(
+                        f"Template boundary {public!r} references an untyped port {node.type}.{port}"
+                    )
         return result
 
-    return Ports(boundary(graph.input_bindings, "inputs"), boundary(graph.output_bindings, "outputs"))
+    return Ports(
+        boundary(graph.input_bindings, "inputs"), boundary(graph.output_bindings, "outputs")
+    )
 
 
 def expansion_configuration(expand, *, exclude=()):

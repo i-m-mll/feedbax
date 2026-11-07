@@ -10,7 +10,14 @@ from jaxtyping import PRNGKeyArray
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.trial_history import trial_history_plan
-from feedbax.runtime.graph import AuthoredArrayEncoding, Component, ComponentBinding, Graph, GraphNode, Wire
+from feedbax.runtime.graph import (
+    AuthoredArrayEncoding,
+    Component,
+    ComponentBinding,
+    Graph,
+    GraphNode,
+    Wire,
+)
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
     derive_dynamic_port_layout,
@@ -187,8 +194,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 )
             if binding.revision != meta.revision:
                 raise ValueError(
-                    f"Composite node {name!r} has unsupported bound revision "
-                    f"{binding.revision!r}"
+                    f"Composite node {name!r} has unsupported bound revision {binding.revision!r}"
                 )
             type_id = binding.type_id
             params = {}
@@ -203,9 +209,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
             type_id, params, revision = registry.serialize_component(
                 component,
                 type_id=binding.type_id if binding is not None else None,
-                revision=(
-                    binding.revision if binding is not None else None
-                ),
+                revision=(binding.revision if binding is not None else None),
             )
 
         layout = registry.dynamic_port_layout(type_id, params)
@@ -416,12 +420,23 @@ def _instantiate_graph(
             params = {**params, "key": node_keys[()]}
         elif meta is not None and "key" in meta.params.build_context_fields:
             params = {**params, "key": derive_key(construction_key, "construction", node_name)}
+        config = resolution.node_configs.get(node_name)
+        if config is not None:
+            config = config.model_copy(
+                update={
+                    name: _materialize_component_param_value(
+                        getattr(config, name), declarations={}, path=()
+                    )
+                    for name in type(config).model_fields
+                }
+            )
         component = build_component(
             node_name,
             node_type,
             params,
             component_registry=execution_registry,
             params_resolved=True,
+            config=config,
         )
         if (
             tuple(component.input_ports) != declared_input_ports

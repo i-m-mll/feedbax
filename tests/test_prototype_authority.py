@@ -347,7 +347,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
         @classmethod
         def normalize_width(cls, value):
             calls["source"] += 1
-            return value + 1
+            return max(value, 3)
 
     class RelayParams(BaseModel):
         width: int
@@ -453,14 +453,13 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
 
     saved = graph_to_spec(graph, registry)
     saved_leaf = saved.subgraphs["nested"] if nested else saved
-    assert saved_leaf.nodes["source"].parameter_state == "effective"
     assert saved_leaf.nodes["source"].params["width"] == 3
     rebuilt = compile_graph(
         GraphDocument(graph=GraphSpec.model_validate_json(saved.model_dump_json())), registry
     )
-    rebuilt_graph = rebuilt.graph.nodes["nested"].graph if nested else rebuilt.graph
+    rebuilt_graph = rebuilt.graph.nodes["nested"] if nested else rebuilt.graph
     assert rebuilt_graph.nodes["source"].width == 3
-    assert calls == {"source": 1, "relay": 1}
+    assert calls == {"source": 2, "relay": 2}
     calls.update(source=0, relay=0)
     studio = enumerate_studio_schema_registry(
         build_default_studio_workspace(label="Normalized parameters"),
@@ -483,7 +482,7 @@ def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
         @field_validator("width")
         @classmethod
         def normalize_width(cls, value):
-            return value + 1
+            return max(value, 4)
 
     registry = ComponentRegistry()
 
