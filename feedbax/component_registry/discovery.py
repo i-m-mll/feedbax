@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import dataclasses
 from dataclasses import dataclass, field
 from functools import partial
 from importlib import import_module
@@ -28,10 +29,15 @@ class ComponentPack:
     def __post_init__(self):
         if not self.namespace or self.namespace.startswith(".") or self.namespace.endswith("."):
             raise ValueError("Component pack requires a stable namespace")
-        frame = inspect.currentframe().f_back.f_back
-        filename = frame.f_code.co_filename
-        if not filename.startswith("<"):
-            object.__setattr__(self, "sources", (*self.sources, Path(filename).resolve()))
+        frame = inspect.currentframe().f_back
+        while frame is not None and (
+            frame.f_code.co_filename.startswith("<")
+            or frame.f_code.co_filename == dataclasses.__file__
+        ):
+            frame = frame.f_back
+        if frame is not None:
+            source = Path(frame.f_code.co_filename).resolve()
+            object.__setattr__(self, "sources", tuple(dict.fromkeys((*self.sources, source))))
 
 
 def discover_modules(*modules: str | ModuleType, namespace: str, histories=None) -> ComponentPack:
