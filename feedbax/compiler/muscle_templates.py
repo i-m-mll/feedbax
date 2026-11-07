@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+from pydantic import Field
+
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
@@ -15,13 +18,11 @@ from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.runtime.components import MatMul
 
 
-
-
 def arm_6muscle_rigid_tendon_graph(
-    dt: float = 0.01,
-    max_isometric_force: float = 500.0,
-    optimal_muscle_length: float = 0.1,
-    tendon_slack_length: float = 0.1,
+    dt: Annotated[float, Field(ge=0.001, allow_inf_nan=False)] = 0.01,
+    max_isometric_force: Annotated[float, Field(ge=0)] = 500.0,
+    optimal_muscle_length: Annotated[float, Field(ge=0.001)] = 0.1,
+    tendon_slack_length: Annotated[float, Field(ge=0)] = 0.1,
     geometry: TwoLinkArmMuscleGeometry | None = None,
 ) -> GraphSpec:
     """Build a joint-kinematics and excitation to muscle force and torque graph."""
@@ -56,9 +57,9 @@ def arm_6muscle_rigid_tendon_graph(
 
 
 def point_mass_8muscle_relu_graph(
-    n_pairs: int = 4,
-    max_isometric_force: float = 500.0,
-    dt: float = 0.01,
+    n_pairs: Annotated[int, Field(ge=1)] = 4,
+    max_isometric_force: Annotated[float, Field(ge=0)] = 500.0,
+    dt: Annotated[float, Field(ge=0.001, allow_inf_nan=False)] = 0.01,
     tau_activation: float = 0.015,
     tau_deactivation: float = 0.05,
 ) -> GraphSpec:
@@ -183,7 +184,6 @@ def _muscle_force_graph(
     )
 
 
-
 from feedbax.contracts.portable import GraphTemplate, ComponentOptions, expansion_configuration
 
 
@@ -191,7 +191,11 @@ class Arm6MuscleRigidTendon(GraphTemplate):
     """Six-muscle arm with Thelen rigid tendon."""
 
     config = expansion_configuration(arm_6muscle_rigid_tendon_graph, exclude=("geometry",))
-    component_options = ComponentOptions(is_composite=True, template_id="feedbax.templates.mechanics.arm_6muscle_rigid_tendon", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True,
+        template_id="feedbax.templates.mechanics.arm_6muscle_rigid_tendon",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):
@@ -202,7 +206,11 @@ class PointMass8MuscleRelu(GraphTemplate):
     """Eight-muscle point mass with ReLU actuators."""
 
     config = expansion_configuration(point_mass_8muscle_relu_graph)
-    component_options = ComponentOptions(is_composite=True, template_id="feedbax.templates.mechanics.point_mass_8muscle_relu", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True,
+        template_id="feedbax.templates.mechanics.point_mass_8muscle_relu",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):

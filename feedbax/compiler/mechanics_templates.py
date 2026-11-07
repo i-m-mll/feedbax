@@ -15,8 +15,6 @@ from feedbax.mechanics.muscle_config import (
 )
 
 
-
-
 def point_mass_template_graph(params: dict[str, Any] | None = None) -> AcausalGraphSpec:
     """Build a driven translational point-mass mechanics interior."""
 
@@ -288,7 +286,6 @@ __all__ = [
 ]
 
 
-
 from pydantic import BaseModel, ConfigDict, Field
 from feedbax.contracts.portable import GraphTemplate, ComponentOptions, validate_authoring
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
@@ -323,7 +320,13 @@ class MassSpringDamper(GraphTemplate):
     """Executable grounded mass-spring-damper mechanics interior."""
 
     config = MassSpringDamperConfig
-    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, interior_domain=MECHANICS_DOMAIN_ID, is_composite=True, template_id="feedbax.templates.mechanics.mass_spring_damper", template_kind="executable")
+    component_options = ComponentOptions(
+        domain=MECHANICS_DOMAIN_ID,
+        interior_domain=MECHANICS_DOMAIN_ID,
+        is_composite=True,
+        template_id="feedbax.templates.mechanics.mass_spring_damper",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):
@@ -334,7 +337,13 @@ class PointMassWithMuscles(GraphTemplate):
     """Point mass driven by one antagonistic muscle pair."""
 
     config = PointMassWithMusclesConfig
-    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, interior_domain=MECHANICS_DOMAIN_ID, is_composite=True, template_id="feedbax.templates.mechanics.point_mass_with_muscles", template_kind="executable")
+    component_options = ComponentOptions(
+        domain=MECHANICS_DOMAIN_ID,
+        interior_domain=MECHANICS_DOMAIN_ID,
+        is_composite=True,
+        template_id="feedbax.templates.mechanics.point_mass_with_muscles",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):
@@ -345,7 +354,13 @@ class TwoLinkArm6Muscle(GraphTemplate):
     """Editable planar multibody arm with six rigid-tendon muscle paths."""
 
     config = TwoLinkArm6MuscleConfig
-    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, interior_domain=MECHANICS_DOMAIN_ID, is_composite=True, template_id="feedbax.templates.mechanics.two_link_arm_6muscle", template_kind="executable")
+    component_options = ComponentOptions(
+        domain=MECHANICS_DOMAIN_ID,
+        interior_domain=MECHANICS_DOMAIN_ID,
+        is_composite=True,
+        template_id="feedbax.templates.mechanics.two_link_arm_6muscle",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):

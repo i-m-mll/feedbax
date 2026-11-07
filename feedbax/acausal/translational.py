@@ -44,6 +44,7 @@ class Mass(AcausalElement):
     The ``net_force`` is the sum of all through variables connected to the
     flange (computed by the assembly algorithm's force-balance step).
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str, mass: NonNegativeFloat = 1.0):
@@ -64,6 +65,7 @@ class LinearSpring(AcausalElement):
     Ports:
         flange_a, flange_b -- translational.
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str, stiffness: NonNegativeFloat = 1.0):
@@ -78,6 +80,7 @@ class LinearDamper(AcausalElement):
     Ports:
         flange_a, flange_b -- translational.
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str, damping: NonNegativeFloat = 1.0):
@@ -93,6 +96,7 @@ class ForceSource(AcausalElement):
         flange -- translational.  The through variable is set directly
         from the causal input array.
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = FORCE_PAYLOAD
@@ -110,6 +114,7 @@ class Ground(AcausalElement):
         flange -- translational.  All across variables connected to this
         port become grounded (fixed at zero).
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
@@ -126,6 +131,7 @@ class PrescribedMotion(AcausalElement):
         across variables become causal inputs (removed from the state
         vector).
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = PRESCRIBED_MOTION_PAYLOAD
@@ -142,6 +148,7 @@ class PositionSensor(AcausalElement):
     Port:
         flange -- translational.  This sensor contributes zero force.
     """
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
@@ -152,6 +159,7 @@ class PositionSensor(AcausalElement):
 @dataclass
 class VelocitySensor(AcausalElement):
     """Reads velocity at a connection node."""
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
@@ -162,6 +170,7 @@ class VelocitySensor(AcausalElement):
 @dataclass
 class ForceSensor(AcausalElement):
     """Reads net force at a connection node."""
+
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
@@ -174,35 +183,42 @@ class MechanicsMass(Mass):
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
+
 class MechanicsLinearSpring(LinearSpring):
     """LinearSpring in a mechanics interior."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
 
 class MechanicsLinearDamper(LinearDamper):
     """LinearDamper in a mechanics interior."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
+
 class MechanicsForceSource(ForceSource):
     """ForceSource in a mechanics interior."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
 
 class MechanicsGround(Ground):
     """Ground in a mechanics interior."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
+
 class MechanicsPositionSensor(PositionSensor):
     """PositionSensor in a mechanics interior."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
+
 class MechanicsVelocitySensor(VelocitySensor):
     """VelocitySensor in a mechanics interior."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
+
 
 class MechanicsForceSensor(ForceSensor):
     """ForceSensor in a mechanics interior."""

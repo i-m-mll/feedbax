@@ -3,6 +3,7 @@
 from typing import Any
 from feedbax.contracts.representation import RepresentationSpec
 
+
 def _literal_binding(value: Any, *, dim: int | None = None) -> dict[str, Any]:
     binding: dict[str, Any] = {"kind": "literal", "value": value}
     if dim is not None:
@@ -117,5 +118,3 @@ def _point_marker_representation() -> RepresentationSpec:
             ],
         }
     )
-
-

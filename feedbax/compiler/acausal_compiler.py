@@ -333,13 +333,22 @@ def _diagnose_component_types(
     path: str,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
-    get_meta = getattr(component_registry, "get", None)
     for node_id, node_spec in graph.nodes.items():
-        if any(is_acausal_type(node_spec.type, role) for role in (ACTUATION_INPUT_TYPE, SENSOR_OUTPUT_TYPE, BOUNDARY_PORT_TYPE)):
+        if any(
+            is_acausal_type(node_spec.type, role)
+            for role in (ACTUATION_INPUT_TYPE, SENSOR_OUTPUT_TYPE, BOUNDARY_PORT_TYPE)
+        ):
             continue
         if is_acausal_type(node_spec.type, ACAUSAL_SYSTEM_TYPE):
             continue
-        meta = component_registry.resolve_component_spec(node_spec.type, node_spec.params, revision=node_spec.revision, complete_params=False).meta
+        from feedbax.contracts.migrations import UnsupportedComponentMigration
+
+        try:
+            meta = component_registry.resolve_component_spec(
+                node_spec.type, node_spec.params, revision=node_spec.revision, complete_params=False
+            ).meta
+        except UnsupportedComponentMigration:
+            meta = None
         if meta is not None and getattr(meta, "domain", None) not in {
             ACAUSAL_DOMAIN_ID,
             MECHANICS_DOMAIN_ID,
@@ -505,7 +514,7 @@ def _compile_planar_multibody_graph(
         raise ValueError(f"Planar multibody graph {node_name!r} is not compilable: {messages}")
     return build_component(
         node_name,
-        "AnalyticalMusculoskeletalPlant",
+        "feedbax.AnalyticalMusculoskeletalPlant",
         {"dt": graph.solver.dt, "n_steps": 1, "solver_type": graph.solver.solver_type},
         component_registry=component_registry,
     )
@@ -536,10 +545,20 @@ def _diagnose_planar_multibody_graph(
     path: str,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
-    link_ids = [node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "PlanarLink")]
-    joint_ids = [node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "RevoluteJoint")]
-    world_ids = [node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "WorldFrame")]
-    anchor_ids = [node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "Anchor")]
+    link_ids = [
+        node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "PlanarLink")
+    ]
+    joint_ids = [
+        node_id
+        for node_id, node in graph.nodes.items()
+        if is_acausal_type(node.type, "RevoluteJoint")
+    ]
+    world_ids = [
+        node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "WorldFrame")
+    ]
+    anchor_ids = [
+        node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "Anchor")
+    ]
     valid_frames = _valid_planar_frames(graph)
 
     if not world_ids or not anchor_ids:
@@ -660,7 +679,9 @@ def _diagnose_planar_multibody_graph(
             counts={
                 "n_dof": len(joint_ids),
                 "n_links": len(link_ids),
-                "n_muscles": sum(1 for node in graph.nodes.values() if is_acausal_type(node.type, "MusclePath")),
+                "n_muscles": sum(
+                    1 for node in graph.nodes.values() if is_acausal_type(node.type, "MusclePath")
+                ),
             },
         )
     )
@@ -752,7 +773,9 @@ def _compile_summary(
 
 
 def _compile_planar_multibody_summary(graph: AcausalGraphSpec) -> dict[str, int]:
-    n_joints = sum(1 for node in graph.nodes.values() if is_acausal_type(node.type, "RevoluteJoint"))
+    n_joints = sum(
+        1 for node in graph.nodes.values() if is_acausal_type(node.type, "RevoluteJoint")
+    )
     return {
         "n_equations": 0,
         "n_unknowns": 0,
@@ -760,7 +783,9 @@ def _compile_planar_multibody_summary(graph: AcausalGraphSpec) -> dict[str, int]
         "n_networks": 1 if graph.nodes else 0,
         "n_elements": len(graph.nodes),
         "n_dof": n_joints,
-        "n_muscles": sum(1 for node in graph.nodes.values() if is_acausal_type(node.type, "MusclePath")),
+        "n_muscles": sum(
+            1 for node in graph.nodes.values() if is_acausal_type(node.type, "MusclePath")
+        ),
     }
 
 

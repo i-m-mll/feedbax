@@ -31,6 +31,7 @@ def _frame_port(name: str) -> AcausalPort:
 @dataclass
 class PlanarLink(AcausalElement):
     """Rigid planar link with proximal and distal attachment frames."""
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(
@@ -53,6 +54,7 @@ class PlanarLink(AcausalElement):
 @dataclass
 class RevoluteJoint(AcausalElement):
     """One-DOF hinge between two planar link frames."""
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(
@@ -80,6 +82,7 @@ class RevoluteJoint(AcausalElement):
 @dataclass
 class WorldFrame(AcausalElement):
     """Fixed inertial frame for a planar multibody interior."""
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str):
@@ -91,6 +94,7 @@ class WorldFrame(AcausalElement):
 @dataclass
 class Anchor(AcausalElement):
     """Ground a body frame to the world frame."""
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(self, name: str, frame: str = "", world_frame: str = "world.frame"):
@@ -103,6 +107,7 @@ class Anchor(AcausalElement):
 @dataclass
 class MusclePath(AcausalElement):
     """Ordered rigid-tendon muscle path over named planar frames."""
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(
@@ -123,6 +128,7 @@ class MusclePath(AcausalElement):
 @dataclass
 class PointMarker(AcausalElement):
     """Named point attached to a planar frame for observations or objectives."""
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     def __init__(
