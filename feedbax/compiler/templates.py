@@ -164,7 +164,7 @@ def recurrent_controller_template_graph(
                 hidden_size=int(hidden_size),
                 input_size=hidden_input_size,
                 out_size=out_size,
-                cell_type=normalized_cell_type,
+                cell_type=f"feedbax.{normalized_cell_type}",
             )
         )
     now = datetime.now().isoformat()
@@ -176,13 +176,13 @@ def recurrent_controller_template_graph(
     }
     nodes = {
         "input_mux": ComponentSpec(
-            type="Mux",
+            type="feedbax.Mux",
             params={"n_inputs": 2, "dtype": dtype_name},
             input_ports=["in_0", "in_1"],
             output_ports=["output"],
         ),
         "cell": ComponentSpec(
-            type=normalized_cell_type,
+            type=f"feedbax.{normalized_cell_type}",
             params=resolved_cell_params,
             input_ports=["input", "hidden", "cell"]
             if normalized_cell_type == "LSTM"
@@ -196,7 +196,7 @@ def recurrent_controller_template_graph(
     cell_input_node = "input_mux"
     if encoding_size is not None:
         nodes["encoder"] = ComponentSpec(
-            type="Linear",
+            type="feedbax.Linear",
             params={
                 "input_size": int(input_size),
                 "output_size": int(encoding_size),
@@ -230,7 +230,7 @@ def recurrent_controller_template_graph(
     hidden_port = "hidden"
     if hidden_nonlinearity != "identity":
         nodes["hidden_activation"] = ComponentSpec(
-            type="Activation",
+            type="feedbax.Activation",
             params={"activation": hidden_nonlinearity},
             input_ports=["input"],
             output_ports=["output"],
@@ -247,7 +247,7 @@ def recurrent_controller_template_graph(
         hidden_port = "output"
     if hidden_noise_std not in (None, 0, 0.0):
         nodes["hidden_noise"] = ComponentSpec(
-            type="Channel",
+            type="feedbax.Channel",
             params={
                 "delay": 0,
                 "noise_model": "additive_gaussian",
@@ -273,7 +273,7 @@ def recurrent_controller_template_graph(
     if out_size is not None:
         output_node, output_port = "readout", "output"
         nodes[output_node] = ComponentSpec(
-            type="Linear",
+            type="feedbax.Linear",
             params={
                 "input_size": int(hidden_size),
                 "output_size": int(out_size),
@@ -288,7 +288,7 @@ def recurrent_controller_template_graph(
     elif out_nonlinearity != "identity":
         output_node, output_port = "output_activation", "output"
         nodes[output_node] = ComponentSpec(
-            type="Activation",
+            type="feedbax.Activation",
             params={"activation": out_nonlinearity},
             input_ports=["input"],
             output_ports=["output"],
@@ -383,7 +383,7 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
     def channel_spec(prefix: str, role: str, timing: str) -> ComponentSpec:
         noise_std = float(params[f"{prefix}_noise_std"] or 0.0)
         return ComponentSpec(
-            type="Channel",
+            type="feedbax.Channel",
             params={
                 "delay": int(params[f"{prefix}_delay"]),
                 "noise_model": "additive_gaussian" if noise_std else "none",
@@ -398,20 +398,20 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
 
     nodes = {
         selector: ComponentSpec(
-            type="SelectState",
+            type="feedbax.SelectState",
             params={"paths": list(params["feedback_paths"])},
             input_ports=["state"],
             output_ports=["output"],
         ),
         channel: channel_spec("feedback", "sensory_feedback", "pre_controller"),
         "feedback_values": ComponentSpec(
-            type="AssembleFeedback",
+            type="feedbax.AssembleFeedback",
             params={"n_inputs": 1, "layout": None},
             input_ports=["in_0"],
             output_ports=["output"],
         ),
         "net": ComponentSpec(
-            type="Subgraph",
+            type="feedbax.Subgraph",
             params={},
             input_ports=net.input_ports,
             output_ports=net.output_ports,
@@ -426,7 +426,7 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
     }
     if force_filter:
         nodes["force_filter"] = ComponentSpec(
-            type="FirstOrderFilter",
+            type="feedbax.FirstOrderFilter",
             params={
                 "tau_rise": tau_rise,
                 "tau_decay": tau_decay,
@@ -487,7 +487,7 @@ class SimpleFeedbackConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     network: dict[str, Any] = Field(default_factory=lambda: {"input_size": 8})
     mechanics: dict[str, Any] = Field(default_factory=lambda: {"dt": 0.01})
-    mechanics_type: str = "PointMass"
+    mechanics_type: str = "feedbax.PointMass"
     tau_rise: float = 0.0
     tau_decay: float = 0.0
     feedback_noise_std: float = 0.0
