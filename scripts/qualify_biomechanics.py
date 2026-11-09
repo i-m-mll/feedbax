@@ -200,6 +200,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=701)
     parser.add_argument("--precision", choices=("float32", "float64"), default="float32")
     parser.add_argument("--batch-one", action="store_true")
+    parser.add_argument("--gradient-part", choices=("both", "fd", "trajectory"), default="both")
     parser.add_argument("--wrap-shoulder", action="store_true",
                         help="Use the qualified exterior cylinder shoulder pair on MJX.")
     parser.add_argument("--load-net", type=Path)
@@ -211,6 +212,8 @@ def main() -> None:
         parser.error("--load-net is for evaluation and timing")
     if args.save_net is not None and args.phase != "train":
         parser.error("--save-net requires the train phase")
+    if args.gradient_part != "both" and args.phase != "gradient":
+        parser.error("--gradient-part requires the gradient phase")
     if args.phase == "held-out-replay" and (not args.wrap_shoulder or args.load_net is None):
         parser.error("held-out-replay requires --wrap-shoulder and --load-net")
     if args.phase == "train" and args.wrap_shoulder and args.save_net is None:
@@ -233,6 +236,8 @@ def main() -> None:
             args.substeps, law_profile=args.law, solver=args.solver,
         )
     else:
+        if args.phase == "gradient":
+            print(f"Building gradient fixture at {args.substeps} substeps", flush=True)
         benchmark, model, model_identity = _make_benchmark(args, lock)
         report.update(model_identity=model_identity, reach=asdict(benchmark.spec))
         if args.load_net is not None:
@@ -256,16 +261,22 @@ def main() -> None:
             report.update(loss=float(loss), weight_delta_l2=float(jnp.sqrt(delta)),
                           first_update_s=perf_counter() - start)
         elif args.phase == "gradient":
-            report["directions"] = [
-                benchmark.directional_check(
-                    model, batch, benchmark.direction(model, seed),
-                    lock["gradient"]["epsilons"][args.precision],
+            report["bank"] = {"kind": "training", "seed": train_seed, "update": 0, "trials": 1}
+            if args.gradient_part != "trajectory":
+                report["directions"] = []
+                for seed in lock["seed_streams"]["directions"]:
+                    print(f"Checking reverse derivative and finite differences for {seed}", flush=True)
+                    result = benchmark.directional_check(
+                        model, batch, benchmark.direction(model, seed),
+                        lock["gradient"]["epsilons"][args.precision],
+                    )
+                    report["directions"].append({"direction_seed": seed, **result})
+                    print(f"Completed gradient direction {seed}", flush=True)
+            if args.gradient_part != "fd":
+                print("Capturing diagnostic trajectory", flush=True)
+                report["trajectory"] = _snapshot(
+                    benchmark, model, batch, wrap_shoulder=args.wrap_shoulder,
                 )
-                for seed in lock["seed_streams"]["directions"]
-            ]
-            report["trajectory"] = _snapshot(
-                benchmark, model, batch, wrap_shoulder=args.wrap_shoulder,
-            )
         elif args.phase == "timing":
             report["kernels"] = {
                 label: asdict(timing)
@@ -274,10 +285,15 @@ def main() -> None:
                 ).items()
             }
         elif args.phase == "held-out-replay":
-            held_out = benchmark.prepare(benchmark.held_out_bank(lock["seed_streams"]["held_out"]))
+            held_out_seed = lock["seed_streams"]["held_out"]
+            held_out = benchmark.prepare(benchmark.held_out_bank(held_out_seed))
             report["held_out_trajectory"] = _snapshot(
                 benchmark, model, held_out, wrap_shoulder=True,
             )
+            report["bank"] = {
+                "kind": "held_out", "seed": held_out_seed,
+                "trials": len(report["held_out_trajectory"]["endpoints_m"]),
+            }
         else:
             held_out = benchmark.prepare(benchmark.held_out_bank(lock["seed_streams"]["held_out"]))
             budget = lock["training"]
