@@ -22,7 +22,13 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from qualify_mjx_warp import assert_warp_ffi, exact_tree, select_lane, stack_lanes
+from qualify_mjx_warp import (
+    assert_single_cuda_device,
+    assert_warp_ffi,
+    exact_tree,
+    select_lane,
+    stack_lanes,
+)
 
 STEPS = (0.001, 0.0005, 0.00025)
 HORIZON = 0.008
@@ -432,6 +438,8 @@ def main():
         device.platform == ("cpu" if args.device == "cpu" else "gpu") for device in devices
     ), devices
     print(f"{args.backend} {args.device}: {[(str(d), d.device_kind) for d in devices]}", flush=True)
+    if (args.backend, args.device) == ("warp", "cuda"):
+        assert_single_cuda_device(devices)
     print(
         f"Euler dt={STEPS}, horizon={HORIZON}, endpoint atol={ENDPOINT_ATOL}, "
         f"refinement ratio={REFINEMENT_RATIO}, floor={REFINEMENT_FLOOR}",
