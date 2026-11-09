@@ -38,7 +38,7 @@ function desktopNotices(): Plugin {
       this.emitFile({
         type: 'asset',
         fileName: 'third-party-notices.json',
-        source: JSON.stringify(Object.fromEntries([...packages].sort()), null, 2) + '\n',
+        source: JSON.stringify(Object.fromEntries(Array.from(packages.entries()).sort()), null, 2) + '\n',
       });
     },
   };

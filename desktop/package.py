@@ -311,6 +311,12 @@ def package(args: argparse.Namespace) -> None:
         app = stage / APP_NAME
         (NATIVE_BINARY.parent / "bundle" / "macos" / APP_NAME).rename(app)
         contents = app / "Contents"
+        if fixture:
+            info = contents / "Info.plist"
+            document = plistlib.loads(info.read_bytes())
+            document["CFBundleName"] = f"Feedbax Studio Fixture {args.fixture_name}"
+            document["CFBundleDisplayName"] = document["CFBundleName"]
+            info.write_bytes(plistlib.dumps(document))
         resources = contents / "Resources"
         resources.mkdir(exist_ok=True)
         studio = resources / "studio"

@@ -150,41 +150,44 @@ class NativeTrainingJobs:
         self, engine: StageEngine, control: NativeTrainingControl, *, recover: bool
     ) -> None:
         assert engine.bundle is not None
-        row_id = engine.bundle.rows[0].row_id
-        if row_id in self._attempts:
-            raise RuntimeError(f"Studio already supervises training row {row_id!r}")
+        run_set_id = engine.bundle.run_set_id
+        if run_set_id in self._attempts:
+            raise RuntimeError(f"Studio already supervises training attempt {run_set_id!r}")
         thread = threading.Thread(
             target=self._monitor,
-            args=(row_id, engine, recover),
+            args=(run_set_id, engine, recover),
             name=f"feedbax-studio-native-{engine.run_set_id}",
             daemon=True,
         )
-        self._attempts[row_id] = _OwnedAttempt(engine, control, thread)
+        self._attempts[run_set_id] = _OwnedAttempt(engine, control, thread)
         thread.start()
 
-    def _monitor(self, row_id: str, engine: StageEngine, recover: bool) -> None:
+    def _monitor(self, run_set_id: str, engine: StageEngine, recover: bool) -> None:
         try:
             engine.run(break_stale_lock=recover, certify_and_register=False)
         except Exception:
             logger.exception("Studio native attempt %s stopped with an error", engine.run_set_id)
         finally:
             with self._lock:
-                self._attempts.pop(row_id)
+                self._attempts.pop(run_set_id)
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
-            for row_id, attempt in self._attempts.items():
+            matches = []
+            for run_set_id, attempt in self._attempts.items():
                 assert attempt.engine.bundle is not None
                 binding = attempt.engine.bundle.staged_training
-                if job_id == row_id or (binding is not None and job_id == binding.manifest_id):
-                    attempt.control.request("stop")
-                    return True
-        return any(job_id in (job["job_id"], job["manifest_id"]) for job in self.snapshot())
+                if job_id == run_set_id or (binding is not None and job_id == binding.manifest_id):
+                    matches.append(attempt)
+            if len(matches) == 1:
+                matches[0].control.request("stop")
+                return True
+        return any(job_id == job["job_id"] for job in self.snapshot())
 
     def resume(self, job_id: str) -> str:
         for bundle, state in self._records():
             row = bundle.rows[0]
-            if row.row_id != job_id:
+            if bundle.run_set_id != job_id:
                 continue
             binding = bundle.staged_training
             assert binding is not None
@@ -202,7 +205,7 @@ class NativeTrainingJobs:
                     bundle, receipt, projection.result, checkpoints,
                 )
                 if checkpoint is None:
-                    return successor.metadata["staged_attempt"]["row_id"]
+                    return successor.metadata["staged_attempt"]["run_set_id"]
                 control = NativeTrainingControl()
                 engine = prepare_native_training_dispatch(
                     successor, root=root, generation=successor.metadata["staging_generation"],
@@ -211,7 +214,7 @@ class NativeTrainingJobs:
                 )
                 self.dispatch(engine, control)
                 assert engine.bundle is not None
-                return engine.bundle.rows[0].row_id
+                return engine.bundle.run_set_id
         raise KeyError(job_id)
 
     def begin_stop(self, *, force: bool) -> None:
@@ -249,7 +252,7 @@ class NativeTrainingJobs:
             ):
                 status = "interrupted"
             item = {
-                "job_id": row_id,
+                "job_id": bundle.run_set_id,
                 "run_set_id": bundle.run_set_id,
                 "manifest_id": binding.manifest_id,
                 "manifest_root": binding.manifest_root,

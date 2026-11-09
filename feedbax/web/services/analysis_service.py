@@ -139,6 +139,10 @@ class AnalysisJobService:
         with self._lock:
             if self._closed:
                 raise AnalysisJobsUnavailable("Studio analysis jobs are unavailable")
+            if self._job_root is not None:
+                for request_id, entry in self._jobs.items():
+                    if entry.manifest_id == manifest_id and entry.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                        return request_id
             if self._active >= self._MAX_ACTIVE:
                 raise AnalysisJobsUnavailable("Studio analysis job queue is full")
             request_id = str(uuid4())
