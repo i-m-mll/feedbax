@@ -77,6 +77,7 @@ from feedbax.orchestration.conformance import (
 )
 from feedbax.orchestration.drivers.base import (
     AcquisitionCreateError,
+    AcquisitionReadinessRejected,
     OrchestrationDriver,
     ProvisioningAttemptError,
 )
@@ -376,6 +377,25 @@ class _ScopedSignalSupervisor:
         if self._received is not None and not body_failed:
             raise _DeferredOperatorSignal(self._received)
 
+    @contextmanager
+    def resource_deadline(self, remaining: float) -> Iterator[None]:
+        """Interrupt a resource-owning phase early enough to start teardown."""
+        if remaining <= 0:
+            raise BudgetExceeded("resource deadline reached its teardown reserve")
+        if not self._installed or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0):
+            raise OrchestrationStageError("resource deadline requires the main-thread supervisor")
+
+        def expired(_signum: int, _frame: Any) -> None:
+            raise BudgetExceeded("resource deadline reached its teardown reserve")
+
+        previous = signal.signal(signal.SIGALRM, expired)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+
     def _handle(self, signum: int, _frame: Any) -> None:
         if self._deferring:
             self._received = signum
@@ -561,7 +581,12 @@ class StageEngine:
                             with signal_supervisor.defer_signals():
                                 state = self._run_stage(stage_id, state)
                         else:
-                            state = self._run_stage(stage_id, state)
+                            state, remaining = self._resource_phase_remaining(stage_id, state)
+                            if remaining is None:
+                                state = self._run_stage(stage_id, state)
+                            else:
+                                with signal_supervisor.resource_deadline(remaining):
+                                    state = self._run_stage(stage_id, state)
                         if stop_after_stage == stage_id:
                             break
                     return state
@@ -591,6 +616,30 @@ class StageEngine:
                         with signal_supervisor.defer_signals():
                             self._run_teardown(latest, abort=True)
                     raise
+
+    def _resource_phase_remaining(
+        self, stage_id: str, state: RunSetState
+    ) -> tuple[RunSetState, float | None]:
+        if self.bundle is None or not (
+            STAGE_ORDER.index(STAGE_PROVISION)
+            <= STAGE_ORDER.index(stage_id)
+            < STAGE_ORDER.index(STAGE_TEARDOWN)
+        ):
+            return state, None
+        reserve = self.bundle.budget.teardown_reserve_seconds
+        if reserve is None:
+            return state, None
+        counters = dict(state.budget_counters)
+        if "provisioning_deadline_at" not in counters:
+            start = self._wall_time()
+            counters.update(
+                provisioning_started_at=start,
+                provisioning_deadline_at=start + self.bundle.budget.max_wall_clock_seconds,
+            )
+            state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+            self.store.save(state)
+        remaining = float(counters["provisioning_deadline_at"]) - reserve - self._wall_time()
+        return state, remaining
 
     def _last_durable_state(self, fallback: RunSetState) -> RunSetState:
         if not self.store.path.exists():
@@ -1351,6 +1400,11 @@ class StageEngine:
             )
             try:
                 acquisition = self.driver.create_pod_once(self.bundle, candidate, intent.intent_id)
+            except BudgetExceeded:
+                if self._signal_supervisor is not None:
+                    with self._signal_supervisor.defer_signals():
+                        self._reconcile_acquisition_intents(state)
+                raise
             except AcquisitionCreateError as exc:
                 if exc.disposition != "ambiguous":
                     last_clean_error = str(exc)
@@ -1385,15 +1439,20 @@ class StageEngine:
                     ) from exc
                 with self._signal_supervisor.defer_signals():
                     state = self._reconcile_acquisition_intents(state)
+                cost_unverified = (
+                    self.bundle.budget.teardown_reserve_seconds is not None
+                    and self.bundle.budget.max_spend_usd is not None
+                )
                 raise ProvisioningAttemptError(
                     str(exc),
-                    retryable=True,
+                    retryable=not cost_unverified,
                     attempt_record={
                         "driver": driver_name,
                         "acquired": False,
                         "intent_id": intent.intent_id,
                         "reconciliation": "resolved-torn-down",
                     },
+                    stop_reason="ambiguous-acquisition-cost-unverified" if cost_unverified else None,
                 ) from exc
 
             state = self._replace_acquisition_intent(
@@ -1454,7 +1513,7 @@ class StageEngine:
                     raise
                 raise ProvisioningAttemptError(
                     str(exc),
-                    retryable=True,
+                    retryable=not isinstance(exc, (AcquisitionReadinessRejected, BudgetExceeded)),
                     attempt_record={
                         "driver": driver_name,
                         "acquired": True,
@@ -1599,6 +1658,7 @@ class StageEngine:
                 "provisioning_deadline_at", started_at + self.bundle.budget.max_wall_clock_seconds
             )
         )
+        deadline -= self.bundle.budget.teardown_reserve_seconds or 0
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         self.store.save(state)
         attempts = list(state.provisioning_attempts)
@@ -2905,9 +2965,11 @@ class StageEngine:
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
         self._prepare_emergency_for_teardown(state)
         stage = state.stage(STAGE_TEARDOWN)
+        discard_on_abort = abort and self.bundle.budget.discard_uncollected_on_abort is True
         if (
             self._destructive_ephemeral_teardown()
             and not self._custody_complete(state)
+            and not discard_on_abort
         ):
             error = "destructive teardown blocked: executed outputs lack complete collection custody"
             blocked = stage.model_copy(
@@ -2953,7 +3015,7 @@ class StageEngine:
                     DriverHook.COLLECT_FAILURE_LOGS,
                     "collect_failure_logs",
                 )
-                if abort
+                if abort and not discard_on_abort
                 else None
             )
             if collect_failure_logs is not None:
@@ -2969,6 +3031,8 @@ class StageEngine:
                     failure_log_collection = {"status": "failed", "error": str(exc)}
             try:
                 outputs = dict(self.driver.teardown(self.bundle, state))
+                if discard_on_abort:
+                    outputs["abort_output_disposition"] = "discard-uncollected-authorized"
                 if not abort and self.bundle.execution_family == "evaluation-matrix":
                     certificate_ref = state.stage(STAGE_CERTIFY).outputs.get("certificate_ref")
                     if not isinstance(certificate_ref, str):

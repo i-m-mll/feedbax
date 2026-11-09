@@ -51,6 +51,7 @@ from feedbax.orchestration.bundle import (
     DeploymentResourceRequest,
     EnvironmentDeclaration,
     RunBundle,
+    RunPodCudaPlacement,
     RowLaunchSpec,
     SchemaArtifactRef,
 )
@@ -2191,6 +2192,117 @@ def test_provider_create_rejection_stops_after_one_intent(
     with pytest.raises(OrchestrationStageError, match=stop_reason):
         engine._stage_provision(final)
     assert transport.runpodctl_calls == [call]
+
+
+@pytest.mark.parametrize("create_rejected", [True, False])
+def test_exact_cuda_create_and_identity_mismatch_remain_governed(
+    tmp_path: Path, create_rejected: bool
+) -> None:
+    bundle = _bundle(tmp_path)
+    gpu = "NVIDIA GeForce RTX 5090"
+    image = bundle.environment.image_id
+    name = "feedbax-exact-cuda"
+    secret = "synthetic-credential-562"
+    placement = RunPodCudaPlacement(
+        cuda_version="13.2",
+        min_driver_major=595,
+        compute_capability="12.0",
+        ephemeral_disk_gb=20,
+        max_hourly_rate_usd=1.19,
+        startup_seconds=120,
+    )
+    requests = []
+    deleted = False
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal deleted
+        requests.append((request.method, request.url.path))
+        assert request.url.host == "api.runpod.io"
+        assert request.headers["Authorization"] == f"Bearer {secret}"
+        path = request.url.path
+        if path.startswith("/v2/catalog/gpus/"):
+            assert request.url.params["cudaVersions"] == "13.2"
+            assert request.url.params["cloud"] == "SECURE"
+            return httpx.Response(200, json={
+                "id": gpu,
+                "price": {"secure": 1.19},
+                "cudaVersions": [{"version": "13.2", "available": True}],
+                "dataCenters": [{"id": "EU-RO-1", "availability": "LOW"}],
+            })
+        if request.method == "POST":
+            assert json.loads(request.content) == {
+                "name": name,
+                "image": image,
+                "cloud": "SECURE",
+                "disk": 20,
+                "gpu": {"id": gpu, "count": 1, "allowedCudaVersions": ["13.2"]},
+                "dataCenterIds": ["EU-RO-1"],
+                "ports": ["22/tcp"],
+                "startSsh": True,
+            }
+            if create_rejected:
+                return httpx.Response(
+                    400,
+                    headers={"Content-Type": "application/problem+json"},
+                    json={"title": "Unexpected detail", "status": 400,
+                          "detail": f"Image digest is unsupported. Bearer {secret}"},
+                )
+            return httpx.Response(201, json={"id": "pod-exact"})
+        if request.method == "DELETE":
+            assert path == "/v2/pods/pod-exact"
+            deleted = True
+            return httpx.Response(204)
+        if path == "/v2/pods":
+            return httpx.Response(200, json={"pods": [], "pagination": {"hasNextPage": False}})
+        if path == "/v2/billing/pods":
+            assert request.url.params["podId"] == "pod-exact"
+            return httpx.Response(200, json={"records": []})
+        assert path == "/v2/pods/pod-exact"
+        if deleted:
+            return httpx.Response(404)
+        return httpx.Response(200, json={
+            "id": "pod-exact", "name": name, "status": "RUNNING", "image": image,
+            "cloud": "SECURE", "disk": 20, "ports": ["22/tcp"],
+            "gpu": {"id": gpu, "count": 1}, "mounts": {},
+            "dataCenterId": "US-KS-2", "cudaVersion": "13.2", "cost": 1.19,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "ssh": {"direct": {"host": "203.0.113.10", "port": 2222, "username": "root"}},
+        })
+
+    transport = FakeRunPodTransport()
+    transport.api_request = SubprocessRunPodTransport(
+        http_transport=httpx.MockTransport(handle)
+    ).api_request
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            image=image, gpu_id=gpu, datacenters=("EU-RO-1",), api_key=secret,
+            cuda_placement=placement,
+        ),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+    driver.acquisition_pod_name = lambda _intent_id: name
+    state = _state(bundle)
+    store = RunSetStateStore(bundle.run_set_dir / "exact-cuda.json")
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
+        engine._stage_provision(state)
+    final = store.load()
+    assert requests.count(("POST", "/v2/pods")) == 1
+    assert len(final.acquisition_intents) == 1
+    assert not transport.ssh_commands and not transport.rsync_calls
+    assert secret not in store.path.read_text()
+    if create_rejected:
+        problem = final.acquisition_intents[0].evidence["create"]["problem"]
+        assert problem["detail"] == "image digest is unsupported. bearer [redacted]"
+        assert not deleted
+    else:
+        assert deleted
+        assert ("GET", "/v2/pods/pod-exact") in requests[requests.index(
+            ("DELETE", "/v2/pods/pod-exact")
+        ) + 1:]
+        assert final.provisioning_attempts[0]["cleanup"]["pod_absence"]["http_status"] == 404
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:

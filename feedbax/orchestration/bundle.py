@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, FiniteFloat, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
@@ -219,11 +219,23 @@ def environment_declaration_identity_projection(
     }
 
 
+class RunPodCudaPlacement(StrictModel):
+    """Exact Secure Cloud placement for one GPU with ephemeral storage."""
+
+    cuda_version: str = Field(pattern=r"^[0-9]+\.[0-9]+$")
+    min_driver_major: int = Field(strict=True, gt=0)
+    compute_capability: str = Field(pattern=r"^[0-9]+\.[0-9]+$")
+    ephemeral_disk_gb: int = Field(strict=True, gt=0)
+    max_hourly_rate_usd: FiniteFloat = Field(gt=0)
+    startup_seconds: int = Field(strict=True, gt=0)
+
+
 class DeploymentResourceRequest(StrictModel):
     """Requested resources, distinct from provider-realized resource facts."""
 
     gpu_id: str | None = Field(default=None, min_length=1)
     regions: list[str] = Field(default_factory=list)
+    runpod_cuda: RunPodCudaPlacement | None = None
 
     @field_validator("regions")
     @classmethod
@@ -233,6 +245,12 @@ class DeploymentResourceRequest(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("requested regions must be unique and remain in preference order")
         return value
+
+    @model_validator(mode="after")
+    def _validate_exact_placement(self) -> "DeploymentResourceRequest":
+        if self.runpod_cuda is not None and (self.gpu_id is None or len(self.regions) != 1):
+            raise ValueError("exact RunPod CUDA placement requires a GPU and one region")
+        return self
 
 
 class DeploymentPolicy(StrictModel):
@@ -246,6 +264,14 @@ class DeploymentPolicy(StrictModel):
     review_required: bool
     review_authorized: bool
     resources: DeploymentResourceRequest = Field(default_factory=DeploymentResourceRequest)
+
+    @model_validator(mode="after")
+    def _validate_runpod_placement_venue(self) -> "DeploymentPolicy":
+        if self.resources.runpod_cuda is not None and (self.driver, self.venue) != (
+            "runpod", "remote"
+        ):
+            raise ValueError("exact RunPod CUDA placement requires the remote RunPod driver")
+        return self
 
 
 class LaunchRowGroup(StrictModel):
@@ -288,9 +314,22 @@ class LaunchPolicy(StrictModel):
 class BudgetPolicy(StrictModel):
     """Run-set budget guards enforced by the stage engine."""
 
-    max_wall_clock_seconds: float = Field(gt=0.0)
-    max_spend_usd: float | None = Field(default=None, ge=0.0)
+    max_wall_clock_seconds: FiniteFloat = Field(gt=0.0)
+    max_spend_usd: FiniteFloat | None = Field(default=None, ge=0.0)
     max_create_attempts: int | None = Field(default=None, strict=True, ge=1)
+    teardown_reserve_seconds: FiniteFloat | None = Field(default=None, gt=0.0)
+    discard_uncollected_on_abort: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_teardown_reserve(self) -> "BudgetPolicy":
+        if (
+            self.teardown_reserve_seconds is not None
+            and self.teardown_reserve_seconds >= self.max_wall_clock_seconds
+        ):
+            raise ValueError("teardown reserve must be shorter than the run budget")
+        if self.discard_uncollected_on_abort and self.teardown_reserve_seconds is None:
+            raise ValueError("abort-time output discard requires a teardown reserve")
+        return self
 
 
 class ImmutableInputArtifactRef(StrictModel):
@@ -489,6 +528,19 @@ class RunBundle(StrictModel):
 
     @model_validator(mode="after")
     def _validate_bundle(self) -> "RunBundle":
+        placement = self.deployment_policy.resources.runpod_cuda
+        if placement is not None and (
+            self.keep_alive
+            or self.deadman_enabled
+            or self.budget.max_create_attempts is None
+            or self.budget.teardown_reserve_seconds is None
+            or self.budget.max_spend_usd is None
+            or self.budget.discard_uncollected_on_abort is not True
+        ):
+            raise ValueError(
+                "exact RunPod CUDA requires attempt, spend and teardown budgets, "
+                "with controller-owned credentials and abort-time teardown authorization"
+            )
         seen: set[str] = set()
         for row in self.rows:
             if row.row_id in seen:

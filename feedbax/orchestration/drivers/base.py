@@ -73,6 +73,10 @@ class AcquisitionCreateError(RuntimeError):
         self.evidence = dict(evidence)
 
 
+class AcquisitionReadinessRejected(RuntimeError):
+    """An acquired resource fails a required identity or readiness policy."""
+
+
 class OrchestrationDriver(Protocol):
     """Synchronous idempotent driver interface used by the stage engine."""
 
