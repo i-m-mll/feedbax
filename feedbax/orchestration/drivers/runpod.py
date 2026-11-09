@@ -21,15 +21,16 @@ import tempfile
 import threading
 import time
 import tomllib
-import urllib.error
-import urllib.request
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
+from urllib.parse import quote
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+
+import httpx
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.base import sha256_file
@@ -57,6 +58,7 @@ from feedbax.orchestration.collection_destination import (
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
     RunBundle,
+    RunPodCudaPlacement,
     RunRowSpec,
     canonical_run_bundle_sha256,
     environment_declaration_identity_projection,
@@ -67,6 +69,8 @@ from feedbax.orchestration.collection_recovery import (
 )
 from feedbax.orchestration.drivers.base import (
     AcquisitionCreateError,
+    AcquisitionDisposition,
+    AcquisitionReadinessRejected,
     AcquisitionResult,
     DriverRowProbe,
     ProviderPodInventoryRecord,
@@ -326,8 +330,12 @@ class RunPodRemoteSmokeError(RunPodDriverError):
         self.evidence = dict(evidence)
 
 
-class _ProvisioningIdentityError(RunPodDriverError):
+class _ProvisioningIdentityError(RunPodDriverError, AcquisitionReadinessRejected):
     """Raised when provider observations conflict during one acquisition."""
+
+
+class _RunPodCapacityUnavailable(RunPodDriverError):
+    """A valid catalog response shows the exact placement is out of stock."""
 
 
 def _canonical_runpod_timestamp(value: Any) -> str | None:
@@ -361,6 +369,15 @@ class CommandResult:
         return self
 
 
+@dataclass(frozen=True)
+class RunPodApiReply:
+    """A response from the fixed RunPod control-plane origin."""
+
+    status: int
+    body: Mapping[str, Any] | None
+    media_type: str
+
+
 class RunPodTransport(Protocol):
     """Transport surface used by :class:`RunPodOrchestrationDriver`."""
 
@@ -372,7 +389,19 @@ class RunPodTransport(Protocol):
         """Run a ``runpodctl`` command."""
 
     def image_exists(self, image: str) -> bool:
-        """Return whether a declared container image tag exists."""
+        """Return whether the exact declared container manifest exists."""
+
+    def api_request(
+        self,
+        method: Literal["GET", "POST", "DELETE"],
+        path: str,
+        *,
+        api_key: str,
+        params: Mapping[str, str | int] | None = None,
+        body: Mapping[str, Any] | None = None,
+        timeout_seconds: float = 8,
+    ) -> RunPodApiReply:
+        """Send one request to the RunPod v2 control plane."""
 
     def ssh(self, command: str) -> CommandResult:
         """Run one command over SSH on the pod."""
@@ -397,8 +426,10 @@ class SubprocessRunPodTransport:
     ssh_port: int | None = None
     ssh_key_path: Path | str = Path("~/.runpod/ssh/RunPod-Key-Go")
     ssh_user: str = "root"
+    strict_ssh_host_key: bool = False
     runpodctl_executable: str = "runpodctl"
     rsync_executable: str = "rsync"
+    http_transport: httpx.BaseTransport | None = field(default=None, repr=False)
 
     def runpodctl(
         self,
@@ -410,17 +441,84 @@ class SubprocessRunPodTransport:
             timeout_seconds=timeout_seconds,
         )
 
-    def image_exists(self, image: str) -> bool:
-        tagged_image = image.split("@", 1)[0]
-        repository, separator, tag = tagged_image.rpartition(":")
-        if not separator or not repository or not tag or "/" not in repository:
-            return False
-        namespace, name = repository.split("/", 1)
-        url = f"https://hub.docker.com/v2/repositories/{namespace}/{name}/tags/{tag}"
+    def api_request(
+        self,
+        method: Literal["GET", "POST", "DELETE"],
+        path: str,
+        *,
+        api_key: str,
+        params: Mapping[str, str | int] | None = None,
+        body: Mapping[str, Any] | None = None,
+        timeout_seconds: float = 8,
+    ) -> RunPodApiReply:
+        if not path.startswith("/v2/") or not api_key or not 0 < timeout_seconds <= 60:
+            raise RunPodDriverError("invalid RunPod API request configuration")
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                return 200 <= response.status < 300
-        except (urllib.error.URLError, TimeoutError):
+            with httpx.Client(
+                base_url="https://api.runpod.io",
+                timeout=timeout_seconds,
+                trust_env=False,
+                transport=self.http_transport,
+            ) as client, client.stream(
+                method,
+                path,
+                headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+                params=params,
+                json=body,
+            ) as response:
+                media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
+                size_limit = 8192 if response.is_error else 4 * 1024 * 1024
+                payload = bytearray()
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    if len(payload) + len(chunk) > size_limit:
+                        return RunPodApiReply(response.status_code, None, media_type)
+                    payload.extend(chunk)
+                try:
+                    decoded = strict_json_loads(bytes(payload)) if payload else None
+                except (ValueError, RecursionError):
+                    decoded = None
+                return RunPodApiReply(
+                    response.status_code,
+                    decoded if isinstance(decoded, Mapping) else None,
+                    media_type,
+                )
+        except httpx.HTTPError:
+            raise RunPodDriverError("RunPod v2 transport failed") from None
+
+    def image_exists(self, image: str) -> bool:
+        match = re.fullmatch(
+            r"(?:docker\.io/)?([a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*)"
+            r"(?::[A-Za-z0-9_.-]+)?@(sha256:[0-9a-f]{64})",
+            image,
+        )
+        if not match:
+            return False
+        repository, digest = match.groups()
+        try:
+            with httpx.Client(timeout=10, trust_env=False, transport=self.http_transport) as client:
+                token = client.get(
+                    "https://auth.docker.io/token",
+                    params={"service": "registry.docker.io", "scope": f"repository:{repository}:pull"},
+                ).raise_for_status().json()
+                bearer = token.get("token") if isinstance(token, dict) else None
+                if not isinstance(bearer, str) or not bearer:
+                    return False
+                manifest = client.head(
+                    f"https://registry-1.docker.io/v2/{repository}/manifests/{digest}",
+                    headers={
+                        "Authorization": f"Bearer {bearer}",
+                        "Accept": (
+                            "application/vnd.oci.image.manifest.v1+json, "
+                            "application/vnd.oci.image.index.v1+json, "
+                            "application/vnd.docker.distribution.manifest.v2+json, "
+                            "application/vnd.docker.distribution.manifest.list.v2+json"
+                        ),
+                    },
+                )
+                return manifest.status_code == 200 and manifest.headers.get(
+                    "Docker-Content-Digest"
+                ) == digest
+        except (httpx.HTTPError, ValueError):
             return False
 
     def ssh(self, command: str) -> CommandResult:
@@ -508,18 +606,11 @@ class SubprocessRunPodTransport:
         args = ["ssh"]
         if detach_stdin:
             args.append("-n")
-        args.extend(
-            [
-                "-i",
-                key,
-                "-p",
-                str(self.ssh_port),
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-            ]
-        )
+        args.extend(["-i", key, "-p", str(self.ssh_port)])
+        if self.strict_ssh_host_key:
+            args.extend(["-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes"])
+        else:
+            args.extend(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"])
         return args
 
 
@@ -552,6 +643,7 @@ class RunPodDriverConfig:
     ssh_port: int | None = None
     gpu_id: str | None = None
     datacenters: tuple[str, ...] = ()
+    cuda_placement: RunPodCudaPlacement | None = None
     api_key: str | None = field(default=None, repr=False)
     min_balance_usd: float = 5.0
     image: str = "runpod/pytorch:latest"
@@ -730,6 +822,8 @@ class RunPodOrchestrationDriver:
             "datacenters": list(self.config.datacenters),
             "pod_name_prefix": self.config.pod_name_prefix,
         }
+        if self.config.cuda_placement is not None:
+            payload["cuda_placement"] = self.config.cuda_placement.model_dump(mode="json")
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
@@ -743,10 +837,12 @@ class RunPodOrchestrationDriver:
         if not self._preflight_passed:
             raise AcquisitionCreateError(
                 "RunPod creation requires passing named driver PREFLIGHT checks first",
-                clean_rejection=True,
+                disposition="terminal-rejection",
                 evidence={"returncode": None, "classification": "preflight-not-passed"},
             )
         name = self.acquisition_pod_name(intent_id)
+        if self.config.cuda_placement is not None:
+            return self._create_cuda_pod(candidate, name)
         args = [
             "pod",
             "create",
@@ -771,7 +867,7 @@ class RunPodOrchestrationDriver:
             except (TypeError, ValueError, RunPodDriverError) as exc:
                 raise AcquisitionCreateError(
                     str(exc),
-                    clean_rejection=False,
+                    disposition="ambiguous",
                     evidence={
                         "returncode": result.returncode,
                         "classification": "ambiguous-invalid-success-payload",
@@ -783,25 +879,103 @@ class RunPodOrchestrationDriver:
                 return AcquisitionResult(pod_id, candidate)
             raise AcquisitionCreateError(
                 "successful RunPod create response omitted a safe pod identity",
-                clean_rejection=False,
+                disposition="ambiguous",
                 evidence={
                     "returncode": result.returncode,
                     "classification": "ambiguous-missing-pod-id",
                     "detail": detail,
                 },
             )
-        classification, classified_detail = _classify_create_failure(result, self.config.api_key)
-        clean_rejection = classification == "non-retryable"
+        disposition, classified_detail = _classify_create_failure(result, self.config.api_key)
         raise AcquisitionCreateError(
             classified_detail or f"runpodctl pod create exited {result.returncode}",
-            clean_rejection=clean_rejection,
+            disposition=disposition,
             evidence={
                 "returncode": result.returncode,
-                "classification": (
-                    "classified-clean-provider-rejection" if clean_rejection else "ambiguous"
-                ),
+                "classification": disposition,
                 "detail": classified_detail,
             },
+        )
+
+    def _api(
+        self,
+        method: Literal["GET", "POST", "DELETE"],
+        path: str,
+        *,
+        params: Mapping[str, str | int] | None = None,
+        body: Mapping[str, Any] | None = None,
+        timeout_seconds: float = 8,
+    ) -> RunPodApiReply:
+        if not self.config.api_key:
+            raise RunPodDriverError("RunPod v2 requires explicit controller credentials")
+        return self.transport.api_request(
+            method,
+            path,
+            api_key=self.config.api_key,
+            params=params,
+            body=body,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _create_cuda_pod(self, region: str | None, name: str) -> AcquisitionResult:
+        placement = self.config.cuda_placement
+        gpu_id = self.config.gpu_id
+        assert placement is not None and gpu_id is not None and region is not None
+        try:
+            quote_reply = self._api(
+                "GET",
+                "/v2/catalog/gpus/" + quote(gpu_id, safe=""),
+                params={
+                    "include": "AVAILABILITY",
+                    "product": "POD",
+                    "cloud": "SECURE",
+                    "count": 1,
+                    "cudaVersions": placement.cuda_version,
+                },
+            )
+            _require_cuda_quote(quote_reply, placement, gpu_id, region)
+        except RunPodDriverError as exc:
+            raise AcquisitionCreateError(
+                str(exc),
+                disposition=(
+                    "retryable-rejection" if isinstance(exc, _RunPodCapacityUnavailable)
+                    else "terminal-rejection"
+                ),
+                evidence={"classification": "cuda-catalog-preflight-failed"},
+            ) from exc
+        try:
+            reply = self._api(
+                "POST",
+                "/v2/pods",
+                body={
+                    "name": name,
+                    "image": self.config.image,
+                    "cloud": "SECURE",
+                    "disk": placement.ephemeral_disk_gb,
+                    "gpu": {
+                        "id": gpu_id,
+                        "count": 1,
+                        "allowedCudaVersions": [placement.cuda_version],
+                    },
+                    "dataCenterIds": [region],
+                    "ports": ["22/tcp"],
+                    "startSsh": True,
+                },
+            )
+        except RunPodDriverError as exc:
+            raise AcquisitionCreateError(
+                "RunPod v2 create response was unavailable",
+                disposition="ambiguous",
+                evidence={"classification": "ambiguous-transport"},
+            ) from exc
+        identifier = (reply.body or {}).get("id")
+        if reply.status == 201 and isinstance(identifier, str) and _SAFE_POD_ID_PATTERN.fullmatch(identifier):
+            return AcquisitionResult(identifier, region)
+        problem = _scrub_create_problem(reply, self.config.api_key or "")
+        raise AcquisitionCreateError(
+            f"RunPod v2 create returned HTTP {reply.status}",
+            disposition="terminal-rejection" if problem is not None else "ambiguous",
+            evidence={"status": reply.status, "problem": problem},
         )
 
     def finish_acquired_pod(
@@ -816,19 +990,24 @@ class RunPodOrchestrationDriver:
         self._last_provision_pod = None
         self._endpoint, pod = self._wait_for_endpoint(acquisition.pod_id)
         self._configure_subprocess_endpoint(self._endpoint)
+        placement_receipt = self._verify_cuda_placement(bundle, pod, intent_id)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
             f"{_sq(remote_run_dir + '/logs')} && command -v setsid >/dev/null"
         )
         self._ensure_deadman(bundle)
-        self._require_gpu_ready()
-        return self._provision_record(
+        if placement_receipt is None:
+            self._require_gpu_ready()
+        record = self._provision_record(
             pod,
             provided_pod=False,
             accepted_datacenter=acquisition.accepted_datacenter,
             intent_id=intent_id,
         )
+        if placement_receipt is not None:
+            record["cuda_placement"] = placement_receipt
+        return record
 
     def restore_from_provision_record(self, record: Mapping[str, Any]) -> None:
         """Restore process-local pod and endpoint identity from durable state."""
@@ -897,6 +1076,7 @@ class RunPodOrchestrationDriver:
         self.transport = transport or SubprocessRunPodTransport(
             ssh_host=self.config.ssh_host,
             ssh_port=self.config.ssh_port,
+            strict_ssh_host_key=self.config.cuda_placement is not None,
         )
         self._sleep = sleep
         self._monotonic = monotonic
@@ -999,6 +1179,21 @@ class RunPodOrchestrationDriver:
     ) -> list[PreflightCheckEntry]:
         checks_by_name: dict[str, PreflightCheckEntry] = {}
         conditional_checks: list[PreflightCheckEntry] = []
+        exact_cuda = self.config.cuda_placement is not None
+        if exact_cuda:
+            owned = (
+                self.engine_acquisition_required()
+                and self.config.auto_teardown
+                and not bundle.keep_alive
+                and not bundle.deadman_enabled
+            )
+            conditional_checks.append(_preflight_check(
+                "runpod-exact-cuda-custody",
+                owned and bool(self.config.api_key),
+                detail=None if owned and self.config.api_key else (
+                    "exact CUDA requires engine-owned teardown and controller-only credentials"
+                ),
+            ))
         lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
         if is_training_matrix_bundle(bundle):
             try:
@@ -1193,6 +1388,7 @@ class RunPodOrchestrationDriver:
             "continuation-schedule-consistency",
             "runpod-lockfiles-declared",
             "runpod-remote-layout-vs-lock",
+            "runpod-exact-cuda-custody",
         }
         structural_failure_names = [
             *upstream_failures,
@@ -1234,6 +1430,25 @@ class RunPodOrchestrationDriver:
             )
             checks_by_name["runpod-balance-floor"] = _dependency_skipped_preflight_check(
                 "runpod-balance-floor", "runpod-credentials"
+            )
+        elif exact_cuda:
+            try:
+                self._observe_v2_pods(timeout_seconds=8)
+            except RunPodDriverError:
+                credential_check = _preflight_check(
+                    "runpod-credentials", False, detail="RunPod v2 pod inventory unavailable"
+                )
+            else:
+                credential_check = _preflight_check(
+                    "runpod-credentials", True, observed="verified"
+                )
+            checks_by_name["runpod-credentials"] = credential_check
+            checks_by_name["runpod-balance-floor"] = (
+                _preflight_check(
+                    "runpod-balance-floor", True, observed="not-required-exact-rate-policy"
+                )
+                if credential_check.status == "pass"
+                else _dependency_skipped_preflight_check("runpod-balance-floor", "runpod-credentials")
             )
         else:
             credentials_required = not self._provided_endpoint or bundle.deadman_enabled
@@ -1526,6 +1741,8 @@ class RunPodOrchestrationDriver:
             contract["staged_root_bindings"] = sorted(
                 (binding.kind, binding.name) for binding in self.staged_root_bindings
             )
+        if self.config.cuda_placement is not None:
+            contract["cuda_placement"] = self.config.cuda_placement.model_dump(mode="json")
         return contract
 
     def _validate_preflight_checks(
@@ -1622,7 +1839,10 @@ class RunPodOrchestrationDriver:
         # does not retroactively flip this to the existing-target branch.
         balance_required = not self._provided_endpoint and not self._provided_pod
         balance = named["runpod-balance-floor"].observed
-        if balance_required:
+        if self.config.cuda_placement is not None:
+            if balance != "not-required-exact-rate-policy":
+                raise RunPodDriverError("exact CUDA preflight rate policy is inconsistent")
+        elif balance_required:
             if isinstance(balance, bool) or not isinstance(balance, (int, float)):
                 raise RunPodDriverError("balance preflight observation is not numeric")
             if not math.isfinite(float(balance)) or balance < self.config.min_balance_usd:
@@ -1640,6 +1860,7 @@ class RunPodOrchestrationDriver:
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
         require_deterministic_runpod_environment(bundle)
+        self._require_cuda_transfer_receipt(bundle, state)
         realization_plan = state.repo_realization_plan or self.repo_realization_plan()
         if realization_plan is None:
             raise RunPodDriverError(
@@ -1690,10 +1911,18 @@ class RunPodOrchestrationDriver:
         sentinel_dir = self._remote_sentinel_dir(bundle)
         logs_dir = f"{remote_run_dir}/logs"
         workdir = self._primary_workdir()
+        uv = self._bootstrap_uv(bundle, remote_run_dir)
+        sync_args = [uv, "sync", "--frozen"]
+        if bundle.environment.dependency_groups is not None:
+            python_version = bundle.environment.python_version
+            assert python_version is not None
+            sync_args.extend(["--no-default-groups", "--python", python_version])
+            for group in bundle.environment.dependency_groups:
+                sync_args.extend(["--group", group])
         self._remote_nohup_sentinel(
             label="uv sync",
             workdir=workdir,
-            command="uv sync --frozen",
+            command=shlex.join(sync_args),
             done_file=f"{sentinel_dir}/uv-sync.done",
             failed_file=f"{sentinel_dir}/uv-sync.failed",
             log_file=f"{logs_dir}/uv-sync.log",
@@ -1704,9 +1933,10 @@ class RunPodOrchestrationDriver:
             failed_file=f"{sentinel_dir}/uv-sync.failed",
             log_file=f"{logs_dir}/uv-sync.log",
         )
-        for index, step in enumerate(
-            (*bundle.environment.overlay_steps, *self.config.overlay_steps)
-        ):
+        driver_overlay = (
+            self.config.overlay_steps if bundle.environment.dependency_groups is None else ()
+        )
+        for index, step in enumerate((*bundle.environment.overlay_steps, *driver_overlay)):
             self._remote_nohup_sentinel(
                 label=f"overlay {index}",
                 workdir=workdir,
@@ -1730,8 +1960,27 @@ class RunPodOrchestrationDriver:
         )
         return realized_fingerprint
 
+    def _bootstrap_uv(self, bundle: RunBundle, remote_run_dir: str) -> str:
+        release = bundle.environment.uv_release
+        if release is None:
+            return "uv"
+        archive = "uv-x86_64-unknown-linux-gnu"
+        url = f"https://github.com/astral-sh/uv/releases/download/{release.version}/{archive}.tar.gz"
+        bin_dir = f"{remote_run_dir}/bin"
+        self._ssh(
+            "set -eu; [ \"$(uname -s):$(uname -m)\" = Linux:x86_64 ]; "
+            "stage=$(mktemp -d); trap 'rm -rf -- \"$stage\"' EXIT; "
+            f"curl --fail --silent --show-error --location --proto '=https' "
+            f"--max-time 45 {_sq(url)} -o \"$stage/uv.tar.gz\"; "
+            f"printf '%s  %s\\n' {_sq(release.archive_sha256)} \"$stage/uv.tar.gz\" | sha256sum -c -; "
+            f"tar -xzf \"$stage/uv.tar.gz\" -C \"$stage\" --strip-components=1 {_sq(archive + '/uv')}; "
+            f"mkdir -p {_sq(bin_dir)}; install -m 755 \"$stage/uv\" {_sq(bin_dir + '/uv')}"
+        )
+        return f"{bin_dir}/uv"
+
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Publish one verified input tree without exposing partial final paths."""
+        self._require_cuda_transfer_receipt(bundle, state)
         attempt = state.stage("STAGE_INPUTS").attempts
         attempt_root = bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
         try:
@@ -2630,29 +2879,22 @@ class RunPodOrchestrationDriver:
         )
         action = "remove-requested"
         try:
-            result = self.transport.runpodctl(
-                "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
-            )
-            if result.returncode != 0:
-                detail = (result.stderr.strip() or result.stdout.strip()).lower()
-                if any(marker in detail for marker in _POD_NOT_FOUND_MARKERS):
-                    action = "already-absent"
-                else:
-                    self.transport.runpodctl(
-                        "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
-                    ).check("runpodctl stop pod")
-                    self.transport.runpodctl(
-                        "remove",
-                        "pod",
-                        pod_id,
-                        timeout_seconds=self._teardown_remaining(deadline),
-                    ).check("runpodctl remove pod after stop")
-                    action = "stopped-then-removed"
+            if self.config.cuda_placement is not None:
+                if not _SAFE_POD_ID_PATTERN.fullmatch(pod_id):
+                    raise RunPodDriverError("unsafe RunPod pod identity")
+                reply = self._api(
+                    "DELETE", f"/v2/pods/{pod_id}",
+                    timeout_seconds=min(8, self._teardown_remaining(deadline)),
+                )
+                if reply.status not in (204, 404):
+                    raise RunPodDriverError(f"RunPod v2 delete returned HTTP {reply.status}")
+                action = "removed" if reply.status == 204 else "already-absent"
             else:
-                action = "removed"
+                action = self._remove_legacy_pod(pod_id, deadline)
             absence = self._wait_for_pod_absence(pod_id, deadline=deadline)
             self._pod_id = None
             self._endpoint = None
+            billing = self._cuda_billing_receipt(bundle, state, pod_id, deadline)
             remaining = deadline - self._monotonic()
             final_inventory = (
                 self._observe_global_pod_inventory(timeout_seconds=remaining)
@@ -2674,6 +2916,7 @@ class RunPodOrchestrationDriver:
                 "ownership": ownership,
                 "pod_absence": absence,
                 "final_pod_inventory": final_inventory,
+                **({"billing": billing} if billing is not None else {}),
             }
         except Exception as exc:
             reason = _redact_secret(str(exc), self.config.api_key)
@@ -2698,6 +2941,69 @@ class RunPodOrchestrationDriver:
                 f"owned pod {pod_id!r} teardown is unresolved: {reason}",
                 teardown_outputs=outputs,
             ) from exc
+
+    def _cuda_billing_receipt(
+        self, bundle: RunBundle, state: RunSetState, pod_id: str, deadline: float
+    ) -> dict[str, Any] | None:
+        if self.config.cuda_placement is None:
+            return None
+        start = (state.provision_record or {}).get("billing_started_at")
+        if start is None and self._last_provision_pod is not None:
+            start = project_runpod_provision_facts(self._last_provision_pod)["billing_started_at"]
+        if not isinstance(start, str) or deadline <= self._monotonic():
+            return {"metered_status": "unavailable"}
+        try:
+            reply = self._api(
+                "GET", "/v2/billing/pods",
+                params={
+                    "podId": pod_id,
+                    "startTime": start,
+                    "endTime": utc_now().isoformat().replace("+00:00", "Z"),
+                    "bucketSize": "hour",
+                },
+                timeout_seconds=min(8, self._teardown_remaining(deadline)),
+            )
+        except RunPodDriverError:
+            return {"metered_status": "unavailable"}
+        records = (reply.body or {}).get("records")
+        if reply.status != 200 or not isinstance(records, list):
+            return {"metered_status": "unavailable"}
+        if not records:
+            return {"metered_status": "pending"}
+        amounts = []
+        for row in records:
+            amount = row.get("totalAmount") if isinstance(row, Mapping) else None
+            if (
+                not isinstance(row, Mapping) or row.get("podId") != pod_id
+                or type(amount) not in (int, float) or not math.isfinite(amount) or amount < 0
+            ):
+                return {"metered_status": "unavailable"}
+            amounts.append(amount)
+        total = sum(amounts)
+        if not math.isfinite(total):
+            return {"metered_status": "unavailable"}
+        return {
+            "metered_status": "reported",
+            "metered_total_usd": total,
+            "run_spend_ceiling_usd": bundle.budget.max_spend_usd,
+        }
+
+    def _remove_legacy_pod(self, pod_id: str, deadline: float) -> str:
+        result = self.transport.runpodctl(
+            "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+        )
+        if result.returncode == 0:
+            return "removed"
+        detail = (result.stderr.strip() or result.stdout.strip()).lower()
+        if any(marker in detail for marker in _POD_NOT_FOUND_MARKERS):
+            return "already-absent"
+        self.transport.runpodctl(
+            "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+        ).check("runpodctl stop pod")
+        self.transport.runpodctl(
+            "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+        ).check("runpodctl remove pod after stop")
+        return "stopped-then-removed"
 
     def teardown_ownership(self, state: RunSetState) -> dict[str, Any]:
         """Describe provider-resource ownership without performing side effects."""
@@ -2755,6 +3061,20 @@ class RunPodOrchestrationDriver:
         self, *, timeout_seconds: float | None = None
     ) -> Mapping[str, Any]:
         """Return sanitized evidence from the provider-wide RunPod pod inventory."""
+        if self.config.cuda_placement is not None:
+            try:
+                _, evidence = self.observe_pod_inventory(timeout_seconds=timeout_seconds)
+            except RunPodDriverError:
+                return {
+                    "scope": "provider-account",
+                    "verified": False,
+                    "observed_at": utc_now().isoformat(),
+                    "observation_basis": "RunPod GET /v2/pods",
+                    "outcome": "unavailable",
+                    "pod_count": None,
+                    "pod_ids": [],
+                }
+            return evidence
         result = self.transport.runpodctl(
             "pod", "list", "--output", "json", timeout_seconds=timeout_seconds
         )
@@ -2807,21 +3127,25 @@ class RunPodOrchestrationDriver:
         self, *, timeout_seconds: float | None = None
     ) -> tuple[tuple[ProviderPodInventoryRecord, ...], Mapping[str, Any]]:
         """Return typed provider inventory plus bounded observation evidence."""
-        result = self.transport.runpodctl(
-            "pod", "list", "--output", "json", timeout_seconds=timeout_seconds
-        )
         observed_at = utc_now().isoformat()
-        basis = "runpodctl pod list --output json"
-        if result.returncode != 0:
-            raise RunPodDriverError(
-                "RunPod inventory observation is unavailable for acquisition reconciliation"
+        if self.config.cuda_placement is not None:
+            records = self._observe_v2_pods(timeout_seconds=timeout_seconds)
+            basis = "RunPod GET /v2/pods"
+        else:
+            result = self.transport.runpodctl(
+                "pod", "list", "--output", "json", timeout_seconds=timeout_seconds
             )
-        try:
-            records = _parse_runpod_pod_inventory(result.stdout)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise RunPodDriverError(
-                "RunPod inventory observation is invalid for acquisition reconciliation"
-            ) from exc
+            basis = "runpodctl pod list --output json"
+            if result.returncode != 0:
+                raise RunPodDriverError(
+                    "RunPod inventory observation is unavailable for acquisition reconciliation"
+                )
+            try:
+                records = _parse_runpod_pod_inventory(result.stdout)
+            except (TypeError, ValueError) as exc:
+                raise RunPodDriverError(
+                    "RunPod inventory observation is invalid for acquisition reconciliation"
+                ) from exc
         evidence = {
             "scope": "provider-account",
             "verified": not records,
@@ -2832,6 +3156,37 @@ class RunPodOrchestrationDriver:
             "pod_ids": [record.pod_id for record in records],
         }
         return records, evidence
+
+    def _observe_v2_pods(
+        self, *, timeout_seconds: float | None
+    ) -> tuple[ProviderPodInventoryRecord, ...]:
+        deadline = self._monotonic() + (
+            timeout_seconds if timeout_seconds is not None else self.reconciliation_timeout_seconds
+        )
+        params: dict[str, str | int] = {"limit": 100}
+        pods: list[Any] = []
+        cursors: set[str] = set()
+        for _ in range(5):
+            reply = self._api(
+                "GET", "/v2/pods", params=params,
+                timeout_seconds=min(8, self._teardown_remaining(deadline)),
+            )
+            body = reply.body or {}
+            page, pagination = body.get("pods"), body.get("pagination")
+            if reply.status != 200 or not isinstance(page, list) or not isinstance(pagination, Mapping):
+                raise RunPodDriverError("RunPod v2 inventory response was invalid")
+            pods.extend(page)
+            if pagination.get("hasNextPage") is False:
+                try:
+                    return _decode_runpod_pod_inventory(pods)
+                except (TypeError, ValueError) as exc:
+                    raise RunPodDriverError("RunPod v2 inventory entries were invalid") from exc
+            cursor = pagination.get("nextCursor")
+            if pagination.get("hasNextPage") is not True or not isinstance(cursor, str) or not cursor or cursor in cursors:
+                raise RunPodDriverError("RunPod v2 inventory cursor was invalid")
+            cursors.add(cursor)
+            params["cursor"] = cursor
+        raise RunPodDriverError("RunPod v2 inventory exceeded five pages")
 
     def observe_global_resource_inventory(
         self,
@@ -2853,6 +3208,21 @@ class RunPodOrchestrationDriver:
         polls = 0
         while self._monotonic() < deadline:
             remaining = deadline - self._monotonic()
+            if self.config.cuda_placement is not None:
+                pod = self._cuda_pod_details(pod_id, timeout_seconds=remaining)
+                polls += 1
+                if pod is None:
+                    return {
+                        "verified": True,
+                        "pod_id": pod_id,
+                        "polls": polls,
+                        "terminal_observation": "not-found",
+                        "http_status": 404,
+                    }
+                remaining = deadline - self._monotonic()
+                if remaining > 0:
+                    self._sleep(min(self.config.poll_seconds, remaining))
+                continue
             result = self.transport.runpodctl(
                 "pod",
                 "get",
@@ -2900,6 +3270,11 @@ class RunPodOrchestrationDriver:
         *,
         timeout_seconds: float | None = None,
     ) -> Mapping[str, Any]:
+        if self.config.cuda_placement is not None:
+            pod = self._cuda_pod_details(pod_id, timeout_seconds=timeout_seconds)
+            if pod is None:
+                raise RunPodDriverError("RunPod v2 pod is absent")
+            return pod
         result = self.transport.runpodctl(
             "pod",
             "get",
@@ -2910,11 +3285,28 @@ class RunPodOrchestrationDriver:
         ).check("runpodctl pod get")
         return _json_object(result.stdout)
 
+    def _cuda_pod_details(
+        self, pod_id: str, *, timeout_seconds: float | None
+    ) -> Mapping[str, Any] | None:
+        if not _SAFE_POD_ID_PATTERN.fullmatch(pod_id):
+            raise RunPodDriverError("unsafe RunPod pod identity")
+        timeout = min(8, timeout_seconds) if timeout_seconds is not None else 8
+        reply = self._api("GET", f"/v2/pods/{pod_id}", timeout_seconds=timeout)
+        if reply.status == 404:
+            return None
+        if reply.status != 200 or reply.body is None or reply.body.get("id") != pod_id:
+            raise RunPodDriverError("RunPod v2 did not return the exact pod identity")
+        return reply.body
+
     def _wait_for_endpoint(
         self,
         pod_id: str,
     ) -> tuple[EndpointClassification, Mapping[str, Any]]:
-        deadline = self._monotonic() + self.config.max_acquire_seconds
+        placement = self.config.cuda_placement
+        startup_seconds = (
+            self.config.max_acquire_seconds if placement is None else placement.startup_seconds
+        )
+        deadline = self._monotonic() + startup_seconds
         while True:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
@@ -2941,11 +3333,82 @@ class RunPodOrchestrationDriver:
                 break
             self._sleep(min(self.config.poll_seconds, remaining))
         raise RunPodDriverError(
-            f"timed out waiting for RunPod SSH endpoint after {self.config.max_acquire_seconds:g}s"
+            f"timed out waiting for RunPod SSH endpoint after {startup_seconds:g}s"
         )
 
     def _require_gpu_ready(self) -> None:
         self._ssh("nvidia-smi >/dev/null").check("nvidia-smi readiness")
+
+    def _verify_cuda_placement(
+        self, bundle: RunBundle, pod: Mapping[str, Any], intent_id: str
+    ) -> dict[str, Any] | None:
+        placement = self.config.cuda_placement
+        if placement is None:
+            return None
+        gpu = pod.get("gpu")
+        mounts = pod.get("mounts")
+        if not (
+            pod.get("id") == self._pod_id
+            and pod.get("image") == self.config.image
+            and pod.get("name") == self.acquisition_pod_name(intent_id)
+            and pod.get("cloud") == "SECURE"
+            and pod.get("dataCenterId") in self.config.datacenters
+            and pod.get("cudaVersion") == placement.cuda_version
+            and pod.get("disk") == placement.ephemeral_disk_gb
+            and pod.get("ports") == ["22/tcp"]
+            and isinstance(gpu, Mapping)
+            and gpu.get("id") == self.config.gpu_id
+            and type(gpu.get("count")) is int
+            and gpu["count"] == 1
+            and isinstance(mounts, Mapping)
+            and not any(mounts.get(kind) for kind in ("persistent", "network", "global"))
+            and _rate_within_cap(pod.get("cost"), placement.max_hourly_rate_usd)
+        ):
+            raise _ProvisioningIdentityError("RunPod resource failed exact CUDA placement policy")
+        result = self.transport.ssh(
+            "nvidia-smi --query-gpu=name,driver_version,compute_cap,uuid --format=csv,noheader"
+        )
+        rows = result.stdout.strip().splitlines()
+        fields = [field.strip() for field in rows[0].split(",")] if len(rows) == 1 else []
+        if result.returncode != 0 or len(fields) != 4:
+            raise _ProvisioningIdentityError("RunPod SSH did not verify exactly one CUDA GPU")
+        name, driver, capability, uuid = fields
+        if not (
+            name == self.config.gpu_id
+            and capability == placement.compute_capability
+            and re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", driver)
+            and int(driver.split(".", 1)[0]) >= placement.min_driver_major
+            and re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", uuid)
+        ):
+            raise _ProvisioningIdentityError("RunPod GPU/driver did not match CUDA placement policy")
+        return {
+            "pod_id": self._pod_id,
+            "intent_id": intent_id,
+            "configuration_sha256": self.acquisition_config_identity(bundle),
+            "device": name,
+            "device_uuid": uuid,
+            "driver": driver,
+            "compute_capability": capability,
+            "region": pod["dataCenterId"],
+            "cuda_version": pod["cudaVersion"],
+            "hourly_rate_usd": pod["cost"],
+            "image": pod["image"],
+            "ephemeral_disk_gb": pod["disk"],
+        }
+
+    def _require_cuda_transfer_receipt(self, bundle: RunBundle, state: RunSetState) -> None:
+        if self.config.cuda_placement is None:
+            return
+        record = state.provision_record or {}
+        receipt = record.get("cuda_placement")
+        intent_id = record.get("intent_id")
+        if not isinstance(receipt, Mapping) or not isinstance(intent_id, str) or not self._pod_id:
+            raise _ProvisioningIdentityError(
+                "RunPod transfer requires its durable CUDA placement receipt"
+            )
+        pod = self._pod_get(self._pod_id)
+        if self._verify_cuda_placement(bundle, pod, intent_id) != receipt:
+            raise _ProvisioningIdentityError("RunPod placement changed before private transfer")
 
     def _configure_subprocess_endpoint(self, endpoint: EndpointClassification) -> None:
         if isinstance(self.transport, SubprocessRunPodTransport):
@@ -3007,6 +3470,8 @@ class RunPodOrchestrationDriver:
                     else "; runpodctl pod get response omitted datacenter"
                 )
             )
+        if self.config.cuda_placement is not None:
+            facts["provider_observation_basis"] = "RunPod GET /v2/pods/{id}"
         record = {
             "driver": self.driver_name,
             **facts,
@@ -3068,6 +3533,7 @@ class RunPodOrchestrationDriver:
         declaration.pop("overlay_steps")
         declaration["declaration_sha256"] = declaration_fingerprint
         command = (
+            f"{_cuda_launch_environment(bundle, self._remote_run_dir(bundle), self._primary_workdir())}"
             "uv run --no-sync python -c "
             f"{_sq(_REMOTE_ENVIRONMENT_PROBE)} "
             f"{_sq(json.dumps(declaration, sort_keys=True, separators=(',', ':')))}"
@@ -3214,6 +3680,19 @@ def classify_pod_state(pod: Mapping[str, Any] | None) -> PodStateClassification:
 def endpoint_classification(pod: Mapping[str, Any]) -> EndpointClassification:
     """Classify RunPod's secure-cloud SSH endpoint shape."""
     ssh = pod.get("ssh") if isinstance(pod.get("ssh"), Mapping) else {}
+    if isinstance(ssh, Mapping) and "direct" in ssh:
+        direct = ssh.get("direct")
+        if not isinstance(direct, Mapping) or direct.get("username") != "root":
+            return EndpointClassification("missing")
+        host, port = direct.get("host"), direct.get("port")
+        if (
+            isinstance(host, str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", host)
+            and type(port) is int
+            and 1 <= port <= 65535
+        ):
+            return EndpointClassification("ssh_object", host, port)
+        return EndpointClassification("missing")
     ip = _string_or_none(ssh.get("ip") or ssh.get("host")) if isinstance(ssh, Mapping) else None
     port = _int_or_none(ssh.get("port")) if isinstance(ssh, Mapping) else None
     command = (
@@ -3248,6 +3727,99 @@ def parse_ssh_command_endpoint(command: str) -> tuple[str | None, int | None]:
         elif "@" in part and not part.startswith("-"):
             host = part.rsplit("@", 1)[1]
     return host, port
+
+
+def _rate_within_cap(rate: object, limit: float) -> bool:
+    return type(rate) in (int, float) and math.isfinite(rate) and 0 < rate <= limit
+
+
+def _require_cuda_quote(
+    reply: RunPodApiReply, placement: RunPodCudaPlacement, gpu_id: str, region: str
+) -> None:
+    body = reply.body or {}
+    if reply.status != 200 or body.get("id") != gpu_id:
+        raise RunPodDriverError("RunPod catalog did not verify the requested GPU")
+    price = body.get("price")
+    if not isinstance(price, Mapping) or not _rate_within_cap(
+        price.get("secure"), placement.max_hourly_rate_usd
+    ):
+        raise RunPodDriverError("RunPod catalog Secure Cloud rate is missing or above the ceiling")
+    versions = body.get("cudaVersions")
+    if not isinstance(versions, list) or not any(
+        isinstance(item, Mapping)
+        and item.get("version") == placement.cuda_version
+        and item.get("available") is True
+        for item in versions
+    ):
+        raise RunPodDriverError("RunPod catalog did not verify exact CUDA availability")
+    regions = body.get("dataCenters")
+    available = [
+        item.get("availability")
+        for item in regions
+        if isinstance(item, Mapping) and item.get("id") == region
+    ] if isinstance(regions, list) else []
+    if len(available) == 1 and available[0] == "NONE":
+        raise _RunPodCapacityUnavailable("RunPod catalog reports no stock in the authorized region")
+    if len(available) != 1 or available[0] not in ("LOW", "MEDIUM", "HIGH"):
+        raise RunPodDriverError("RunPod catalog did not verify stock in the authorized region")
+
+
+_CREATE_PROBLEM_TITLES = {
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    413: "Content Too Large",
+    422: "Unprocessable Entity",
+}
+_CREATE_PROBLEM_WORDS = frozenset("""
+a access additional allowed allowedcudaversions an and are argument at authentication
+authorization available bad bearer be body cannot capacity cloud conflict conflicts
+container count could cuda datacenter datacenterids digest disabled disk does enabled
+entity exceeds expired failed failure field for forbidden format found gpu has id image
+in insufficient invalid is key larger limit malformed memory minimum missing mount mounts
+must name network no not of on only or out path permission persistent pod port ports
+preferred processed properties property public registry rejected request required requires
+resource response rule rules secure size ssh startssh stock supported tag template than
+the this to token too type unauthorized unknown unprocessable unsupported use valid
+validation value version volume was with workspace
+""".split())
+
+
+def _scrub_problem_detail(value: str, api_key: str) -> str:
+    if api_key:
+        value = value.replace(api_key, "[redacted]").replace(quote(api_key, safe=""), "[redacted]")
+    words = re.findall(r"[a-z0-9_@/.+%=-]+", value[:512].lower())
+    result = []
+    for word in words[:48]:
+        parts = word.strip(".").split(".")
+        text = word if all(part in _CREATE_PROBLEM_WORDS for part in parts) else "[redacted]"
+        if text != "[redacted]" or not result or result[-1] != text:
+            result.append(text)
+    return " ".join(result)
+
+
+def _scrub_create_problem(reply: RunPodApiReply, api_key: str) -> dict[str, Any] | None:
+    """Preserve bounded validation vocabulary from a documented definitive rejection."""
+    problem = reply.body or {}
+    if (
+        reply.status not in _CREATE_PROBLEM_TITLES
+        or reply.media_type != "application/problem+json"
+        or type(problem.get("status")) is not int
+        or problem["status"] != reply.status
+        or not isinstance(problem.get("title"), str)
+        or not isinstance(problem.get("detail"), str)
+    ):
+        return None
+    errors = problem.get("errors", [])
+    if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
+        return None
+    return {
+        "status": reply.status,
+        "title": _CREATE_PROBLEM_TITLES[reply.status],
+        "detail": _scrub_problem_detail(problem["detail"], api_key),
+        "errors": [_scrub_problem_detail(error, api_key) for error in errors[:8]],
+    }
 
 
 def rank_datacenters_for_gpu(
@@ -3309,6 +3881,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ("container", "image"),
         ("template", "imageName"),
         ("template", "image_name"),
+        ("image",),
     )
     hourly_rate_raw = first(
         ("costPerHr",),
@@ -3316,6 +3889,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ("hourlyRate",),
         ("machine", "costPerHr"),
         ("machine", "costPerHour"),
+        ("cost",),
     )
     billing_started_at_raw = first(("createdAt",), ("created_at",))
     try:
@@ -4236,6 +4810,7 @@ def build_launch_row_command(
     )
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
+        f"{_cuda_launch_environment(bundle, str(PurePosixPath(namespace.sentinel_dir).parent), workdir)}"
         'mark_failed() { rc=$?; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '
         f'if [ "$success" -ne 1 ]; then touch {_sq(failed_file)}; fi; exit "$rc"; }}; '
         'signal_failed() { rc=$1; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '
@@ -4284,6 +4859,18 @@ def build_launch_row_command(
         "i=$((i+1)); sleep 0.05; done; "
         f"[ -s {_sq(pid_file)} ] && [ -s {_sq(process_identity_file)} ]; }}"
     )
+
+
+def _cuda_launch_environment(bundle: RunBundle, run_dir: str, workdir: str) -> str:
+    prefix = ""
+    if bundle.environment.uv_release is not None:
+        prefix = f"export PATH={_sq(run_dir + '/bin')}:{_sq(workdir + '/.venv/bin')}:\"$PATH\"; "
+    if bundle.deployment_policy.resources.runpod_cuda is not None:
+        prefix += (
+            "unset LD_LIBRARY_PATH; "
+            "export JAX_PLATFORMS=cuda CUDA_VISIBLE_DEVICES=0 JAX_ENABLE_COMPILATION_CACHE=false; "
+        )
+    return prefix
 
 
 _REMOTE_PROCESS_GROUP_SIGNAL_SCRIPT = """
@@ -4555,6 +5142,12 @@ def runpod_config_for_bundle(
         ssh_port=_int_or_none(metadata.get("runpod_ssh_port")),
         gpu_id=resources.gpu_id,
         datacenters=tuple(resources.regions),
+        cuda_placement=resources.runpod_cuda,
+        teardown_absence_timeout_seconds=(
+            bundle.budget.teardown_reserve_seconds
+            if resources.runpod_cuda is not None and bundle.budget.teardown_reserve_seconds is not None
+            else 60.0
+        ),
         api_key=api_key,
         min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
         image=bundle.environment.image_id or "runpod/pytorch:latest",
@@ -4885,24 +5478,27 @@ def _is_no_capacity_create_response(stdout: str, stderr: str) -> bool:
 
 def _classify_create_failure(
     result: CommandResult, secret: str | None
-) -> tuple[Literal["retryable", "non-retryable"], str]:
-    """Classify only sanitized provider authorization and request failures."""
+) -> tuple[AcquisitionDisposition, str]:
+    """Separate confirmed capacity and request rejections from ambiguous failures."""
     stdout = _redact_secret(result.stdout, secret)
     stderr = _redact_secret(result.stderr, secret)
     detail = (stderr or stdout).strip()
-    if _is_no_capacity_create_response(stdout, stderr):
-        return "non-retryable", detail
     try:
         payload = strict_json_loads(result.stdout or result.stderr)
     except (json.JSONDecodeError, StrictJsonError):
         payload = None
-    if isinstance(payload, Mapping):
-        code = str(payload.get("statusCode") or payload.get("code") or "").lower()
-        if code in {"400", "401", "403", "422", "unauthorized", "forbidden", "invalid_request"}:
-            return "non-retryable", detail
-    if result.returncode in {400, 401, 403, 422}:
-        return "non-retryable", detail
-    return "retryable", detail
+    code = (
+        str(payload.get("statusCode") or payload.get("code") or "").lower()
+        if isinstance(payload, Mapping)
+        else ""
+    )
+    if code in {"401", "403", "unauthorized", "forbidden"}:
+        return "terminal-rejection", detail
+    if _is_no_capacity_create_response(stdout, stderr):
+        return "retryable-rejection", detail
+    if code in {"400", "422", "invalid_request"}:
+        return "terminal-rejection", detail
+    return "ambiguous", detail
 
 
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:
@@ -4962,7 +5558,10 @@ def _json_object(payload: str) -> dict[str, Any]:
 
 def _parse_runpod_pod_inventory(payload: str) -> tuple[ProviderPodInventoryRecord, ...]:
     """Parse supported inventory shapes without discarding provider pod names."""
-    loaded = strict_json_loads(payload)
+    return _decode_runpod_pod_inventory(strict_json_loads(payload))
+
+
+def _decode_runpod_pod_inventory(loaded: object) -> tuple[ProviderPodInventoryRecord, ...]:
     if isinstance(loaded, list):
         pods = loaded
     elif isinstance(loaded, Mapping):

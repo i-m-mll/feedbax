@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, FiniteFloat, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
@@ -167,15 +167,43 @@ class RepoRevision(StrictModel):
     dirty_allowed: bool = False
 
 
+class UvRelease(StrictModel):
+    """Verified Linux x86-64 release archive for remote environment realization."""
+
+    version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class EnvironmentDeclaration(StrictModel):
     """Declared execution environment for a run bundle."""
 
     python_version: str | None = None
     repo_revisions: list[RepoRevision] = Field(default_factory=list)
     lockfile_hashes: dict[str, str] = Field(default_factory=dict)
+    dependency_groups: tuple[str, ...] | None = Field(default=None, min_length=1)
+    uv_release: UvRelease | None = None
     overlay_steps: list[str] = Field(default_factory=list)
     image_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("dependency_groups")
+    @classmethod
+    def _validate_dependency_groups(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        if any(not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", group) for group in value):
+            raise ValueError("dependency groups must be normalized uv group names")
+        if len(value) != len(set(value)):
+            raise ValueError("dependency groups must be unique")
+        return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def _validate_grouped_environment(self) -> "EnvironmentDeclaration":
+        if self.dependency_groups is not None and not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+", self.python_version or ""
+        ):
+            raise ValueError("a grouped environment requires an exact Python version")
+        return self
 
 
 def environment_declaration_identity_projection(
@@ -189,9 +217,30 @@ def environment_declaration_identity_projection(
             for revision in environment.repo_revisions
         ],
         "lockfile_hashes": dict(sorted(environment.lockfile_hashes.items())),
+        **(
+            {"dependency_groups": list(environment.dependency_groups)}
+            if environment.dependency_groups is not None
+            else {}
+        ),
+        **(
+            {"uv_release": environment.uv_release.model_dump(mode="json")}
+            if environment.uv_release is not None
+            else {}
+        ),
         "overlay_steps": list(environment.overlay_steps),
         "image_id": environment.image_id,
     }
+
+
+class RunPodCudaPlacement(StrictModel):
+    """Exact Secure Cloud placement for one GPU with ephemeral storage."""
+
+    cuda_version: str = Field(pattern=r"^[0-9]+\.[0-9]+$")
+    min_driver_major: int = Field(strict=True, gt=0)
+    compute_capability: str = Field(pattern=r"^[0-9]+\.[0-9]+$")
+    ephemeral_disk_gb: int = Field(strict=True, gt=0)
+    max_hourly_rate_usd: FiniteFloat = Field(gt=0)
+    startup_seconds: int = Field(strict=True, gt=0)
 
 
 class DeploymentResourceRequest(StrictModel):
@@ -199,6 +248,7 @@ class DeploymentResourceRequest(StrictModel):
 
     gpu_id: str | None = Field(default=None, min_length=1)
     regions: list[str] = Field(default_factory=list)
+    runpod_cuda: RunPodCudaPlacement | None = None
 
     @field_validator("regions")
     @classmethod
@@ -208,6 +258,12 @@ class DeploymentResourceRequest(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("requested regions must be unique and remain in preference order")
         return value
+
+    @model_validator(mode="after")
+    def _validate_exact_placement(self) -> "DeploymentResourceRequest":
+        if self.runpod_cuda is not None and (self.gpu_id is None or len(self.regions) != 1):
+            raise ValueError("exact RunPod CUDA placement requires a GPU and one region")
+        return self
 
 
 class DeploymentPolicy(StrictModel):
@@ -221,6 +277,14 @@ class DeploymentPolicy(StrictModel):
     review_required: bool
     review_authorized: bool
     resources: DeploymentResourceRequest = Field(default_factory=DeploymentResourceRequest)
+
+    @model_validator(mode="after")
+    def _validate_runpod_placement_venue(self) -> "DeploymentPolicy":
+        if self.resources.runpod_cuda is not None and (self.driver, self.venue) != (
+            "runpod", "remote"
+        ):
+            raise ValueError("exact RunPod CUDA placement requires the remote RunPod driver")
+        return self
 
 
 class LaunchRowGroup(StrictModel):
@@ -261,10 +325,24 @@ class LaunchPolicy(StrictModel):
 
 
 class BudgetPolicy(StrictModel):
-    """Run-set budget guards enforced by MONITOR."""
+    """Run-set budget guards enforced by the stage engine."""
 
-    max_wall_clock_seconds: float = Field(gt=0.0)
-    max_spend_usd: float | None = Field(default=None, ge=0.0)
+    max_wall_clock_seconds: FiniteFloat = Field(gt=0.0)
+    max_spend_usd: FiniteFloat | None = Field(default=None, ge=0.0)
+    max_create_attempts: int | None = Field(default=None, strict=True, ge=1)
+    teardown_reserve_seconds: FiniteFloat | None = Field(default=None, gt=0.0)
+    discard_uncollected_on_abort: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_teardown_reserve(self) -> "BudgetPolicy":
+        if (
+            self.teardown_reserve_seconds is not None
+            and self.teardown_reserve_seconds >= self.max_wall_clock_seconds
+        ):
+            raise ValueError("teardown reserve must be shorter than the run budget")
+        if self.discard_uncollected_on_abort and self.teardown_reserve_seconds is None:
+            raise ValueError("abort-time output discard requires a teardown reserve")
+        return self
 
 
 class ImmutableInputArtifactRef(StrictModel):
@@ -463,6 +541,22 @@ class RunBundle(StrictModel):
 
     @model_validator(mode="after")
     def _validate_bundle(self) -> "RunBundle":
+        placement = self.deployment_policy.resources.runpod_cuda
+        if placement is not None and (
+            self.keep_alive
+            or self.deadman_enabled
+            or self.budget.max_create_attempts is None
+            or self.budget.teardown_reserve_seconds is None
+            or self.budget.max_spend_usd is None
+            or self.budget.discard_uncollected_on_abort is not True
+            or self.environment.dependency_groups is None
+            or self.environment.uv_release is None
+            or self.environment.overlay_steps
+        ):
+            raise ValueError(
+                "exact RunPod CUDA requires attempt, spend and teardown budgets, "
+                "with controller-owned credentials, authorized abort-time teardown, and a pinned environment"
+            )
         seen: set[str] = set()
         for row in self.rows:
             if row.row_id in seen:

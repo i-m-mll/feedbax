@@ -17,6 +17,7 @@ import shlex
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
@@ -50,6 +51,7 @@ from feedbax.orchestration.bundle import (
     DeploymentResourceRequest,
     EnvironmentDeclaration,
     RunBundle,
+    RunPodCudaPlacement,
     RowLaunchSpec,
     SchemaArtifactRef,
 )
@@ -82,11 +84,7 @@ from feedbax.orchestration.drivers.capabilities import (
     DriverHook,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
-from feedbax.orchestration.drivers.base import (
-    AcquisitionCreateError,
-    AcquisitionResult,
-    ProvisioningAttemptError,
-)
+from feedbax.orchestration.drivers.base import AcquisitionResult, ProvisioningAttemptError
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
@@ -741,7 +739,7 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
     store = RunSetStateStore(bundle.run_set_dir / "lease-state.json")
     transport = AcquisitionLeaseTransport(store)
     transport.create_results = [
-        CommandResult(400, '{"statusCode":400,"code":"invalid_request"}'),
+        CommandResult(1, '{"error":"no longer any instances available"}'),
         CommandResult(0, '{"id":"pod-second"}'),
     ]
     transport.register_on_create = [(), ("pod-second",)]
@@ -776,7 +774,7 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
 def test_unstructured_or_lost_create_response_remains_ambiguous(result: CommandResult) -> None:
     classification, _detail = runpod_module._classify_create_failure(result, None)
 
-    assert classification == "retryable"
+    assert classification == "ambiguous"
 
 
 CREATE_FAILURE_CORPUS_PATH = (
@@ -1220,6 +1218,31 @@ def test_provisioning_resume_reuses_deadline_and_failed_cost(tmp_path: Path) -> 
     assert resumed.budget_counters["failed_provision_cost_usd"] > cost
 
 
+def test_resource_deadline_survives_phase_change_and_restart(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(update={
+        "budget": BudgetPolicy(max_wall_clock_seconds=900, teardown_reserve_seconds=60)
+    })
+    driver = RunPodOrchestrationDriver(transport=FakeRunPodTransport())
+    clock = FakeClock()
+    store = RunSetStateStore(bundle.run_set_dir / "deadline.json")
+    state = _state(bundle)
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store, wall_time=clock.monotonic)
+    _, remaining = engine._resource_phase_remaining(STAGE_PROVISION, state)
+    assert remaining == 840
+    clock.sleep(300)
+    restarted = StageEngine(bundle=bundle, driver=driver, store=store, wall_time=clock.monotonic)
+    _, remaining = restarted._resource_phase_remaining(STAGE_REALIZE_ENV, store.load())
+    assert remaining == 540
+    clock.sleep(540)
+    _, remaining = restarted._resource_phase_remaining(STAGE_STAGE_INPUTS, store.load())
+    assert remaining == 0
+    with _ScopedSignalSupervisor() as supervisor:
+        with pytest.raises(stages.BudgetExceeded, match="teardown reserve"):
+            with supervisor.resource_deadline(remaining):
+                pytest.fail("the phase must not execute after its resource deadline")
+
+
 def test_classifies_secure_endpoint_shapes_and_dead_states() -> None:
     ready = {
         "desiredStatus": "RUNNING",
@@ -1327,6 +1350,32 @@ def test_projects_canonical_and_raw_runpod_billing_timestamp(
 
     assert facts["billing_started_at"] == canonical
     assert facts["billing_started_at_raw"] == raw_timestamp
+
+
+@pytest.mark.parametrize("digest_matches", [True, False])
+def test_image_probe_verifies_the_immutable_manifest(digest_matches: bool) -> None:
+    digest = "sha256:" + "a" * 64
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "auth.docker.io":
+            assert request.method == "GET"
+            assert request.url.params["scope"] == "repository:runpod/base:pull"
+            return httpx.Response(200, json={"token": "public-read-token"})
+        assert request.method == "HEAD"
+        assert request.url.host == "registry-1.docker.io"
+        assert request.url.path == f"/v2/runpod/base/manifests/{digest}"
+        assert request.headers["Authorization"] == "Bearer public-read-token"
+        return httpx.Response(
+            200, headers={"Docker-Content-Digest": digest if digest_matches else "other"}
+        )
+
+    transport = SubprocessRunPodTransport(http_transport=httpx.MockTransport(handle))
+    assert not transport.image_exists("runpod/base:latest")
+    assert not requests
+    assert transport.image_exists(f"runpod/base@{digest}") is digest_matches
+    assert len(requests) == 2
 
 
 def test_provision_projection_does_not_invent_declared_image() -> None:
@@ -2101,8 +2150,30 @@ def test_provision_cleanup_failure_does_not_mask_keyboard_interrupt(
     assert driver.has_pending_owned_resource() is True
 
 
-def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("response", "limit", "stop_reason", "disposition"),
+    [
+        (
+            '{"statusCode":401,"code":"unauthorized"}',
+            None,
+            "non-retryable-error",
+            "terminal-rejection",
+        ),
+        (
+            '{"error":"no longer any instances available"}',
+            1,
+            "create-attempt-limit",
+            "retryable-rejection",
+        ),
+    ],
+)
+def test_provider_create_rejection_stops_after_one_intent(
+    tmp_path: Path, response: str, limit: int | None, stop_reason: str, disposition: str
+) -> None:
     bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={"budget": bundle.budget.model_copy(update={"max_create_attempts": limit})}
+    )
     transport = FakeRunPodTransport()
     call = (
         "pod",
@@ -2118,14 +2189,11 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
         "--data-center-ids",
         "CA-MTL-1",
     )
-    transport.queue_runpodctl(
-        ("user", "--output", "json"), CommandResult(0, '{"clientBalance":10}')
-    )
-    transport.queue_runpodctl(call, CommandResult(401, '{"statusCode":401,"code":"unauthorized"}'))
+    transport.queue_runpodctl(call, CommandResult(1, response))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
-            datacenters=("CA-MTL-1",),
+            datacenters=("CA-MTL-1", "US-KS-2"),
             image=bundle.environment.image_id,
             local_repos={"feedbax": tmp_path},
         ),
@@ -2135,18 +2203,131 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
     state = _state(bundle)
     store.save(state)
     driver._preflight_passed = True
-    driver.create_pod_once = lambda *_args: (_ for _ in ()).throw(
-        AcquisitionCreateError(
-            "unauthorized",
-            clean_rejection=True,
-            evidence={"returncode": 401, "classification": "clean"},
-        )
-    )
+    driver.acquisition_pod_name = lambda _intent_id: call[3]
     engine = StageEngine(bundle=bundle, driver=driver, store=store)
-    with pytest.raises(ProvisioningAttemptError) as raised:
-        engine._engine_owned_provision(state, attempt_ordinal=1)
-    assert raised.value.retryable is True
-    assert store.load().acquisition_intents[0].state == "failed-unacquired"
+    with pytest.raises(OrchestrationStageError, match=stop_reason):
+        engine._stage_provision(state)
+    final = store.load()
+    assert transport.runpodctl_calls == [call]
+    assert final.provisioning_stop_reason == stop_reason
+    assert len(final.acquisition_intents) == 1
+    intent = final.acquisition_intents[0]
+    assert intent.state == "failed-unacquired"
+    assert intent.evidence["create"]["classification"] == disposition
+    with pytest.raises(OrchestrationStageError, match=stop_reason):
+        engine._stage_provision(final)
+    assert transport.runpodctl_calls == [call]
+
+
+@pytest.mark.parametrize("create_rejected", [True, False])
+def test_exact_cuda_create_and_identity_mismatch_remain_governed(
+    tmp_path: Path, create_rejected: bool
+) -> None:
+    bundle = _bundle(tmp_path)
+    gpu = "NVIDIA GeForce RTX 5090"
+    image = bundle.environment.image_id
+    name = "feedbax-exact-cuda"
+    secret = "synthetic-credential-562"
+    placement = RunPodCudaPlacement(
+        cuda_version="13.2",
+        min_driver_major=595,
+        compute_capability="12.0",
+        ephemeral_disk_gb=20,
+        max_hourly_rate_usd=1.19,
+        startup_seconds=120,
+    )
+    requests = []
+    deleted = False
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal deleted
+        requests.append((request.method, request.url.path))
+        assert request.url.host == "api.runpod.io"
+        assert request.headers["Authorization"] == f"Bearer {secret}"
+        path = request.url.path
+        if path.startswith("/v2/catalog/gpus/"):
+            assert request.url.params["cudaVersions"] == "13.2"
+            assert request.url.params["cloud"] == "SECURE"
+            return httpx.Response(200, json={
+                "id": gpu,
+                "price": {"secure": 1.19},
+                "cudaVersions": [{"version": "13.2", "available": True}],
+                "dataCenters": [{"id": "EU-RO-1", "availability": "LOW"}],
+            })
+        if request.method == "POST":
+            assert json.loads(request.content) == {
+                "name": name,
+                "image": image,
+                "cloud": "SECURE",
+                "disk": 20,
+                "gpu": {"id": gpu, "count": 1, "allowedCudaVersions": ["13.2"]},
+                "dataCenterIds": ["EU-RO-1"],
+                "ports": ["22/tcp"],
+                "startSsh": True,
+            }
+            if create_rejected:
+                return httpx.Response(
+                    400,
+                    headers={"Content-Type": "application/problem+json"},
+                    json={"title": "Unexpected detail", "status": 400,
+                          "detail": f"Image digest is unsupported. Bearer {secret}"},
+                )
+            return httpx.Response(201, json={"id": "pod-exact"})
+        if request.method == "DELETE":
+            assert path == "/v2/pods/pod-exact"
+            deleted = True
+            return httpx.Response(204)
+        if path == "/v2/pods":
+            return httpx.Response(200, json={"pods": [], "pagination": {"hasNextPage": False}})
+        if path == "/v2/billing/pods":
+            assert request.url.params["podId"] == "pod-exact"
+            return httpx.Response(200, json={"records": []})
+        assert path == "/v2/pods/pod-exact"
+        if deleted:
+            return httpx.Response(404)
+        return httpx.Response(200, json={
+            "id": "pod-exact", "name": name, "status": "RUNNING", "image": image,
+            "cloud": "SECURE", "disk": 20, "ports": ["22/tcp"],
+            "gpu": {"id": gpu, "count": 1}, "mounts": {},
+            "dataCenterId": "US-KS-2", "cudaVersion": "13.2", "cost": 1.19,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "ssh": {"direct": {"host": "203.0.113.10", "port": 2222, "username": "root"}},
+        })
+
+    transport = FakeRunPodTransport()
+    transport.api_request = SubprocessRunPodTransport(
+        http_transport=httpx.MockTransport(handle)
+    ).api_request
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            image=image, gpu_id=gpu, datacenters=("EU-RO-1",), api_key=secret,
+            cuda_placement=placement,
+        ),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+    driver.acquisition_pod_name = lambda _intent_id: name
+    state = _state(bundle)
+    store = RunSetStateStore(bundle.run_set_dir / "exact-cuda.json")
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store)
+    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
+        engine._stage_provision(state)
+    final = store.load()
+    assert requests.count(("POST", "/v2/pods")) == 1
+    assert len(final.acquisition_intents) == 1
+    assert not transport.ssh_commands and not transport.rsync_calls
+    assert secret not in store.path.read_text()
+    if create_rejected:
+        problem = final.acquisition_intents[0].evidence["create"]["problem"]
+        assert problem["detail"] == "image digest is unsupported. bearer [redacted]"
+        assert not deleted
+    else:
+        assert deleted
+        assert ("GET", "/v2/pods/pod-exact") in requests[requests.index(
+            ("DELETE", "/v2/pods/pod-exact")
+        ) + 1:]
+        assert final.provisioning_attempts[0]["cleanup"]["pod_absence"]["http_status"] == 404
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
@@ -2293,8 +2474,20 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
     assert all("nvidia-smi" not in command for command in transport.ssh_commands)
 
 
-def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:
+@pytest.mark.parametrize("groups", [None, ("mjx-warp",)])
+def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(
+    tmp_path: Path, groups: tuple[str, ...] | None
+) -> None:
     bundle = _bundle(tmp_path)
+    if groups is not None:
+        environment = EnvironmentDeclaration.model_validate(
+            {
+                **bundle.environment.model_dump(),
+                "python_version": "3.12.8",
+                "dependency_groups": groups,
+            }
+        )
+        bundle = bundle.model_copy(update={"environment": environment})
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))  # mkdir
     transport.queue_ssh(CommandResult(1, ""))  # fingerprint probe mismatch
@@ -2341,8 +2534,9 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "PATCH_FROM='/Users/mll/local feedbax'" in joined
     assert "uv sync --frozen" in joined
     assert "uv pip install extra" in joined
-    assert "jax.__version__" in joined
-    assert "jax[cuda12]" in joined
+    assert ("jax[cuda12]" in joined) == (groups is None)
+    if groups is not None:
+        assert "uv sync --frozen --no-default-groups --python 3.12.8 --group mjx-warp" in joined
     assert "compose_application()" in joined
     assert "lockfile digest mismatch" in joined
 

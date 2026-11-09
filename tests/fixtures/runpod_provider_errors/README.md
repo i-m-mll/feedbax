@@ -1,32 +1,16 @@
 # RunPod create-failure corpus
 
-`create_failure_corpus.json` is a small, hand-curated set of sanitized RunPod
-`pod create` failure payloads, each with an adjudicated classification. It
-exists so a future provider wording variant is caught by a failing test
-instead of silently recurring as a production halt (as happened twice: once
-fixed under [issue:88307fb], once under [issue:32d1d73]).
+`create_failure_corpus.json` contains curated, sanitized RunPod `pod create` failure payloads. The tests preserve the classifications established after provider wording caused production halts in [issue:88307fb] and [issue:32d1d73].
 
 ## What is in the corpus, and why
 
-Every entry records the exact `(returncode, stdout, stderr)` a
-`runpodctl pod create` failure produced, plus the classification a human
-adjudicated for it:
+Every entry records the `(returncode, stdout, stderr)` from a `runpodctl pod create` failure and the resulting classification.
 
-- **`non-retryable`** ("definitive"): the provider's response proves no pod
-  was created, so the acquisition loop should reject the datacenter and try
-  the next candidate. Covers both production-observed no-capacity wordings,
-  one permanent request/configuration error, and one authentication/quota
-  failure.
-- **`retryable`** ("ambiguous"): the response does not prove that no pod was
-  created (malformed body, unrelated error, lost transport, or a structured
-  message outside the adjudicated vocabulary). The unconditional
-  ambiguous-to-halt backstop in `_classify_create_failure` /
-  `_engine_owned_provision` must stop provisioning for every one of these,
-  because guessing risks orphaning a billable pod.
+- **`retryable-rejection`** applies to a definitive capacity rejection. The engine can try another authorized candidate within its budget.
+- **`terminal-rejection`** applies to a definitive request or authorization error. The engine records the failed intent and stops.
+- **`ambiguous`** applies when the response leaves pod ownership uncertain. The engine reconciles the persisted acquisition intent and stops if it cannot prove cleanup.
 
-`tests/test_runpod_orchestration_driver.py` iterates this file, asserting
-both the classification (`_classify_create_failure`) and the acquisition
-behavior it drives (region-rejected-and-continue vs. halt).
+`tests/test_runpod_orchestration_driver.py` checks the classifications and their effect on acquisition.
 
 ## Curation workflow for a new entry
 
