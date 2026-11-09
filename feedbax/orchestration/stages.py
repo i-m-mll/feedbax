@@ -1334,7 +1334,15 @@ class StageEngine:
         if not candidates:
             raise OrchestrationStageError("engine-owned acquisition has no candidates")
         last_clean_error = "provider rejected every acquisition candidate"
+        create_limit = self.bundle.budget.max_create_attempts
         for candidate_ordinal, candidate in enumerate(candidates, start=1):
+            if create_limit is not None and len(state.acquisition_intents) >= create_limit:
+                raise ProvisioningAttemptError(
+                    "run set exhausted its authorized create attempts",
+                    retryable=False,
+                    attempt_record={"driver": driver_name, "acquired": False},
+                    stop_reason="create-attempt-limit",
+                )
             state, intent = self._new_acquisition_intent(
                 state,
                 attempt_ordinal=attempt_ordinal,
@@ -1653,6 +1661,10 @@ class StageEngine:
                     raise OrchestrationStageError(
                         "provisioning stopped: non-retryable-error"
                     ) from exc
+                create_limit = self.bundle.budget.max_create_attempts
+                if create_limit is not None and len(state.acquisition_intents) >= create_limit:
+                    self._stop_provisioning(state, attempts, "create-attempt-limit")
+                    raise BudgetExceeded("provisioning stopped: create-attempt-limit") from exc
                 if self._wall_time() >= deadline:
                     self._stop_provisioning(state, attempts, "wall-clock-exceeded")
                     raise BudgetExceeded("provisioning exceeded its wall-clock boundary") from exc

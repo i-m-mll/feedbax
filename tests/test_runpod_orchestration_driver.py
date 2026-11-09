@@ -2124,8 +2124,30 @@ def test_provision_cleanup_failure_does_not_mask_keyboard_interrupt(
     assert driver.has_pending_owned_resource() is True
 
 
-def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("response", "limit", "stop_reason", "disposition"),
+    [
+        (
+            '{"statusCode":401,"code":"unauthorized"}',
+            None,
+            "non-retryable-error",
+            "terminal-rejection",
+        ),
+        (
+            '{"error":"no longer any instances available"}',
+            1,
+            "create-attempt-limit",
+            "retryable-rejection",
+        ),
+    ],
+)
+def test_provider_create_rejection_stops_after_one_intent(
+    tmp_path: Path, response: str, limit: int | None, stop_reason: str, disposition: str
+) -> None:
     bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={"budget": bundle.budget.model_copy(update={"max_create_attempts": limit})}
+    )
     transport = FakeRunPodTransport()
     call = (
         "pod",
@@ -2141,7 +2163,7 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
         "--data-center-ids",
         "CA-MTL-1",
     )
-    transport.queue_runpodctl(call, CommandResult(1, '{"statusCode":401,"code":"unauthorized"}'))
+    transport.queue_runpodctl(call, CommandResult(1, response))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
@@ -2157,16 +2179,18 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
     driver._preflight_passed = True
     driver.acquisition_pod_name = lambda _intent_id: call[3]
     engine = StageEngine(bundle=bundle, driver=driver, store=store)
-    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
+    with pytest.raises(OrchestrationStageError, match=stop_reason):
         engine._stage_provision(state)
     final = store.load()
     assert transport.runpodctl_calls == [call]
-    assert final.provisioning_stop_reason == "non-retryable-error"
+    assert final.provisioning_stop_reason == stop_reason
     assert len(final.acquisition_intents) == 1
     intent = final.acquisition_intents[0]
     assert intent.state == "failed-unacquired"
-    assert intent.evidence["create"]["classification"] == "terminal-rejection"
-    assert final.provisioning_attempts[0]["intent_id"] == intent.intent_id
+    assert intent.evidence["create"]["classification"] == disposition
+    with pytest.raises(OrchestrationStageError, match=stop_reason):
+        engine._stage_provision(final)
+    assert transport.runpodctl_calls == [call]
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:

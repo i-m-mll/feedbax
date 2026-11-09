@@ -261,10 +261,11 @@ class LaunchPolicy(StrictModel):
 
 
 class BudgetPolicy(StrictModel):
-    """Run-set budget guards enforced by MONITOR."""
+    """Run-set budget guards enforced by the stage engine."""
 
     max_wall_clock_seconds: float = Field(gt=0.0)
     max_spend_usd: float | None = Field(default=None, ge=0.0)
+    max_create_attempts: int | None = Field(default=None, strict=True, ge=1)
 
 
 class ImmutableInputArtifactRef(StrictModel):
