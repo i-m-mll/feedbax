@@ -135,7 +135,7 @@ function compareEndpoints(left: Endpoint, right: Endpoint): number {
 
 function canonicalAcausalPayload(graph: AcausalGraphSpec): Record<string, unknown> {
   const defaults = acausalReportDefaults;
-  const { nodes, connections, solver, subgraphs, metadata, mujoco_asset } = graph;
+  const { nodes, connections, solver, subgraphs, metadata, mujoco_asset, planar_dynamics, wrap_geometries } = graph;
   return withoutModelDefaults({
     ...graph,
     nodes: nodes && Object.fromEntries(
@@ -161,6 +161,14 @@ function canonicalAcausalPayload(graph: AcausalGraphSpec): Record<string, unknow
         ])
       ),
     }, defaults.MuJoCoAssetBinding),
+    wrap_geometries: wrap_geometries && Object.fromEntries(
+      Object.entries(wrap_geometries).map(([name, geometry]) => [
+        name, withoutModelDefaults({ ...geometry }, defaults.PlanarWrapGeometry),
+      ])
+    ),
+    planar_dynamics: planar_dynamics && withoutModelDefaults(
+      { ...planar_dynamics }, defaults.PlanarDynamicsSpec
+    ),
   }, defaults.AcausalGraphSpec);
 }
 

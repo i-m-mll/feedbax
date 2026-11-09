@@ -61,6 +61,7 @@ jobs:
         run: >
           uv run --no-sync pytest -n 0 -m optional_mjx
           tests/test_authored_mujoco_model.py tests/test_stateful_mujoco_boundary.py
+          tests/test_articulated_muscles.py tests/test_compliant_mjx.py
 
       - name: Run ruff fatal checks
         run: uv run ruff check feedbax tests scripts --select E9,F63,F7,F82 --ignore F722,F821

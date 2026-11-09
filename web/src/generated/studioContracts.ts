@@ -70,6 +70,7 @@ export interface SolverConfigSpec {
   solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5" | "mujoco";
   dt: number;
   root_finder?: RootFinderSpec | null;
+  planar_substeps?: number | null;
 }
 
 export interface ContentObjectRef {
@@ -87,8 +88,10 @@ export interface SpatialSite {
 
 export interface SpatialMusclePath {
   sites: string[];
+  wraps?: MuscleWrap[];
   law: string;
   state_size: number;
+  law_revision?: number | null;
   parameters?: Record<string, unknown>;
 }
 
@@ -97,6 +100,29 @@ export interface MuJoCoAssetBinding {
   effector_site: string;
   sites?: Record<string, SpatialSite>;
   paths?: Record<string, SpatialMusclePath>;
+}
+
+export interface JointDampingMode {
+  coefficients: Record<string, number>;
+  damping: number;
+}
+
+export interface MuscleWrap {
+  after_site: number;
+  geom: string;
+  side_site: string;
+}
+
+export interface PlanarDynamicsSpec {
+  gravity?: [number, number];
+  joint_dampers?: Record<string, JointDampingMode>;
+}
+
+export interface PlanarWrapGeometry {
+  kind: "sphere" | "cylinder";
+  frame: string;
+  radius: number;
+  offset?: [number, number];
 }
 
 export interface AcausalGraphSpec {
@@ -109,6 +135,8 @@ export interface AcausalGraphSpec {
   subgraphs?: Record<string, AcausalGraphSpec> | null;
   metadata?: GraphMetadata | null;
   mujoco_asset?: MuJoCoAssetBinding | null;
+  planar_dynamics?: PlanarDynamicsSpec | null;
+  wrap_geometries?: Record<string, PlanarWrapGeometry>;
 }
 
 export interface ParameterConstraintSpec {
@@ -2022,7 +2050,9 @@ export const acausalReportDefaults = {
     "connections": [],
     "subgraphs": null,
     "metadata": null,
-    "mujoco_asset": null
+    "mujoco_asset": null,
+    "planar_dynamics": null,
+    "wrap_geometries": {}
   },
   "ComponentSpec": {
     "params": {},
@@ -2045,6 +2075,19 @@ export const acausalReportDefaults = {
     "sites": {},
     "paths": {}
   },
+  "PlanarDynamicsSpec": {
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "joint_dampers": {}
+  },
+  "PlanarWrapGeometry": {
+    "offset": [
+      0.0,
+      0.0
+    ]
+  },
   "RootFinderSpec": {
     "method": "newton",
     "rtol": 1e-06,
@@ -2052,9 +2095,12 @@ export const acausalReportDefaults = {
     "max_steps": 32
   },
   "SolverConfigSpec": {
-    "root_finder": null
+    "root_finder": null,
+    "planar_substeps": null
   },
   "SpatialMusclePath": {
+    "wraps": [],
+    "law_revision": null,
     "parameters": {}
   }
 };
@@ -2260,6 +2306,7 @@ export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
       "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5"), z.literal("mujoco")]),
       "dt": z.number().finite(),
       "root_finder": RootFinderSpecSchema.nullable().optional(),
+      "planar_substeps": z.number().int().safe().gte(1).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<SolverConfigSpec>;
@@ -2297,8 +2344,10 @@ export const SpatialMusclePathSchema: z.ZodType<SpatialMusclePath> = z.lazy(() =
   z
     .object({
       "sites": z.array(z.string()).min(2),
+      "wraps": z.array(MuscleWrapSchema).optional(),
       "law": z.string().min(1),
       "state_size": z.number().int().safe().gte(0),
+      "law_revision": z.number().int().safe().gte(1).nullable().optional(),
       "parameters": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
@@ -2315,6 +2364,45 @@ export const MuJoCoAssetBindingSchema: z.ZodType<MuJoCoAssetBinding> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<MuJoCoAssetBinding>;
 
+export const JointDampingModeSchema: z.ZodType<JointDampingMode> = z.lazy(() =>
+  z
+    .object({
+      "coefficients": z.record(z.string(), z.number().finite()),
+      "damping": z.number().finite().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<JointDampingMode>;
+
+export const MuscleWrapSchema: z.ZodType<MuscleWrap> = z.lazy(() =>
+  z
+    .object({
+      "after_site": z.number().int().safe().gte(0),
+      "geom": z.string().min(1),
+      "side_site": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<MuscleWrap>;
+
+export const PlanarDynamicsSpecSchema: z.ZodType<PlanarDynamicsSpec> = z.lazy(() =>
+  z
+    .object({
+      "gravity": z.tuple([z.number().finite(), z.number().finite()]).optional(),
+      "joint_dampers": z.record(z.string(), JointDampingModeSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<PlanarDynamicsSpec>;
+
+export const PlanarWrapGeometrySchema: z.ZodType<PlanarWrapGeometry> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("sphere"), z.literal("cylinder")]),
+      "frame": z.string().min(1),
+      "radius": z.number().finite().gt(0),
+      "offset": z.tuple([z.number().finite(), z.number().finite()]).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<PlanarWrapGeometry>;
+
 export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
   z
     .object({
@@ -2327,6 +2415,8 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
       "subgraphs": z.record(z.string(), AcausalGraphSpecSchema).nullable().optional(),
       "metadata": GraphMetadataSchema.nullable().optional(),
       "mujoco_asset": MuJoCoAssetBindingSchema.nullable().optional(),
+      "planar_dynamics": PlanarDynamicsSpecSchema.nullable().optional(),
+      "wrap_geometries": z.record(z.string(), PlanarWrapGeometrySchema).optional(),
     })
     .strict()
     .superRefine((value, ctx) => {
@@ -2334,6 +2424,18 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "A MuJoCo asset binding is required exactly for spatial multibody",
+        });
+      }
+      if (value.physical_domain !== 'planar_multibody' && (value.planar_dynamics != null || value.solver.planar_substeps != null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Planar dynamics and substeps require planar multibody",
+        });
+      }
+      if (value.physical_domain !== 'planar_multibody' && Object.keys(value.wrap_geometries ?? {}).length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Wrap geometry overlays require a planar multibody graph",
         });
       }
       if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {

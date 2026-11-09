@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec, acausal_interior_content_hash
+from feedbax.contracts.acausal import AcausalGraphSpec, MuscleWrap, SolverConfigSpec, acausal_interior_content_hash
 from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.mechanics.compiled_model import (
@@ -60,18 +60,50 @@ def _add_site(body: MjsBody, name: str, position: Sequence[float]) -> None:
 
 def _add_muscle_path(
     spec: MjSpec, name: str, sites: tuple[str, ...], law: str, state_size: int,
-    parameters: Mapping[str, object],
+    parameters: Mapping[str, object], *, external_tendon_actuation: bool = True,
+    law_revision: int | None = None, wraps: tuple[MuscleWrap, ...] = (),
 ) -> MusclePathBinding:
     if len(sites) < 2:
         raise ValueError(f"MusclePath {name!r} requires at least two sites")
     if not isinstance(law, str) or not law or type(state_size) is not int or state_size < 0:
         raise ValueError(f"MusclePath {name!r} requires a law name and nonnegative state size")
-    tendon = spec.add_tendon(name=name)
-    for site in sites:
-        tendon.wrap_site(site)
-    return MusclePathBinding(
+    if law_revision is not None and (type(law_revision) is not int or law_revision < 1):
+        raise ValueError(f"MusclePath {name!r} requires a positive law revision")
+    import mujoco
+
+    path = MusclePathBinding(
         name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
+        law_revision=law_revision,
     )
+    if spec.actuator(path.actuator_name) is not None:
+        raise ValueError(f"MusclePath {name!r} duplicates actuator {path.actuator_name!r}")
+    by_segment = {wrap.after_site: wrap for wrap in wraps}
+    if len(by_segment) != len(wraps) or any(index >= len(sites) - 1 for index in by_segment):
+        raise ValueError(f"MusclePath {name!r} requires a unique wrap per existing segment")
+    for wrap in wraps:
+        geom = spec.geom(wrap.geom)
+        if geom is None or geom.type not in (mujoco.mjtGeom.mjGEOM_SPHERE, mujoco.mjtGeom.mjGEOM_CYLINDER):
+            raise ValueError(f"MusclePath {name!r} wrap {wrap.geom!r} must name a sphere or cylinder")
+        if spec.site(wrap.side_site) is None:
+            raise ValueError(f"MusclePath {name!r} references unknown side site {wrap.side_site!r}")
+
+    tendon = spec.add_tendon(name=name)
+    for index, site in enumerate(sites):
+        tendon.wrap_site(site)
+        if wrap := by_segment.get(index):
+            tendon.wrap_geom(wrap.geom, wrap.side_site)
+
+    if not external_tendon_actuation:
+        return path
+
+    motor = spec.add_actuator(name=path.actuator_name)
+    motor.set_to_motor()
+    motor.trntype = mujoco.mjtTrn.mjTRN_TENDON
+    motor.target = name
+    motor.gear = [-1, 0, 0, 0, 0, 0]
+    motor.ctrllimited = False
+    motor.forcelimited = False
+    return path
 
 
 def _physical_identity(graph: AcausalGraphSpec, timestep: float) -> str:
@@ -81,7 +113,9 @@ def _physical_identity(graph: AcausalGraphSpec, timestep: float) -> str:
     }))
 
 
-def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
+def compile_planar_model(
+    graph: AcausalGraphSpec, *, external_tendon_actuation: bool = True,
+) -> CompiledPhysicalModel:
     """Compile one rooted planar serial chain with explicit COM inertials.
 
     The graph's revolute joints supply the topology. Anchoring identifies the
@@ -149,10 +183,14 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
 
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
-    spec.option.timestep = _number(graph.solver.dt, "solver.dt")
+    spec.option.timestep = _number(graph.solver.dt, "solver.dt") / (
+        graph.solver.planar_substeps or 1
+    )
     if spec.option.timestep <= 0:
         raise ValueError("Planar MuJoCo timestep must be positive")
-    spec.option.gravity = [0.0, -9.81, 0.0]
+    dynamics = graph.planar_dynamics
+    gravity = (0.0, -9.81) if dynamics is None else dynamics.gravity
+    spec.option.gravity = [*gravity, 0.0]
     bodies = {world: spec.worldbody}
     parent_name = world
     for _ in links:
@@ -202,12 +240,23 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
         bodies[name] = body
         parent_name = name
 
+    for name, geom in sorted(graph.wrap_geometries.items()):
+        if not name or geom.frame not in frames:
+            raise ValueError(f"Wrap geometry {name!r} requires a valid planar frame")
+        body_name, x = frames[geom.frame]
+        dx, dy = geom.offset
+        kind = {"sphere": mujoco.mjtGeom.mjGEOM_SPHERE, "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER}
+        bodies[body_name].add_geom(
+            name=name, type=kind[geom.kind], pos=[x + dx, dy, 0],
+            size=[geom.radius, geom.radius, 0], mass=0, contype=0, conaffinity=0,
+        )
+
     def attach(site: str, point: Mapping[str, object]) -> None:
         frame = point.get("frame")
         if not isinstance(frame, str) or frame not in frames:
             raise ValueError(f"Site {site!r} references missing planar frame {frame!r}")
         body_name, x = frames[frame]
-        dx, dy = _vector(point.get("offset") or [0, 0], 2, f"{site}.offset")
+        dx, dy = _vector(point.get("offset", [0, 0]), 2, f"{site}.offset")
         _add_site(bodies[body_name], site, [x + dx, dy, 0])
 
     markers = set()
@@ -223,14 +272,41 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
         sites = tuple(f"{name}/point{i}" for i in range(len(points)))
         for site, point in zip(sites, points, strict=True):
             attach(site, point)
+        law = params.get("law", "feedbax.RigidTendonHillMuscle")
+        wraps = tuple(MuscleWrap.model_validate(wrap) for wrap in params.get("wraps", ()))
+        moment_arm = params.get("moment_arm")
+        if wraps and moment_arm is not None:
+            raise ValueError(f"MusclePath {name!r} cannot wrap with a constant moment arm")
+        law_parameters = params.get("law_parameters")
+        if moment_arm is not None and law_parameters is not None:
+            raise ValueError(f"MusclePath {name!r} mixes a constant moment arm and nested law parameters")
+        if law_parameters is None:
+            law_parameters = (
+                {key: value for key, value in params.items()
+                 if key not in {"path_points", "law", "state_size", "law_revision",
+                                "law_parameters", "moment_arm", "wraps"}}
+                if law == "feedbax.RigidTendonHillMuscle" else {}
+            )
+        if moment_arm is not None:
+            law_parameters = {**law_parameters, "moment_arm": moment_arm}
         paths.append(_add_muscle_path(
-            spec, name, sites,
-            params.get("law", "feedbax.RigidTendonHillMuscle"), params.get("state_size", 1),
-            {key: value for key, value in params.items()
-             if key not in {"path_points", "law", "state_size"}},
+            spec, name, sites, law, params.get("state_size", 1), law_parameters,
+            law_revision=params.get("law_revision"),
+            wraps=wraps,
+            external_tendon_actuation=external_tendon_actuation,
         ))
+    if dynamics is not None:
+        for name, damper in sorted(dynamics.joint_dampers.items()):
+            if missing := damper.coefficients.keys() - joints.keys():
+                raise ValueError(f"Joint damper {name!r} refers to unknown joints {sorted(missing)}")
+            if not any(damper.coefficients.values()):
+                raise ValueError(f"Joint damper {name!r} requires a nonzero coefficient")
+            tendon = spec.add_tendon(name=f"__feedbax_damper__/{name}", damping=damper.damping)
+            for joint_name, coefficient in sorted(damper.coefficients.items()):
+                if coefficient:
+                    tendon.wrap_joint(joint_name, coefficient)
     return describe_model(
-        spec.compile(), identity=_physical_identity(graph, graph.solver.dt), dimension=2,
+        spec.compile(), identity=_physical_identity(graph, spec.option.timestep), dimension=2,
         effector_site="effector" if "effector" in markers else None, paths=tuple(paths),
         planar_segment_lengths=tuple(lengths[name] for name in bodies if name != world),
     )
@@ -284,6 +360,7 @@ def compile_spatial_model(
             raise ValueError(f"Overlay path {name!r} references unknown sites {missing!r}")
         paths.append(_add_muscle_path(
             spec, name, path.sites, path.law, path.state_size, path.parameters,
+            law_revision=path.law_revision, wraps=path.wraps,
         ))
     model = spec.compile()
     return describe_model(

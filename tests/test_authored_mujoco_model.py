@@ -120,6 +120,8 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
             <joint name="pivot" type="ball"/>
             <inertial pos=".1 0 0" mass="2" diaginertia=".2 .3 .4"/>
             <site name="effector" pos=".3 .1 .2"/>
+            <geom name="wrapper" type="sphere" size=".04" pos=".1 0 .12"
+                  mass="0" contype="0" conaffinity="0"/>
           </body>
         </worldbody>
         <actuator>
@@ -134,9 +136,13 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
         "mujoco_asset": {
             "asset": asset.model_dump(),
             "effector_site": "effector",
-            "sites": {"insertion": {"body": "arm", "position": [0.1, 0, 0.25]}},
+            "sites": {
+                "insertion": {"body": "arm", "position": [0.1, 0, 0.25]},
+                "side": {"body": "arm", "position": [0.18, 0, 0.12]},
+            },
             "paths": {"flexor": {
                 "sites": ["fixed", "insertion"],
+                "wraps": [{"after_site": 0, "geom": "wrapper", "side_site": "side"}],
                 "law": "feedbax.RigidTendonHillMuscle",
                 "state_size": 1,
                 "parameters": {"max_isometric_force": 150.0},
@@ -157,6 +163,9 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
     assert edited.joints[edited.joint_ids["pivot"]].qpos == slice(0, 4)
     assert edited.actuator_ids["drive"] == 0
     assert edited.paths[edited.tendon_ids["flexor"]].parameters["max_isometric_force"] == 150.0
+    wrap = edited.model.tendon_adr[edited.tendon_ids["flexor"]] + 1
+    assert edited.model.wrap_type[wrap] == mujoco.mjtWrap.mjWRAP_SPHERE
+    assert edited.model.wrap_prm[wrap] == edited.site_ids["side"]
     assert edited.model.site_pos[edited.site_ids["insertion"], 2] == 0.35
     assert first.model.site_pos[first.site_ids["insertion"], 2] == 0.25
     with pytest.raises(ValueError, match="needs an artifact provider"):
@@ -167,3 +176,21 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
     )
     with pytest.raises(ValueError, match="external resource"):
         compile_spatial_model(restored, provider)
+
+
+def test_saved_planar_damping_modes_are_passive_and_use_physics_substeps():
+    from scripts.biomechanics_fixture import planar_interior
+
+    interior = planar_interior(10, direct_torque=True)
+    restored = AcausalGraphSpec.model_validate_json(interior.model_dump_json())
+    model = compile_planar_model(restored).model
+    data = mujoco.MjData(model)
+    data.qpos[:] = (-0.4, 1.1)
+    data.qvel[:] = (0.6, -0.3)
+    mujoco.mj_forward(model, data)
+
+    damping = np.array([[0.05, 0.025], [0.025, 0.05]])
+    np.testing.assert_allclose(data.qfrc_passive, -damping @ data.qvel, atol=1e-12)
+    np.testing.assert_array_equal(model.opt.gravity, np.zeros(3))
+    assert model.opt.timestep == pytest.approx(0.001)
+    assert restored.solver.dt == pytest.approx(0.01)

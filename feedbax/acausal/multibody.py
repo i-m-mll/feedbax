@@ -117,7 +117,7 @@ class Anchor(AcausalElement):
 
 @dataclass
 class MusclePath(AcausalElement):
-    """Ordered rigid-tendon muscle path over named planar frames."""
+    """Ordered muscle path over named planar frames."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
@@ -135,6 +135,8 @@ class MusclePath(AcausalElement):
         tau_act: float = 0.01,
         tau_deact: float = 0.04,
         max_contraction_velocity: float | None = None,
+        law_parameters: dict[str, Any] | None = None,
+        law_revision: int | None = None,
     ):
         super().__init__(name=name)
         self.signal_inputs = ("activation",)

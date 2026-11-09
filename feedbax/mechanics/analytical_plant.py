@@ -26,18 +26,21 @@ import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
 from feedbax.mechanics.body import BodyPreset
+from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.hill_muscles import (
+    ActivationDynamics,
     ForceLengthCurve,
     ForceVelocityCurve,
     PassiveForceLengthCurve,
+    bounded_rigid_fiber_force,
 )
 from feedbax.mechanics.muscle_config import default_muscle_config
+from feedbax.mechanics.muscle_law import MuscleLawBank
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
-    ECCENTRIC_VELOCITY_LIMIT_FRACTION,
     require_positive_finite,
     require_positive_array,
 )
@@ -63,6 +66,48 @@ class AnalyticalMuscleState(Module):
     """
 
     activations: Float[Array, " n_muscles"]
+
+
+class TwoLinkMusclePlant(AbstractPlant):
+    """A two-link analytical skeleton with coupled stage-local muscle laws."""
+
+    skeleton: TwoLinkArm
+    geometry: TwoLinkArmMuscleGeometry
+    law_bank: MuscleLawBank
+    initial_angle: Array = field(converter=jnp.asarray)
+    clip_states: bool = eqx.field(static=True, default=False)
+
+    def __init__(self, skeleton, geometry, law_bank, initial_angle):
+        if not law_bank.laws or len(law_bank.laws) != geometry.n_muscles:
+            raise ValueError("Each analytical attachment requires a muscle law")
+        initial_angle = jnp.asarray(initial_angle)
+        if initial_angle.shape != (2,):
+            raise ValueError("A two-link plant requires two initial angles")
+        self.skeleton = skeleton
+        self.geometry = geometry
+        self.law_bank = law_bank
+        self.initial_angle = initial_angle
+
+    @property
+    def input_size(self) -> int:
+        return len(self.law_bank.laws)
+
+    @property
+    def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
+        return {}
+
+    def init(self, *, key: PRNGKeyArray) -> PlantState:
+        skeleton = eqx.tree_at(lambda state: state.angle, self.skeleton.init(key=key),
+                               self.initial_angle)
+        lengths, velocities, _ = self.geometry.path_kinematics(skeleton.angle, skeleton.d_angle)
+        return PlantState(skeleton=skeleton, muscles=self.law_bank.init_state(lengths, velocities))
+
+    def vector_field(self, t: Scalar, state: PlantState, input: Array) -> PlantState:
+        angles, angular_velocity = state.skeleton.angle, state.skeleton.d_angle
+        lengths, velocities, jacobian = self.geometry.path_kinematics(angles, angular_velocity)
+        derivatives, tension = self.law_bank.evaluate(state.muscles, input, lengths, velocities)
+        skeleton = self.skeleton.vector_field(t, state.skeleton, -jacobian.T @ tension)
+        return PlantState(skeleton=skeleton, muscles=derivatives)
 
 
 class AnalyticalMusculoskeletalPlant(AbstractPlant):
@@ -344,31 +389,15 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         Returns:
             Muscle forces (non-negative), shape ``(n_muscles,)``.
         """
-        # Clamp fiber lengths to prevent numerical issues.
-        min_length = 0.3 * self.optimal_fiber_length
-        max_length = 2.0 * self.optimal_fiber_length
-        clamped_fiber = jnp.clip(fiber_lengths, min_length, max_length)
-
-        norm_length = clamped_fiber / self.optimal_fiber_length
-
-        # Clamp velocity to reasonable range.
-        max_vel = self.vmax * self.optimal_fiber_length
-        clamped_velocity = jnp.clip(
-            fiber_velocities,
-            -max_vel,
-            max_vel * ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+        return bounded_rigid_fiber_force(
+            activations, fiber_lengths, fiber_velocities,
+            optimal_length=self.optimal_fiber_length,
+            maximum_speed=self.vmax * self.optimal_fiber_length,
+            force_scale=self.muscle_gear,
+            force_length=self.force_length,
+            force_velocity=self.force_velocity,
+            passive_force_length=self.passive_force_length,
         )
-        norm_velocity = clamped_velocity / (
-            self.vmax * self.optimal_fiber_length
-        )
-
-        # Force-length-velocity curves (vmapped over muscles).
-        fl = jax.vmap(self.force_length)(norm_length)
-        fv = jax.vmap(self.force_velocity)(norm_velocity)
-        passive = jax.vmap(self.passive_force_length)(norm_length)
-
-        force = self.muscle_gear * (activations * fl * fv + passive)
-        return jnp.maximum(force, 0.0)
 
     # ------------------------------------------------------------------
     # AbstractPlant interface
@@ -410,13 +439,7 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             )
         activations = state.muscles.activations
 
-        # --- Activation dynamics ---
-        # First-order filter with separate time constants for
-        # activation (excitation > current) and deactivation.
-        tau = jnp.where(
-            excitations > activations, self.tau_act, self.tau_deact,
-        )
-        d_activations = (excitations - activations) / tau
+        d_activations = ActivationDynamics(self.tau_act, self.tau_deact)(excitations, activations)
 
         # --- Muscle geometry (rigid tendon) ---
         mt_lengths = self._musculotendon_lengths(angles)
@@ -514,7 +537,8 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             raise ValueError("Constant-moment-arm excitation requires authored planar paths")
         for path in descriptor.paths:
             if (path.law != "feedbax.RigidTendonHillMuscle" or path.state_size != 1
-                    or "moment_arm" not in path.parameters):
+                    or path.law_revision not in (None, 1)
+                    or path.parameters.get("moment_arm") is None):
                 raise ValueError(
                     f"Muscle path {path.name!r} requires a supported law with explicit moment arms"
                 )

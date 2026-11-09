@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Mapping
+
+import numpy as np
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 
@@ -30,6 +32,13 @@ class MusclePathBinding:
     law: str
     state_size: int
     parameters: Mapping[str, object]
+    tendon_id: int = -1
+    actuator_id: int | None = None
+    law_revision: int | None = None
+
+    @property
+    def actuator_name(self) -> str:
+        return f"feedbax/path/{self.name}"
 
 
 @dataclass(frozen=True, eq=False)
@@ -49,6 +58,27 @@ class CompiledPhysicalModel:
     actuator_state: tuple[slice, ...]
     paths: tuple[MusclePathBinding, ...]
     planar_segment_lengths: tuple[float, ...]
+
+
+def outside_wraps_only(model: MjModel) -> bool:
+    """Check that every primitive route has an explicitly exterior, body-fixed side site."""
+    import mujoco
+
+    sphere = mujoco.mjtWrap.mjWRAP_SPHERE
+    cylinder = mujoco.mjtWrap.mjWRAP_CYLINDER
+    for index in np.flatnonzero(np.isin(model.wrap_type, (sphere, cylinder))):
+        geom = model.wrap_objid[index]
+        side = int(model.wrap_prm[index])
+        if side < 0 or model.site_bodyid[side] != model.geom_bodyid[geom]:
+            return False
+        offset = model.site_pos[side] - model.geom_pos[geom]
+        if model.wrap_type[index] == cylinder:
+            rotation = np.empty(9)
+            mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+            offset = (rotation.reshape(3, 3).T @ offset)[:2]
+        if np.linalg.norm(offset) <= model.geom_size[geom, 0]:
+            return False
+    return True
 
 
 def describe_model(
@@ -83,6 +113,18 @@ def describe_model(
         raise ValueError(f"Unknown MuJoCo effector site {effector_site!r}")
     tendon_ids = indices(mujoco.mjtObj.mjOBJ_TENDON, model.ntendon)
     actuator_ids = indices(mujoco.mjtObj.mjOBJ_ACTUATOR, model.nu)
+    paths = tuple(
+        replace(
+            path, tendon_id=tendon_ids[path.name], actuator_id=actuator_ids.get(path.actuator_name),
+        )
+        for path in paths
+    )
+    for path in paths:
+        sites = [site_ids[site] for site in path.sites]
+        for a, b in zip(sites, sites[1:]):
+            if (model.site_bodyid[a] == model.site_bodyid[b]
+                    and np.array_equal(model.site_pos[a], model.site_pos[b])):
+                raise ValueError(f"MusclePath {path.name!r} contains a zero-length fixed segment")
     joint_names = {i: name for name, i in joint_ids.items()}
     joints = []
     for i, (joint_type, qpos, qvel) in enumerate(
@@ -111,8 +153,18 @@ def describe_model(
                 "actuator_biastype", "actuator_actadr", "actuator_actnum",
             )
         },
-        "paths": [[path.name, list(path.sites), path.law, path.state_size] for path in paths],
+        "paths": [
+            [path.name, list(path.sites), path.law, path.state_size]
+            if path.law_revision is None else
+            [path.name, list(path.sites), path.law, path.state_size, path.law_revision]
+            for path in paths
+        ],
     }
+    wrap_geoms = np.isin(model.wrap_type, (
+        mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER,
+    ))
+    if wrap_geoms.any():
+        structure["wrap_side_sites"] = model.wrap_prm[wrap_geoms].astype(int).tolist()
     signature = sha256(canonical_json_v2_bytes(structure)).hexdigest()
     actuator_state = tuple(
         slice(int(address), int(address) + int(count)) if count else slice(0, 0)

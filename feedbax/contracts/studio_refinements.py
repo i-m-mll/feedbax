@@ -290,6 +290,17 @@ CROSS_FIELD_REFINEMENTS.update(
                 "(value.physical_domain === 'spatial_multibody') !== (value.mujoco_asset != null)",
             ),
             _typescript_refinement(
+                "acausal-graph.planar-dynamics",
+                "Planar dynamics and substeps require planar multibody",
+                "value.physical_domain !== 'planar_multibody' && "
+                "(value.planar_dynamics != null || value.solver.planar_substeps != null)",
+            ),
+            _typescript_refinement(
+                "acausal-graph.planar-wrap-geometries",
+                "Wrap geometry overlays require a planar multibody graph",
+                "value.physical_domain !== 'planar_multibody' && Object.keys(value.wrap_geometries ?? {}).length > 0",
+            ),
+            _typescript_refinement(
                 "acausal-graph.no-array-params",
                 "AcausalGraphSpec does not support component-param array value schemas",
                 "Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))",

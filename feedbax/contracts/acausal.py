@@ -71,6 +71,25 @@ class SolverConfigSpec(BaseModel):
     solver_type: SolverType
     dt: float
     root_finder: Optional[RootFinderSpec] = None
+    planar_substeps: int | None = Field(default=None, ge=1, strict=True)
+
+
+class JointDampingMode(StrictModel):
+    """Passive damping of a weighted sum of named planar joint velocities."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    coefficients: dict[str, float] = Field(min_length=1)
+    damping: float = Field(gt=0)
+
+
+class PlanarDynamicsSpec(StrictModel):
+    """Optional dynamics for an authored planar chain."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    gravity: tuple[float, float] = (0.0, -9.81)
+    joint_dampers: dict[str, JointDampingMode] = Field(default_factory=dict)
 
 
 class SpatialSite(StrictModel):
@@ -82,12 +101,33 @@ class SpatialSite(StrictModel):
     position: tuple[float, float, float]
 
 
+class MuscleWrap(StrictModel):
+    """Wrap one segment between consecutive sites around a named geometry."""
+
+    after_site: int = Field(ge=0, strict=True)
+    geom: str = Field(min_length=1)
+    side_site: str = Field(min_length=1)
+
+
+class PlanarWrapGeometry(StrictModel):
+    """An XY sphere or Z-axis cylinder, local to a named planar frame."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    kind: Literal["sphere", "cylinder"]
+    frame: str = Field(min_length=1)
+    radius: float = Field(gt=0)
+    offset: tuple[float, float] = (0.0, 0.0)
+
+
 class SpatialMusclePath(StrictModel):
     """A path through native or overlay sites, with its external muscle law."""
 
     sites: tuple[str, ...] = Field(min_length=2)
+    wraps: tuple[MuscleWrap, ...] = ()
     law: str = Field(min_length=1)
     state_size: int = Field(ge=0, strict=True)
+    law_revision: int | None = Field(default=None, ge=1, strict=True)
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -114,6 +154,8 @@ class AcausalGraphSpec(BaseModel):
     subgraphs: Optional[Dict[str, "AcausalGraphSpec"]] = None
     metadata: Optional["GraphMetadata"] = None
     mujoco_asset: MuJoCoAssetBinding | None = None
+    planar_dynamics: PlanarDynamicsSpec | None = None
+    wrap_geometries: dict[str, PlanarWrapGeometry] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -147,6 +189,12 @@ class AcausalGraphSpec(BaseModel):
     def reject_component_param_array_values(self) -> "AcausalGraphSpec":
         if (self.physical_domain == "spatial_multibody") != (self.mujoco_asset is not None):
             raise ValueError("A MuJoCo asset binding is required exactly for spatial multibody")
+        if self.physical_domain != "planar_multibody" and (
+            self.planar_dynamics is not None or self.solver.planar_substeps is not None
+        ):
+            raise ValueError("Planar dynamics and substeps require planar multibody")
+        if self.wrap_geometries and self.physical_domain != "planar_multibody":
+            raise ValueError("Wrap geometry overlays require a planar multibody graph")
         for node_id, node in self.nodes.items():
             for param_name, value in node.params.items():
                 if _contains_array_value(value):
