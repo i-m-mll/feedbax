@@ -30,7 +30,7 @@ EVALUATION_TYPE = "feedbax.mjx_warp_qualification"
 _PARAMS_SCHEMA = "feedbax.spec.mjx_warp_qualification"
 RECEIPT_CONSUMER_ID = "feedbax.mjx_warp_receipt"
 RECEIPT_CONSUMER_VERSION = "v1"
-RECEIPT_SCHEMA_ID = "feedbax.analysis.mjx_warp_receipt"
+RECEIPT_SCHEMA_ID = "feedbax.manifest.mjx_warp_receipt"
 RECEIPT_SCHEMA_VERSION = f"{RECEIPT_SCHEMA_ID}.v1"
 RECEIPT_ROLE = "warp_qualification_receipt"
 
