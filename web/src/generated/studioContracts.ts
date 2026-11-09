@@ -70,6 +70,7 @@ export interface SolverConfigSpec {
   solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5" | "mujoco";
   dt: number;
   root_finder?: RootFinderSpec | null;
+  mjx_backend?: "jax" | "warp";
 }
 
 export interface ContentObjectRef {
@@ -2052,7 +2053,8 @@ export const acausalReportDefaults = {
     "max_steps": 32
   },
   "SolverConfigSpec": {
-    "root_finder": null
+    "root_finder": null,
+    "mjx_backend": "jax"
   },
   "SpatialMusclePath": {
     "parameters": {}
@@ -2260,6 +2262,7 @@ export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
       "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5"), z.literal("mujoco")]),
       "dt": z.number().finite(),
       "root_finder": RootFinderSpecSchema.nullable().optional(),
+      "mjx_backend": z.union([z.literal("jax"), z.literal("warp")]).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<SolverConfigSpec>;

@@ -71,6 +71,7 @@ class SolverConfigSpec(BaseModel):
     solver_type: SolverType
     dt: float
     root_finder: Optional[RootFinderSpec] = None
+    mjx_backend: Literal["jax", "warp"] = "jax"
 
 
 class SpatialSite(StrictModel):
@@ -147,6 +148,10 @@ class AcausalGraphSpec(BaseModel):
     def reject_component_param_array_values(self) -> "AcausalGraphSpec":
         if (self.physical_domain == "spatial_multibody") != (self.mujoco_asset is not None):
             raise ValueError("A MuJoCo asset binding is required exactly for spatial multibody")
+        if self.solver.mjx_backend == "warp" and self.physical_domain not in {
+            "planar_multibody", "spatial_multibody",
+        }:
+            raise ValueError("MJX-Warp requires a MuJoCo multibody domain")
         for node_id, node in self.nodes.items():
             for param_name, value in node.params.items():
                 if _contains_array_value(value):

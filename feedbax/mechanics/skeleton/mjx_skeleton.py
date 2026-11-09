@@ -53,9 +53,10 @@ class MJXSkeletonState(AbstractSkeletonState):
 
 
 class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
-    """Shared MJX-JAX state, observation and dynamics for planar and spatial models."""
+    """Shared MJX state, observation and dynamics for planar and spatial models."""
 
     mjx_model: object
+    _warp_data_template: object | None
     descriptor: CompiledPhysicalModel | None = field(static=True)
     effector_site_id: int = field(static=True)
     effector_body_id: int = field(static=True)
@@ -63,7 +64,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
     nq: int = field(static=True)
     nv: int = field(static=True)
     nbody: int = field(static=True)
-    constraint_rows: int = field(static=True)
+    constraint_rows: int | None = field(static=True)
     _quaternions: tuple[tuple[int, int], ...] = field(static=True)
     _continuation_mask: int = field(static=True)
     _bounds: StateBounds
@@ -75,6 +76,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         effector_body_id: int,
         *,
         descriptor: CompiledPhysicalModel | None = None,
+        warp_data_template=None,
     ):
         from mujoco import mjtJoint, mjtState, mjx
 
@@ -87,6 +89,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
                 f"but body {effector_body_id} was specified"
             )
         self.mjx_model = mjx_model
+        self._warp_data_template = warp_data_template
         self.descriptor = descriptor
         self.effector_site_id = effector_site_id
         self.effector_body_id = site_body_id
@@ -96,13 +99,16 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         self.nbody = int(mjx_model.nbody)
         # This is the allocation used by the pinned MJX-JAX forward solver,
         # including rows inactive in the initial pose.
-        self.constraint_rows = mjx.make_data(mjx_model, impl="jax")._impl.efc_J.shape[0]
+        self.constraint_rows = (
+            mjx.make_data(mjx_model, impl="jax")._impl.efc_J.shape[0]
+            if warp_data_template is None else None
+        )
         self._continuation_mask = int(
             mjtState.mjSTATE_WARMSTART | mjtState.mjSTATE_EQ_ACTIVE
             | mjtState.mjSTATE_MOCAP_POS | mjtState.mjSTATE_MOCAP_QUAT
         )
         if mjx_model.nhistory or mjx_model.npluginstate or mjx_model.nplastic:
-            raise ValueError("MJX-JAX continuation does not support history, plugins or plasticity")
+            raise ValueError("MJX continuation does not support history, plugins or plasticity")
 
         self._quaternions = ()
         if descriptor is not None:
@@ -138,16 +144,38 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
             self._bounds = StateBounds(low=bound(low), high=bound(high))
 
     @classmethod
-    def from_descriptor(cls, descriptor: CompiledPhysicalModel) -> MJXSkeleton:
+    def from_descriptor(
+        cls, descriptor: CompiledPhysicalModel, *, backend: Literal["jax", "warp"] = "jax",
+    ) -> MJXSkeleton:
         from mujoco import mjx
 
         if descriptor.effector_site is None:
             raise ValueError("An executable MuJoCo model requires an effector site")
         site_id = descriptor.site_ids[descriptor.effector_site]
+        model = descriptor.model
+        if backend == "jax":
+            mjx_model, template = mjx.put_model(model, impl="jax"), None
+        elif backend == "warp":
+            from feedbax.mechanics.skeleton.mjx_warp import make_warp_model_and_data
+
+            mjx_model, template = make_warp_model_and_data(model)
+        else:
+            raise ValueError(f"Unknown MJX implementation {backend!r}")
         return cls(
-            mjx.put_model(descriptor.model, impl="jax"),
-            site_id, int(descriptor.model.site_bodyid[site_id]), descriptor=descriptor,
+            mjx_model, site_id, int(model.site_bodyid[site_id]),
+            descriptor=descriptor, warp_data_template=template,
         )
+
+    @property
+    def implementation(self) -> Literal["jax", "warp"]:
+        return "jax" if self._warp_data_template is None else "warp"
+
+    def _fresh_data(self):
+        from mujoco import mjx
+
+        if self._warp_data_template is not None:
+            return self._warp_data_template
+        return mjx.make_data(self.mjx_model, impl="jax")
 
     def retract_configuration(self, qpos: Array) -> Array:
         """Project quaternion coordinates onto the unit sphere."""
@@ -178,13 +206,21 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         return jnp.concatenate(pieces)
 
     def project_state(self, state: MJXSkeletonState) -> MJXSkeletonState:
+        state = self._cast_state(state)
         return replace(state, qpos=self.retract_configuration(state.qpos))
+
+    def _cast_state(self, state: MJXSkeletonState) -> MJXSkeletonState:
+        if self._warp_data_template is None:
+            return state
+        return jax.tree.map(
+            lambda value: jnp.asarray(value, dtype=self._warp_data_template.qpos.dtype), state,
+        )
 
     def _reconstruct_data(self, state: MJXSkeletonState):
         from mujoco import mjx
 
         model = self.mjx_model
-        data = mjx.make_data(model, impl="jax")
+        data = self._fresh_data()
         if state.continuation.size:
             data = mjx.set_state(model, data, state.continuation, self._continuation_mask)
         return data.replace(
@@ -219,7 +255,8 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         arm = data.site_xpos[self.effector_site_id] - data.xipos[self.effector_body_id]
         wrench = jnp.concatenate((site_force, jnp.cross(arm, site_force)))
         return data.replace(
-            ctrl=ctrl,
+            ctrl=jnp.asarray(ctrl, dtype=data.ctrl.dtype)
+            if self._warp_data_template is not None else ctrl,
             xfrc_applied=wrenches.at[self.effector_body_id].add(wrench),
         )
 
@@ -246,9 +283,16 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
     def forward_kinematics(self, state: MJXSkeletonState) -> CartesianState:
         from mujoco import mjx
 
-        data = mjx.com_vel(self.mjx_model, self._kinematics_data(state))
-        offset = data.xpos - data.subtree_com[self.mjx_model.body_rootid]
-        vel = data.cvel[:, 3:] + jnp.cross(data.cvel[:, :3], offset)
+        model = self.mjx_model
+        data = self._kinematics_data(state)
+        if self._warp_data_template is not None:
+            vel = jax.vmap(
+                lambda pos, body: data.qvel @ mjx.jac(model, data, pos, body)[0],
+            )(data.xpos, jnp.arange(self.nbody))
+        else:
+            data = mjx.com_vel(model, data)
+            offset = data.xpos - data.subtree_com[model.body_rootid]
+            vel = data.cvel[:, 3:] + jnp.cross(data.cvel[:, :3], offset)
         return self._cartesian(data.xpos, vel, data.xmat)
 
     @jax.named_scope("fbx.MJXSkeleton.effector")
@@ -298,7 +342,14 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         """Advance the authored integrator with controls and COM wrenches held for the step."""
         from mujoco import mjx
 
+        state = self._cast_state(state)
         data = mjx.step(self.mjx_model, self._dynamics_data(state, ctrl))
+        if self._warp_data_template is not None:
+            data = data.replace(qpos=eqx.error_if(
+                data.qpos, jnp.any(data._impl.overflow != 0),
+                "MJX-Warp exceeded its allocated collision or constraint capacity",
+                on_error="raise",
+            ))
         return replace(
             state, qpos=data.qpos, qvel=data.qvel, act=data.act, time=data.time,
             continuation=mjx.get_state(self.mjx_model, data, self._continuation_mask),
@@ -315,7 +366,8 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         """Reinitialize provider buffers after transferring the common physical state."""
         from mujoco import mjx
 
-        fresh = mjx.make_data(self.mjx_model, impl="jax")
+        fresh = self._fresh_data()
+        state = jax.tree.map(lambda value: jnp.asarray(value, dtype=fresh.qpos.dtype), state)
         data = self._reconstruct_data(state).replace(qacc_warmstart=fresh.qacc_warmstart)
         return replace(state, continuation=mjx.get_state(
             self.mjx_model, data, self._continuation_mask,
@@ -324,7 +376,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
     def init(self, *, key: PRNGKeyArray) -> MJXSkeletonState:
         from mujoco import mjx
 
-        data = mjx.make_data(self.mjx_model, impl="jax")
+        data = self._fresh_data()
         return MJXSkeletonState(
             qpos=data.qpos, qvel=data.qvel, act=data.act, time=data.time,
             effector_force=jnp.zeros(self.dimension, dtype=data.qpos.dtype),

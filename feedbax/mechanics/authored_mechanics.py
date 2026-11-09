@@ -46,9 +46,12 @@ class AuthoredMechanics(Mechanics):
         if len(adapters) != 1:
             raise ValueError("MuJoCo control must be declared with one ActuationInput")
         source_kind = adapters[0].params.get("source_kind", "force")
-        skeleton = MJXSkeleton.from_descriptor(descriptor)
         model = descriptor.model
         self._solver_name = graph.solver.solver_type
+        implementation = graph.solver.mjx_backend
+        if implementation == "warp" and self._solver_name != "mujoco":
+            raise ValueError("MJX-Warp currently requires native MuJoCo stepping")
+        skeleton = MJXSkeleton.from_descriptor(descriptor, backend=implementation)
         supported_actuation = {
             int(mjtDyn.mjDYN_NONE), int(mjtDyn.mjDYN_INTEGRATOR), int(mjtDyn.mjDYN_FILTER),
         }
@@ -71,7 +74,7 @@ class AuthoredMechanics(Mechanics):
             if graph.solver.root_finder is not None:
                 raise ValueError("Native MuJoCo stepping uses the asset's solver options")
             if not native:
-                raise ValueError("The authored MuJoCo integrator is unsupported by MJX-JAX")
+                raise ValueError(f"The authored MuJoCo integrator is unsupported by MJX-{implementation}")
             backend = MJXBackend(control_dt=graph.solver.dt, sub_dt=model.opt.timestep)
         else:
             if not continuous:
@@ -121,7 +124,7 @@ class AuthoredMechanics(Mechanics):
 
     @property
     def supports_reverse_mode(self) -> bool:
-        """The stock JAX solver is qualified only with zero allocated constraint rows."""
+        """Whether this model and execution mode support physics differentiation."""
         return self.capabilities.reverse_mode
 
     @property
@@ -182,11 +185,17 @@ class AuthoredMechanics(Mechanics):
     def _state_header(self) -> dict:
         import mujoco
 
+        implementation = self.plant.skeleton.implementation
+        runtime = [f"mjx-{implementation}", mujoco.__version__, jax.__version__]
+        if implementation == "warp":
+            from importlib.metadata import version
+
+            runtime.extend(version(name) for name in ("mujoco-mjx", "warp-lang", "jaxlib"))
         return {
             "schema": "feedbax.mujoco.continuation.v1",
             "model": self.descriptor.identity,
             "structure": self.descriptor.structural_signature,
-            "runtime": ["mjx-jax", mujoco.__version__, jax.__version__],
+            "runtime": runtime,
             "solver": self._solver_name,
             "periods": [self.backend.control_dt, self.backend.sub_dt],
         }
