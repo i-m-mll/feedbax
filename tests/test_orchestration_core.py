@@ -3640,6 +3640,8 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
     raw_root.mkdir(parents=True)
     (raw_root / "states.bin").write_bytes(b"x" * (1024 * 1024))
     (row_root / "failure.json").write_text('{"failed":true}\n', encoding="utf-8")
+    diagnostic = b"x" * (96 * 1024) + b"worker failure\n"
+    (row_root / "stderr.log").write_bytes(diagnostic)
     state = RunSetState(
         run_set_id=bundle.run_set_id,
         rows={"failed": RowState(status="failed", error="fixture failure")},
@@ -3661,6 +3663,7 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
         "COLLECT",
         StageState(status="failed", outputs={"rows": {"failed": collected}}),
     )
+    logs = Path(driver.collect_failure_logs(bundle, state)["failure_logs"])
     teardown = driver.teardown(bundle, state)
     reclamation = teardown["failed_row_reclamation"]
     assert len(reclamation) == 1
@@ -3668,6 +3671,7 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
     assert reclamation[0]["status"] == "reclaimed"
     assert reclamation[0]["reclaimed_bytes"] >= 1024 * 1024
     assert not row_root.exists()
+    assert (logs / "failed.stderr.log").read_bytes() == diagnostic[-64 * 1024:]
     assert driver.teardown(bundle, state)["failed_row_reclamation"] == [
         {
             "row_id": "failed",
