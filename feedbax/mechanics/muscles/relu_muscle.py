@@ -13,11 +13,14 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+import equinox as eqx
 import jax.numpy as jnp
 from equinox.nn import State, StateIndex
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.contracts.component import PortType
+from feedbax.mechanics.hill_muscles import ActivationDynamics
+from feedbax.mechanics.muscle_law import MuscleStage
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
 from typing import Annotated
@@ -92,6 +95,16 @@ class ReluMuscle(Component):
         initial_state = jnp.zeros(()) + initial_activation
         self.state_index = StateIndex(initial_state)
 
+    def as_muscle_law(self) -> ActivationTensionLaw:
+        """Expose the same constitutive law for stage-local integration."""
+        return ActivationTensionLaw(
+            max_isometric_force=self.max_isometric_force,
+            tau_activation=self.tau_activation,
+            tau_deactivation=self.tau_deactivation,
+            min_activation=self.min_activation,
+            initial_activation=self.state_index.init,
+        )
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -113,17 +126,10 @@ class ReluMuscle(Component):
         excitation = inputs.get("excitation", jnp.array(0.0))
 
         # Activation ODE: da/dt = (u - a) / tau
-        tau = jnp.where(
-            excitation > activation,
-            self.tau_activation,
-            self.tau_deactivation,
-        )
-        da_dt = (excitation - activation) / tau
-        new_activation = activation + da_dt * self.dt
-        new_activation = jnp.clip(new_activation, self.min_activation, 1.0)
-
-        # Force = activation * max_isometric_force
-        force = new_activation * self.max_isometric_force
+        law = self.as_muscle_law()
+        da_dt = law.activation_derivative(activation, excitation)
+        new_activation = jnp.clip(activation + da_dt * self.dt, self.min_activation, 1.0)
+        force = law.tension(new_activation)
 
         state = state.set(self.state_index, new_activation)
 
@@ -132,3 +138,34 @@ class ReluMuscle(Component):
             "activation": new_activation,
         }
         return outputs, state
+
+
+
+class ActivationTensionLaw(eqx.Module):
+    """First-order activation with tension linear in bounded activation."""
+
+    max_isometric_force: float
+    tau_activation: float
+    tau_deactivation: float
+    min_activation: float
+    initial_activation: Array
+
+    @property
+    def state_size(self) -> int:
+        return 1
+
+    def init_state(self, length: Array, velocity: Array) -> Array:
+        return self.initial_activation.astype(length.dtype).reshape(1)
+
+    def activation_derivative(self, activation: Array, excitation: Array) -> Array:
+        return ActivationDynamics(self.tau_activation, self.tau_deactivation)(excitation, activation)
+
+    def tension(self, activation: Array) -> Array:
+        return self.max_isometric_force * jnp.clip(activation, self.min_activation, 1.0)
+
+    def evaluate(
+        self, state: Array, excitation: Array, length: Array, velocity: Array,
+    ) -> MuscleStage:
+        activation = state[0]
+        derivative = self.activation_derivative(activation, excitation)
+        return MuscleStage(jnp.expand_dims(derivative, 0), self.tension(activation))

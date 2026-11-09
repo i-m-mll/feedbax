@@ -12,6 +12,14 @@ The compiled descriptor owns the native model, exact authored identity, asset id
 
 The structural signature includes named topology and state and law layout. Numeric changes can preserve that signature while changing exact identity. Group candidates by structural signature, then check that their chosen provider's static data can share one compiled program. Resume against the same authored model uses exact identity.
 
+## Muscle excitation
+
+Set the `ActuationInput` source to `muscle_excitation_vector` to drive the paths in lexicographic name order. The default law is the bounded, zero-pennation rigid Hill law with one activation state. A path can instead name `feedbax.ReluMuscle` or a custom type registered with the same component registry used to compile the graph. A registered component either implements `MuscleLaw` or returns a pure law from `as_muscle_law()`. The law takes the current state, excitation, length and lengthening velocity, and returns its state derivative and shortening tension. The declared state size must match the law's fixed vector width.
+
+Set law parameters in `law_parameters` on a planar `MusclePath` or in `parameters` on a spatial overlay path. An optional `law_revision` selects the component registry revision and its migrations. Exact continuation records the resolved law identities. Older planar graphs with explicit constant moment arms retain their original rigid-tendon behavior. A graph using constant arms must use them for every path and cannot combine them with nested law parameters.
+
+The continuous solver evaluates paths, muscle state derivatives and tension together at each stage. A native MuJoCo step accepts raw authored actuator controls. Geometry-driven excitation requires the continuous solver.
+
 ## Execution
 
 `compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Authored muscle paths expose geometry for coupling.
