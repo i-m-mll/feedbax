@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from math import cos, sin, sqrt
+from math import acos, cos, sin, sqrt
 from typing import Literal
 
 import diffrax
@@ -33,6 +33,10 @@ COM_OFFSETS = (0.11, 0.16)
 PIVOT_INERTIAS = (0.025, 0.045)
 DAMPING_MODES = ((1.0, 0.0375), (-1.0, 0.0125))
 DAMPING = ((0.05, 0.025), (0.025, 0.05))
+SHOULDER_WRAP_MAX_DISPLACEMENT_RAD = 0.45
+_SHOULDER_WRAP_RADIUS = 0.062
+_SHOULDER_WRAP_SEPARATION = 2.10
+_SHOULDER_WRAP_SIDE_RADIUS = 0.095
 
 
 def _point(frame: str, x: float, y: float = 0.0) -> dict:
@@ -43,7 +47,7 @@ def _origin(frame: str, pivot_x: float, radius: float, angle: float) -> dict:
     return _point(frame, pivot_x + radius * cos(angle), radius * sin(angle))
 
 
-def _path_specs() -> list[tuple[list[dict], float, float]]:
+def _path_specs(wrap_shoulder: bool) -> list[tuple[list[dict], float, float]]:
     """Author balanced antagonists at the task's initial pose."""
     shoulder, elbow = START_QPOS
     upper_length = LENGTHS[0]
@@ -55,9 +59,20 @@ def _path_specs() -> list[tuple[list[dict], float, float]]:
             - 2 * origin_radius * insertion_radius * cos(separation)
         )
 
+    origin_radius, insertion_radius = 0.07, 0.12
+    shoulder_separation = separation
+    shoulder_length = length(origin_radius, insertion_radius)
+    if wrap_shoulder:
+        radius = _SHOULDER_WRAP_RADIUS
+        shoulder_separation = _SHOULDER_WRAP_SEPARATION
+        tangent_angle = acos(radius / origin_radius) + acos(radius / insertion_radius)
+        shoulder_length = (
+            sqrt(origin_radius**2 - radius**2) + sqrt(insertion_radius**2 - radius**2)
+            + radius * (shoulder_separation - tangent_angle)
+        )
     shoulder_pair = [
-        ([_origin("world.frame", 0.0, 0.07, shoulder + sign * separation),
-          _point("link0.proximal", 0.12)], length(0.07, 0.12), 80.0)
+        ([_origin("world.frame", 0.0, origin_radius, shoulder + sign * shoulder_separation),
+          _point("link0.proximal", insertion_radius)], shoulder_length, 80.0)
         for sign in (1, -1)
     ]
     elbow_pair = [
@@ -86,6 +101,7 @@ def planar_interior(
     *,
     law_profile: Literal["rigid", "activation"] = "rigid",
     direct_torque: bool = False,
+    wrap_shoulder: bool = False,
     solver: Literal["euler", "tsit5"] = "euler",
 ) -> AcausalGraphSpec:
     """Author a horizontal two-link, six-muscle arm inspired by Li and Todorov."""
@@ -108,7 +124,7 @@ def planar_interior(
             "RevoluteJoint", parent_frame=parent_frame, child_frame=f"link{i}.proximal",
         )
 
-    for i, (points, rest_length, max_force) in enumerate(_path_specs()):
+    for i, (points, rest_length, max_force) in enumerate(_path_specs(wrap_shoulder)):
         optimal_length = 0.065
         params = {"path_points": points, "state_size": 1}
         if law_profile == "rigid":
@@ -135,6 +151,21 @@ def planar_interior(
             )
         nodes[f"muscle_{i}"] = node("MusclePath", **params)
 
+    wrap_geometries = {}
+    if wrap_shoulder:
+        wrap_geometries["shoulder_wrap"] = {
+            "kind": "cylinder", "frame": "world.frame", "radius": _SHOULDER_WRAP_RADIUS,
+        }
+        for index, sign in enumerate((1, -1)):
+            side = f"shoulder_side_{index}"
+            nodes[side] = node("PointMarker", **_origin(
+                "world.frame", 0.0, _SHOULDER_WRAP_SIDE_RADIUS,
+                START_QPOS[0] + sign * _SHOULDER_WRAP_SEPARATION / 2,
+            ))
+            nodes[f"muscle_{index}"].params["wraps"] = [
+                {"after_site": 0, "geom": "shoulder_wrap", "side_site": side},
+            ]
+
     nodes.update({
         "drive": node(
             "ActuationInput", port_name="force",
@@ -148,6 +179,7 @@ def planar_interior(
     return AcausalGraphSpec(
         physical_domain="planar_multibody",
         nodes=nodes,
+        wrap_geometries=wrap_geometries,
         solver={"solver_type": solver, "dt": CONTROL_DT, "planar_substeps": physics_substeps},
         planar_dynamics=PlanarDynamicsSpec(
             gravity=(0.0, 0.0),
@@ -182,9 +214,14 @@ def build_mechanics(
     law_profile: Literal["rigid", "activation"] = "rigid",
     solver: Literal["euler", "tsit5"] = "euler",
     engine: Literal["mjx", "analytical"] = "mjx",
+    wrap_shoulder: bool = False,
 ) -> Mechanics:
     """Build the benchmark using the production graph or analytical plant."""
-    interior = planar_interior(physics_substeps, law_profile=law_profile, solver=solver)
+    if wrap_shoulder and engine != "mjx":
+        raise ValueError("The analytical benchmark only supports fixed guides")
+    interior = planar_interior(
+        physics_substeps, law_profile=law_profile, solver=solver, wrap_shoulder=wrap_shoulder,
+    )
     registry = ComponentRegistry()
     if engine == "mjx":
         return compile_graph(graph_document(interior), registry).graph.nodes["mechanics"]

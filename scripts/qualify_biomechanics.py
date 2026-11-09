@@ -16,7 +16,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from scripts.biomechanics_fixture import START_QPOS, build_mechanics, matched_physics
+from scripts.biomechanics_fixture import (
+    SHOULDER_WRAP_MAX_DISPLACEMENT_RAD,
+    START_QPOS,
+    build_mechanics,
+    matched_physics,
+)
 from scripts.biomechanics_rnn_benchmark import (
     ReachBenchmark,
     ReachSpec,
@@ -48,6 +53,7 @@ def _make_benchmark(args, lock):
     jax.config.update("jax_enable_x64", spec.precision == "float64")
     mechanics = build_mechanics(
         args.substeps, engine=args.engine, law_profile=args.law, solver=args.solver,
+        wrap_shoulder=args.wrap_shoulder,
     )
     model = make_controller(mechanics, spec, seed=args.seed)
     coordinate = "qpos" if args.engine == "mjx" else "angle"
@@ -56,7 +62,7 @@ def _make_benchmark(args, lock):
     return benchmark, model, model_identity
 
 
-def _snapshot(benchmark, model, batch) -> dict:
+def _snapshot(benchmark, model, batch, *, wrap_shoulder: bool = False) -> dict:
     diff, frozen = eqx.partition(model, benchmark.trainable)
 
     @eqx.filter_jit
@@ -73,10 +79,26 @@ def _snapshot(benchmark, model, batch) -> dict:
         )
 
     names = ("endpoints_m", "qpos_min_rad", "qpos_max_rad", "qvel_abs_max_rad_s")
-    return {
+    snapshot = {
         name: np.asarray(value).tolist()
         for name, value in zip(names, capture(diff, frozen, batch), strict=True)
     }
+    if wrap_shoulder:
+        start = START_QPOS[0]
+        limit = SHOULDER_WRAP_MAX_DISPLACEMENT_RAD
+        sampled_lo = snapshot["qpos_min_rad"][0]
+        sampled_hi = snapshot["qpos_max_rad"][0]
+        lo = min(start, sampled_lo)
+        hi = max(start, sampled_hi)
+        snapshot["shoulder_wrap"] = {
+            "sample_period_s": benchmark.spec.control_dt,
+            "observed_min_rad": lo,
+            "observed_max_rad": hi,
+            "qualified_min_rad": start - limit,
+            "qualified_max_rad": start + limit,
+            "all_sampled_poses_qualified": start - limit <= sampled_lo <= sampled_hi <= start + limit,
+        }
+    return snapshot
 
 
 def main() -> None:
@@ -91,9 +113,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=701)
     parser.add_argument("--precision", choices=("float32", "float64"), default="float32")
     parser.add_argument("--batch-one", action="store_true")
+    parser.add_argument("--wrap-shoulder", action="store_true",
+                        help="Use the qualified exterior cylinder shoulder pair on MJX.")
     parser.add_argument("--load-net", type=Path)
     parser.add_argument("--save-net", type=Path)
     args = parser.parse_args()
+    if args.wrap_shoulder and (args.engine != "mjx" or args.phase == "physics"):
+        parser.error("--wrap-shoulder requires an MJX row without the analytical physics comparator")
     jax.config.update("jax_enable_compilation_cache", False)
     lock = json.loads(args.lock.read_text())
     report = {
@@ -104,6 +130,7 @@ def main() -> None:
         "substeps": args.substeps,
         "seed": args.seed,
         "protocol": lock,
+        "wrap_shoulder": args.wrap_shoulder,
     }
     if args.phase == "physics":
         jax.config.update("jax_enable_x64", True)
@@ -138,7 +165,9 @@ def main() -> None:
                 )
                 for seed in lock["seed_streams"]["directions"]
             ]
-            report["trajectory"] = _snapshot(benchmark, model, batch)
+            report["trajectory"] = _snapshot(
+                benchmark, model, batch, wrap_shoulder=args.wrap_shoulder,
+            )
         elif args.phase == "timing":
             report["kernels"] = {
                 label: asdict(timing)
@@ -163,6 +192,10 @@ def main() -> None:
                 updates=result.updates,
                 stop_reason=result.stop_reason,
             )
+            if args.wrap_shoulder:
+                report["held_out_trajectory"] = _snapshot(
+                    benchmark, model, held_out, wrap_shoulder=True,
+                )
         if args.save_net is not None:
             eqx.tree_serialise_leaves(args.save_net, model.net)
     report["peak_process_rss_bytes"] = process_peak_rss_bytes()
