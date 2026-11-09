@@ -182,7 +182,8 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
     reports = ReportRecipeRegistry()
     register_builtin_report_recipes(reports)
     evaluations = EvaluationRecipeRegistry()
-    register_warp_qualification(evaluations)
+    evaluation_consumers = EvaluationBatchConsumerRegistry()
+    register_warp_qualification(evaluations, evaluation_consumers)
     row_lowerers = TrainingRowLowererRegistry()
     preparations = ExecutionPreparationProviderRegistry()
     training_programs = TrainingProgramCatalog(row_lowerers, preparations)
@@ -195,7 +196,7 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
         experiment_packages=ExperimentRegistry(),
         analysis_recipes=AnalysisRecipeRegistry(),
         evaluation_recipes=evaluations,
-        evaluation_batch_consumers=EvaluationBatchConsumerRegistry(),
+        evaluation_batch_consumers=evaluation_consumers,
         evaluation_product_union_finalizers=EvaluationCompactProductUnionFinalizerRegistry(),
         report_recipes=reports,
         figures=figures,

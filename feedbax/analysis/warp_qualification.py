@@ -13,6 +13,14 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeRegistry,
     EvaluationRecipeResult,
 )
+from feedbax.analysis.evaluation_compaction import (
+    EvaluationBatchConsumerInput,
+    EvaluationBatchConsumerRegistry,
+    EvaluationBatchFinalizeInput,
+    EvaluationBatchFragment,
+    EvaluationBatchMergeInput,
+    EvaluationBatchMergeState,
+)
 from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.manifest import EvaluationRunSpec
@@ -20,6 +28,11 @@ from feedbax.contracts.manifest import EvaluationRunSpec
 
 EVALUATION_TYPE = "feedbax.mjx_warp_qualification"
 _PARAMS_SCHEMA = "feedbax.spec.mjx_warp_qualification"
+RECEIPT_CONSUMER_ID = "feedbax.mjx_warp_receipt"
+RECEIPT_CONSUMER_VERSION = "v1"
+RECEIPT_SCHEMA_ID = "feedbax.analysis.mjx_warp_receipt"
+RECEIPT_SCHEMA_VERSION = f"{RECEIPT_SCHEMA_ID}.v1"
+RECEIPT_ROLE = "warp_qualification_receipt"
 
 
 class WarpQualificationParams(StrictModel):
@@ -34,8 +47,9 @@ def _qualify(spec: EvaluationRunSpec) -> EvaluationRecipeResult:
     params = WarpQualificationParams.model_validate(spec.params)
     receipt = run_qualification(backend="warp", device=params.device, fixture="all")
     return EvaluationRecipeResult(
+        states=receipt,
         summary_metrics={"qualified_fixtures": len(receipt["fixtures"])},
-        metadata={"warp_qualification": receipt},
+        metadata={"states_schema": RECEIPT_SCHEMA_VERSION},
     )
 
 
@@ -59,9 +73,28 @@ def _evaluate_batch(
         raise EvaluationBatchRowError(item.row_id, error) from error
 
 
-def register_warp_qualification(registry: EvaluationRecipeRegistry) -> None:
-    registry.register(EVALUATION_TYPE, _evaluate, batch_recipe=_evaluate_batch)
-    registry.register_authoring_schema(
+def _compact(value: EvaluationBatchConsumerInput) -> EvaluationBatchFragment:
+    (receipt,) = value.states
+    return EvaluationBatchFragment(receipt, RECEIPT_SCHEMA_ID, RECEIPT_SCHEMA_VERSION, RECEIPT_ROLE)
+
+
+def _merge(value: EvaluationBatchMergeInput) -> EvaluationBatchMergeState:
+    if value.prior_merge_state is not None:
+        raise ValueError("MJX-Warp qualification produces exactly one receipt per matrix")
+    return EvaluationBatchMergeState(value.fragment, RECEIPT_SCHEMA_ID, RECEIPT_SCHEMA_VERSION)
+
+
+def _finalize(value: EvaluationBatchFinalizeInput) -> EvaluationBatchFragment:
+    return EvaluationBatchFragment(
+        value.terminal_merge_state, RECEIPT_SCHEMA_ID, RECEIPT_SCHEMA_VERSION, RECEIPT_ROLE
+    )
+
+
+def register_warp_qualification(
+    recipes: EvaluationRecipeRegistry, consumers: EvaluationBatchConsumerRegistry
+) -> None:
+    recipes.register(EVALUATION_TYPE, _evaluate, batch_recipe=_evaluate_batch)
+    recipes.register_authoring_schema(
         EVALUATION_TYPE,
         EvaluationAuthoringSchema(
             schema_id=_PARAMS_SCHEMA,
@@ -69,4 +102,12 @@ def register_warp_qualification(registry: EvaluationRecipeRegistry) -> None:
             params_model=WarpQualificationParams,
             axis_profiles=({"device": ("cpu",)}, {"device": ("cuda",)}),
         ),
+    )
+    consumers.register(
+        RECEIPT_CONSUMER_ID,
+        RECEIPT_CONSUMER_VERSION,
+        compact=_compact,
+        merge=_merge,
+        finalize=_finalize,
+        accepts_fresh_states=True,
     )
