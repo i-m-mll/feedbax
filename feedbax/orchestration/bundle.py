@@ -167,6 +167,13 @@ class RepoRevision(StrictModel):
     dirty_allowed: bool = False
 
 
+class UvRelease(StrictModel):
+    """Verified Linux x86-64 release archive for remote environment realization."""
+
+    version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class EnvironmentDeclaration(StrictModel):
     """Declared execution environment for a run bundle."""
 
@@ -174,6 +181,7 @@ class EnvironmentDeclaration(StrictModel):
     repo_revisions: list[RepoRevision] = Field(default_factory=list)
     lockfile_hashes: dict[str, str] = Field(default_factory=dict)
     dependency_groups: tuple[str, ...] | None = Field(default=None, min_length=1)
+    uv_release: UvRelease | None = None
     overlay_steps: list[str] = Field(default_factory=list)
     image_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -212,6 +220,11 @@ def environment_declaration_identity_projection(
         **(
             {"dependency_groups": list(environment.dependency_groups)}
             if environment.dependency_groups is not None
+            else {}
+        ),
+        **(
+            {"uv_release": environment.uv_release.model_dump(mode="json")}
+            if environment.uv_release is not None
             else {}
         ),
         "overlay_steps": list(environment.overlay_steps),
@@ -536,10 +549,13 @@ class RunBundle(StrictModel):
             or self.budget.teardown_reserve_seconds is None
             or self.budget.max_spend_usd is None
             or self.budget.discard_uncollected_on_abort is not True
+            or self.environment.dependency_groups is None
+            or self.environment.uv_release is None
+            or self.environment.overlay_steps
         ):
             raise ValueError(
                 "exact RunPod CUDA requires attempt, spend and teardown budgets, "
-                "with controller-owned credentials and abort-time teardown authorization"
+                "with controller-owned credentials, authorized abort-time teardown, and a pinned environment"
             )
         seen: set[str] = set()
         for row in self.rows:

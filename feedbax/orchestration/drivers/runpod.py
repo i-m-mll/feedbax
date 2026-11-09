@@ -1911,7 +1911,8 @@ class RunPodOrchestrationDriver:
         sentinel_dir = self._remote_sentinel_dir(bundle)
         logs_dir = f"{remote_run_dir}/logs"
         workdir = self._primary_workdir()
-        sync_args = ["uv", "sync", "--frozen"]
+        uv = self._bootstrap_uv(bundle, remote_run_dir)
+        sync_args = [uv, "sync", "--frozen"]
         if bundle.environment.dependency_groups is not None:
             python_version = bundle.environment.python_version
             assert python_version is not None
@@ -1958,6 +1959,24 @@ class RunPodOrchestrationDriver:
             f"{_sq(self._remote_fingerprint_path(bundle))}"
         )
         return realized_fingerprint
+
+    def _bootstrap_uv(self, bundle: RunBundle, remote_run_dir: str) -> str:
+        release = bundle.environment.uv_release
+        if release is None:
+            return "uv"
+        archive = "uv-x86_64-unknown-linux-gnu"
+        url = f"https://github.com/astral-sh/uv/releases/download/{release.version}/{archive}.tar.gz"
+        bin_dir = f"{remote_run_dir}/bin"
+        self._ssh(
+            "set -eu; [ \"$(uname -s):$(uname -m)\" = Linux:x86_64 ]; "
+            "stage=$(mktemp -d); trap 'rm -rf -- \"$stage\"' EXIT; "
+            f"curl --fail --silent --show-error --location --proto '=https' "
+            f"--max-time 45 {_sq(url)} -o \"$stage/uv.tar.gz\"; "
+            f"printf '%s  %s\\n' {_sq(release.archive_sha256)} \"$stage/uv.tar.gz\" | sha256sum -c -; "
+            f"tar -xzf \"$stage/uv.tar.gz\" -C \"$stage\" --strip-components=1 {_sq(archive + '/uv')}; "
+            f"mkdir -p {_sq(bin_dir)}; install -m 755 \"$stage/uv\" {_sq(bin_dir + '/uv')}"
+        )
+        return f"{bin_dir}/uv"
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Publish one verified input tree without exposing partial final paths."""
@@ -3514,6 +3533,7 @@ class RunPodOrchestrationDriver:
         declaration.pop("overlay_steps")
         declaration["declaration_sha256"] = declaration_fingerprint
         command = (
+            f"{_cuda_launch_environment(bundle, self._remote_run_dir(bundle), self._primary_workdir())}"
             "uv run --no-sync python -c "
             f"{_sq(_REMOTE_ENVIRONMENT_PROBE)} "
             f"{_sq(json.dumps(declaration, sort_keys=True, separators=(',', ':')))}"
@@ -4790,6 +4810,7 @@ def build_launch_row_command(
     )
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
+        f"{_cuda_launch_environment(bundle, str(PurePosixPath(namespace.sentinel_dir).parent), workdir)}"
         'mark_failed() { rc=$?; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '
         f'if [ "$success" -ne 1 ]; then touch {_sq(failed_file)}; fi; exit "$rc"; }}; '
         'signal_failed() { rc=$1; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '
@@ -4838,6 +4859,18 @@ def build_launch_row_command(
         "i=$((i+1)); sleep 0.05; done; "
         f"[ -s {_sq(pid_file)} ] && [ -s {_sq(process_identity_file)} ]; }}"
     )
+
+
+def _cuda_launch_environment(bundle: RunBundle, run_dir: str, workdir: str) -> str:
+    prefix = ""
+    if bundle.environment.uv_release is not None:
+        prefix = f"export PATH={_sq(run_dir + '/bin')}:{_sq(workdir + '/.venv/bin')}:\"$PATH\"; "
+    if bundle.deployment_policy.resources.runpod_cuda is not None:
+        prefix += (
+            "unset LD_LIBRARY_PATH; "
+            "export JAX_PLATFORMS=cuda CUDA_VISIBLE_DEVICES=0 JAX_ENABLE_COMPILATION_CACHE=false; "
+        )
+    return prefix
 
 
 _REMOTE_PROCESS_GROUP_SIGNAL_SCRIPT = """
