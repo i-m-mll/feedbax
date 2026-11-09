@@ -48,6 +48,7 @@ class CompiledPhysicalModel:
     joints: tuple[JointLayout, ...]
     actuator_state: tuple[slice, ...]
     paths: tuple[MusclePathBinding, ...]
+    planar_segment_lengths: tuple[float, ...]
 
 
 def describe_model(
@@ -58,6 +59,7 @@ def describe_model(
     effector_site: str | None = None,
     asset_identity: str | None = None,
     paths: tuple[MusclePathBinding, ...] = (),
+    planar_segment_lengths: tuple[float, ...] = (),
 ) -> CompiledPhysicalModel:
     """Derive binding and grouping information from the compiled model."""
     import mujoco
@@ -118,5 +120,6 @@ def describe_model(
     )
     return CompiledPhysicalModel(
         model, identity, asset_identity, signature, dimension, effector_site,
-        body_ids, joint_ids, site_ids, tendon_ids, actuator_ids, tuple(joints), actuator_state, paths,
+        body_ids, joint_ids, site_ids, tendon_ids, actuator_ids, tuple(joints), actuator_state,
+        paths, planar_segment_lengths,
     )

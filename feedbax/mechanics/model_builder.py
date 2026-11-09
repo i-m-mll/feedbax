@@ -73,8 +73,20 @@ def planar_chain_graph(
     """Author a planar chain from a morphology preset."""
     if chain_config.n_joints < 1:
         raise ValueError("A planar chain requires at least one joint")
+    link_shape = (chain_config.n_joints,)
+    if any(value.shape != link_shape for value in (
+        preset.segment_lengths, preset.segment_masses, preset.joint_damping, preset.joint_stiffness,
+    )):
+        raise ValueError(f"Each physical preset vector must have shape {link_shape}")
     if muscle_config is None:
         muscle_config = default_muscle_config(preset, chain_config)
+    muscle_shape = (muscle_config.n_muscles,)
+    if muscle_config.n_joints != chain_config.n_joints or any(
+        value.shape != muscle_shape for value in (
+            preset.muscle_pcsa, preset.muscle_optimal_fiber_length, preset.muscle_tendon_slack_length,
+        )
+    ):
+        raise ValueError("Muscle parameters and attachments must match the planar chain topology")
 
     def component(name: str, **params: object) -> ComponentSpec:
         return ComponentSpec(type=f"feedbax.{name}", params=params)
@@ -134,7 +146,7 @@ def planar_chain_graph(
     })
     return AcausalGraphSpec(
         physical_domain="planar_multibody", nodes=nodes,
-        connections=[AcausalConnectionSpec(a=a, b=b) for a, b in edges],
+        connections=[AcausalConnectionSpec.model_validate({"a": a, "b": b}) for a, b in edges],
         solver=SolverConfigSpec(solver_type=solver_type, dt=sim_config.dt),
     )
 

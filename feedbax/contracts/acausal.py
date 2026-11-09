@@ -25,7 +25,7 @@ ACAUSAL_GRAPH_SCHEMA_VERSION = "feedbax.spec.acausal_graph.v2"
 AcausalPhysicalDomain = Literal[
     "translational", "rotational", "planar_multibody", "spatial_multibody"
 ]
-SolverType = Literal["euler", "implicit_euler", "kvaerno5", "tsit5"]
+SolverType = Literal["euler", "implicit_euler", "kvaerno5", "tsit5", "mujoco"]
 
 
 class AcausalConnectionSpec(BaseModel):

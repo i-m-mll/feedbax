@@ -61,6 +61,10 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         """Return the Cartesian state of the end effector."""
         ...
 
+    def project_state(self, state: StateT) -> StateT:
+        """Project a configuration after an accepted integration step."""
+        return state
+
     @abstractmethod
     def update_state_given_effector_force(
         self,

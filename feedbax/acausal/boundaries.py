@@ -26,9 +26,10 @@ class ActuationInput(ComponentOwner):
     ports = Ports({"u": FORCE_PAYLOAD.port_type(), "flange": conserving_port_type()}, {})
     port_name: str = "u"
     order: int = 0
-    source_kind: Literal["force", "torque", "prescribed_motion", "muscle_excitation_vector"] = (
-        "force"
-    )
+    source_kind: Literal[
+        "force", "torque", "prescribed_motion", "muscle_excitation_vector", "actuator_control",
+    ] = "force"
+    size: int | None = None
     units: str | None = None
 
 
@@ -41,9 +42,9 @@ class SensorOutput(ComponentOwner):
     ports = Ports({"flange": conserving_port_type()}, {"y": signal_port_type()})
     port_name: str = "y"
     order: int = 0
-    quantity: Literal["position", "velocity", "force", "torque", "angle", "angular_velocity"] = (
-        "position"
-    )
+    quantity: Literal[
+        "position", "velocity", "force", "torque", "angle", "angular_velocity", "effector", "state",
+    ] = "position"
     units: str | None = None
 
 

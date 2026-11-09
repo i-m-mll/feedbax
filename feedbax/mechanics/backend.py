@@ -15,6 +15,7 @@ delegate time integration to either:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from numbers import Integral
 from typing import Protocol, runtime_checkable
 
@@ -117,6 +118,15 @@ class PhysicsState(Module):
     plant: PlantState
     effector: CartesianState
     aux: PyTree
+
+
+@dataclass(frozen=True)
+class PhysicsCapabilities:
+    """Execution and differentiation capabilities of a compiled model."""
+
+    native_step: bool
+    continuous: bool
+    reverse_mode: bool
 
 
 @runtime_checkable

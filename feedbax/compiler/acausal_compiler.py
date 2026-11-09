@@ -21,6 +21,7 @@ from feedbax.contracts.acausal import (
     AcausalGraphSpec,
     acausal_interior_content_hash,
 )
+from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.acausal_interface import (
     ACTUATION_INPUT_TYPE,
     BOUNDARY_PORT_TYPE,
@@ -41,8 +42,8 @@ from feedbax.contracts.domain import (
     report_status_for_diagnostics,
 )
 from feedbax.contracts.graph import ComponentSpec
-from feedbax.compiler.builders import build_component
 from feedbax.mechanics.solver_config import resolve_acausal_solver
+from feedbax.runtime.graph import GraphNode
 
 
 if TYPE_CHECKING:
@@ -64,6 +65,7 @@ _SENSOR_ELEMENT_TYPES = {
 }
 
 Endpoint = tuple[str, str]
+_MULTIBODY_DOMAINS = {"planar_multibody", "spatial_multibody"}
 
 
 @dataclass
@@ -79,8 +81,10 @@ def compile_acausal_graph(
     interior_spec: AcausalGraphSpec,
     node_name: str,
     component_registry: Any,
-) -> AcausalSystem:
-    """Compile an ``AcausalGraphSpec`` into an executable ``AcausalSystem``."""
+    *,
+    artifact_provider: ArtifactBlobProvider | None = None,
+) -> GraphNode:
+    """Compile an authored acausal interior into its executable mechanics."""
 
     if not isinstance(interior_spec, AcausalGraphSpec):
         raise ValueError(
@@ -92,11 +96,12 @@ def compile_acausal_graph(
             f"Acausal compiler expected schema_id {ACAUSAL_GRAPH_SCHEMA_ID!r} "
             f"for node {node_name!r}, got {interior_spec.schema_id!r}"
         )
-    if interior_spec.physical_domain == "planar_multibody":
-        return _compile_planar_multibody_graph(
+    if interior_spec.physical_domain in _MULTIBODY_DOMAINS:
+        return _compile_multibody_graph(
             interior_spec,
             node_name=node_name,
             component_registry=component_registry,
+            artifact_provider=artifact_provider,
         )
 
     solver = _solver_runtime(interior_spec)
@@ -158,7 +163,7 @@ def compile_acausal_authoring_report(
     analysis: StructuralAnalysis | None = None
     flattened = _FlattenedAcausalGraph()
 
-    if interior_spec.physical_domain == "planar_multibody":
+    if interior_spec.physical_domain in _MULTIBODY_DOMAINS:
         try:
             interface = derive_acausal_interface(interior_spec)
             derived_interface = {
@@ -233,7 +238,15 @@ def _diagnose_acausal_spec(
     diagnostics: list[DomainDiagnostic] = []
     if not nested:
         try:
-            _solver_runtime(graph)
+            if graph.physical_domain in _MULTIBODY_DOMAINS and graph.solver.solver_type == "mujoco":
+                from math import isfinite
+
+                if not isfinite(graph.solver.dt) or graph.solver.dt <= 0:
+                    raise ValueError("MuJoCo control period must be finite and positive")
+                if graph.solver.root_finder is not None:
+                    raise ValueError("Native MuJoCo stepping uses the asset's solver options")
+            else:
+                _solver_runtime(graph)
         except ValueError as exc:
             diagnostics.append(
                 DomainDiagnostic(
@@ -269,6 +282,7 @@ def _diagnose_acausal_spec(
         )
     if graph.physical_domain == "planar_multibody":
         diagnostics.extend(_diagnose_planar_multibody_graph(graph, path))
+    if graph.physical_domain in _MULTIBODY_DOMAINS:
         return diagnostics
     if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
         try:
@@ -454,12 +468,14 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
     allowed_sources = {
         "translational": {"force", "prescribed_motion"},
         "rotational": {"torque", "prescribed_motion"},
-        "planar_multibody": {"muscle_excitation_vector"},
+        "planar_multibody": {"muscle_excitation_vector", "actuator_control"},
+        "spatial_multibody": {"actuator_control"},
     }
     allowed_sensors = {
         "translational": {"position", "velocity", "force"},
         "rotational": {"angle", "angular_velocity", "torque"},
-        "planar_multibody": {"effector", "state", "dof", "muscle_length", "muscle_velocity"},
+        "planar_multibody": {"effector", "state", "position", "velocity"},
+        "spatial_multibody": {"effector", "state", "position", "velocity"},
     }
     for node_id, node_spec in graph.nodes.items():
         params = dict(node_spec.params)
@@ -494,12 +510,16 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
     return diagnostics
 
 
-def _compile_planar_multibody_graph(
+def _compile_multibody_graph(
     graph: AcausalGraphSpec,
     *,
     node_name: str,
     component_registry: Any,
-) -> Any:
+    artifact_provider: ArtifactBlobProvider | None,
+) -> GraphNode:
+    from feedbax.mechanics.authored_mechanics import AuthoredMechanics
+    from feedbax.mechanics.authored_model import compile_planar_model, compile_spatial_model
+
     diagnostics = [
         diagnostic
         for diagnostic in _diagnose_acausal_spec(
@@ -511,13 +531,17 @@ def _compile_planar_multibody_graph(
     ]
     if diagnostics:
         messages = "; ".join(diagnostic.message for diagnostic in diagnostics)
-        raise ValueError(f"Planar multibody graph {node_name!r} is not compilable: {messages}")
-    return build_component(
-        node_name,
-        "feedbax.AnalyticalMusculoskeletalPlant",
-        {"dt": graph.solver.dt, "n_steps": 1, "solver_type": graph.solver.solver_type},
-        component_registry=component_registry,
-    )
+        raise ValueError(f"Multibody graph {node_name!r} is not compilable: {messages}")
+    try:
+        descriptor = (
+            compile_planar_model(graph) if graph.physical_domain == "planar_multibody"
+            else compile_spatial_model(graph, artifact_provider)
+        )
+        return AuthoredMechanics(graph, descriptor)
+    except ModuleNotFoundError as exc:
+        if exc.name in {"mujoco", "mujoco.mjx"}:
+            raise ValueError("MuJoCo graph execution requires the feedbax[mjx] extra") from exc
+        raise
 
 
 def _frame_ref(node_id: str, port_name: str) -> str:
@@ -649,7 +673,7 @@ def _diagnose_planar_multibody_graph(
             )
             continue
         missing_frames = [
-            str(point.get("frame", ""))
+            str(point.get("frame", "")) if isinstance(point, dict) else repr(point)
             for point in path_points
             if not isinstance(point, dict) or str(point.get("frame", "")) not in valid_frames
         ]

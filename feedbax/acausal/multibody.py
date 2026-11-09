@@ -74,7 +74,7 @@ class RevoluteJoint(AcausalElement):
         limit_max: float | None = None,
         stiffness: NonNegativeFloat = 0.0,
         frame_angle: float = 0.0,
-        frame_offset: tuple[float, float] = (0.0, 0.0),
+        frame_offset: list[float] | None = None,
     ):
         super().__init__(name=name)
         self.ports["parent"] = _frame_port("parent")
@@ -128,6 +128,13 @@ class MusclePath(AcausalElement):
         moment_arm: list[float] | None = None,
         reference_length: float = 0.2,
         max_isometric_force: float = 1.0,
+        law: str = "feedbax.RigidTendonHillMuscle",
+        state_size: int = 1,
+        optimal_muscle_length: float = 0.1,
+        tendon_slack_length: float = 0.1,
+        tau_act: float = 0.01,
+        tau_deact: float = 0.04,
+        max_contraction_velocity: float | None = None,
     ):
         super().__init__(name=name)
         self.signal_inputs = ("activation",)

@@ -67,7 +67,7 @@ export interface RootFinderSpec {
 }
 
 export interface SolverConfigSpec {
-  solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5";
+  solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5" | "mujoco";
   dt: number;
   root_finder?: RootFinderSpec | null;
 }
@@ -2030,12 +2030,20 @@ export const acausalReportDefaults = {
     "input_ports": [],
     "output_ports": []
   },
+  "ContentObjectRef": {
+    "schema_id": "feedbax.spec.content_object_ref",
+    "schema_version": "feedbax.spec.content_object_ref.v1"
+  },
   "GraphMetadata": {
     "description": null,
     "version": "1.0.0",
     "save_revision": 0,
     "author": null,
     "tags": null
+  },
+  "MuJoCoAssetBinding": {
+    "sites": {},
+    "paths": {}
   },
   "RootFinderSpec": {
     "method": "newton",
@@ -2045,6 +2053,9 @@ export const acausalReportDefaults = {
   },
   "SolverConfigSpec": {
     "root_finder": null
+  },
+  "SpatialMusclePath": {
+    "parameters": {}
   }
 };
 
@@ -2246,7 +2257,7 @@ export const RootFinderSpecSchema: z.ZodType<RootFinderSpec> = z.lazy(() =>
 export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
   z
     .object({
-      "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5")]),
+      "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5"), z.literal("mujoco")]),
       "dt": z.number().finite(),
       "root_finder": RootFinderSpecSchema.nullable().optional(),
     })

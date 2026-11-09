@@ -1006,9 +1006,12 @@ def generate() -> str:
         for model in (
             AcausalGraphSpec,
             ComponentSpec,
+            ContentObjectRef,
             GraphMetadata,
+            MuJoCoAssetBinding,
             RootFinderSpec,
             SolverConfigSpec,
+            SpatialMusclePath,
         )
     }
     event_model_names = [model.__name__ for model in EVENT_MODELS]

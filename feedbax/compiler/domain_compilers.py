@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
-
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import GraphNode
 
 
-DomainCompiler = Callable[[Any, str, Any], Component]
+DomainCompiler = Callable[..., GraphNode]
 
 
 _COMPILERS: dict[str, DomainCompiler] = {}
