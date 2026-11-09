@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -16,12 +17,17 @@ from feedbax._atomic import write_bytes_atomic
 from feedbax._vendor.jax_cookbook._io import json_dump, load
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import derive_acausal_interface, is_acausal_type
+from feedbax.mechanics.articulated_muscles import ArticulatedMusclePlant
 from feedbax.mechanics.backend import DiffraxBackend, MJXBackend, PhysicsCapabilities
 from feedbax.mechanics.compiled_model import CompiledPhysicalModel, outside_wraps_only
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.mjx_skeleton import AppliedWrench, MJXSkeleton
 from feedbax.mechanics.solver_config import resolve_acausal_solver
+
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 
 class AuthoredMechanics(Mechanics):
@@ -35,7 +41,10 @@ class AuthoredMechanics(Mechanics):
     _solver_name: str = eqx.field(static=True)
     _wraps_allow_ad: bool = eqx.field(static=True)
 
-    def __init__(self, graph: AcausalGraphSpec, descriptor: CompiledPhysicalModel):
+    def __init__(
+        self, graph: AcausalGraphSpec, descriptor: CompiledPhysicalModel, *,
+        component_registry: ComponentRegistry,
+    ):
         from mujoco import mjtDyn, mjtIntegrator
 
         interface = derive_acausal_interface(graph)
@@ -93,7 +102,10 @@ class AuthoredMechanics(Mechanics):
         elif source_kind == "muscle_excitation_vector" and isinstance(backend, DiffraxBackend):
             from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 
-            plant = AnalyticalMusculoskeletalPlant.from_authored_planar_model(skeleton)
+            if any(path.parameters.get("moment_arm") is not None for path in descriptor.paths):
+                plant = AnalyticalMusculoskeletalPlant.from_authored_planar_model(skeleton)
+            else:
+                plant = ArticulatedMusclePlant(skeleton, component_registry)
         else:
             raise ValueError(f"Unsupported MuJoCo control {source_kind!r} for {self._solver_name!r}")
 
@@ -187,7 +199,7 @@ class AuthoredMechanics(Mechanics):
     def _state_header(self) -> dict:
         import mujoco
 
-        return {
+        header = {
             "schema": "feedbax.mujoco.continuation.v1",
             "model": self.descriptor.identity,
             "structure": self.descriptor.structural_signature,
@@ -195,6 +207,9 @@ class AuthoredMechanics(Mechanics):
             "solver": self._solver_name,
             "periods": [self.backend.control_dt, self.backend.sub_dt],
         }
+        if isinstance(self.plant, ArticulatedMusclePlant):
+            header["muscle_laws"] = [list(identity) for identity in self.plant.law_identities]
+        return header
 
     def save_state(self, path: Path, state: State) -> None:
         """Save this model's physical and integration state with its binding."""
@@ -214,8 +229,9 @@ class AuthoredMechanics(Mechanics):
 
     def transfer_state(self, source: AuthoredMechanics, source_state: State, state: State) -> State:
         """Transfer common physical state and initialize the destination solver buffers."""
-        if source.descriptor.identity != self.descriptor.identity:
-            raise ValueError("MuJoCo state transfer requires the same physical model")
+        if (source.descriptor.identity != self.descriptor.identity
+                or source._state_header().get("muscle_laws") != self._state_header().get("muscle_laws")):
+            raise ValueError("MuJoCo state transfer requires the same physical model and muscle laws")
         old = source.state_view(source_state)
         skeleton = self.plant.skeleton.reset_continuation(old.plant.skeleton)
         plant = replace(old.plant, skeleton=skeleton)

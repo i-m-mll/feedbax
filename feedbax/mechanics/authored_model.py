@@ -60,17 +60,20 @@ def _add_site(body: MjsBody, name: str, position: Sequence[float]) -> None:
 
 def _add_muscle_path(
     spec: MjSpec, name: str, sites: tuple[str, ...], law: str, state_size: int,
-    parameters: Mapping[str, object], *, wraps: tuple[MuscleWrap, ...] = (),
-    external_tendon_actuation: bool = True,
+    parameters: Mapping[str, object], *, external_tendon_actuation: bool = True,
+    law_revision: int | None = None, wraps: tuple[MuscleWrap, ...] = (),
 ) -> MusclePathBinding:
     if len(sites) < 2:
         raise ValueError(f"MusclePath {name!r} requires at least two sites")
     if not isinstance(law, str) or not law or type(state_size) is not int or state_size < 0:
         raise ValueError(f"MusclePath {name!r} requires a law name and nonnegative state size")
+    if law_revision is not None and (type(law_revision) is not int or law_revision < 1):
+        raise ValueError(f"MusclePath {name!r} requires a positive law revision")
     import mujoco
 
     path = MusclePathBinding(
         name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
+        law_revision=law_revision,
     )
     if spec.actuator(path.actuator_name) is not None:
         raise ValueError(f"MusclePath {name!r} duplicates actuator {path.actuator_name!r}")
@@ -265,11 +268,23 @@ def compile_planar_model(
         sites = tuple(f"{name}/point{i}" for i in range(len(points)))
         for site, point in zip(sites, points, strict=True):
             attach(site, point)
+        law = params.get("law", "feedbax.RigidTendonHillMuscle")
+        moment_arm = params.get("moment_arm")
+        law_parameters = params.get("law_parameters")
+        if moment_arm is not None and law_parameters is not None:
+            raise ValueError(f"MusclePath {name!r} mixes a constant moment arm and nested law parameters")
+        if law_parameters is None:
+            law_parameters = (
+                {key: value for key, value in params.items()
+                 if key not in {"path_points", "law", "state_size", "law_revision",
+                                "law_parameters", "moment_arm", "wraps"}}
+                if law == "feedbax.RigidTendonHillMuscle" else {}
+            )
+        if moment_arm is not None:
+            law_parameters = {**law_parameters, "moment_arm": moment_arm}
         paths.append(_add_muscle_path(
-            spec, name, sites,
-            params.get("law", "feedbax.RigidTendonHillMuscle"), params.get("state_size", 1),
-            {key: value for key, value in params.items()
-             if key not in {"path_points", "law", "state_size", "wraps"}},
+            spec, name, sites, law, params.get("state_size", 1), law_parameters,
+            law_revision=params.get("law_revision"),
             wraps=tuple(MuscleWrap.model_validate(wrap) for wrap in params.get("wraps", ())),
             external_tendon_actuation=external_tendon_actuation,
         ))
@@ -327,7 +342,8 @@ def compile_spatial_model(
         if missing:
             raise ValueError(f"Overlay path {name!r} references unknown sites {missing!r}")
         paths.append(_add_muscle_path(
-            spec, name, path.sites, path.law, path.state_size, path.parameters, wraps=path.wraps,
+            spec, name, path.sites, path.law, path.state_size, path.parameters,
+            law_revision=path.law_revision, wraps=path.wraps,
         ))
     model = spec.compile()
     return describe_model(

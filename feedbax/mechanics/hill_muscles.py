@@ -32,6 +32,7 @@ import optimistix as optx
 
 from feedbax._ode import ode_step
 from feedbax.mechanics.dae import DAEComponent, DAEParams
+from feedbax.mechanics.muscle_law import MuscleStage
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
     ECCENTRIC_VELOCITY_LIMIT_FRACTION,
@@ -182,6 +183,28 @@ class ForceVelocityCurve(Module):
             required > 0.0, self.eccentric_force_max, jnp.where(required < 0.0, 0.0, 1.0),
         )
         return self.inverse(jnp.where(has_capacity, multiplier, no_capacity))
+
+
+def bounded_rigid_fiber_force(
+    activation: Array,
+    fiber_length: Array,
+    fiber_velocity: Array,
+    *,
+    optimal_length: Array | float,
+    maximum_speed: Array | float,
+    force_scale: Array | float,
+    force_length: ForceLengthCurve,
+    force_velocity: ForceVelocityCurve,
+    passive_force_length: PassiveForceLengthCurve,
+) -> Array:
+    """Evaluate the bounded zero-pennation Hill fiber force in newtons."""
+    length = jnp.clip(fiber_length, 0.3 * optimal_length, 2.0 * optimal_length)
+    normalized_length = length / optimal_length
+    velocity = jnp.clip(
+        fiber_velocity, -maximum_speed, maximum_speed * ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+    )
+    active = activation * force_length(normalized_length) * force_velocity(velocity / maximum_speed)
+    return jnp.maximum(force_scale * (active + passive_force_length(normalized_length)), 0.0)
 
 
 class TendonForceLengthCurve(Module):
@@ -662,13 +685,9 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         """
         excitation, mt_length, mt_velocity = input
 
-        # Activation dynamics
-        tau = jnp.where(
-            excitation > state.activation,
-            self.muscle_params.tau_activation,
-            self.muscle_params.tau_deactivation,
-        )
-        d_activation = (excitation - state.activation) / tau
+        d_activation = ActivationDynamics(
+            self.muscle_params.tau_activation, self.muscle_params.tau_deactivation,
+        )(excitation, state.activation)
 
         # Tendon length and force
         tendon_length = self.compute_tendon_length(state.fiber_length, mt_length)
@@ -837,3 +856,40 @@ class ActivationDynamics(Module):
             self.tau_deactivation,
         )
         return (excitation - activation) / tau
+
+
+
+class BoundedRigidTendonHillLaw(Module):
+    """Zero-pennation rigid tendon with one integrated activation per path."""
+
+    params: HillMuscleParams
+    initial_activation: float = 0.0
+    force_length: ForceLengthCurve = field(default_factory=ForceLengthCurve)
+    passive_force_length: PassiveForceLengthCurve = field(default_factory=PassiveForceLengthCurve)
+    force_velocity: ForceVelocityCurve = field(default_factory=ForceVelocityCurve)
+
+    @property
+    def state_size(self) -> int:
+        return 1
+
+    def init_state(self, length: Array, velocity: Array) -> Array:
+        return jnp.full((1,), self.initial_activation, dtype=length.dtype)
+
+    def evaluate(
+        self, state: Array, excitation: Array, length: Array, velocity: Array,
+    ) -> MuscleStage:
+        params = self.params
+        activation = state[0]
+        derivative = ActivationDynamics(params.tau_activation, params.tau_deactivation)(
+            excitation, activation,
+        )
+        tension = bounded_rigid_fiber_force(
+            activation, length - params.tendon_slack_length, velocity,
+            optimal_length=params.optimal_fiber_length,
+            maximum_speed=params.vmax * params.optimal_fiber_length,
+            force_scale=params.max_isometric_force,
+            force_length=self.force_length,
+            force_velocity=self.force_velocity,
+            passive_force_length=self.passive_force_length,
+        )
+        return MuscleStage(jnp.expand_dims(derivative, 0), tension)

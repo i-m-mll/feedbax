@@ -146,15 +146,18 @@ def derive_acausal_interface(graph: AcausalGraphSpec) -> DerivedAcausalInterface
         port: actuation_source_payload(graph.nodes[node_id])
         for port, node_id in adapter_inputs.items()
     }
+    muscles: tuple[str, ...] = ()
     if graph.physical_domain == "planar_multibody":
         muscles = tuple(sorted(
             name for name, node in graph.nodes.items() if is_acausal_type(node.type, "MusclePath")
         ))
-        for port, node_id in adapter_inputs.items():
-            if graph.nodes[node_id].params.get("source_kind") == "muscle_excitation_vector":
-                if not muscles:
-                    raise AcausalInterfaceError("Muscle excitation requires authored muscle paths")
-                input_payloads[port] = SourcePayload(muscles, vector=True)
+    elif graph.mujoco_asset is not None:
+        muscles = tuple(sorted(graph.mujoco_asset.paths))
+    for port, node_id in adapter_inputs.items():
+        if graph.nodes[node_id].params.get("source_kind") == "muscle_excitation_vector":
+            if not muscles:
+                raise AcausalInterfaceError("Muscle excitation requires authored muscle paths")
+            input_payloads[port] = SourcePayload(muscles, vector=True)
     for node_id, node in graph.nodes.items():
         if node.type in SIGNAL_INPUT_PAYLOADS:
             if node_id in input_payloads:

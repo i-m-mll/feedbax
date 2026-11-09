@@ -27,6 +27,7 @@ from equinox import field
 from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.mechanics.hill_muscles import ActivationDynamics
 from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ComponentOptions
@@ -246,12 +247,9 @@ class RigidTendonHillMuscleThelen(Component):
         mt_velocity = signals["musculotendon_velocity"]
 
         # --- Activation dynamics (Euler step) ---
-        tau = jnp.where(
-            excitation > activation,
-            self.tau_activation,
-            self.tau_deactivation,
+        da_dt = ActivationDynamics(self.tau_activation, self.tau_deactivation)(
+            excitation, activation,
         )
-        da_dt = (excitation - activation) / tau
         new_activation = activation + da_dt * self.dt
         new_activation = jnp.clip(new_activation, self.min_activation, 1.0)
 

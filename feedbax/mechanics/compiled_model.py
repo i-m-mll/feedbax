@@ -34,6 +34,7 @@ class MusclePathBinding:
     parameters: Mapping[str, object]
     tendon_id: int = -1
     actuator_id: int | None = None
+    law_revision: int | None = None
 
     @property
     def actuator_name(self) -> str:
@@ -152,7 +153,12 @@ def describe_model(
                 "actuator_biastype", "actuator_actadr", "actuator_actnum",
             )
         },
-        "paths": [[path.name, list(path.sites), path.law, path.state_size] for path in paths],
+        "paths": [
+            [path.name, list(path.sites), path.law, path.state_size]
+            if path.law_revision is None else
+            [path.name, list(path.sites), path.law, path.state_size, path.law_revision]
+            for path in paths
+        ],
     }
     wrap_geoms = np.isin(model.wrap_type, (
         mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER,
