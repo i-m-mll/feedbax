@@ -160,12 +160,13 @@ class ActivationTensionLaw(eqx.Module):
     def activation_derivative(self, activation: Array, excitation: Array) -> Array:
         return ActivationDynamics(self.tau_activation, self.tau_deactivation)(excitation, activation)
 
-    def tension(self, activation: Array) -> Array:
-        return self.max_isometric_force * jnp.clip(activation, self.min_activation, 1.0)
+    def tension(self, bounded_activation: Array) -> Array:
+        return self.max_isometric_force * bounded_activation
 
     def evaluate(
         self, state: Array, excitation: Array, length: Array, velocity: Array,
     ) -> MuscleStage:
         activation = state[0]
         derivative = self.activation_derivative(activation, excitation)
-        return MuscleStage(jnp.expand_dims(derivative, 0), self.tension(activation))
+        bounded = jnp.clip(activation, self.min_activation, 1.0)
+        return MuscleStage(jnp.expand_dims(derivative, 0), self.tension(bounded))
