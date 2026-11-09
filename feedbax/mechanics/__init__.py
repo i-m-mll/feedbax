@@ -19,6 +19,7 @@ from .hill_muscles import (
     HillMuscleState,
     RigidTendonHillMuscle,
     CompliantTendonHillMuscle,
+    CompliantTendonHillLaw,
     ForceLengthCurve,
     PassiveForceLengthCurve,
     ForceVelocityCurve,

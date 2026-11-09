@@ -653,7 +653,11 @@ class TestCompliantTendonMusculoskeletalArm:
         )
         state = init_state_from_component(arm)
         dae_state = state.get(arm.state_index)
-        dae_state = eqx.tree_at(lambda s: s.system.activations, dae_state, activation)
+        dae_state = eqx.tree_at(
+            lambda s: (s.system.activations, s.system.fiber_lengths),
+            dae_state,
+            (activation, jnp.full_like(activation, params.optimal_fiber_length)),
+        )
         state = state.set(arm.state_index, dae_state)
 
         outputs, stepped_state = arm({"excitations": activation}, state, key=key)

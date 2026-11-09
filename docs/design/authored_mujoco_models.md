@@ -20,6 +20,10 @@ Set law parameters in `law_parameters` on a planar `MusclePath` or in `parameter
 
 The continuous solver evaluates paths, muscle state derivatives and tension together at each stage. A native MuJoCo step accepts raw authored actuator controls. Geometry-driven excitation requires the continuous solver.
 
+Use law `feedbax.CompliantTendonHillMuscle` with state size 2 for activation and fiber length. It accepts the Hill force, length and activation parameters, plus `pennation_angle` in radians at optimal fiber length. The tendon force comes from its extension beyond slack length. Fiber speed balances projected fiber force with tendon tension within the force–velocity curve's attainable range. Beyond that range the law limits fiber speed and continues to transmit the spring tension.
+
+The initial fiber length balances isometric force at the configured activation and path length. Resetting generalized position recomputes that equilibrium using the current activation. Use `reset_muscle_equilibrium` after manually editing a starting activation. Same-runtime resume restores saved fiber lengths and activations exactly. Choose a physics step that resolves the tendon stiffness for the authored parameters and the intended trajectory. A fiber length at or below pennation thickness or a spring force outside the numerical range of the selected precision fails explicitly.
+
 ## Execution
 
 `compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Authored muscle paths expose geometry for coupling.
