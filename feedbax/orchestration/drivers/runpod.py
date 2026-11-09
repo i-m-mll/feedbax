@@ -21,8 +21,6 @@ import tempfile
 import threading
 import time
 import tomllib
-import urllib.error
-import urllib.request
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -30,6 +28,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+
+import httpx
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.base import sha256_file
@@ -373,7 +373,7 @@ class RunPodTransport(Protocol):
         """Run a ``runpodctl`` command."""
 
     def image_exists(self, image: str) -> bool:
-        """Return whether a declared container image tag exists."""
+        """Return whether the exact declared container manifest exists."""
 
     def ssh(self, command: str) -> CommandResult:
         """Run one command over SSH on the pod."""
@@ -400,6 +400,7 @@ class SubprocessRunPodTransport:
     ssh_user: str = "root"
     runpodctl_executable: str = "runpodctl"
     rsync_executable: str = "rsync"
+    http_transport: httpx.BaseTransport | None = field(default=None, repr=False)
 
     def runpodctl(
         self,
@@ -412,16 +413,39 @@ class SubprocessRunPodTransport:
         )
 
     def image_exists(self, image: str) -> bool:
-        tagged_image = image.split("@", 1)[0]
-        repository, separator, tag = tagged_image.rpartition(":")
-        if not separator or not repository or not tag or "/" not in repository:
+        match = re.fullmatch(
+            r"(?:docker\.io/)?([a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*)"
+            r"(?::[A-Za-z0-9_.-]+)?@(sha256:[0-9a-f]{64})",
+            image,
+        )
+        if not match:
             return False
-        namespace, name = repository.split("/", 1)
-        url = f"https://hub.docker.com/v2/repositories/{namespace}/{name}/tags/{tag}"
+        repository, digest = match.groups()
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                return 200 <= response.status < 300
-        except (urllib.error.URLError, TimeoutError):
+            with httpx.Client(timeout=10, trust_env=False, transport=self.http_transport) as client:
+                token = client.get(
+                    "https://auth.docker.io/token",
+                    params={"service": "registry.docker.io", "scope": f"repository:{repository}:pull"},
+                ).raise_for_status().json()
+                bearer = token.get("token") if isinstance(token, dict) else None
+                if not isinstance(bearer, str) or not bearer:
+                    return False
+                manifest = client.head(
+                    f"https://registry-1.docker.io/v2/{repository}/manifests/{digest}",
+                    headers={
+                        "Authorization": f"Bearer {bearer}",
+                        "Accept": (
+                            "application/vnd.oci.image.manifest.v1+json, "
+                            "application/vnd.oci.image.index.v1+json, "
+                            "application/vnd.docker.distribution.manifest.v2+json, "
+                            "application/vnd.docker.distribution.manifest.list.v2+json"
+                        ),
+                    },
+                )
+                return manifest.status_code == 200 and manifest.headers.get(
+                    "Docker-Content-Digest"
+                ) == digest
+        except (httpx.HTTPError, ValueError):
             return False
 
     def ssh(self, command: str) -> CommandResult:

@@ -17,6 +17,7 @@ import shlex
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
@@ -1323,6 +1324,32 @@ def test_projects_canonical_and_raw_runpod_billing_timestamp(
 
     assert facts["billing_started_at"] == canonical
     assert facts["billing_started_at_raw"] == raw_timestamp
+
+
+@pytest.mark.parametrize("digest_matches", [True, False])
+def test_image_probe_verifies_the_immutable_manifest(digest_matches: bool) -> None:
+    digest = "sha256:" + "a" * 64
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "auth.docker.io":
+            assert request.method == "GET"
+            assert request.url.params["scope"] == "repository:runpod/base:pull"
+            return httpx.Response(200, json={"token": "public-read-token"})
+        assert request.method == "HEAD"
+        assert request.url.host == "registry-1.docker.io"
+        assert request.url.path == f"/v2/runpod/base/manifests/{digest}"
+        assert request.headers["Authorization"] == "Bearer public-read-token"
+        return httpx.Response(
+            200, headers={"Docker-Content-Digest": digest if digest_matches else "other"}
+        )
+
+    transport = SubprocessRunPodTransport(http_transport=httpx.MockTransport(handle))
+    assert not transport.image_exists("runpod/base:latest")
+    assert not requests
+    assert transport.image_exists(f"runpod/base@{digest}") is digest_matches
+    assert len(requests) == 2
 
 
 def test_provision_projection_does_not_invent_declared_image() -> None:
