@@ -59,6 +59,10 @@ SPATIAL_XML = """
     <site name="guide" pos=".17 -.09 .07"/>
     <site name="antagonist" pos="-.13 .19 -.02"/>
     <site name="return_guide" pos=".02 .13 -.015"/>
+    <body name="slider">
+      <joint name="slide" type="slide" axis="1 0 0"/>
+      <inertial pos="0 0 0" mass=".5" diaginertia=".03 .04 .05"/>
+    </body>
     <body name="arm">
       <joint name="pivot" type="ball" damping=".05"/>
       <inertial pos="0 0 0" mass="1" diaginertia=".11 .14 .19"/>
@@ -380,7 +384,9 @@ def qualify(name, factory, poses, excitation, provider, path, *, warp, device):
         final = node.state_view(result[1]).plant
         np.testing.assert_allclose(final.skeleton.time, HORIZON, rtol=0, atol=1e-7)
         if node.descriptor.dimension == 3:
-            np.testing.assert_allclose(np.linalg.norm(final.skeleton.qpos, axis=-1), 1, atol=5e-7)
+            pivot = next(joint for joint in node.descriptor.joints if joint.name == "pivot")
+            quaternion = final.skeleton.qpos[:, pivot.qpos]
+            np.testing.assert_allclose(np.linalg.norm(quaternion, axis=-1), 1, atol=5e-7)
             assert np.all(
                 np.abs(
                     final.muscles[0][:, 1] - node.state_view(initial).plant.muscles[0][:, 1],
@@ -432,7 +438,10 @@ def main():
                 device=args.device,
             )
         if args.fixture in ("all", "spatial"):
-            poses = [[math.cos(angle / 2), 0, 0, math.sin(angle / 2)] for angle in (0.18, -0.12)]
+            poses = [
+                [0.03, math.cos(angle / 2), 0, 0, math.sin(angle / 2)]
+                for angle in (0.18, -0.12)
+            ]
             qualify(
                 "spatial mixed",
                 spatial_interior,
