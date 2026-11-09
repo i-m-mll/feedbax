@@ -537,6 +537,7 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             raise ValueError("Constant-moment-arm excitation requires authored planar paths")
         for path in descriptor.paths:
             if (path.law != "feedbax.RigidTendonHillMuscle" or path.state_size != 1
+                    or path.law_revision not in (None, 1)
                     or path.parameters.get("moment_arm") is None):
                 raise ValueError(
                     f"Muscle path {path.name!r} requires a supported law with explicit moment arms"
