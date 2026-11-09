@@ -23,6 +23,14 @@ MANIFEST = "Resources/release.json"
 _MACH_O_MAGIC = {
     bytes.fromhex(value) for value in ("cffaedfe", "feedfacf", "cafebabe", "cafebabf")
 }
+_BUILD_RPATHS = {
+    "scipy": frozenset({
+        "/opt/homebrew/Cellar/gcc@13/13.4.0/lib/gcc/13",
+        "/opt/homebrew/Cellar/gcc@13/13.4.0/lib/gcc/13/gcc",
+        "/opt/homebrew/Cellar/gcc@13/13.4.0/lib/gcc/13/gcc/aarch64-apple-darwin23/13",
+    }),
+    "sklearn": frozenset({"/Users/runner/miniconda3/envs/build/lib"}),
+}
 
 
 def sha256(path: Path) -> str:
@@ -88,7 +96,20 @@ def _macho_files(contents: Path) -> list[Path]:
     return result
 
 
-def native_inventory(contents: Path, minimum: str) -> dict[str, dict[str, Any]]:
+def _loader_references(block: str) -> set[tuple[str, str]]:
+    references = set()
+    for load_command in re.split(r"^Load command \d+\n", block, flags=re.M):
+        operation = re.search(r"^\s*cmd (LC_\w+)$", load_command, re.M)
+        reference = re.search(r"^\s*(?:name|path) (.+?) \(offset", load_command, re.M)
+        if operation is None or reference is None:
+            continue
+        kind = operation[1]
+        if kind == "LC_RPATH" or (kind.endswith("_DYLIB") and kind != "LC_ID_DYLIB"):
+            references.add((kind, reference[1]))
+    return references
+
+
+def relocate_and_inventory_native(contents: Path, minimum: str) -> dict[str, dict[str, Any]]:
     """Record arm64 deployment targets and reject external developer dylib paths."""
     files = _macho_files(contents)
     records = {}
@@ -113,24 +134,38 @@ def native_inventory(contents: Path, minimum: str) -> dict[str, dict[str, Any]]:
                 return tuple(int(part) for part in (value + ".0.0").split(".")[:3])
             if version_parts(versions[0]) > version_parts(minimum):
                 raise ValueError(f"{path} requires macOS {versions[0]}, above declared {minimum}")
-            references = set()
-            for load_command in re.split(r"^Load command \d+\n", block, flags=re.M):
-                operation = re.search(r"^\s*cmd (LC_\w+)$", load_command, re.M)
-                reference = re.search(r"^\s*(?:name|path) (.+?) \(offset", load_command, re.M)
-                if operation is None or reference is None:
-                    continue
-                kind = operation[1]
-                if kind == "LC_RPATH" or (kind.endswith("_DYLIB") and kind != "LC_ID_DYLIB"):
-                    references.add(reference[1])
-            for reference in references:
+            relative = path.relative_to(contents)
+            parts = relative.parts
+            in_site_packages = (
+                len(parts) > 5 and parts[:3] == ("Resources", "python", "lib")
+                and parts[4] == "site-packages"
+            )
+            package = parts[5] if in_site_packages else ""
+            references = _loader_references(block)
+            removed = sorted(
+                reference for kind, reference in references
+                if kind == "LC_RPATH" and reference in _BUILD_RPATHS.get(package, ())
+            )
+            if removed:
+                command(
+                    "xcrun", "install_name_tool",
+                    *(argument for reference in removed for argument in ("-delete_rpath", reference)),
+                    path,
+                )
+                actual = _loader_references(command("xcrun", "otool", "-arch", "arm64", "-l", path))
+                if actual != references - {("LC_RPATH", reference) for reference in removed}:
+                    raise ValueError(f"unexpected loader changes while relocating {relative}")
+                references = actual
+            for _, reference in references:
                 if not reference.startswith((
                     "/System/Library/", "/usr/lib/", "@loader_path/", "@executable_path/", "@rpath/"
                 )) and reference not in ("@loader_path", "@executable_path"):
                     raise ValueError(f"{path} loads a library outside the app or OS: {reference}")
-            records[path.relative_to(contents).as_posix()] = {
+            records[relative.as_posix()] = {
                 "architecture": "arm64",
                 "minimum_macos": versions[0],
-                "load_references": sorted(references),
+                "load_references": sorted({reference for _, reference in references}),
+                **({"removed_build_rpaths": removed} if removed else {}),
             }
     if LAUNCHER not in records:
         raise ValueError("the Tauri launcher is not a native arm64 executable")
@@ -162,7 +197,7 @@ def seal(app: Path, manifest: dict[str, Any], signing_identity: str) -> dict[str
     if (contents / MANIFEST).exists() or (contents / "_CodeSignature").exists():
         raise ValueError("sealing requires a new, unsigned Tauri bundle")
     command("xattr", "-cr", app)
-    native = native_inventory(contents, manifest["platform"]["minimum_macos"])
+    native = relocate_and_inventory_native(contents, manifest["platform"]["minimum_macos"])
     for relative in native:
         if relative != LAUNCHER:
             command("codesign", "--force", "--sign", identity, "--timestamp=none", contents / relative)
