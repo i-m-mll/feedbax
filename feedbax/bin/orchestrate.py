@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -809,11 +810,13 @@ def _driver_construction_context(
     training_method_registry: TrainingProgramRegistry,
     load_credentials: bool = True,
 ) -> DriverConstructionContext:
-    api_key = (
-        load_runpod_api_key()
-        if load_credentials and bundle.deployment_policy.driver == "runpod"
-        else None
-    )
+    policy = bundle.deployment_policy
+    api_key = None
+    if load_credentials and policy.driver == "runpod":
+        if policy.resources.runpod_cuda is None:
+            api_key = load_runpod_api_key()
+        elif policy.cloud_authorized and (not policy.review_required or policy.review_authorized):
+            api_key = os.environ.get("RUNPOD_API_KEY")
     return DriverConstructionContext(
         configuration={
             "bundle": bundle,
