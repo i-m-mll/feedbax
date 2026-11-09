@@ -23,7 +23,7 @@ A constraint-free model has no compiled constraint rows on the MJX-JAX execution
 
 ## Reproduction
 
-On macOS arm64, run `uv run --no-sync python scripts/qualify_mujoco_baseline.py` after the locked install. The diagnostic enables JAX CPU and float64, uses a central-difference step of `1e-5`, and compares against the independently compiled native MuJoCo implementation. The same reproductions were run with the prior tested lock and the 4.0.0 candidate. The diagnostic asserts the observed defects to detect a change in provider behavior when reevaluating the baseline.
+On macOS arm64, run `uv run --no-sync python scripts/qualify_mujoco_baseline.py` after the locked install. The diagnostic enables JAX CPU and float64, uses a central-difference step of `1e-5`, and compares against the independently compiled native MuJoCo implementation. The constrained solve and tendon wrap were reproduced on the prior tested lock and the 4.0.0 candidate. The diagnostic asserts the observed defects to detect a change in provider behavior when reevaluating the baseline.
 
 - At a 2 ms step and 0.3 N·m, the unconstrained hinge advances by `4.8e-6` rad to `0.0024` rad/s. MJX reverse mode and native finite differences both give approximately `1.6e-5` rad per N·m.
 - At 0.3 rad, the outside-sidesite tendon length is approximately `0.564100853441` m and its derivative is `0.0155392466` m/rad. The inside-sidesite length is approximately `0.547491292943` m, with native finite difference `-0.0300132564` m/rad and NaN from MJX reverse mode.

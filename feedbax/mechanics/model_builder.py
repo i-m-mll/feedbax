@@ -116,8 +116,7 @@ def build_model(
             | int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
         )
 
-    if hasattr(spec, "compiler") and hasattr(spec.compiler, "angle"):
-        spec.compiler.angle = "radian"
+    spec.compiler.degree = False
 
     world = spec.worldbody
 
@@ -152,8 +151,8 @@ def build_model(
         _set_if_attr(joint, "pos", [0.0, 0.0, 0.0])
         _set_if_attr(joint, "limited", True)
         _set_if_attr(joint, "range", [-np.pi, np.pi])
-        _set_if_attr(joint, "damping", float(preset.joint_damping[i]))
-        _set_if_attr(joint, "stiffness", float(preset.joint_stiffness[i]))
+        joint.damping = [float(preset.joint_damping[i]), 0.0, 0.0]
+        joint.stiffness = [float(preset.joint_stiffness[i]), 0.0, 0.0]
         joint_names.append(f"joint{i}")
         joint_objects.append(joint)
 
@@ -225,7 +224,7 @@ def to_mjx(model):
     """
     from mujoco import mjx
 
-    return mjx.put_model(model)
+    return mjx.put_model(model, impl="jax")
 
 
 def get_site_id(model, name: str) -> int:
