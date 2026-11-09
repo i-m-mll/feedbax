@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Mapping
+
+import numpy as np
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 
@@ -30,6 +32,13 @@ class MusclePathBinding:
     law: str
     state_size: int
     parameters: Mapping[str, object]
+    tendon_id: int = -1
+    actuator_id: int | None = None
+    law_revision: int | None = None
+
+    @property
+    def actuator_name(self) -> str:
+        return f"feedbax/path/{self.name}"
 
 
 @dataclass(frozen=True, eq=False)
@@ -83,6 +92,18 @@ def describe_model(
         raise ValueError(f"Unknown MuJoCo effector site {effector_site!r}")
     tendon_ids = indices(mujoco.mjtObj.mjOBJ_TENDON, model.ntendon)
     actuator_ids = indices(mujoco.mjtObj.mjOBJ_ACTUATOR, model.nu)
+    paths = tuple(
+        replace(
+            path, tendon_id=tendon_ids[path.name], actuator_id=actuator_ids.get(path.actuator_name),
+        )
+        for path in paths
+    )
+    for path in paths:
+        sites = [site_ids[site] for site in path.sites]
+        for a, b in zip(sites, sites[1:]):
+            if (model.site_bodyid[a] == model.site_bodyid[b]
+                    and np.array_equal(model.site_pos[a], model.site_pos[b])):
+                raise ValueError(f"MusclePath {path.name!r} contains a zero-length fixed segment")
     joint_names = {i: name for name, i in joint_ids.items()}
     joints = []
     for i, (joint_type, qpos, qvel) in enumerate(
@@ -111,7 +132,12 @@ def describe_model(
                 "actuator_biastype", "actuator_actadr", "actuator_actnum",
             )
         },
-        "paths": [[path.name, list(path.sites), path.law, path.state_size] for path in paths],
+        "paths": [
+            [path.name, list(path.sites), path.law, path.state_size]
+            if path.law_revision is None else
+            [path.name, list(path.sites), path.law, path.state_size, path.law_revision]
+            for path in paths
+        ],
     }
     signature = sha256(canonical_json_v2_bytes(structure)).hexdigest()
     actuator_state = tuple(
