@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import equinox as eqx
 import jax
@@ -16,6 +16,8 @@ from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkelet
 from feedbax.runtime.state import CartesianState, SpatialCartesianState, StateBounds
 
 if TYPE_CHECKING:
+    from mujoco.mjx import Data
+
     from feedbax.mechanics.compiled_model import CompiledPhysicalModel
 
 
@@ -31,6 +33,14 @@ class AppliedWrench(eqx.Module):
     moment: Array
     point: Array
     frame: Literal["world", "body"] = field(static=True)
+
+
+class MusclePathKinematics(NamedTuple):
+    """Lengths (m), lengthening speeds (m/s), and d(length)/d(generalized displacement)."""
+
+    length: Array
+    velocity: Array
+    jacobian: Array
 
 
 class _BodyWrenches(eqx.Module):
@@ -64,7 +74,10 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
     nq: int = field(static=True)
     nv: int = field(static=True)
     nbody: int = field(static=True)
-    constraint_rows: int | None = field(static=True)
+    constraint_rows: int = field(static=True)
+    _path_tendons: tuple[int, ...] = field(static=True)
+    _path_actuators: tuple[int, ...] = field(static=True)
+    _path_segments: tuple[tuple[int, int], ...] = field(static=True)
     _quaternions: tuple[tuple[int, int], ...] = field(static=True)
     _continuation_mask: int = field(static=True)
     _bounds: StateBounds
@@ -77,6 +90,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         *,
         descriptor: CompiledPhysicalModel | None = None,
         warp_data_template=None,
+        warp_constraint_rows: int | None = None,
     ):
         from mujoco import mjtJoint, mjtState, mjx
 
@@ -97,11 +111,24 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         self.nq = int(mjx_model.nq)
         self.nv = int(mjx_model.nv)
         self.nbody = int(mjx_model.nbody)
-        # This is the allocation used by the pinned MJX-JAX forward solver,
-        # including rows inactive in the initial pose.
+        paths = () if descriptor is None else descriptor.paths
+        self._path_tendons = tuple(path.tendon_id for path in paths)
+        self._path_actuators = tuple(
+            path.actuator_id for path in paths if path.actuator_id is not None
+        )
+        if len(self._path_actuators) != len(paths):
+            raise ValueError("The authored MJX skeleton requires muscle path transmissions")
+        self._path_segments = tuple(
+            (descriptor.site_ids[a], descriptor.site_ids[b])
+            for path in paths
+            for a, b in zip(path.sites, path.sites[1:])
+        )
+        if sorted(self._path_actuators) != list(range(self.input_size, int(mjx_model.nu))):
+            raise ValueError("Authored muscle transmissions must follow native controls")
+        # Include rows inactive in the initial pose.
         self.constraint_rows = (
             mjx.make_data(mjx_model, impl="jax")._impl.efc_J.shape[0]
-            if warp_data_template is None else None
+            if warp_constraint_rows is None else warp_constraint_rows
         )
         self._continuation_mask = int(
             mjtState.mjSTATE_WARMSTART | mjtState.mjSTATE_EQ_ACTIVE
@@ -154,16 +181,17 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         site_id = descriptor.site_ids[descriptor.effector_site]
         model = descriptor.model
         if backend == "jax":
-            mjx_model, template = mjx.put_model(model, impl="jax"), None
+            mjx_model, template, constraint_rows = mjx.put_model(model, impl="jax"), None, None
         elif backend == "warp":
             from feedbax.mechanics.skeleton.mjx_warp import make_warp_model_and_data
 
-            mjx_model, template = make_warp_model_and_data(model)
+            mjx_model, template, constraint_rows = make_warp_model_and_data(model)
         else:
             raise ValueError(f"Unknown MJX implementation {backend!r}")
         return cls(
             mjx_model, site_id, int(model.site_bodyid[site_id]),
             descriptor=descriptor, warp_data_template=template,
+            warp_constraint_rows=constraint_rows,
         )
 
     @property
@@ -234,10 +262,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
         return mjx.com_pos(self.mjx_model, data)
 
-    def _dynamics_data(self, state: MJXSkeletonState, ctrl: Array):
-        from mujoco import mjx
-
-        data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
+    def _with_wrenches(self, state: MJXSkeletonState, data: Data) -> Data:
         wrenches = data.xfrc_applied
         if state.wrenches is not None:
             body = state.wrenches
@@ -255,9 +280,79 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         arm = data.site_xpos[self.effector_site_id] - data.xipos[self.effector_body_id]
         wrench = jnp.concatenate((site_force, jnp.cross(arm, site_force)))
         return data.replace(
-            ctrl=jnp.asarray(ctrl, dtype=data.ctrl.dtype)
-            if self._warp_data_template is not None else ctrl,
             xfrc_applied=wrenches.at[self.effector_body_id].add(wrench),
+        )
+
+    def _dynamics_data(self, state: MJXSkeletonState, ctrl: Array) -> Data:
+        from mujoco import mjx
+
+        data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
+        if self._warp_data_template is not None:
+            ctrl = jnp.asarray(ctrl, dtype=data.ctrl.dtype)
+        return self._with_wrenches(state, data).replace(
+            ctrl=jnp.pad(ctrl, (0, len(self._path_actuators))),
+        )
+
+    def continuous_stage(self, state: MJXSkeletonState) -> Data:
+        """Evaluate the position and velocity of a constraint-free integration stage."""
+        from mujoco import mjx
+
+        if self.constraint_rows:
+            raise ValueError("A coupled MJX stage requires zero compiled constraint rows")
+        model = self.mjx_model
+        if self._warp_data_template is not None:
+            state = self._cast_state(state)
+            data = mjx.tendon(model, self._kinematics_data(state))
+            return self._with_wrenches(state, data)
+        data = mjx.fwd_position(model, self._reconstruct_data(state))
+        return mjx.fwd_velocity(model, self._with_wrenches(state, data))
+
+    def muscle_path_kinematics(self, stage: Data) -> MusclePathKinematics:
+        """Read authored paths in descriptor order using MJX's nv-column tendon Jacobian."""
+        tendons = np.asarray(self._path_tendons, dtype=int)
+        lengths = stage.ten_length[tendons]
+        if self._path_segments:
+            first, second = np.asarray(self._path_segments).T
+            delta = stage.site_xpos[first] - stage.site_xpos[second]
+            invalid = ~jnp.isfinite(delta).all() | (delta == 0).all(axis=1).any()
+            lengths = eqx.error_if(
+                lengths, invalid, "A muscle path has a coincident or nonfinite fixed segment",
+            )
+        if self._warp_data_template is not None:
+            from feedbax.mechanics.skeleton.mjx_warp import tendon_jacobian
+
+            jacobian = tendon_jacobian(self.mjx_model, stage, tendons)
+        else:
+            jacobian = stage._impl.ten_J[tendons]
+        return MusclePathKinematics(lengths, jacobian @ stage.qvel, jacobian)
+
+    def tendon_controls(self, tension: Array) -> Array:
+        """Set muscle shortening tensions (N); leave other actuator controls at zero."""
+        if tension.shape != (len(self._path_actuators),):
+            raise ValueError(f"Expected {len(self._path_actuators)} muscle tensions")
+        ids = np.asarray(self._path_actuators, dtype=int)
+        return jnp.zeros(int(self.mjx_model.nu), dtype=tension.dtype).at[ids].set(tension)
+
+    def continuous_derivative(
+        self, state: MJXSkeletonState, stage: Data, ctrl: Array,
+    ) -> MJXSkeletonState:
+        """Finish a prepared constraint-free stage with its evaluated native controls."""
+        from mujoco import mjx
+
+        model = self.mjx_model
+        if self._warp_data_template is not None:
+            controls = jnp.asarray(ctrl, dtype=stage.ctrl.dtype)
+            data = mjx.forward(model, stage.replace(ctrl=controls))
+            return self._derivative(state, data, self._require_warp_capacity(data, data.qacc))
+        data = mjx.fwd_actuation(model, stage.replace(ctrl=ctrl))
+        data = mjx.fwd_acceleration(model, data)
+        return self._derivative(state, data, data.qacc_smooth)
+
+    def _derivative(self, state: MJXSkeletonState, data: Data, acceleration: Array):
+        return replace(
+            jax.tree.map(jnp.zeros_like, state),
+            qpos=self.configuration_derivative(data.qpos, data.qvel),
+            qvel=acceleration, act=data.act_dot, time=jnp.ones_like(state.time),
         )
 
     @jax.named_scope("fbx.MJXSkeleton.vector_field")
@@ -265,11 +360,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         from mujoco import mjx
 
         data = mjx.forward(self.mjx_model, self._dynamics_data(state, input))
-        return replace(
-            jax.tree.map(jnp.zeros_like, state),
-            qpos=self.configuration_derivative(data.qpos, data.qvel),
-            qvel=data.qacc, act=data.act_dot, time=jnp.ones_like(state.time),
-        )
+        return self._derivative(state, data, data.qacc)
 
     def _cartesian(self, pos, vel, rotation) -> CartesianState:
         pos = pos[..., :self.dimension]
@@ -344,15 +435,19 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
 
         state = self._cast_state(state)
         data = mjx.step(self.mjx_model, self._dynamics_data(state, ctrl))
-        if self._warp_data_template is not None:
-            data = data.replace(qpos=eqx.error_if(
-                data.qpos, jnp.any(data._impl.overflow != 0),
-                "MJX-Warp exceeded its allocated collision or constraint capacity",
-                on_error="raise",
-            ))
         return replace(
-            state, qpos=data.qpos, qvel=data.qvel, act=data.act, time=data.time,
+            state, qpos=self._require_warp_capacity(data, data.qpos),
+            qvel=data.qvel, act=data.act, time=data.time,
             continuation=mjx.get_state(self.mjx_model, data, self._continuation_mask),
+        )
+
+    def _require_warp_capacity(self, data: Data, value: Array) -> Array:
+        if self._warp_data_template is None:
+            return value
+        return eqx.error_if(
+            value, jnp.any(data._impl.overflow != 0),
+            "MJX-Warp exceeded its allocated collision or constraint capacity",
+            on_error="raise",
         )
 
     def inverse_kinematics(self, effector_state: CartesianState) -> MJXSkeletonState:
@@ -386,7 +481,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
 
     @property
     def input_size(self) -> int:
-        return int(self.mjx_model.nu)
+        return int(self.mjx_model.nu) - len(self._path_actuators)
 
     @property
     def bounds(self) -> StateBounds[MJXSkeletonState]:

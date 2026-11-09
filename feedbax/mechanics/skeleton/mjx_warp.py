@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -48,4 +49,18 @@ def make_warp_model_and_data(model):
             model, impl="warp", device=device,
             naconmax=1, naccdmax=1, njmax=max(1, int(max_rows)),
         ),
+        int(max_rows),
     )
+
+
+def tendon_jacobian(model, data, tendon_ids: np.ndarray):
+    """Gather the selected packed tendon rows into generalized-velocity columns."""
+    metadata = model._impl
+    counts = metadata.ten_J_rownnz[tendon_ids]
+    row_starts = metadata.ten_J_rowadr[tendon_ids]
+    rows = np.repeat(np.arange(len(tendon_ids)), counts)
+    packed_starts = np.cumsum(counts) - counts
+    entries = np.arange(len(rows)) + np.repeat(row_starts - packed_starts, counts)
+    columns = metadata.ten_J_colind[entries]
+    values = data._impl.ten_J[entries]
+    return jnp.zeros((len(tendon_ids), model.nv), dtype=values.dtype).at[rows, columns].set(values)

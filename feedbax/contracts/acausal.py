@@ -89,6 +89,7 @@ class SpatialMusclePath(StrictModel):
     sites: tuple[str, ...] = Field(min_length=2)
     law: str = Field(min_length=1)
     state_size: int = Field(ge=0, strict=True)
+    law_revision: int | None = Field(default=None, ge=1, strict=True)
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 

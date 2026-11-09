@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -16,12 +17,17 @@ from feedbax._atomic import write_bytes_atomic
 from feedbax._vendor.jax_cookbook._io import json_dump, load
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import derive_acausal_interface, is_acausal_type
+from feedbax.mechanics.articulated_muscles import ArticulatedMusclePlant
 from feedbax.mechanics.backend import DiffraxBackend, MJXBackend, PhysicsCapabilities
 from feedbax.mechanics.compiled_model import CompiledPhysicalModel
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.mjx_skeleton import AppliedWrench, MJXSkeleton
 from feedbax.mechanics.solver_config import resolve_acausal_solver
+
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 
 class AuthoredMechanics(Mechanics):
@@ -34,7 +40,10 @@ class AuthoredMechanics(Mechanics):
     _outputs: tuple[tuple[str, str], ...] = eqx.field(static=True)
     _solver_name: str = eqx.field(static=True)
 
-    def __init__(self, graph: AcausalGraphSpec, descriptor: CompiledPhysicalModel):
+    def __init__(
+        self, graph: AcausalGraphSpec, descriptor: CompiledPhysicalModel, *,
+        component_registry: ComponentRegistry,
+    ):
         from mujoco import mjtDyn, mjtIntegrator, mjtWrap
 
         interface = derive_acausal_interface(graph)
@@ -49,8 +58,8 @@ class AuthoredMechanics(Mechanics):
         model = descriptor.model
         self._solver_name = graph.solver.solver_type
         implementation = graph.solver.mjx_backend
-        if implementation == "warp" and self._solver_name != "mujoco":
-            raise ValueError("MJX-Warp currently requires native MuJoCo stepping")
+        if implementation == "warp" and self._solver_name not in {"mujoco", "euler"}:
+            raise ValueError("MJX-Warp supports native stepping and explicit Euler")
         skeleton = MJXSkeleton.from_descriptor(descriptor, backend=implementation)
         supported_actuation = {
             int(mjtDyn.mjDYN_NONE), int(mjtDyn.mjDYN_INTEGRATOR), int(mjtDyn.mjDYN_FILTER),
@@ -65,10 +74,23 @@ class AuthoredMechanics(Mechanics):
             mjtIntegrator.mjINT_EULER, mjtIntegrator.mjINT_RK4, mjtIntegrator.mjINT_IMPLICITFAST,
         )
         wrapped = {int(mjtWrap.mjWRAP_SPHERE), int(mjtWrap.mjWRAP_CYLINDER)}
+        constant_arms = any(path.parameters.get("moment_arm") is not None for path in descriptor.paths)
+        if implementation == "warp":
+            continuous = (
+                continuous
+                and native
+                and source_kind == "muscle_excitation_vector"
+                and bool(descriptor.paths)
+                and not constant_arms
+                and wrapped.isdisjoint(model.wrap_type)
+            )
         self.capabilities = PhysicsCapabilities(
             native_step=native and source_kind == "actuator_control",
             continuous=continuous,
-            reverse_mode=skeleton.constraint_rows == 0 and wrapped.isdisjoint(model.wrap_type),
+            reverse_mode=(
+                implementation == "jax" and skeleton.constraint_rows == 0
+                and wrapped.isdisjoint(model.wrap_type)
+            ),
         )
         if self._solver_name == "mujoco":
             if graph.solver.root_finder is not None:
@@ -78,6 +100,11 @@ class AuthoredMechanics(Mechanics):
             backend = MJXBackend(control_dt=graph.solver.dt, sub_dt=model.opt.timestep)
         else:
             if not continuous:
+                if implementation == "warp":
+                    raise ValueError(
+                        "MJX-Warp explicit Euler requires fixed-site articulated muscle paths, "
+                        "zero compiled constraint rows and unbounded stage-local actuators"
+                    )
                 raise ValueError(
                     "Continuous MJX requires zero compiled constraint rows and "
                     "unbounded, stage-local actuator dynamics. Use native MuJoCo stepping "
@@ -95,7 +122,10 @@ class AuthoredMechanics(Mechanics):
         elif source_kind == "muscle_excitation_vector" and isinstance(backend, DiffraxBackend):
             from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 
-            plant = AnalyticalMusculoskeletalPlant.from_authored_planar_model(skeleton)
+            if constant_arms:
+                plant = AnalyticalMusculoskeletalPlant.from_authored_planar_model(skeleton)
+            else:
+                plant = ArticulatedMusclePlant(skeleton, component_registry)
         else:
             raise ValueError(f"Unsupported MuJoCo control {source_kind!r} for {self._solver_name!r}")
 
@@ -142,7 +172,8 @@ class AuthoredMechanics(Mechanics):
         port = self._inputs[0]
         if port not in inputs:
             raise ValueError(f"Missing required MuJoCo control input {port!r}")
-        action = jnp.asarray(inputs[port])
+        dtype = jnp.float32 if self.plant.skeleton.implementation == "warp" else None
+        action = jnp.asarray(inputs[port], dtype=dtype)
         if action.shape != (self.plant.input_size,):
             raise ValueError(
                 f"MuJoCo input {port!r} expects shape ({self.plant.input_size},), got {action.shape}"
@@ -168,7 +199,17 @@ class AuthoredMechanics(Mechanics):
             raise ValueError("MuJoCo trial initialization requires generalized coordinates")
         state = super().replace_state_value(state, path, value)
         if path[:2] == ("plant", "skeleton"):
-            return self.state_consistency_update(state)
+            state = self.state_consistency_update(state)
+            if path[2:] in ((), ("qpos",)):
+                state = self.reset_muscle_equilibrium(state)
+        return state
+
+    def reset_muscle_equilibrium(self, state: State) -> State:
+        """Set compliant fiber equilibrium after editing the starting pose or activation."""
+        if isinstance(self.plant, ArticulatedMusclePlant):
+            current = self.state_view(state)
+            plant = self.plant.equilibrate_muscles(current.plant)
+            return state.set(self.state_index, replace(current, plant=plant))
         return state
 
     def apply_wrench(self, state: State, body: str, wrench: AppliedWrench) -> State:
@@ -191,7 +232,7 @@ class AuthoredMechanics(Mechanics):
             from importlib.metadata import version
 
             runtime.extend(version(name) for name in ("mujoco-mjx", "warp-lang", "jaxlib"))
-        return {
+        header = {
             "schema": "feedbax.mujoco.continuation.v1",
             "model": self.descriptor.identity,
             "structure": self.descriptor.structural_signature,
@@ -199,6 +240,9 @@ class AuthoredMechanics(Mechanics):
             "solver": self._solver_name,
             "periods": [self.backend.control_dt, self.backend.sub_dt],
         }
+        if isinstance(self.plant, ArticulatedMusclePlant):
+            header["muscle_laws"] = [list(identity) for identity in self.plant.law_identities]
+        return header
 
     def save_state(self, path: Path, state: State) -> None:
         """Save this model's physical and integration state with its binding."""
@@ -218,12 +262,17 @@ class AuthoredMechanics(Mechanics):
 
     def transfer_state(self, source: AuthoredMechanics, source_state: State, state: State) -> State:
         """Transfer common physical state and initialize the destination solver buffers."""
-        if source.descriptor.identity != self.descriptor.identity:
-            raise ValueError("MuJoCo state transfer requires the same physical model")
+        if (source.descriptor.identity != self.descriptor.identity
+                or source._state_header().get("muscle_laws") != self._state_header().get("muscle_laws")):
+            raise ValueError("MuJoCo state transfer requires the same physical model and muscle laws")
         old = source.state_view(source_state)
         skeleton = self.plant.skeleton.reset_continuation(old.plant.skeleton)
-        plant = replace(old.plant, skeleton=skeleton)
         initial = self.backend.init_state(self.plant, key=jax.random.PRNGKey(0))
+        muscles = jax.tree.map(
+            lambda value, template: jnp.asarray(value, dtype=template.dtype),
+            old.plant.muscles, initial.plant.muscles,
+        )
+        plant = replace(old.plant, skeleton=skeleton, muscles=muscles)
         effector = self.plant.skeleton.effector(skeleton)
         return state.set(
             self.state_index,
