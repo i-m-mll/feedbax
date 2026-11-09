@@ -118,6 +118,7 @@ fn connect(app: &AppHandle) {
                 "A different installed release owns the background service. Use coordinated package replacement."
             },
             Some("installing") => "A package replacement is in progress. Select Reconnect once it finishes.",
+            Some("recovery_required") => "Complete the interrupted Studio installation recovery, then select Reconnect.",
             Some("stopping") => "The service is stopping. Select Reconnect once it has stopped.",
             _ => "The Studio service did not become ready. Inspect Service Logs and select Reconnect.",
         };
@@ -143,6 +144,9 @@ fn stop(app: &AppHandle, disposition: &'static str) {
                 }
                 Some("timed_out") => {
                     "Job shutdown reached its deadline. Inspect the jobs or request Force Stop."
+                }
+                Some("recovery_required") => {
+                    "Complete the interrupted Studio installation recovery before stopping the service."
                 }
                 _ => "Studio could not stop this installed service.",
             };

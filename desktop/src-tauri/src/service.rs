@@ -122,7 +122,10 @@ impl Release {
     pub fn register(&self) -> Result<&'static str> {
         let agent = self.registration();
         unsafe {
-            if agent.status() == SMAppServiceStatus::NotRegistered {
+            if matches!(
+                agent.status(),
+                SMAppServiceStatus::NotRegistered | SMAppServiceStatus::NotFound
+            ) {
                 if let Err(error) = agent.registerAndReturnError() {
                     let status = agent.status();
                     if !matches!(
@@ -203,6 +206,9 @@ impl Release {
         let Some(_activation) = activation_lock(&paths)? else {
             return Ok(json!({"status": "installing"}));
         };
+        if paths.control.join("installation.json").exists() {
+            return Ok(json!({"status": "recovery_required"}));
+        }
         let health = self.call("health", &[])?;
         match health["status"].as_str() {
             Some("ready") => return self.call("ticket", &[]),
@@ -217,9 +223,13 @@ impl Release {
     }
 
     pub fn stop(&self, disposition: &str) -> Result<Value> {
-        let Some(_activation) = activation_lock(&self.paths()?)? else {
+        let paths = self.paths()?;
+        let Some(_activation) = activation_lock(&paths)? else {
             return Ok(json!({"status": "installing"}));
         };
+        if paths.control.join("installation.json").exists() {
+            return Ok(json!({"status": "recovery_required"}));
+        }
         self.stop_locked(disposition)
     }
 

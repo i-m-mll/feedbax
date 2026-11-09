@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import os
 import pickle
 import sys
 import time
@@ -47,7 +48,7 @@ from feedbax.training.executor import (
     execute_training_run_spec,
     prepare_training_manifest_metadata_projection,
 )
-from feedbax.training.interruption import RunInterruptionController
+from feedbax.training.interruption import CHECKPOINT_STOP_FILE_ENV, RunInterruptionController
 from feedbax.training.preparation import (
     ExecutionPreparationPlan,
     ExecutionPreparationRequest,
@@ -962,7 +963,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)
-        with RunInterruptionController() as interruption:
+        stop_file = os.environ.get(CHECKPOINT_STOP_FILE_ENV)
+        with RunInterruptionController(stop_file=Path(stop_file) if stop_file else None) as interruption:
             try:
                 result = execute_training_run_spec(
                     run_spec,

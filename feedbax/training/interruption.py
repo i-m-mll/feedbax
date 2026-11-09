@@ -7,10 +7,12 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, TextIO
 
 
 CancellationAction = Literal["continue", "stop", "terminate"]
+CHECKPOINT_STOP_FILE_ENV = "FEEDBAX_CHECKPOINT_STOP_FILE"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class RunInterruptionController:
         read_choice: Callable[[], str] | None = None,
         output: TextIO | None = None,
         now: Callable[[], float] = time.time,
+        stop_file: Path | None = None,
     ) -> None:
         self.interactive = sys.stdin.isatty() if interactive is None else interactive
         self._read_choice = read_choice or (lambda: input().strip())
@@ -53,6 +56,7 @@ class RunInterruptionController:
         self._interrupt_count = 0
         self._requested_at: float | None = None
         self._delivered = False
+        self._stop_file = stop_file
         self._previous_handler: signal.Handlers | None = None
 
     def __enter__(self) -> "RunInterruptionController":
@@ -73,6 +77,13 @@ class RunInterruptionController:
     def poll(self) -> CancellationDecision | None:
         """Return one pending decision at a safe execution boundary."""
         if self._interrupt_count == 0 or self._delivered:
+            if self._stop_file is not None:
+                try:
+                    requested_at = self._stop_file.stat().st_mtime
+                except FileNotFoundError:
+                    return None
+                self._stop_file = None
+                return CancellationDecision("stop", "non_interactive", requested_at)
             return None
         self._delivered = True
         requested_at = self._requested_at if self._requested_at is not None else self._now()
