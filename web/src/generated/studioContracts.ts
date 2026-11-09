@@ -90,6 +90,7 @@ export interface SpatialMusclePath {
   sites: string[];
   law: string;
   state_size: number;
+  law_revision?: number | null;
   parameters?: Record<string, unknown>;
 }
 
@@ -2076,6 +2077,7 @@ export const acausalReportDefaults = {
     "planar_substeps": null
   },
   "SpatialMusclePath": {
+    "law_revision": null,
     "parameters": {}
   }
 };
@@ -2321,6 +2323,7 @@ export const SpatialMusclePathSchema: z.ZodType<SpatialMusclePath> = z.lazy(() =
       "sites": z.array(z.string()).min(2),
       "law": z.string().min(1),
       "state_size": z.number().int().safe().gte(0),
+      "law_revision": z.number().int().safe().gte(1).nullable().optional(),
       "parameters": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()

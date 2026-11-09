@@ -5,11 +5,20 @@ from __future__ import annotations
 from math import cos, sin, sqrt
 from typing import Literal
 
+import diffrax
+
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec, JointDampingMode, PlanarDynamicsSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.mechanics.authored_mechanics import AuthoredMechanics
+from feedbax.mechanics.analytical_plant import TwoLinkMusclePlant
+from feedbax.mechanics.articulated_muscles import build_muscle_law
+from feedbax.mechanics.authored_model import compile_planar_model
+from feedbax.mechanics.backend import DiffraxBackend
+from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry, TwoLinkPointPath
+from feedbax.mechanics.mechanics import Mechanics
+from feedbax.mechanics.muscle_law import MuscleLawBank
+from feedbax.mechanics.skeleton.arm import TwoLinkArm
 
 CONTROL_DT = 0.01
 START_QPOS = (-0.55, 1.30)
@@ -18,6 +27,7 @@ MASSES = (1.4, 1.0)
 COM_OFFSETS = (0.11, 0.16)
 PIVOT_INERTIAS = (0.025, 0.045)
 DAMPING_MODES = ((1.0, 0.0375), (-1.0, 0.0125))
+DAMPING = ((0.05, 0.025), (0.025, 0.05))
 
 
 def _point(frame: str, x: float, y: float = 0.0) -> dict:
@@ -95,18 +105,18 @@ def planar_interior(
 
     for i, (points, rest_length, max_force) in enumerate(_path_specs()):
         optimal_length = 0.065
-        params = {
-            "path_points": points,
-            "state_size": 1,
-            "max_isometric_force": max_force,
-            "tau_act": 0.01,
-            "tau_deact": 0.04,
-        }
+        params = {"path_points": points, "state_size": 1}
         if law_profile == "rigid":
             params.update(
                 law="feedbax.RigidTendonHillMuscle",
-                optimal_muscle_length=optimal_length,
-                tendon_slack_length=rest_length - optimal_length,
+                law_parameters={
+                    "max_isometric_force": max_force,
+                    "optimal_muscle_length": optimal_length,
+                    "tendon_slack_length": rest_length - optimal_length,
+                    "tau_act": 0.01,
+                    "tau_deact": 0.04,
+                    "initial_activation": 0.05,
+                },
             )
         else:
             params.update(
@@ -115,6 +125,7 @@ def planar_interior(
                     "max_isometric_force": max_force,
                     "tau_activation": 0.01,
                     "tau_deactivation": 0.04,
+                    "initial_activation": 0.05,
                 },
             )
         nodes[f"muscle_{i}"] = node("MusclePath", **params)
@@ -165,7 +176,35 @@ def build_mechanics(
     *,
     law_profile: Literal["rigid", "activation"] = "rigid",
     solver: Literal["euler", "tsit5"] = "euler",
-) -> AuthoredMechanics:
-    """Compile the benchmark arm through the public graph entry point."""
+    engine: Literal["mjx", "analytical"] = "mjx",
+) -> Mechanics:
+    """Build the benchmark using the production graph or analytical plant."""
     interior = planar_interior(physics_substeps, law_profile=law_profile, solver=solver)
-    return compile_graph(graph_document(interior), ComponentRegistry()).graph.nodes["mechanics"]
+    registry = ComponentRegistry()
+    if engine == "mjx":
+        return compile_graph(graph_document(interior), registry).graph.nodes["mechanics"]
+    if engine != "analytical":
+        raise ValueError(f"Unknown benchmark engine {engine!r}")
+
+    descriptor = compile_planar_model(interior)
+    frames = {"world.frame": 0, "link0.proximal": 1, "link1.proximal": 2}
+    paths = []
+    for path in descriptor.paths:
+        points = interior.nodes[path.name].params["path_points"]
+        paths.append(TwoLinkPointPath(
+            LENGTHS[0], tuple(frames[point["frame"]] for point in points),
+            [point["offset"] for point in points],
+        ))
+    law_bank = MuscleLawBank(tuple(build_muscle_law(path, registry)[0] for path in descriptor.paths))
+    plant = TwoLinkMusclePlant(
+        TwoLinkArm(LENGTHS, MASSES, PIVOT_INERTIAS, COM_OFFSETS, DAMPING),
+        TwoLinkArmMuscleGeometry(tuple(paths)),
+        law_bank,
+        START_QPOS,
+    )
+    backend = DiffraxBackend(
+        control_dt=CONTROL_DT,
+        sub_dt=CONTROL_DT / physics_substeps,
+        solver={"euler": diffrax.Euler, "tsit5": diffrax.Tsit5}[solver](),
+    )
+    return Mechanics(plant=plant, backend=backend)

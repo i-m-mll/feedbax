@@ -26,6 +26,7 @@ import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
 from feedbax.mechanics.body import BodyPreset
+from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.hill_muscles import (
     ActivationDynamics,
     ForceLengthCurve,
@@ -34,6 +35,7 @@ from feedbax.mechanics.hill_muscles import (
     bounded_rigid_fiber_force,
 )
 from feedbax.mechanics.muscle_config import default_muscle_config
+from feedbax.mechanics.muscle_law import MuscleLawBank
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton
@@ -64,6 +66,48 @@ class AnalyticalMuscleState(Module):
     """
 
     activations: Float[Array, " n_muscles"]
+
+
+class TwoLinkMusclePlant(AbstractPlant):
+    """A two-link analytical skeleton with coupled stage-local muscle laws."""
+
+    skeleton: TwoLinkArm
+    geometry: TwoLinkArmMuscleGeometry
+    law_bank: MuscleLawBank
+    initial_angle: Array = field(converter=jnp.asarray)
+    clip_states: bool = eqx.field(static=True, default=False)
+
+    def __init__(self, skeleton, geometry, law_bank, initial_angle):
+        if not law_bank.laws or len(law_bank.laws) != geometry.n_muscles:
+            raise ValueError("Each analytical attachment requires a muscle law")
+        initial_angle = jnp.asarray(initial_angle)
+        if initial_angle.shape != (2,):
+            raise ValueError("A two-link plant requires two initial angles")
+        self.skeleton = skeleton
+        self.geometry = geometry
+        self.law_bank = law_bank
+        self.initial_angle = initial_angle
+
+    @property
+    def input_size(self) -> int:
+        return len(self.law_bank.laws)
+
+    @property
+    def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
+        return {}
+
+    def init(self, *, key: PRNGKeyArray) -> PlantState:
+        skeleton = eqx.tree_at(lambda state: state.angle, self.skeleton.init(key=key),
+                               self.initial_angle)
+        lengths, velocities, _ = self.geometry.path_kinematics(skeleton.angle, skeleton.d_angle)
+        return PlantState(skeleton=skeleton, muscles=self.law_bank.init_state(lengths, velocities))
+
+    def vector_field(self, t: Scalar, state: PlantState, input: Array) -> PlantState:
+        angles, angular_velocity = state.skeleton.angle, state.skeleton.d_angle
+        lengths, velocities, jacobian = self.geometry.path_kinematics(angles, angular_velocity)
+        derivatives, tension = self.law_bank.evaluate(state.muscles, input, lengths, velocities)
+        skeleton = self.skeleton.vector_field(t, state.skeleton, -jacobian.T @ tension)
+        return PlantState(skeleton=skeleton, muscles=derivatives)
 
 
 class AnalyticalMusculoskeletalPlant(AbstractPlant):
