@@ -16,6 +16,8 @@ from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.contracts.studio_api import (
     AnalysisJobStatusResponse,
+    SuccessPayload,
+    SuccessResponse,
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
 )
@@ -213,17 +215,27 @@ async def generate_figure(
     durable result identity.
     """
     registries = request.app.state.bootstrap_state.bundle
+    jobs = request.app.state.analysis_jobs
     if payload.job_kind == "figure":
         figure_spec = _figure_spec_for_request(payload)
         manifest_id = figure_manifest_id(figure_spec)
+        kind, spec = "figure", figure_spec
         work = partial(_run_figure_sync, figure_spec, registries)
     else:
         analysis_spec = _spec_for_analysis_request(payload)
         computation = registries.analysis_recipes.new_computation(analysis_spec.analysis_type)
         manifest_id = analysis_run_manifest_id(analysis_spec, computation=computation)
+        kind, spec = "analysis", analysis_spec
         work = partial(_run_analysis_sync, analysis_spec, registries, computation=computation)
     try:
-        request_id = request.app.state.analysis_jobs.submit(manifest_id, work)
+        if jobs.owns_processes:
+            request_id = jobs.submit_operation(
+                manifest_id,
+                operation={"kind": kind, "spec": spec.model_dump(mode="json")},
+                bootstrap_modules=request.app.state.bootstrap_modules,
+            )
+        else:
+            request_id = jobs.submit(manifest_id, work)
     except AnalysisJobsUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return GenerateAnalysisResponse(
@@ -254,3 +266,15 @@ async def get_status(request_id: str, request: Request) -> AnalysisJobStatusResp
             "error": entry.error,
         }
     )
+
+
+@router.delete("/{request_id}", response_model=SuccessResponse)
+async def cancel_analysis(request_id: str, request: Request) -> SuccessResponse:
+    """Cancel a queued or owned running analysis without restarting it."""
+    try:
+        found = request.app.state.analysis_jobs.cancel(request_id)
+    except AnalysisJobsUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Unknown request_id '{request_id}'")
+    return SuccessResponse(data=SuccessPayload(success=True))

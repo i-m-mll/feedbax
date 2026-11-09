@@ -22,6 +22,7 @@ from feedbax.contracts.studio_api import (
 )
 from feedbax.web.services.graph_service import GraphService
 from feedbax.objectives.service import loss_service
+from feedbax.web.services.desktop_jobs import TrainingJobsUnavailable
 from feedbax.web.services.training_service import RunStateCorruptionError, training_service
 from feedbax.web.worker.transport import WorkerConfigurationError, WorkerTransportError
 
@@ -88,17 +89,22 @@ async def start_training(payload: TrainingRequest, request: Request) -> Training
         if payload.training_config is not None
         else None
     )
-    job_id = await training_service.start_training(
-        payload.training_spec.n_batches,
-        training_config=training_config,
-        training_spec=payload.training_spec.model_dump(),
-        task_spec=payload.task_spec.model_dump(),
-        task_binding_spec=payload.task_binding_spec,
-        graph_spec=payload.graph_spec,
-        conformance_registry=request.app.state.bootstrap_state.bundle.conformance_checks,
-        driver_registry=request.app.state.bootstrap_state.bundle.drivers,
-        plugin_provenance=request.app.state.bootstrap_state.provenance,
-    )
+    jobs = getattr(request.app.state, "desktop_jobs", None)
+    start = jobs.start_legacy if jobs is not None else training_service.start_training
+    try:
+        job_id = await start(
+            payload.training_spec.n_batches,
+            training_config=training_config,
+            training_spec=payload.training_spec.model_dump(),
+            task_spec=payload.task_spec.model_dump(),
+            task_binding_spec=payload.task_binding_spec,
+            graph_spec=payload.graph_spec,
+            conformance_registry=request.app.state.bootstrap_state.bundle.conformance_checks,
+            driver_registry=request.app.state.bootstrap_state.bundle.drivers,
+            plugin_provenance=request.app.state.bootstrap_state.provenance,
+        )
+    except TrainingJobsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return TrainingStartResponse(data={"job_id": job_id})
 
 
@@ -122,7 +128,10 @@ async def get_training_status(job_id: str) -> TrainingStatusResponse:
 
 
 @router.delete("/{job_id}", response_model=SuccessResponse)
-async def stop_training(job_id: str) -> SuccessResponse:
+async def stop_training(job_id: str, request: Request) -> SuccessResponse:
+    jobs = getattr(request.app.state, "desktop_jobs", None)
+    if jobs is not None and jobs.training.cancel(job_id):
+        return SuccessResponse(data=SuccessPayload(success=True))
     try:
         await training_service.stop_training(job_id)
     except ValueError:

@@ -12,6 +12,7 @@ from feedbax.contracts.spec_storage import (
     TrainingRunExecutionCapsule,
     training_spec_sha256,
 )
+from feedbax.contracts.training import MethodRefSpec, OptimizerSpec
 
 if TYPE_CHECKING:
     from feedbax.orchestration.assembly import (
@@ -28,6 +29,23 @@ STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = (
 )
 STUDIO_TRAINING_COMPILER_ID = "feedbax.studio.worker"
 STUDIO_TRAINING_COMPILER_VERSION = "feedbax.studio.worker.v1"
+STUDIO_GRAPH_METHOD = MethodRefSpec(package="feedbax", name="studio_graph", version="v1")
+STUDIO_GRAPH_METHOD_PAYLOAD_ID = "feedbax.spec.training_method.studio_graph"
+STUDIO_GRAPH_METHOD_PAYLOAD_VERSION = f"{STUDIO_GRAPH_METHOD_PAYLOAD_ID}.v1"
+
+
+class StudioGraphMethodPayload(StrictModel):
+    """Numerical settings for one checkpointable Studio graph training run."""
+
+    optimizer: OptimizerSpec
+    target_total: int = Field(gt=0)
+
+    @field_validator("optimizer")
+    @classmethod
+    def _require_constant_schedule(cls, optimizer: OptimizerSpec) -> OptimizerSpec:
+        if optimizer.lr_schedule is not None:
+            raise ValueError("checkpointable Studio graph training requires a constant learning rate")
+        return optimizer
 
 
 class StudioTrainingAssemblySpec(StrictModel):

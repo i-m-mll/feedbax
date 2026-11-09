@@ -13,6 +13,7 @@ from feedbax.contracts.graph import (
     GraphSpec,
     ParamValue,
     RetentionPolicySpec,
+    StudioTaskBindingSpec,
     StudioTaskTimelineSpec,
 )
 from feedbax.contracts.checkpoints import (
@@ -1502,6 +1503,9 @@ class TrainingRunSpec(TrainingRunContractModel):
     on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
     graph: GraphTopologySourceSpec
     task: TaskSpec
+    task_binding_spec: StudioTaskBindingSpec | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     training_config: TrainingConfig
     objective: ObjectiveSlotSpec
     risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)

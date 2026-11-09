@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -16,12 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, NoReturn, Optional, Sequence
 
+from feedbax.contracts.base import utc_now
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
 from feedbax.contracts.spec_storage import store_canonical_json_artifact
 from feedbax.contracts.studio_training import (
+    STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
     STUDIO_TRAINING_COMPILER_ID,
     STUDIO_TRAINING_COMPILER_VERSION,
     StudioTrainingAssemblySpec,
@@ -59,7 +63,7 @@ from feedbax.orchestration.stages import (
     STAGE_LAUNCH,
     StageEngine,
 )
-from feedbax.orchestration.state import RunSetState
+from feedbax.orchestration.state import RunSetState, RunSetStateStore
 import feedbax.web.worker.client as worker_client
 from feedbax.web.services.worker_driver import load_worker_execution_payload
 from feedbax.web.worker.transport import (
@@ -72,6 +76,8 @@ from feedbax.web.worker.transport import (
 
 
 logger = logging.getLogger(__name__)
+_OWNER_EXIT = "Studio restarted before the local worker finished"
+_FORCED_STOP = "Studio force-stopped the local worker"
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +190,7 @@ class TrainingService:
             else _allowed_worker_origins_from_env()
         )
         self._remote: bool = False
+        self._owner_pipe: int | None = None
         self._lock = asyncio.Lock()
         self._job_refs_by_job: dict[str, _JobRef] = {}
 
@@ -257,14 +264,18 @@ class TrainingService:
 
             port = _find_free_port()
             self._port = port
-            self._endpoint = WorkerEndpoint.create(f"http://127.0.0.1:{port}")
-
-            self._process = subprocess.Popen(
-                [sys.executable, "-m", "feedbax.web.worker", "--port", str(port)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            desktop = os.environ.get("FEEDBAX_DESKTOP_STATE")
+            command = [sys.executable, "-m", "feedbax.web.worker", "--port", str(port)]
+            origin = f"http://127.0.0.1:{port}"
+            if desktop:
+                token = secrets.token_urlsafe(32)
+                self._endpoint = WorkerEndpoint.create(origin, credential=token)
+                self._process = self._spawn_owned_worker(command, Path(desktop), token)
+            else:
+                self._endpoint = WorkerEndpoint.create(origin)
+                self._process = subprocess.Popen(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                )
 
             try:
                 await worker_client.wait_for_health(self._endpoint, timeout=5.0, interval=0.1)
@@ -275,6 +286,56 @@ class TrainingService:
                 raise RuntimeError(f"Worker subprocess failed health check{detail}") from exc
             return self._endpoint
 
+    def _spawn_owned_worker(self, command: list[str], state: Path, token: str) -> subprocess.Popen:
+        owner, keepalive = os.pipe()
+        try:
+            with (state / "jobs" / "worker.lock").open("a+b") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                process = subprocess.Popen(
+                    [*command, "--owner-fd", str(owner), "--instance-lock-fd", str(lock.fileno())],
+                    env=dict(os.environ, FEEDBAX_WORKER_AUTH_TOKEN=token),
+                    pass_fds=(owner, lock.fileno()),
+                    stdout=subprocess.DEVNULL,
+                    stderr=None,
+                    text=True,
+                )
+        except BaseException:
+            os.close(keepalive)
+            raise
+        finally:
+            os.close(owner)
+        if self._owner_pipe is not None:
+            os.close(self._owner_pipe)
+        self._owner_pipe = keepalive
+        return process
+
+    def reconcile_desktop_worker(self, jobs: Path, *, forced: bool = False) -> None:
+        """Settle incomplete legacy rows after their inherited worker lock is released."""
+        jobs.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + 5
+        with (jobs / "worker.lock").open("a+b") as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("previous Studio training worker has not exited")
+                    time.sleep(0.05)
+            self.rebuild_cache_from_state_docs()
+            for ref in self._job_refs_by_job.values():
+                status = self._status_from_state(ref.job_id)
+                if status is None or status["status"] not in ("pending", "ready", "launched", "running"):
+                    continue
+                store = RunSetStateStore(ref.state_path)
+                with store.lock(break_stale=True):
+                    state = store.load()
+                    row = state.rows[ref.job_id].model_copy(update={
+                        "status": "failed", "error": _FORCED_STOP if forced else _OWNER_EXIT,
+                        "completed_at": utc_now(),
+                    })
+                    store.save(state.with_row(ref.job_id, row))
+
     def _terminate_worker(self) -> None:
         """Terminate the worker subprocess if it is running."""
         process = self._process
@@ -282,6 +343,9 @@ class TrainingService:
         self._endpoint = None
         self._port = None
         self._remote = False
+        if self._owner_pipe is not None:
+            os.close(self._owner_pipe)
+            self._owner_pipe = None
 
         if process is not None:
             try:
@@ -635,6 +699,8 @@ class TrainingService:
                 # These rows are addressed through their staged receipt in the runs API.
                 continue
             for row in bundle.rows:
+                if row.execution.payload.schema_id != STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID:
+                    continue
                 refs[row.row_id] = _JobRef(
                     job_id=row.row_id,
                     run_set_id=bundle.run_set_id,
@@ -662,6 +728,9 @@ class TrainingService:
                     "provenance_id": ref.run_set_id,
                     "job_id": ref.job_id,
                     "run_set_id": ref.run_set_id,
+                    "error": status.get("error"),
+                    "completed_batches": status["batch"],
+                    "total_batches": status["total_batches"],
                 }
             )
         return rows
@@ -851,11 +920,12 @@ class TrainingService:
         if latest is not None and latest.type == "complete":
             status = "stopped" if payload.get("status") == "cancelled" else "completed"
         elif status == "failed":
-            status = "error"
+            status = "interrupted" if row.error in (_OWNER_EXIT, _FORCED_STOP) else "error"
         elif status in ("launched", "ready"):
             status = "running"
         return {
             "status": status,
+            "error": row.error,
             "batch": int(payload.get("batch", 0) or 0),
             "program_step": payload.get("program_step"),
             "total_batches": int(payload.get("total_batches", total_batches) or 0),

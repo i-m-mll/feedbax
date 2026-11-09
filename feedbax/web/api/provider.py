@@ -48,6 +48,7 @@ from feedbax.orchestration.staged_training import (
 )
 from feedbax.orchestration.stages import PreflightFailed
 from feedbax.studio.native_training import prepare_native_training_dispatch
+from feedbax.web.services.desktop_jobs import NativeTrainingControl, TrainingJobsUnavailable
 from feedbax.web.services.training_service import training_service
 
 
@@ -129,6 +130,8 @@ def dispatch_studio_native_training(
 ) -> StudioNativeTrainingDispatchAccepted:
     root = default_manifest_root().resolve()
     bootstrap = request.app.state.bootstrap_state
+    jobs = getattr(request.app.state, "desktop_jobs", None)
+    control = NativeTrainingControl() if jobs is not None else None
     try:
         manifest, _ = load_staged_training_receipt(root, payload.manifest_id)
         engine = prepare_native_training_dispatch(
@@ -137,8 +140,14 @@ def dispatch_studio_native_training(
             generation=payload.generation,
             registry_bundle=bootstrap.bundle,
             plugin_registrations=bootstrap.provenance,
+            interruption_probe=control.poll if control is not None else None,
         )
-        training_service.dispatch_staged_training(engine)
+        if jobs is not None:
+            jobs.training.dispatch(engine, control)
+        else:
+            training_service.dispatch_staged_training(engine)
+    except TrainingJobsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except StagedTrainingConflict as exc:

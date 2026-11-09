@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+import numpy as np
 import optax
 import pytest
 from pydantic import TypeAdapter
@@ -395,6 +396,91 @@ def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:
     assert compiled.task_inputs[0].target_node == "readout"
     assert compiled.task_inputs[0].graph_input in compiled.graph.input_ports
     assert compiled.trainable_nodes == ("readout",)
+
+
+def test_builtin_studio_graph_resumes_the_numerical_checkpoint(tmp_path: Path) -> None:
+    from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+    from feedbax.contracts.studio_training import (
+        STUDIO_GRAPH_METHOD,
+        STUDIO_GRAPH_METHOD_PAYLOAD_ID,
+        STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+        StudioGraphMethodPayload,
+    )
+    from feedbax.contracts.training import TrainingRunSpec, resolve_training_run_spec
+    from feedbax.contracts.worker import derive_consistency_predicate
+    from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
+    from feedbax.training.executor import execute_training_run_spec
+    from feedbax.training.preparation import ExecutionPreparationRequest
+    from feedbax.training.studio_executor import studio_graph_method_contract
+
+    legacy = _training_spec()
+    payload = StudioGraphMethodPayload(optimizer=legacy["optimizer"], target_total=2)
+    contract = studio_graph_method_contract(payload)
+    spec = TrainingRunSpec(
+        graph={"inline": _linear_graph_spec()},
+        task={"type": "Generic", "params": {}},
+        task_binding_spec=_task_binding_spec(),
+        training_config={"n_batches": 2, "batch_size": 1, "n_reach_steps": 4},
+        objective={"loss": legacy["loss"]},
+        method_ref=STUDIO_GRAPH_METHOD,
+        method_payload={
+            "schema_id": STUDIO_GRAPH_METHOD_PAYLOAD_ID,
+            "schema_version": STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+            "payload": payload.model_dump(mode="json"),
+        },
+        worker_execution={
+            "method_contract": contract,
+            "effective_phase": {
+                "method_ref": contract.method_ref, "axes": contract.axes,
+                "state_slots": contract.state_slots, "phase_program": contract.phase_program,
+                "consistency_predicate": derive_consistency_predicate(contract.phase_program),
+            },
+        },
+        checkpoint_progress={"checkpoint_interval": 1, "progress_interval": 1},
+    )
+    registries = new_application_registry_bundle()
+
+    def prepare(run_spec, *, resume=False):
+        method = resolve_training_run_spec(run_spec, registries.training_programs)
+        graph = compile_graph(
+            GraphDocument(graph=run_spec.graph.inline), registries.components,
+            input_prototypes=prototypes_from_task_bindings(run_spec.task_binding_spec),
+        )
+        return registries.execution_preparations.prepare(ExecutionPreparationRequest(
+            run_spec=run_spec, method_payload=method.payload, method_contract=method.contract,
+            effective_phase=method.effective_phase, executable_graph=graph, resume=resume,
+        ))
+
+    first = execute_training_run_spec(
+        spec, run_id="studio-graph-first", preparation=prepare(spec),
+        registry=registries.training_programs,
+        manifest_root=tmp_path, checkpoint_root=tmp_path / "first",
+        stop_after_barrier="after_train_batch",
+    )
+    assert first.end_completed_batches == 1
+    source = authenticate_published_checkpoint_custody(tmp_path / "first")
+    continuation = spec.model_copy(deep=True)
+    continuation.training_config.n_batches = 1
+    continuation.checkpoint_progress.continuation = CheckpointContinuationRequest(
+        source_completed_batches=1, additional_batches=1,
+    )
+    prepared = prepare(continuation, resume=True)
+    expected = prepared.kernel_context["studio_graph_update"](first.final_slots)
+    resumed = execute_training_run_spec(
+        continuation, run_id="studio-graph-resumed", preparation=prepared,
+        registry=registries.training_programs,
+        manifest_root=tmp_path, checkpoint_root=tmp_path / "resumed",
+        checkpoint_source_root=tmp_path / "first", resume=True,
+    )
+    assert resumed.status == "completed"
+    assert (resumed.start_completed_batches, resumed.end_completed_batches) == (1, 2)
+    terminal = authenticate_published_checkpoint_custody(tmp_path / "resumed")
+    assert terminal.manifest.parent_lineage[0].transaction_id == source.manifest.transaction_id
+    for slot in ("model", "optimizer", "prng", "batch_counter"):
+        actual = resumed.final_slots[slot]
+        assert jt.structure(actual) == jt.structure(expected[slot])
+        for actual_leaf, expected_leaf in zip(jt.leaves(actual), jt.leaves(expected[slot]), strict=True):
+            np.testing.assert_array_equal(actual_leaf, expected_leaf, err_msg=slot)
 
 
 def test_compile_training_run_dry_runs_acausal_graph_node() -> None:

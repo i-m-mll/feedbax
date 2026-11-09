@@ -9,11 +9,14 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import threading
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Feedbax headless training worker")
     parser.add_argument("--port", type=int, default=8765, help="HTTP port to listen on")
+    parser.add_argument("--owner-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--instance-lock-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument(
         "--host",
         type=str,
@@ -21,6 +24,19 @@ def main() -> None:
         help="Host/interface to bind to (use 0.0.0.0 for remote access)",
     )
     args = parser.parse_args()
+    if (args.owner_fd is None) != (args.instance_lock_fd is None):
+        parser.error("an owned worker requires both inherited descriptors")
+    if args.owner_fd is not None:
+        os.set_inheritable(args.owner_fd, False)
+        os.set_inheritable(args.instance_lock_fd, False)
+
+        def stop_on_owner_exit() -> None:
+            try:
+                os.read(args.owner_fd, 1)
+            finally:
+                os._exit(0)
+
+        threading.Thread(target=stop_on_owner_exit, daemon=True).start()
 
     auth_token = os.environ.get("FEEDBAX_WORKER_AUTH_TOKEN")
     try:

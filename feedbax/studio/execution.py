@@ -1040,39 +1040,55 @@ def _build_invocation_backend_plan(
 
 
 def _default_local_realization(*, job_id: str, cwd: str | None) -> BackendRealizationRequest:
-    repo_root = Path(__file__).resolve().parents[2]
-    revision = subprocess.run(
-        ["git", "--no-optional-locks", "rev-parse", "HEAD"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=5,
-    ).stdout.strip()
-    listed = subprocess.run(
-        ["git", "--no-optional-locks", "ls-files", "-co", "--exclude-standard", "feedbax"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=5,
-    ).stdout.splitlines()
-    code_hash = hashlib.sha256(revision.encode("ascii") + b"\0")
-    for relative in sorted(set(listed)):
-        path = repo_root / relative
-        if not path.is_file():
-            continue
-        code_hash.update(relative.encode("utf-8") + b"\0")
-        code_hash.update(path.read_bytes())
-    code_digest = code_hash.hexdigest()
-    lock_path = repo_root / "uv.lock"
-    environment_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    import os
+
+    installed_root = os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT")
+    if installed_root:
+        from feedbax.desktop.release import Release
+        from feedbax.orchestration.revision import assert_feedbax_revision_exact
+
+        release = Release.load(Path(installed_root))
+        assert_feedbax_revision_exact(release.document["source_commit"])
+        code_bundle_id = f"feedbax-installed-release:sha256:{release.digest}"
+        environment_bundle_id = (
+            f"feedbax-installed-dependencies:sha256:{release.document['dependency_manifest_sha256']}"
+        )
+    else:
+        repo_root = Path(__file__).resolve().parents[2]
+        revision = subprocess.run(
+            ["git", "--no-optional-locks", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        ).stdout.strip()
+        listed = subprocess.run(
+            ["git", "--no-optional-locks", "ls-files", "-co", "--exclude-standard", "feedbax"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        ).stdout.splitlines()
+        code_hash = hashlib.sha256(revision.encode("ascii") + b"\0")
+        for relative in sorted(set(listed)):
+            path = repo_root / relative
+            if not path.is_file():
+                continue
+            code_hash.update(relative.encode("utf-8") + b"\0")
+            code_hash.update(path.read_bytes())
+        code_digest = code_hash.hexdigest()
+        lock_path = repo_root / "uv.lock"
+        environment_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+        code_bundle_id = f"feedbax-working-tree:sha256:{code_digest}"
+        environment_bundle_id = f"uv-lock:sha256:{environment_digest}"
     return BackendRealizationRequest(
         adapter_id="feedbax.orchestration.local",
         adapter_version="1",
         capability_variant="local-stop",
-        code_bundle_id=f"feedbax-working-tree:sha256:{code_digest}",
-        environment_bundle_id=f"uv-lock:sha256:{environment_digest}",
+        code_bundle_id=code_bundle_id,
+        environment_bundle_id=environment_bundle_id,
         command=(
             sys.executable,
             "-m",
@@ -1615,7 +1631,8 @@ def _materialized_row_specs(
             dict(graph_spec),
             row.payload,
             row.spec.task.model_dump(mode="json", exclude_none=True),
-            None,
+            row.spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
+            if row.spec.task_binding_spec is not None else None,
             "TrainingRunSpec",
         )
     graph_spec = row.payload.get("graph_spec")
