@@ -139,6 +139,11 @@ dev = [
     "scipy>=1.17.1",
     "ruff>=0.12.11",
 ]
+mjx-warp = [
+    "feedbax[mjx]",
+    "mujoco-mjx[warp]==4.0.0",
+    "jax[cuda13]==0.7.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 
 [tool.hatch.build.targets.sdist]
 packages = ["feedbax"]

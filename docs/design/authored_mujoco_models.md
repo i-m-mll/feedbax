@@ -14,14 +14,16 @@ The structural signature includes named topology and state and law layout. Numer
 
 ## Execution
 
-`compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Asset and overlay tendon paths are preserved for geometry-based coupling.
+`compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Asset and overlay tendon paths are preserved for geometry-based coupling. Select MJX with `solver.mjx_backend`, which defaults to `jax`.
 
 | Solver | Execution |
 | --- | --- |
-| `mujoco` | MJX-JAX steps the authored MuJoCo integrator at the model timestep. Controls and COM wrenches are held through one native substep. |
+| `mujoco` | The selected MJX implementation steps the authored MuJoCo integrator at the model timestep. Controls and COM wrenches are held through one native substep. |
 | `euler`, `tsit5` | Diffrax advances continuous MJX forward dynamics at a fixed substep. Loads and actuator derivatives are evaluated at each stage. |
 
 The control period must be an integer multiple of the model timestep. The continuous route admits zero compiled constraint rows and stage-local actuator dynamics without activation limits. History, plugins and plasticity are outside this continuation profile. Reverse mode is qualified on the constraint-free profile without primitive tendon wrapping. Qualification uses the exact stock provider described in [MuJoCo numerical baseline](mujoco_numerical_baseline.md).
+
+The Warp native profile uses float32 and runs explicit forward and RL rollouts. It requires rigid bodies, disabled sleeping, and collisions disabled or excluded by the model. Contact buffers span the entire Warp batch. The collision-free profile bounds joint, tendon and equality constraint capacity per world and fails on an overflow. Physics automatic differentiation is unavailable. Euler, RK4 and implicitfast are native MuJoCo integrator options. The `mjx-warp` dependency group supplies the optional runtime for qualification and adds the locked JAX CUDA plugin on Linux x86_64. `scripts/qualify_mjx_warp.py` runs the batched graph fixtures and native references. CUDA acceptance requires an actual NVIDIA device. The script also offers local CPU diagnostics.
 
 Spatial position and velocity are in world XYZ. The orientation matrix maps local coordinates to world axes. Spatial body wrenches supply three coordinates each for force, moment and application point. Planar wrenches supply XY force and point and a one-element Z moment. A body-frame application point is relative to the body origin. The backend transports the free moment and lever-arm contribution to the body COM.
 
