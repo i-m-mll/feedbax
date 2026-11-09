@@ -1,69 +1,82 @@
-"""MuJoCo/MJX skeleton implementing feedbax's AbstractSkeleton interface.
-
-Uses ``mjx.forward()`` to compute forward dynamics without integrating,
-exposing a standard ``vector_field()`` returning ``(qvel, qacc)`` so that
-Diffrax handles the time integration.
-"""
+"""Stateful MuJoCo XLA skeleton used by native and continuous physics backends."""
 
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import replace
+from typing import TYPE_CHECKING, Literal
 
 import equinox as eqx
-from equinox import field
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, Scalar
+import numpy as np
+from equinox import field
+from jaxtyping import Array, PRNGKeyArray, Scalar
 
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
-from feedbax.runtime.state import CartesianState, StateBounds
+from feedbax.runtime.state import CartesianState, SpatialCartesianState, StateBounds
+
+if TYPE_CHECKING:
+    from feedbax.mechanics.compiled_model import CompiledPhysicalModel
+
+
+class AppliedWrench(eqx.Module):
+    """Force, free moment and application point in the same world or body frame.
+
+    A planar wrench has XY force and point and a one-element Z moment. A
+    spatial wrench has XYZ force, point and moment. A body-frame point is
+    relative to the body's origin, and a world-frame point is absolute.
+    """
+
+    force: Array
+    moment: Array
+    point: Array
+    frame: Literal["world", "body"] = field(static=True)
+
+
+class _BodyWrenches(eqx.Module):
+    force: Array
+    moment: Array
+    point: Array
+    body_frame: Array
 
 
 class MJXSkeletonState(AbstractSkeletonState):
-    """Configuration state for an MJX-based skeleton.
+    """Physical state, held loads and the provider's native continuation vector."""
 
-    Attributes:
-        qpos: Generalized positions, shape ``(nq,)``.
-        qvel: Generalized velocities, shape ``(nv,)``.
-        effector_force: World-space XY force held at the effector site, shape ``(2,)``.
-    """
-
-    qpos: Float[Array, " nq"] = field(default_factory=lambda: jnp.zeros(1))
-    qvel: Float[Array, " nv"] = field(default_factory=lambda: jnp.zeros(1))
-    effector_force: Float[Array, "2"] = field(default_factory=lambda: jnp.zeros(2))
+    qpos: Array = field(default_factory=lambda: jnp.zeros(1))
+    qvel: Array = field(default_factory=lambda: jnp.zeros(1))
+    effector_force: Array = field(default_factory=lambda: jnp.zeros(2))
+    act: Array = field(default_factory=lambda: jnp.zeros(0))
+    time: Array = field(default_factory=lambda: jnp.zeros(()))
+    continuation: Array = field(default_factory=lambda: jnp.zeros(0))
+    wrenches: _BodyWrenches | None = None
 
 
 class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
-    """Skeleton dynamics via MuJoCo/MJX forward computation.
+    """Shared MJX-JAX state, observation and dynamics for planar and spatial models."""
 
-    Calls ``mjx.forward()`` to compute accelerations without integrating,
-    providing a ``vector_field()`` compatible with Diffrax ODE solvers.
-
-    Attributes:
-        mjx_model: The MJX model (on device).
-        effector_site_id: Site index for the end-effector.
-        effector_body_id: Body index for the end-effector body.
-        nq: Number of generalized positions (static).
-        nv: Number of generalized velocities (static).
-        nbody: Number of bodies (static).
-    """
-
-    mjx_model: object  # mjx.Model — not typed to avoid import at class-definition time
+    mjx_model: object
+    descriptor: CompiledPhysicalModel | None = field(static=True)
     effector_site_id: int = field(static=True)
     effector_body_id: int = field(static=True)
+    dimension: Literal[2, 3] = field(static=True)
     nq: int = field(static=True)
     nv: int = field(static=True)
     nbody: int = field(static=True)
-    _bounds: StateBounds  # Cached at init from concrete model data
+    constraint_rows: int = field(static=True)
+    _quaternions: tuple[tuple[int, int], ...] = field(static=True)
+    _continuation_mask: int = field(static=True)
+    _bounds: StateBounds
 
     def __init__(
         self,
         mjx_model,
         effector_site_id: int,
         effector_body_id: int,
+        *,
+        descriptor: CompiledPhysicalModel | None = None,
     ):
-        from mujoco import mjtJoint
-        import numpy as np
+        from mujoco import mjtJoint, mjtState, mjx
 
         if not 0 <= effector_site_id < mjx_model.nsite:
             raise ValueError(f"Invalid effector site index {effector_site_id}")
@@ -73,211 +86,256 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
                 f"Effector site {effector_site_id} belongs to body {site_body_id}, "
                 f"but body {effector_body_id} was specified"
             )
-
         self.mjx_model = mjx_model
+        self.descriptor = descriptor
         self.effector_site_id = effector_site_id
         self.effector_body_id = site_body_id
+        self.dimension = 2 if descriptor is None else descriptor.dimension
         self.nq = int(mjx_model.nq)
         self.nv = int(mjx_model.nv)
         self.nbody = int(mjx_model.nbody)
+        # This is the allocation used by the pinned MJX-JAX forward solver,
+        # including rows inactive in the initial pose.
+        self.constraint_rows = mjx.make_data(mjx_model, impl="jax")._impl.efc_J.shape[0]
+        self._continuation_mask = int(
+            mjtState.mjSTATE_WARMSTART | mjtState.mjSTATE_EQ_ACTIVE
+            | mjtState.mjSTATE_MOCAP_POS | mjtState.mjSTATE_MOCAP_QUAT
+        )
+        if mjx_model.nhistory or mjx_model.npluginstate or mjx_model.nplastic:
+            raise ValueError("MJX-JAX continuation does not support history, plugins or plasticity")
+
+        self._quaternions = ()
+        if descriptor is not None:
+            self._quaternions = tuple(
+                (joint.qpos.stop - 4, joint.qvel.stop - 3)
+                for joint in descriptor.joints if joint.kind in {"ball", "free"}
+            )
+        elif np.isin(
+            mjx_model.jnt_type, [int(mjtJoint.mjJNT_BALL), int(mjtJoint.mjJNT_FREE)],
+        ).any():
+            raise ValueError("Ball and free joints require a spatial compiled descriptor")
+        if self._quaternions and self.dimension != 3:
+            raise ValueError("Ball and free joints require a spatial compiled descriptor")
 
         scalar_joint = np.isin(
-            mjx_model.jnt_type, [mjtJoint.mjJNT_HINGE, mjtJoint.mjJNT_SLIDE]
+            mjx_model.jnt_type, [int(mjtJoint.mjJNT_HINGE), int(mjtJoint.mjJNT_SLIDE)],
         )
         limited = np.asarray(mjx_model.jnt_limited, dtype=bool) & scalar_joint
+        self._bounds = StateBounds(low=None, high=None)
         if np.any(limited):
             addresses = mjx_model.jnt_qposadr[limited]
-            joint_ranges = np.asarray(mjx_model.jnt_range)[limited]
-            low = np.full(self.nq, -np.inf, dtype=joint_ranges.dtype)
-            high = np.full(self.nq, np.inf, dtype=joint_ranges.dtype)
-            low[addresses], high[addresses] = joint_ranges.T
-            self._bounds = StateBounds(
-                low=MJXSkeletonState(
-                    qpos=jnp.asarray(low),
-                    qvel=None,
-                    effector_force=None,
-                ),
-                high=MJXSkeletonState(
-                    qpos=jnp.asarray(high),
-                    qvel=None,
-                    effector_force=None,
-                ),
-            )
-        else:
-            self._bounds = StateBounds(low=None, high=None)
+            ranges = np.asarray(mjx_model.jnt_range)[limited]
+            low = np.full(self.nq, -np.inf, dtype=ranges.dtype)
+            high = np.full(self.nq, np.inf, dtype=ranges.dtype)
+            low[addresses], high[addresses] = ranges.T
 
-    def _reconstruct_data(self, state: MJXSkeletonState):
-        """Build MJX data with the current generalized positions and velocities."""
+            def bound(value):
+                return MJXSkeletonState(
+                    qpos=jnp.asarray(value), qvel=None, effector_force=None,
+                    act=None, time=None, continuation=None,
+                )
+
+            self._bounds = StateBounds(low=bound(low), high=bound(high))
+
+    @classmethod
+    def from_descriptor(cls, descriptor: CompiledPhysicalModel) -> MJXSkeleton:
         from mujoco import mjx
 
-        return mjx.make_data(self.mjx_model).replace(qpos=state.qpos, qvel=state.qvel)
+        if descriptor.effector_site is None:
+            raise ValueError("An executable MuJoCo model requires an effector site")
+        site_id = descriptor.site_ids[descriptor.effector_site]
+        return cls(
+            mjx.put_model(descriptor.model, impl="jax"),
+            site_id, int(descriptor.model.site_bodyid[site_id]), descriptor=descriptor,
+        )
+
+    def retract_configuration(self, qpos: Array) -> Array:
+        """Project quaternion coordinates onto the unit sphere."""
+        for start, _ in self._quaternions:
+            quat = qpos[start:start + 4]
+            norm = jnp.linalg.norm(quat)
+            norm = eqx.error_if(
+                norm, ~jnp.isfinite(norm) | (norm <= jnp.finfo(quat.dtype).eps),
+                "MuJoCo configuration contains an invalid quaternion",
+            )
+            qpos = qpos.at[start:start + 4].set(quat / norm)
+        return qpos
+
+    def configuration_derivative(self, qpos: Array, qvel: Array) -> Array:
+        """MuJoCo uses scalar-first quaternions and body-local angular velocity."""
+        pieces = []
+        previous_pos = previous_vel = 0
+        for pos, vel in self._quaternions:
+            pieces.append(qvel[previous_vel:vel])
+            scalar, vector = qpos[pos], qpos[pos + 1:pos + 4]
+            omega = qvel[vel:vel + 3]
+            pieces.append(0.5 * jnp.concatenate((
+                jnp.array([-jnp.dot(vector, omega)]),
+                scalar * omega + jnp.cross(vector, omega),
+            )))
+            previous_pos, previous_vel = pos + 4, vel + 3
+        pieces.append(qvel[previous_vel:previous_vel + self.nq - previous_pos])
+        return jnp.concatenate(pieces)
+
+    def project_state(self, state: MJXSkeletonState) -> MJXSkeletonState:
+        return replace(state, qpos=self.retract_configuration(state.qpos))
+
+    def _reconstruct_data(self, state: MJXSkeletonState):
+        from mujoco import mjx
+
+        model = self.mjx_model
+        data = mjx.make_data(model, impl="jax")
+        if state.continuation.size:
+            data = mjx.set_state(model, data, state.continuation, self._continuation_mask)
+        return data.replace(
+            qpos=self.retract_configuration(state.qpos), qvel=state.qvel,
+            act=state.act, time=state.time,
+        )
 
     def _kinematics_data(self, state: MJXSkeletonState):
-        """Compute world positions and the center-of-mass motion bases."""
         from mujoco import mjx
 
         data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
         return mjx.com_pos(self.mjx_model, data)
 
     def _dynamics_data(self, state: MJXSkeletonState, ctrl: Array):
-        """Prepare controls and the current body COM wrench for dynamics."""
         from mujoco import mjx
 
         data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
-        force = jnp.pad(state.effector_force, (0, 1))
-        moment_arm = data.site_xpos[self.effector_site_id] - data.xipos[self.effector_body_id]
-        wrench = jnp.concatenate((force, jnp.cross(moment_arm, force)))
+        wrenches = data.xfrc_applied
+        if state.wrenches is not None:
+            body = state.wrenches
+            local = body.body_frame[:, None] > 0.5
+
+            def world_vector(value):
+                return jnp.where(local, jnp.einsum("bij,bj->bi", data.xmat, value), value)
+
+            force = world_vector(body.force)
+            point = world_vector(body.point) + jnp.where(local, data.xpos, 0)
+            moment = world_vector(body.moment) + jnp.cross(point - data.xipos, force)
+            wrenches = jnp.concatenate((force, moment), axis=1)
+
+        site_force = jnp.pad(state.effector_force, (0, 3 - self.dimension))
+        arm = data.site_xpos[self.effector_site_id] - data.xipos[self.effector_body_id]
+        wrench = jnp.concatenate((site_force, jnp.cross(arm, site_force)))
         return data.replace(
-            ctrl=ctrl, xfrc_applied=data.xfrc_applied.at[self.effector_body_id].set(wrench)
+            ctrl=ctrl,
+            xfrc_applied=wrenches.at[self.effector_body_id].add(wrench),
         )
 
     @jax.named_scope("fbx.MJXSkeleton.vector_field")
-    def vector_field(
-        self,
-        t: Scalar,
-        state: MJXSkeletonState,
-        input: Array,
-    ) -> MJXSkeletonState:
-        """Return time derivatives of the MJX skeleton state.
-
-        Calls ``mjx.forward()`` to compute accelerations (qacc) without
-        integrating, then returns ``(qvel, qacc, zeros)`` as the derivative.
-
-        Args:
-            t: Time (unused — MJX dynamics are time-invariant).
-            state: Current skeleton state.
-            input: Actuator controls, shape ``(nu,)``.
-
-        Returns:
-            MJXSkeletonState with (d_qpos=qvel, d_qvel=qacc, d_effector_force=0).
-        """
+    def vector_field(self, t: Scalar, state: MJXSkeletonState, input: Array) -> MJXSkeletonState:
         from mujoco import mjx
 
-        data = self._dynamics_data(state, input)
-        data = mjx.forward(self.mjx_model, data)
-
-        return MJXSkeletonState(
-            qpos=state.qvel,  # d(qpos)/dt = qvel
-            qvel=data.qacc,   # d(qvel)/dt = qacc
-            effector_force=jnp.zeros_like(state.effector_force),
+        data = mjx.forward(self.mjx_model, self._dynamics_data(state, input))
+        return replace(
+            jax.tree.map(jnp.zeros_like, state),
+            qpos=self.configuration_derivative(data.qpos, data.qvel),
+            qvel=data.qacc, act=data.act_dot, time=jnp.ones_like(state.time),
         )
+
+    def _cartesian(self, pos, vel, rotation) -> CartesianState:
+        pos = pos[..., :self.dimension]
+        vel = vel[..., :self.dimension]
+        force = jnp.zeros_like(pos)
+        if self.dimension == 3:
+            return SpatialCartesianState(pos=pos, vel=vel, force=force, orientation=rotation)
+        return CartesianState(pos=pos, vel=vel, force=force)
 
     @jax.named_scope("fbx.MJXSkeleton.forward_kinematics")
     def forward_kinematics(self, state: MJXSkeletonState) -> CartesianState:
-        """Return world-space XY positions and velocities at every body origin."""
         from mujoco import mjx
 
         data = mjx.com_vel(self.mjx_model, self._kinematics_data(state))
-        # MJX expresses cvel in world axes at the root subtree's center of mass.
         offset = data.xpos - data.subtree_com[self.mjx_model.body_rootid]
         vel = data.cvel[:, 3:] + jnp.cross(data.cvel[:, :3], offset)
-
-        pos = data.xpos[:, :2]
-        return CartesianState(pos=pos, vel=vel[:, :2], force=jnp.zeros_like(pos))
+        return self._cartesian(data.xpos, vel, data.xmat)
 
     @jax.named_scope("fbx.MJXSkeleton.effector")
     def effector(self, state: MJXSkeletonState) -> CartesianState:
-        """Return the Cartesian state of the end-effector site.
-
-        The velocity is the world-space site position Jacobian applied to
-        generalized velocity, projected onto the XY plane.
-
-        Args:
-            state: Current skeleton state.
-
-        Returns:
-            CartesianState with 2D effector position, velocity, and zero force.
-        """
         from mujoco import mjx
 
         data = self._kinematics_data(state)
-        pos = data.site_xpos[self.effector_site_id]
+        site = self.effector_site_id
+        pos = data.site_xpos[site]
         jac_pos, _ = mjx.jac(self.mjx_model, data, pos, self.effector_body_id)
-        vel = data.qvel @ jac_pos
-
-        return CartesianState(pos=pos[:2], vel=vel[:2], force=jnp.zeros(2))
+        return self._cartesian(pos, data.qvel @ jac_pos, data.site_xmat[site])
 
     def update_state_given_effector_force(
-        self,
-        effector_force: Array,
-        state: MJXSkeletonState,
-        *,
-        key: Optional[PRNGKeyArray] = None,
+        self, effector_force: Array, state: MJXSkeletonState, *, key: PRNGKeyArray | None = None,
     ) -> MJXSkeletonState:
-        """Hold a world-space XY force at the effector site until the next update."""
         force = jnp.asarray(effector_force, dtype=state.effector_force.dtype)
-        return eqx.tree_at(lambda s: s.effector_force, state, force)
+        if force.shape != (self.dimension,):
+            raise ValueError(f"Effector force requires shape ({self.dimension},), got {force.shape}")
+        return replace(state, effector_force=force)
+
+    def with_wrench(
+        self, state: MJXSkeletonState, body_id: int, wrench: AppliedWrench,
+    ) -> MJXSkeletonState:
+        """Replace the held load on one body. The next integration stage transforms it."""
+        if not 0 < body_id < self.nbody or wrench.frame not in {"body", "world"}:
+            raise ValueError("Wrench requires a non-world body and a world or body frame")
+        force, moment, point = (
+            jnp.asarray(value, dtype=state.qpos.dtype)
+            for value in (wrench.force, wrench.moment, wrench.point)
+        )
+        if force.shape != (self.dimension,) or point.shape != (self.dimension,):
+            raise ValueError(f"Wrench force and point require shape ({self.dimension},)")
+        if moment.shape != (1 if self.dimension == 2 else 3,):
+            raise ValueError(f"Wrench moment does not match the {self.dimension}D model")
+        if self.dimension == 2:
+            force, point, moment = jnp.pad(force, (0, 1)), jnp.pad(point, (0, 1)), jnp.pad(moment, (2, 0))
+        body = state.wrenches
+        if body is None:
+            body = self._empty_wrenches(state.qpos.dtype)
+        return replace(state, wrenches=_BodyWrenches(
+            body.force.at[body_id].set(force), body.moment.at[body_id].set(moment),
+            body.point.at[body_id].set(point), body.body_frame.at[body_id].set(wrench.frame == "body"),
+        ))
 
     @jax.named_scope("fbx.MJXSkeleton.step")
     def step(self, state: MJXSkeletonState, ctrl: Array) -> MJXSkeletonState:
-        """One discrete MuJoCo step via ``mjx.step()``.
-
-        Unlike ``vector_field()`` (which returns derivatives for Diffrax
-        integration), this method performs a full discrete-time integration
-        step using MuJoCo's native integrator. The COM wrench is evaluated
-        at the start of each timestep and held through its internal stages
-        (including RK4). The site force carries over to the next timestep.
-
-        Args:
-            state: Current skeleton state.
-            ctrl: Actuator controls, shape ``(nu,)``.
-
-        Returns:
-            Updated MJXSkeletonState after one MuJoCo timestep.
-        """
+        """Advance the authored integrator with controls and COM wrenches held for the step."""
         from mujoco import mjx
 
-        data = self._dynamics_data(state, ctrl)
-        data = mjx.step(self.mjx_model, data)
-
-        return MJXSkeletonState(
-            qpos=data.qpos,
-            qvel=data.qvel,
-            effector_force=state.effector_force,
+        data = mjx.step(self.mjx_model, self._dynamics_data(state, ctrl))
+        return replace(
+            state, qpos=data.qpos, qvel=data.qvel, act=data.act, time=data.time,
+            continuation=mjx.get_state(self.mjx_model, data, self._continuation_mask),
         )
 
     def inverse_kinematics(self, effector_state: CartesianState) -> MJXSkeletonState:
-        """Not implemented for MJX skeletons.
+        raise NotImplementedError("Initialize an MJX model with generalized coordinates")
 
-        MJX has no analytical inverse kinematics. Numerical IK is future work.
-        MJXPlant cannot be used in SimpleFeedback graphs requiring IK.
+    def _empty_wrenches(self, dtype) -> _BodyWrenches:
+        zeros = jnp.zeros((self.nbody, 3), dtype=dtype)
+        return _BodyWrenches(zeros, zeros, zeros, jnp.zeros(self.nbody, dtype=dtype))
 
-        Raises:
-            NotImplementedError: Always.
-        """
-        raise NotImplementedError(
-            "MJXSkeleton does not support inverse kinematics. "
-            "MJX has no analytical IK; numerical IK is future work."
-        )
-
-    def init(self, *, key: PRNGKeyArray) -> MJXSkeletonState:
-        """Initialize skeleton state with small random perturbation.
-
-        Args:
-            key: PRNG key for random initialization.
-
-        Returns:
-            Initial MJXSkeletonState.
-        """
+    def reset_continuation(self, state: MJXSkeletonState) -> MJXSkeletonState:
+        """Reinitialize provider buffers after transferring the common physical state."""
         from mujoco import mjx
 
-        data = mjx.make_data(self.mjx_model)
-        qpos = data.qpos + jax.random.normal(key, (self.nq,)) * 0.01
-        data = data.replace(qpos=qpos)
-        data = mjx.forward(self.mjx_model, data)
+        fresh = mjx.make_data(self.mjx_model, impl="jax")
+        data = self._reconstruct_data(state).replace(qacc_warmstart=fresh.qacc_warmstart)
+        return replace(state, continuation=mjx.get_state(
+            self.mjx_model, data, self._continuation_mask,
+        ))
 
+    def init(self, *, key: PRNGKeyArray) -> MJXSkeletonState:
+        from mujoco import mjx
+
+        data = mjx.make_data(self.mjx_model, impl="jax")
         return MJXSkeletonState(
-            qpos=data.qpos,
-            qvel=data.qvel,
-            effector_force=jnp.zeros(2),
+            qpos=data.qpos, qvel=data.qvel, act=data.act, time=data.time,
+            effector_force=jnp.zeros(self.dimension, dtype=data.qpos.dtype),
+            continuation=mjx.get_state(self.mjx_model, data, self._continuation_mask),
+            wrenches=self._empty_wrenches(data.qpos.dtype),
         )
 
     @property
     def input_size(self) -> int:
-        """Number of actuator inputs."""
         return int(self.mjx_model.nu)
 
     @property
     def bounds(self) -> StateBounds[MJXSkeletonState]:
-        """State bounds derived from MuJoCo joint limits (cached at init)."""
         return self._bounds

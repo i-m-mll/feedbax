@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from hashlib import sha256
 from math import cos, isfinite, sin
 from numbers import Real
@@ -12,7 +13,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from feedbax.contracts.acausal import AcausalGraphSpec, acausal_interior_content_hash
+from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec, acausal_interior_content_hash
 from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.mechanics.compiled_model import (
@@ -52,6 +53,8 @@ def _element_groups(graph: AcausalGraphSpec, types: Sequence[str]) -> dict[str, 
 
 
 def _add_site(body: MjsBody, name: str, position: Sequence[float]) -> None:
+    if not isinstance(name, str) or not name:
+        raise ValueError("MuJoCo sites require a nonempty name")
     body.add_site(name=name, pos=position, size=[0.005, 0.005, 0.005])
 
 
@@ -66,7 +69,16 @@ def _add_muscle_path(
     tendon = spec.add_tendon(name=name)
     for site in sites:
         tendon.wrap_site(site)
-    return MusclePathBinding(name, sites, law, state_size, MappingProxyType(dict(parameters)))
+    return MusclePathBinding(
+        name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
+    )
+
+
+def _physical_identity(graph: AcausalGraphSpec, timestep: float) -> str:
+    return acausal_interior_content_hash(graph.model_copy(update={
+        "solver": SolverConfigSpec(solver_type="euler", dt=timestep),
+        "metadata": None,
+    }))
 
 
 def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
@@ -105,7 +117,8 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
         for end, distance in (("proximal", 0.0), ("distal", length))
     })
     root_frame = anchor_params.get("frame")
-    if root_frame not in frames or anchor_params.get("world_frame", "world.frame") != world_frame:
+    if (not isinstance(root_frame, str) or root_frame not in frames
+            or anchor_params.get("world_frame", "world.frame") != world_frame):
         raise ValueError(f"Anchor {anchor!r} must connect a link frame to {world_frame!r}")
 
     outgoing = {}
@@ -115,7 +128,9 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
     }
     for name, params in joints.items():
         parent_frame, child_frame = params.get("parent_frame"), params.get("child_frame")
-        if parent_frame not in frames or child_frame not in frames or child_frame == world_frame:
+        if (not isinstance(parent_frame, str) or not isinstance(child_frame, str)
+                or parent_frame not in frames or child_frame not in frames
+                or child_frame == world_frame):
             raise ValueError(f"Joint {name!r} has invalid parent/child frame references")
         parent_name, parent_x = frames[parent_frame]
         child_name, child_x = frames[child_frame]
@@ -135,6 +150,8 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
     spec.option.timestep = _number(graph.solver.dt, "solver.dt")
+    if spec.option.timestep <= 0:
+        raise ValueError("Planar MuJoCo timestep must be positive")
     spec.option.gravity = [0.0, -9.81, 0.0]
     bodies = {world: spec.worldbody}
     parent_name = world
@@ -187,7 +204,7 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
 
     def attach(site: str, point: Mapping[str, object]) -> None:
         frame = point.get("frame")
-        if frame not in frames:
+        if not isinstance(frame, str) or frame not in frames:
             raise ValueError(f"Site {site!r} references missing planar frame {frame!r}")
         body_name, x = frames[frame]
         dx, dy = _vector(point.get("offset") or [0, 0], 2, f"{site}.offset")
@@ -213,8 +230,9 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
              if key not in {"path_points", "law", "state_size"}},
         ))
     return describe_model(
-        spec.compile(), identity=acausal_interior_content_hash(graph), dimension=2,
+        spec.compile(), identity=_physical_identity(graph, graph.solver.dt), dimension=2,
         effector_site="effector" if "effector" in markers else None, paths=tuple(paths),
+        planar_segment_lengths=tuple(lengths[name] for name in bodies if name != world),
     )
 
 
@@ -267,8 +285,9 @@ def compile_spatial_model(
         paths.append(_add_muscle_path(
             spec, name, path.sites, path.law, path.state_size, path.parameters,
         ))
+    model = spec.compile()
     return describe_model(
-        spec.compile(), identity=acausal_interior_content_hash(graph), dimension=3,
+        model, identity=_physical_identity(graph, model.opt.timestep), dimension=3,
         asset_identity=binding.asset.object_id, effector_site=binding.effector_site,
         paths=tuple(paths),
     )
