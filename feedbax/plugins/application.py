@@ -14,6 +14,7 @@ from feedbax.analysis.evaluation_product_union import (
 )
 from feedbax.analysis.reports import ReportRecipeRegistry, register_builtin_report_recipes
 from feedbax.analysis.specs import AnalysisRecipeRegistry
+from feedbax.analysis.warp_qualification import register_warp_qualification
 from feedbax.contracts.training import (
     DeclaredTrainingProgram,
     TrainingProgramRegistry,
@@ -180,6 +181,8 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
     register_default_figure_constructors(figures)
     reports = ReportRecipeRegistry()
     register_builtin_report_recipes(reports)
+    evaluations = EvaluationRecipeRegistry()
+    register_warp_qualification(evaluations)
     row_lowerers = TrainingRowLowererRegistry()
     preparations = ExecutionPreparationProviderRegistry()
     training_programs = TrainingProgramCatalog(row_lowerers, preparations)
@@ -191,7 +194,7 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
         execution_preparations=preparations,
         experiment_packages=ExperimentRegistry(),
         analysis_recipes=AnalysisRecipeRegistry(),
-        evaluation_recipes=EvaluationRecipeRegistry(),
+        evaluation_recipes=evaluations,
         evaluation_batch_consumers=EvaluationBatchConsumerRegistry(),
         evaluation_product_union_finalizers=EvaluationCompactProductUnionFinalizerRegistry(),
         report_recipes=reports,

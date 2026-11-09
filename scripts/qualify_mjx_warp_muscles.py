@@ -21,7 +21,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from qualify_mjx_warp import (
+from feedbax.mechanics.warp_qualification import (
     assert_single_cuda_device,
     assert_warp_ffi,
     exact_tree,
