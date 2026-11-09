@@ -1,8 +1,4 @@
-"""MuJoCo model construction for configurable planar chains.
-
-Builds MuJoCo models via the MjSpec API (not MJCF XML) from body presets
-and chain/simulation configurations.
-"""
+"""Graph and native model construction for configurable planar chains."""
 
 from __future__ import annotations
 
@@ -10,11 +6,19 @@ from typing import Optional
 
 import equinox as eqx
 import numpy as np
-from jaxtyping import Array, Float
 
+from feedbax.contracts.acausal import (
+    AcausalConnectionSpec,
+    AcausalGraphSpec,
+    SolverConfigSpec,
+    SolverType,
+)
+from feedbax.contracts.graph import ComponentSpec
 from feedbax.mechanics.body import BodyPreset
 from feedbax.mechanics.muscle_config import (
+    MuscleConfig,
     MuscleTopology,
+    default_muscle_config,
     default_monoarticular_topology,
 )
 
@@ -57,160 +61,103 @@ class SimConfig(eqx.Module):
     episode_duration: float = 2.0
 
 
-def _set_if_attr(obj: object, name: str, value: object) -> None:
-    if hasattr(obj, name):
-        setattr(obj, name, value)
+def planar_chain_graph(
+    preset: BodyPreset,
+    chain_config: ChainConfig,
+    sim_config: SimConfig,
+    muscle_config: MuscleConfig | None = None,
+    *,
+    solver_type: SolverType = "euler",
+    joint_limits: tuple[float, float] | None = None,
+) -> AcausalGraphSpec:
+    """Author a planar chain from a morphology preset."""
+    if chain_config.n_joints < 1:
+        raise ValueError("A planar chain requires at least one joint")
+    if muscle_config is None:
+        muscle_config = default_muscle_config(preset, chain_config)
 
+    def component(name: str, **params: object) -> ComponentSpec:
+        return ComponentSpec(type=f"feedbax.{name}", params=params)
 
-def _capsule_volume(length: float, radius: float) -> float:
-    cylinder = np.pi * radius * radius * length
-    sphere = 4.0 / 3.0 * np.pi * radius**3
-    return cylinder + sphere
+    nodes = {
+        "world": component("WorldFrame"),
+        "anchor": component("Anchor", world_frame="world.frame", frame="link0.proximal"),
+    }
+    edges = [(("world", "frame"), ("anchor", "world")),
+             (("anchor", "frame"), ("link0", "proximal"))]
+    for i in range(chain_config.n_joints):
+        link, joint = f"link{i}", f"joint{i}"
+        parent = ("world", "frame") if i == 0 else (f"link{i - 1}", "distal")
+        length, mass = float(preset.segment_lengths[i]), float(preset.segment_masses[i])
+        nodes[link] = component(
+            "PlanarLink", length=length, mass=mass, com=0.5, inertia=mass * length**2 / 12,
+        )
+        limits = {"limit_min": joint_limits[0], "limit_max": joint_limits[1]} if joint_limits else {}
+        nodes[joint] = component(
+            "RevoluteJoint", parent_frame=".".join(parent), child_frame=f"{link}.proximal",
+            damping=float(preset.joint_damping[i]), stiffness=float(preset.joint_stiffness[i]),
+            **limits,
+        )
+        edges.extend(((parent, (joint, "parent")), ((joint, "child"), (link, "proximal"))))
+
+    def point(body: str, position) -> dict:
+        frame = "world.frame" if body == "world" else f"{body}.proximal"
+        x, y, z = map(float, position)
+        if z != 0:
+            raise ValueError(f"Planar attachment on {body!r} requires zero Z offset")
+        return {"frame": frame, "offset": [x, y]}
+
+    for i in range(muscle_config.n_muscles):
+        origin = point(muscle_config.origin_body[i], muscle_config.origin_pos[i])
+        insertion = point(muscle_config.insertion_body[i], muscle_config.insertion_pos[i])
+        optimal_length = float(preset.muscle_optimal_fiber_length[i])
+        slack_length = float(preset.muscle_tendon_slack_length[i])
+        nodes[f"muscle_{i}"] = component(
+            "MusclePath", path_points=[origin, insertion],
+            law="feedbax.RigidTendonHillMuscle", state_size=1,
+            moment_arm=[float(value) for value in muscle_config.moment_arms[i]],
+            reference_length=optimal_length + slack_length,
+            max_isometric_force=float(preset.muscle_pcsa[i]) * 30,
+            optimal_muscle_length=optimal_length, tendon_slack_length=slack_length,
+            tau_act=preset.tau_act, tau_deact=preset.tau_deact,
+        )
+
+    nodes.update({
+        "excitation": component(
+            "ActuationInput", port_name="excitation", source_kind="muscle_excitation_vector",
+        ),
+        "effector": component("SensorOutput", port_name="effector", quantity="effector"),
+        "state": component("SensorOutput", port_name="state", quantity="state"),
+        "effector_marker": component(
+            "PointMarker", frame=f"link{chain_config.n_joints - 1}.distal", marker_name="effector",
+        ),
+    })
+    return AcausalGraphSpec(
+        physical_domain="planar_multibody", nodes=nodes,
+        connections=[AcausalConnectionSpec(a=a, b=b) for a, b in edges],
+        solver=SolverConfigSpec(solver_type=solver_type, dt=sim_config.dt),
+    )
 
 
 def build_model(
     preset: BodyPreset,
     chain_config: ChainConfig,
     sim_config: SimConfig,
-    muscle_config=None,
+    muscle_config: MuscleConfig | None = None,
     differentiable: bool = False,
 ):
-    """Build a MuJoCo model for a planar chain using MjSpec.
-
-    Constructs an N-link planar chain with hinge joints, capsule geometries,
-    and muscle-like actuators from the given body parameterization.
-
-    Args:
-        preset: Body parameters (segment lengths, masses, damping, etc.).
-        chain_config: Chain topology configuration.
-        sim_config: Simulation timing configuration.
-        muscle_config: Optional muscle attachment configuration. If None,
-            a default flexor/extensor layout is created.
-        differentiable: If True, configure the solver for reverse-mode
-            differentiability: fixed iteration count (``iterations=1``,
-            ``ls_iterations=0``) so MJX uses ``fori_loop`` instead of
-            ``while_loop``, and globally disable contacts.
-
-    Returns:
-        Compiled ``mujoco.MjModel`` instance.
-    """
-    import mujoco
-
-    if muscle_config is None:
-        from feedbax.mechanics.muscle_config import default_muscle_config
-        muscle_config = default_muscle_config(preset, chain_config)
-
-    spec = mujoco.MjSpec()
-
-    _set_if_attr(spec.option, "timestep", float(sim_config.dt))
-    _set_if_attr(spec.option, "gravity", [0.0, -9.81, 0.0])
+    """Build the native model through the same graph used for portable models."""
+    from feedbax.mechanics.authored_model import compile_planar_model
 
     if differentiable:
-        # Use fixed solver iterations so MJX emits fori_loop (not while_loop),
-        # which supports reverse-mode AD. Disable contacts globally to avoid
-        # additional non-differentiable collision detection paths.
-        spec.option.iterations = 1
-        spec.option.ls_iterations = 0
-        spec.option.disableflags = (
-            int(spec.option.disableflags)
-            | int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
+        raise ValueError(
+            "This preset has joint limits. For MJX reverse mode, author a constraint-free "
+            "planar_chain_graph and retain its physical settings."
         )
-
-    spec.compiler.degree = False
-
-    world = spec.worldbody
-
-    # Ground plane for reference.
-    try:
-        plane = world.add_geom()
-        _set_if_attr(plane, "type", mujoco.mjtGeom.mjGEOM_PLANE)
-        _set_if_attr(plane, "size", [2.0, 2.0, 0.1])
-        _set_if_attr(plane, "pos", [0.0, 0.0, -0.05])
-        _set_if_attr(plane, "rgba", [0.9, 0.9, 0.9, 1.0])
-    except Exception:
-        pass
-
-    body_map: dict[str, object] = {"world": world}
-    joint_names: list[str] = []
-    joint_objects: list[object] = []
-
-    parent = world
-    x_offset = 0.0
-    radius = 0.02
-
-    for i in range(chain_config.n_joints):
-        length = float(preset.segment_lengths[i])
-        mass = float(preset.segment_masses[i])
-
-        body = parent.add_body(name=f"link{i}", pos=[x_offset, 0.0, 0.0])
-        body_map[f"link{i}"] = body
-
-        joint = body.add_joint(name=f"joint{i}")
-        _set_if_attr(joint, "type", mujoco.mjtJoint.mjJNT_HINGE)
-        _set_if_attr(joint, "axis", [0.0, 0.0, 1.0])
-        _set_if_attr(joint, "pos", [0.0, 0.0, 0.0])
-        _set_if_attr(joint, "limited", True)
-        _set_if_attr(joint, "range", [-np.pi, np.pi])
-        joint.damping = [float(preset.joint_damping[i]), 0.0, 0.0]
-        joint.stiffness = [float(preset.joint_stiffness[i]), 0.0, 0.0]
-        joint_names.append(f"joint{i}")
-        joint_objects.append(joint)
-
-        geom = body.add_geom(name=f"geom{i}")
-        _set_if_attr(geom, "type", mujoco.mjtGeom.mjGEOM_CAPSULE)
-        _set_if_attr(geom, "fromto", [0.0, 0.0, 0.0, length, 0.0, 0.0])
-        _set_if_attr(geom, "size", [radius, 0.0, 0.0])
-        if hasattr(geom, "mass"):
-            _set_if_attr(geom, "mass", mass)
-        else:
-            volume = _capsule_volume(length, radius)
-            _set_if_attr(geom, "density", mass / max(volume, 1e-6))
-
-        if i == chain_config.n_joints - 1:
-            eff = body.add_site(name="effector", pos=[length, 0.0, 0.0])
-            _set_if_attr(eff, "size", [0.01, 0.01, 0.01])
-            _set_if_attr(eff, "rgba", [0.1, 0.6, 0.9, 1.0])
-
-        parent = body
-        x_offset = length
-
-    # Muscle attachment sites (visual / reference only).
-    for i in range(muscle_config.n_muscles):
-        origin_body = body_map[muscle_config.origin_body[i]]
-        insert_body = body_map[muscle_config.insertion_body[i]]
-        origin_site = origin_body.add_site(name=f"muscle{i}_origin")
-        _set_if_attr(origin_site, "pos", muscle_config.origin_pos[i].tolist())
-        _set_if_attr(origin_site, "size", [0.005, 0.005, 0.005])
-        insert_site = insert_body.add_site(name=f"muscle{i}_insert")
-        _set_if_attr(insert_site, "pos", muscle_config.insertion_pos[i].tolist())
-        _set_if_attr(insert_site, "size", [0.005, 0.005, 0.005])
-
-    # General torque actuators — one per joint.
-    # Bug: 138bbe5 — Muscle-to-torque conversion happens in JAX (MJXPlant),
-    # so MuJoCo only needs unity-gear torque actuators on each joint.
-    for j in range(chain_config.n_joints):
-        act = spec.add_actuator()
-        _set_if_attr(act, "name", f"torque_{j}")
-        if hasattr(act, "set_to_motor"):
-            act.set_to_motor()
-        elif hasattr(mujoco, "mjtActuator"):
-            _set_if_attr(act, "type", mujoco.mjtActuator.mjACT_MOTOR)
-        joint_name = joint_names[j]
-        if hasattr(act, "target"):
-            act.trntype = mujoco.mjtTrn.mjTRN_JOINT
-            act.target = joint_name
-        elif hasattr(act, "joint"):
-            act.joint = joint_name
-        else:
-            _set_if_attr(act, "trntype", mujoco.mjtTrn.mjTRN_JOINT)
-            joint_obj = joint_objects[j]
-            if hasattr(act, "trnid") and hasattr(joint_obj, "id"):
-                act.trnid = [joint_obj.id, 0]
-        _set_if_attr(act, "gear", [1.0, 0, 0, 0, 0, 0])
-        _set_if_attr(act, "ctrlrange", [-100.0, 100.0])
-        _set_if_attr(act, "ctrllimited", True)
-
-    return spec.compile()
+    graph = planar_chain_graph(
+        preset, chain_config, sim_config, muscle_config, joint_limits=(-np.pi, np.pi),
+    )
+    return compile_planar_model(graph).model
 
 
 def to_mjx(model):

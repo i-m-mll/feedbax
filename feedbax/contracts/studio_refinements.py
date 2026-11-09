@@ -285,9 +285,21 @@ CROSS_FIELD_REFINEMENTS.update(
         ),
         "AcausalGraphSpec": (
             _typescript_refinement(
+                "acausal-graph.spatial-asset",
+                "A MuJoCo asset binding is required exactly for spatial multibody",
+                "(value.physical_domain === 'spatial_multibody') !== (value.mujoco_asset != null)",
+            ),
+            _typescript_refinement(
                 "acausal-graph.no-array-params",
                 "AcausalGraphSpec does not support component-param array value schemas",
                 "Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))",
+            ),
+        ),
+        "ContentObjectRef": (
+            _typescript_refinement(
+                "content-object.identity",
+                "content object id does not match its SHA-256",
+                "value.object_id !== 'content-object://sha256/' + value.sha256",
             ),
         ),
         "GraphSpec": (
@@ -486,6 +498,7 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "SparseCooArrayValueSpec": frozenset({"validate_entries"}),
     "ConstantArrayValueSpec": frozenset({"validate_value"}),
     "AcausalConnectionSpec": frozenset({"validate_and_canonicalize"}),
+    "ContentObjectRef": frozenset({"_validate_identity"}),
     "AcausalGraphSpec": frozenset(
         {"validate_subgraph_family", "reject_component_param_array_values"}
     ),
