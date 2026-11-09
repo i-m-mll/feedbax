@@ -7,7 +7,6 @@ from copy import deepcopy
 from hashlib import sha256
 from math import cos, isfinite, sin
 from numbers import Real
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
@@ -72,7 +71,7 @@ def _add_muscle_path(
     import mujoco
 
     path = MusclePathBinding(
-        name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
+        name, sites, law, state_size, deepcopy(dict(parameters)),
         law_revision=law_revision,
     )
     if spec.actuator(path.actuator_name) is not None:

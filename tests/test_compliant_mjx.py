@@ -95,6 +95,7 @@ def _document(provider, dt):
 
 
 def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch):
+    import pickle
     from types import SimpleNamespace
 
     pytest.importorskip("fastapi")
@@ -105,8 +106,10 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
         STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
     )
+    from feedbax.training.checkpoint_custody import structural_abi_fingerprint
     from feedbax.web import config
     from feedbax.web.api import graphs
+    from feedbax.web.model_assets import model_artifact_provider
     from feedbax.web.services.graph_service import GraphService
 
     pytest.importorskip("mujoco.mjx")
@@ -135,6 +138,15 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         assert project.status_code == 200, project.text
         binding = project.json()["data"]["graph"]["subgraphs"]["physics"]["mujoco_asset"]
         assert binding["asset"] == imported.json()
+
+    reopened = GraphSpec.model_validate(project.json()["data"]["graph"])
+    compiled = compile_graph(
+        GraphDocument(graph=reopened), app.state.bootstrap_state.bundle.components,
+        artifact_provider=model_artifact_provider(reopened),
+    ).graph
+    restored = pickle.loads(pickle.dumps(compiled))
+    assert jax.tree.structure(restored) == jax.tree.structure(compiled)
+    assert structural_abi_fingerprint(restored) == structural_abi_fingerprint(compiled)
 
 
 def _reference_equilibrium(angle):
