@@ -150,10 +150,12 @@ def _finish(journal: Path, document: dict, destination: Path) -> None:
     _sync(journal.parent)
 
 
-def _replace(journal: Path, document: dict, destination: Path, lock: int) -> dict:
+def _replace(journal: Path, document: dict, destination: Path, lock: int, *, prepared: bool = False) -> dict:
     _, candidate, previous = _transaction_paths(document, destination)
     old, new = document["old"], document["new"]
-    installed = verify(destination) if destination.exists() else None
+    installed = old
+    if not prepared:
+        installed = verify(destination) if destination.exists() else None
     if installed != new:
         if installed != old and installed is not None:
             raise RuntimeError("the destination contains an unexpected signed release")
@@ -165,7 +167,7 @@ def _replace(journal: Path, document: dict, destination: Path, lock: int) -> dic
             destination.rename(previous)
             _sync(destination.parent)
             _sync(previous.parent)
-        if verify(candidate) != new or (old is not None and verify(previous) != old):
+        if not prepared and (verify(candidate) != new or (old is not None and verify(previous) != old)):
             raise RuntimeError("staged or rollback bytes changed during installation")
         candidate.rename(destination)
         _sync(candidate.parent)
@@ -199,7 +201,7 @@ def install(archive: Path, receipt_path: Path, destination: Path, disposition: s
             }
             _record(journal, document)
             recorded = True
-            outcome = _replace(journal, document, destination, lock)
+            outcome = _replace(journal, document, destination, lock, prepared=True)
             if outcome["status"] == "deferred":
                 _finish(journal, document, destination)
             return outcome
