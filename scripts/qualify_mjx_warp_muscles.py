@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
-import re
 from tempfile import TemporaryDirectory
 
 import jax
@@ -367,13 +366,17 @@ def qualify(name, factory, poses, excitation, provider, path, *, warp, device):
         if warp:
             assert not node.supports_reverse_mode
             if index == 0:
-                for solver in ("implicit_euler", "kvaerno5"):
+                for solver in ("implicit_euler", "kvaerno5", "tsit5"):
                     try:
                         executable(interior, provider, warp=True, solver=solver)
                     except GraphCompilationError as error:
-                        assert re.search(r"MJX-Warp.*explicit", str(error)), str(error)
+                        message = str(error)
+                        assert (
+                            "MJX-Warp supports native stepping and explicit Euler" in message
+                            or (solver in message and "requires an explicit solver" in message)
+                        ), message
                     else:
-                        raise AssertionError(f"Warp accepted Jacobian-dependent solver {solver}")
+                        raise AssertionError(f"Warp accepted unsupported solver {solver}")
 
         def initialize(key, position):
             state = graph.init_state(key=key)
