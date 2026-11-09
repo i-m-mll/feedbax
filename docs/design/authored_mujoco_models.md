@@ -14,7 +14,11 @@ The structural signature includes named topology and state and law layout. Numer
 
 ## Execution
 
-`compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Asset and overlay tendon paths are preserved for geometry-based coupling.
+`compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Authored muscle paths expose geometry for coupling.
+
+Each authored muscle path is an ordered spatial tendon through fixed sites. The path reports length in metres, positive lengthening velocity in metres per second, and the Jacobian of length with respect to generalized displacements. The Jacobian has one column per generalized velocity coordinate, including for quaternion models. A generated stateless tendon motor takes positive shortening tension in newtons with unit gain and gear −1. The engine then applies generalized force `-J.T @ tension` and the corresponding power `-tension @ lengthening_velocity`. The public `actuator_control` port continues to address the other native actuators in their original order.
+
+Coupled continuous stages evaluate position and velocity before computing tension and pass those same engine values to actuation and acceleration. A fixed segment whose sites coincide on one body is rejected at compilation. Geometry evaluation rejects a pose where a segment becomes coincident or nonfinite. Derivatives apply at regular fixed-path poses of a fixed model.
 
 | Solver | Execution |
 | --- | --- |
