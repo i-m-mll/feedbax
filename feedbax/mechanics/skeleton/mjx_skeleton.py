@@ -322,9 +322,11 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
             from feedbax.mechanics.skeleton.mjx_warp import tendon_jacobian
 
             jacobian = tendon_jacobian(self.mjx_model, stage, tendons)
+            velocity = jacobian @ stage.qvel
         else:
             jacobian = stage._impl.ten_J[tendons]
-        return MusclePathKinematics(lengths, jacobian @ stage.qvel, jacobian)
+            velocity = stage._impl.ten_velocity[tendons]
+        return MusclePathKinematics(lengths, velocity, jacobian)
 
     def tendon_controls(self, tension: Array) -> Array:
         """Set muscle shortening tensions (N); leave other actuator controls at zero."""
