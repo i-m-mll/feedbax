@@ -202,16 +202,23 @@ def _package_python(resources: Path, stage: Path, extension: Path | None) -> dic
         "sha256": sha256(feedbax),
     }
     requirements = stage / "wheels.txt"
-    requirements.write_text("".join(
-        f"{name} @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n"
-        for name, wheel in sorted(wheels.items())
-    ))
+    lines = []
+    for name, wheel in sorted(wheels.items()):
+        if wheel["url"].startswith("file:"):
+            requirement = f"{name}=={wheel['version']}"
+        else:
+            requirement = f"{name} @ {wheel['url']}"
+        lines.append(f"{requirement} --hash=sha256:{wheel['sha256']}\n")
+    requirements.write_text("".join(lines))
+    wheel_locations = ["--find-links", str(dist)]
+    if extension is not None:
+        wheel_locations.extend(("--find-links", str(extension.parent)))
     site = Path(run(python, "-I", "-B", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))",
                     capture=True).strip())
     if not site.resolve().is_relative_to(resources):
         raise ValueError(f"Python package installation would leave the release: {site}")
     run("uv", "pip", "install", "--python", python, "--target", site, "--no-deps", "--only-binary", ":all:",
-        "--link-mode", "copy", "--require-hashes", "-r", requirements)
+        "--no-index", *wheel_locations, "--link-mode", "copy", "--require-hashes", "-r", requirements)
     run("uv", "pip", "check", "--python", python)
     if (site / "bin").exists():
         shutil.rmtree(site / "bin")
