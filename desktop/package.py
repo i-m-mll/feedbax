@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -16,6 +17,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from xml.etree import ElementTree
 
 from packaging.markers import Marker
 from packaging.tags import compatible_tags, cpython_tags, mac_platforms
@@ -73,11 +75,20 @@ def clean_revision() -> str:
     return git("rev-parse", "HEAD^{commit}")
 
 
+def desktop_icon_source() -> bytes:
+    artwork = ElementTree.parse(ROOT / "web/public/icon.svg").getroot()
+    artwork.insert(0, ElementTree.Element(
+        "{http://www.w3.org/2000/svg}rect", width="100%", height="100%", fill="white",
+    ))
+    return ElementTree.tostring(artwork)
+
+
 def native_inputs() -> dict:
     return {
         "target": TARGET,
         "minimum_macos": MINIMUM_MACOS,
         "inputs": {path: git("rev-parse", f"HEAD:{path}") for path in LOCKED_BUILD_INPUTS},
+        "desktop_icon_sha256": hashlib.sha256(desktop_icon_source()).hexdigest(),
         "rustc": run("rustc", "-vV", capture=True).strip(),
         "xcode_sdk": run("xcrun", "--sdk", "macosx", "--show-sdk-version", capture=True).strip(),
         "tauri": run(*TAURI, "--version", cwd=DESKTOP, capture=True).strip(),
@@ -96,9 +107,12 @@ def build_native(timeout: int) -> None:
     inputs = native_inputs()
     icons = DESKTOP / "src-tauri" / "icons"
     stamp = icons / "source.txt"
-    icon_source = inputs["inputs"]["web/public/icon.svg"] + "\n"
+    icon_source = inputs["desktop_icon_sha256"] + "\n"
     if not all((icons / name).is_file() for name in ("icon.png", "icon.icns", "source.txt")) or stamp.read_text() != icon_source:
-        run(*TAURI, "icon", ROOT / "web/public/icon.svg", "--output", icons, cwd=DESKTOP)
+        icons.mkdir(parents=True, exist_ok=True)
+        source = icons / "source.svg"
+        source.write_bytes(desktop_icon_source())
+        run(*TAURI, "icon", source, "--output", icons, cwd=DESKTOP)
         stamp.write_text(icon_source)
     run(*TAURI, "build", "--target", TARGET, "--no-bundle", "--ci", "--", "--locked",
         cwd=DESKTOP, env=native_environment(), timeout=timeout)
