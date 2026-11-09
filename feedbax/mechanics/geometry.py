@@ -16,6 +16,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from equinox import Module, field
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
@@ -125,6 +126,36 @@ class ConstantMomentArmGeometry(AbstractMuscleGeometry):
     def moment_arm(self, angles: Array) -> Array:
         """Return constant moment arms (independent of angle)."""
         return self.moment_arms
+
+
+class TwoLinkPointPath(AbstractMuscleGeometry):
+    """Fixed attachments in world, upper-link and lower-link local frames."""
+
+    upper_length: float
+    frames: tuple[int, ...] = eqx.field(static=True)
+    offsets: Array = field(converter=jnp.asarray)
+
+    def __check_init__(self) -> None:
+        if len(self.frames) < 2 or any(frame not in (0, 1, 2) for frame in self.frames):
+            raise ValueError("A two-link path requires two or more valid body frames")
+        if self.offsets.shape != (len(self.frames), 2):
+            raise ValueError("Each two-link path point requires a local XY offset")
+
+    def musculotendon_length(self, angles: Array) -> Array:
+        frames = jnp.asarray(self.frames)
+        heading = jnp.concatenate((jnp.zeros_like(angles[:1]), jnp.cumsum(angles)))
+        direction = jnp.stack((jnp.cos(heading), jnp.sin(heading)), axis=-1)
+        normal = jnp.stack((-direction[:, 1], direction[:, 0]), axis=-1)
+        origin = jnp.zeros_like(angles)
+        origins = jnp.stack((origin, origin, self.upper_length * direction[1]))
+        points = (
+            origins[frames] + self.offsets[:, :1] * direction[frames]
+            + self.offsets[:, 1:] * normal[frames]
+        )
+        return jnp.sum(jnp.linalg.norm(jnp.diff(points, axis=0), axis=-1))
+
+    def moment_arm(self, angles: Array) -> Array:
+        return -jax.grad(self.musculotendon_length)(angles)
 
 
 class PolynomialMomentArmGeometry(AbstractMuscleGeometry):
@@ -352,6 +383,15 @@ class TwoLinkArmMuscleGeometry(Module):
             MT lengths [n_muscles].
         """
         return jnp.array([g.musculotendon_length(angles) for g in self.geometries])
+
+    def path_kinematics(self, angles: Array, velocities: Array) -> tuple[Array, Array, Array]:
+        """Return path length, lengthening velocity and the length Jacobian."""
+        def values_with_aux(q: Array) -> tuple[Array, Array]:
+            lengths = self.musculotendon_lengths(q)
+            return lengths, lengths
+
+        jacobian, lengths = jax.jacfwd(values_with_aux, has_aux=True)(angles)
+        return lengths, jacobian @ velocities, jacobian
 
     def moment_arms(self, angles: Array) -> Array:
         """Compute moment arm matrix.

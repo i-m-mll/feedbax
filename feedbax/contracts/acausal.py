@@ -71,6 +71,25 @@ class SolverConfigSpec(BaseModel):
     solver_type: SolverType
     dt: float
     root_finder: Optional[RootFinderSpec] = None
+    planar_substeps: int | None = Field(default=None, ge=1, strict=True)
+
+
+class JointDampingMode(StrictModel):
+    """Passive damping of a weighted sum of named planar joint velocities."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    coefficients: dict[str, float] = Field(min_length=1)
+    damping: float = Field(gt=0)
+
+
+class PlanarDynamicsSpec(StrictModel):
+    """Optional dynamics for an authored planar chain."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    gravity: tuple[float, float] = (0.0, -9.81)
+    joint_dampers: dict[str, JointDampingMode] = Field(default_factory=dict)
 
 
 class SpatialSite(StrictModel):
@@ -115,6 +134,7 @@ class AcausalGraphSpec(BaseModel):
     subgraphs: Optional[Dict[str, "AcausalGraphSpec"]] = None
     metadata: Optional["GraphMetadata"] = None
     mujoco_asset: MuJoCoAssetBinding | None = None
+    planar_dynamics: PlanarDynamicsSpec | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -148,6 +168,10 @@ class AcausalGraphSpec(BaseModel):
     def reject_component_param_array_values(self) -> "AcausalGraphSpec":
         if (self.physical_domain == "spatial_multibody") != (self.mujoco_asset is not None):
             raise ValueError("A MuJoCo asset binding is required exactly for spatial multibody")
+        if self.physical_domain != "planar_multibody" and (
+            self.planar_dynamics is not None or self.solver.planar_substeps is not None
+        ):
+            raise ValueError("Planar dynamics and substeps require planar multibody")
         for node_id, node in self.nodes.items():
             for param_name, value in node.params.items():
                 if _contains_array_value(value):

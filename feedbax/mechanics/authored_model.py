@@ -171,10 +171,14 @@ def compile_planar_model(
 
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
-    spec.option.timestep = _number(graph.solver.dt, "solver.dt")
+    spec.option.timestep = _number(graph.solver.dt, "solver.dt") / (
+        graph.solver.planar_substeps or 1
+    )
     if spec.option.timestep <= 0:
         raise ValueError("Planar MuJoCo timestep must be positive")
-    spec.option.gravity = [0.0, -9.81, 0.0]
+    dynamics = graph.planar_dynamics
+    gravity = (0.0, -9.81) if dynamics is None else dynamics.gravity
+    spec.option.gravity = [*gravity, 0.0]
     bodies = {world: spec.worldbody}
     parent_name = world
     for _ in links:
@@ -264,8 +268,18 @@ def compile_planar_model(
             law_revision=params.get("law_revision"),
             external_tendon_actuation=external_tendon_actuation,
         ))
+    if dynamics is not None:
+        for name, damper in sorted(dynamics.joint_dampers.items()):
+            if missing := damper.coefficients.keys() - joints.keys():
+                raise ValueError(f"Joint damper {name!r} refers to unknown joints {sorted(missing)}")
+            if not any(damper.coefficients.values()):
+                raise ValueError(f"Joint damper {name!r} requires a nonzero coefficient")
+            tendon = spec.add_tendon(name=f"__feedbax_damper__/{name}", damping=damper.damping)
+            for joint_name, coefficient in sorted(damper.coefficients.items()):
+                if coefficient:
+                    tendon.wrap_joint(joint_name, coefficient)
     return describe_model(
-        spec.compile(), identity=_physical_identity(graph, graph.solver.dt), dimension=2,
+        spec.compile(), identity=_physical_identity(graph, spec.option.timestep), dimension=2,
         effector_site="effector" if "effector" in markers else None, paths=tuple(paths),
         planar_segment_lengths=tuple(lengths[name] for name in bodies if name != world),
     )
