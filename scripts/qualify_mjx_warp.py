@@ -158,6 +158,21 @@ def assert_warp_ffi(lowered, compiled, device):
     print(f"{device} Warp FFI targets: {warp_targets}", flush=True)
 
 
+def assert_single_cuda_device(jax_devices):
+    import warp
+
+    warp.init()
+    warp_devices = warp.get_cuda_devices()
+    assert len(jax_devices) == len(warp_devices) == 1, (jax_devices, warp_devices)
+    device = warp_devices[0]
+    assert device.ordinal == jax_devices[0].local_hardware_id, (device, jax_devices)
+    print(
+        f"Warp CUDA ordinal={device.ordinal}, name={device.name}, "
+        f"arch=sm_{device.arch}, output={device.get_cuda_output_format()}",
+        flush=True,
+    )
+
+
 def native_trace(model, initial, controls, body, site, dimension, wrench):
     """Advance independent MuJoCo MjData at matched timestep and held body loads."""
     data = mujoco.MjData(model)
@@ -415,6 +430,8 @@ def main():
         device.platform == ("cpu" if args.device == "cpu" else "gpu") for device in devices
     ), devices
     print(f"Devices: {[(str(device), device.device_kind) for device in devices]}", flush=True)
+    if (args.backend, args.device) == ("warp", "cuda"):
+        assert_single_cuda_device(devices)
     print(f"Float32 acceptance: rtol={RTOL}, atol={ATOL}, time atol={TIME_ATOL}", flush=True)
     with TemporaryDirectory(prefix="feedbax-qualify-mjx-warp-") as temporary:
         path = Path(temporary)
