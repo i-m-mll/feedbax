@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
 from feedbax.analysis.evaluation import (
     EvaluationAuthoringSchema,
+    EvaluationBatchItem,
+    EvaluationBatchRowError,
     EvaluationRecipeRegistry,
     EvaluationRecipeResult,
 )
@@ -23,13 +26,7 @@ class WarpQualificationParams(StrictModel):
     device: Literal["cpu", "cuda"]
 
 
-def _evaluate(
-    spec: EvaluationRunSpec,
-    _root: Path,
-    _states_path: Path,
-    _context: StagedExecutionContext,
-    /,
-) -> EvaluationRecipeResult:
+def _qualify(spec: EvaluationRunSpec) -> EvaluationRecipeResult:
     from feedbax.mechanics.warp_qualification import run_qualification
 
     if spec.training_run_ids or spec.inputs:
@@ -42,8 +39,28 @@ def _evaluate(
     )
 
 
+def _evaluate(
+    spec: EvaluationRunSpec,
+    _root: Path,
+    _states_path: Path,
+    _context: StagedExecutionContext,
+    /,
+) -> EvaluationRecipeResult:
+    return _qualify(spec)
+
+
+def _evaluate_batch(
+    items: Sequence[EvaluationBatchItem], _context: StagedExecutionContext
+) -> Sequence[EvaluationRecipeResult]:
+    (item,) = items
+    try:
+        return (_qualify(item.spec),)
+    except Exception as error:
+        raise EvaluationBatchRowError(item.row_id, error) from error
+
+
 def register_warp_qualification(registry: EvaluationRecipeRegistry) -> None:
-    registry.register(EVALUATION_TYPE, _evaluate)
+    registry.register(EVALUATION_TYPE, _evaluate, batch_recipe=_evaluate_batch)
     registry.register_authoring_schema(
         EVALUATION_TYPE,
         EvaluationAuthoringSchema(
