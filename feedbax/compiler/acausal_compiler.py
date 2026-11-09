@@ -469,7 +469,7 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
         "translational": {"force", "prescribed_motion"},
         "rotational": {"torque", "prescribed_motion"},
         "planar_multibody": {"muscle_excitation_vector", "actuator_control"},
-        "spatial_multibody": {"actuator_control"},
+        "spatial_multibody": {"actuator_control", "muscle_excitation_vector"},
     }
     allowed_sensors = {
         "translational": {"position", "velocity", "force"},
@@ -537,7 +537,7 @@ def _compile_multibody_graph(
             compile_planar_model(graph) if graph.physical_domain == "planar_multibody"
             else compile_spatial_model(graph, artifact_provider)
         )
-        return AuthoredMechanics(graph, descriptor)
+        return AuthoredMechanics(graph, descriptor, component_registry=component_registry)
     except ModuleNotFoundError as exc:
         if exc.name in {"mujoco", "mujoco.mjx"}:
             raise ValueError("MuJoCo graph execution requires the feedbax[mjx] extra") from exc
