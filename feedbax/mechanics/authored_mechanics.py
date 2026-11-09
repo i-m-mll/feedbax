@@ -177,7 +177,17 @@ class AuthoredMechanics(Mechanics):
             raise ValueError("MuJoCo trial initialization requires generalized coordinates")
         state = super().replace_state_value(state, path, value)
         if path[:2] == ("plant", "skeleton"):
-            return self.state_consistency_update(state)
+            state = self.state_consistency_update(state)
+            if path[2:] in ((), ("qpos",)):
+                state = self.reset_muscle_equilibrium(state)
+        return state
+
+    def reset_muscle_equilibrium(self, state: State) -> State:
+        """Set compliant fiber equilibrium after editing the starting pose or activation."""
+        if isinstance(self.plant, ArticulatedMusclePlant):
+            current = self.state_view(state)
+            plant = self.plant.equilibrate_muscles(current.plant)
+            return state.set(self.state_index, replace(current, plant=plant))
         return state
 
     def apply_wrench(self, state: State, body: str, wrench: AppliedWrench) -> State:

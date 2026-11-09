@@ -241,6 +241,16 @@ class TestRigidTendonHillMuscle:
         expected = mt_length - muscle.params.tendon_slack_length
         assert jnp.isclose(fiber_length, expected, atol=1e-6)
 
+    @pytest.mark.parametrize("angle", [0.005, 0.3])
+    def test_fiber_velocity_differentiates_the_authored_length(self, muscle_params, angle):
+        muscle = RigidTendonHillMuscle(params=replace(muscle_params, pennation_angle=angle))
+        fiber_length, expected = jax.jvp(
+            muscle.compute_fiber_length_from_mt_length,
+            (jnp.asarray(0.24),), (jnp.asarray(-0.15),),
+        )
+        actual = muscle.compute_fiber_velocity_from_mt_velocity(fiber_length, jnp.asarray(-0.15))
+        assert float(actual) == pytest.approx(float(expected), rel=1e-6)
+
 
 class TestCompliantTendonMuscle:
     """Tests for compliant tendon Hill muscle."""
@@ -643,7 +653,11 @@ class TestCompliantTendonMusculoskeletalArm:
         )
         state = init_state_from_component(arm)
         dae_state = state.get(arm.state_index)
-        dae_state = eqx.tree_at(lambda s: s.system.activations, dae_state, activation)
+        dae_state = eqx.tree_at(
+            lambda s: (s.system.activations, s.system.fiber_lengths),
+            dae_state,
+            (activation, jnp.full_like(activation, params.optimal_fiber_length)),
+        )
         state = state.set(arm.state_index, dae_state)
 
         outputs, stepped_state = arm({"excitations": activation}, state, key=key)
