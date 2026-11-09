@@ -60,18 +60,34 @@ def _add_site(body: MjsBody, name: str, position: Sequence[float]) -> None:
 
 def _add_muscle_path(
     spec: MjSpec, name: str, sites: tuple[str, ...], law: str, state_size: int,
-    parameters: Mapping[str, object],
+    parameters: Mapping[str, object], *, external_tendon_actuation: bool = True,
 ) -> MusclePathBinding:
     if len(sites) < 2:
         raise ValueError(f"MusclePath {name!r} requires at least two sites")
     if not isinstance(law, str) or not law or type(state_size) is not int or state_size < 0:
         raise ValueError(f"MusclePath {name!r} requires a law name and nonnegative state size")
+    import mujoco
+
+    path = MusclePathBinding(
+        name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
+    )
+    if spec.actuator(path.actuator_name) is not None:
+        raise ValueError(f"MusclePath {name!r} duplicates actuator {path.actuator_name!r}")
     tendon = spec.add_tendon(name=name)
     for site in sites:
         tendon.wrap_site(site)
-    return MusclePathBinding(
-        name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
-    )
+
+    if not external_tendon_actuation:
+        return path
+
+    motor = spec.add_actuator(name=path.actuator_name)
+    motor.set_to_motor()
+    motor.trntype = mujoco.mjtTrn.mjTRN_TENDON
+    motor.target = name
+    motor.gear = [-1, 0, 0, 0, 0, 0]
+    motor.ctrllimited = False
+    motor.forcelimited = False
+    return path
 
 
 def _physical_identity(graph: AcausalGraphSpec, timestep: float) -> str:
@@ -81,7 +97,9 @@ def _physical_identity(graph: AcausalGraphSpec, timestep: float) -> str:
     }))
 
 
-def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
+def compile_planar_model(
+    graph: AcausalGraphSpec, *, external_tendon_actuation: bool = True,
+) -> CompiledPhysicalModel:
     """Compile one rooted planar serial chain with explicit COM inertials.
 
     The graph's revolute joints supply the topology. Anchoring identifies the
@@ -207,7 +225,7 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
         if not isinstance(frame, str) or frame not in frames:
             raise ValueError(f"Site {site!r} references missing planar frame {frame!r}")
         body_name, x = frames[frame]
-        dx, dy = _vector(point.get("offset") or [0, 0], 2, f"{site}.offset")
+        dx, dy = _vector(point.get("offset", [0, 0]), 2, f"{site}.offset")
         _add_site(bodies[body_name], site, [x + dx, dy, 0])
 
     markers = set()
@@ -228,6 +246,7 @@ def compile_planar_model(graph: AcausalGraphSpec) -> CompiledPhysicalModel:
             params.get("law", "feedbax.RigidTendonHillMuscle"), params.get("state_size", 1),
             {key: value for key, value in params.items()
              if key not in {"path_points", "law", "state_size"}},
+            external_tendon_actuation=external_tendon_actuation,
         ))
     return describe_model(
         spec.compile(), identity=_physical_identity(graph, graph.solver.dt), dimension=2,

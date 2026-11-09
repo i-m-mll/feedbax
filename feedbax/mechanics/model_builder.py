@@ -169,7 +169,7 @@ def build_model(
     graph = planar_chain_graph(
         preset, chain_config, sim_config, muscle_config, joint_limits=(-np.pi, np.pi),
     )
-    return compile_planar_model(graph).model
+    return compile_planar_model(graph, external_tendon_actuation=False).model
 
 
 def to_mjx(model):
