@@ -33,6 +33,7 @@ class AuthoredMechanics(Mechanics):
     _inputs: tuple[str, ...] = eqx.field(static=True)
     _outputs: tuple[tuple[str, str], ...] = eqx.field(static=True)
     _solver_name: str = eqx.field(static=True)
+    _wraps_allow_ad: bool = eqx.field(static=True)
 
     def __init__(self, graph: AcausalGraphSpec, descriptor: CompiledPhysicalModel):
         from mujoco import mjtDyn, mjtIntegrator
@@ -61,10 +62,11 @@ class AuthoredMechanics(Mechanics):
         native = model.opt.integrator in (
             mjtIntegrator.mjINT_EULER, mjtIntegrator.mjINT_RK4, mjtIntegrator.mjINT_IMPLICITFAST,
         )
+        self._wraps_allow_ad = outside_wraps_only(model)
         self.capabilities = PhysicsCapabilities(
             native_step=native and source_kind == "actuator_control",
             continuous=continuous,
-            reverse_mode=skeleton.constraint_rows == 0 and outside_wraps_only(model),
+            reverse_mode=skeleton.constraint_rows == 0 and self._wraps_allow_ad,
         )
         if self._solver_name == "mujoco":
             if graph.solver.root_finder is not None:
@@ -142,6 +144,10 @@ class AuthoredMechanics(Mechanics):
         if action.shape != (self.plant.input_size,):
             raise ValueError(
                 f"MuJoCo input {port!r} expects shape ({self.plant.input_size},), got {action.shape}"
+            )
+        if not self._wraps_allow_ad:
+            action, state = eqx.internal.nondifferentiable(
+                (action, state), msg="Tendon routes without a fixed exterior side site are forward-only",
             )
         values, state = super().__call__({"force": action}, state, key=key)
         return self._observations(values), state

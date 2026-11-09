@@ -542,3 +542,14 @@ def test_exterior_sphere_and_cylinder_wraps_match_native_and_tangency():
     inside.nodes["side"].params["offset"] = [0.01, 0]
     forward_graph = compile_graph(_document(inside), ComponentRegistry()).graph
     assert not forward_graph.nodes["physics"].supports_reverse_mode
+
+    def forward(command):
+        outputs, _ = forward_graph(
+            {"control": command}, forward_graph.init_state(key=key), key=key,
+        )
+        return outputs["effector"].pos[1]
+
+    command = jnp.array([0.2])
+    assert jnp.isfinite(forward(command))
+    with pytest.raises(RuntimeError, match="fixed exterior side site"):
+        jax.grad(forward)(command)
