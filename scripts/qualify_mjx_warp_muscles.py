@@ -221,7 +221,7 @@ def check_native(node, initial, result, dt):
     assert len(paths) == (1 if descriptor.dimension == 2 else 2)
     assert sorted(path.state_size for path in paths) == list(range(1, len(paths) + 1))
     site = descriptor.site_ids[descriptor.effector_site]
-    outputs, final, history = result
+    outputs, final, history, final_geometry = result
     qvel = history.physics.plant.skeleton.qvel
     initial = node.state_view(initial).plant
     final = node.state_view(final).plant
@@ -274,6 +274,17 @@ def check_native(node, initial, result, dt):
 
         data.qpos[:], data.qvel[:] = finish.skeleton.qpos, finish.skeleton.qvel
         mujoco.mj_forward(model, data)
+        tendons = [binding.tendon_id for binding in paths]
+        native_jacobian = np.zeros((model.ntendon, model.nv))
+        mujoco.mju_sparse2dense(
+            native_jacobian, data.ten_J,
+            model.ten_J_rownnz, model.ten_J_rowadr, model.ten_J_colind,
+        )
+        assert np.any(np.abs(data.ten_velocity[tendons]) > 1e-6)
+        geometry = select_lane(final_geometry, lane)
+        np.testing.assert_allclose(geometry.length, data.ten_length[tendons], **KINEMATIC_TOL)
+        np.testing.assert_allclose(geometry.velocity, data.ten_velocity[tendons], **KINEMATIC_TOL)
+        np.testing.assert_allclose(geometry.jacobian, native_jacobian[tendons], **KINEMATIC_TOL)
         jacobian = np.zeros((3, model.nv))
         mujoco.mj_jacSite(model, data, jacobian, None, site)
         tip = select_lane(outputs["effector"], lane)
@@ -363,13 +374,16 @@ def qualify(name, factory, poses, excitation, provider, path, *, warp, device):
             return node.replace_state_value(state, ("plant", "skeleton", "qpos"), position)
 
         def rollout(state, command, key):
-            return graph(
+            outputs, final, history = graph(
                 {"excitation": command},
                 state,
                 key=key,
                 n_steps=command.shape[0],
                 return_state_history=True,
             )
+            skeleton = node.plant.skeleton
+            stage = skeleton.continuous_stage(node.state_view(final).plant.skeleton)
+            return outputs, final, history, skeleton.muscle_path_kinematics(stage)
 
         initial = jax.jit(jax.vmap(initialize))(keys, poses)
         qpos = node.state_view(initial).plant.skeleton.qpos
