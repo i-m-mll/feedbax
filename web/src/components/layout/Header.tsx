@@ -26,6 +26,7 @@ import { defaultTaskSpec, defaultTrainingSpec, useTrainingStore } from '@/stores
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
 import { buildWorkspaceSnapshot, hydrateWorkspacePresentation } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
+import { DesktopJobs } from '@/components/layout/DesktopJobs';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import { isCausalGraphSpec } from '@/types/graph';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
@@ -362,6 +363,7 @@ export function Header() {
 
       {/* Right-side action buttons */}
       <div className="flex-none flex items-center gap-3 text-slate-500">
+        {import.meta.env.VITE_FEEDBAX_DESKTOP === '1' && <DesktopJobs />}
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="New project"

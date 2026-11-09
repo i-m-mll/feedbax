@@ -1,0 +1,8 @@
+{
+  "name": "feedbax-studio-desktop",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@tauri-apps/cli": "2.10.0"
+  }
+}
