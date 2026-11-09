@@ -6,7 +6,7 @@
     "returncode": 1,
     "stdout": "",
     "stderr": "{\"error\":\"This machine does not have the resources to deploy your pod. Please try a different machine\"}\nUsage:\n  runpodctl pod create [flags]\n\n{\"error\":\"failed to create pod: This machine does not have the resources to deploy your pod. Please try a different machine\"}\n",
-    "expected_classification": "non-retryable",
+    "expected_classification": "retryable-rejection",
     "expected_behavior": "region-rejected-continues"
   },
   {
@@ -16,7 +16,7 @@
     "returncode": 1,
     "stdout": "{\"error\":\"There are no longer any instances available with the requested specifications. Please refresh and try again.\"}\n",
     "stderr": "",
-    "expected_classification": "non-retryable",
+    "expected_classification": "retryable-rejection",
     "expected_behavior": "region-rejected-continues"
   },
   {
@@ -26,8 +26,8 @@
     "returncode": 400,
     "stdout": "{\"statusCode\":400,\"code\":\"invalid_request\",\"error\":\"image reference is not a valid immutable digest\"}\n",
     "stderr": "",
-    "expected_classification": "non-retryable",
-    "expected_behavior": "region-rejected-continues"
+    "expected_classification": "terminal-rejection",
+    "expected_behavior": "halt-terminal"
   },
   {
     "name": "authentication_unauthorized",
@@ -36,8 +36,8 @@
     "returncode": 401,
     "stdout": "{\"statusCode\":401,\"error\":\"Unauthorized: invalid or expired API key\"}\n",
     "stderr": "",
-    "expected_classification": "non-retryable",
-    "expected_behavior": "region-rejected-continues"
+    "expected_classification": "terminal-rejection",
+    "expected_behavior": "halt-terminal"
   },
   {
     "name": "ambiguous_malformed_json",
@@ -46,7 +46,7 @@
     "returncode": 1,
     "stdout": "{\"error\":\"This machine does not have the reso",
     "stderr": "",
-    "expected_classification": "retryable",
+    "expected_classification": "ambiguous",
     "expected_behavior": "halt-ambiguous"
   },
   {
@@ -56,7 +56,7 @@
     "returncode": 1,
     "stdout": "",
     "stderr": "internal server error, please contact support",
-    "expected_classification": "retryable",
+    "expected_classification": "ambiguous",
     "expected_behavior": "halt-ambiguous"
   },
   {
@@ -66,7 +66,7 @@
     "returncode": 124,
     "stdout": "",
     "stderr": "",
-    "expected_classification": "retryable",
+    "expected_classification": "ambiguous",
     "expected_behavior": "halt-ambiguous"
   },
   {
@@ -76,7 +76,7 @@
     "returncode": 1,
     "stdout": "{\"error\":\"pod limit exceeded for this account\"}\n",
     "stderr": "",
-    "expected_classification": "retryable",
+    "expected_classification": "ambiguous",
     "expected_behavior": "halt-ambiguous"
   }
 ]

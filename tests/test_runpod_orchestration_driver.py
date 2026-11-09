@@ -739,7 +739,7 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
     store = RunSetStateStore(bundle.run_set_dir / "lease-state.json")
     transport = AcquisitionLeaseTransport(store)
     transport.create_results = [
-        CommandResult(400, '{"statusCode":400,"code":"invalid_request"}'),
+        CommandResult(1, '{"error":"no longer any instances available"}'),
         CommandResult(0, '{"id":"pod-second"}'),
     ]
     transport.register_on_create = [(), ("pod-second",)]
@@ -774,7 +774,7 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
 def test_unstructured_or_lost_create_response_remains_ambiguous(result: CommandResult) -> None:
     classification, _detail = runpod_module._classify_create_failure(result, None)
 
-    assert classification == "retryable"
+    assert classification == "ambiguous"
 
 
 CREATE_FAILURE_CORPUS_PATH = (
