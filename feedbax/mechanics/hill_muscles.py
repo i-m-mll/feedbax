@@ -639,6 +639,11 @@ class CompliantTendonHillLaw(Module):
         projection = self._projection(fiber)
         tendon_length = length - projection
         normalized_tension = self.tendon_force_length(tendon_length / p.tendon_slack_length)
+        tension = p.max_isometric_force * normalized_tension
+        tension = eqx.error_if(
+            tension, (fiber <= self._thickness()) | ~jnp.isfinite(tension),
+            "Compliant fiber length must exceed its pennation thickness and give finite tension",
+        )
         capacity, passive = self._fiber_multipliers(activation, fiber)
         cos_alpha = projection / fiber
         required = normalized_tension / cos_alpha - passive
@@ -662,7 +667,7 @@ class CompliantTendonHillLaw(Module):
         )
         return MuscleStage(
             jnp.stack((activation_rate, fiber_speed)).astype(state.dtype),
-            p.max_isometric_force * normalized_tension,
+            tension,
         )
 
 
