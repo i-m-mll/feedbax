@@ -298,7 +298,7 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "acausal-graph.planar-wrap-geometries",
                 "Wrap geometry overlays require a planar multibody graph",
-                "value.physical_domain !== 'planar_multibody' && Object.keys(value.wrap_geometries).length > 0",
+                "value.physical_domain !== 'planar_multibody' && Object.keys(value.wrap_geometries ?? {}).length > 0",
             ),
             _typescript_refinement(
                 "acausal-graph.no-array-params",
