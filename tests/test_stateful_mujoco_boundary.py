@@ -538,6 +538,34 @@ def test_exterior_sphere_and_cylinder_wraps_match_native_and_tangency():
             np.testing.assert_allclose(derivative(jnp.asarray(q)), radius, atol=2e-10)
             np.testing.assert_allclose(geometry.jacobian, radius, atol=2e-10)
 
+    external = interior.model_copy(deep=True)
+    external.nodes["drive"].params.update(source_kind="muscle_excitation_vector", size=2)
+    gains = np.array([2.0, 3.0])
+    activation_time = 0.015
+    for name, gain in zip(("cylinder", "sphere"), gains, strict=True):
+        external.nodes[name].params.update(
+            law="feedbax.ReluMuscle",
+            law_parameters={"max_isometric_force": float(gain), "tau_activation": activation_time},
+        )
+    coupled = compile_graph(_document(external), ComponentRegistry()).graph
+    physics = coupled.nodes["physics"]
+
+    def end_velocity(command):
+        initial = physics.replace_state_value(
+            coupled.init_state(key=key), ("plant", "skeleton", "qpos"), jnp.array([2.10]),
+        )
+        _, first = coupled({"control": command}, initial, key=key)
+        _, last = coupled({"control": command}, first, key=key)
+        return physics.state_view(last).plant.skeleton.qvel[0]
+
+    native.qpos[:] = 2.10
+    mujoco.mj_forward(native_model, native)
+    mass = np.empty((1, 1))
+    mujoco.mj_fullM(native_model, native, mass)
+    sensitivity = eqx.filter_jit(jax.grad(end_velocity))(jnp.array([0.2, 0.3]))
+    expected_sensitivity = -radius * gains * interior.solver.dt**2 / (mass[0, 0] * activation_time)
+    np.testing.assert_allclose(sensitivity, expected_sensitivity, atol=2e-10)
+
     inside = interior.model_copy(deep=True)
     inside.nodes["side"].params["offset"] = [0.01, 0]
     forward_graph = compile_graph(_document(inside), ComponentRegistry()).graph

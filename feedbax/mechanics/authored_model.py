@@ -269,7 +269,10 @@ def compile_planar_model(
         for site, point in zip(sites, points, strict=True):
             attach(site, point)
         law = params.get("law", "feedbax.RigidTendonHillMuscle")
+        wraps = tuple(MuscleWrap.model_validate(wrap) for wrap in params.get("wraps", ()))
         moment_arm = params.get("moment_arm")
+        if wraps and moment_arm is not None:
+            raise ValueError(f"MusclePath {name!r} cannot wrap with a constant moment arm")
         law_parameters = params.get("law_parameters")
         if moment_arm is not None and law_parameters is not None:
             raise ValueError(f"MusclePath {name!r} mixes a constant moment arm and nested law parameters")
@@ -285,7 +288,7 @@ def compile_planar_model(
         paths.append(_add_muscle_path(
             spec, name, sites, law, params.get("state_size", 1), law_parameters,
             law_revision=params.get("law_revision"),
-            wraps=tuple(MuscleWrap.model_validate(wrap) for wrap in params.get("wraps", ())),
+            wraps=wraps,
             external_tendon_actuation=external_tendon_actuation,
         ))
     return describe_model(
