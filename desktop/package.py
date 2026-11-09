@@ -277,6 +277,10 @@ def _rust_notices(resources: Path) -> None:
                 "notices": {path.name: path.read_text(errors="replace") for path in sorted(files)},
             }
     (resources / "rust-notices.json").write_bytes(json_bytes(inventory))
+    toolchain = Path(run("rustc", "--print", "sysroot", capture=True).strip()) / "share/doc/rust"
+    notices = resources / "rust-standard-library-notices"
+    shutil.copytree(toolchain / "licenses", notices / "licenses")
+    shutil.copyfile(toolchain / "COPYRIGHT-library.html", notices / "COPYRIGHT-library.html")
 
 
 def package(args: argparse.Namespace) -> None:

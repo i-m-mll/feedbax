@@ -113,16 +113,24 @@ def native_inventory(contents: Path, minimum: str) -> dict[str, dict[str, Any]]:
                 return tuple(int(part) for part in (value + ".0.0").split(".")[:3])
             if version_parts(versions[0]) > version_parts(minimum):
                 raise ValueError(f"{path} requires macOS {versions[0]}, above declared {minimum}")
-            references = sorted(set(re.findall(r"^\s*(?:name|path) (\S+) \(offset", block, re.M)))
+            references = set()
+            for load_command in re.split(r"^Load command \d+\n", block, flags=re.M):
+                operation = re.search(r"^\s*cmd (LC_\w+)$", load_command, re.M)
+                reference = re.search(r"^\s*(?:name|path) (.+?) \(offset", load_command, re.M)
+                if operation is None or reference is None:
+                    continue
+                kind = operation[1]
+                if kind == "LC_RPATH" or (kind.endswith("_DYLIB") and kind != "LC_ID_DYLIB"):
+                    references.add(reference[1])
             for reference in references:
                 if not reference.startswith((
-                    "/System/Library/", "/usr/lib/", "@loader_path", "@executable_path", "@rpath/"
-                )):
+                    "/System/Library/", "/usr/lib/", "@loader_path/", "@executable_path/", "@rpath/"
+                )) and reference not in ("@loader_path", "@executable_path"):
                     raise ValueError(f"{path} loads a library outside the app or OS: {reference}")
             records[path.relative_to(contents).as_posix()] = {
                 "architecture": "arm64",
                 "minimum_macos": versions[0],
-                "load_references": references,
+                "load_references": sorted(references),
             }
     if LAUNCHER not in records:
         raise ValueError("the Tauri launcher is not a native arm64 executable")
