@@ -6,6 +6,10 @@ from math import cos, sin, sqrt
 from typing import Literal
 
 import diffrax
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
 
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
@@ -19,6 +23,7 @@ from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry, TwoLinkPointPat
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscle_law import MuscleLawBank
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
+from feedbax.mechanics.skeleton._planar import two_link_inertia
 
 CONTROL_DT = 0.01
 START_QPOS = (-0.55, 1.30)
@@ -208,3 +213,101 @@ def build_mechanics(
         solver={"euler": diffrax.Euler, "tsit5": diffrax.Tsit5}[solver](),
     )
     return Mechanics(plant=plant, backend=backend)
+
+
+def matched_physics(physics_substeps: int, *, law_profile: str, solver: str) -> dict[str, float]:
+    """Compare independent two-link dynamics and matched production trajectories."""
+    import mujoco
+
+    if not jax.config.x64_enabled:
+        raise ValueError("The physical reference comparison requires JAX x64")
+    analytical = build_mechanics(
+        physics_substeps, law_profile=law_profile, solver=solver, engine="analytical",
+    )
+    mjx_mechanics = build_mechanics(physics_substeps, law_profile=law_profile, solver=solver)
+    arm = analytical.plant.skeleton
+    model = mjx_mechanics.descriptor.model
+    native = mujoco.MjData(model)
+    key = jax.random.key(30)
+    zero = jnp.zeros(2)
+    bare_arm = eqx.tree_at(lambda s: s.B, arm, jnp.zeros((2, 2)))
+    direct = {
+        "mass_matrix_kg_m2": 0.0,
+        "coriolis_nm": 0.0,
+        "damping_nm": 0.0,
+        "path_length_m": 0.0,
+        "path_velocity_m_s": 0.0,
+        "path_jacobian_m": 0.0,
+        "coupled_accel_rad_s2": 0.0,
+    }
+
+    @jax.jit
+    def stages(qpos, qvel, excitation):
+        native_state = analytical.plant.init(key=key)
+        native_state = eqx.tree_at(
+            lambda state: (state.skeleton.angle, state.skeleton.d_angle), native_state,
+            (qpos, qvel),
+        )
+        engine_state = mjx_mechanics.plant.init(key=key)
+        engine_state = eqx.tree_at(
+            lambda state: (state.skeleton.qpos, state.skeleton.qvel), engine_state,
+            (qpos, qvel),
+        )
+        skel = mjx_mechanics.plant.skeleton
+        mjx_path = skel.muscle_path_kinematics(skel.continuous_stage(engine_state.skeleton))
+        ref_path = analytical.plant.geometry.path_kinematics(qpos, qvel)
+        mjx_acc = mjx_mechanics.plant.vector_field(0.0, engine_state, excitation).skeleton.qvel
+        ref_acc = analytical.plant.vector_field(0.0, native_state, excitation).skeleton.d_angle
+        return mjx_path, ref_path, mjx_acc, ref_acc
+
+    for qpos, qvel in (
+        (START_QPOS, (0.35, -0.72)), ((-0.38, 1.12), (-0.40, 0.85)),
+        ((-0.73, 1.53), (0.83, -0.53)),
+    ):
+        native.qpos[:], native.qvel[:] = qpos, qvel
+        mujoco.mj_forward(model, native)
+        inertia = np.empty((2, 2))
+        mujoco.mj_fullM(model, native, inertia)
+        qpos, qvel = jnp.asarray(qpos), jnp.asarray(qvel)
+        expected_inertia, _ = two_link_inertia(arm.l, arm.m, arm.I, arm.s, qpos[1])
+        arm_state = eqx.tree_at(
+            lambda state: (state.angle, state.d_angle), arm.init(), (qpos, qvel),
+        )
+        coriolis = -expected_inertia @ bare_arm.vector_field(0.0, arm_state, zero).d_angle
+        observed, reference, mjx_acc, reference_acc = stages(
+            qpos, qvel, jnp.linspace(0.2, 0.8, 6),
+        )
+        errors = (
+            inertia - expected_inertia, native.qfrc_bias - coriolis,
+            native.qfrc_passive + arm.B @ qvel,
+            *(left - right for left, right in zip(observed, reference, strict=True)),
+            mjx_acc - reference_acc,
+        )
+        for name, error in zip(direct, errors, strict=True):
+            direct[name] = max(direct[name], float(jnp.max(jnp.abs(error))))
+
+    phase = jnp.arange(60)[:, None] * (2 * jnp.pi / 60)
+    commands = 0.2 + 0.15 * jnp.sin(phase + jnp.arange(6)[None, :])
+
+    def rollout(mechanics, coordinate):
+        mechanics = mechanics.prepare()
+        state = mechanics.init_state(key=key)
+        state = mechanics.replace_state_value(
+            state, ("plant", "skeleton", coordinate), jnp.asarray(START_QPOS),
+        )
+
+        @jax.jit
+        def run(initial):
+            def step(carry, command):
+                out, carry = mechanics({"force": command}, carry, key=key)
+                return carry, (out["effector"].pos, out["effector"].vel)
+
+            return jax.lax.scan(step, initial, commands)[1]
+
+        return run(state)
+
+    actual_pos, actual_vel = rollout(mjx_mechanics, "qpos")
+    ref_pos, ref_vel = rollout(analytical, "angle")
+    direct["rollout_position_m"] = float(jnp.max(jnp.linalg.norm(actual_pos - ref_pos, axis=-1)))
+    direct["rollout_velocity_m_s"] = float(jnp.max(jnp.linalg.norm(actual_vel - ref_vel, axis=-1)))
+    return direct
