@@ -1218,6 +1218,31 @@ def test_provisioning_resume_reuses_deadline_and_failed_cost(tmp_path: Path) -> 
     assert resumed.budget_counters["failed_provision_cost_usd"] > cost
 
 
+def test_resource_deadline_survives_phase_change_and_restart(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(update={
+        "budget": BudgetPolicy(max_wall_clock_seconds=900, teardown_reserve_seconds=60)
+    })
+    driver = RunPodOrchestrationDriver(transport=FakeRunPodTransport())
+    clock = FakeClock()
+    store = RunSetStateStore(bundle.run_set_dir / "deadline.json")
+    state = _state(bundle)
+    store.save(state)
+    engine = StageEngine(bundle=bundle, driver=driver, store=store, wall_time=clock.monotonic)
+    _, remaining = engine._resource_phase_remaining(STAGE_PROVISION, state)
+    assert remaining == 840
+    clock.sleep(300)
+    restarted = StageEngine(bundle=bundle, driver=driver, store=store, wall_time=clock.monotonic)
+    _, remaining = restarted._resource_phase_remaining(STAGE_REALIZE_ENV, store.load())
+    assert remaining == 540
+    clock.sleep(540)
+    _, remaining = restarted._resource_phase_remaining(STAGE_STAGE_INPUTS, store.load())
+    assert remaining == 0
+    with _ScopedSignalSupervisor() as supervisor:
+        with pytest.raises(stages.BudgetExceeded, match="teardown reserve"):
+            with supervisor.resource_deadline(remaining):
+                pytest.fail("the phase must not execute after its resource deadline")
+
+
 def test_classifies_secure_endpoint_shapes_and_dead_states() -> None:
     ready = {
         "desiredStatus": "RUNNING",
