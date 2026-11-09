@@ -144,13 +144,24 @@ payload = {
 # publish its terminal result, even if the service that launched it exited.
 signal.signal(signal.SIGINT, lambda *_: None)
 signal.signal(signal.SIGTERM, lambda *_: None)
-publish(identity_path, (json.dumps(payload, sort_keys=True) + "\n").encode())
-os.close(int(launch_fd))
 try:
-    returncode = subprocess.call(command)
+    executor = subprocess.Popen(command)
 except OSError as error:
     publish(failed_path, f"could not start executor: {error}\n".encode())
     raise
+# Popen returns after exec. Publishing earlier can expose a child whose
+# process arguments still belong to the launching monitor.
+try:
+    publish(identity_path, (json.dumps(payload, sort_keys=True) + "\n").encode())
+    os.close(int(launch_fd))
+except OSError as error:
+    try:
+        print(f"could not publish process identity: {error}", file=sys.stderr, flush=True)
+    finally:
+        # A worker without a published identity cannot be safely adopted.
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    raise
+returncode = executor.wait()
 terminal = b"0\n" if returncode == 0 else f"exit={returncode}\n".encode()
 publish(done_path if returncode == 0 else failed_path, terminal)
 sys.exit(0 if returncode == 0 else 1)
@@ -604,7 +615,7 @@ class LocalOrchestrationDriver:
             launch_token=launch_token,
         )
         paths["pid"].write_text(f"{process.pid}\n", encoding="utf-8")
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         while not paths["process_identity"].is_file() and process.poll() is None:
             if time.monotonic() >= deadline:
                 break
@@ -613,8 +624,11 @@ class LocalOrchestrationDriver:
         if observed != identity:
             if process.poll() is None:
                 _terminate_process_group(process.pid, process=process)
-            detail = identity_error or "process identity record does not match launch"
-            paths["failed"].write_text(detail + "\n", encoding="utf-8")
+            if paths["failed"].exists():
+                detail = paths["failed"].read_text(encoding="utf-8").strip()
+            else:
+                detail = identity_error or "process identity record does not match launch"
+                paths["failed"].write_text(detail + "\n", encoding="utf-8")
             return {"row_id": row.row_id, "pid": process.pid, "status": "failed", "detail": detail}
         return {
             "row_id": row.row_id,
