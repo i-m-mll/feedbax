@@ -568,17 +568,18 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         )
 
     def init_system_state(self, *, key: PRNGKeyArray) -> MusculoskeletalState:
-        """Initialize at rest position."""
+        """Initialize isometric fiber balance at the arm's starting pose."""
         init_arm = TwoLinkArmState()
-
-        init_fiber_lengths = jnp.array([
-            mp.optimal_fiber_length for mp in self.muscle_params
+        lengths = self.geometry.musculotendon_lengths(init_arm.angle)
+        initial_muscles = jnp.stack([
+            law.init_state(length, jnp.zeros_like(length))
+            for law, length in zip(self.laws, lengths, strict=True)
         ])
 
         return MusculoskeletalState(
             arm=init_arm,
-            activations=jnp.zeros(self.n_muscles),
-            fiber_lengths=init_fiber_lengths,
+            activations=initial_muscles[:, 0],
+            fiber_lengths=initial_muscles[:, 1],
             fiber_velocities=jnp.zeros(self.n_muscles),
             forces=jnp.zeros(self.n_muscles),
         )
