@@ -1,0 +1,70 @@
+{
+  "schema": "feedbax.biomechanics-rnn-qualification.v1",
+  "target": {
+    "machine": "Apple M4 Pro, 14 CPU cores, 48 GiB unified memory",
+    "runtime": "macOS 27.0.1 arm64, CPython 3.12.9, JAX CPU",
+    "providers": {"mujoco-core": "4.0.0", "mujoco-mjx": "4.0.0", "jax": "0.7.2", "jaxlib": "0.7.2"},
+    "persistent_compilation_cache": false
+  },
+  "reach": {
+    "control_dt": 0.01,
+    "steps": 60,
+    "hidden_units": 64,
+    "batch_size": 16,
+    "precision": "float32",
+    "sensory_delay_steps": 1,
+    "motor_delay_steps": 0,
+    "position_noise_m": 0.001,
+    "velocity_noise_m_s": 0.01,
+    "motor_noise": 0.005,
+    "min_radius_m": 0.06,
+    "max_radius_m": 0.09,
+    "pulse_force_n": 0.5,
+    "pulse_start": 25,
+    "pulse_steps": 5,
+    "learning_rate": 0.003,
+    "gradient_clip": 1.0,
+    "terminal_position_weight": 1.0,
+    "running_position_weight": 0.4,
+    "terminal_speed_weight": 0.025,
+    "command_weight": 0.002
+  },
+  "seed_streams": {
+    "controller": [701, 907, 1217],
+    "train": 13007,
+    "held_out": 23011,
+    "directions": [33013, 33023, 33029]
+  },
+  "physical": {
+    "max_abs_skeletal_and_path_error": 1e-9,
+    "max_rollout_position_error_m": 1e-7,
+    "max_rollout_velocity_error_m_s": 1e-6
+  },
+  "gradient": {
+    "epsilons": {
+      "float32": [0.04, 0.02, 0.01, 0.005, 0.0025],
+      "float64": [0.01, 0.003, 0.001, 0.0003, 0.0001]
+    },
+    "adjacent_steps_required": 2,
+    "absolute_tolerance": 0.000001,
+    "relative_tolerance": 0.03
+  },
+  "refinement": {
+    "substeps": [10, 20, 40],
+    "endpoint_absolute_m": 0.002,
+    "loss_absolute": 0.00002,
+    "gradient_absolute": 0.000002,
+    "gradient_relative": 0.05
+  },
+  "success": {"position_p90_m": 0.015, "speed_p90_m_s": 0.12, "command_rms": 0.55},
+  "minimum_successful_seeds": 2,
+  "training": {
+    "update_cap": 500,
+    "elapsed_cap_s": 110,
+    "peak_rss_cap_bytes": 2684354560,
+    "evaluate_every": 10
+  },
+  "timing_repeats": 5,
+  "practical": {"update_compile_s": 50, "median_update_s": 0.12},
+  "diagnosis": {"focused_repair_attempts": 1}
+}

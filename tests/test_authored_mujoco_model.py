@@ -176,3 +176,21 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
     )
     with pytest.raises(ValueError, match="external resource"):
         compile_spatial_model(restored, provider)
+
+
+def test_saved_planar_damping_modes_are_passive_and_use_physics_substeps():
+    from scripts.biomechanics_fixture import planar_interior
+
+    interior = planar_interior(10, direct_torque=True)
+    restored = AcausalGraphSpec.model_validate_json(interior.model_dump_json())
+    model = compile_planar_model(restored).model
+    data = mujoco.MjData(model)
+    data.qpos[:] = (-0.4, 1.1)
+    data.qvel[:] = (0.6, -0.3)
+    mujoco.mj_forward(model, data)
+
+    damping = np.array([[0.05, 0.025], [0.025, 0.05]])
+    np.testing.assert_allclose(data.qfrc_passive, -damping @ data.qvel, atol=1e-12)
+    np.testing.assert_array_equal(model.opt.gravity, np.zeros(3))
+    assert model.opt.timestep == pytest.approx(0.001)
+    assert restored.solver.dt == pytest.approx(0.01)
