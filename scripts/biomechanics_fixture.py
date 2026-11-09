@@ -20,6 +20,7 @@ from feedbax.mechanics.articulated_muscles import build_muscle_law
 from feedbax.mechanics.authored_model import compile_planar_model
 from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry, TwoLinkPointPath
+from feedbax.mechanics.hill_muscles import CompliantTendonHillLaw
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscle_law import MuscleLawBank
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
@@ -33,6 +34,7 @@ COM_OFFSETS = (0.11, 0.16)
 PIVOT_INERTIAS = (0.025, 0.045)
 DAMPING_MODES = ((1.0, 0.0375), (-1.0, 0.0125))
 DAMPING = ((0.05, 0.025), (0.025, 0.05))
+LawProfile = Literal["rigid", "activation", "compliant"]
 
 
 def _point(frame: str, x: float, y: float = 0.0) -> dict:
@@ -84,7 +86,7 @@ def _path_specs() -> list[tuple[list[dict], float, float]]:
 def planar_interior(
     physics_substeps: int,
     *,
-    law_profile: Literal["rigid", "activation"] = "rigid",
+    law_profile: LawProfile = "rigid",
     direct_torque: bool = False,
     solver: Literal["euler", "tsit5"] = "euler",
 ) -> AcausalGraphSpec:
@@ -111,9 +113,14 @@ def planar_interior(
     for i, (points, rest_length, max_force) in enumerate(_path_specs()):
         optimal_length = 0.065
         params = {"path_points": points, "state_size": 1}
-        if law_profile == "rigid":
+        if law_profile in ("rigid", "compliant"):
+            compliant = law_profile == "compliant" and i >= 4
             params.update(
-                law="feedbax.RigidTendonHillMuscle",
+                law=(
+                    "feedbax.CompliantTendonHillMuscle" if compliant
+                    else "feedbax.RigidTendonHillMuscle"
+                ),
+                state_size=2 if compliant else 1,
                 law_parameters={
                     "max_isometric_force": max_force,
                     "optimal_muscle_length": optimal_length,
@@ -179,7 +186,7 @@ def graph_document(interior: AcausalGraphSpec) -> GraphDocument:
 def build_mechanics(
     physics_substeps: int,
     *,
-    law_profile: Literal["rigid", "activation"] = "rigid",
+    law_profile: LawProfile = "rigid",
     solver: Literal["euler", "tsit5"] = "euler",
     engine: Literal["mjx", "analytical"] = "mjx",
 ) -> Mechanics:
@@ -215,7 +222,9 @@ def build_mechanics(
     return Mechanics(plant=plant, backend=backend)
 
 
-def matched_physics(physics_substeps: int, *, law_profile: str, solver: str) -> dict[str, float]:
+def matched_physics(
+    physics_substeps: int, *, law_profile: LawProfile, solver: Literal["euler", "tsit5"],
+) -> dict[str, float]:
     """Compare independent two-link dynamics and matched production trajectories."""
     import mujoco
 
@@ -256,6 +265,12 @@ def matched_physics(physics_substeps: int, *, law_profile: str, solver: str) -> 
         skel = mjx_mechanics.plant.skeleton
         mjx_path = skel.muscle_path_kinematics(skel.continuous_stage(engine_state.skeleton))
         ref_path = analytical.plant.geometry.path_kinematics(qpos, qvel)
+        if law_profile == "compliant":
+            native_state = eqx.tree_at(
+                lambda state: state.muscles, native_state,
+                analytical.plant.law_bank.init_state(*ref_path[:2]),
+            )
+            engine_state = mjx_mechanics.plant.equilibrate_muscles(engine_state)
         mjx_acc = mjx_mechanics.plant.vector_field(0.0, engine_state, excitation).skeleton.qvel
         ref_acc = analytical.plant.vector_field(0.0, native_state, excitation).skeleton.d_angle
         return mjx_path, ref_path, mjx_acc, ref_acc
@@ -310,4 +325,18 @@ def matched_physics(physics_substeps: int, *, law_profile: str, solver: str) -> 
     ref_pos, ref_vel = rollout(analytical, "angle")
     direct["rollout_position_m"] = float(jnp.max(jnp.linalg.norm(actual_pos - ref_pos, axis=-1)))
     direct["rollout_velocity_m_s"] = float(jnp.max(jnp.linalg.norm(actual_vel - ref_vel, axis=-1)))
+    if law_profile == "compliant":
+        plant = analytical.plant
+        initial = plant.init(key=key)
+        lengths = plant.geometry.musculotendon_lengths(initial.skeleton.angle)
+        residuals = []
+        for law, state, length in zip(plant.law_bank.laws, initial.muscles, lengths, strict=True):
+            if isinstance(law, CompliantTendonHillLaw):
+                activation, fiber = state
+                projected_fiber = law.fiber_force(activation, fiber, jnp.zeros_like(fiber)) * jnp.cos(
+                    law.pennation(fiber)
+                )
+                spring_force = law.tendon_force(law.tendon_length(fiber, length))
+                residuals.append(float(jnp.abs(projected_fiber - spring_force)))
+        direct["initial_compliant_equilibrium_n"] = max(residuals)
     return direct

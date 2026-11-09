@@ -85,7 +85,7 @@ def main() -> None:
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--engine", choices=("mjx", "analytical"), default="mjx")
-    parser.add_argument("--law", choices=("rigid", "activation"), default="rigid")
+    parser.add_argument("--law", choices=("rigid", "activation", "compliant"), default="rigid")
     parser.add_argument("--solver", choices=("euler", "tsit5"), default="euler")
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=701)
