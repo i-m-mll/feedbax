@@ -481,7 +481,7 @@ class ReachBenchmark:
         curve = []
 
         def evaluate(step):
-            metrics = self.evaluate(model, held_out)
+            metrics = jax.block_until_ready(self.evaluate(model, held_out))
             point = LearningPoint(
                 step,
                 update_s,

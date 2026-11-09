@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, replace
+from hashlib import sha256
 from importlib.metadata import version
+from io import BytesIO
 import json
 from pathlib import Path
 import platform
@@ -17,6 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax._ode import restore_storage_dtypes
 from feedbax.mechanics.backend import PhysicsState
 from scripts.biomechanics_fixture import (
@@ -185,7 +188,9 @@ def _snapshot(benchmark, model, batch, *, wrap_shoulder: bool = False) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("physics", "rehearsal", "gradient", "timing", "train"))
+    parser.add_argument(
+        "phase", choices=("physics", "rehearsal", "gradient", "timing", "train", "held-out-replay"),
+    )
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--engine", choices=("mjx", "analytical"), default="mjx")
@@ -202,6 +207,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.wrap_shoulder and (args.engine != "mjx" or args.phase == "physics"):
         parser.error("--wrap-shoulder requires an MJX row without the analytical physics comparator")
+    if args.load_net is not None and args.phase in ("physics", "rehearsal", "train"):
+        parser.error("--load-net is for evaluation and timing")
+    if args.save_net is not None and args.phase != "train":
+        parser.error("--save-net requires the train phase")
+    if args.phase == "held-out-replay" and (not args.wrap_shoulder or args.load_net is None):
+        parser.error("held-out-replay requires --wrap-shoulder and --load-net")
+    if args.phase == "train" and args.wrap_shoulder and args.save_net is None:
+        parser.error("wrapped training requires --save-net for held-out replay")
     jax.config.update("jax_enable_compilation_cache", False)
     lock = json.loads(args.lock.read_text())
     report = {
@@ -223,10 +236,13 @@ def main() -> None:
         benchmark, model, model_identity = _make_benchmark(args, lock)
         report.update(model_identity=model_identity, reach=asdict(benchmark.spec))
         if args.load_net is not None:
-            net = eqx.tree_deserialise_leaves(args.load_net, model.net)
+            checkpoint = args.load_net.read_bytes()
+            net = eqx.tree_deserialise_leaves(BytesIO(checkpoint), model.net)
             model = eqx.tree_at(lambda graph: graph.net, model, net)
+            report["loaded_checkpoint_sha256"] = sha256(checkpoint).hexdigest()
         train_seed = lock["seed_streams"]["train"] + args.seed
-        batch = benchmark.prepare(benchmark.train_bank(train_seed, 0))
+        if args.phase in ("rehearsal", "gradient", "timing"):
+            batch = benchmark.prepare(benchmark.train_bank(train_seed, 0))
         if args.phase == "rehearsal":
             start = perf_counter()
             updated, _, loss = jax.block_until_ready(
@@ -257,6 +273,11 @@ def main() -> None:
                     model, batch, repeats=lock["timing_repeats"],
                 ).items()
             }
+        elif args.phase == "held-out-replay":
+            held_out = benchmark.prepare(benchmark.held_out_bank(lock["seed_streams"]["held_out"]))
+            report["held_out_trajectory"] = _snapshot(
+                benchmark, model, held_out, wrap_shoulder=True,
+            )
         else:
             held_out = benchmark.prepare(benchmark.held_out_bank(lock["seed_streams"]["held_out"]))
             budget = lock["training"]
@@ -274,15 +295,16 @@ def main() -> None:
                 updates=result.updates,
                 stop_reason=result.stop_reason,
             )
-            if args.wrap_shoulder:
-                report["held_out_trajectory"] = _snapshot(
-                    benchmark, model, held_out, wrap_shoulder=True,
-                )
         if args.save_net is not None:
-            eqx.tree_serialise_leaves(args.save_net, model.net)
+            buffer = BytesIO()
+            eqx.tree_serialise_leaves(buffer, model.net)
+            checkpoint = buffer.getvalue()
+            write_bytes_atomic(args.save_net, checkpoint)
+            report["saved_checkpoint_sha256"] = sha256(checkpoint).hexdigest()
     report["peak_process_rss_bytes"] = process_peak_rss_bytes()
     report["identity"] = _identity()
-    args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    result = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    write_bytes_atomic(args.out, result.encode())
 
 
 if __name__ == "__main__":
