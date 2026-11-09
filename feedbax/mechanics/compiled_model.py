@@ -60,6 +60,27 @@ class CompiledPhysicalModel:
     planar_segment_lengths: tuple[float, ...]
 
 
+def outside_wraps_only(model: MjModel) -> bool:
+    """Check that every primitive route has an explicitly exterior, body-fixed side site."""
+    import mujoco
+
+    sphere = mujoco.mjtWrap.mjWRAP_SPHERE
+    cylinder = mujoco.mjtWrap.mjWRAP_CYLINDER
+    for index in np.flatnonzero(np.isin(model.wrap_type, (sphere, cylinder))):
+        geom = model.wrap_objid[index]
+        side = int(model.wrap_prm[index])
+        if side < 0 or model.site_bodyid[side] != model.geom_bodyid[geom]:
+            return False
+        offset = model.site_pos[side] - model.geom_pos[geom]
+        if model.wrap_type[index] == cylinder:
+            rotation = np.empty(9)
+            mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+            offset = (rotation.reshape(3, 3).T @ offset)[:2]
+        if np.linalg.norm(offset) <= model.geom_size[geom, 0]:
+            return False
+    return True
+
+
 def describe_model(
     model: MjModel,
     *,
@@ -139,6 +160,11 @@ def describe_model(
             for path in paths
         ],
     }
+    wrap_geoms = np.isin(model.wrap_type, (
+        mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER,
+    ))
+    if wrap_geoms.any():
+        structure["wrap_side_sites"] = model.wrap_prm[wrap_geoms].astype(int).tolist()
     signature = sha256(canonical_json_v2_bytes(structure)).hexdigest()
     actuator_state = tuple(
         slice(int(address), int(address) + int(count)) if count else slice(0, 0)

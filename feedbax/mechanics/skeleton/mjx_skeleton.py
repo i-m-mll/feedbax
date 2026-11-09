@@ -279,6 +279,13 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
             lengths, stage._impl.ten_velocity[tendons], stage._impl.ten_J[tendons],
         )
 
+    def muscle_path_wrap_counts(self, stage: Data) -> Array:
+        """Count active primitive contacts per authored path from engine routing."""
+        tendons = np.asarray(self._path_tendons, dtype=int)
+        paths = () if self.descriptor is None else self.descriptor.paths
+        sites = np.asarray([len(path.sites) for path in paths], dtype=int)
+        return (stage._impl.ten_wrapnum[tendons] - sites) // 2
+
     def tendon_controls(self, tension: Array) -> Array:
         """Set muscle shortening tensions (N); leave other actuator controls at zero."""
         if tension.shape != (len(self._path_actuators),):

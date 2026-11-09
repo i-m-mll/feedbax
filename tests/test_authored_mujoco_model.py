@@ -120,6 +120,8 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
             <joint name="pivot" type="ball"/>
             <inertial pos=".1 0 0" mass="2" diaginertia=".2 .3 .4"/>
             <site name="effector" pos=".3 .1 .2"/>
+            <geom name="wrapper" type="sphere" size=".04" pos=".1 0 .12"
+                  mass="0" contype="0" conaffinity="0"/>
           </body>
         </worldbody>
         <actuator>
@@ -134,9 +136,13 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
         "mujoco_asset": {
             "asset": asset.model_dump(),
             "effector_site": "effector",
-            "sites": {"insertion": {"body": "arm", "position": [0.1, 0, 0.25]}},
+            "sites": {
+                "insertion": {"body": "arm", "position": [0.1, 0, 0.25]},
+                "side": {"body": "arm", "position": [0.18, 0, 0.12]},
+            },
             "paths": {"flexor": {
                 "sites": ["fixed", "insertion"],
+                "wraps": [{"after_site": 0, "geom": "wrapper", "side_site": "side"}],
                 "law": "feedbax.RigidTendonHillMuscle",
                 "state_size": 1,
                 "parameters": {"max_isometric_force": 150.0},
@@ -157,6 +163,9 @@ def test_saved_spatial_asset_and_overlay_bindings(tmp_path):
     assert edited.joints[edited.joint_ids["pivot"]].qpos == slice(0, 4)
     assert edited.actuator_ids["drive"] == 0
     assert edited.paths[edited.tendon_ids["flexor"]].parameters["max_isometric_force"] == 150.0
+    wrap = edited.model.tendon_adr[edited.tendon_ids["flexor"]] + 1
+    assert edited.model.wrap_type[wrap] == mujoco.mjtWrap.mjWRAP_SPHERE
+    assert edited.model.wrap_prm[wrap] == edited.site_ids["side"]
     assert edited.model.site_pos[edited.site_ids["insertion"], 2] == 0.35
     assert first.model.site_pos[first.site_ids["insertion"], 2] == 0.25
     with pytest.raises(ValueError, match="needs an artifact provider"):

@@ -101,10 +101,30 @@ class SpatialSite(StrictModel):
     position: tuple[float, float, float]
 
 
+class MuscleWrap(StrictModel):
+    """Wrap one segment between consecutive sites around a named geometry."""
+
+    after_site: int = Field(ge=0, strict=True)
+    geom: str = Field(min_length=1)
+    side_site: str = Field(min_length=1)
+
+
+class PlanarWrapGeometry(StrictModel):
+    """An XY sphere or Z-axis cylinder, local to a named planar frame."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    kind: Literal["sphere", "cylinder"]
+    frame: str = Field(min_length=1)
+    radius: float = Field(gt=0)
+    offset: tuple[float, float] = (0.0, 0.0)
+
+
 class SpatialMusclePath(StrictModel):
     """A path through native or overlay sites, with its external muscle law."""
 
     sites: tuple[str, ...] = Field(min_length=2)
+    wraps: tuple[MuscleWrap, ...] = ()
     law: str = Field(min_length=1)
     state_size: int = Field(ge=0, strict=True)
     law_revision: int | None = Field(default=None, ge=1, strict=True)
@@ -135,6 +155,7 @@ class AcausalGraphSpec(BaseModel):
     metadata: Optional["GraphMetadata"] = None
     mujoco_asset: MuJoCoAssetBinding | None = None
     planar_dynamics: PlanarDynamicsSpec | None = None
+    wrap_geometries: dict[str, PlanarWrapGeometry] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -172,6 +193,8 @@ class AcausalGraphSpec(BaseModel):
             self.planar_dynamics is not None or self.solver.planar_substeps is not None
         ):
             raise ValueError("Planar dynamics and substeps require planar multibody")
+        if self.wrap_geometries and self.physical_domain != "planar_multibody":
+            raise ValueError("Wrap geometry overlays require a planar multibody graph")
         for node_id, node in self.nodes.items():
             for param_name, value in node.params.items():
                 if _contains_array_value(value):

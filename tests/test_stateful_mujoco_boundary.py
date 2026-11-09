@@ -444,3 +444,140 @@ def test_spatial_overlay_transmits_through_quaternion_velocity_map(spatial_fixed
     assert node.workspace_dimension == 3 and (skeleton.nq, skeleton.nv) == (7, 6)
     assert skeleton.input_size == 1
     _assert_path_stage(skeleton, state, reference, integrate, jnp.array([2.1]))
+
+
+def test_exterior_sphere_and_cylinder_wraps_match_native_and_tangency():
+    radius, start_radius, end_radius = 0.062, 0.07, 0.12
+    interior = AcausalGraphSpec.model_validate({
+        "physical_domain": "planar_multibody",
+        "solver": {"solver_type": "euler", "dt": 0.002},
+        "wrap_geometries": {
+            kind: {"kind": kind, "frame": "world.frame", "radius": radius}
+            for kind in ("cylinder", "sphere")
+        },
+        "nodes": {
+            "world": {"type": "feedbax.WorldFrame"},
+            "anchor": {"type": "feedbax.Anchor", "params": {"frame": "link.proximal"}},
+            "link": {"type": "feedbax.PlanarLink", "params": {"length": 0.30}},
+            "joint": {"type": "feedbax.RevoluteJoint", "params": {
+                "parent_frame": "world.frame", "child_frame": "link.proximal",
+            }},
+            "drive": {"type": "feedbax.ActuationInput", "params": {
+                "port_name": "control", "source_kind": "actuator_control", "size": 1,
+            }},
+            "sense": {"type": "feedbax.SensorOutput", "params": {
+                "port_name": "effector", "quantity": "effector",
+            }},
+            "tip": {"type": "feedbax.PointMarker", "params": {
+                "frame": "link.distal", "marker_name": "effector",
+            }},
+            "side": {"type": "feedbax.PointMarker", "params": {
+                "frame": "world.frame", "offset": [0.055, 0.08],
+            }},
+            **{
+                kind: {"type": "feedbax.MusclePath", "params": {
+                    "path_points": [
+                        {"frame": "world.frame", "offset": [start_radius, 0]},
+                        {"frame": "link.proximal", "offset": [end_radius, 0]},
+                    ],
+                    "wraps": [{"after_site": 0, "geom": kind, "side_site": "side"}],
+                }}
+                for kind in ("cylinder", "sphere")
+            },
+        },
+    })
+    graph = _saved_path_graph(interior)
+    node = graph.nodes["physics"]
+    assert node.supports_reverse_mode
+    skeleton = node.plant.skeleton
+    key = jax.random.PRNGKey(0)
+    state = replace(
+        node.state_view(graph.init_state(key=key)).plant.skeleton, qvel=jnp.array([0.35]),
+    )
+
+    @eqx.filter_jit
+    def evaluate(q):
+        current = replace(state, qpos=jnp.reshape(q, (1,)))
+        stage = skeleton.continuous_stage(current)
+        geometry = skeleton.muscle_path_kinematics(stage)
+        tension = skeleton.tendon_controls(jnp.array([0.9, 1.3]))
+        loaded = skeleton.continuous_derivative(current, stage, tension).qvel
+        idle = skeleton.continuous_derivative(current, stage, jnp.zeros_like(tension)).qvel
+        return geometry, skeleton.muscle_path_wrap_counts(stage), loaded - idle
+
+    def reference_length(q):
+        return evaluate(q)[0].length
+
+    derivative = eqx.filter_jit(jax.jacrev(reference_length))
+    native_model = node.descriptor.model
+    native = mujoco.MjData(native_model)
+    native.qvel[:] = state.qvel
+    for path, tension in zip(node.descriptor.paths, [0.9, 1.3], strict=True):
+        native.ctrl[path.actuator_id] = tension
+    grazing = np.arccos(radius / start_radius) + np.arccos(radius / end_radius)
+    tangent_lengths = np.sqrt(start_radius**2 - radius**2) + np.sqrt(end_radius**2 - radius**2)
+
+    for q in [grazing - 1e-4, grazing + 1e-4, 1.65, 2.10, 2.55]:
+        geometry, count, delta_accel = evaluate(jnp.asarray(q))
+        native.qpos[:] = q
+        mujoco.mj_forward(native_model, native)
+        mass = np.empty((1, 1))
+        mujoco.mj_fullM(native_model, native, mass)
+        engaged = q > grazing
+        expected = (
+            tangent_lengths + radius * (q - grazing) if engaged
+            else abs(start_radius - end_radius * np.exp(1j * q))
+        )
+        np.testing.assert_array_equal(count, [int(engaged)] * 2)
+        np.testing.assert_array_equal(native.ten_wrapnum, 2 + 2 * np.asarray(count))
+        np.testing.assert_allclose(geometry.length, expected, atol=2e-12)
+        np.testing.assert_allclose(geometry.length, native.ten_length, atol=2e-12)
+        np.testing.assert_allclose(geometry.velocity, native.ten_velocity, atol=2e-12)
+        np.testing.assert_allclose(mass @ delta_accel, native.qfrc_actuator, atol=2e-10)
+        if q >= 1.65:
+            np.testing.assert_allclose(derivative(jnp.asarray(q)), radius, atol=2e-10)
+            np.testing.assert_allclose(geometry.jacobian, radius, atol=2e-10)
+
+    external = interior.model_copy(deep=True)
+    external.nodes["drive"].params.update(source_kind="muscle_excitation_vector", size=2)
+    gains = np.array([2.0, 3.0])
+    activation_time = 0.015
+    for name, gain in zip(("cylinder", "sphere"), gains, strict=True):
+        external.nodes[name].params.update(
+            law="feedbax.ReluMuscle",
+            law_parameters={"max_isometric_force": float(gain), "tau_activation": activation_time},
+        )
+    coupled = compile_graph(_document(external), ComponentRegistry()).graph
+    physics = coupled.nodes["physics"]
+
+    def end_velocity(command):
+        initial = physics.replace_state_value(
+            coupled.init_state(key=key), ("plant", "skeleton", "qpos"), jnp.array([2.10]),
+        )
+        _, first = coupled({"control": command}, initial, key=key)
+        _, last = coupled({"control": command}, first, key=key)
+        return physics.state_view(last).plant.skeleton.qvel[0]
+
+    native.qpos[:] = 2.10
+    mujoco.mj_forward(native_model, native)
+    mass = np.empty((1, 1))
+    mujoco.mj_fullM(native_model, native, mass)
+    sensitivity = eqx.filter_jit(jax.grad(end_velocity))(jnp.array([0.2, 0.3]))
+    expected_sensitivity = -radius * gains * interior.solver.dt**2 / (mass[0, 0] * activation_time)
+    np.testing.assert_allclose(sensitivity, expected_sensitivity, atol=2e-10)
+
+    inside = interior.model_copy(deep=True)
+    inside.nodes["side"].params["offset"] = [0.01, 0]
+    forward_graph = compile_graph(_document(inside), ComponentRegistry()).graph
+    assert not forward_graph.nodes["physics"].supports_reverse_mode
+
+    def forward(command):
+        outputs, _ = forward_graph(
+            {"control": command}, forward_graph.init_state(key=key), key=key,
+        )
+        return outputs["effector"].pos[1]
+
+    command = jnp.array([0.2])
+    assert jnp.isfinite(forward(command))
+    with pytest.raises(RuntimeError, match="fixed exterior side site"):
+        jax.grad(forward)(command)
