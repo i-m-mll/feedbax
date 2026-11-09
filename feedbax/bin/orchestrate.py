@@ -809,7 +809,11 @@ def _driver_construction_context(
     training_method_registry: TrainingProgramRegistry,
     load_credentials: bool = True,
 ) -> DriverConstructionContext:
-    api_key = load_runpod_api_key() if load_credentials else None
+    api_key = (
+        load_runpod_api_key()
+        if load_credentials and bundle.deployment_policy.driver == "runpod"
+        else None
+    )
     return DriverConstructionContext(
         configuration={
             "bundle": bundle,
