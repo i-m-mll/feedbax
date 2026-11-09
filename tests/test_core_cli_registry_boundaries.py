@@ -175,6 +175,7 @@ def test_orchestration_teardown_passes_training_registry(
         run_set_id: str,
         *,
         stop_after_stage: str | None = None,
+        abort_only: bool = False,
         break_stale_lock: bool = False,
         retry_failed_certification: bool = False,
         interruption_probe: Callable[[], CancellationDecision | None] | None = None,
@@ -190,6 +191,7 @@ def test_orchestration_teardown_passes_training_registry(
         del (
             run_set_id,
             stop_after_stage,
+            abort_only,
             break_stale_lock,
             retry_failed_certification,
             interruption_probe,
@@ -208,6 +210,7 @@ def test_orchestration_teardown_passes_training_registry(
     args = SimpleNamespace(
         run_set="run-set",
         force=False,
+        abort=True,
         content_store_root=None,
         content_lease_seconds=None,
         bootstrap_state=_bootstrap_state(training_methods),

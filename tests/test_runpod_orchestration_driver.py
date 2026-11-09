@@ -122,6 +122,7 @@ class FakeRunPodTransport:
         self.runpodctl_calls: list[tuple[str, ...]] = []
         self.runpodctl_timeouts: list[float | None] = []
         self.ssh_commands: list[str] = []
+        self.ssh_timeouts: list[float | None] = []
         self.rsync_calls: list[tuple[str, str, bool, tuple[str, ...]]] = []
         self.runpodctl_results: dict[tuple[str, ...], list[CommandResult]] = {}
         self.ssh_results: list[CommandResult] = []
@@ -162,8 +163,9 @@ class FakeRunPodTransport:
         self.image_exists_calls.append(image)
         return image == "runpod/pytorch:1.0.3@sha256:" + "a" * 64
 
-    def ssh(self, command: str) -> CommandResult:
+    def ssh(self, command: str, *, timeout_seconds: float | None = None) -> CommandResult:
         self.ssh_commands.append(command)
+        self.ssh_timeouts.append(timeout_seconds)
         self.operations.append(f"ssh:{command}")
         if command.startswith("if [ -f ") and "printf pending" in command:
             if self.sentinel_results:
@@ -2219,11 +2221,14 @@ def test_provider_create_rejection_stops_after_one_intent(
     assert transport.runpodctl_calls == [call]
 
 
-@pytest.mark.parametrize("create_rejected", [True, False])
-def test_exact_cuda_create_and_identity_mismatch_remain_governed(
-    tmp_path: Path, create_rejected: bool
+@pytest.mark.parametrize("scenario", ["create-rejected", "placement-mismatch", "changed-key", "startup-timeout", "delayed-ssh"])
+def test_exact_cuda_startup_remains_governed(
+    tmp_path: Path, scenario: str
 ) -> None:
     bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(update={
+        "budget": bundle.budget.model_copy(update={"max_create_attempts": 1}),
+    })
     gpu = "NVIDIA GeForce RTX 5090"
     image = bundle.environment.image_id
     name = "feedbax-exact-cuda"
@@ -2234,7 +2239,7 @@ def test_exact_cuda_create_and_identity_mismatch_remain_governed(
         compute_capability="12.0",
         ephemeral_disk_gb=20,
         max_hourly_rate_usd=1.19,
-        startup_seconds=120,
+        startup_seconds=7,
     )
     requests = []
     deleted = False
@@ -2265,7 +2270,7 @@ def test_exact_cuda_create_and_identity_mismatch_remain_governed(
                 "ports": ["22/tcp"],
                 "startSsh": True,
             }
-            if create_rejected:
+            if scenario == "create-rejected":
                 return httpx.Response(
                     400,
                     headers={"Content-Type": "application/problem+json"},
@@ -2289,21 +2294,40 @@ def test_exact_cuda_create_and_identity_mismatch_remain_governed(
             "id": "pod-exact", "name": name, "status": "RUNNING", "image": image,
             "cloud": "SECURE", "disk": 20, "ports": ["22/tcp"],
             "gpu": {"id": gpu, "count": 1}, "mounts": {},
-            "dataCenterId": "US-KS-2", "cudaVersion": "13.2", "cost": 1.19,
+            "dataCenterId": "US-KS-2" if scenario == "placement-mismatch" else "EU-RO-1",
+            "cudaVersion": "13.2", "cost": 1.19,
             "createdAt": datetime.now(timezone.utc).isoformat(),
             "ssh": {"direct": {"host": "203.0.113.10", "port": 2222, "username": "root"}},
         })
 
     transport = FakeRunPodTransport()
+    if scenario == "changed-key":
+        transport.queue_ssh(CommandResult(255, "", "REMOTE HOST IDENTIFICATION HAS CHANGED"))
+    elif scenario in {"startup-timeout", "delayed-ssh"}:
+        transport.queue_ssh(CommandResult(255, "", "Connection refused"))
+        if scenario == "delayed-ssh":
+            transport.queue_ssh(CommandResult(
+                0, f"{gpu}, 595.2, 12.0, GPU-00000000-0000-0000-0000-000000000000"
+            ))
+        else:
+            transport.queue_ssh(CommandResult(255, "", "No ED25519 host key is known for endpoint"))
     transport.api_request = SubprocessRunPodTransport(
         http_transport=httpx.MockTransport(handle)
     ).api_request
+    elapsed = 0.0
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             image=image, gpu_id=gpu, datacenters=("EU-RO-1",), api_key=secret,
             cuda_placement=placement,
         ),
         transport=transport,
+        monotonic=lambda: elapsed,
+        sleep=sleep,
     )
     driver._preflight_passed = True
     driver.acquisition_pod_name = lambda _intent_id: name
@@ -2311,23 +2335,129 @@ def test_exact_cuda_create_and_identity_mismatch_remain_governed(
     store = RunSetStateStore(bundle.run_set_dir / "exact-cuda.json")
     store.save(state)
     engine = StageEngine(bundle=bundle, driver=driver, store=store)
-    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
-        engine._stage_provision(state)
+    if scenario == "delayed-ssh":
+        _, outputs = engine._stage_provision(state)
+        assert outputs["cuda_placement"]["device"] == gpu
+        assert transport.ssh_timeouts[:2] == [7, 2]
+        assert elapsed == 5
+        assert not deleted
+    else:
+        with pytest.raises(OrchestrationStageError, match="provisioning stopped"):
+            engine._stage_provision(state)
     final = store.load()
     assert requests.count(("POST", "/v2/pods")) == 1
     assert len(final.acquisition_intents) == 1
-    assert not transport.ssh_commands and not transport.rsync_calls
+    assert not transport.rsync_calls
     assert secret not in store.path.read_text()
-    if create_rejected:
+    if scenario == "create-rejected":
         problem = final.acquisition_intents[0].evidence["create"]["problem"]
         assert problem["detail"] == "image digest is unsupported. bearer [redacted]"
         assert not deleted
-    else:
+    elif scenario != "delayed-ssh":
         assert deleted
         assert ("GET", "/v2/pods/pod-exact") in requests[requests.index(
             ("DELETE", "/v2/pods/pod-exact")
         ) + 1:]
         assert final.provisioning_attempts[0]["cleanup"]["pod_absence"]["http_status"] == 404
+    if scenario in {"create-rejected", "placement-mismatch"}:
+        assert not transport.ssh_commands
+    if scenario == "changed-key":
+        assert transport.ssh_timeouts == [7]
+    if scenario == "startup-timeout":
+        assert transport.ssh_timeouts == [7, 2]
+        assert elapsed == 7
+
+
+@pytest.mark.parametrize("phase", ["intended", "ambiguous", "acquired", "running"])
+def test_abort_only_reconciles_owned_resources_and_fences_resume(
+    tmp_path: Path, phase: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(update={"budget": bundle.budget.model_copy(update={
+        "teardown_reserve_seconds": 60,
+        "discard_uncollected_on_abort": True,
+        "max_create_attempts": 1,
+    })})
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    transport = AcquisitionLeaseTransport(store)
+    engine, driver, state = _acquisition_engine(bundle, store, transport)
+    state, intent = engine._new_acquisition_intent(
+        state, attempt_ordinal=1, candidate_ordinal=1, candidate=None,
+    )
+    pod_id = "pod-recover"
+    transport.inventory[pod_id] = driver.acquisition_pod_name(intent.intent_id)
+    if phase != "intended":
+        state = engine._replace_acquisition_intent(
+            state, intent.intent_id,
+            state="ambiguous" if phase == "ambiguous" else "acquired",
+            pod_ids=[] if phase == "ambiguous" else [pod_id],
+        )
+    if phase == "running":
+        state = state.model_copy(update={"provision_record": {
+            "driver": "runpod", "pod_id": pod_id, "intent_id": intent.intent_id,
+            "ssh_host": "203.0.113.10", "ssh_port": 2222,
+        }})
+        state = state.with_stage(STAGE_PROVISION, StageState(status="completed"))
+        state = state.with_stage("MONITOR", StageState(status="running"))
+    store.save(state)
+
+    final = engine.abort()
+    assert final.abort_reason == "operator-abort"
+    assert final.acquisition_intents[0].state == "resolved-torn-down"
+    assert final.stage("TEARDOWN").status == "completed"
+    assert not transport.inventory and not transport.ssh_commands
+    assert not transport.create_names and not transport.rsync_calls
+    assert final.stage("MONITOR").status == state.stage("MONITOR").status
+    operations = list(transport.operations)
+    restarted = StageEngine(bundle=bundle, driver=driver, store=store)
+    with pytest.raises(OrchestrationStageError, match="operator aborted this run"):
+        restarted.run()
+    assert restarted.abort() == final
+    assert transport.operations == operations
+
+
+@pytest.mark.parametrize("visible", [True, False])
+def test_operator_signal_during_create_reconciles_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, visible: bool,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(update={"budget": bundle.budget.model_copy(update={
+        "teardown_reserve_seconds": 60,
+        "discard_uncollected_on_abort": True,
+        "max_create_attempts": 1,
+    })})
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    transport = AcquisitionLeaseTransport(store)
+    engine, driver, _ = _acquisition_engine(bundle, store, transport)
+    observed_signals = []
+    monkeypatch.setattr(signal, "raise_signal", observed_signals.append)
+
+    def create(_bundle: RunBundle, _candidate: str | None, intent_id: str) -> Any:
+        if visible:
+            transport.inventory["pod-in-flight"] = driver.acquisition_pod_name(intent_id)
+        os.kill(os.getpid(), signal.SIGTERM)
+        pytest.fail("operator signal did not interrupt the create call")
+
+    monkeypatch.setattr(driver, "create_pod_once", create)
+    monkeypatch.setattr(engine, "_run_stage", lambda _stage, state: engine._engine_owned_provision(
+        state, attempt_ordinal=1,
+    ))
+    if visible:
+        with pytest.raises(SystemExit, match=str(128 + signal.SIGTERM)):
+            engine.run()
+        assert observed_signals == [signal.SIGTERM]
+    else:
+        with pytest.raises(OrchestrationStageError, match="ambiguous-acquisition-unresolved"):
+            engine.run()
+
+    final = store.load()
+    assert final.abort_reason == "operator-abort"
+    assert final.acquisition_intents[0].state == (
+        "resolved-torn-down" if visible else "ambiguous-unresolved"
+    )
+    assert not transport.inventory and not transport.ssh_commands
+    with pytest.raises(OrchestrationStageError, match="operator aborted this run"):
+        engine.run()
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:

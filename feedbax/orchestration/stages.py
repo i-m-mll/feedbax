@@ -318,6 +318,9 @@ class _DeferredOperatorSignal(BaseException):
         self.signum = signum
 
 
+_OPERATOR_ABORT = "operator-abort"
+
+
 class _ScopedSignalSupervisor:
     """Convert hard-abort signals into orderly cleanup for one run boundary.
 
@@ -555,6 +558,10 @@ class StageEngine:
             self._signal_supervisor = signal_supervisor
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
+                if state.abort_reason == _OPERATOR_ABORT:
+                    raise OrchestrationStageError(
+                        "operator aborted this run; use teardown --abort to recover cleanup"
+                    )
                 state = self._hydrate_completed_assembly(state)
                 if self.bundle is not None and state.stage(STAGE_PREFLIGHT).status == "completed":
                     try:
@@ -601,6 +608,14 @@ class StageEngine:
                     ):
                         raise
                     if (
+                        isinstance(exc, _DeferredOperatorSignal)
+                        and self.bundle is not None
+                        and self.bundle.budget.discard_uncollected_on_abort is True
+                    ):
+                        with signal_supervisor.defer_signals():
+                            self._abort_locked(latest)
+                        raise
+                    if (
                         self.bundle is not None
                         and self.driver is not None
                         and (
@@ -616,6 +631,32 @@ class StageEngine:
                         with signal_supervisor.defer_signals():
                             self._run_teardown(latest, abort=True)
                     raise
+
+    def abort(self, *, break_stale_lock: bool = False) -> RunSetState:
+        """Close execution and clean up an existing run without replaying stages."""
+        if self.bundle is None or self.bundle.budget.discard_uncollected_on_abort is not True:
+            raise OrchestrationStageError("cleanup-only abort requires an abort-discard policy")
+        with _ScopedSignalSupervisor() as signal_supervisor:
+            with self.store.lock(break_stale=break_stale_lock):
+                state = self.store.load()
+                with signal_supervisor.defer_signals():
+                    return self._abort_locked(state)
+
+    def _abort_locked(self, state: RunSetState) -> RunSetState:
+        if state.stage(STAGE_TEARDOWN).status == "completed":
+            return state
+        state = self._stop_provisioning(
+            state, list(state.provisioning_attempts), _OPERATOR_ABORT
+        )
+        self._prepare_emergency_for_teardown(state)
+        # A signal during POST can leave an intended WAL entry and no local pod ID.
+        state = self._reconcile_acquisition_intents(state)
+        self._restore_driver_from_provision_record(state)
+        state = self._run_teardown(state, abort=True)
+        teardown = state.stage(STAGE_TEARDOWN)
+        if teardown.status != "completed":
+            raise _TeardownFailed(teardown.error or "abort teardown failed")
+        return state
 
     def _resource_phase_remaining(
         self, stage_id: str, state: RunSetState
@@ -1473,6 +1514,12 @@ class StageEngine:
                     self.driver.finish_acquired_pod(self.bundle, acquisition, intent.intent_id)
                 )
             except BaseException as exc:
+                if (
+                    isinstance(exc, _DeferredOperatorSignal)
+                    and self.bundle.budget.discard_uncollected_on_abort is True
+                ):
+                    # The enclosing run handles abort after cancelling the phase timer.
+                    raise
                 cleanup: Mapping[str, Any] | None = None
                 failure_evidence = getattr(
                     self.driver, "acquisition_failure_evidence", lambda: {}
@@ -1548,20 +1595,27 @@ class StageEngine:
             return state
         timeout = float(self.driver.reconciliation_timeout_seconds)
         deadline = self._monotonic() + timeout
-        records, inventory_evidence = self.driver.observe_pod_inventory(
-            timeout_seconds=max(0.0, deadline - self._monotonic())
-        )
+        aborting = state.abort_reason == _OPERATOR_ABORT
+        records, inventory_evidence = (), {}
+        if not aborting or any(not intent.pod_ids for intent in pending):
+            records, inventory_evidence = self.driver.observe_pod_inventory(
+                timeout_seconds=max(0.0, deadline - self._monotonic())
+            )
         pod_name = self.driver.acquisition_pod_name
         for original in pending:
             expected_name = pod_name(original.intent_id)
-            matches = [record for record in records if record.name == expected_name]
+            matched_ids = (
+                list(original.pod_ids)
+                if aborting and original.pod_ids
+                else [record.pod_id for record in records if record.name == expected_name]
+            )
             evidence = {
                 **original.evidence,
-                "inventory": dict(inventory_evidence),
+                **({"inventory": dict(inventory_evidence)} if inventory_evidence else {}),
                 "expected_name": expected_name,
-                "matched_pod_ids": [record.pod_id for record in matches],
+                "matched_pod_ids": matched_ids,
             }
-            if not matches:
+            if not matched_ids:
                 evidence["unresolved_owned_pod"] = {
                     "pod_id": None,
                     "name": expected_name,
@@ -1587,18 +1641,18 @@ class StageEngine:
                 state,
                 original.intent_id,
                 state="ambiguous",
-                pod_ids=[record.pod_id for record in matches],
+                pod_ids=matched_ids,
                 evidence=evidence,
             )
             self.store.save(state)
             teardown_evidence = list(original.teardown_evidence)
-            for record in matches:
+            for pod_id in matched_ids:
                 if self._monotonic() >= deadline:
                     raise OrchestrationStageError(
                         "acquisition reconciliation exceeded its teardown deadline"
                     )
                 self.driver.adopt_owned_pod(
-                    record.pod_id,
+                    pod_id,
                     timeout_seconds=max(0.0, deadline - self._monotonic()),
                 )
                 adopted_provision_record = self.driver.adopted_provision_record(original.intent_id)
@@ -1612,7 +1666,7 @@ class StageEngine:
                     evidence["unresolved_owned_pod"] = outputs.get(
                         "unresolved_owned_pod",
                         {
-                            "pod_id": record.pod_id,
+                            "pod_id": pod_id,
                             "last_known_state": "unknown",
                             "reason": str(exc),
                         },
@@ -1776,7 +1830,7 @@ class StageEngine:
                 "provisioning_attempts": attempts,
                 "provisioning_stop_reason": reason,
                 "budget_counters": counters,
-                "abort_reason": reason,
+                "abort_reason": _OPERATOR_ABORT if state.abort_reason == _OPERATOR_ABORT else reason,
                 "updated_at": utc_now(),
             }
         )

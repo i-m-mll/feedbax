@@ -334,6 +334,10 @@ class _ProvisioningIdentityError(RunPodDriverError, AcquisitionReadinessRejected
     """Raised when provider observations conflict during one acquisition."""
 
 
+class _SshNotReady(RunPodDriverError):
+    """The pinned endpoint is still starting or awaiting host-key enrollment."""
+
+
 class _RunPodCapacityUnavailable(RunPodDriverError):
     """A valid catalog response shows the exact placement is out of stock."""
 
@@ -403,7 +407,7 @@ class RunPodTransport(Protocol):
     ) -> RunPodApiReply:
         """Send one request to the RunPod v2 control plane."""
 
-    def ssh(self, command: str) -> CommandResult:
+    def ssh(self, command: str, *, timeout_seconds: float | None = None) -> CommandResult:
         """Run one command over SSH on the pod."""
 
     def rsync(
@@ -427,6 +431,7 @@ class SubprocessRunPodTransport:
     ssh_key_path: Path | str = Path("~/.runpod/ssh/RunPod-Key-Go")
     ssh_user: str = "root"
     strict_ssh_host_key: bool = False
+    ssh_known_hosts_path: str | None = None
     runpodctl_executable: str = "runpodctl"
     rsync_executable: str = "rsync"
     http_transport: httpx.BaseTransport | None = field(default=None, repr=False)
@@ -521,9 +526,12 @@ class SubprocessRunPodTransport:
         except (httpx.HTTPError, ValueError):
             return False
 
-    def ssh(self, command: str) -> CommandResult:
+    def ssh(self, command: str, *, timeout_seconds: float | None = None) -> CommandResult:
         host = self._require_host()
-        return _run_command([*self._ssh_base(detach_stdin=True), host, command])
+        args = self._ssh_base(detach_stdin=True)
+        if timeout_seconds is not None:
+            args.extend(["-o", f"ConnectTimeout={max(1, math.ceil(timeout_seconds))}"])
+        return _run_command([*args, host, command], timeout_seconds=timeout_seconds)
 
     def rsync(
         self,
@@ -609,6 +617,12 @@ class SubprocessRunPodTransport:
         args.extend(["-i", key, "-p", str(self.ssh_port)])
         if self.strict_ssh_host_key:
             args.extend(["-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes"])
+            if self.ssh_known_hosts_path is not None:
+                args.extend([
+                    "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
+                    "-o", "GlobalKnownHostsFile=/dev/null",
+                    "-o", f'UserKnownHostsFile="{self.ssh_known_hosts_path}"',
+                ])
         else:
             args.extend(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"])
         return args
@@ -802,6 +816,14 @@ class RunPodOrchestrationDriver:
     def acquisition_candidates(self, bundle: RunBundle) -> tuple[str | None, ...]:
         """Return the ordered singleton-create datacenter candidates."""
         del bundle
+        if self.config.cuda_placement is not None and isinstance(
+            self.transport, SubprocessRunPodTransport
+        ):
+            host_file = Path(self.transport.ssh_known_hosts_path or "")
+            if not host_file.is_file() or not re.fullmatch(r"/[A-Za-z0-9/_.-]+", str(host_file)):
+                raise RunPodDriverError(
+                    "exact RunPod CUDA acquisition requires a scoped FEEDBAX_RUNPOD_KNOWN_HOSTS file"
+                )
         return tuple(self.config.datacenters) or (None,)
 
     @property
@@ -988,9 +1010,13 @@ class RunPodOrchestrationDriver:
         self._pod_id = acquisition.pod_id
         self._provided_pod = False
         self._last_provision_pod = None
-        self._endpoint, pod = self._wait_for_endpoint(acquisition.pod_id)
+        if self.config.cuda_placement is None:
+            self._endpoint, pod, placement_receipt = self._wait_for_endpoint(acquisition.pod_id)
+        else:
+            self._endpoint, pod, placement_receipt = self._wait_for_endpoint(
+                acquisition.pod_id, cuda_context=(bundle, intent_id)
+            )
         self._configure_subprocess_endpoint(self._endpoint)
-        placement_receipt = self._verify_cuda_placement(bundle, pod, intent_id)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
@@ -1077,6 +1103,7 @@ class RunPodOrchestrationDriver:
             ssh_host=self.config.ssh_host,
             ssh_port=self.config.ssh_port,
             strict_ssh_host_key=self.config.cuda_placement is not None,
+            ssh_known_hosts_path=os.environ.get("FEEDBAX_RUNPOD_KNOWN_HOSTS"),
         )
         self._sleep = sleep
         self._monotonic = monotonic
@@ -1134,7 +1161,7 @@ class RunPodOrchestrationDriver:
             }
 
         if self._pod_id:
-            endpoint, pod = self._wait_for_endpoint(self._pod_id)
+            endpoint, pod, _ = self._wait_for_endpoint(self._pod_id)
             self._endpoint = endpoint
             self._configure_subprocess_endpoint(endpoint)
             self._require_gpu_ready()
@@ -3301,7 +3328,9 @@ class RunPodOrchestrationDriver:
     def _wait_for_endpoint(
         self,
         pod_id: str,
-    ) -> tuple[EndpointClassification, Mapping[str, Any]]:
+        *,
+        cuda_context: tuple[RunBundle, str] | None = None,
+    ) -> tuple[EndpointClassification, Mapping[str, Any], dict[str, Any] | None]:
         placement = self.config.cuda_placement
         startup_seconds = (
             self.config.max_acquire_seconds if placement is None else placement.startup_seconds
@@ -3316,16 +3345,33 @@ class RunPodOrchestrationDriver:
             if self._monotonic() > deadline:
                 break
             classification = classify_pod_state(pod)
-            if classification.status == "ready":
-                return (
-                    EndpointClassification(
-                        "ssh_object",
-                        classification.ip,
-                        classification.port,
-                        endpoint_classification(pod).ssh_command,
-                    ),
-                    pod,
+            if classification.status == "ready" and (
+                cuda_context is None or (
+                    pod.get("status") == "RUNNING"
+                    and isinstance(pod.get("ssh"), Mapping)
+                    and "direct" in pod["ssh"]
                 )
+            ):
+                endpoint = EndpointClassification(
+                    "ssh_object", classification.ip, classification.port,
+                    endpoint_classification(pod).ssh_command,
+                )
+                if cuda_context is None:
+                    return endpoint, pod, None
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    break
+                self._configure_subprocess_endpoint(endpoint)
+                bundle, intent_id = cuda_context
+                try:
+                    receipt = self._verify_cuda_placement(
+                        bundle, pod, intent_id, startup_remaining=remaining,
+                    )
+                except _SshNotReady:
+                    pass
+                else:
+                    if self._monotonic() <= deadline:
+                        return endpoint, pod, receipt
             if classification.status == "dead":
                 raise RunPodDriverError(f"pod entered dead state: {classification.reason}")
             remaining = deadline - self._monotonic()
@@ -3333,14 +3379,15 @@ class RunPodOrchestrationDriver:
                 break
             self._sleep(min(self.config.poll_seconds, remaining))
         raise RunPodDriverError(
-            f"timed out waiting for RunPod SSH endpoint after {startup_seconds:g}s"
+            f"timed out waiting for RunPod SSH readiness after {startup_seconds:g}s"
         )
 
     def _require_gpu_ready(self) -> None:
         self._ssh("nvidia-smi >/dev/null").check("nvidia-smi readiness")
 
     def _verify_cuda_placement(
-        self, bundle: RunBundle, pod: Mapping[str, Any], intent_id: str
+        self, bundle: RunBundle, pod: Mapping[str, Any], intent_id: str,
+        *, startup_remaining: float | None = None,
     ) -> dict[str, Any] | None:
         placement = self.config.cuda_placement
         if placement is None:
@@ -3366,8 +3413,20 @@ class RunPodOrchestrationDriver:
         ):
             raise _ProvisioningIdentityError("RunPod resource failed exact CUDA placement policy")
         result = self.transport.ssh(
-            "nvidia-smi --query-gpu=name,driver_version,compute_cap,uuid --format=csv,noheader"
+            "nvidia-smi --query-gpu=name,driver_version,compute_cap,uuid --format=csv,noheader",
+            timeout_seconds=8 if startup_remaining is None else min(8, startup_remaining),
         )
+        if startup_remaining is not None and (
+            result.returncode == 124 or (
+                result.returncode == 255 and any(
+                    message in result.stderr.lower() for message in (
+                        "connection refused", "connection timed out", "connection reset",
+                        "no route to host", "host key is known for",
+                    )
+                )
+            )
+        ):
+            raise _SshNotReady("RunPod SSH is not yet ready")
         rows = result.stdout.strip().splitlines()
         fields = [field.strip() for field in rows[0].split(",")] if len(rows) == 1 else []
         if result.returncode != 0 or len(fields) != 4:
