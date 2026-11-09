@@ -450,18 +450,18 @@ class RigidTendonHillMuscle(AbstractHillMuscle):
         fiber_length: Array,
         musculotendon_velocity: Array,
     ) -> Array:
-        """Compute fiber velocity from musculotendon velocity (rigid tendon).
+        """Differentiate the rigid tendon fiber length at a taut pose.
 
         Args:
             fiber_length: Current fiber length [m].
-            musculotendon_velocity: Musculotendon shortening velocity [m/s].
+            musculotendon_velocity: Musculotendon lengthening velocity [m/s].
 
         Returns:
             Fiber velocity [m/s].
         """
-        cos_alpha = jnp.cos(self.compute_pennation_angle(fiber_length))
-        # d/dt(L_mt) = d/dt(L_f * cos(alpha)) ≈ v_f * cos(alpha) for small angle changes
-        return musculotendon_velocity / cos_alpha
+        if self.params.pennation_angle < 0.01:
+            return musculotendon_velocity
+        return musculotendon_velocity * jnp.cos(self.compute_pennation_angle(fiber_length))
 
     def compute_force(
         self,
