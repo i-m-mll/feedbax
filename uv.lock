@@ -609,6 +609,7 @@ dependencies = [
     { name = "crc32c" },
     { name = "diffrax" },
     { name = "equinox" },
+    { name = "httpx" },
     { name = "jax" },
     { name = "jaxtyping" },
     { name = "numpy" },
@@ -629,7 +630,6 @@ all = [
     { name = "anyio" },
     { name = "dill" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "ipyfilechooser" },
     { name = "ipywidgets" },
     { name = "jax" },
@@ -690,7 +690,6 @@ viz = [
 web = [
     { name = "anyio" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -705,6 +704,7 @@ dev = [
     { name = "scipy" },
 ]
 mjx-warp = [
+    { name = "dill" },
     { name = "feedbax", extra = ["mjx"] },
     { name = "jax", extra = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mujoco-mjx", extra = ["warp"] },
@@ -720,7 +720,7 @@ requires-dist = [
     { name = "equinox", specifier = ">=0.13.1" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110.0" },
     { name = "feedbax", extras = ["mjx", "web"], marker = "extra == 'all'" },
-    { name = "httpx", marker = "extra == 'web'", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "ipyfilechooser", marker = "extra == 'all'", specifier = ">=0.6.0" },
     { name = "ipyfilechooser", marker = "extra == 'notebook'", specifier = ">=0.6.0" },
     { name = "ipywidgets", marker = "extra == 'all'", specifier = ">=8.1.5" },
@@ -784,6 +784,7 @@ dev = [
     { name = "scipy", specifier = ">=1.17.1" },
 ]
 mjx-warp = [
+    { name = "dill", specifier = ">=0.3.9" },
     { name = "feedbax", extras = ["mjx"] },
     { name = "jax", extras = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.7.2" },
     { name = "mujoco-mjx", extras = ["warp"], specifier = "==4.0.0" },
