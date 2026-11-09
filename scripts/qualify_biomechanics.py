@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from importlib.metadata import version
 import json
 from pathlib import Path
@@ -11,11 +11,14 @@ import platform
 import subprocess
 from time import perf_counter
 
+import diffrax
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from feedbax._ode import restore_storage_dtypes
+from feedbax.mechanics.backend import PhysicsState
 from scripts.biomechanics_fixture import (
     SHOULDER_WRAP_MAX_DISPLACEMENT_RAD,
     START_QPOS,
@@ -62,8 +65,55 @@ def _make_benchmark(args, lock):
     return benchmark, model, model_identity
 
 
+@eqx.filter_jit
+def _euler_stage_envelope(mechanics, history, commands):
+    """Replay each observed tick with its exact held command and stored force."""
+    plant, backend = mechanics.plant, mechanics.backend
+
+    def replay_tick(inputs):
+        before, command, force = inputs
+        loaded = plant.skeleton.update_state_given_effector_force(force, before.plant.skeleton)
+        initial = PhysicsState(
+            plant=restore_storage_dtypes(replace(before.plant, skeleton=loaded), before.plant),
+            effector=replace(before.effector, force=force),
+            aux=before.solver,
+        )
+        start = initial.plant.skeleton.qpos[0]
+
+        def substep(_, carry):
+            state, lo, hi = carry
+            state = backend.substep(plant, state, command)
+            shoulder = state.plant.skeleton.qpos[0]
+            return state, jnp.minimum(lo, shoulder), jnp.maximum(hi, shoulder)
+
+        final, lo, hi = jax.lax.fori_loop(0, backend.n_substeps, substep, (initial, start, start))
+        return lo, hi, final.plant.skeleton.qpos, final.plant.skeleton.qvel
+
+    def replay_trial(trial, control):
+        before = jax.tree.map(lambda value: value[:-1], trial)
+        force = trial.plant.skeleton.effector_force[1:]
+        return jax.lax.map(replay_tick, (before, control, force))
+
+    lo, hi, qpos, qvel = jax.vmap(replay_trial)(history, commands)
+    reference = history.plant.skeleton
+
+    def compare(replayed, observed):
+        error = jnp.abs(replayed - observed)
+        scale = jnp.maximum(1.0, jnp.maximum(jnp.abs(replayed), jnp.abs(observed)))
+        tolerance = 32 * jnp.finfo(replayed.dtype).eps * scale
+        return jnp.max(error), jnp.max(tolerance), jnp.all(error <= tolerance)
+
+    return (
+        jnp.min(lo), jnp.max(hi),
+        compare(qpos, reference.qpos[:, 1:]), compare(qvel, reference.qvel[:, 1:]),
+    )
+
+
 def _snapshot(benchmark, model, batch, *, wrap_shoulder: bool = False) -> dict:
     diff, frozen = eqx.partition(model, benchmark.trainable)
+    replay_euler = wrap_shoulder and isinstance(model.mechanics.backend.solver, diffrax.Euler)
+    if replay_euler and model.force_lp is not None:
+        raise ValueError("Wrapped Euler replay requires the captured efferent signal to drive mechanics")
 
     @eqx.filter_jit
     def capture(weights, static, data):
@@ -71,17 +121,27 @@ def _snapshot(benchmark, model, batch, *, wrap_shoulder: bool = False) -> dict:
         skeletal = states.mechanics.plant.skeleton
         qpos = skeletal.qpos if hasattr(skeletal, "qpos") else skeletal.angle
         qvel = skeletal.qvel if hasattr(skeletal, "qvel") else skeletal.d_angle
-        return (
+        summary = (
             states.mechanics.effector.pos[:, -1],
             jnp.min(qpos, axis=(0, 1)),
             jnp.max(qpos, axis=(0, 1)),
             jnp.max(jnp.abs(qvel), axis=(0, 1)),
         )
+        replay_inputs = None
+        if replay_euler:
+            initial = jax.vmap(model.mechanics.state_view)(data.state)
+            history = jax.tree.map(
+                lambda before, after: jnp.concatenate((before[:, None], after), axis=1),
+                initial, states.mechanics,
+            )
+            replay_inputs = (history, states.efferent.output)
+        return summary, replay_inputs
 
+    values, replay_inputs = capture(diff, frozen, batch)
     names = ("endpoints_m", "qpos_min_rad", "qpos_max_rad", "qvel_abs_max_rad_s")
     snapshot = {
         name: np.asarray(value).tolist()
-        for name, value in zip(names, capture(diff, frozen, batch), strict=True)
+        for name, value in zip(names, values, strict=True)
     }
     if wrap_shoulder:
         start = START_QPOS[0]
@@ -98,6 +158,25 @@ def _snapshot(benchmark, model, batch, *, wrap_shoulder: bool = False) -> dict:
             "qualified_max_rad": start + limit,
             "all_sampled_poses_qualified": start - limit <= sampled_lo <= sampled_hi <= start + limit,
         }
+        if replay_inputs is not None:
+            history, commands = replay_inputs
+            stage_lo, stage_hi, position, velocity = _euler_stage_envelope(
+                model.mechanics, history, commands,
+            )
+            lo, hi = float(stage_lo), float(stage_hi)
+            matched = bool(position[2]) and bool(velocity[2])
+            snapshot["shoulder_wrap"]["euler_replay"] = {
+                "sample_period_s": model.mechanics.backend.sub_dt,
+                "samples_per_trial": 1 + commands.shape[1] * model.mechanics.backend.n_substeps,
+                "observed_min_rad": lo,
+                "observed_max_rad": hi,
+                "qpos_max_abs_error_rad": float(position[0]),
+                "qpos_max_tolerance_rad": float(position[1]),
+                "qvel_max_abs_error_rad_s": float(velocity[0]),
+                "qvel_max_tolerance_rad_s": float(velocity[1]),
+                "matches_feedback_ticks": matched,
+                "all_sampled_poses_qualified": matched and start - limit <= lo <= hi <= start + limit,
+            }
     return snapshot
 
 
