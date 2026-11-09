@@ -2337,8 +2337,20 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
     assert all("nvidia-smi" not in command for command in transport.ssh_commands)
 
 
-def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:
+@pytest.mark.parametrize("groups", [None, ("mjx-warp",)])
+def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(
+    tmp_path: Path, groups: tuple[str, ...] | None
+) -> None:
     bundle = _bundle(tmp_path)
+    if groups is not None:
+        environment = EnvironmentDeclaration.model_validate(
+            {
+                **bundle.environment.model_dump(),
+                "python_version": "3.12.8",
+                "dependency_groups": groups,
+            }
+        )
+        bundle = bundle.model_copy(update={"environment": environment})
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))  # mkdir
     transport.queue_ssh(CommandResult(1, ""))  # fingerprint probe mismatch
@@ -2385,8 +2397,9 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "PATCH_FROM='/Users/mll/local feedbax'" in joined
     assert "uv sync --frozen" in joined
     assert "uv pip install extra" in joined
-    assert "jax.__version__" in joined
-    assert "jax[cuda12]" in joined
+    assert ("jax[cuda12]" in joined) == (groups is None)
+    if groups is not None:
+        assert "uv sync --frozen --no-default-groups --python 3.12.8 --group mjx-warp" in joined
     assert "compose_application()" in joined
     assert "lockfile digest mismatch" in joined
 

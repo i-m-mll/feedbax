@@ -173,9 +173,29 @@ class EnvironmentDeclaration(StrictModel):
     python_version: str | None = None
     repo_revisions: list[RepoRevision] = Field(default_factory=list)
     lockfile_hashes: dict[str, str] = Field(default_factory=dict)
+    dependency_groups: tuple[str, ...] | None = Field(default=None, min_length=1)
     overlay_steps: list[str] = Field(default_factory=list)
     image_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("dependency_groups")
+    @classmethod
+    def _validate_dependency_groups(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        if any(not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", group) for group in value):
+            raise ValueError("dependency groups must be normalized uv group names")
+        if len(value) != len(set(value)):
+            raise ValueError("dependency groups must be unique")
+        return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def _validate_grouped_environment(self) -> "EnvironmentDeclaration":
+        if self.dependency_groups is not None and not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+", self.python_version or ""
+        ):
+            raise ValueError("a grouped environment requires an exact Python version")
+        return self
 
 
 def environment_declaration_identity_projection(
@@ -189,6 +209,11 @@ def environment_declaration_identity_projection(
             for revision in environment.repo_revisions
         ],
         "lockfile_hashes": dict(sorted(environment.lockfile_hashes.items())),
+        **(
+            {"dependency_groups": list(environment.dependency_groups)}
+            if environment.dependency_groups is not None
+            else {}
+        ),
         "overlay_steps": list(environment.overlay_steps),
         "image_id": environment.image_id,
     }

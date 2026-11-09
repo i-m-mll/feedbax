@@ -1712,10 +1712,17 @@ class RunPodOrchestrationDriver:
         sentinel_dir = self._remote_sentinel_dir(bundle)
         logs_dir = f"{remote_run_dir}/logs"
         workdir = self._primary_workdir()
+        sync_args = ["uv", "sync", "--frozen"]
+        if bundle.environment.dependency_groups is not None:
+            python_version = bundle.environment.python_version
+            assert python_version is not None
+            sync_args.extend(["--no-default-groups", "--python", python_version])
+            for group in bundle.environment.dependency_groups:
+                sync_args.extend(["--group", group])
         self._remote_nohup_sentinel(
             label="uv sync",
             workdir=workdir,
-            command="uv sync --frozen",
+            command=shlex.join(sync_args),
             done_file=f"{sentinel_dir}/uv-sync.done",
             failed_file=f"{sentinel_dir}/uv-sync.failed",
             log_file=f"{logs_dir}/uv-sync.log",
@@ -1726,9 +1733,10 @@ class RunPodOrchestrationDriver:
             failed_file=f"{sentinel_dir}/uv-sync.failed",
             log_file=f"{logs_dir}/uv-sync.log",
         )
-        for index, step in enumerate(
-            (*bundle.environment.overlay_steps, *self.config.overlay_steps)
-        ):
+        driver_overlay = (
+            self.config.overlay_steps if bundle.environment.dependency_groups is None else ()
+        )
+        for index, step in enumerate((*bundle.environment.overlay_steps, *driver_overlay)):
             self._remote_nohup_sentinel(
                 label=f"overlay {index}",
                 workdir=workdir,
