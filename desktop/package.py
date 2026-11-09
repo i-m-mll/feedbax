@@ -319,6 +319,10 @@ def package(args: argparse.Namespace) -> None:
             info.write_bytes(plistlib.dumps(document))
         resources = contents / "Resources"
         resources.mkdir(exist_ok=True)
+        installer = resources / "installer"
+        installer.mkdir()
+        for script in ("install.py", "seal.py"):
+            shutil.copyfile(DESKTOP / script, installer / script)
         studio = resources / "studio"
         run("bun", "--bun", "vite", "build", "--outDir", studio, cwd=ROOT / "web",
             env=dict(os.environ, VITE_FEEDBAX_DESKTOP="1"))
@@ -340,6 +344,7 @@ def package(args: argparse.Namespace) -> None:
             "resources": {
                 "launcher": LAUNCHER, "python": PYTHON, "studio": "Resources/studio",
                 "dependencies": "Resources/dependencies.json", "launch_agent": launch_agent,
+                "installer": "Resources/installer",
             },
         } | fixture
         if clean_revision() != revision:

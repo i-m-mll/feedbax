@@ -30,6 +30,7 @@ pub struct Release {
     contents: PathBuf,
     bundle: String,
     python: PathBuf,
+    installer: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -60,27 +61,29 @@ impl Release {
                     .into(),
             );
         }
-        let relative = Path::new(
-            manifest
-                .resources
-                .get("python")
-                .ok_or("Release has no Python entrypoint")?,
-        );
-        if !relative
-            .components()
-            .all(|part| matches!(part, Component::Normal(_)))
-        {
-            return Err("Installed Python entrypoint must be bundle-relative".into());
-        }
-        let python = contents.join(relative).canonicalize()?;
-        if !python.starts_with(&contents) || !python.is_file() {
-            return Err("Installed Python entrypoint is outside the app bundle".into());
-        }
+        let python = installed_resource(&contents, &manifest, "python")?;
+        let installer = installed_resource(&contents, &manifest, "installer")?;
         Ok(Self {
             contents,
             bundle: identifier,
             python,
+            installer,
         })
+    }
+
+    pub fn run_installer(&self, args: &[String]) -> Result<()> {
+        let status = Command::new(&self.python)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .args(["-I", "-B", "-c",
+                "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module('install', run_name='__main__')"])
+            .arg(&self.installer)
+            .args(args)
+            .status()?;
+        if !status.success() {
+            return Err(format!("Studio installer exited with {status}").into());
+        }
+        Ok(())
     }
 
     fn command(&self, action: &str) -> Command {
@@ -265,6 +268,26 @@ impl Release {
         }
         Ok(())
     }
+}
+
+fn installed_resource(contents: &Path, manifest: &Manifest, role: &str) -> Result<PathBuf> {
+    let relative = Path::new(
+        manifest
+            .resources
+            .get(role)
+            .ok_or_else(|| format!("Studio release has no {role} resource"))?,
+    );
+    if !relative
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+    {
+        return Err(format!("Installed {role} resource must be bundle-relative").into());
+    }
+    let resource = contents.join(relative).canonicalize()?;
+    if !resource.starts_with(contents) {
+        return Err(format!("Installed {role} resource is outside the app bundle").into());
+    }
+    Ok(resource)
 }
 
 fn activation_lock(paths: &Paths) -> Result<Option<File>> {

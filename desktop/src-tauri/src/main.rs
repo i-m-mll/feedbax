@@ -217,6 +217,17 @@ fn setup(app: &mut App) -> tauri::Result<()> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| matches!(arg.as_str(), "install" | "recover" | "uninstall"))
+    {
+        if let Err(error) =
+            service::Release::load().and_then(|release| release.run_installer(&args))
+        {
+            service::fail(error);
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "service") {
         if let Err(error) = service::cli(&args[1..]) {
             service::fail(error);

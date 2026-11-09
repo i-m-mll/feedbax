@@ -26,14 +26,15 @@ The numerical package join supplies `--numerical-manifest <path>`. The manifest 
 ## Install and replace
 
 ```sh
-uv run --no-project python desktop/install.py install "$STUDIO_APP_PATH" \
+ditto -x -k .desktop-build/candidate/Feedbax-Studio-macos-arm64.zip "$STUDIO_UNPACK_DIR"
+"$STUDIO_UNPACK_DIR/Feedbax Studio.app/Contents/MacOS/feedbax-studio" install "$STUDIO_APP_PATH" \
   --archive .desktop-build/candidate/Feedbax-Studio-macos-arm64.zip \
   --receipt .desktop-build/candidate/receipt.json --jobs defer
 ```
 
 The install command verifies the supplied archive and signed app, registers its background item and waits for the installed service's exact release identity. Open the installed app through Finder after installation. For a replacement, quit Studio first. With `--jobs defer`, active jobs prevent replacement. Select `--jobs checkpoint` to request a cooperative stop or `--jobs force` to terminate active work explicitly. Preserve the release archive and receipt together.
 
-If interrupted, use `desktop/install.py recover <app-path> --control <control-directory>` to continue or add `--rollback` to restore the previous bundle. The production control directory is `~/.feedbax/config/desktop-service`. A fixture uses `<fixture-root>/state/config/desktop-service`. If macOS requires background item approval, open Login Items in System Settings, enable the item and run recovery. `desktop/install.py uninstall <app-path>` stops and unregisters Studio and removes the app. The same job dispositions apply.
+Run the installer commands on the executable in the unpacked app. The executable uses its bundled interpreter and installer. Use `recover <app-path> --control <control-directory>` to continue or add `--rollback` to restore the previous bundle. The production control directory is `~/.feedbax/config/desktop-service`. A fixture uses `<fixture-root>/state/config/desktop-service`. If macOS requires background item approval, open Login Items in System Settings, enable the item and run recovery. The `uninstall <app-path>` operation stops and unregisters Studio and removes the app. The same job dispositions apply.
 
 ## Service and data
 
