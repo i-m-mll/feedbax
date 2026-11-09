@@ -149,10 +149,11 @@ def exact_tree(actual, expected):
 def assert_warp_ffi(lowered, compiled, device):
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
     assert "stablehlo.while" in stablehlo, "Expected a compiled scan in the authored graph"
-    # MJX's variadic-tuple adapter registers its Warp callable under its wrapper name.
+    # Warp's registered name encodes the wrapper's qualname without its module.
     hlo = compiled.as_text()
     targets = sorted(set(re.findall(r'custom_call_target="([^"]+)"', hlo)))
-    warp_targets = [target for target in targets if "warp" in target and "ffi" in target]
+    warp_prefix = "jax_callable_variadic_tuple__locals__callable_wrapper__locals__func_wrapper"
+    warp_targets = [target for target in targets if target.startswith(warp_prefix)]
     assert warp_targets, f"No Warp FFI survived {device} compilation. Custom calls: {targets}"
     print(f"{device} Warp FFI targets: {warp_targets}", flush=True)
 
