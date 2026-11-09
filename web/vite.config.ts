@@ -10,12 +10,43 @@ import type { Plugin } from 'vite';
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
 
-function desktopNotices(): Plugin {
+const plotlyPackage = 'plotly.js-dist-min';
+const desktopPlotlyAsset = 'vendor/plotly.mjs';
+
+function desktopResources(): Plugin {
   return {
-    name: 'desktop-notices',
+    name: 'desktop-resources',
+    enforce: 'pre',
+    resolveId(source) {
+      if (source === plotlyPackage) {
+        return { id: `/${desktopPlotlyAsset}`, external: true };
+      }
+    },
     generateBundle(_options, bundle) {
       const packages = new Map<string, { license?: string; notices: string[] }>();
       const visited = new Set<string>();
+      function recordPackage(directory: string) {
+        if (visited.has(directory)) return;
+        visited.add(directory);
+        const { name, version, license } = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'));
+        if (!name || !version) return;
+        const notices = readdirSync(directory, { withFileTypes: true })
+          .filter((entry) => entry.isFile() && /^(licen[cs]e|notice|copying)([-._]|$)/i.test(entry.name))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((entry) => readFileSync(path.join(directory, entry.name), 'utf8'));
+        packages.set(`${name}@${version}`, { license, notices });
+      }
+      const plotly = path.join(__dirname, 'node_modules', plotlyPackage);
+      recordPackage(plotly);
+      this.emitFile({
+        type: 'asset',
+        fileName: desktopPlotlyAsset,
+        source: Buffer.concat([
+          Buffer.from('const module = { exports: {} };\n'),
+          readFileSync(path.join(plotly, 'plotly.min.js')),
+          Buffer.from('\nexport const { newPlot, purge } = module.exports;\n'),
+        ]),
+      });
       for (const output of Object.values(bundle)) {
         if (output.type !== 'chunk') continue;
         for (const [id, rendered] of Object.entries(output.modules)) {
@@ -24,15 +55,7 @@ function desktopNotices(): Plugin {
           while (directory.includes('/node_modules/') && !existsSync(path.join(directory, 'package.json'))) {
             directory = path.dirname(directory);
           }
-          if (!directory.includes('/node_modules/') || visited.has(directory)) continue;
-          visited.add(directory);
-          const { name, version, license } = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'));
-          if (!name || !version) continue;
-          const notices = readdirSync(directory, { withFileTypes: true })
-            .filter((entry) => entry.isFile() && /^(licen[cs]e|notice|copying)(\.|$)/i.test(entry.name))
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((entry) => readFileSync(path.join(directory, entry.name), 'utf8'));
-          packages.set(`${name}@${version}`, { license, notices });
+          if (directory.includes('/node_modules/')) recordPackage(directory);
         }
       }
       this.emitFile({
@@ -54,7 +77,7 @@ export default defineConfig({
   },
   plugins: [
     react(),
-    isDesktop ? desktopNotices() : VitePWA({
+    isDesktop ? desktopResources() : VitePWA({
       registerType: 'autoUpdate',
       workbox: {
         skipWaiting: true,
