@@ -67,20 +67,48 @@ export interface RootFinderSpec {
 }
 
 export interface SolverConfigSpec {
-  solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5";
+  solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5" | "mujoco";
   dt: number;
   root_finder?: RootFinderSpec | null;
+}
+
+export interface ContentObjectRef {
+  schema_id?: "feedbax.spec.content_object_ref";
+  schema_version?: "feedbax.spec.content_object_ref.v1";
+  object_id: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+export interface SpatialSite {
+  body: string;
+  position: [number, number, number];
+}
+
+export interface SpatialMusclePath {
+  sites: string[];
+  law: string;
+  state_size: number;
+  parameters?: Record<string, unknown>;
+}
+
+export interface MuJoCoAssetBinding {
+  asset: ContentObjectRef;
+  effector_site: string;
+  sites?: Record<string, SpatialSite>;
+  paths?: Record<string, SpatialMusclePath>;
 }
 
 export interface AcausalGraphSpec {
   schema_id?: "feedbax.spec.acausal_graph";
   schema_version?: "feedbax.spec.acausal_graph.v2";
-  physical_domain: "translational" | "rotational" | "planar_multibody";
+  physical_domain: "translational" | "rotational" | "planar_multibody" | "spatial_multibody";
   nodes?: Record<string, ComponentSpec>;
   connections?: AcausalConnectionSpec[];
   solver: SolverConfigSpec;
   subgraphs?: Record<string, AcausalGraphSpec> | null;
   metadata?: GraphMetadata | null;
+  mujoco_asset?: MuJoCoAssetBinding | null;
 }
 
 export interface ParameterConstraintSpec {
@@ -1993,7 +2021,8 @@ export const acausalReportDefaults = {
     "nodes": {},
     "connections": [],
     "subgraphs": null,
-    "metadata": null
+    "metadata": null,
+    "mujoco_asset": null
   },
   "ComponentSpec": {
     "params": {},
@@ -2001,12 +2030,20 @@ export const acausalReportDefaults = {
     "input_ports": [],
     "output_ports": []
   },
+  "ContentObjectRef": {
+    "schema_id": "feedbax.spec.content_object_ref",
+    "schema_version": "feedbax.spec.content_object_ref.v1"
+  },
   "GraphMetadata": {
     "description": null,
     "version": "1.0.0",
     "save_revision": 0,
     "author": null,
     "tags": null
+  },
+  "MuJoCoAssetBinding": {
+    "sites": {},
+    "paths": {}
   },
   "RootFinderSpec": {
     "method": "newton",
@@ -2016,6 +2053,9 @@ export const acausalReportDefaults = {
   },
   "SolverConfigSpec": {
     "root_finder": null
+  },
+  "SpatialMusclePath": {
+    "parameters": {}
   }
 };
 
@@ -2217,27 +2257,85 @@ export const RootFinderSpecSchema: z.ZodType<RootFinderSpec> = z.lazy(() =>
 export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
   z
     .object({
-      "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5")]),
+      "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5"), z.literal("mujoco")]),
       "dt": z.number().finite(),
       "root_finder": RootFinderSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<SolverConfigSpec>;
 
+export const ContentObjectRefSchema: z.ZodType<ContentObjectRef> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.content_object_ref").optional(),
+      "schema_version": z.literal("feedbax.spec.content_object_ref.v1").optional(),
+      "object_id": z.string().regex(new RegExp("^content-object://sha256/[0-9a-f]{64}$")),
+      "sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "size_bytes": z.number().int().safe().gte(0),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.object_id !== 'content-object://sha256/' + value.sha256) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "content object id does not match its SHA-256",
+        });
+      }
+    })
+) as unknown as z.ZodType<ContentObjectRef>;
+
+export const SpatialSiteSchema: z.ZodType<SpatialSite> = z.lazy(() =>
+  z
+    .object({
+      "body": z.string().min(1),
+      "position": z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<SpatialSite>;
+
+export const SpatialMusclePathSchema: z.ZodType<SpatialMusclePath> = z.lazy(() =>
+  z
+    .object({
+      "sites": z.array(z.string()).min(2),
+      "law": z.string().min(1),
+      "state_size": z.number().int().safe().gte(0),
+      "parameters": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SpatialMusclePath>;
+
+export const MuJoCoAssetBindingSchema: z.ZodType<MuJoCoAssetBinding> = z.lazy(() =>
+  z
+    .object({
+      "asset": ContentObjectRefSchema,
+      "effector_site": z.string().min(1),
+      "sites": z.record(z.string(), SpatialSiteSchema).optional(),
+      "paths": z.record(z.string(), SpatialMusclePathSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<MuJoCoAssetBinding>;
+
 export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.acausal_graph").optional(),
       "schema_version": z.literal("feedbax.spec.acausal_graph.v2").optional(),
-      "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody")]),
+      "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody"), z.literal("spatial_multibody")]),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "connections": z.array(AcausalConnectionSpecSchema).optional(),
       "solver": SolverConfigSpecSchema,
       "subgraphs": z.record(z.string(), AcausalGraphSpecSchema).nullable().optional(),
       "metadata": GraphMetadataSchema.nullable().optional(),
+      "mujoco_asset": MuJoCoAssetBindingSchema.nullable().optional(),
     })
     .strict()
     .superRefine((value, ctx) => {
+      if ((value.physical_domain === 'spatial_multibody') !== (value.mujoco_asset != null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A MuJoCo asset binding is required exactly for spatial multibody",
+        });
+      }
       if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

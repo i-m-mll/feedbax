@@ -34,6 +34,7 @@ from feedbax.mechanics.hill_muscles import (
 from feedbax.mechanics.muscle_config import default_muscle_config
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
+from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
     ECCENTRIC_VELOCITY_LIMIT_FRACTION,
@@ -96,7 +97,7 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         tau_deact: Deactivation time constant in seconds.
     """
 
-    skeleton: TwoLinkArm
+    skeleton: TwoLinkArm | MJXSkeleton
     clip_states: bool = eqx.field(static=True)
     segment_lengths: Float[Array, " n_joints"]
     moment_arms: Float[Array, "n_muscles n_joints"]
@@ -105,8 +106,8 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
     tendon_slack_length: Float[Array, " n_muscles"]
     mt_reference_length: Float[Array, " n_muscles"]
     vmax: Float[Array, " n_muscles"]
-    tau_act: float
-    tau_deact: float
+    tau_act: float | Array
+    tau_deact: float | Array
     force_length: ForceLengthCurve = field(static=True)
     passive_force_length: PassiveForceLengthCurve = field(static=True)
     force_velocity: ForceVelocityCurve = field(static=True)
@@ -115,7 +116,7 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
 
     def __init__(
         self,
-        skeleton: TwoLinkArm,
+        skeleton: TwoLinkArm | MJXSkeleton,
         segment_lengths: Array,
         moment_arms: Array,
         muscle_gear: Array,
@@ -123,8 +124,8 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         tendon_slack_length: Array,
         mt_reference_length: Array,
         vmax: Array,
-        tau_act: float = 0.01,
-        tau_deact: float = 0.04,
+        tau_act: float | Array = 0.01,
+        tau_deact: float | Array = 0.04,
         clip_states: bool = True,
         *,
         key: Optional[PRNGKeyArray] = None,
@@ -151,15 +152,24 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         """
         self.skeleton = skeleton
         self.clip_states = clip_states
-        self.segment_lengths = require_positive_array("segment_lengths", segment_lengths, (2,))
+        n_joints = skeleton.nv if isinstance(skeleton, MJXSkeleton) else 2
+        self.segment_lengths = require_positive_array(
+            "segment_lengths", segment_lengths, (n_joints,),
+        )
         self.moment_arms = jnp.asarray(moment_arms)
-        if self.moment_arms.ndim != 2 or self.moment_arms.shape[1] != 2:
+        if self.moment_arms.ndim != 2 or self.moment_arms.shape[1] != n_joints:
             raise ValueError(
                 "moment_arms must have shape (n_muscles, 2), "
                 f"got {self.moment_arms.shape}"
             )
         n_muscles = self.moment_arms.shape[0]
-        self.muscle_gear = require_positive_array("muscle_gear", muscle_gear, (n_muscles,))
+        if isinstance(skeleton, MJXSkeleton):
+            self.muscle_gear = jnp.asarray(muscle_gear)
+            if (self.muscle_gear.shape != (n_muscles,) or
+                    not bool(jnp.all(jnp.isfinite(self.muscle_gear) & (self.muscle_gear >= 0)))):
+                raise ValueError("Each authored muscle needs a finite nonnegative force scale")
+        else:
+            self.muscle_gear = require_positive_array("muscle_gear", muscle_gear, (n_muscles,))
         self.optimal_fiber_length = require_positive_array(
             "optimal_fiber_length", optimal_fiber_length, (n_muscles,)
         )
@@ -170,8 +180,13 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             "mt_reference_length", mt_reference_length, (n_muscles,)
         )
         self.vmax = require_positive_array("vmax", vmax, (n_muscles,))
-        self.tau_act = require_positive_finite("tau_act", tau_act)
-        self.tau_deact = require_positive_finite("tau_deact", tau_deact)
+        def activation_period(name, value):
+            if jnp.ndim(value) == 0:
+                return require_positive_finite(name, value)
+            return require_positive_array(name, value, (n_muscles,))
+
+        self.tau_act = activation_period("tau_act", tau_act)
+        self.tau_deact = activation_period("tau_deact", tau_deact)
         self.force_length = ForceLengthCurve()
         self.passive_force_length = PassiveForceLengthCurve()
         self.force_velocity = ForceVelocityCurve()
@@ -260,7 +275,8 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         Returns:
             Current musculotendon lengths, shape ``(n_muscles,)`` [m].
         """
-        return self.musculotendon_lengths(state.skeleton.angle)
+        angles = state.skeleton.qpos if isinstance(self.skeleton, MJXSkeleton) else state.skeleton.angle
+        return self.musculotendon_lengths(angles)
 
     def current_muscle_activations(
         self,
@@ -384,10 +400,14 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             - ``muscles.activations`` = activation derivatives
         """
         excitations = jnp.clip(input, 0.0, 1.0)
-        angles = state.skeleton.angle
-        d_angles = jnp.clip(
-            state.skeleton.d_angle, -self.max_velocity, self.max_velocity,
-        )
+        authored = isinstance(self.skeleton, MJXSkeleton)
+        if authored:
+            angles, d_angles = state.skeleton.qpos, state.skeleton.qvel
+        else:
+            angles = state.skeleton.angle
+            d_angles = jnp.clip(
+                state.skeleton.d_angle, -self.max_velocity, self.max_velocity,
+            )
         activations = state.muscles.activations
 
         # --- Activation dynamics ---
@@ -413,13 +433,16 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         joint_torques = self.moment_arms.T @ forces
 
         # --- Lagrangian dynamics ---
-        skeleton = eqx.tree_at(lambda s: s.d_angle, state.skeleton, d_angles)
+        skeleton = state.skeleton
+        if not authored:
+            skeleton = eqx.tree_at(lambda s: s.d_angle, skeleton, d_angles)
         d_skeleton = self.skeleton.vector_field(t, skeleton, joint_torques)
-        d_skeleton = eqx.tree_at(
-            lambda s: s.d_angle,
-            d_skeleton,
-            jnp.clip(d_skeleton.d_angle, -self.max_acceleration, self.max_acceleration),
-        )
+        if not authored:
+            d_skeleton = eqx.tree_at(
+                lambda s: s.d_angle,
+                d_skeleton,
+                jnp.clip(d_skeleton.d_angle, -self.max_acceleration, self.max_acceleration),
+            )
 
         return PlantState(
             skeleton=d_skeleton,
@@ -482,6 +505,33 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
     # ------------------------------------------------------------------
     # Construction from BodyPreset
     # ------------------------------------------------------------------
+
+    @classmethod
+    def from_authored_planar_model(cls, skeleton: MJXSkeleton) -> AnalyticalMusculoskeletalPlant:
+        """Use the existing rigid law with explicitly authored constant moment arms."""
+        descriptor = skeleton.descriptor
+        if descriptor is None or descriptor.dimension != 2 or not descriptor.paths:
+            raise ValueError("Constant-moment-arm excitation requires authored planar paths")
+        for path in descriptor.paths:
+            if (path.law != "feedbax.RigidTendonHillMuscle" or path.state_size != 1
+                    or "moment_arm" not in path.parameters):
+                raise ValueError(
+                    f"Muscle path {path.name!r} requires a supported law with explicit moment arms"
+                )
+
+        def parameter(name, default):
+            return jnp.asarray([path.parameters.get(name, default) for path in descriptor.paths])
+
+        return cls(
+            skeleton=skeleton, segment_lengths=jnp.asarray(descriptor.planar_segment_lengths),
+            moment_arms=parameter("moment_arm", None),
+            muscle_gear=parameter("max_isometric_force", 1.0),
+            optimal_fiber_length=parameter("optimal_muscle_length", 0.1),
+            tendon_slack_length=parameter("tendon_slack_length", 0.1),
+            mt_reference_length=parameter("reference_length", 0.2),
+            vmax=parameter("max_contraction_velocity", DEFAULT_MUSCLE_VMAX),
+            tau_act=parameter("tau_act", 0.01), tau_deact=parameter("tau_deact", 0.04),
+        )
 
     @classmethod
     def from_body_preset(

@@ -49,7 +49,7 @@ class StateBounds(Module, Generic[StateT]):
 
 
 class CartesianState(Module):
-    """Cartesian state of a mechanical system in two spatial dimensions.
+    """Cartesian observations in the model's workspace dimension.
 
     Attributes:
         pos: The position coordinates of the point(s) in the system.
@@ -57,9 +57,15 @@ class CartesianState(Module):
         force: The respective forces.
     """
 
-    pos: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
-    vel: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
-    force: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
+    pos: Float[Array, "... d"] = field(default_factory=lambda: jnp.zeros(2))
+    vel: Float[Array, "... d"] = field(default_factory=lambda: jnp.zeros(2))
+    force: Float[Array, "... d"] = field(default_factory=lambda: jnp.zeros(2))
+
+
+class SpatialCartesianState(CartesianState):
+    """Spatial pose with a rotation matrix mapping local vectors to world axes."""
+
+    orientation: Float[Array, "... 3 3"] = field(kw_only=True)
 
 
 def clip_state(

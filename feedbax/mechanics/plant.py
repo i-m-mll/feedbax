@@ -87,6 +87,9 @@ class AbstractPlant(AbstractDynamicalSystem[PlantState]):
         Integrators use this on each accepted step before observing or storing it.
         The projection preserves unbounded leaves and each leaf's storage dtype.
         """
+        skeleton = self.skeleton.project_state(state.skeleton)
+        if skeleton is not state.skeleton:
+            state = PlantState(skeleton=skeleton, muscles=state.muscles)
         if not self.clip_states:
             return state
         return jt.map(

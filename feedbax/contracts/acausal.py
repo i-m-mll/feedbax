@@ -12,6 +12,8 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.base import StrictModel
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ComponentSpec, GraphMetadata
@@ -20,8 +22,10 @@ if TYPE_CHECKING:
 ACAUSAL_GRAPH_SCHEMA_ID = "feedbax.spec.acausal_graph"
 ACAUSAL_GRAPH_SCHEMA_VERSION_V1 = "feedbax.spec.acausal_graph.v1"
 ACAUSAL_GRAPH_SCHEMA_VERSION = "feedbax.spec.acausal_graph.v2"
-AcausalPhysicalDomain = Literal["translational", "rotational", "planar_multibody"]
-SolverType = Literal["euler", "implicit_euler", "kvaerno5", "tsit5"]
+AcausalPhysicalDomain = Literal[
+    "translational", "rotational", "planar_multibody", "spatial_multibody"
+]
+SolverType = Literal["euler", "implicit_euler", "kvaerno5", "tsit5", "mujoco"]
 
 
 class AcausalConnectionSpec(BaseModel):
@@ -69,6 +73,33 @@ class SolverConfigSpec(BaseModel):
     root_finder: Optional[RootFinderSpec] = None
 
 
+class SpatialSite(StrictModel):
+    """A named overlay attachment in a native body's local coordinates, in m."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    body: str = Field(min_length=1)
+    position: tuple[float, float, float]
+
+
+class SpatialMusclePath(StrictModel):
+    """A path through native or overlay sites, with its external muscle law."""
+
+    sites: tuple[str, ...] = Field(min_length=2)
+    law: str = Field(min_length=1)
+    state_size: int = Field(ge=0, strict=True)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class MuJoCoAssetBinding(StrictModel):
+    """A self-contained MJCF asset and graph-owned, named overlays."""
+
+    asset: ContentObjectRef
+    effector_site: str = Field(min_length=1)
+    sites: dict[str, SpatialSite] = Field(default_factory=dict)
+    paths: dict[str, SpatialMusclePath] = Field(default_factory=dict)
+
+
 class AcausalGraphSpec(BaseModel):
     """Durable acausal graph interior specification."""
 
@@ -82,6 +113,7 @@ class AcausalGraphSpec(BaseModel):
     solver: SolverConfigSpec
     subgraphs: Optional[Dict[str, "AcausalGraphSpec"]] = None
     metadata: Optional["GraphMetadata"] = None
+    mujoco_asset: MuJoCoAssetBinding | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -113,6 +145,8 @@ class AcausalGraphSpec(BaseModel):
 
     @model_validator(mode="after")
     def reject_component_param_array_values(self) -> "AcausalGraphSpec":
+        if (self.physical_domain == "spatial_multibody") != (self.mujoco_asset is not None):
+            raise ValueError("A MuJoCo asset binding is required exactly for spatial multibody")
         for node_id, node in self.nodes.items():
             for param_name, value in node.params.items():
                 if _contains_array_value(value):
