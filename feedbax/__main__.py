@@ -834,6 +834,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
         from feedbax.compiler.prototypes import prototypes_from_task_bindings
         from feedbax.contracts.authored_canonical import canonical_sha256
+        from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
+        from feedbax.web.model_assets import model_artifact_provider
 
         executable_graph = compile_graph(
             GraphDocument(
@@ -855,6 +857,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             input_prototypes=(
                 prototypes_from_task_bindings(run_spec.task_binding_spec)
                 if run_spec.task_binding_spec is not None else None
+            ),
+            artifact_provider=(
+                model_artifact_provider(run_spec.graph.inline)
+                if run_spec.method_ref == STUDIO_GRAPH_METHOD else None
             ),
         )
         method_registration = resolved_method.registration

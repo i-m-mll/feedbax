@@ -49,6 +49,7 @@ NATIVE_BINARY = NATIVE_TARGET / TARGET / "release" / "feedbax-studio"
 NATIVE_RECEIPT = SCRATCH / "native.json"
 TAURI = ("bun", "run", "tauri")
 EXTRAS = ("web", "analysis", "training")
+MJX_WHEELS = frozenset({"jax", "jaxlib", "mujoco-core", "mujoco-mjx"})
 LOCKED_BUILD_INPUTS = (
     "desktop/src-tauri", "desktop/shell", "desktop/bun.lock", "desktop/package.json",
     "web/public/icon.svg",
@@ -160,7 +161,7 @@ def _locked_wheels(path: Path) -> dict[str, dict]:
     return result
 
 
-def _numerical_wheels(path: Path, base: dict[str, dict]) -> dict:
+def _numerical_wheels(path: Path, base: dict[str, dict], *, locked_only: bool) -> dict:
     document = json.loads(path.read_bytes())
     if document["schema"] != WHEEL_SCHEMA or document["target"] != TARGET:
         raise ValueError("unsupported numerical wheel manifest")
@@ -173,11 +174,20 @@ def _numerical_wheels(path: Path, base: dict[str, dict]) -> dict:
         if name in provided:
             raise ValueError(f"duplicate numerical wheel for {name}")
         provided.add(name)
+        if locked_only and (
+            name not in base
+            or wheel.name != base[name]["filename"]
+            or item["sha256"] != base[name]["sha256"]
+        ):
+            raise ValueError(f"numerical wheel differs from the locked macOS CPU profile: {wheel.name}")
         base[name] = {
             "version": str(version), "filename": wheel.name, "url": wheel.as_uri(),
             "sha256": item["sha256"],
         }
-    return {"sha256": sha256(path), "runtime": document["runtime"]}
+    if locked_only and not MJX_WHEELS <= provided:
+        raise ValueError(f"numerical manifest lacks locked MJX CPU wheels: {sorted(MJX_WHEELS - provided)}")
+    declared_runtime = document["runtime"]
+    return {"sha256": sha256(path), "runtime": "mjx-jax-cpu" if locked_only else declared_runtime}
 
 
 def _unpack_python(resources: Path) -> Path:
@@ -199,13 +209,19 @@ def _unpack_python(resources: Path) -> Path:
     return resources.parent / PYTHON
 
 
-def _package_python(resources: Path, stage: Path, extension: Path | None) -> dict:
+def _package_python(resources: Path, stage: Path, extension: Path | None, profile: str) -> dict:
     python = _unpack_python(resources)
     lock = stage / "pylock.toml"
+    extras = (*EXTRAS, "mjx") if profile == "mjx-cpu" else EXTRAS
     run("uv", "export", "--quiet", "--locked", "--no-dev", "--no-emit-project", "--format", "pylock.toml",
-        *(argument for extra in EXTRAS for argument in ("--extra", extra)), "--output-file", lock)
+        *(argument for extra in extras for argument in ("--extra", extra)), "--output-file", lock)
     wheels = _locked_wheels(lock)
-    numerical = _numerical_wheels(extension, wheels) if extension is not None else None
+    if profile == "mjx-cpu" and "warp-lang" in wheels:
+        raise ValueError("the macOS MJX CPU profile cannot include warp-lang")
+    numerical = (
+        _numerical_wheels(extension, wheels, locked_only=profile == "mjx-cpu")
+        if extension is not None else None
+    )
     dist = stage / "wheel"
     run("uv", "build", "--wheel", "--python", python, "--require-hashes",
         "--build-constraints", DESKTOP / "build-requirements.txt", "--out-dir", dist)
@@ -238,6 +254,7 @@ def _package_python(resources: Path, stage: Path, extension: Path | None) -> dic
         shutil.rmtree(site / "bin")
     return {
         "schema": "feedbax.desktop.dependencies.v1",
+        "profile": profile,
         "python": {"version": PYTHON_VERSION, "url": PYTHON_URL, "sha256": PYTHON_SHA256},
         "provider": numerical or {"runtime": "jax-cpu"},
         "uv_lock_sha256": sha256(ROOT / "uv.lock"),
@@ -351,7 +368,7 @@ def package(args: argparse.Namespace) -> None:
         studio = resources / "studio"
         run("bun", "--bun", "vite", "build", "--outDir", studio, cwd=ROOT / "web",
             env=dict(os.environ, VITE_FEEDBAX_DESKTOP="1"))
-        dependencies = _package_python(resources, stage, args.numerical_manifest)
+        dependencies = _package_python(resources, stage, args.numerical_manifest, args.runtime_profile)
         (resources / "dependencies.json").write_bytes(json_bytes(dependencies))
         _rust_notices(resources)
         launch_agent = _write_launch_agent(contents, identifier)
@@ -397,9 +414,12 @@ def main() -> None:
     bundle.add_argument("--fixture-root", type=Path)
     bundle.add_argument("--fixture-name")
     bundle.add_argument("--numerical-manifest", type=lambda value: Path(value).resolve(strict=True))
+    bundle.add_argument("--runtime-profile", choices=("jax-cpu", "mjx-cpu"), default="jax-cpu")
     args = parser.parse_args()
     if sys.platform != "darwin" or platform.machine() != "arm64":
         parser.error("packaging requires macOS on Apple Silicon")
+    if args.action == "bundle" and args.runtime_profile == "mjx-cpu" and args.numerical_manifest is None:
+        parser.error("the mjx-cpu profile requires the qualified --numerical-manifest")
     SCRATCH.mkdir(exist_ok=True)
     if args.action == "native":
         build_native(args.timeout)

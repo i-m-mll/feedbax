@@ -15,6 +15,7 @@ from feedbax.compiler.penzai_compiler import (
     inspect_penzai_model,
 )
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
+from feedbax.web.model_assets import model_artifact_provider
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
@@ -456,7 +457,9 @@ class GraphService:
         document_sha256 = studio_semantic_document_sha256(graph, workspace)
         semantic_anchors: dict[str, SemanticAnchor] = {}
         if component_registry is not None:
-            compilation = compile_graph(document, component_registry)
+            compilation = compile_graph(
+                document, component_registry, artifact_provider=model_artifact_provider(graph),
+            )
             semantic_anchors = {
                 entry.resolved_path: SemanticAnchor(
                     semantic_document_sha256=document_sha256,

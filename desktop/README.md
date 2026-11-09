@@ -23,6 +23,8 @@ For a private fixture, add `--fixture-name <unique-name> --fixture-root <absolut
 
 The numerical package join supplies `--numerical-manifest <path>`. The manifest uses `feedbax.desktop.wheels.v1`, targets `aarch64-apple-darwin`, declares `runtime` and lists exact wheel filenames and SHA-256 values under `wheels`. Stage the wheel files alongside the manifest. These replace same-name locked wheels or add new wheels. The final package still has to pass dependency, native-code and installed runtime acceptance.
 
+For the stock biomechanics CPU build, add `--runtime-profile mjx-cpu` and supply the qualified numerical manifest. The recipe adds the locked `mjx` extra. The manifest must attest the exact macOS wheels for `jax`, `jaxlib`, `mujoco-core` and `mujoco-mjx`. This profile accepts only wheels from the selected lock closure and reports the MJX JAX provider on CPU. The default `jax-cpu` profile retains the base dependency set.
+
 ## Install and replace
 
 ```sh
@@ -43,3 +45,5 @@ Studio's Quit command closes the GUI. Its per-user background service continues 
 The application menu has idle, checkpoint and force service stops, Reconnect, Login Items and Service Logs. Stop at a checkpoint can wait for the next supported training checkpoint. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
 
 Installed files live inside the app bundle. Durable application state lives under `~/.feedbax`, with configuration in `config`, preferences in `settings` and the default workspace under `workspace`. Project-selected output locations retain models, checkpoints and results. `~/.cache/feedbax` contains disposable compilation files, temporary files and bounded service logs. Replacement and uninstall preserve durable state and project data.
+
+Import a self-contained UTF-8 MJCF document through the authenticated Studio endpoint `POST /api/graphs/assets/mujoco` with the XML as the request body. Use the returned content reference as `mujoco_asset.asset` in the authored graph. Studio retains the exact asset in its durable web content store and resolves the same reference when opening the project, training and resuming.
