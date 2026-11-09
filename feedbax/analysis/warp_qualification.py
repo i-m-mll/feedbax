@@ -21,7 +21,6 @@ _PARAMS_SCHEMA = "feedbax.spec.mjx_warp_qualification"
 
 class WarpQualificationParams(StrictModel):
     device: Literal["cpu", "cuda"]
-    fixture: Literal["planar", "spatial", "all"]
 
 
 def _evaluate(
@@ -36,7 +35,7 @@ def _evaluate(
     if spec.training_run_ids or spec.inputs:
         raise ValueError("MJX-Warp qualification uses only its authored synthetic fixtures")
     params = WarpQualificationParams.model_validate(spec.params)
-    receipt = run_qualification(backend="warp", device=params.device, fixture=params.fixture)
+    receipt = run_qualification(backend="warp", device=params.device, fixture="all")
     return EvaluationRecipeResult(
         summary_metrics={"qualified_fixtures": len(receipt["fixtures"])},
         metadata={"warp_qualification": receipt},
@@ -51,6 +50,6 @@ def register_warp_qualification(registry: EvaluationRecipeRegistry) -> None:
             schema_id=_PARAMS_SCHEMA,
             schema_version=f"{_PARAMS_SCHEMA}.v1",
             params_model=WarpQualificationParams,
-            axis_profiles=({"device": ("cpu", "cuda"), "fixture": ("planar", "spatial", "all")},),
+            axis_profiles=({"device": ("cpu",)}, {"device": ("cuda",)}),
         ),
     )
