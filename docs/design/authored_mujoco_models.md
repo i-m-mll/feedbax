@@ -20,12 +20,17 @@ Each authored muscle path is an ordered spatial tendon through fixed sites. The 
 
 Coupled continuous stages evaluate position and velocity before computing tension and pass those same engine values to actuation and acceleration. A fixed segment whose sites coincide on one body is rejected at compilation. Geometry evaluation rejects a pose where a segment becomes coincident or nonfinite. Derivatives apply at regular fixed-path poses of a fixed model.
 
+
+For planar wrapping, `wrap_geometries` defines named spheres or Z-aligned cylinders with a frame, XY offset and radius in metres. These geometries do not add contact or inertia. The cylinder's visual half-height equals its radius. Tendon routing uses MuJoCo's infinite-cylinder surface. A spatial overlay references named sphere or cylinder geometry from the asset. In either model, the path's optional `wraps` list names each wrapped segment by its zero-based `after_site` index, and names the `geom` and `side_site`. A planar side site is a named `PointMarker`. Geometry, site and segment references persist with the model.
+
+The reverse-mode capability requires zero compiled constraint rows. For wrapped models every side site must be outside its primitive and fixed in the same body. Use derivatives in a regular pose domain, where the path endpoints are clear of the primitive, the selected side defines a stable route, and the pose stays away from grazing or route transitions. In the planar acceptance geometry, endpoint radii are 0.07 and 0.12 m, wrap radius is 0.062 m, and the tested active-wrap angle range is 1.65–2.55 rad. The near-grazing checks qualify forward routing and force transmission. Inside side sites remain available for forward execution, with reverse-mode capability disabled. `muscle_path_wrap_counts` reads the current engine route engagement per authored path.
+
 | Solver | Execution |
 | --- | --- |
 | `mujoco` | MJX-JAX steps the authored MuJoCo integrator at the model timestep. Controls and COM wrenches are held through one native substep. |
 | `euler`, `tsit5` | Diffrax advances continuous MJX forward dynamics at a fixed substep. Loads and actuator derivatives are evaluated at each stage. |
 
-The control period must be an integer multiple of the model timestep. The continuous route admits zero compiled constraint rows and stage-local actuator dynamics without activation limits. History, plugins and plasticity are outside this continuation profile. Reverse mode is qualified on the constraint-free profile without primitive tendon wrapping. Qualification uses the exact stock provider described in [MuJoCo numerical baseline](mujoco_numerical_baseline.md).
+The control period must be an integer multiple of the model timestep. The continuous route admits zero compiled constraint rows and stage-local actuator dynamics without activation limits. History, plugins and plasticity are outside this continuation profile. Qualification uses the exact stock provider described in [MuJoCo numerical baseline](mujoco_numerical_baseline.md).
 
 Spatial position and velocity are in world XYZ. The orientation matrix maps local coordinates to world axes. Spatial body wrenches supply three coordinates each for force, moment and application point. Planar wrenches supply XY force and point and a one-element Z moment. A body-frame application point is relative to the body origin. The backend transports the free moment and lever-arm contribution to the body COM.
 

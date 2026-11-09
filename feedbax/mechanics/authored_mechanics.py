@@ -17,7 +17,7 @@ from feedbax._vendor.jax_cookbook._io import json_dump, load
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import derive_acausal_interface, is_acausal_type
 from feedbax.mechanics.backend import DiffraxBackend, MJXBackend, PhysicsCapabilities
-from feedbax.mechanics.compiled_model import CompiledPhysicalModel
+from feedbax.mechanics.compiled_model import CompiledPhysicalModel, outside_wraps_only
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.mjx_skeleton import AppliedWrench, MJXSkeleton
@@ -35,7 +35,7 @@ class AuthoredMechanics(Mechanics):
     _solver_name: str = eqx.field(static=True)
 
     def __init__(self, graph: AcausalGraphSpec, descriptor: CompiledPhysicalModel):
-        from mujoco import mjtDyn, mjtIntegrator, mjtWrap
+        from mujoco import mjtDyn, mjtIntegrator
 
         interface = derive_acausal_interface(graph)
         if len(interface.input_ports) != 1 or interface.boundary_ports:
@@ -61,11 +61,10 @@ class AuthoredMechanics(Mechanics):
         native = model.opt.integrator in (
             mjtIntegrator.mjINT_EULER, mjtIntegrator.mjINT_RK4, mjtIntegrator.mjINT_IMPLICITFAST,
         )
-        wrapped = {int(mjtWrap.mjWRAP_SPHERE), int(mjtWrap.mjWRAP_CYLINDER)}
         self.capabilities = PhysicsCapabilities(
             native_step=native and source_kind == "actuator_control",
             continuous=continuous,
-            reverse_mode=skeleton.constraint_rows == 0 and wrapped.isdisjoint(model.wrap_type),
+            reverse_mode=skeleton.constraint_rows == 0 and outside_wraps_only(model),
         )
         if self._solver_name == "mujoco":
             if graph.solver.root_finder is not None:
@@ -121,7 +120,7 @@ class AuthoredMechanics(Mechanics):
 
     @property
     def supports_reverse_mode(self) -> bool:
-        """The stock JAX solver is qualified only with zero allocated constraint rows."""
+        """Reverse mode requires zero constraint rows and regular poses of exterior wraps."""
         return self.capabilities.reverse_mode
 
     @property

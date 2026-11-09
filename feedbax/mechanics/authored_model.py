@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec, acausal_interior_content_hash
+from feedbax.contracts.acausal import AcausalGraphSpec, MuscleWrap, SolverConfigSpec, acausal_interior_content_hash
 from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.mechanics.compiled_model import (
@@ -60,7 +60,8 @@ def _add_site(body: MjsBody, name: str, position: Sequence[float]) -> None:
 
 def _add_muscle_path(
     spec: MjSpec, name: str, sites: tuple[str, ...], law: str, state_size: int,
-    parameters: Mapping[str, object], *, external_tendon_actuation: bool = True,
+    parameters: Mapping[str, object], *, wraps: tuple[MuscleWrap, ...] = (),
+    external_tendon_actuation: bool = True,
 ) -> MusclePathBinding:
     if len(sites) < 2:
         raise ValueError(f"MusclePath {name!r} requires at least two sites")
@@ -73,9 +74,21 @@ def _add_muscle_path(
     )
     if spec.actuator(path.actuator_name) is not None:
         raise ValueError(f"MusclePath {name!r} duplicates actuator {path.actuator_name!r}")
+    by_segment = {wrap.after_site: wrap for wrap in wraps}
+    if len(by_segment) != len(wraps) or any(index >= len(sites) - 1 for index in by_segment):
+        raise ValueError(f"MusclePath {name!r} requires a unique wrap per existing segment")
+    for wrap in wraps:
+        geom = spec.geom(wrap.geom)
+        if geom is None or geom.type not in (mujoco.mjtGeom.mjGEOM_SPHERE, mujoco.mjtGeom.mjGEOM_CYLINDER):
+            raise ValueError(f"MusclePath {name!r} wrap {wrap.geom!r} must name a sphere or cylinder")
+        if spec.site(wrap.side_site) is None:
+            raise ValueError(f"MusclePath {name!r} references unknown side site {wrap.side_site!r}")
+
     tendon = spec.add_tendon(name=name)
-    for site in sites:
+    for index, site in enumerate(sites):
         tendon.wrap_site(site)
+        if wrap := by_segment.get(index):
+            tendon.wrap_geom(wrap.geom, wrap.side_site)
 
     if not external_tendon_actuation:
         return path
@@ -220,6 +233,17 @@ def compile_planar_model(
         bodies[name] = body
         parent_name = name
 
+    for name, geom in sorted(graph.wrap_geometries.items()):
+        if not name or geom.frame not in frames:
+            raise ValueError(f"Wrap geometry {name!r} requires a valid planar frame")
+        body_name, x = frames[geom.frame]
+        dx, dy = geom.offset
+        kind = {"sphere": mujoco.mjtGeom.mjGEOM_SPHERE, "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER}
+        bodies[body_name].add_geom(
+            name=name, type=kind[geom.kind], pos=[x + dx, dy, 0],
+            size=[geom.radius, geom.radius, 0], mass=0, contype=0, conaffinity=0,
+        )
+
     def attach(site: str, point: Mapping[str, object]) -> None:
         frame = point.get("frame")
         if not isinstance(frame, str) or frame not in frames:
@@ -245,7 +269,8 @@ def compile_planar_model(
             spec, name, sites,
             params.get("law", "feedbax.RigidTendonHillMuscle"), params.get("state_size", 1),
             {key: value for key, value in params.items()
-             if key not in {"path_points", "law", "state_size"}},
+             if key not in {"path_points", "law", "state_size", "wraps"}},
+            wraps=tuple(MuscleWrap.model_validate(wrap) for wrap in params.get("wraps", ())),
             external_tendon_actuation=external_tendon_actuation,
         ))
     return describe_model(
@@ -302,7 +327,7 @@ def compile_spatial_model(
         if missing:
             raise ValueError(f"Overlay path {name!r} references unknown sites {missing!r}")
         paths.append(_add_muscle_path(
-            spec, name, path.sites, path.law, path.state_size, path.parameters,
+            spec, name, path.sites, path.law, path.state_size, path.parameters, wraps=path.wraps,
         ))
     model = spec.compile()
     return describe_model(
