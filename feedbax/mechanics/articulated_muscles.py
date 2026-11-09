@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from math import isfinite
+from math import isfinite, pi
 from typing import TYPE_CHECKING
 
 import equinox as eqx
@@ -12,7 +12,11 @@ from equinox.nn import StateIndex
 from jaxtyping import Array, PRNGKeyArray, Scalar
 
 from feedbax.mechanics.compiled_model import MusclePathBinding
-from feedbax.mechanics.hill_muscles import BoundedRigidTendonHillLaw, HillMuscleParams
+from feedbax.mechanics.hill_muscles import (
+    BoundedRigidTendonHillLaw,
+    CompliantTendonHillLaw,
+    HillMuscleParams,
+)
 from feedbax.mechanics.muscle_law import MuscleLaw
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton
@@ -23,6 +27,7 @@ if TYPE_CHECKING:
 
 
 LEGACY_RIGID_LAW = "feedbax.RigidTendonHillMuscle"
+COMPLIANT_HILL_LAW = "feedbax.CompliantTendonHillMuscle"
 
 
 def _finite_range(name: str, value: object, low: float, high: float) -> float:
@@ -33,28 +38,39 @@ def _finite_range(name: str, value: object, low: float, high: float) -> float:
     return float(value)
 
 
-def _bounded_rigid_law(parameters: dict) -> BoundedRigidTendonHillLaw:
+def _build_hill_law(
+    parameters: dict, *, compliant: bool,
+) -> BoundedRigidTendonHillLaw | CompliantTendonHillLaw:
     supported = {
         "max_isometric_force", "optimal_muscle_length", "tendon_slack_length",
         "max_contraction_velocity", "tau_act", "tau_deact", "initial_activation",
         "reference_length",
     }
+    if compliant:
+        supported.add("pennation_angle")
     if unknown := parameters.keys() - supported:
-        raise ValueError(f"Unsupported rigid Hill law parameters: {sorted(unknown)}")
+        raise ValueError(f"Unsupported Hill law parameters: {sorted(unknown)}")
     vmax = parameters.get("max_contraction_velocity")
-    return BoundedRigidTendonHillLaw(
+    force = parameters.get("max_isometric_force", 1.0)
+    slack = parameters.get("tendon_slack_length", 0.1)
+    pennation = _finite_range("pennation_angle", parameters.get("pennation_angle", 0.0), 0.0, pi / 2)
+    if pennation >= pi / 2:
+        raise ValueError("pennation_angle must be below pi/2")
+    law_type = CompliantTendonHillLaw if compliant else BoundedRigidTendonHillLaw
+    return law_type(
         params=HillMuscleParams(
-            max_isometric_force=_finite_range(
-                "max_isometric_force", parameters.get("max_isometric_force", 1.0),
-                0.0, float("inf"),
+            max_isometric_force=(
+                require_positive_finite("max_isometric_force", force) if compliant
+                else _finite_range("max_isometric_force", force, 0.0, float("inf"))
             ),
             optimal_fiber_length=require_positive_finite(
                 "optimal_muscle_length", parameters.get("optimal_muscle_length", 0.1),
             ),
-            tendon_slack_length=_finite_range(
-                "tendon_slack_length", parameters.get("tendon_slack_length", 0.1),
-                0.0, float("inf"),
+            tendon_slack_length=(
+                require_positive_finite("tendon_slack_length", slack) if compliant
+                else _finite_range("tendon_slack_length", slack, 0.0, float("inf"))
             ),
+            pennation_angle=pennation,
             tau_activation=require_positive_finite("tau_act", parameters.get("tau_act", 0.01)),
             tau_deactivation=require_positive_finite("tau_deact", parameters.get("tau_deact", 0.04)),
             vmax=require_positive_finite(
@@ -72,10 +88,10 @@ def build_muscle_law(
 ) -> tuple[MuscleLaw, tuple[str, int]]:
     """Resolve one authored law through the same registry as the graph."""
     parameters = dict(binding.parameters)
-    if binding.law == LEGACY_RIGID_LAW:
+    if binding.law in (LEGACY_RIGID_LAW, COMPLIANT_HILL_LAW):
         if binding.law_revision not in (None, 1):
-            raise ValueError(f"Unsupported {LEGACY_RIGID_LAW} revision {binding.law_revision}")
-        law = _bounded_rigid_law(parameters)
+            raise ValueError(f"Unsupported {binding.law} revision {binding.law_revision}")
+        law = _build_hill_law(parameters, compliant=binding.law == COMPLIANT_HILL_LAW)
         identity = (binding.law, 1)
     else:
         resolved = registry.resolve_component_spec(
@@ -133,6 +149,19 @@ class ArticulatedMusclePlant(AbstractPlant):
             if state.shape != (law.state_size,) or not jnp.issubdtype(state.dtype, jnp.floating):
                 raise ValueError(f"{type(law).__name__} must initialize a floating state vector")
         return PlantState(skeleton=skeleton, muscles=states)
+
+    def equilibrate_muscles(self, state: PlantState) -> PlantState:
+        """Initialize compliant fibers at the current pose and activation."""
+        if not any(isinstance(law, CompliantTendonHillLaw) for law in self.laws):
+            return state
+        stage = self.skeleton.continuous_stage(state.skeleton)
+        lengths = self.skeleton.muscle_path_kinematics(stage).length
+        muscles = tuple(
+            law.equilibrium_state(current[0], length).astype(current.dtype)
+            if isinstance(law, CompliantTendonHillLaw) else current
+            for law, current, length in zip(self.laws, state.muscles, lengths, strict=True)
+        )
+        return eqx.tree_at(lambda plant: plant.muscles, state, muscles)
 
     def vector_field(self, t: Scalar, state: PlantState, input: Array) -> PlantState:
         stage = self.skeleton.continuous_stage(state.skeleton)
