@@ -1344,7 +1344,7 @@ class StageEngine:
             try:
                 acquisition = self.driver.create_pod_once(self.bundle, candidate, intent.intent_id)
             except AcquisitionCreateError as exc:
-                if exc.clean_rejection:
+                if exc.disposition != "ambiguous":
                     last_clean_error = str(exc)
                     state = self._replace_acquisition_intent(
                         state,
@@ -1353,6 +1353,16 @@ class StageEngine:
                         evidence={"create": exc.evidence},
                     )
                     self.store.save(state)
+                    if exc.disposition == "terminal-rejection":
+                        raise ProvisioningAttemptError(
+                            str(exc),
+                            retryable=False,
+                            attempt_record={
+                                "driver": driver_name,
+                                "acquired": False,
+                                "intent_id": intent.intent_id,
+                            },
+                        ) from exc
                     continue
                 state = self._replace_acquisition_intent(
                     state,
@@ -1603,6 +1613,8 @@ class StageEngine:
                 else:
                     outputs = dict(self.driver.provision(self.bundle, state))
             except ProvisioningAttemptError as exc:
+                if self._uses_engine_acquisition():
+                    state = self.store.load()
                 finished_at = self._wall_time()
                 attempt = {
                     **exc.attempt_record,

@@ -82,11 +82,7 @@ from feedbax.orchestration.drivers.capabilities import (
     DriverHook,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
-from feedbax.orchestration.drivers.base import (
-    AcquisitionCreateError,
-    AcquisitionResult,
-    ProvisioningAttemptError,
-)
+from feedbax.orchestration.drivers.base import AcquisitionResult, ProvisioningAttemptError
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
@@ -2118,14 +2114,11 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
         "--data-center-ids",
         "CA-MTL-1",
     )
-    transport.queue_runpodctl(
-        ("user", "--output", "json"), CommandResult(0, '{"clientBalance":10}')
-    )
-    transport.queue_runpodctl(call, CommandResult(401, '{"statusCode":401,"code":"unauthorized"}'))
+    transport.queue_runpodctl(call, CommandResult(1, '{"statusCode":401,"code":"unauthorized"}'))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
-            datacenters=("CA-MTL-1",),
+            datacenters=("CA-MTL-1", "US-KS-2"),
             image=bundle.environment.image_id,
             local_repos={"feedbax": tmp_path},
         ),
@@ -2135,18 +2128,18 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
     state = _state(bundle)
     store.save(state)
     driver._preflight_passed = True
-    driver.create_pod_once = lambda *_args: (_ for _ in ()).throw(
-        AcquisitionCreateError(
-            "unauthorized",
-            clean_rejection=True,
-            evidence={"returncode": 401, "classification": "clean"},
-        )
-    )
+    driver.acquisition_pod_name = lambda _intent_id: call[3]
     engine = StageEngine(bundle=bundle, driver=driver, store=store)
-    with pytest.raises(ProvisioningAttemptError) as raised:
-        engine._engine_owned_provision(state, attempt_ordinal=1)
-    assert raised.value.retryable is True
-    assert store.load().acquisition_intents[0].state == "failed-unacquired"
+    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
+        engine._stage_provision(state)
+    final = store.load()
+    assert transport.runpodctl_calls == [call]
+    assert final.provisioning_stop_reason == "non-retryable-error"
+    assert len(final.acquisition_intents) == 1
+    intent = final.acquisition_intents[0]
+    assert intent.state == "failed-unacquired"
+    assert intent.evidence["create"]["classification"] == "terminal-rejection"
+    assert final.provisioning_attempts[0]["intent_id"] == intent.intent_id
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:

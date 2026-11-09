@@ -67,6 +67,7 @@ from feedbax.orchestration.collection_recovery import (
 )
 from feedbax.orchestration.drivers.base import (
     AcquisitionCreateError,
+    AcquisitionDisposition,
     AcquisitionResult,
     DriverRowProbe,
     ProviderPodInventoryRecord,
@@ -743,7 +744,7 @@ class RunPodOrchestrationDriver:
         if not self._preflight_passed:
             raise AcquisitionCreateError(
                 "RunPod creation requires passing named driver PREFLIGHT checks first",
-                clean_rejection=True,
+                disposition="terminal-rejection",
                 evidence={"returncode": None, "classification": "preflight-not-passed"},
             )
         name = self.acquisition_pod_name(intent_id)
@@ -771,7 +772,7 @@ class RunPodOrchestrationDriver:
             except (TypeError, ValueError, RunPodDriverError) as exc:
                 raise AcquisitionCreateError(
                     str(exc),
-                    clean_rejection=False,
+                    disposition="ambiguous",
                     evidence={
                         "returncode": result.returncode,
                         "classification": "ambiguous-invalid-success-payload",
@@ -783,23 +784,20 @@ class RunPodOrchestrationDriver:
                 return AcquisitionResult(pod_id, candidate)
             raise AcquisitionCreateError(
                 "successful RunPod create response omitted a safe pod identity",
-                clean_rejection=False,
+                disposition="ambiguous",
                 evidence={
                     "returncode": result.returncode,
                     "classification": "ambiguous-missing-pod-id",
                     "detail": detail,
                 },
             )
-        classification, classified_detail = _classify_create_failure(result, self.config.api_key)
-        clean_rejection = classification == "non-retryable"
+        disposition, classified_detail = _classify_create_failure(result, self.config.api_key)
         raise AcquisitionCreateError(
             classified_detail or f"runpodctl pod create exited {result.returncode}",
-            clean_rejection=clean_rejection,
+            disposition=disposition,
             evidence={
                 "returncode": result.returncode,
-                "classification": (
-                    "classified-clean-provider-rejection" if clean_rejection else "ambiguous"
-                ),
+                "classification": disposition,
                 "detail": classified_detail,
             },
         )
@@ -4885,24 +4883,27 @@ def _is_no_capacity_create_response(stdout: str, stderr: str) -> bool:
 
 def _classify_create_failure(
     result: CommandResult, secret: str | None
-) -> tuple[Literal["retryable", "non-retryable"], str]:
-    """Classify only sanitized provider authorization and request failures."""
+) -> tuple[AcquisitionDisposition, str]:
+    """Separate confirmed capacity and request rejections from ambiguous failures."""
     stdout = _redact_secret(result.stdout, secret)
     stderr = _redact_secret(result.stderr, secret)
     detail = (stderr or stdout).strip()
-    if _is_no_capacity_create_response(stdout, stderr):
-        return "non-retryable", detail
     try:
         payload = strict_json_loads(result.stdout or result.stderr)
     except (json.JSONDecodeError, StrictJsonError):
         payload = None
-    if isinstance(payload, Mapping):
-        code = str(payload.get("statusCode") or payload.get("code") or "").lower()
-        if code in {"400", "401", "403", "422", "unauthorized", "forbidden", "invalid_request"}:
-            return "non-retryable", detail
-    if result.returncode in {400, 401, 403, 422}:
-        return "non-retryable", detail
-    return "retryable", detail
+    code = (
+        str(payload.get("statusCode") or payload.get("code") or "").lower()
+        if isinstance(payload, Mapping)
+        else ""
+    )
+    if code in {"401", "403", "unauthorized", "forbidden"}:
+        return "terminal-rejection", detail
+    if _is_no_capacity_create_response(stdout, stderr):
+        return "retryable-rejection", detail
+    if code in {"400", "422", "invalid_request"}:
+        return "terminal-rejection", detail
+    return "ambiguous", detail
 
 
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:
