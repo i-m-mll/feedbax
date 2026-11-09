@@ -29,6 +29,7 @@ from feedbax.training.preparation import (
 )
 from feedbax.training.row_lowering import TrainingRowLowererRegistry
 from feedbax.training.authoring import training_method_row_lowerer_registration
+from feedbax.training.studio_executor import studio_graph_training_program
 
 from .bootstrap import RegistrationContext, RegistryKey
 from .registry import ExperimentRegistry
@@ -184,6 +185,7 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
     preparations = ExecutionPreparationProviderRegistry()
     training_programs = TrainingProgramCatalog(row_lowerers, preparations)
     training_programs.register_program(standard_supervised_training_program())
+    training_programs.register_program(studio_graph_training_program(components))
     return ApplicationRegistryBundle(
         components=components,
         training_programs=training_programs,

@@ -12,17 +12,29 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 
+from feedbax.contracts.studio_training import (
+    STUDIO_GRAPH_METHOD,
+    STUDIO_GRAPH_METHOD_PAYLOAD_ID,
+    STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+    StudioGraphMethodPayload,
+)
 from feedbax.contracts.training import (
+    DeclaredTrainingProgram,
+    ScheduleProjection,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     StandardSupervisedMethodPayload,
     TrainingMethodRegistration,
+    TrainingMethodScheduleProjector,
     TrainingProgramRegistry,
+    TrainingSpec,
+    declare_training_program,
     standard_supervised_method_contract,
     standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
+from feedbax.training.preparation import ExecutionPreparationRequest, ExecutionPreparationResult
 
 
 def executor_method_contract(*, total_batches: int):
@@ -141,6 +153,21 @@ class StudioUpdateKernel:
             **metrics,
         }
 
+    def reported_update(self, slots: Mapping[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        updated = dict(self(slots))
+        jax.block_until_ready(updated)
+        loss, terms, grad_norm = jax.device_get(
+            (updated["train_loss"], updated["loss_terms"], updated["grad_norm"])
+        )
+        updated.update(
+            train_loss=float(loss),
+            loss_terms={name: float(value) for name, value in terms.items()},
+            grad_norm=float(grad_norm),
+            step_time_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return updated
+
 
 def studio_training_registry(
     *,
@@ -167,18 +194,7 @@ def studio_training_registry(
         context: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         del context, coordinate
-        step_t0 = time.perf_counter()
-        updated = dict(kernel(slots))
-        jax.block_until_ready(updated)
-        loss, terms, grad_norm = jax.device_get(
-            (updated["train_loss"], updated["loss_terms"], updated["grad_norm"])
-        )
-        updated.update(
-            train_loss=float(loss),
-            loss_terms={name: float(value) for name, value in terms.items()},
-            grad_norm=float(grad_norm),
-        )
-        updated["step_time_ms"] = (time.perf_counter() - step_t0) * 1000.0
+        updated = kernel.reported_update(slots)
         if observe_model is not None:
             observe_model(updated["model"])
         return updated
@@ -210,3 +226,97 @@ def studio_training_registry(
         )
     )
     return registry
+
+
+def studio_graph_method_contract(payload: StudioGraphMethodPayload):
+    return executor_method_contract(total_batches=payload.target_total).model_copy(update={
+        "method_ref": STUDIO_GRAPH_METHOD.key,
+        "method_payload_schema_version": STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+    })
+
+
+def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingProgram[StudioGraphMethodPayload]:
+    """Declare the existing Studio graph update for the checkpointable native executor."""
+    from feedbax.training.optimizers import build_optimizer
+
+    def prepare(request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
+        from feedbax.web.worker.execution import (
+            _StudioWorkerLossService,
+            _evaluate_loss,
+            compile_training_run,
+            rollout_graph,
+        )
+
+        spec, payload = request.run_spec, request.method_payload
+        if not isinstance(payload, StudioGraphMethodPayload):
+            raise ValueError("Studio graph preparation requires its resolved method payload")
+        if spec.graph.inline is None or spec.task_binding_spec is None or spec.objective.loss is None:
+            raise ValueError("Studio graph training requires an inline graph, typed task bindings and a loss")
+        continuation = spec.checkpoint_progress.continuation
+        offset = continuation.source_completed_batches if continuation is not None else 0
+        if offset + spec.training_config.n_batches != payload.target_total:
+            raise ValueError("Studio graph segment does not reach its original batch target")
+        compiled = compile_training_run(
+            graph_spec=spec.graph.inline,
+            training_spec=TrainingSpec(
+                optimizer=payload.optimizer, loss=spec.objective.loss,
+                n_batches=spec.training_config.n_batches, batch_size=spec.training_config.batch_size,
+            ),
+            task_spec=spec.task.model_dump(mode="json", exclude_none=True),
+            task_binding_spec=spec.task_binding_spec.model_dump(mode="json", exclude_none=True),
+            cfg=spec.training_config,
+            component_registry=component_registry,
+            executable_graph=request.executable_graph,
+        )
+        optimizer = build_optimizer(
+            payload.optimizer, schedule_origin_step=0, current_step=0,
+            gradient_clip=spec.training_config.grad_clip,
+        )
+        kernel = StudioUpdateKernel(
+            compiled=compiled, optimizer=optimizer,
+            rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
+            evaluate_loss_fn=_evaluate_loss,
+        )
+        trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
+        return ExecutionPreparationResult(
+            initial_slots={
+                "model": compiled.graph,
+                "optimizer": optimizer.init(trainable),
+                "prng": jr.PRNGKey(0),
+                "batch_counter": jnp.array(0, dtype=jnp.int32),
+            },
+            kernel_context={"studio_graph_update": kernel},
+            loss_service=_StudioWorkerLossService(compiled),
+        )
+
+    def gradient_update(slots: Mapping[str, Any], coordinate: Any, context: Mapping[str, Any]):
+        del coordinate
+        return context["studio_graph_update"].reported_update(slots)
+
+    def guard(payload: StudioGraphMethodPayload):
+        def continue_training(slots: Mapping[str, Any], coordinate: Any, context: Mapping[str, Any]):
+            del coordinate, context
+            return int(slots["batch_counter"]) < payload.target_total
+
+        return {"feedbax.training.studio_executor.continue_training": continue_training}
+
+    return declare_training_program(
+        method_ref=STUDIO_GRAPH_METHOD.key,
+        payload_schema_id=STUDIO_GRAPH_METHOD_PAYLOAD_ID,
+        payload_schema_version=STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+        payload_model=StudioGraphMethodPayload,
+        contract_compiler=studio_graph_method_contract,
+        update_kernels_factory=lambda _payload: {
+            "feedbax.training.standard_supervised.gradient_update": gradient_update,
+        },
+        guard_predicates_factory=guard,
+        preparation_provider=prepare,
+        schedule_projector=TrainingMethodScheduleProjector(
+            projector_id="feedbax.training.studio_graph.schedule_projection",
+            projector_version="v1",
+            projector=lambda _payload, _coordinates: ScheduleProjection(),
+        ),
+        optimizer_spec_projector=lambda payload: payload.optimizer,
+        owner="feedbax.training.studio_executor",
+        package="feedbax",
+    )

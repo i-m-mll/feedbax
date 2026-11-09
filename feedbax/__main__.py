@@ -831,6 +831,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if run_spec.graph.inline is None:
             raise ValueError("execute-training-run-spec requires an inline graph document")
         from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
+        from feedbax.compiler.prototypes import prototypes_from_task_bindings
         from feedbax.contracts.authored_canonical import canonical_sha256
 
         executable_graph = compile_graph(
@@ -850,6 +851,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             ),
             registries.components,
+            input_prototypes=(
+                prototypes_from_task_bindings(run_spec.task_binding_spec)
+                if run_spec.task_binding_spec is not None else None
+            ),
         )
         method_registration = resolved_method.registration
         preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)

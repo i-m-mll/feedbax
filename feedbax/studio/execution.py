@@ -1631,7 +1631,8 @@ def _materialized_row_specs(
             dict(graph_spec),
             row.payload,
             row.spec.task.model_dump(mode="json", exclude_none=True),
-            None,
+            row.spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
+            if row.spec.task_binding_spec is not None else None,
             "TrainingRunSpec",
         )
     graph_spec = row.payload.get("graph_spec")
