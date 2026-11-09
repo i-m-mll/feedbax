@@ -36,9 +36,13 @@ from feedbax.contracts.domain import (
 from feedbax.contracts.acausal import (
     AcausalConnectionSpec,
     AcausalGraphSpec,
+    MuJoCoAssetBinding,
     RootFinderSpec,
     SolverConfigSpec,
+    SpatialMusclePath,
+    SpatialSite,
 )
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
     RepresentationElementSpec,
@@ -292,6 +296,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AcausalConnectionSpec,
     RootFinderSpec,
     SolverConfigSpec,
+    ContentObjectRef,
+    SpatialSite,
+    SpatialMusclePath,
+    MuJoCoAssetBinding,
     AcausalGraphSpec,
     ParameterConstraintSpec,
     WireSpec,
