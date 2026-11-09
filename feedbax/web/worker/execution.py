@@ -128,6 +128,7 @@ def compile_training_run(
     task_binding_spec: dict[str, Any] | StudioTaskBindingSpec,
     cfg: Any,
     component_registry: Any,
+    executable_graph: Any | None = None,
 ) -> CompiledTrainingRun:
     """Compile Studio specs into a generic executable graph training plan."""
     graph_model = (
@@ -197,13 +198,15 @@ def compile_training_run(
         )
 
     try:
-        from feedbax.compiler import GraphDocument, compile_graph
+        if executable_graph is None:
+            from feedbax.compiler import GraphDocument, compile_graph
 
-        graph = compile_graph(
-            GraphDocument(graph=graph_model),
-            component_registry,
-            input_prototypes=prototypes_from_task_bindings(binding_model),
-        ).graph
+            executable_graph = compile_graph(
+                GraphDocument(graph=graph_model),
+                component_registry,
+                input_prototypes=prototypes_from_task_bindings(binding_model),
+            )
+        graph = executable_graph.graph
     except NotImplementedError as exc:
         raise GraphCompilationError(
             "GraphSpec contains an unsupported executable component",

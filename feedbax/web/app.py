@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +29,8 @@ from feedbax.web.api import (
 )
 from feedbax.web.orchestration.controller import StudioController
 from feedbax.web.services.analysis_service import AnalysisJobService
-from feedbax.web.services.training_service import training_service
+from feedbax.web.services.desktop_jobs import NativeTrainingJobs, StudioJobLifecycle
+from feedbax.web.services.training_service import _orchestration_parent_root, training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
 
@@ -39,17 +42,28 @@ def create_app(
     *,
     bootstrap_modules: tuple[str, ...] = (),
     studio_controller: StudioController | None = None,
+    desktop_job_root: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
         app.state.bootstrap_modules = bootstrap_modules
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
-        try:
-            training_service.rebuild_cache_from_state_docs()
-        except Exception:
-            logger.exception("Failed to rebuild the Studio run-state projection")
-        analysis_jobs = AnalysisJobService()
+        if desktop_job_root is None:
+            try:
+                training_service.rebuild_cache_from_state_docs()
+            except Exception:
+                logger.exception("Failed to rebuild the Studio run-state projection")
+        analysis_jobs = AnalysisJobService(
+            job_root=desktop_job_root / "analysis" if desktop_job_root is not None else None
+        )
         app.state.analysis_jobs = analysis_jobs
+        desktop_jobs = None
+        if desktop_job_root is not None:
+            await asyncio.to_thread(training_service.reconcile_desktop_worker, desktop_job_root)
+            native_jobs = NativeTrainingJobs(app.state.bootstrap_state, _orchestration_parent_root())
+            desktop_jobs = StudioJobLifecycle(analysis_jobs, native_jobs, training_service, desktop_job_root)
+            app.state.desktop_jobs = desktop_jobs
+            native_jobs.recover()
         controller = studio_controller or StudioController(training_service=training_service)
         app.state.studio_controller = controller
         try:
@@ -57,6 +71,8 @@ def create_app(
                 yield
         finally:
             try:
+                if desktop_jobs is not None:
+                    analysis_jobs.begin_stop(force=True)
                 await analysis_jobs.aclose()
             finally:
                 training_service._terminate_worker()

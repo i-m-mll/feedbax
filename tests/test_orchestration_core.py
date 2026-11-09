@@ -4825,6 +4825,42 @@ def test_local_driver_recovers_and_stops_exact_owned_process_group(tmp_path: Pat
     assert not _process_group_alive(identity.process_group_id)
 
 
+def test_local_driver_authenticates_detached_completion(tmp_path: Path) -> None:
+    finish = tmp_path / "finish"
+    command = [
+        sys.executable, "-c",
+        "import time\nfrom pathlib import Path\n"
+        f"while not Path({str(finish)!r}).exists():\n    time.sleep(0.01)\n",
+    ]
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", command=command)])
+    row = bundle.row("row-a")
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    launcher = LocalOrchestrationDriver(cwd=tmp_path)
+    launcher.provision(bundle, state)
+    launched = launcher.launch_row(bundle, row, state)
+    identity = ProcessIdentity.model_validate(launched["process_identity"])
+    state = state.with_row(row.row_id, RowState(status="running", process_identity=identity))
+    recovered = LocalOrchestrationDriver(cwd=tmp_path)
+    sentinels = bundle.run_set_dir / "sentinels"
+    identity_path = sentinels / "row-a.process.json"
+    process = launcher._processes[row.row_id]
+    try:
+        (sentinels / "row-a.pid").unlink()
+        assert recovered.launch_row(bundle, row, state)["adopted"]
+        forged = identity.model_copy(update={"launch_token": "0" * 64})
+        identity_path.write_text(forged.model_dump_json(), encoding="utf-8")
+        rejected = recovered.probe(bundle, row, state)
+        assert rejected.status == "failed" and "launch token" in rejected.detail
+        identity_path.write_text(identity.model_dump_json(), encoding="utf-8")
+        finish.touch()
+        assert process.wait(timeout=5) == 0
+        assert recovered.probe(bundle, row, state).status == "completed"
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
 @pytest.mark.parametrize("method", ["stop_row", "request_stop_at_checkpoint"])
 @pytest.mark.parametrize("transition", ["exited", "live", "members", "unknown", "replaced", "unowned"])
 def test_local_stop_reconciles_exit_during_signal_authorization(
@@ -4957,6 +4993,10 @@ def test_local_checkpoint_stop_reconciles_exit_during_signal_attempt(
     monkeypatch.setattr("feedbax.orchestration.drivers.local._pid_alive", lambda pid: True)
     monkeypatch.setattr("feedbax.orchestration.drivers.local._process_group_alive", lambda pgid: True)
     monkeypatch.setattr(os, "getpgid", lambda pid: identity.process_group_id)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_has_launch_token",
+        lambda pid, token: (pid, token) == (identity.pid, identity.launch_token),
+    )
     monkeypatch.setattr(os, "killpg", exit_during_signal)
     monkeypatch.setattr(
         "feedbax.orchestration.drivers.local._process_group_member_pids", inspect_members,

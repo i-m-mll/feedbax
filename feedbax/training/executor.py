@@ -741,6 +741,11 @@ def execute_training_run_spec(
     )
     cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
+    if run_spec.task_binding_spec is not None:
+        bound_task = run_spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
+        if task_binding_spec is not None and task_binding_spec != bound_task:
+            raise TrainingRunExecutorError("task bindings disagree with the authored training spec")
+        task_binding_spec = bound_task
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
     loose_preparation = any(
         value is not None

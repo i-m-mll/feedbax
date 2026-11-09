@@ -200,3 +200,8 @@ dmypy.json
 *.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts
+
+# Desktop compilation and package staging
+/.desktop-build/
+/desktop/src-tauri/gen/
+/desktop/src-tauri/icons/

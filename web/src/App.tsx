@@ -8,6 +8,7 @@ import { Divider } from '@/components/layout/Divider';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
 import { useGraphStore } from '@/stores/graphStore';
 import { persistLocalProjectTabs } from '@/stores/projectsStore';
+import { synchronizeDesktopPreferences } from '@/stores/settingsStore';
 import { startStudioPersistence } from '@/services/studioPersistence';
 import {
   useLayoutStore,
@@ -26,6 +27,12 @@ export default function App() {
   const graphId = useGraphStore((s) => s.graphId);
 
   useEffect(() => startStudioPersistence(), []);
+
+  useEffect(() => {
+    if (import.meta.env.VITE_FEEDBAX_DESKTOP === '1') {
+      return synchronizeDesktopPreferences((message) => toast.error(message, { id: 'desktop-preferences' }));
+    }
+  }, []);
 
   useEffect(() => {
     if (!graphId || typeof BroadcastChannel === 'undefined') return;

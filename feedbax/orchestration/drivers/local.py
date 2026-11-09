@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -89,6 +92,7 @@ from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, Ru
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import publish_directory_no_replace
 from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
+from feedbax.training.interruption import CHECKPOINT_STOP_FILE_ENV
 
 
 class LocalDriverError(RuntimeError):
@@ -103,10 +107,29 @@ FEEDBAX_PROCESS_IDENTITY_ENV = "FEEDBAX_PROCESS_IDENTITY"
 _LOCAL_PROCESS_LAUNCH_SCRIPT = r"""
 import json
 import os
-import secrets
+import signal
+import subprocess
 import sys
+import tempfile
 
-identity_path, *command = sys.argv[1:]
+identity_path, done_path, failed_path, launch_fd, *command = sys.argv[1:]
+def publish(path, data):
+    directory = os.path.dirname(path)
+    descriptor, temporary_path = tempfile.mkstemp(dir=directory)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary_path, path, follow_symlinks=False)
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        os.unlink(temporary_path)
+
 payload = {
     "schema_id": "feedbax.orchestration.process_identity",
     "schema_version": "feedbax.orchestration.process_identity.v1",
@@ -117,35 +140,31 @@ payload = {
     "pid": os.getpid(),
     "process_group_id": os.getpgrp(),
 }
-data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
-temporary_path = f"{identity_path}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-descriptor = os.open(
-    temporary_path,
-    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-    0o600,
-)
+# The executor receives the same group signal. Keep the monitor alive to
+# publish its terminal result, even if the service that launched it exited.
+signal.signal(signal.SIGINT, lambda *_: None)
+signal.signal(signal.SIGTERM, lambda *_: None)
 try:
+    executor = subprocess.Popen(command)
+except OSError as error:
+    publish(failed_path, f"could not start executor: {error}\n".encode())
+    raise
+# Popen returns after exec. Publishing earlier can expose a child whose
+# process arguments still belong to the launching monitor.
+try:
+    publish(identity_path, (json.dumps(payload, sort_keys=True) + "\n").encode())
+    os.close(int(launch_fd))
+except OSError as error:
     try:
-        while data:
-            written = os.write(descriptor, data)
-            if written <= 0:
-                raise RuntimeError("process identity acknowledgement write made no progress")
-            data = data[written:]
-        os.fsync(descriptor)
+        print(f"could not publish process identity: {error}", file=sys.stderr, flush=True)
     finally:
-        os.close(descriptor)
-    os.link(temporary_path, identity_path, follow_symlinks=False)
-    directory = os.open(os.path.dirname(identity_path), os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-finally:
-    try:
-        os.unlink(temporary_path)
-    except FileNotFoundError:
-        pass
-os.execvpe(command[0], command, os.environ)
+        # A worker without a published identity cannot be safely adopted.
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    raise
+returncode = executor.wait()
+terminal = b"0\n" if returncode == 0 else f"exit={returncode}\n".encode()
+publish(done_path if returncode == 0 else failed_path, terminal)
+sys.exit(0 if returncode == 0 else 1)
 """
 
 
@@ -460,6 +479,20 @@ class LocalOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, Any]:
         paths = _row_paths(bundle, row.row_id)
+        paths["sentinels"].mkdir(parents=True, exist_ok=True)
+        launch_lock = paths["sentinels"] / f"{row.row_id}.launch.lock"
+        with launch_lock.open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._launch_row_locked(bundle, row, state, paths, lock.fileno())
+
+    def _launch_row_locked(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+        paths: Mapping[str, Path],
+        launch_fd: int,
+    ) -> Mapping[str, Any]:
         if paths["done"].exists():
             return {"row_id": row.row_id, "status": "completed"}
         if paths["failed"].exists():
@@ -475,7 +508,7 @@ class LocalOrchestrationDriver:
                 "process_identity": identity.model_dump(mode="json"),
             }
         if paths["started"].exists():
-            pid = _read_pid(paths["pid"])
+            pid = _row_pid(paths)
             if pid and _pid_alive(pid):
                 identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
                 if identity is None:
@@ -528,6 +561,8 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
+        if bundle.staged_training is not None:
+            env[CHECKPOINT_STOP_FILE_ENV] = str(paths["checkpoint_stop"])
         launch_token = secrets.token_hex(32)
         env[FEEDBAX_PROCESS_IDENTITY_ENV] = launch_token
         jax_cache_dir = resolve_jax_compilation_cache_dir()
@@ -557,6 +592,9 @@ class LocalOrchestrationDriver:
                 "-c",
                 _LOCAL_PROCESS_LAUNCH_SCRIPT,
                 str(paths["process_identity"]),
+                str(paths["done"]),
+                str(paths["failed"]),
+                str(launch_fd),
                 *command,
             ],
             cwd=self.cwd,
@@ -564,6 +602,7 @@ class LocalOrchestrationDriver:
             stdout=stdout,
             stderr=stderr,
             start_new_session=True,
+            pass_fds=(launch_fd,),
         )
         stdout.close()
         stderr.close()
@@ -576,7 +615,7 @@ class LocalOrchestrationDriver:
             launch_token=launch_token,
         )
         paths["pid"].write_text(f"{process.pid}\n", encoding="utf-8")
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         while not paths["process_identity"].is_file() and process.poll() is None:
             if time.monotonic() >= deadline:
                 break
@@ -585,8 +624,11 @@ class LocalOrchestrationDriver:
         if observed != identity:
             if process.poll() is None:
                 _terminate_process_group(process.pid, process=process)
-            detail = identity_error or "process identity record does not match launch"
-            paths["failed"].write_text(detail + "\n", encoding="utf-8")
+            if paths["failed"].exists():
+                detail = paths["failed"].read_text(encoding="utf-8").strip()
+            else:
+                detail = identity_error or "process identity record does not match launch"
+                paths["failed"].write_text(detail + "\n", encoding="utf-8")
             return {"row_id": row.row_id, "pid": process.pid, "status": "failed", "detail": detail}
         return {
             "row_id": row.row_id,
@@ -604,41 +646,20 @@ class LocalOrchestrationDriver:
         paths = _row_paths(bundle, row.row_id)
         process = self._processes.get(row.row_id)
         if process is not None:
-            returncode = process.poll()
-            if returncode is None:
-                identity, detail = _verified_local_process_identity(paths, bundle, row, process.pid)
-                if identity is None:
-                    try:
-                        returncode = process.wait(timeout=0.05)
-                    except subprocess.TimeoutExpired:
-                        returncode = None
-                    if returncode == 0:
-                        paths["done"].write_text("0\n", encoding="utf-8")
-                        return DriverRowProbe(status="completed", pid=process.pid)
-                    if returncode is not None:
-                        paths["failed"].write_text(f"{returncode}\n", encoding="utf-8")
-                        return DriverRowProbe(
-                            status="failed", pid=process.pid, detail=f"exit={returncode}"
-                        )
-                    return DriverRowProbe(status="failed", pid=process.pid, detail=detail)
-                return DriverRowProbe(status="running", pid=process.pid, process_identity=identity)
-            if returncode == 0:
-                paths["done"].write_text("0\n", encoding="utf-8")
-                return DriverRowProbe(status="completed", pid=process.pid)
-            paths["failed"].write_text(f"{returncode}\n", encoding="utf-8")
-            return DriverRowProbe(status="failed", pid=process.pid, detail=f"exit={returncode}")
+            process.poll()
+        pid = process.pid if process is not None else _row_pid(paths)
+        identity, detail = None, "pid exited without sentinel"
+        if pid and _pid_alive(pid) and not (paths["done"].exists() or paths["failed"].exists()):
+            identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
         if paths["done"].exists():
-            return DriverRowProbe(status="completed", pid=_read_pid(paths["pid"]))
+            return DriverRowProbe(status="completed", pid=pid)
         if paths["failed"].exists():
-            return DriverRowProbe(status="failed", pid=_read_pid(paths["pid"]))
-        if paths["pid"].exists():
-            pid = _read_pid(paths["pid"])
-            if pid and _pid_alive(pid):
-                identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
-                if identity is None:
-                    return DriverRowProbe(status="failed", pid=pid, detail=detail)
-                return DriverRowProbe(status="running", pid=pid, process_identity=identity)
-            return DriverRowProbe(status="failed", pid=pid, detail="pid exited without sentinel")
+            failure = paths["failed"].read_text(encoding="utf-8").strip()
+            return DriverRowProbe(status="failed", pid=pid, detail=failure or None)
+        if identity is not None:
+            return DriverRowProbe(status="running", pid=pid, process_identity=identity)
+        if paths["started"].exists():
+            return DriverRowProbe(status="failed", pid=pid, detail=detail)
         return DriverRowProbe(status="pending")
 
     def stop_row(
@@ -649,7 +670,7 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, Any]:
         paths = _row_paths(bundle, row.row_id)
         process = self._processes.get(row.row_id)
-        pid = process.pid if process is not None else _read_pid(paths["pid"])
+        pid = process.pid if process is not None else _row_pid(paths)
         expected = state.rows.get(row.row_id)
         group_alive = (
             expected is not None
@@ -660,7 +681,8 @@ class LocalOrchestrationDriver:
             identity = _authorize_local_signal(paths, bundle, row, state, pid, process=process)
             if identity is not None:
                 _terminate_process_group(identity.process_group_id, process=process)
-        paths["failed"].write_text("stopped\n", encoding="utf-8")
+        if not paths["done"].exists() and not paths["failed"].exists():
+            paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
 
     def request_stop_at_checkpoint(
@@ -671,8 +693,12 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, Any]:
         """Ask a local row to stop itself at its next durable checkpoint."""
         paths = _row_paths(bundle, row.row_id)
+        if bundle.staged_training is not None:
+            # The executor may still be importing before its SIGINT handler is ready.
+            _atomic_write_local_json(paths["checkpoint_stop"], {"action": "stop"})
+            return {"row_id": row.row_id, "status": "stop_requested"}
         process = self._processes.get(row.row_id)
-        pid = process.pid if process is not None else _read_pid(paths["pid"])
+        pid = process.pid if process is not None else _row_pid(paths)
         expected = state.rows.get(row.row_id)
         group_alive = (
             expected is not None
@@ -757,7 +783,7 @@ class LocalOrchestrationDriver:
         for row in bundle.rows:
             probe = self.probe(bundle, row, state)
             paths = _row_paths(bundle, row.row_id)
-            pid = probe.pid or _read_pid(paths["pid"])
+            pid = probe.pid or _row_pid(paths)
             if probe.status == "running" or (pid and _process_group_alive(pid)):
                 self.stop_row(bundle, row, state)
                 stopped.append(row.row_id)
@@ -1292,7 +1318,10 @@ def _reclaim_failed_row_tree(
 
 def _row_command(row: RunRowSpec, python_executable: str) -> list[str]:
     if row.launch.command:
-        return [str(part) for part in row.launch.command]
+        command = [str(part) for part in row.launch.command]
+        if row.execution_family == "native-training" and command[:3] == ["python", "-m", "feedbax"]:
+            command[0] = python_executable
+        return command
     assert row.launch.entry is not None
     return [python_executable, row.launch.entry]
 
@@ -1315,6 +1344,7 @@ def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
         "started": sentinels / f"{row_id}.started",
         "pid": sentinels / f"{row_id}.pid",
         "process_identity": sentinels / f"{row_id}.process.json",
+        "checkpoint_stop": sentinels / f"{row_id}.checkpoint-stop.json",
         "done": sentinels / f"{row_id}.done",
         "failed": sentinels / f"{row_id}.failed",
         "event_log": events / f"{row_id}.events.jsonl",
@@ -1472,6 +1502,14 @@ def _read_local_process_identity(path: Path) -> tuple[ProcessIdentity | None, st
         return None, f"process identity record is invalid: {exc}"
 
 
+def _row_pid(paths: Mapping[str, Path]) -> int | None:
+    pid = _read_pid(paths["pid"])
+    if pid is not None:
+        return pid
+    identity, _ = _read_local_process_identity(paths["process_identity"])
+    return identity.pid if identity is not None else None
+
+
 def _verified_local_process_identity(
     paths: Mapping[str, Path],
     bundle: RunBundle,
@@ -1497,12 +1535,45 @@ def _verified_local_process_identity(
         return None, member_error
     if not members:
         return None, "process group exited before identity verification"
+    verified = {member for member in members if _process_has_launch_token(member, identity.launch_token)}
+    if len(verified) != len(members):
+        remaining, inspection_error = _process_group_member_pids(identity.process_group_id)
+        if inspection_error is not None or not remaining or not set(remaining) <= verified:
+            return None, "live process group does not carry the recorded launch token"
     return identity, "verified"
+
+
+def _process_has_launch_token(pid: int, token: str) -> bool:
+    expected = f"{FEEDBAX_PROCESS_IDENTITY_ENV}={token}".encode()
+    if sys.platform == "darwin":
+        # CTL_KERN/KERN_PROCARGS2 returns argc, executable, argv, and environment.
+        sysctl = ctypes.CDLL(None).sysctl
+        mib = (ctypes.c_int * 3)(1, 49, pid)
+        size = ctypes.c_size_t()
+        if sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+            return False
+        buffer = ctypes.create_string_buffer(size.value)
+        if sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+            return False
+        argc = int.from_bytes(buffer.raw[:4], sys.byteorder, signed=True)
+        arguments = buffer.raw[4:size.value].partition(b"\0")[2].lstrip(b"\0")
+        if argc < 1:
+            return False
+        return expected in arguments.split(b"\0")[argc:]
+    try:
+        return expected in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return False
 
 
 def _process_group_member_pids(
     process_group_id: int,
 ) -> tuple[tuple[int, ...], str | None]:
+    if sys.platform == "darwin":
+        try:
+            return _darwin_process_group_members(process_group_id), None
+        except OSError as exc:
+            return (), f"process group membership inspection failed: {exc}"
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,pgid=,stat="],
@@ -1527,6 +1598,55 @@ def _process_group_member_pids(
         if group == process_group_id and not fields[2].startswith("Z"):
             members.append(pid)
     return tuple(members), None
+
+
+@cache
+def _darwin_libproc() -> ctypes.CDLL:
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    libproc.proc_listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+    libproc.proc_listpids.restype = ctypes.c_int
+    libproc.proc_pidinfo.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+    ]
+    libproc.proc_pidinfo.restype = ctypes.c_int
+    return libproc
+
+
+def _darwin_process_group_members(process_group_id: int) -> tuple[int, ...]:
+    """Inspect the requested group without spawning a host-wide process listing."""
+    proc_pgrp_only = 2
+    proc_pidt_shortbsdinfo = 13
+    zombie = 5
+    libproc = _darwin_libproc()
+    capacity = 16
+    pid_size = ctypes.sizeof(ctypes.c_int)
+    while True:
+        pids = (ctypes.c_int * capacity)()
+        size = ctypes.sizeof(pids)
+        ctypes.set_errno(0)
+        used = libproc.proc_listpids(proc_pgrp_only, process_group_id, pids, size)
+        if not 0 <= used <= size or used % pid_size or (used == 0 and ctypes.get_errno()):
+            error = ctypes.get_errno() or errno.EIO
+            raise OSError(error, os.strerror(error), "proc_listpids")
+        if used < size:
+            break
+        capacity *= 2
+
+    # struct proc_bsdshortinfo starts with pid, ppid, pgid and status in sys/proc_info.h.
+    info = (ctypes.c_uint32 * 16)()
+    size = ctypes.sizeof(info)
+    members = []
+    for pid in pids[:used // pid_size]:
+        ctypes.set_errno(0)
+        used = libproc.proc_pidinfo(pid, proc_pidt_shortbsdinfo, 0, info, size)
+        if used != size:
+            error = ctypes.get_errno() or errno.EIO
+            if error == errno.ESRCH:
+                continue
+            raise OSError(error, os.strerror(error), "proc_pidinfo")
+        if info[2] == process_group_id and info[3] != zombie:
+            members.append(pid)
+    return tuple(members)
 
 
 def _authorize_local_signal(
