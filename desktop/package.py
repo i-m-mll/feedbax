@@ -79,7 +79,7 @@ def native_inputs() -> dict:
         "minimum_macos": MINIMUM_MACOS,
         "inputs": {path: git("rev-parse", f"HEAD:{path}") for path in LOCKED_BUILD_INPUTS},
         "rustc": run("rustc", "-vV", capture=True).strip(),
-        "xcode_sdk": run("xcrun", "--show-sdk-version", capture=True).strip(),
+        "xcode_sdk": run("xcrun", "--sdk", "macosx", "--show-sdk-version", capture=True).strip(),
         "tauri": run(*TAURI, "--version", cwd=DESKTOP, capture=True).strip(),
     }
 
