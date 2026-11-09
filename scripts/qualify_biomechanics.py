@@ -103,9 +103,12 @@ def _euler_stage_envelope(mechanics, history, commands):
         tolerance = 32 * jnp.finfo(replayed.dtype).eps * scale
         return jnp.max(error), jnp.max(tolerance), jnp.all(error <= tolerance)
 
+    terminal = reference.qpos[:, -1, 0]
     return (
-        jnp.min(lo), jnp.max(hi),
-        compare(qpos, reference.qpos[:, 1:]), compare(qvel, reference.qvel[:, 1:]),
+        jnp.minimum(jnp.min(lo), jnp.min(terminal)),
+        jnp.maximum(jnp.max(hi), jnp.max(terminal)),
+        compare(qpos, reference.qpos[:, 1:]),
+        compare(qvel, reference.qvel[:, 1:]),
     )
 
 
