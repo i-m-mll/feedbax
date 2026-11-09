@@ -70,6 +70,7 @@ export interface SolverConfigSpec {
   solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5" | "mujoco";
   dt: number;
   root_finder?: RootFinderSpec | null;
+  planar_substeps?: number | null;
 }
 
 export interface ContentObjectRef {
@@ -99,6 +100,16 @@ export interface MuJoCoAssetBinding {
   paths?: Record<string, SpatialMusclePath>;
 }
 
+export interface JointDampingMode {
+  coefficients: Record<string, number>;
+  damping: number;
+}
+
+export interface PlanarDynamicsSpec {
+  gravity?: [number, number];
+  joint_dampers?: Record<string, JointDampingMode>;
+}
+
 export interface AcausalGraphSpec {
   schema_id?: "feedbax.spec.acausal_graph";
   schema_version?: "feedbax.spec.acausal_graph.v2";
@@ -109,6 +120,7 @@ export interface AcausalGraphSpec {
   subgraphs?: Record<string, AcausalGraphSpec> | null;
   metadata?: GraphMetadata | null;
   mujoco_asset?: MuJoCoAssetBinding | null;
+  planar_dynamics?: PlanarDynamicsSpec | null;
 }
 
 export interface ParameterConstraintSpec {
@@ -2022,7 +2034,8 @@ export const acausalReportDefaults = {
     "connections": [],
     "subgraphs": null,
     "metadata": null,
-    "mujoco_asset": null
+    "mujoco_asset": null,
+    "planar_dynamics": null
   },
   "ComponentSpec": {
     "params": {},
@@ -2045,6 +2058,13 @@ export const acausalReportDefaults = {
     "sites": {},
     "paths": {}
   },
+  "PlanarDynamicsSpec": {
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "joint_dampers": {}
+  },
   "RootFinderSpec": {
     "method": "newton",
     "rtol": 1e-06,
@@ -2052,7 +2072,8 @@ export const acausalReportDefaults = {
     "max_steps": 32
   },
   "SolverConfigSpec": {
-    "root_finder": null
+    "root_finder": null,
+    "planar_substeps": null
   },
   "SpatialMusclePath": {
     "parameters": {}
@@ -2260,6 +2281,7 @@ export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
       "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5"), z.literal("mujoco")]),
       "dt": z.number().finite(),
       "root_finder": RootFinderSpecSchema.nullable().optional(),
+      "planar_substeps": z.number().int().safe().gte(1).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<SolverConfigSpec>;
@@ -2315,6 +2337,24 @@ export const MuJoCoAssetBindingSchema: z.ZodType<MuJoCoAssetBinding> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<MuJoCoAssetBinding>;
 
+export const JointDampingModeSchema: z.ZodType<JointDampingMode> = z.lazy(() =>
+  z
+    .object({
+      "coefficients": z.record(z.string(), z.number().finite()),
+      "damping": z.number().finite().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<JointDampingMode>;
+
+export const PlanarDynamicsSpecSchema: z.ZodType<PlanarDynamicsSpec> = z.lazy(() =>
+  z
+    .object({
+      "gravity": z.tuple([z.number().finite(), z.number().finite()]).optional(),
+      "joint_dampers": z.record(z.string(), JointDampingModeSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<PlanarDynamicsSpec>;
+
 export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
   z
     .object({
@@ -2327,6 +2367,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
       "subgraphs": z.record(z.string(), AcausalGraphSpecSchema).nullable().optional(),
       "metadata": GraphMetadataSchema.nullable().optional(),
       "mujoco_asset": MuJoCoAssetBindingSchema.nullable().optional(),
+      "planar_dynamics": PlanarDynamicsSpecSchema.nullable().optional(),
     })
     .strict()
     .superRefine((value, ctx) => {
@@ -2334,6 +2375,12 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "A MuJoCo asset binding is required exactly for spatial multibody",
+        });
+      }
+      if (value.physical_domain !== 'planar_multibody' && (value.planar_dynamics != null || value.solver.planar_substeps != null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Planar dynamics and substeps require planar multibody",
         });
       }
       if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {
