@@ -102,6 +102,7 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from feedbax.contracts.artifact_custody import ContentGcRequest
     from feedbax.contracts.graph import (
         STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
         STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
@@ -134,6 +135,16 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
             "graph": graph.model_dump(mode="json", exclude_none=True),
         })
         assert saved.status_code == 200, saved.text
+        content = model_artifact_provider(graph)
+        assert content is not None
+        dry_run = content.collect_garbage()
+        assert any(
+            item.sha256 == asset.sha256 and item.decision == "live"
+            for item in dry_run.decisions
+        )
+        content.collect_garbage(ContentGcRequest(
+            destructive=True, expected_generation=dry_run.generation,
+        ))
         project = client.get(f"/api/graphs/{saved.json()['data']['id']}")
         assert project.status_code == 200, project.text
         binding = project.json()["data"]["graph"]["subgraphs"]["physics"]["mujoco_asset"]
@@ -147,6 +158,11 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     restored = pickle.loads(pickle.dumps(compiled))
     assert jax.tree.structure(restored) == jax.tree.structure(compiled)
     assert structural_abi_fingerprint(restored) == structural_abi_fingerprint(compiled)
+
+    mjx_model = compiled.nodes["physics"].plant.skeleton.mjx_model
+    different_limits = np.logical_not(mjx_model.jnt_limited).astype(mjx_model.jnt_limited.dtype)
+    changed_model = mjx_model.replace(jnt_limited=different_limits)
+    assert structural_abi_fingerprint(changed_model) != structural_abi_fingerprint(mjx_model)
 
 
 def _reference_equilibrium(angle):

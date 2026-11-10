@@ -711,6 +711,11 @@ mjx-warp = [
     { name = "jax", extra = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mujoco-mjx", extra = ["warp"] },
 ]
+mjx-warp-cpu = [
+    { name = "dill" },
+    { name = "feedbax", extra = ["mjx"] },
+    { name = "mujoco-mjx", extra = ["warp"] },
+]
 
 [package.metadata]
 requires-dist = [
@@ -790,6 +795,11 @@ mjx-warp = [
     { name = "dill", specifier = ">=0.3.9" },
     { name = "feedbax", extras = ["mjx"] },
     { name = "jax", extras = ["cuda13"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.7.2" },
+    { name = "mujoco-mjx", extras = ["warp"], specifier = "==4.0.0" },
+]
+mjx-warp-cpu = [
+    { name = "dill", specifier = ">=0.3.9" },
+    { name = "feedbax", extras = ["mjx"] },
     { name = "mujoco-mjx", extras = ["warp"], specifier = "==4.0.0" },
 ]
 

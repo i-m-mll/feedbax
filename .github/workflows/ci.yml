@@ -63,6 +63,11 @@ jobs:
           tests/test_authored_mujoco_model.py tests/test_stateful_mujoco_boundary.py
           tests/test_articulated_muscles.py tests/test_compliant_mjx.py
 
+      - name: Qualify planar Warp execution on CPU
+        run: |
+          uv sync --locked --dev --all-extras --group mjx-warp-cpu
+          uv run --no-sync python scripts/qualify_mjx_warp.py --backend warp --device cpu --fixture planar
+
       - name: Run ruff fatal checks
         run: uv run ruff check feedbax tests scripts --select E9,F63,F7,F82 --ignore F722,F821
 

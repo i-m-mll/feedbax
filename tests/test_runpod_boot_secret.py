@@ -45,7 +45,7 @@ def test_boot_command_preserves_only_the_matching_key(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("scenario", [
     "success", "wrong-key", "startup-timeout", "pod-rejected", "pod-ambiguous", "secret-rejected",
-    "secret-ambiguous", "restart-found", "restart-zero", "restart-lost-delete",
+    "secret-ambiguous", "restart-found", "restart-zero", "restart-lost-delete", "restart-foreign",
 ])
 def test_boot_secret_is_owned_by_the_production_acquisition_intent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str,
@@ -91,7 +91,9 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
             assert intent.preparation and intent.preparation.provider_id is None
             payload = json.loads(request.content)
             assert payload.pop("value") == private_key
-            assert payload == runpod._boot_secret_metadata(intent.intent_id)
+            assert set(payload) == {"name", "description"}
+            assert payload["name"].startswith("feedbax-host-")
+            assert payload["description"] == f"Feedbax acquisition {intent.intent_id}"
             if scenario == "secret-rejected":
                 return httpx.Response(403)
             secret = {**payload, "id": "secret-one"}
@@ -189,6 +191,15 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
             assert persisted.state == "intended" and not persisted.preparation.released
             assert effects == [("GET", secret_path)]
         secret = {**runpod._boot_secret_metadata(intent.intent_id), "id": "secret-one"}
+        if scenario == "restart-foreign":
+            owned_description = secret["description"]
+            secret["description"] = "Feedbax acquisition another-intent"
+            with pytest.raises(runpod.RunPodDriverError, match="metadata did not match"):
+                new_engine().abort()
+            persisted, = store.load().acquisition_intents
+            assert not persisted.preparation.released
+            assert ("DELETE", f"{secret_path}/secret-one") not in effects
+            secret["description"] = owned_description
         if scenario == "restart-lost-delete":
             with pytest.raises(runpod.RunPodDriverError, match="transport failed"):
                 new_engine().abort()
