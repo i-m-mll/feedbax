@@ -71,7 +71,9 @@ class SolverConfigSpec(BaseModel):
     solver_type: SolverType
     dt: float
     root_finder: Optional[RootFinderSpec] = None
-    mjx_backend: Literal["jax", "warp"] = "jax"
+    mjx_backend: Literal["jax", "warp"] = Field(
+        default="jax", exclude_if=lambda backend: backend == "jax",
+    )
     planar_substeps: int | None = Field(default=None, ge=1, strict=True)
 
 
@@ -156,7 +158,9 @@ class AcausalGraphSpec(BaseModel):
     metadata: Optional["GraphMetadata"] = None
     mujoco_asset: MuJoCoAssetBinding | None = None
     planar_dynamics: PlanarDynamicsSpec | None = None
-    wrap_geometries: dict[str, PlanarWrapGeometry] = Field(default_factory=dict)
+    wrap_geometries: dict[str, PlanarWrapGeometry] = Field(
+        default_factory=dict, exclude_if=lambda geometries: not geometries,
+    )
 
     @model_validator(mode="before")
     @classmethod

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 from copy import deepcopy
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -32,6 +33,7 @@ from feedbax.contracts.graph import (
     GraphSpec,
     ParamSchema,
     WireSpec,
+    studio_semantic_document_bytes,
 )
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
@@ -243,6 +245,13 @@ def test_graph_project_round_trips_with_acausal_interior() -> None:
 
     dumped = project.model_dump(mode="json")
     loaded = GraphProject.model_validate_json(project.model_dump_json())
+
+    # This is the same saved v2 graph an older Studio build could have written.
+    # Its execution identity must survive the additive solver and geometry fields.
+    persisted = json.loads(studio_semantic_document_bytes(loaded.graph, None))
+    interior = persisted["graph"]["subgraphs"]["plant"]
+    assert interior["solver"] == _acausal_graph_payload()["solver"]
+    assert "wrap_geometries" not in interior
 
     assert loaded.model_dump(mode="json") == dumped
     assert dumped["graph"]["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
