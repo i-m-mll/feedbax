@@ -27,7 +27,7 @@ from feedbax.contracts.manifest import EvaluationRunSpec
 
 
 EVALUATION_TYPE = "feedbax.mjx_warp_qualification"
-_PARAMS_SCHEMA = "feedbax.spec.mjx_warp_qualification"
+EXTERNAL_MUSCLE_EVALUATION_TYPE = "feedbax.mjx_warp_external_muscles"
 RECEIPT_CONSUMER_ID = "feedbax.mjx_warp_receipt"
 RECEIPT_CONSUMER_VERSION = "v1"
 RECEIPT_SCHEMA_ID = "feedbax.manifest.mjx_warp_receipt"
@@ -40,7 +40,10 @@ class WarpQualificationParams(StrictModel):
 
 
 def _qualify(spec: EvaluationRunSpec) -> EvaluationRecipeResult:
-    from feedbax.mechanics.warp_qualification import run_qualification
+    if spec.evaluation_type == EXTERNAL_MUSCLE_EVALUATION_TYPE:
+        from feedbax.mechanics.warp_muscle_qualification import run_qualification
+    else:
+        from feedbax.mechanics.warp_qualification import run_qualification
 
     if spec.training_run_ids or spec.inputs:
         raise ValueError("MJX-Warp qualification uses only its authored synthetic fixtures")
@@ -93,16 +96,18 @@ def _finalize(value: EvaluationBatchFinalizeInput) -> EvaluationBatchFragment:
 def register_warp_qualification(
     recipes: EvaluationRecipeRegistry, consumers: EvaluationBatchConsumerRegistry
 ) -> None:
-    recipes.register(EVALUATION_TYPE, _evaluate, batch_recipe=_evaluate_batch)
-    recipes.register_authoring_schema(
-        EVALUATION_TYPE,
-        EvaluationAuthoringSchema(
-            schema_id=_PARAMS_SCHEMA,
-            schema_version=f"{_PARAMS_SCHEMA}.v1",
-            params_model=WarpQualificationParams,
-            axis_profiles=({"device": ("cpu",)}, {"device": ("cuda",)}),
-        ),
-    )
+    for evaluation_type in (EVALUATION_TYPE, EXTERNAL_MUSCLE_EVALUATION_TYPE):
+        schema_id = evaluation_type.replace("feedbax.", "feedbax.spec.", 1)
+        recipes.register(evaluation_type, _evaluate, batch_recipe=_evaluate_batch)
+        recipes.register_authoring_schema(
+            evaluation_type,
+            EvaluationAuthoringSchema(
+                schema_id=schema_id,
+                schema_version=f"{schema_id}.v1",
+                params_model=WarpQualificationParams,
+                axis_profiles=({"device": ("cpu",)}, {"device": ("cuda",)}),
+            ),
+        )
     consumers.register(
         RECEIPT_CONSUMER_ID,
         RECEIPT_CONSUMER_VERSION,

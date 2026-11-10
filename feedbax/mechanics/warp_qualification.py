@@ -413,8 +413,8 @@ def qualify(interior, provider, path, *, warp, device, body, qpos, qvel, wrench,
     return {"native_max_absolute_error": checks, "warp_ffi_targets": ffi_targets}
 
 
-def run_qualification(*, backend: str, device: str, fixture: str) -> dict:
-    """Run the declared fixture set and return the measured receipt."""
+def qualification_runtime(*, backend: str, device: str) -> tuple[dict, dict | None]:
+    """Configure the shared fixture runtime and identify its CUDA device."""
     jax.config.update("jax_enable_x64", False)
     jax.config.update("jax_platforms", device)
     versions = {}
@@ -439,6 +439,12 @@ def run_qualification(*, backend: str, device: str, fixture: str) -> dict:
     ), devices
     print(f"Devices: {[(str(device), device.device_kind) for device in devices]}", flush=True)
     cuda_binding = assert_single_cuda_device(devices) if (backend, device) == ("warp", "cuda") else None
+    return versions, cuda_binding
+
+
+def run_qualification(*, backend: str, device: str, fixture: str) -> dict:
+    """Run the declared fixture set and return the measured receipt."""
+    versions, cuda_binding = qualification_runtime(backend=backend, device=device)
     print(f"Float32 acceptance: rtol={RTOL}, atol={ATOL}, time atol={TIME_ATOL}", flush=True)
     results = {}
     with TemporaryDirectory(prefix="feedbax-qualify-mjx-warp-") as temporary:
