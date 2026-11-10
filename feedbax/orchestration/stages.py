@@ -1629,6 +1629,12 @@ class StageEngine:
         preparation = intent.preparation
         if preparation is None or preparation.released:
             return state
+        # A durable public identity permits the pod POST. After that boundary,
+        # keep the preparation until rejection or verified pod removal.
+        if preparation.public_identity is not None and intent.state not in (
+            "failed-unacquired", "resolved-torn-down",
+        ):
+            return state
         release = self._driver_hook(
             DriverHook.ACQUISITION_PREPARATION, "release_acquisition_preparation",
         )
@@ -1669,10 +1675,7 @@ class StageEngine:
             state = self._reconcile_acquired_pods(state, deadline)
         finally:
             state = self._last_durable_state(state)
-            active_intent = (state.provision_record or {}).get("intent_id")
             for intent in state.acquisition_intents:
-                if intent.intent_id == active_intent and intent.state == "acquired":
-                    continue
                 state = self._release_acquisition_preparation(state, intent.intent_id, deadline)
         return state
 
