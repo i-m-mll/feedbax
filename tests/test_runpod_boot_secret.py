@@ -45,6 +45,7 @@ def test_boot_command_preserves_only_the_matching_key(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("scenario", [
     "success", "wrong-key", "startup-timeout", "pod-rejected", "pod-ambiguous", "secret-rejected",
+    "pod-ambiguous-inventory-unavailable", "pod-ambiguous-delete-unavailable",
     "secret-ambiguous", "restart-found", "restart-zero", "restart-lost-delete", "restart-foreign",
 ])
 def test_boot_secret_is_owned_by_the_production_acquisition_intent(
@@ -73,6 +74,7 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
     effects: list[tuple[str, str]] = []
     secret = None
     pod = None
+    provider_recovered = False
     secret_path = "/v2/account/secrets"
     pod_path = "/v2/pods"
 
@@ -119,7 +121,7 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
                 "createdAt": datetime.now(timezone.utc).isoformat(),
                 "ssh": {"direct": {"host": "203.0.113.10", "port": 2222, "username": "root"}},
             }
-            if scenario == "pod-ambiguous":
+            if scenario.startswith("pod-ambiguous"):
                 raise httpx.ReadTimeout("reply lost")
             return httpx.Response(201, json={"id": "pod-one"})
         if path == secret_path:
@@ -129,7 +131,10 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
         if path == f"{secret_path}/secret-one":
             if method == "DELETE":
                 assert pod is None
-                assert store.load().acquisition_intents[0].preparation.provider_id == "secret-one"
+                intent, = store.load().acquisition_intents
+                assert intent.preparation.provider_id == "secret-one"
+                if intent.preparation.public_identity is not None:
+                    assert intent.state in {"failed-unacquired", "resolved-torn-down"}
                 secret = None
                 if scenario == "restart-lost-delete":
                     raise httpx.ReadTimeout("delete response lost")
@@ -137,10 +142,14 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
             return httpx.Response(200, json=secret) if secret else httpx.Response(404)
         if path == f"{pod_path}/pod-one":
             if method == "DELETE":
+                if scenario == "pod-ambiguous-delete-unavailable" and not provider_recovered:
+                    return httpx.Response(503)
                 pod = None
                 return httpx.Response(204)
             return httpx.Response(200, json=pod) if pod else httpx.Response(404)
         if path == pod_path:
+            if scenario == "pod-ambiguous-inventory-unavailable" and not provider_recovered:
+                return httpx.Response(503)
             return httpx.Response(200, json={
                 "pods": [{"id": pod["id"], "name": pod["name"]}] if pod else [],
                 "pagination": {"hasNextPage": False},
@@ -218,6 +227,16 @@ def test_boot_secret_is_owned_by_the_production_acquisition_intent(
         resumed._restore_driver_from_provision_record(live)
         resumed.driver._ssh("true")
         assert resumed.abort().stage("TEARDOWN").status == "completed"
+    elif scenario.endswith("-unavailable"):
+        with pytest.raises(runpod.RunPodDriverError, match="inventory response was invalid|teardown is unresolved"):
+            engine.run(stop_after_stage="PROVISION")
+        persisted, = store.load().acquisition_intents
+        assert persisted.state in {"ambiguous", "ambiguous-unresolved"}
+        assert not persisted.preparation.released
+        assert secret is not None and pod is not None
+        assert ("DELETE", f"{secret_path}/secret-one") not in effects
+        provider_recovered = True
+        assert new_engine().abort().stage("TEARDOWN").status == "completed"
     else:
         with pytest.raises(OrchestrationStageError, match="provisioning stopped"):
             engine.run(stop_after_stage="PROVISION")
