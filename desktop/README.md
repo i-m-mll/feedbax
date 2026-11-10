@@ -1,6 +1,6 @@
 # Feedbax Studio for macOS
 
-The base release uses Tauri, macOS 14 or newer on Apple Silicon, and bundled CPython 3.12.9 with JAX on CPU. The app reads its resources from the signed bundle. It requires no developer checkout, virtual environment, or dependency installer at runtime.
+Feedbax Studio uses Tauri, macOS 14 or newer on Apple Silicon, and bundled CPython 3.12.9 with MJX on JAX CPU. Each Studio bundle contains Feedbax from the same source commit and version as the release. The app reads its resources from the signed bundle and requires no developer checkout, virtual environment, or dependency installer at runtime.
 
 ## Build a private candidate
 
@@ -12,6 +12,7 @@ From a clean commit on an Apple Silicon build Mac with Xcode command-line tools,
 uv run --no-project --with packaging==26.3 python desktop/package.py native
 uv run --no-project --with packaging==26.3 python desktop/package.py bundle \
   --output .desktop-build/candidate --build-number 1 \
+  --numerical-manifest "$STUDIO_NUMERICAL_MANIFEST" \
   --signing-identity "$STUDIO_SIGNING_IDENTITY"
 ```
 
@@ -21,9 +22,7 @@ The native phase uses Cargo's normal target reuse. Bundle assembly checks the re
 
 For a private fixture, add `--fixture-name <unique-name> --fixture-root <absolute-path>` to the bundle phase. Both releases in a replacement exercise must use the same fixture name and state root. Keep the absolute root short enough for the macOS Unix socket address limit.
 
-The numerical package join supplies `--numerical-manifest <path>`. The manifest uses `feedbax.desktop.wheels.v1`, targets `aarch64-apple-darwin`, declares `runtime` and lists exact wheel filenames and SHA-256 values under `wheels`. Stage the wheel files alongside the manifest. These replace same-name locked wheels or add new wheels. The final package still has to pass dependency, native-code and installed runtime acceptance.
-
-For the stock biomechanics CPU build, add `--runtime-profile mjx-cpu` and supply the qualified numerical manifest. The recipe adds the locked `mjx` extra. The manifest must attest the exact macOS wheels for `jax`, `jaxlib`, `mujoco-core` and `mujoco-mjx`. This profile accepts only wheels from the selected lock closure and reports the MJX JAX provider on CPU. The default `jax-cpu` profile retains the base dependency set.
+Every bundle uses the locked `mjx` extra. Set `STUDIO_NUMERICAL_MANIFEST` to the qualified `feedbax.desktop.wheels.v1` manifest for `aarch64-apple-darwin`, with its wheel files staged alongside it. The manifest declares `runtime` and attests the exact filenames and SHA-256 values for `jax`, `jaxlib`, `mujoco-core` and `mujoco-mjx` under `wheels`. Bundle assembly requires these inputs to match the selected lock closure before it assembles the app. The sealed dependency inventory reports the MJX JAX provider on CPU.
 
 ## Install and replace
 
