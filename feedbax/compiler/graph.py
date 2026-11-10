@@ -11,6 +11,7 @@ from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts._causal_inputs import InputDriverConflict
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.graph import (
@@ -518,6 +519,7 @@ def compile_graph(
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
     *,
     initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
+    artifact_provider: ArtifactBlobProvider | None = None,
 ) -> ExecutableGraph:
     """Compile one exact graph document through resolution and realization.
 
@@ -526,6 +528,9 @@ def compile_graph(
     ``initialization_keys`` entry overrides derivation for one leaf. Use a node
     ID for a top-level leaf or a tuple of IDs for a nested leaf. These keys
     do not change the resolved topology.
+
+    Supply the artifact provider for content-addressed model assets. The
+    provider is construction context and stays outside the saved document.
     """
     document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     graph_anchor = SemanticAnchor(
@@ -641,6 +646,7 @@ def compile_graph(
             resolution,
             construction_key=jr.PRNGKey(0),
             initialization_keys=leaf_keys,
+            artifact_provider=artifact_provider,
         )
         executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)

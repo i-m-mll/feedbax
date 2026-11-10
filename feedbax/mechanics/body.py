@@ -142,6 +142,34 @@ def default_2link_bounds() -> BodyPresetBounds:
     )
 
 
+def default_2link_preset(tau_act: float = 0.01, tau_deact: float = 0.04) -> BodyPreset:
+    """Default morphology shared by the analytical and authored arm presets."""
+    from feedbax.mechanics.muscle_config import default_6muscle_2link_segment_lengths
+
+    bounds = default_2link_bounds()
+    return BodyPreset(
+        segment_lengths=default_6muscle_2link_segment_lengths(),
+        segment_masses=(bounds.segment_masses_min + bounds.segment_masses_max) / 2.0,
+        joint_damping=(bounds.joint_damping_min + bounds.joint_damping_max) / 2.0,
+        joint_stiffness=(bounds.joint_stiffness_min + bounds.joint_stiffness_max) / 2.0,
+        muscle_pcsa=(bounds.muscle_pcsa_min + bounds.muscle_pcsa_max) / 2.0,
+        muscle_optimal_fiber_length=(
+            bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max
+        )
+        / 2.0,
+        muscle_tendon_slack_length=(
+            bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max
+        )
+        / 2.0,
+        muscle_moment_arm_magnitudes=(
+            bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max
+        )
+        / 2.0,
+        tau_act=tau_act,
+        tau_deact=tau_deact,
+    )
+
+
 def to_flat(preset: BodyPreset) -> Float[Array, " n_phi"]:
     """Concatenate all BodyPreset fields into a flat vector for neural conditioning.
 

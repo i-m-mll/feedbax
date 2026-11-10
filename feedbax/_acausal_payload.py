@@ -14,10 +14,14 @@ class SourcePayload:
     """Ordered scalar fields in a causal payload delivered to one acausal source."""
 
     slots: tuple[str, ...]
+    vector: bool = False
+    width: int | None = None
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return () if len(self.slots) == 1 else (len(self.slots),)
+        if self.width is not None:
+            return (self.width,)
+        return () if len(self.slots) == 1 and not self.vector else (len(self.slots),)
 
     def validate_shape(self, port: str, shape: tuple[int, ...] | None) -> None:
         expected_shape = self.shape

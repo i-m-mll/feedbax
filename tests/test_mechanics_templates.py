@@ -21,7 +21,6 @@ from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.acausal_compiler import compile_acausal_graph
-from feedbax.compiler.builders import build_component
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.mechanics.muscle_config import default_6muscle_2link_moment_arms
@@ -59,12 +58,15 @@ def test_mechanics_templates_are_real_executable_acausal_graphs() -> None:
         assert isinstance(meta.template_graph, AcausalGraphSpec)
         assert registry.template_builder_issues(meta) == []
 
+        if name == "feedbax.TwoLinkArm6Muscle":
+            pytest.importorskip("mujoco.mjx")
         system = compile_acausal_graph(meta.template_graph, name, registry)
         assert system.input_ports == inputs
         assert system.output_ports == outputs
 
 
 def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
+    pytest.importorskip("mujoco.mjx")
     registry = _registry()
     template = registry.get("feedbax.TwoLinkArm6Muscle")
     assert template is not None
@@ -79,24 +81,11 @@ def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
         moment_arms,
     )
 
+    graph.nodes["muscle_0"].params["moment_arm"] = [0.06, 0.0]
+    graph.nodes["muscle_0"].params["max_isometric_force"] = 2.5
     compiled = compile_acausal_graph(graph, "arm", registry)
-    direct = build_component(
-        "direct",
-        "feedbax.AnalyticalMusculoskeletalPlant",
-        {"dt": graph.solver.dt, "n_steps": 1},
-        component_registry=registry,
-    )
-    assert jnp.allclose(compiled.plant.moment_arms, direct.plant.moment_arms)
-
-    compiled_state = compiled.init_state(key=jax.random.PRNGKey(0))
-    direct_state = direct.init_state(key=jax.random.PRNGKey(0))
-    inputs = {"excitation": jnp.ones(6) * 0.25}
-    compiled_outputs, _ = compiled(inputs, compiled_state, key=jax.random.PRNGKey(1))
-    direct_outputs, _ = direct(inputs, direct_state, key=jax.random.PRNGKey(1))
-    assert jnp.allclose(
-        compiled_outputs["state"].plant.skeleton.angle,
-        direct_outputs["state"].plant.skeleton.angle,
-    )
+    np.testing.assert_allclose(compiled.plant.moment_arms[0], [0.06, 0.0])
+    assert compiled.plant.muscle_gear[0] == 2.5
 
 
 def test_multibody_registry_entries_declare_workspace_representations() -> None:
@@ -248,6 +237,8 @@ def test_mechanics_domain_registry_entries_compile_or_template_build() -> None:
         checked.append(definition.name)
         if isinstance(meta.template_graph, AcausalGraphSpec):
             assert registry.template_builder_issues(meta) == []
+            if meta.template_graph.physical_domain == "planar_multibody":
+                pytest.importorskip("mujoco.mjx")
             compile_acausal_graph(meta.template_graph, definition.name, registry)
             continue
 

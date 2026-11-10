@@ -384,11 +384,13 @@ def _planar_arm_spec(
 
 @pytest.fixture
 def planar_arm_graph() -> Graph:
+    pytest.importorskip("mujoco.mjx")
     registry = _registry()
     return spec_to_graph(_planar_arm_spec(registry), registry)
 
 
 def test_planar_tsit5_step_matches_direct_diffrax_after_document_roundtrip() -> None:
+    pytest.importorskip("mujoco.mjx")
     registry = _registry()
     dt = 0.01
     solver = SolverConfigSpec(solver_type="tsit5", dt=dt)

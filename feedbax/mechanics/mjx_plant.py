@@ -189,28 +189,15 @@ class MJXPlant(AbstractPlant):
             for p in presets
         ]
 
-        ref = plants[0].skeleton
-        for i, p in enumerate(plants[1:], 1):
-            assert p.skeleton.nq == ref.nq, (
-                f"Body {i}: nq={p.skeleton.nq} != {ref.nq}"
-            )
-            assert p.skeleton.nv == ref.nv, (
-                f"Body {i}: nv={p.skeleton.nv} != {ref.nv}"
-            )
-            assert p.skeleton.nbody == ref.nbody, (
-                f"Body {i}: nbody={p.skeleton.nbody} != {ref.nbody}"
-            )
-
-        # MJX Model puts geometry-dependent arrays (geom_rbound_hfield etc.)
-        # into the pytree auxiliary data, so different bodies have different
-        # treedefs. We flatten each plant, stack the array leaves, and
-        # unflatten with the first plant's treedef (the auxiliary data only
-        # affects collision detection, not forward dynamics).
+        if not plants:
+            raise ValueError("An MJX morphology batch requires at least one model")
         all_flat = [jt.flatten(p) for p in plants]
         template_treedef = all_flat[0][1]
+        if any(treedef != template_treedef for _, treedef in all_flat[1:]):
+            raise ValueError("MJX models with different provider-static data need separate batches")
         stacked_leaves = [
             jnp.stack(leaves)
-            for leaves in zip(*[f[0] for f in all_flat])
+            for leaves in zip(*(leaves for leaves, _ in all_flat), strict=True)
         ]
         return jt.unflatten(template_treedef, stacked_leaves)
 

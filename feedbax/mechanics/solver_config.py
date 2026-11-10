@@ -43,9 +43,10 @@ def resolve_acausal_solver(
     implicit_solver = _IMPLICIT_SOLVER_TYPES.get(solver_name)
     if implicit_solver is None:
         raise ValueError(f"Unsupported solver type {solver_name!r}")
-    if physical_domain == "planar_multibody":
+    if physical_domain in {"planar_multibody", "spatial_multibody"}:
+        label = "Planar" if physical_domain == "planar_multibody" else "Spatial"
         raise ValueError(
-            f"Planar multibody integration requires an explicit solver; got {solver_name!r}"
+            f"{label} multibody integration requires an explicit solver; got {solver_name!r}"
         )
     root_spec = root_finder or RootFinderSpec()
     if root_spec.method != "newton":

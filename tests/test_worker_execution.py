@@ -49,7 +49,7 @@ from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.contracts.studio_api import TrainingWebSocketEvent
-from feedbax.contracts.training import TaskSpec
+from feedbax.contracts.training import TaskSpec, TrainingRunSpec
 from feedbax.orchestration.events import run_event_from_legacy_worker_event
 from feedbax.web.services.training_service import TrainingService
 
@@ -398,25 +398,20 @@ def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:
     assert compiled.trainable_nodes == ("readout",)
 
 
-def test_builtin_studio_graph_resumes_the_numerical_checkpoint(tmp_path: Path) -> None:
-    from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+def _studio_worker_run_spec() -> TrainingRunSpec:
     from feedbax.contracts.studio_training import (
         STUDIO_GRAPH_METHOD,
         STUDIO_GRAPH_METHOD_PAYLOAD_ID,
         STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
         StudioGraphMethodPayload,
     )
-    from feedbax.contracts.training import TrainingRunSpec, resolve_training_run_spec
     from feedbax.contracts.worker import derive_consistency_predicate
-    from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
-    from feedbax.training.executor import execute_training_run_spec
-    from feedbax.training.preparation import ExecutionPreparationRequest
     from feedbax.training.studio_executor import studio_graph_method_contract
 
     legacy = _training_spec()
     payload = StudioGraphMethodPayload(optimizer=legacy["optimizer"], target_total=2)
     contract = studio_graph_method_contract(payload)
-    spec = TrainingRunSpec(
+    return TrainingRunSpec(
         graph={"inline": _linear_graph_spec()},
         task={"type": "Generic", "params": {}},
         task_binding_spec=_task_binding_spec(),
@@ -438,6 +433,34 @@ def test_builtin_studio_graph_resumes_the_numerical_checkpoint(tmp_path: Path) -
         },
         checkpoint_progress={"checkpoint_interval": 1, "progress_interval": 1},
     )
+
+
+def test_studio_worker_cli_accepts_serialized_graph(tmp_path: Path) -> None:
+    from feedbax.__main__ import main
+    from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
+
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(_studio_worker_run_spec().model_dump_json(exclude_none=True))
+    checkpoint_root = tmp_path / "checkpoints"
+    assert main([
+        "execute-training-run-spec", str(spec_path),
+        "--manifest-root", str(tmp_path / "runs"),
+        "--checkpoint-root", str(checkpoint_root),
+        "--run-id", "studio-cli",
+        "--update-budget", "1", "--no-progress",
+    ]) == 0
+    checkpoint = authenticate_published_checkpoint_custody(checkpoint_root)
+    assert checkpoint.manifest.completed_training_batches == 1
+
+
+def test_builtin_studio_graph_resumes_the_numerical_checkpoint(tmp_path: Path) -> None:
+    from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+    from feedbax.contracts.training import resolve_training_run_spec
+    from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
+    from feedbax.training.executor import execute_training_run_spec
+    from feedbax.training.preparation import ExecutionPreparationRequest
+
+    spec = _studio_worker_run_spec()
     registries = new_application_registry_bundle()
 
     def prepare(run_spec, *, resume=False):

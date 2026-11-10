@@ -1,6 +1,6 @@
 # Feedbax Studio for macOS
 
-The base release uses Tauri, macOS 14 or newer on Apple Silicon, and bundled CPython 3.12.9 with JAX on CPU. The app reads its resources from the signed bundle. It requires no developer checkout, virtual environment, or dependency installer at runtime.
+Feedbax Studio uses Tauri, macOS 14 or newer on Apple Silicon, and bundled CPython 3.12.9 with MJX on JAX CPU. Each Studio bundle contains Feedbax from the same source commit and version as the release. The app reads its resources from the signed bundle and requires no developer checkout, virtual environment, or dependency installer at runtime.
 
 ## Build a private candidate
 
@@ -12,6 +12,7 @@ From a clean commit on an Apple Silicon build Mac with Xcode command-line tools,
 uv run --no-project --with packaging==26.3 python desktop/package.py native
 uv run --no-project --with packaging==26.3 python desktop/package.py bundle \
   --output .desktop-build/candidate --build-number 1 \
+  --numerical-manifest "$STUDIO_NUMERICAL_MANIFEST" \
   --signing-identity "$STUDIO_SIGNING_IDENTITY"
 ```
 
@@ -21,7 +22,7 @@ The native phase uses Cargo's normal target reuse. Bundle assembly checks the re
 
 For a private fixture, add `--fixture-name <unique-name> --fixture-root <absolute-path>` to the bundle phase. Both releases in a replacement exercise must use the same fixture name and state root. Keep the absolute root short enough for the macOS Unix socket address limit.
 
-The numerical package join supplies `--numerical-manifest <path>`. The manifest uses `feedbax.desktop.wheels.v1`, targets `aarch64-apple-darwin`, declares `runtime` and lists exact wheel filenames and SHA-256 values under `wheels`. Stage the wheel files alongside the manifest. These replace same-name locked wheels or add new wheels. The final package still has to pass dependency, native-code and installed runtime acceptance.
+Every bundle uses the locked `mjx` extra. Set `STUDIO_NUMERICAL_MANIFEST` to the qualified `feedbax.desktop.wheels.v1` manifest for `aarch64-apple-darwin`, with its wheel files staged alongside it. The manifest declares `runtime` and attests the exact filenames and SHA-256 values for `jax`, `jaxlib`, `mujoco-core` and `mujoco-mjx` under `wheels`. Bundle assembly requires these inputs to match the selected lock closure before it assembles the app. The sealed dependency inventory reports the MJX JAX provider on CPU.
 
 ## Install and replace
 
@@ -43,3 +44,27 @@ Studio's Quit command closes the GUI. Its per-user background service continues 
 The application menu has idle, checkpoint and force service stops, Reconnect, Login Items and Service Logs. Stop at a checkpoint can wait for the next supported training checkpoint. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
 
 Installed files live inside the app bundle. Durable application state lives under `~/.feedbax`, with configuration in `config`, preferences in `settings` and the default workspace under `workspace`. Project-selected output locations retain models, checkpoints and results. `~/.cache/feedbax` contains disposable compilation files, temporary files and bounded service logs. Replacement and uninstall preserve durable state and project data.
+
+Import a self-contained UTF-8 MJCF document through the authenticated Studio endpoint `POST /api/graphs/assets/mujoco` with the XML as the request body. Use the returned content reference as `mujoco_asset.asset` in the authored graph. Studio retains the exact asset in its durable web content store and resolves the same reference when opening the project, training and resuming.
+
+## Qualify the signed MJX CPU candidate
+
+Generate the fixture inputs with the source development environment. Copy the harness and JSON to a private QA directory outside the developer checkout. Every installed harness command uses the signed app's bundled interpreter and the exact installed fixture root.
+
+```sh
+uv run --no-sync python -m scripts.qualify_biomechanics_desktop author > "$QA/fixtures.json"
+cp scripts/qualify_biomechanics_desktop.py "$QA/"
+CONTENTS="$APP/Contents"
+PYTHON="$CONTENTS/Resources/python/bin/python3.12"
+LAUNCHER="$CONTENTS/MacOS/feedbax-studio"
+```
+
+Install the retained signed archive using its receipt and verify native background-service readiness. For the source-denial phase, stop the registered service and run the exact installed launcher with `service serve` under the host's fixture sandbox. Deny reads from the developer checkout, Homebrew and dependency stores, and deny writes inside the app. Keep the fixture state and JIT cache writable. Prove both sandbox denials before collecting results. Start a fresh service under the same sandbox after the checkpoint stop. Keep the native installation and each service-generation receipt together.
+
+Run the harness as `"$PYTHON" -I -B "$QA/qualify_biomechanics_desktop.py"`. Pass `--contents "$CONTENTS" --fixture-root "$FIXTURE"` to commands that address the installed app. Capture each command's JSON output.
+
+1. Run `start "$QA/fixtures.json" planar-rigid --batches 2 --checkpoint-interval 1`. Wait with `snapshot "$JOB" --status completed`, then run `checkpoint "$QA/fixtures.json" planar-rigid "$JOB"`. The checkpoint command authenticates the model slot, checks that the controller weights moved and executes the loaded model to verify its planar observation and muscle state.
+2. Open the installed GUI and start `spatial-mixed` with a batch target large enough to span Quit and relaunch. Use a short checkpoint interval. Capture `snapshot "$JOB" --status running --gui present` after the first progress event, then quit the GUI and capture an absent-GUI snapshot. Reopen and capture a present-GUI snapshot. Use `--after-sequence` with the prior event sequence for each subsequent sample. Run `prove-quit` on the three snapshots to compare the service, worker, job and progress.
+3. Request `"$LAUNCHER" service stop checkpoint`. With the service stopped, run `checkpoint "$QA/fixtures.json" spatial-mixed "$JOB" --source-snapshot "$QA/reopened.json"`. Restart the service and use `resume "$JOB" "$PROJECT" "$QA/fixtures.json" spatial-mixed`. Wait for the successor to progress, then let it complete or checkpoint-stop it. If stopped, use its own pre-stop snapshot for offline checkpoint inspection. Run `prove-resume` on the original and successor checkpoint records. The proof checks restart generation, checkpoint lineage, unchanged authored model, controller weight progress, XYZ observations, a normalized quaternion, and the mixed muscle-state widths.
+
+Run `cache-probe` with the bundled interpreter under the same sandbox. It compiles a small CPU executable and verifies an actual write to the fixture's configured JIT cache. Retain the exact release and dependency identities, source-denial and native readiness logs, signed size, startup time, bundled MuJoCo notices, native inventory and cache proof. Stop and unregister the fixture after acceptance.

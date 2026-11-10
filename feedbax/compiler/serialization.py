@@ -6,6 +6,8 @@ import json
 from typing import Any, Literal, Mapping, Sequence, cast
 
 from jaxtyping import PRNGKeyArray
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
@@ -26,6 +28,7 @@ from feedbax.contracts.component import (
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
+    GraphSubgraphSpec,
     WireSpec,
     require_causal_subgraph,
     validate_subgraph_domain,
@@ -178,11 +181,18 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
 
         registry = ComponentRegistry()
 
+    from feedbax.mechanics.authored_mechanics import AuthoredMechanics
+
     nodes: dict[str, ComponentSpec] = {}
-    subgraphs: dict[str, GraphSpec] = {}
+    subgraphs: dict[str, GraphSubgraphSpec] = {}
     for name, component in graph.nodes.items():
         binding = graph.component_bindings.get(name)
-        if isinstance(component, Graph):
+        if isinstance(component, AuthoredMechanics):
+            type_id = binding.type_id if binding is not None else "feedbax.AcausalSystem"
+            revision = binding.revision if binding is not None else None
+            params = {}
+            subgraphs[name] = AcausalGraphSpec.model_validate_json(component.authored_json)
+        elif isinstance(component, Graph):
             if binding is None:
                 raise ValueError(
                     f"Programmatic composite node {name!r} has no declared component binding"
@@ -276,6 +286,7 @@ def _instantiate_graph(
     *,
     construction_key: PRNGKeyArray,
     initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
+    artifact_provider: ArtifactBlobProvider | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
     keys_by_node: dict[str, dict[tuple[str, ...], PRNGKeyArray]] = {}
@@ -368,7 +379,12 @@ def _instantiate_graph(
                         f"domain {required_domain!r} schema {domain.interior_schema_id!r}"
                     )
                 compiler = get_domain_compiler(domain.compiler_id)
-                nodes[node_name] = compiler(subgraph, node_name, execution_registry)
+                if isinstance(subgraph, AcausalGraphSpec):
+                    nodes[node_name] = compiler(
+                        subgraph, node_name, execution_registry, artifact_provider=artifact_provider,
+                    )
+                else:
+                    nodes[node_name] = compiler(subgraph, node_name, execution_registry)
                 continue
             causal_subgraph = require_causal_subgraph(
                 subgraph,
@@ -382,6 +398,7 @@ def _instantiate_graph(
                 resolution.subgraphs[node_name],
                 construction_key=derive_key(construction_key, "construction", node_name),
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
+                artifact_provider=artifact_provider,
             )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
@@ -397,6 +414,7 @@ def _instantiate_graph(
                 resolution.subgraphs[node_name],
                 construction_key=derive_key(construction_key, "construction", node_name),
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
+                artifact_provider=artifact_provider,
             )
             continue
         meta = metadata_registry.get(node_type)

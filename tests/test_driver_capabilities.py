@@ -334,7 +334,11 @@ def test_local_driver_default_realizes_stop_variant() -> None:
     assert realized.variant_id == "local-stop"
     assert realized.facts.resources is ResourceSemantics.LOCAL_PROCESS
     assert realized.facts.optional_hooks == frozenset(
-        {DriverHook.PREFLIGHT_CHECKS, DriverHook.CHECKPOINT_STOP}
+        {
+            DriverHook.PREFLIGHT_CHECKS,
+            DriverHook.CHECKPOINT_STOP,
+            DriverHook.COLLECT_FAILURE_LOGS,
+        }
     )
 
 

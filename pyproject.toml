@@ -38,13 +38,14 @@ dependencies = [
     "optax>=0.2.4",
     "optimistix>=0.0.10",
     "plotly>=6.0.0",
-    "pydantic>=2.0",
+    "pydantic>=2.12",
     "rich>=14.1.0",
     "ruamel-yaml>=0.18.0",
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
     "rfc8785>=0.1.4",
     "packaging>=24.2",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -76,7 +77,6 @@ viz = [
 web = [
     "anyio>=4.0.0",
     "fastapi>=0.110.0",
-    "httpx>=0.27.0",
     "starlette>=0.36.3",
     "uvicorn>=0.29.0",
     "websockets>=15,<16",
@@ -88,18 +88,18 @@ notebook = [
     "ruamel-yaml>=0.18.0",
 ]
 mjx = [
-    "mujoco>=3.2.5",
-    "mujoco-mjx>=3.2.5",
+    "jax==0.7.2",
+    "jaxlib==0.7.2",
+    "mujoco-core==4.0.0",
+    "mujoco-mjx==4.0.0",
 ]
 all = [
     "dill>=0.3.9",
-    "feedbax[web]",
+    "feedbax[mjx,web]",
     "ipyfilechooser>=0.6.0",
     "ipywidgets>=8.1.5",
     "kaleido==0.2.1",
     "matplotlib>=3.10.1",
-    "mujoco>=3.2.5",
-    "mujoco-mjx>=3.2.5",
     "notebook>=7.4.1",
     "pandas>=2.1.0",
     "polars>=1.24.0",
@@ -126,6 +126,23 @@ documentation = "https://docs.lprt.ca/feedbax"
 
 [tool.uv]
 config-settings = { editable-mode = "compat" }
+constraint-dependencies = [
+    # JAX 0.7.2 with the CUDA 13.0 Update 2 runtime and R580 driver.
+    "nvidia-cublas==13.1.0.3",
+    "nvidia-cuda-crt==13.0.88",
+    "nvidia-cuda-cupti==13.0.85",
+    "nvidia-cuda-nvcc==13.0.88",
+    "nvidia-cuda-nvrtc==13.0.88",
+    "nvidia-cuda-runtime==13.0.96",
+    "nvidia-cudnn-cu13==9.14.0.64",
+    "nvidia-cufft==12.0.0.61",
+    "nvidia-cusolver==12.0.4.66",
+    "nvidia-cusparse==12.6.3.3",
+    "nvidia-nccl-cu13==2.27.7",
+    "nvidia-nvjitlink==13.0.88",
+    "nvidia-nvshmem-cu13==3.3.20",
+    "nvidia-nvvm==13.0.88",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -133,13 +150,21 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "mujoco>=3.2.5",
-    "mujoco-mjx>=3.2.5",
+    "feedbax[mjx]",
     "pyright>=1.1.407",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
     "scipy>=1.17.1",
     "ruff>=0.12.11",
+]
+mjx-warp-cpu = [
+    "dill>=0.3.9",
+    "feedbax[mjx]",
+    "mujoco-mjx[warp]==4.0.0",
+]
+mjx-warp = [
+    {include-group = "mjx-warp-cpu"},
+    "jax[cuda13]==0.7.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [tool.hatch.build.targets.sdist]

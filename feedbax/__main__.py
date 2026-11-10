@@ -834,27 +834,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
         from feedbax.compiler.prototypes import prototypes_from_task_bindings
         from feedbax.contracts.authored_canonical import canonical_sha256
+        from feedbax.contracts.graph import GraphSpec
+        from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
+        from feedbax.web.model_assets import model_artifact_provider
 
-        executable_graph = compile_graph(
-            GraphDocument(
-                graph=run_spec.graph.inline,
-                trial_root=DocumentRoot(
-                    schema_id="feedbax.spec.training.task",
-                    schema_version="1",
-                    content_sha256=canonical_sha256(run_spec.task.model_dump(mode="json")),
-                ),
-                objective_root=DocumentRoot(
-                    schema_id=run_spec.objective.schema_id or "feedbax.objective_slot",
-                    schema_version=run_spec.objective.schema_version or "1",
-                    content_sha256=canonical_sha256(
-                        run_spec.objective.model_dump(mode="json", exclude_none=True)
-                    ),
+        graph_document = GraphDocument(
+            graph=run_spec.graph.inline,
+            trial_root=DocumentRoot(
+                schema_id="feedbax.spec.training.task",
+                schema_version="1",
+                content_sha256=canonical_sha256(run_spec.task.model_dump(mode="json")),
+            ),
+            objective_root=DocumentRoot(
+                schema_id=run_spec.objective.schema_id or "feedbax.objective_slot",
+                schema_version=run_spec.objective.schema_version or "1",
+                content_sha256=canonical_sha256(
+                    run_spec.objective.model_dump(mode="json", exclude_none=True)
                 ),
             ),
+        )
+        executable_graph = compile_graph(
+            graph_document,
             registries.components,
             input_prototypes=(
                 prototypes_from_task_bindings(run_spec.task_binding_spec)
                 if run_spec.task_binding_spec is not None else None
+            ),
+            artifact_provider=(
+                model_artifact_provider(GraphSpec.model_validate(graph_document.graph))
+                if run_spec.method_ref == STUDIO_GRAPH_METHOD else None
             ),
         )
         method_registration = resolved_method.registration

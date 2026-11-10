@@ -200,11 +200,13 @@ def compile_training_run(
     try:
         if executable_graph is None:
             from feedbax.compiler import GraphDocument, compile_graph
+            from feedbax.web.model_assets import model_artifact_provider
 
             executable_graph = compile_graph(
                 GraphDocument(graph=graph_model),
                 component_registry,
                 input_prototypes=prototypes_from_task_bindings(binding_model),
+                artifact_provider=model_artifact_provider(graph_model),
             )
         graph = executable_graph.graph
     except NotImplementedError as exc:

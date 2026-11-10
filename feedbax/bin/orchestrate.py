@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -255,6 +256,11 @@ def build_parser() -> argparse.ArgumentParser:
     teardown = subparsers.add_parser("teardown", help="Tear down run-set resources")
     teardown.add_argument("--run-set", required=True, help="Run-set id")
     teardown.add_argument("--force", action="store_true", help="Break a stale state lock")
+    teardown.add_argument(
+        "--abort",
+        action="store_true",
+        help="Close execution and clean up an existing run with an abort-discard policy",
+    )
     teardown.add_argument("--content-store-root", metavar="ABSOLUTE_PATH")
     teardown.add_argument("--content-lease-seconds", type=int)
     teardown.set_defaults(func=cmd_teardown)
@@ -633,6 +639,7 @@ def cmd_teardown(args: argparse.Namespace) -> int:
     state = _run_existing(
         args.run_set,
         stop_after_stage="TEARDOWN",
+        abort_only=args.abort,
         break_stale_lock=args.force,
         content_store_root=args.content_store_root,
         content_lease_seconds=args.content_lease_seconds,
@@ -694,6 +701,7 @@ def _run_engine(
     bundle: RunBundle,
     *,
     stop_after_stage: str | None = None,
+    abort_only: bool = False,
     break_stale_lock: bool = False,
     retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
@@ -717,14 +725,17 @@ def _run_engine(
         content_store_root=content_store_root,
         content_lease_seconds=content_lease_seconds,
     )
-    state = StageEngine(
+    engine = StageEngine(
         bundle=bundle,
         driver=driver,
         conformance_registry=conformance_registry,
         training_method_registry=training_method_registry,
         plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
-    ).run(
+    )
+    if abort_only:
+        return engine.abort(break_stale_lock=break_stale_lock)
+    state = engine.run(
         break_stale_lock=break_stale_lock,
         stop_after_stage=stop_after_stage,
         retry_failed_certification=retry_failed_certification,
@@ -738,6 +749,7 @@ def _run_existing(
     run_set_id: str,
     *,
     stop_after_stage: str | None = None,
+    abort_only: bool = False,
     break_stale_lock: bool = False,
     retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
@@ -751,9 +763,12 @@ def _run_existing(
     content_lease_seconds: int | None = None,
 ) -> RunSetState:
     bundle = _load_existing_bundle(run_set_id)
+    if stop_after_stage == "TEARDOWN" and bundle.deployment_policy.resources.runpod_cuda is not None:
+        abort_only = True
     return _run_engine(
         bundle,
         stop_after_stage=stop_after_stage,
+        abort_only=abort_only,
         break_stale_lock=break_stale_lock,
         retry_failed_certification=retry_failed_certification,
         interruption_probe=interruption_probe,
@@ -809,7 +824,13 @@ def _driver_construction_context(
     training_method_registry: TrainingProgramRegistry,
     load_credentials: bool = True,
 ) -> DriverConstructionContext:
-    api_key = load_runpod_api_key() if load_credentials else None
+    policy = bundle.deployment_policy
+    api_key = None
+    if load_credentials and policy.driver == "runpod":
+        if policy.resources.runpod_cuda is None:
+            api_key = load_runpod_api_key()
+        elif policy.cloud_authorized and (not policy.review_required or policy.review_authorized):
+            api_key = os.environ.get("RUNPOD_API_KEY")
     return DriverConstructionContext(
         configuration={
             "bundle": bundle,

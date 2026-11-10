@@ -1,8 +1,7 @@
 """Portable analytical musculoskeletal mechanics owner."""
 
 from __future__ import annotations
-from typing import Annotated, Any
-from collections.abc import Mapping
+from typing import Annotated
 import jax.numpy as jnp
 import jax.random as jr
 from pydantic import Field
@@ -12,11 +11,10 @@ from feedbax.contracts.portable import Ports, ConfigBinding
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant as AnalyticalPlant
 from feedbax.mechanics.backend import DiffraxBackend
-from feedbax.mechanics.body import BodyPreset, default_2link_bounds
+from feedbax.mechanics.body import default_2link_preset
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.model_builder import ChainConfig
 from feedbax.mechanics.muscle_config import (
-    default_6muscle_2link_segment_lengths,
     default_6muscle_2link_topology,
 )
 from feedbax.mechanics.solver_config import (
@@ -26,33 +24,6 @@ from feedbax.mechanics.solver_config import (
     planar_solver_name,
     resolve_acausal_solver,
 )
-
-
-def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
-    bounds = default_2link_bounds()
-    tau_act = params["tau_act"]
-    tau_deact = params["tau_deact"]
-    return BodyPreset(
-        segment_lengths=default_6muscle_2link_segment_lengths(),
-        segment_masses=(bounds.segment_masses_min + bounds.segment_masses_max) / 2.0,
-        joint_damping=(bounds.joint_damping_min + bounds.joint_damping_max) / 2.0,
-        joint_stiffness=(bounds.joint_stiffness_min + bounds.joint_stiffness_max) / 2.0,
-        muscle_pcsa=(bounds.muscle_pcsa_min + bounds.muscle_pcsa_max) / 2.0,
-        muscle_optimal_fiber_length=(
-            bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max
-        )
-        / 2.0,
-        muscle_tendon_slack_length=(
-            bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max
-        )
-        / 2.0,
-        muscle_moment_arm_magnitudes=(
-            bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max
-        )
-        / 2.0,
-        tau_act=tau_act,
-        tau_deact=tau_deact,
-    )
 
 
 class AnalyticalMusculoskeletalPlant(Mechanics, Component):
@@ -82,7 +53,7 @@ class AnalyticalMusculoskeletalPlant(Mechanics, Component):
         backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=solver)
         chain_config = ChainConfig(n_joints=2, muscle_topology=default_6muscle_2link_topology())
         plant = AnalyticalPlant.from_body_preset(
-            _default_analytical_body_preset({"tau_act": tau_act, "tau_deact": tau_deact}),
+            default_2link_preset(tau_act, tau_deact),
             chain_config,
             clip_states=clip_states,
             key=jr.PRNGKey(0),

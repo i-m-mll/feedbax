@@ -34,13 +34,13 @@ from feedbax.mechanics.hill_muscles import (
     ForceLengthCurve,
     PassiveForceLengthCurve,
     ForceVelocityCurve,
-    TendonForceLengthCurve,
+    CompliantTendonHillLaw,
+    bounded_rigid_fiber_force,
 )
 from feedbax.mechanics.skeleton._planar import link_kinematics, two_link_angular_acceleration
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
-    ECCENTRIC_VELOCITY_LIMIT_FRACTION,
     require_array_shape,
     require_positive_finite,
     require_positive_array,
@@ -255,36 +255,18 @@ class RigidTendonMusculoskeletalArm(GraphNode):
         Returns:
             Muscle forces [n_muscles].
         """
-        forces = []
-        for i, mp in enumerate(self.muscle_params):
-            # Clamp fiber length to prevent numerical issues
-            min_length = 0.3 * mp.optimal_fiber_length
-            max_length = 2.0 * mp.optimal_fiber_length
-            clamped_fiber_length = jnp.clip(fiber_lengths[i], min_length, max_length)
-
-            # Normalized quantities
-            norm_length = clamped_fiber_length / mp.optimal_fiber_length
-
-            # Clamp velocity to reasonable range
-            max_vel = mp.vmax * mp.optimal_fiber_length
-            clamped_velocity = jnp.clip(
-                fiber_velocities[i],
-                -max_vel,
-                max_vel * ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+        return jnp.array([
+            bounded_rigid_fiber_force(
+                activations[i], fiber_lengths[i], fiber_velocities[i],
+                optimal_length=params.optimal_fiber_length,
+                maximum_speed=params.vmax * params.optimal_fiber_length,
+                force_scale=params.max_isometric_force,
+                force_length=self.force_length,
+                force_velocity=self.force_velocity,
+                passive_force_length=self.passive_force_length,
             )
-            norm_velocity = clamped_velocity / (mp.vmax * mp.optimal_fiber_length)
-
-            # Force-length-velocity
-            fl = self.force_length(norm_length)
-            fv = self.force_velocity(norm_velocity)
-            passive = self.passive_force_length(norm_length)
-
-            # Total force (ensure non-negative)
-            force = mp.max_isometric_force * (activations[i] * fl * fv + passive)
-            force = jnp.maximum(force, 0.0)
-            forces.append(force)
-
-        return jnp.array(forces)
+            for i, params in enumerate(self.muscle_params)
+        ])
 
     def _vector_field(
         self,
@@ -453,15 +435,8 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     arm_s: Float[Array, "2"]
     arm_B: Float[Array, "2 2"]
 
-    # Muscles
-    muscle_params: tuple[HillMuscleParams, ...]
+    laws: tuple[CompliantTendonHillLaw, ...]
     geometry: TwoLinkArmMuscleGeometry
-
-    # Curves
-    force_length: ForceLengthCurve = field(static=True)
-    passive_force_length: PassiveForceLengthCurve = field(static=True)
-    force_velocity: ForceVelocityCurve = field(static=True)
-    tendon_force_length: TendonForceLengthCurve = field(static=True)
 
     def __init__(
         self,
@@ -521,13 +496,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
                 "muscle_params length must match geometry.n_muscles: "
                 f"{len(muscle_params)} != {geometry.n_muscles}"
             )
-        self.muscle_params = muscle_params
-
-        # Curves
-        self.force_length = ForceLengthCurve()
-        self.passive_force_length = PassiveForceLengthCurve()
-        self.force_velocity = ForceVelocityCurve()
-        self.tendon_force_length = TendonForceLengthCurve()
+        self.laws = tuple(CompliantTendonHillLaw(params) for params in muscle_params)
 
         if root_finder is None:
             root_finder = optx.Newton(rtol=1e-8, atol=1e-8)
@@ -543,58 +512,18 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     def n_muscles(self) -> int:
         return self.geometry.n_muscles
 
-    def _compute_tendon_force(self, fiber_length: Array, mt_length: Array, mp: HillMuscleParams) -> Array:
-        """Compute tendon force from fiber and MT lengths."""
-        # Clamp fiber length to reasonable range
-        min_fiber = 0.3 * mp.optimal_fiber_length
-        max_fiber = 2.0 * mp.optimal_fiber_length
-        clamped_fiber = jnp.clip(fiber_length, min_fiber, max_fiber)
-
-        tendon_length = mt_length - clamped_fiber * jnp.cos(mp.pennation_angle)
-        # Ensure tendon length is non-negative
-        tendon_length = jnp.maximum(tendon_length, 0.0)
-
-        norm_tendon = tendon_length / mp.tendon_slack_length
-        norm_force = self.tendon_force_length(norm_tendon)
-        # Clamp force to prevent inf/overflow
-        norm_force = jnp.clip(norm_force, 0.0, 10.0)  # Max 10x isometric
-        return mp.max_isometric_force * norm_force
+    @property
+    def muscle_params(self) -> tuple[HillMuscleParams, ...]:
+        return tuple(law.params for law in self.laws)
 
     def _tendon_loads(self, state: MusculoskeletalState) -> tuple[Array, Array]:
-        """Return tendon forces and their joint torques at the given state."""
         angle = state.arm.angle
         mt_lengths = self.geometry.musculotendon_lengths(angle)
-        tendon_forces = jnp.array([
-            self._compute_tendon_force(state.fiber_lengths[i], mt_lengths[i], mp)
-            for i, mp in enumerate(self.muscle_params)
+        forces = jnp.stack([
+            law.tendon_force(law.tendon_length(fiber, length))
+            for law, fiber, length in zip(self.laws, state.fiber_lengths, mt_lengths, strict=True)
         ])
-        torques = self.geometry.moment_arms(angle).T @ tendon_forces
-        return tendon_forces, torques
-
-    def _compute_fiber_velocity(
-        self,
-        activation: Array,
-        fiber_length: Array,
-        tendon_force: Array,
-        mp: HillMuscleParams,
-    ) -> Array:
-        """Compute the bounded fiber speed from the instantaneous tendon force."""
-        # Required fiber force
-        cos_alpha = jnp.cos(mp.pennation_angle)
-        required_fiber_force = tendon_force / cos_alpha
-
-        # Force-length
-        norm_length = fiber_length / mp.optimal_fiber_length
-        fl = self.force_length(norm_length)
-        passive = self.passive_force_length(norm_length)
-
-        # Solve for velocity
-        norm_required = required_fiber_force / mp.max_isometric_force
-        norm_velocity = self.force_velocity._inverse_active_force(
-            norm_required - passive, activation * fl,
-        )
-
-        return norm_velocity * mp.vmax * mp.optimal_fiber_length
+        return forces, self.geometry.moment_arms(angle).T @ forces
 
     @jax.named_scope("fbx.CompliantTendonMusculoskeletalArm.vector_field")
     def vector_field(
@@ -604,31 +533,20 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         input: Array,
     ) -> MusculoskeletalState:
         """Compute derivatives for compliant tendon model."""
-        excitations = input  # Rename for clarity within method
         arm = state.arm
         angle, d_angle = arm.angle, arm.d_angle
-
-        # Activation dynamics
-        def activation_deriv(exc, act, mp):
-            tau = jnp.where(exc > act, mp.tau_activation, mp.tau_deactivation)
-            return (exc - act) / tau
-
-        d_activations = jnp.array([
-            activation_deriv(excitations[i], state.activations[i], self.muscle_params[i])
-            for i in range(self.n_muscles)
-        ])
-
-        tendon_forces, torques = self._tendon_loads(state)
-
-        fiber_velocities = jnp.array([
-            self._compute_fiber_velocity(
-                state.activations[i],
-                state.fiber_lengths[i],
-                tendon_forces[i],
-                self.muscle_params[i],
+        lengths = self.geometry.musculotendon_lengths(angle)
+        moments = self.geometry.moment_arms(angle)
+        stages = tuple(
+            law.evaluate(jnp.stack((activation, fiber)), excitation, length, velocity)
+            for law, activation, fiber, excitation, length, velocity in zip(
+                self.laws, state.activations, state.fiber_lengths, input,
+                lengths, -moments @ d_angle, strict=True,
             )
-            for i in range(self.n_muscles)
-        ])
+        )
+        d_activations, fiber_velocities = jnp.stack([stage.derivative for stage in stages]).T
+        tendon_forces = jnp.stack([stage.tension for stage in stages])
+        torques = moments.T @ tendon_forces
 
         dd_angle = two_link_angular_acceleration(
             self.arm_l, self.arm_m, self.arm_I, self.arm_s, self.arm_B,
@@ -650,17 +568,18 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         )
 
     def init_system_state(self, *, key: PRNGKeyArray) -> MusculoskeletalState:
-        """Initialize at rest position."""
+        """Initialize isometric fiber balance at the arm's starting pose."""
         init_arm = TwoLinkArmState()
-
-        init_fiber_lengths = jnp.array([
-            mp.optimal_fiber_length for mp in self.muscle_params
+        lengths = self.geometry.musculotendon_lengths(init_arm.angle)
+        initial_muscles = jnp.stack([
+            law.init_state(length, jnp.zeros_like(length))
+            for law, length in zip(self.laws, lengths, strict=True)
         ])
 
         return MusculoskeletalState(
             arm=init_arm,
-            activations=jnp.zeros(self.n_muscles),
-            fiber_lengths=init_fiber_lengths,
+            activations=initial_muscles[:, 0],
+            fiber_lengths=initial_muscles[:, 1],
             fiber_velocities=jnp.zeros(self.n_muscles),
             forces=jnp.zeros(self.n_muscles),
         )

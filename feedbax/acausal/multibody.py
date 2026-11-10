@@ -30,7 +30,11 @@ def _frame_port(name: str) -> AcausalPort:
 
 @dataclass
 class PlanarLink(AcausalElement):
-    """Rigid planar link with proximal and distal attachment frames."""
+    """Rigid link along local +X, with length in m and mass in kg.
+
+    `com` is the longitudinal fraction from proximal to distal, `com_y`
+    is its transverse offset in m, and `inertia` is Izz about the COM in kg·m².
+    """
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
@@ -41,6 +45,7 @@ class PlanarLink(AcausalElement):
         mass: NonNegativeFloat = 1.0,
         com: float = 0.5,
         inertia: NonNegativeFloat = 0.03,
+        com_y: float = 0.0,
     ):
         super().__init__(name=name)
         self.ports["proximal"] = _frame_port("proximal")
@@ -48,12 +53,13 @@ class PlanarLink(AcausalElement):
         self.params[f"{name}.length"] = length
         self.params[f"{name}.mass"] = mass
         self.params[f"{name}.com"] = com
+        self.params[f"{name}.com_y"] = com_y
         self.params[f"{name}.inertia"] = inertia
 
 
 @dataclass
 class RevoluteJoint(AcausalElement):
-    """One-DOF hinge between two planar link frames."""
+    """Local +Z hinge. Frame and spring angles are in radians."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
@@ -66,12 +72,17 @@ class RevoluteJoint(AcausalElement):
         rest_angle: float = 0.0,
         limit_min: float | None = None,
         limit_max: float | None = None,
+        stiffness: NonNegativeFloat = 0.0,
+        frame_angle: float = 0.0,
+        frame_offset: list[float] | None = None,
     ):
         super().__init__(name=name)
         self.ports["parent"] = _frame_port("parent")
         self.ports["child"] = _frame_port("child")
         self.params[f"{name}.damping"] = damping
         self.params[f"{name}.rest_angle"] = rest_angle
+        self.params[f"{name}.stiffness"] = stiffness
+        self.params[f"{name}.frame_angle"] = frame_angle
         if limit_min is not None:
             self.params[f"{name}.limit_min"] = float(limit_min)
         if limit_max is not None:
@@ -106,7 +117,7 @@ class Anchor(AcausalElement):
 
 @dataclass
 class MusclePath(AcausalElement):
-    """Ordered rigid-tendon muscle path over named planar frames."""
+    """Ordered muscle path over named planar frames."""
 
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
@@ -117,6 +128,15 @@ class MusclePath(AcausalElement):
         moment_arm: list[float] | None = None,
         reference_length: float = 0.2,
         max_isometric_force: float = 1.0,
+        law: str = "feedbax.RigidTendonHillMuscle",
+        state_size: int = 1,
+        optimal_muscle_length: float = 0.1,
+        tendon_slack_length: float = 0.1,
+        tau_act: float = 0.01,
+        tau_deact: float = 0.04,
+        max_contraction_velocity: float | None = None,
+        law_parameters: dict[str, Any] | None = None,
+        law_revision: int | None = None,
     ):
         super().__init__(name=name)
         self.signal_inputs = ("activation",)

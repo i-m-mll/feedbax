@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.capabilities import RealizedDriverCapabilities
@@ -55,6 +55,9 @@ class ProviderPodInventoryRecord:
     name: str
 
 
+AcquisitionDisposition = Literal["terminal-rejection", "retryable-rejection", "ambiguous"]
+
+
 class AcquisitionCreateError(RuntimeError):
     """Classified result of one provider create invocation."""
 
@@ -62,12 +65,16 @@ class AcquisitionCreateError(RuntimeError):
         self,
         message: str,
         *,
-        clean_rejection: bool,
+        disposition: AcquisitionDisposition,
         evidence: Mapping[str, Any],
     ) -> None:
         super().__init__(message)
-        self.clean_rejection = clean_rejection
+        self.disposition = disposition
         self.evidence = dict(evidence)
+
+
+class AcquisitionReadinessRejected(RuntimeError):
+    """An acquired resource fails a required identity or readiness policy."""
 
 
 class OrchestrationDriver(Protocol):

@@ -35,6 +35,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+from jax.tree_util import PyTreeDef
 from feedbax._vendor.jax_cookbook import is_type
 import numpy as np
 from packaging.version import InvalidVersion, Version
@@ -6392,7 +6393,37 @@ def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:
     value = _thaw_runtime_value(value)
     pairs, treedef = jt.flatten_with_path(value)
     leaves = [_leaf_fingerprint(path, leaf) for path, leaf in pairs]
-    return _structural_abi_fingerprint_from_leaves(str(treedef), leaves)
+    return _structural_abi_fingerprint_from_leaves(_structural_treedef_text(treedef), leaves)
+
+
+_MJX_ARRAY_WRAPPER = "mujoco.mjx._src.dataclasses._NumPyArrayHashWrapper"
+_MJX_ARRAY_REPR = re.compile(rf"<{re.escape(_MJX_ARRAY_WRAPPER)} object at 0x[0-9a-fA-F]+>")
+
+
+def _structural_treedef_text(treedef: PyTreeDef) -> str:
+    """Identify pinned MJX static metadata by array content instead of address."""
+    text = str(treedef)
+    if _MJX_ARRAY_WRAPPER not in text:
+        return text
+
+    replacements: dict[str, str] = {}
+    nodes = [treedef]
+    while nodes:
+        node = nodes.pop()
+        nodes.extend(node.children())
+        pending: list[Any] = [node.node_data()]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, tuple):
+                pending.extend(value)
+            elif _qualified_type_name(value) == _MJX_ARRAY_WRAPPER:
+                array = value.array
+                digest = sha256_bytes(array.tobytes(order="C"))
+                replacements[repr(value)] = (
+                    f"<MJX static array dtype={array.dtype.str!r} "
+                    f"shape={array.shape!r} sha256={digest}>"
+                )
+    return _MJX_ARRAY_REPR.sub(lambda match: replacements[match[0]], text)
 
 
 def _structural_abi_fingerprint_from_leaves(
@@ -7691,7 +7722,7 @@ def _slot_integrity_records(value: Any) -> _SlotIntegrityRecords:
     return _SlotIntegrityRecords(
         leaf_digests=digests,
         structural_abi_fingerprint=_structural_abi_fingerprint_from_leaves(
-            str(treedef),
+            _structural_treedef_text(treedef),
             fingerprints,
         ),
     )

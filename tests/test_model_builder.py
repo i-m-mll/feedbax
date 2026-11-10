@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from feedbax.mechanics.body import BodyPreset, default_3link_bounds, sample_preset
@@ -69,10 +70,13 @@ class TestSimConfig:
 
 
 class TestBuildModel:
-    def test_compiles(self, model):
+    def test_compiles(self, model, preset):
         assert model is not None
         assert model.nq == 3  # 3 hinge joints
         assert model.nv == 3
+        np.testing.assert_allclose(model.jnt_range, np.tile([-np.pi, np.pi], (3, 1)))
+        np.testing.assert_allclose(model.dof_damping, preset.joint_damping)
+        np.testing.assert_allclose(model.jnt_stiffness, preset.joint_stiffness)
 
     def test_actuators(self, model, chain_config):
         # Now one torque actuator per joint, not per muscle.
