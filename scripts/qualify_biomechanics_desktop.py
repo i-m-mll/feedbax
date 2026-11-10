@@ -385,6 +385,24 @@ def continuation(before, after):
     return {"source": before, "successor": after}
 
 
+def cache_probe(paths):
+    paths.configure_studio()
+    import jax
+    import jax.numpy as jnp
+
+    cache = paths.cache / "jax"
+    require(jax.config.jax_compilation_cache_dir == str(cache), "JAX cache is outside the fixture authority")
+    before = set(cache.glob("*-cache"))
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    stamp = time.monotonic_ns() % 65521
+    value = jax.jit(lambda x: x * x + stamp)(jnp.array([1, 2], dtype=jnp.int32))
+    require(value.tolist() == [stamp + 1, stamp + 4], "cached CPU computation differs")
+    files = sorted(set(cache.glob("*-cache")) - before)
+    require(files and jax.default_backend() == "cpu", "no CPU executable was written to the fixture JIT cache")
+    return {"backend": "cpu", "cache": str(cache), "entries": [path.name for path in files]}
+
+
 def source_smoke(name, case):
     import jax
     import jax.numpy as jnp
@@ -468,6 +486,8 @@ def evaluate(args):
     if args.action in {"prove-quit", "prove-resume"}:
         verify = same_job if args.action == "prove-quit" else continuation
         return verify(*(json.loads(path.read_bytes()) for path in args.records))
+    if args.action == "cache-probe":
+        return cache_probe(Fixture(args.contents, args.fixture_root).paths)
     case = json.loads(args.fixtures.read_bytes())[args.case] if hasattr(args, "fixtures") else None
     if args.action == "source-smoke":
         return source_smoke(args.case, case)
@@ -499,6 +519,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("author")
+    sub.add_parser("cache-probe")
     for action in ("start", "checkpoint", "source-smoke", "source-plan"):
         cmd = sub.add_parser(action)
         cmd.add_argument("fixtures", type=Path)
@@ -519,7 +540,7 @@ def main():
     cmd.add_argument("project")
     cmd.add_argument("fixtures", type=Path)
     cmd.add_argument("case", choices=CASES)
-    for action in ("start", "snapshot", "checkpoint", "resume"):
+    for action in ("start", "snapshot", "checkpoint", "resume", "cache-probe"):
         sub.choices[action].add_argument("--contents", type=Path, required=True)
         sub.choices[action].add_argument("--fixture-root", type=Path, required=True)
     for action in ("prove-quit", "prove-resume"):
