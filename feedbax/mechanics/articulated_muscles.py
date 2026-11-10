@@ -120,7 +120,7 @@ class ArticulatedMusclePlant(AbstractPlant):
     skeleton: MJXSkeleton
     law_bank: MuscleLawBank
     law_identities: tuple[tuple[str, int], ...] = eqx.field(static=True)
-    clip_states: bool = eqx.field(static=True, default=False)
+    clip_states: bool = eqx.field(static=True)
 
     def __init__(self, skeleton: MJXSkeleton, registry: ComponentRegistry):
         descriptor = skeleton.descriptor
@@ -130,6 +130,7 @@ class ArticulatedMusclePlant(AbstractPlant):
         bound = tuple(build_muscle_law(path, registry) for path in descriptor.paths)
         laws, self.law_identities = zip(*bound, strict=True)
         self.law_bank = MuscleLawBank(laws)
+        self.clip_states = False
 
     @property
     def laws(self) -> tuple[MuscleLaw, ...]:

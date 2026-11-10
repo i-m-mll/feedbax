@@ -75,7 +75,7 @@ class TwoLinkMusclePlant(AbstractPlant):
     geometry: TwoLinkArmMuscleGeometry
     law_bank: MuscleLawBank
     initial_angle: Array = field(converter=jnp.asarray)
-    clip_states: bool = eqx.field(static=True, default=False)
+    clip_states: bool = eqx.field(static=True)
 
     def __init__(self, skeleton, geometry, law_bank, initial_angle):
         if not law_bank.laws or len(law_bank.laws) != geometry.n_muscles:
@@ -87,6 +87,7 @@ class TwoLinkMusclePlant(AbstractPlant):
         self.geometry = geometry
         self.law_bank = law_bank
         self.initial_angle = initial_angle
+        self.clip_states = False
 
     @property
     def input_size(self) -> int:

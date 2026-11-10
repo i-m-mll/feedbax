@@ -96,6 +96,8 @@ def _document(provider, dt):
 
 def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch):
     import pickle
+    import subprocess
+    import sys
     from types import SimpleNamespace
 
     pytest.importorskip("fastapi")
@@ -107,7 +109,10 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
         STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
     )
-    from feedbax.training.checkpoint_custody import structural_abi_fingerprint
+    from feedbax.training.checkpoint_custody import (
+        _semantic_structural_abi_sha256,
+        structural_abi_fingerprint,
+    )
     from feedbax.web import config
     from feedbax.web.api import graphs
     from feedbax.web.model_assets import model_artifact_provider
@@ -158,6 +163,32 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     restored = pickle.loads(pickle.dumps(compiled))
     assert jax.tree.structure(restored) == jax.tree.structure(compiled)
     assert structural_abi_fingerprint(restored) == structural_abi_fingerprint(compiled)
+
+    model_file = tmp_path / "model.pkl"
+    model_file.write_bytes(pickle.dumps(compiled))
+    fingerprint_file = tmp_path / "fingerprint.txt"
+    subprocess.run(
+        [sys.executable, "-B", "-c", """
+import pickle
+import sys
+from pathlib import Path
+
+import jax
+from feedbax.training.checkpoint_custody import (
+    _semantic_structural_abi_sha256, structural_abi_fingerprint,
+)
+
+jax.config.update("jax_enable_x64", True)
+model = pickle.loads(Path(sys.argv[1]).read_bytes())
+fingerprint = _semantic_structural_abi_sha256(structural_abi_fingerprint(model), value=model)
+Path(sys.argv[2]).write_text(fingerprint)
+""", str(model_file), str(fingerprint_file)],
+        check=True,
+        timeout=25,
+    )
+    assert fingerprint_file.read_text() == _semantic_structural_abi_sha256(
+        structural_abi_fingerprint(compiled), value=compiled,
+    )
 
     mjx_model = compiled.nodes["physics"].plant.skeleton.mjx_model
     different_limits = np.logical_not(mjx_model.jnt_limited).astype(mjx_model.jnt_limited.dtype)
