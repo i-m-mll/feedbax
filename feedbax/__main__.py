@@ -834,6 +834,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
         from feedbax.compiler.prototypes import prototypes_from_task_bindings
         from feedbax.contracts.authored_canonical import canonical_sha256
+        from feedbax.contracts.graph import GraphSpec
         from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
         from feedbax.web.model_assets import model_artifact_provider
 
@@ -860,7 +861,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if run_spec.task_binding_spec is not None else None
             ),
             artifact_provider=(
-                model_artifact_provider(graph_document.graph)
+                model_artifact_provider(GraphSpec.model_validate(graph_document.graph))
                 if run_spec.method_ref == STUDIO_GRAPH_METHOD else None
             ),
         )
