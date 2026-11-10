@@ -241,6 +241,9 @@ class RunPodCudaPlacement(StrictModel):
     ephemeral_disk_gb: int = Field(strict=True, gt=0)
     max_hourly_rate_usd: FiniteFloat = Field(gt=0)
     startup_seconds: int = Field(strict=True, gt=0)
+    ssh_host_trust: Literal["operator-pin", "boot-secret"] = Field(
+        default="operator-pin", exclude_if=lambda mode: mode == "operator-pin",
+    )
 
 
 class DeploymentResourceRequest(StrictModel):

@@ -6,6 +6,7 @@ unit tests can pin command shapes without contacting RunPod.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -134,6 +135,7 @@ from feedbax.orchestration.repo_realization import (
 )
 from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
 from feedbax.orchestration.state import (
+    AcquisitionPreparation,
     DEPENDENCY_SKIP_OUTCOME,
     PreflightCheckEntry,
     ProcessIdentity,
@@ -342,6 +344,58 @@ class _RunPodCapacityUnavailable(RunPodDriverError):
     """A valid catalog response shows the exact placement is out of stock."""
 
 
+_BOOT_HOST_KEY_ENV = "FEEDBAX_BOOT_SSH_KEY"
+_BOOT_HOST_KEY_COMMAND = """set +x
+set -euo pipefail
+umask 077
+unset key
+key="${FEEDBAX_BOOT_SSH_KEY:?Missing injected SSH host key}"
+unset FEEDBAX_BOOT_SSH_KEY
+temporary=$(mktemp "$2/.feedbax-host.XXXXXX")
+trap 'rm -f -- "$temporary"' EXIT
+printf '%s' "$key" | base64 -d >"$temporary"
+unset key
+derived=$(ssh-keygen -y -f "$temporary")
+read -r algorithm blob _ <<<"$derived"
+public="$algorithm $blob"
+test "$public" = "$1"
+mv -f -- "$temporary" "$2/ssh_host_ed25519_key"
+printf '%s\n' "$public" >"$2/ssh_host_ed25519_key.pub"
+trap - EXIT
+exec "$3"
+"""
+
+
+def _boot_secret_metadata(intent_id: str) -> dict[str, str]:
+    digest = hashlib.sha256(intent_id.encode()).hexdigest()
+    return {"name": f"feedbax-host-{digest}", "description": f"Feedbax acquisition {intent_id}"}
+
+
+def _owned_boot_secret_id(record: Any, intent_id: str) -> str | None:
+    if not isinstance(record, Mapping):
+        return None
+    identity = record.get("id")
+    if (
+        isinstance(identity, str) and _SAFE_POD_ID_PATTERN.fullmatch(identity)
+        and all(record.get(field) == value for field, value in _boot_secret_metadata(intent_id).items())
+    ):
+        return identity
+    return None
+
+
+def _fresh_boot_host_key() -> tuple[str, str]:
+    with tempfile.TemporaryDirectory(prefix="feedbax-ssh-key-") as directory:
+        path = Path(directory) / "host"
+        result = _run_command(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", str(path)],
+            timeout_seconds=5,
+        )
+        if result.returncode:
+            raise RunPodDriverError("could not generate an ephemeral OpenSSH host key")
+        public_key = " ".join(path.with_suffix(".pub").read_text(encoding="ascii").split()[:2])
+        return base64.b64encode(path.read_bytes()).decode("ascii"), public_key
+
+
 def _canonical_runpod_timestamp(value: Any) -> str | None:
     """Return a canonical UTC instant for a RunPod client timestamp."""
     if not isinstance(value, str) or not value:
@@ -432,6 +486,7 @@ class SubprocessRunPodTransport:
     ssh_user: str = "root"
     strict_ssh_host_key: bool = False
     ssh_known_hosts_path: str | None = None
+    ssh_boot_public_key: str | None = None
     runpodctl_executable: str = "runpodctl"
     rsync_executable: str = "rsync"
     http_transport: httpx.BaseTransport | None = field(default=None, repr=False)
@@ -623,9 +678,33 @@ class SubprocessRunPodTransport:
                     "-o", "GlobalKnownHostsFile=/dev/null",
                     "-o", f'UserKnownHostsFile="{self.ssh_known_hosts_path}"',
                 ])
+            if self.ssh_boot_public_key is not None:
+                self._write_boot_host_pin()
+                args.extend(["-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "UpdateHostKeys=no"])
         else:
             args.extend(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"])
         return args
+
+    def _write_boot_host_pin(self) -> None:
+        host, port, public = self.ssh_host, self.ssh_port, self.ssh_boot_public_key
+        if (
+            not host or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", host)
+            or port is None or not 1 <= port <= 65535
+            or not public or not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/]+={0,2}", public)
+            or self.ssh_known_hosts_path is None
+            or not re.fullmatch(r"/[A-Za-z0-9/_.-]+", self.ssh_known_hosts_path)
+        ):
+            raise RunPodDriverError("missing or invalid boot SSH host pin")
+        endpoint = host if port == 22 else f"[{host}]:{port}"
+        path = Path(self.ssh_known_hosts_path)
+        with tempfile.NamedTemporaryFile(dir=path.parent, mode="w", delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(f"{endpoint} {public}\n")
+                stream.flush()
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -658,6 +737,7 @@ class RunPodDriverConfig:
     gpu_id: str | None = None
     datacenters: tuple[str, ...] = ()
     cuda_placement: RunPodCudaPlacement | None = None
+    boot_known_hosts_path: Path | None = None
     api_key: str | None = field(default=None, repr=False)
     min_balance_usd: float = 5.0
     image: str = "runpod/pytorch:latest"
@@ -746,6 +826,7 @@ class RunPodOrchestrationDriver:
             DriverHook.HAS_PENDING_OWNED_RESOURCE,
             DriverHook.GOVERN_PROVISIONING_RETRIES,
             DriverHook.ENGINE_ACQUISITION,
+            DriverHook.ACQUISITION_PREPARATION,
             DriverHook.PROVISION_RETRY_DELAY,
         }
     )
@@ -816,7 +897,7 @@ class RunPodOrchestrationDriver:
     def acquisition_candidates(self, bundle: RunBundle) -> tuple[str | None, ...]:
         """Return the ordered singleton-create datacenter candidates."""
         del bundle
-        if self.config.cuda_placement is not None and isinstance(
+        if self.config.cuda_placement is not None and not self._uses_boot_secret() and isinstance(
             self.transport, SubprocessRunPodTransport
         ):
             host_file = Path(self.transport.ssh_known_hosts_path or "")
@@ -825,6 +906,94 @@ class RunPodOrchestrationDriver:
                     "exact RunPod CUDA acquisition requires a scoped FEEDBAX_RUNPOD_KNOWN_HOSTS file"
                 )
         return tuple(self.config.datacenters) or (None,)
+
+    def _uses_boot_secret(self) -> bool:
+        placement = self.config.cuda_placement
+        return placement is not None and placement.ssh_host_trust == "boot-secret"
+
+    def acquisition_preparation_required(self, bundle: RunBundle) -> bool:
+        return self._uses_boot_secret()
+
+    def prepare_acquisition(
+        self, bundle: RunBundle, candidate: str | None, intent_id: str,
+    ) -> AcquisitionPreparation:
+        """Create one write-only boot secret for a previously persisted intent."""
+        if not self._uses_boot_secret() or not self._preflight_passed:
+            raise AcquisitionCreateError(
+                "RunPod boot secret requires authorized exact CUDA preflight",
+                disposition="terminal-rejection", evidence={"classification": "boot-secret-preflight"},
+            )
+        self._check_cuda_quote(candidate)
+        try:
+            private_key, public_key = _fresh_boot_host_key()
+        except (OSError, RunPodDriverError) as exc:
+            raise AcquisitionCreateError(
+                "could not generate the RunPod boot host key", disposition="terminal-rejection",
+                evidence={"classification": "boot-secret-key-generation"},
+            ) from exc
+        metadata = _boot_secret_metadata(intent_id)
+        try:
+            reply = self._api(
+                "POST", "/v2/account/secrets",
+                body={**metadata, "value": private_key},
+            )
+        except RunPodDriverError:
+            raise AcquisitionCreateError(
+                "RunPod boot secret creation outcome is unknown", disposition="ambiguous",
+                evidence={"classification": "boot-secret-create-ambiguous"},
+            ) from None
+        identity = _owned_boot_secret_id(reply.body, intent_id)
+        if reply.status == 201 and identity is not None:
+            self._boot_public_key = (intent_id, public_key)
+            return AcquisitionPreparation(provider_id=identity, public_identity=public_key)
+        raise AcquisitionCreateError(
+            f"RunPod boot secret create returned HTTP {reply.status}",
+            disposition=(
+                "terminal-rejection"
+                if reply.status in {400, 401, 403, 409, 413, 422, 429} else "ambiguous"
+            ),
+            evidence={"classification": "boot-secret-create", "status": reply.status},
+        )
+
+    def recover_acquisition_preparation(self, intent_id: str, *, timeout_seconds: float) -> str:
+        """Discover the exact secret after loss of the create response."""
+        metadata = _boot_secret_metadata(intent_id)
+        deadline = self._monotonic() + timeout_seconds
+        found = self._api(
+            "GET", "/v2/account/secrets", params={"name": metadata["name"]},
+            timeout_seconds=min(8, self._teardown_remaining(deadline)),
+        )
+        rows = (found.body or {}).get("secrets")
+        if found.status != 200 or not isinstance(rows, list) or len(rows) != 1:
+            raise RunPodDriverError("RunPod could not reconcile the intended boot secret by name")
+        provider_id = _owned_boot_secret_id(rows[0], intent_id)
+        if provider_id is None:
+            raise RunPodDriverError("RunPod boot secret metadata did not match the acquisition intent")
+        return provider_id
+
+    def release_acquisition_preparation(
+        self, intent_id: str, provider_id: str, *, timeout_seconds: float,
+    ) -> None:
+        """Prove deletion of the exact intent-owned boot secret."""
+        if not _SAFE_POD_ID_PATTERN.fullmatch(provider_id):
+            raise RunPodDriverError("invalid RunPod boot secret identity")
+        deadline = self._monotonic() + timeout_seconds
+
+        path = f"/v2/account/secrets/{provider_id}"
+
+        def secret_api(method: Literal["GET", "DELETE"]) -> RunPodApiReply:
+            return self._api(
+                method, path, timeout_seconds=min(8, self._teardown_remaining(deadline)),
+            )
+
+        found = secret_api("GET")
+        if found.status == 404:
+            return
+        if found.status != 200 or _owned_boot_secret_id(found.body, intent_id) != provider_id:
+            raise RunPodDriverError("RunPod boot secret metadata did not match the acquisition intent")
+        removed = secret_api("DELETE")
+        if removed.status not in {204, 404} or secret_api("GET").status != 404:
+            raise RunPodDriverError("RunPod boot secret deletion was not verified")
 
     @property
     def reconciliation_timeout_seconds(self) -> float:
@@ -864,7 +1033,7 @@ class RunPodOrchestrationDriver:
             )
         name = self.acquisition_pod_name(intent_id)
         if self.config.cuda_placement is not None:
-            return self._create_cuda_pod(candidate, name)
+            return self._create_cuda_pod(candidate, name, intent_id=intent_id)
         args = [
             "pod",
             "create",
@@ -939,7 +1108,7 @@ class RunPodOrchestrationDriver:
             timeout_seconds=timeout_seconds,
         )
 
-    def _create_cuda_pod(self, region: str | None, name: str) -> AcquisitionResult:
+    def _check_cuda_quote(self, region: str | None) -> None:
         placement = self.config.cuda_placement
         gpu_id = self.config.gpu_id
         assert placement is not None and gpu_id is not None and region is not None
@@ -965,6 +1134,33 @@ class RunPodOrchestrationDriver:
                 ),
                 evidence={"classification": "cuda-catalog-preflight-failed"},
             ) from exc
+
+    def _create_cuda_pod(
+        self, region: str | None, name: str, *, intent_id: str | None = None,
+    ) -> AcquisitionResult:
+        placement = self.config.cuda_placement
+        gpu_id = self.config.gpu_id
+        assert placement is not None and gpu_id is not None and region is not None
+        self._check_cuda_quote(region)
+        bootstrap: dict[str, Any] = {}
+        if self._uses_boot_secret():
+            if (
+                intent_id is None or self._boot_public_key is None
+                or self._boot_public_key[0] != intent_id
+            ):
+                raise AcquisitionCreateError(
+                    "RunPod pod create requires the prepared boot host key",
+                    disposition="terminal-rejection", evidence={"classification": "boot-secret-missing"},
+                )
+            secret_name = _boot_secret_metadata(intent_id)["name"]
+            bootstrap = {
+                "env": {_BOOT_HOST_KEY_ENV: "{{ RUNPOD_SECRET_" + secret_name + " }}"},
+                "entrypoint": [
+                    "/bin/bash", "-c", _BOOT_HOST_KEY_COMMAND, "feedbax-host-key",
+                    self._boot_public_key[1], "/etc/ssh", "/start.sh",
+                ],
+                "cmd": [],
+            }
         try:
             reply = self._api(
                 "POST",
@@ -982,6 +1178,7 @@ class RunPodOrchestrationDriver:
                     "dataCenterIds": [region],
                     "ports": ["22/tcp"],
                     "startSsh": True,
+                    **bootstrap,
                 },
             )
         except RunPodDriverError as exc:
@@ -1010,6 +1207,8 @@ class RunPodOrchestrationDriver:
         self._pod_id = acquisition.pod_id
         self._provided_pod = False
         self._last_provision_pod = None
+        if self._uses_boot_secret():
+            self._boot_known_hosts_path = bundle.run_set_dir / "ssh-known-hosts"
         if self.config.cuda_placement is None:
             self._endpoint, pod, placement_receipt = self._wait_for_endpoint(acquisition.pod_id)
         else:
@@ -1033,6 +1232,9 @@ class RunPodOrchestrationDriver:
         )
         if placement_receipt is not None:
             record["cuda_placement"] = placement_receipt
+        if self._uses_boot_secret():
+            assert self._boot_public_key is not None and self._boot_public_key[0] == intent_id
+            record["ssh_boot_public_key"] = self._boot_public_key[1]
         return record
 
     def restore_from_provision_record(self, record: Mapping[str, Any]) -> None:
@@ -1051,6 +1253,12 @@ class RunPodOrchestrationDriver:
         self._pod_id = pod_id if isinstance(pod_id, str) and pod_id else None
         self._provided_pod = record.get("provided_pod") is True
         self._provided_endpoint = record.get("provided_endpoint") is True
+        if self._uses_boot_secret():
+            intent_id, public = record.get("intent_id"), record.get("ssh_boot_public_key")
+            self._boot_public_key = (
+                (intent_id, public)
+                if isinstance(intent_id, str) and isinstance(public, str) else None
+            )
         self._endpoint = EndpointClassification("ssh_object", host, port)
         self._configure_subprocess_endpoint(self._endpoint)
 
@@ -1099,6 +1307,8 @@ class RunPodOrchestrationDriver:
         realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
         self.config = config or RunPodDriverConfig()
+        self._boot_public_key: tuple[str, str] | None = None
+        self._boot_known_hosts_path = self.config.boot_known_hosts_path
         self.transport = transport or SubprocessRunPodTransport(
             ssh_host=self.config.ssh_host,
             ssh_port=self.config.ssh_port,
@@ -1477,6 +1687,23 @@ class RunPodOrchestrationDriver:
                 if credential_check.status == "pass"
                 else _dependency_skipped_preflight_check("runpod-balance-floor", "runpod-credentials")
             )
+            if self._uses_boot_secret():
+                secret_read = False
+                if credential_check.status == "pass":
+                    try:
+                        reply = self._api(
+                            "GET", "/v2/account/secrets",
+                            params={"name": "feedbax-host-permission-probe"},
+                        )
+                        secret_read = reply.status == 200 and isinstance(
+                            (reply.body or {}).get("secrets"), list,
+                        )
+                    except RunPodDriverError:
+                        pass
+                conditional_checks.append(_preflight_check(
+                    "runpod-boot-secret-metadata-read", secret_read,
+                    detail=None if secret_read else "RunPod Secrets metadata read unavailable",
+                ))
         else:
             credentials_required = not self._provided_endpoint or bundle.deadman_enabled
             try:
@@ -3471,10 +3698,23 @@ class RunPodOrchestrationDriver:
 
     def _configure_subprocess_endpoint(self, endpoint: EndpointClassification) -> None:
         if isinstance(self.transport, SubprocessRunPodTransport):
+            boot_options: dict[str, Any] = {}
+            if self._uses_boot_secret():
+                boot_options = {
+                    "strict_ssh_host_key": True,
+                    "ssh_known_hosts_path": (
+                        str(self._boot_known_hosts_path)
+                        if self._boot_known_hosts_path is not None else None
+                    ),
+                    "ssh_boot_public_key": (
+                        self._boot_public_key[1] if self._boot_public_key is not None else ""
+                    ),
+                }
             self.transport = replace(
                 self.transport,
                 ssh_host=endpoint.ip,
                 ssh_port=endpoint.port,
+                **boot_options,
             )
 
     def _ensure_deadman(self, bundle: RunBundle) -> None:
@@ -5202,6 +5442,7 @@ def runpod_config_for_bundle(
         gpu_id=resources.gpu_id,
         datacenters=tuple(resources.regions),
         cuda_placement=resources.runpod_cuda,
+        boot_known_hosts_path=bundle.run_set_dir / "ssh-known-hosts",
         teardown_absence_timeout_seconds=(
             bundle.budget.teardown_reserve_seconds
             if resources.runpod_cuda is not None and bundle.budget.teardown_reserve_seconds is not None

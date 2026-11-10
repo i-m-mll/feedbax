@@ -126,6 +126,7 @@ from feedbax.orchestration.staged_training import (
 )
 from feedbax.orchestration.state import (
     AcquisitionIntent,
+    AcquisitionPreparation,
     EmergencyProviderIdentity,
     EmergencyRunSetRecord,
     PreflightCheckEntry,
@@ -615,6 +616,12 @@ class StageEngine:
                         with signal_supervisor.defer_signals():
                             self._abort_locked(latest)
                         raise
+                    if any(
+                        intent.preparation is not None and not intent.preparation.released
+                        for intent in latest.acquisition_intents
+                    ):
+                        with signal_supervisor.defer_signals():
+                            latest = self._reconcile_acquisition_intents(latest)
                     if (
                         self.bundle is not None
                         and self.driver is not None
@@ -1401,6 +1408,15 @@ class StageEngine:
             intent_id=(f"{state.run_set_id}-a{attempt_ordinal}-c{candidate_ordinal}-{nonce}"),
             datacenter_candidate=candidate,
             config_identity=identity,
+            preparation=(
+                AcquisitionPreparation()
+                if self._call_driver_hook(
+                    DriverHook.ACQUISITION_PREPARATION,
+                    "acquisition_preparation_required",
+                    self.bundle,
+                )
+                else None
+            ),
         )
         state = state.model_copy(
             update={
@@ -1440,6 +1456,27 @@ class StageEngine:
                 candidate=candidate,
             )
             try:
+                if intent.preparation is not None:
+                    prepare = self._driver_hook(
+                        DriverHook.ACQUISITION_PREPARATION, "prepare_acquisition",
+                    )
+                    assert prepare is not None
+                    try:
+                        preparation = prepare(self.bundle, candidate, intent.intent_id)
+                    except AcquisitionCreateError as exc:
+                        if exc.disposition != "ambiguous":
+                            state = self._replace_acquisition_intent(
+                                state, intent.intent_id,
+                                preparation=AcquisitionPreparation(released=True),
+                            )
+                            self.store.save(state)
+                        raise
+                    state = self._replace_acquisition_intent(
+                        state, intent.intent_id,
+                        preparation=preparation,
+                    )
+                    # Only this durable transition permits the separate pod POST.
+                    self.store.save(state)
                 acquisition = self.driver.create_pod_once(self.bundle, candidate, intent.intent_id)
             except BudgetExceeded:
                 if self._signal_supervisor is not None:
@@ -1456,6 +1493,10 @@ class StageEngine:
                         evidence={"create": exc.evidence},
                     )
                     self.store.save(state)
+                    state = self._release_acquisition_preparation(
+                        state, intent.intent_id,
+                        self._monotonic() + self.driver.reconciliation_timeout_seconds,
+                    )
                     if exc.disposition == "terminal-rejection":
                         raise ProvisioningAttemptError(
                             str(exc),
@@ -1558,6 +1599,10 @@ class StageEngine:
                 self.store.save(state)
                 if not isinstance(exc, Exception):
                     raise
+                state = self._release_acquisition_preparation(
+                    state, intent.intent_id,
+                    self._monotonic() + self.driver.reconciliation_timeout_seconds,
+                )
                 raise ProvisioningAttemptError(
                     str(exc),
                     retryable=not isinstance(exc, (AcquisitionReadinessRejected, BudgetExceeded)),
@@ -1577,9 +1622,61 @@ class StageEngine:
             attempt_record={"driver": driver_name, "acquired": False},
         )
 
+    def _release_acquisition_preparation(
+        self, state: RunSetState, intent_id: str, deadline: float,
+    ) -> RunSetState:
+        intent = next(item for item in state.acquisition_intents if item.intent_id == intent_id)
+        preparation = intent.preparation
+        if preparation is None or preparation.released:
+            return state
+        release = self._driver_hook(
+            DriverHook.ACQUISITION_PREPARATION, "release_acquisition_preparation",
+        )
+        if release is None:
+            raise OrchestrationStageError("driver cannot reconcile its acquisition preparation")
+        provider_id = preparation.provider_id
+        if provider_id is None:
+            recover = self._driver_hook(
+                DriverHook.ACQUISITION_PREPARATION, "recover_acquisition_preparation",
+            )
+            assert recover is not None
+            provider_id = recover(intent_id, timeout_seconds=deadline - self._monotonic())
+            preparation = preparation.model_copy(update={"provider_id": provider_id})
+            state = self._replace_acquisition_intent(
+                state, intent_id, preparation=preparation,
+            )
+            # Once discovered, its exact ID must survive a lost delete response.
+            self.store.save(state)
+        release(intent_id, provider_id, timeout_seconds=deadline - self._monotonic())
+        state = self._replace_acquisition_intent(
+            state, intent_id,
+            preparation=preparation.model_copy(update={"released": True}),
+            state="failed-unacquired" if preparation.public_identity is None else intent.state,
+        )
+        self.store.save(state)
+        return state
+
     def _reconcile_acquisition_intents(self, state: RunSetState) -> RunSetState:
         if not self._uses_engine_acquisition():
             return state
+        deadline = self._monotonic() + self.driver.reconciliation_timeout_seconds
+        if not any(
+            intent.preparation is not None and not intent.preparation.released
+            for intent in state.acquisition_intents
+        ):
+            return self._reconcile_acquired_pods(state, deadline)
+        try:
+            state = self._reconcile_acquired_pods(state, deadline)
+        finally:
+            state = self._last_durable_state(state)
+            active_intent = (state.provision_record or {}).get("intent_id")
+            for intent in state.acquisition_intents:
+                if intent.intent_id == active_intent and intent.state == "acquired":
+                    continue
+                state = self._release_acquisition_preparation(state, intent.intent_id, deadline)
+        return state
+
+    def _reconcile_acquired_pods(self, state: RunSetState, deadline: float) -> RunSetState:
         provision_intent_id = (
             state.provision_record.get("intent_id")
             if isinstance(state.provision_record, Mapping)
@@ -1588,13 +1685,14 @@ class StageEngine:
         pending = [
             intent
             for intent in state.acquisition_intents
-            if intent.state in {"intended", "ambiguous", "ambiguous-unresolved"}
-            or (intent.state == "acquired" and intent.intent_id != provision_intent_id)
+            if (intent.preparation is None or intent.preparation.public_identity is not None)
+            and (
+                intent.state in {"intended", "ambiguous", "ambiguous-unresolved"}
+                or (intent.state == "acquired" and intent.intent_id != provision_intent_id)
+            )
         ]
         if not pending:
             return state
-        timeout = float(self.driver.reconciliation_timeout_seconds)
-        deadline = self._monotonic() + timeout
         aborting = state.abort_reason == _OPERATOR_ABORT
         records, inventory_evidence = (), {}
         if not aborting or any(not intent.pod_ids for intent in pending):
@@ -3083,8 +3181,34 @@ class StageEngine:
                     # Failure diagnostics are best-effort and must never mask
                     # the error that caused abort teardown.
                     failure_log_collection = {"status": "failed", "error": str(exc)}
+            outputs = {}
             try:
+                active_intent = (state.provision_record or {}).get("intent_id")
+                pending_preparation = next((
+                    intent for intent in state.acquisition_intents
+                    if intent.intent_id == active_intent
+                    and intent.preparation is not None
+                    and not intent.preparation.released
+                ), None)
+                deadline = (
+                    self._monotonic() + self.driver.reconciliation_timeout_seconds
+                    if pending_preparation is not None else None
+                )
                 outputs = dict(self.driver.teardown(self.bundle, state))
+                if pending_preparation is not None:
+                    state = self._project_intent_teardown(state, outputs)
+                    self.store.save(state)
+                    if not any(
+                        intent.intent_id == active_intent and intent.state == "resolved-torn-down"
+                        for intent in state.acquisition_intents
+                    ):
+                        raise OrchestrationStageError(
+                            "acquisition preparation requires verified pod absence before release"
+                        )
+                    assert deadline is not None
+                    state = self._release_acquisition_preparation(
+                        state, pending_preparation.intent_id, deadline,
+                    )
                 if discard_on_abort:
                     outputs["abort_output_disposition"] = "discard-uncollected-authorized"
                 if not abort and self.bundle.execution_family == "evaluation-matrix":
@@ -3106,7 +3230,7 @@ class StageEngine:
                 status = "completed"
                 error = None
             except Exception as exc:
-                outputs = dict(getattr(exc, "teardown_outputs", {}))
+                outputs.update(getattr(exc, "teardown_outputs", {}))
                 status = "failed"
                 error = str(exc)
         teardown_outputs: dict[str, Any] = {**outputs, "abort_path": abort}
@@ -3149,6 +3273,8 @@ class StageEngine:
         )
         for intent in state.acquisition_intents:
             if intent.intent_id == intent_id or pod_id in intent.pod_ids:
+                if intent.state == "resolved-torn-down":
+                    return state
                 return self._replace_acquisition_intent(
                     state,
                     intent.intent_id,

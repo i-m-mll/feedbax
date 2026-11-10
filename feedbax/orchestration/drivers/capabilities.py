@@ -51,6 +51,7 @@ class DriverHook(StrEnum):
     REPO_REALIZATION_PLAN = "repo_realization_plan"
     PREFLIGHT_EVIDENCE = "preflight_evidence"
     ENGINE_ACQUISITION = "engine_acquisition"
+    ACQUISITION_PREPARATION = "acquisition_preparation"
     PROVISION_RETRY_DELAY = "provision_retry_delay"
     REMOTE_SMOKE = "remote_smoke"
     SMOKE_FAILURE_EVIDENCE = "smoke_failure_evidence"
@@ -561,6 +562,12 @@ _HOOK_MEMBERS: Mapping[DriverHook, tuple[str, ...]] = MappingProxyType(
             "observe_pod_inventory",
             "adopt_owned_pod",
             "adopted_provision_record",
+        ),
+        DriverHook.ACQUISITION_PREPARATION: (
+            "acquisition_preparation_required",
+            "prepare_acquisition",
+            "recover_acquisition_preparation",
+            "release_acquisition_preparation",
         ),
         DriverHook.PROVISION_RETRY_DELAY: ("provision_retry_delay",),
         DriverHook.REMOTE_SMOKE: ("smoke_row",),
