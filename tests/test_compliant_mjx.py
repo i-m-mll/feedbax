@@ -94,6 +94,61 @@ def _document(provider, dt):
     ))
 
 
+def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch):
+    import pickle
+    from types import SimpleNamespace
+
+    pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from feedbax.contracts.graph import (
+        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+    )
+    from feedbax.training.checkpoint_custody import structural_abi_fingerprint
+    from feedbax.web import config
+    from feedbax.web.api import graphs
+    from feedbax.web.model_assets import model_artifact_provider
+    from feedbax.web.services.graph_service import GraphService
+
+    pytest.importorskip("mujoco.mjx")
+    fixture = ImmutableArtifactBlobProvider(tmp_path / "fixture")
+    graph = _document(fixture, 0.001).graph
+    asset = graph.subgraphs["physics"].mujoco_asset.asset
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(graphs, "service", GraphService(tmp_path))
+    app = FastAPI()
+    app.state.bootstrap_state = SimpleNamespace(bundle=SimpleNamespace(components=ComponentRegistry()))
+    app.include_router(graphs.router, prefix="/api/graphs")
+
+    with TestClient(app) as client:
+        external = client.post("/api/graphs/assets/mujoco", content=b'<mujoco><include file="other.xml"/></mujoco>')
+        assert external.status_code == 422
+        imported = client.post("/api/graphs/assets/mujoco", content=fixture.get_object(asset))
+        assert imported.status_code == 200
+        assert imported.json() == asset.model_dump(mode="json")
+        saved = client.post("/api/graphs", json={
+            "schema_id": STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
+            "schema_version": STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+            "graph": graph.model_dump(mode="json", exclude_none=True),
+        })
+        assert saved.status_code == 200, saved.text
+        project = client.get(f"/api/graphs/{saved.json()['data']['id']}")
+        assert project.status_code == 200, project.text
+        binding = project.json()["data"]["graph"]["subgraphs"]["physics"]["mujoco_asset"]
+        assert binding["asset"] == imported.json()
+
+    reopened = GraphSpec.model_validate(project.json()["data"]["graph"])
+    compiled = compile_graph(
+        GraphDocument(graph=reopened), app.state.bootstrap_state.bundle.components,
+        artifact_provider=model_artifact_provider(reopened),
+    ).graph
+    restored = pickle.loads(pickle.dumps(compiled))
+    assert jax.tree.structure(restored) == jax.tree.structure(compiled)
+    assert structural_abi_fingerprint(restored) == structural_abi_fingerprint(compiled)
+
+
 def _reference_equilibrium(angle):
     # Independent scalar force balance and world-space ball-joint rotation.
     c, s = math.cos(angle), math.sin(angle)
@@ -121,7 +176,9 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
     n_steps = 8
     angle = 0.18
     qpos = jnp.array([math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2)])
-    where = lambda state: state.physics.effector.pos
+    def where(state):
+        return state.physics.effector.pos
+
     loss = TargetStateLoss("spatial target", where=where)
     trial = TaskTrialSpec(
         inits=WhereDict({"physics.plant.skeleton.qpos": qpos}),

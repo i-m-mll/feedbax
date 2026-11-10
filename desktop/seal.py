@@ -30,6 +30,7 @@ _BUILD_RPATHS = {
         "/opt/homebrew/Cellar/gcc@13/13.4.0/lib/gcc/13/gcc/aarch64-apple-darwin23/13",
     }),
     "sklearn": frozenset({"/Users/runner/miniconda3/envs/build/lib"}),
+    "mujoco": frozenset({"/Volumes/BuildData/foundry_bot/w/src/release"}),
 }
 
 

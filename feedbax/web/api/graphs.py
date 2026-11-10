@@ -1,9 +1,12 @@
 from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ValidationError
+from starlette.concurrency import run_in_threadpool
 from typing import Any, Optional
 
+from feedbax.compiler.graph import GraphCompilationError
 from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.graph import (
     GraphSpec,
@@ -28,9 +31,11 @@ from feedbax.contracts.studio_api import (
     PenzaiNodeRequest,
 )
 from feedbax.web.services.graph_service import GraphSaveConflictError, GraphService
+from feedbax.web.model_assets import import_mujoco_asset
 
 router = APIRouter()
 service = GraphService()
+MAX_MUJOCO_ASSET_BYTES = 8 * 1024 * 1024
 
 
 def _component_registry(request: Request):
@@ -87,6 +92,20 @@ async def list_graphs(request: Request, response: Response) -> GraphListResponse
     )
 
 
+@router.post("/assets/mujoco", response_model=ContentObjectRef)
+async def add_mujoco_asset(request: Request) -> ContentObjectRef:
+    """Import self-contained MJCF for use in a spatial graph's asset binding."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > MAX_MUJOCO_ASSET_BYTES:
+            raise HTTPException(status_code=413, detail="MuJoCo asset exceeds the 8 MiB limit")
+        raw.extend(chunk)
+    try:
+        return await run_in_threadpool(import_mujoco_asset, bytes(raw))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("", response_model=GraphCreateResponse)
 async def create_graph(payload: dict[str, Any], request: Request) -> GraphCreateResponse:
     admitted = _admit_save(payload)
@@ -100,7 +119,7 @@ async def create_graph(payload: dict[str, Any], request: Request) -> GraphCreate
             workspace_document=admitted.workspace_document,
             component_registry=component_registry,
         )
-    except UnsupportedComponentMigration as exc:
+    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return GraphCreateResponse(data={"id": record.graph_id, "metadata": record.project.metadata})
 
@@ -115,7 +134,7 @@ async def get_graph(graph_id: str, request: Request, response: Response) -> Grap
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
-    except UnsupportedComponentMigration as exc:
+    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return GraphDetailResponse(
         data={
@@ -152,7 +171,7 @@ async def update_graph(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
-    except UnsupportedComponentMigration as exc:
+    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GraphSaveConflictError as exc:
         raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc
@@ -179,7 +198,7 @@ async def beacon_update_graph(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
-    except UnsupportedComponentMigration as exc:
+    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GraphSaveConflictError as exc:
         raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc

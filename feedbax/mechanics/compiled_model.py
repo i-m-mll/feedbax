@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 from hashlib import sha256
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Mapping
@@ -36,6 +37,15 @@ class MusclePathBinding:
     actuator_id: int | None = None
     law_revision: int | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
+
+    def __reduce__(self):
+        return type(self), (
+            self.name, self.sites, self.law, self.state_size, dict(self.parameters),
+            self.tendon_id, self.actuator_id, self.law_revision,
+        )
+
     @property
     def actuator_name(self) -> str:
         return f"feedbax/path/{self.name}"
@@ -58,6 +68,28 @@ class CompiledPhysicalModel:
     actuator_state: tuple[slice, ...]
     paths: tuple[MusclePathBinding, ...]
     planar_segment_lengths: tuple[float, ...]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, CompiledPhysicalModel):
+            return NotImplemented
+        return (self.identity, self.structural_signature) == (other.identity, other.structural_signature)
+
+    def __hash__(self) -> int:
+        return hash((self.identity, self.structural_signature))
+
+    def __repr__(self) -> str:
+        return (
+            f"CompiledPhysicalModel(identity={self.identity!r}, "
+            f"structural_signature={self.structural_signature!r})"
+        )
+
+    def __reduce__(self):
+        rebuild = partial(
+            describe_model, identity=self.identity, dimension=self.dimension,
+            effector_site=self.effector_site, asset_identity=self.asset_identity,
+            paths=self.paths, planar_segment_lengths=self.planar_segment_lengths,
+        )
+        return rebuild, (self.model,)
 
 
 def outside_wraps_only(model: MjModel) -> bool:

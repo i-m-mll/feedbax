@@ -779,6 +779,17 @@ class ImmutableArtifactBlobProvider:
                 )
             return ref
 
+    def store_rooted_object(self, data: bytes, *, namespace: str) -> ContentObjectRef:
+        """Store an imported object and retain its exact identity in one transaction."""
+        with self._exclusive_lock():
+            ref = self.store_object(data)
+            self.register_root(ContentRootRecord(
+                root_id=f"{namespace}:{ref.sha256}",
+                root_kind="import",
+                targets=(ContentRetentionTarget(ref_kind="object", object=ref),),
+            ))
+            return ref
+
     def _store_file(
         self,
         source_path: Path | str,

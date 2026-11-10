@@ -32,6 +32,9 @@ def _service_lock(directory: Path):
 
 
 async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket) -> None:
+    from hashlib import sha256
+    from importlib.metadata import version
+
     import jax
     import jaxlib
     import uvicorn
@@ -46,7 +49,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
     backend = jax.default_backend()
     if backend != "cpu" or platform.machine() != "arm64":
         raise RuntimeError("this Studio release requires the JAX CPU backend on Apple Silicon")
-    runtime = {
+    runtime: dict[str, object] = {
         "python": str(Path(sys.executable).resolve(strict=True)),
         "python_version": platform.python_version(),
         "source_commit": revision,
@@ -54,6 +57,25 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
         "jaxlib": jaxlib.__version__,
         "backend": backend,
     }
+    dependency_bytes = release.resource("dependencies").read_bytes()
+    if sha256(dependency_bytes).hexdigest() != release.document["dependency_manifest_sha256"]:
+        raise RuntimeError("Studio dependency manifest does not match the installed release")
+    dependencies = json.loads(dependency_bytes)
+    profile = dependencies.get("profile", "jax-cpu")
+    if profile not in ("jax-cpu", "mjx-cpu"):
+        raise RuntimeError(f"unknown Studio dependency profile: {profile!r}")
+    runtime["profile"] = profile
+    if profile == "mjx-cpu":
+        distributions = {name: version(name) for name in ("mujoco-core", "mujoco-mjx")}
+        numerical = {"jax": jax.__version__, "jaxlib": jaxlib.__version__, **distributions}
+        if any(dependencies["wheels"][name]["version"] != actual for name, actual in numerical.items()):
+            raise RuntimeError("Studio numerical distributions do not match the installed release")
+        runtime["physics"] = {
+            "provider": "mujoco.mjx",
+            "implementation": "jax",
+            "device": backend,
+            "distributions": distributions,
+        }
     app = create_app(desktop_job_root=paths.state / "jobs")
     endpoint = Endpoint.create(studio_socket.getsockname()[1])
     transport = DesktopTransport(app, endpoint)

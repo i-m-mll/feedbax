@@ -7,7 +7,6 @@ from copy import deepcopy
 from hashlib import sha256
 from math import cos, isfinite, sin
 from numbers import Real
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
@@ -72,7 +71,7 @@ def _add_muscle_path(
     import mujoco
 
     path = MusclePathBinding(
-        name, sites, law, state_size, MappingProxyType(deepcopy(dict(parameters))),
+        name, sites, law, state_size, deepcopy(dict(parameters)),
         law_revision=law_revision,
     )
     if spec.actuator(path.actuator_name) is not None:
@@ -312,6 +311,23 @@ def compile_planar_model(
     )
 
 
+def validate_spatial_mjcf(raw: bytes) -> str:
+    """Validate a self-contained UTF-8 MJCF asset and return its XML."""
+    xml = raw.decode("utf-8")
+    if "<!DOCTYPE" in xml:
+        raise ValueError("MuJoCo assets cannot declare XML document types")
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as exc:
+        raise ValueError(f"Invalid MuJoCo XML: {exc}") from exc
+    if root.tag != "mujoco":
+        raise ValueError("MuJoCo assets require a self-contained <mujoco> document")
+    for element in root.iter():
+        if element.tag in {"include", "plugin", "extension"} or element.attrib.keys() & {"file", "uri"}:
+            raise ValueError(f"MuJoCo asset uses an external resource in <{element.tag}>")
+    return xml
+
+
 def compile_spatial_model(
     graph: AcausalGraphSpec, artifact_provider: ArtifactBlobProvider | None,
 ) -> CompiledPhysicalModel:
@@ -330,20 +346,7 @@ def compile_spatial_model(
     raw = artifact_provider.get_object(binding.asset)
     if len(raw) != binding.asset.size_bytes or sha256(raw).hexdigest() != binding.asset.sha256:
         raise ValueError(f"MuJoCo asset bytes disagree with {binding.asset.object_id}")
-    xml = raw.decode("utf-8")
-    if "<!DOCTYPE" in xml:
-        raise ValueError("MuJoCo assets cannot declare XML document types")
-    try:
-        root = ElementTree.fromstring(xml)
-    except ElementTree.ParseError as exc:
-        raise ValueError(f"Invalid MuJoCo asset {binding.asset.object_id}: {exc}") from exc
-    if root.tag != "mujoco":
-        raise ValueError("MuJoCo assets require a self-contained <mujoco> document")
-    for element in root.iter():
-        if element.tag in {"include", "plugin", "extension"} or element.attrib.keys() & {"file", "uri"}:
-            raise ValueError(f"MuJoCo asset uses an external resource in <{element.tag}>")
-
-    spec = mujoco.MjSpec.from_string(xml)
+    spec = mujoco.MjSpec.from_string(validate_spatial_mjcf(raw))
     for name, site in sorted(binding.sites.items()):
         if spec.site(name) is not None:
             raise ValueError(f"Overlay site {name!r} duplicates a site in the MuJoCo asset")
