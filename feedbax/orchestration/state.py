@@ -172,6 +172,15 @@ class RowState(StrictModel):
     error: str | None = None
 
 
+class AcquisitionPreparation(StrictModel):
+    """Custody of an optional provider resource needed before a pod can be created."""
+
+    provider_id: str | None = None
+    # Only the durable preparation that permits a pod POST has a public identity.
+    public_identity: str | None = None
+    released: bool = False
+
+
 class AcquisitionIntent(StrictModel):
     """One durable engine-owned record for exactly one provider create invocation."""
 
@@ -182,6 +191,9 @@ class AcquisitionIntent(StrictModel):
     updated_at: datetime = Field(default_factory=utc_now)
     state: AcquisitionIntentState = "intended"
     pod_ids: list[str] = Field(default_factory=list)
+    preparation: AcquisitionPreparation | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     evidence: dict[str, Any] = Field(default_factory=dict)
     teardown_evidence: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -28,7 +28,7 @@ The initial fiber length balances isometric force at the configured activation a
 
 ## Execution
 
-`compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Authored muscle paths expose geometry for coupling.
+`compile_graph` builds either interior through `Mechanics` and the compiled descriptor. Pass the spatial asset's artifact provider explicitly. The `actuator_control` input has a declared vector size that must match the compiled actuator count. The canonical planar muscle template uses its authored constant moment arms and the existing rigid-tendon muscle law. Authored muscle paths expose geometry for coupling. Select MJX with `solver.mjx_backend`, which defaults to `jax`.
 
 Each authored muscle path is an ordered spatial tendon through fixed sites. The path reports length in metres, positive lengthening velocity in metres per second, and the Jacobian of length with respect to generalized displacements. The Jacobian has one column per generalized velocity coordinate, including for quaternion models. A generated stateless tendon motor takes positive shortening tension in newtons with unit gain and gear −1. The engine then applies generalized force `-J.T @ tension` and the corresponding power `-tension @ lengthening_velocity`. The public `actuator_control` port continues to address the other native actuators in their original order.
 
@@ -41,10 +41,14 @@ The reverse-mode capability requires zero compiled constraint rows. For wrapped 
 
 | Solver | Execution |
 | --- | --- |
-| `mujoco` | MJX-JAX steps the authored MuJoCo integrator at the model timestep. Controls and COM wrenches are held through one native substep. |
+| `mujoco` | The selected MJX implementation steps the authored MuJoCo integrator at the model timestep. Controls and COM wrenches are held through one native substep. |
 | `euler`, `tsit5` | Diffrax advances continuous MJX forward dynamics at a fixed substep. Loads and actuator derivatives are evaluated at each stage. |
 
 The control period must be an integer multiple of the model timestep. The continuous route admits zero compiled constraint rows and stage-local actuator dynamics without activation limits. History, plugins and plasticity are outside this continuation profile. Qualification uses the exact stock provider described in [MuJoCo numerical baseline](mujoco_numerical_baseline.md).
+
+The Warp native profile uses float32 and runs explicit forward and RL rollouts. It requires rigid bodies, disabled sleeping, and collisions disabled or excluded by the model. Contact buffers span the entire Warp batch. The collision-free profile bounds joint, tendon and equality constraint capacity per world and fails on an overflow. Physics automatic differentiation is unavailable. Euler, RK4 and implicitfast are native MuJoCo integrator options. The `mjx-warp` dependency group supplies the optional runtime for qualification and adds the locked JAX CUDA plugin and CUDA 13.0 Update 2 libraries on Linux x86_64. `scripts/qualify_mjx_warp.py` runs the batched graph fixtures and native references. CUDA acceptance requires an actual NVIDIA device. The script also offers local CPU diagnostics.
+
+The Warp external-muscle profile uses explicit Euler and the same fixed-site tendon transmissions and rigid or compliant muscle state as MJX-JAX. It requires zero structural constraints, stage-local native actuator dynamics and unrestricted native activation. Primitive wrapping, the constant moment-arm template and implicit coupled solvers are outside this profile. `scripts/qualify_mjx_warp_muscles.py` exercises representative planar rigid and spatial mixed compliant cases.
 
 Spatial position and velocity are in world XYZ. The orientation matrix maps local coordinates to world axes. Spatial body wrenches supply three coordinates each for force, moment and application point. Planar wrenches supply XY force and point and a one-element Z moment. A body-frame application point is relative to the body origin. The backend transports the free moment and lever-arm contribution to the body COM.
 

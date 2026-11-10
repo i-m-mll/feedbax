@@ -12,6 +12,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -269,6 +270,7 @@ class LocalOrchestrationDriver:
                     {
                         DriverHook.PREFLIGHT_CHECKS,
                         DriverHook.CHECKPOINT_STOP,
+                        DriverHook.COLLECT_FAILURE_LOGS,
                     }
                 ),
             ),
@@ -765,6 +767,37 @@ class LocalOrchestrationDriver:
             if first.is_file() and sha256_file(first) != str(payload_sha256):
                 raise LocalDriverError(f"payload sha256 mismatch for row {row.row_id!r}")
         return collected
+
+    def collect_failure_logs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, str]:
+        """Retain bounded executor diagnostics before failed row trees are reclaimed."""
+        check_collection_destinations(bundle, rows=())
+        with tempfile.TemporaryDirectory(dir=bundle.run_set_dir, prefix=".failure-logs-") as staging:
+            source = Path(staging)
+            for row in bundle.rows:
+                if state.rows[row.row_id].status != "failed":
+                    continue
+                row_dir = _row_paths(bundle, row.row_id)["row_dir"]
+                if row_dir.is_symlink() or row_dir.parent.is_symlink():
+                    raise LocalDriverError(f"failure log directory is not run-owned: {row_dir}")
+                for stream in ("stdout", "stderr"):
+                    try:
+                        descriptor = os.open(
+                            row_dir / f"{stream}.log", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+                        )
+                    except FileNotFoundError:
+                        continue
+                    with os.fdopen(descriptor, "rb") as log:
+                        info = os.fstat(log.fileno())
+                        if not stat.S_ISREG(info.st_mode):
+                            raise LocalDriverError("executor diagnostic must be a regular file")
+                        limit = 64 * 1024
+                        log.seek(max(0, info.st_size - limit))
+                        (source / f"{row.row_id}.{stream}.log").write_bytes(log.read(limit))
+            if not any(source.iterdir()):
+                return {}
+            destination = bundle.run_set_dir / "failure-logs"
+            publish_collection_output(bundle, source, destination)
+        return {"failure_logs": str(destination)}
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         result = dict(self._teardown_resources(bundle, state))

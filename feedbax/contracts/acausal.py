@@ -71,6 +71,7 @@ class SolverConfigSpec(BaseModel):
     solver_type: SolverType
     dt: float
     root_finder: Optional[RootFinderSpec] = None
+    mjx_backend: Literal["jax", "warp"] = "jax"
     planar_substeps: int | None = Field(default=None, ge=1, strict=True)
 
 
@@ -195,6 +196,10 @@ class AcausalGraphSpec(BaseModel):
             raise ValueError("Planar dynamics and substeps require planar multibody")
         if self.wrap_geometries and self.physical_domain != "planar_multibody":
             raise ValueError("Wrap geometry overlays require a planar multibody graph")
+        if self.solver.mjx_backend == "warp" and self.physical_domain not in {
+            "planar_multibody", "spatial_multibody",
+        }:
+            raise ValueError("MJX-Warp requires a MuJoCo multibody domain")
         for node_id, node in self.nodes.items():
             for param_name, value in node.params.items():
                 if _contains_array_value(value):
