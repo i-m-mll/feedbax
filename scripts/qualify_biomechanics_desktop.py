@@ -431,6 +431,8 @@ def source_smoke(name, case):
 
 
 def source_plan(name, case):
+    from unittest.mock import patch
+
     from feedbax.desktop.release import AppPaths
     from fastapi.testclient import TestClient
 
@@ -439,14 +441,25 @@ def source_plan(name, case):
         paths.configure_studio()
         from feedbax.web.app import create_app
 
-        with TestClient(create_app(desktop_job_root=paths.state / "jobs")) as client:
+        app = create_app(desktop_job_root=paths.state / "jobs")
+        with TestClient(app) as client:
             def request(method, path, body=None):
                 kwargs = {"content": body} if isinstance(body, bytes) else {"json": body}
                 response = client.request(method, path, **kwargs)
                 require(response.is_success, f"{method} {path}: {response.status_code}: {response.text[:1800]}")
                 return response.json()
 
-            return prepare(request, name, case, 2, 1)
+            plan = prepare(request, name, case, 2, 1)
+            # Exercise real native assembly without admitting a worker.
+            with patch.object(app.state.desktop_jobs.training, "dispatch") as dispatch:
+                accepted = request("POST", "/api/provider/studio/training/dispatch", {
+                    "manifest_id": plan["manifest_id"], "generation": plan["generation"],
+                })
+            dispatch.assert_called_once()
+            engine, _ = dispatch.call_args.args
+            row, = engine.bundle.rows
+            require(row.execution_family == "native-training", "fixture did not assemble a native row")
+            return {**plan, "run_set_id": accepted["run_set_id"], "execution_family": row.execution_family}
 
 
 def evaluate(args):
