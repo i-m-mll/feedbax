@@ -186,6 +186,14 @@ def main(args):
     stopped = wait_until(lambda: job_row(host, first.id, "stopped"))
     assert stopped["checkpoint"] == {"step": 4}
     continued = Job("continued", "project", "request", make_launch(fail=True), continues=first.id)
+    independent = Job("independent", "project", "request", make_launch(fail=False))
+    admit(host, "rerun", independent)
+    wait_until(lambda: job_row(host, independent.id, "running"))
+    with pytest.raises(HostError) as refusal:
+        admit(host, "resume", continued)
+    assert refusal.value.code == "invalid_resume"
+    host.stop([independent.id], "checkpoint")
+    wait_until(lambda: job_row(host, independent.id, "stopped"))
     admit(host, "resume", continued)
     failed = wait_until(lambda: job_row(host, continued.id, "failed"))
     assert failed["continues"] == first.id

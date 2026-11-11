@@ -221,7 +221,7 @@ class Store:
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
-                    f"SELECT id FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
+                    f"SELECT id, continues FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
                     (job["project"], job["request"]),
                 ).fetchone()
                 if by_id is not None:
@@ -231,6 +231,10 @@ class Store:
                         )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
+                    if job["continues"] is not None and live["continues"] != job["continues"]:
+                        raise HostError(
+                            "invalid_resume", "Another attempt of this request is already running."
+                        )
                     job_id, disposition = live["id"], "attached"
                 else:
                     self._require_admission_current(job, item["checked_through"])
