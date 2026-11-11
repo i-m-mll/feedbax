@@ -5,7 +5,7 @@ import {
   sampleTaskTrials,
   buildStudioPersistenceDocument,
   persistStudioDocument,
-  semanticWorkspaceForSave,
+  semanticWorkspace,
   stageStudioEvaluationMatrix,
 } from '@/api/client';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
@@ -126,14 +126,14 @@ describe('graph API save concurrency', () => {
       validation: { errors: [], warnings: [] },
       metadata: {},
     } as any;
-    expect(() => semanticWorkspaceForSave(workspace)).toThrow(/workspace schema identity/);
+    expect(() => semanticWorkspace(workspace)).toThrow(/workspace schema identity/);
 
     workspace.schema_id = 'feedbax.spec.studio.workspace';
     workspace.stages = [{
       id: 'stage:train',
       schema_version: 'feedbax.spec.studio.stage.v2',
     }];
-    expect(() => semanticWorkspaceForSave(workspace)).toThrow(/stage schema identity/);
+    expect(() => semanticWorkspace(workspace)).toThrow(/stage schema identity/);
   });
 });
 

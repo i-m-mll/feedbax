@@ -1434,15 +1434,10 @@ function importTemplateGraphIntoGraph(
       ...importedNodes,
     },
     wires: [...graph.wires, ...importedWires],
-    subgraphs:
-      Object.keys(importedSubgraphs).length > 0 || graph.subgraphs
-        ? {
-            ...(graph.subgraphs ?? {}),
-            ...importedSubgraphs,
-          }
-        : graph.subgraphs,
-    retained_observables:
-      retained_observables.length > 0 ? retained_observables : graph.retained_observables,
+    ...(Object.keys(importedSubgraphs).length > 0 && {
+      subgraphs: { ...graph.subgraphs, ...importedSubgraphs },
+    }),
+    ...(retained_observables.length > 0 && { retained_observables }),
   };
 
   return {

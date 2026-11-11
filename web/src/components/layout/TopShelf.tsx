@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
+import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { useLayoutStore } from '@/stores/layoutStore';
 
 const RightPanel = lazy(() =>
@@ -39,23 +40,33 @@ export function TopShelf({
       className="flex h-full w-full max-w-full flex-col overflow-hidden min-h-0 bg-white/80 backdrop-blur-sm"
       style={{ height }}
     >
-      <Suspense fallback={<div style={{ height: 44 }} className="border-b border-slate-100" />}>
-        <ScenarioProjectionToolbar availableHeight={availableHeight} />
-      </Suspense>
+      <StudioErrorBoundary region="Toolbar">
+        <Suspense fallback={<div style={{ height: 44 }} className="border-b border-slate-100" />}>
+          <ScenarioProjectionToolbar availableHeight={availableHeight} />
+        </Suspense>
+      </StudioErrorBoundary>
       {!topCollapsed && (
         <div className="flex min-w-0 flex-1 min-h-0">
-          <Sidebar />
-          <Suspense fallback={<TopShelfFallback />}>
-            <TaskScenarioPanel />
-          </Suspense>
-          <main className="relative min-w-0 flex-1 min-h-0">
+          <StudioErrorBoundary region="Library">
+            <Sidebar />
+          </StudioErrorBoundary>
+          <StudioErrorBoundary region="Task">
             <Suspense fallback={<TopShelfFallback />}>
-              <ScenarioProjectionWorkspace />
+              <TaskScenarioPanel />
             </Suspense>
+          </StudioErrorBoundary>
+          <main className="relative min-w-0 flex-1 min-h-0">
+            <StudioErrorBoundary region="Editor">
+              <Suspense fallback={<TopShelfFallback />}>
+                <ScenarioProjectionWorkspace />
+              </Suspense>
+            </StudioErrorBoundary>
           </main>
-          <Suspense fallback={<TopShelfFallback />}>
-            <RightPanel />
-          </Suspense>
+          <StudioErrorBoundary region="Inspector">
+            <Suspense fallback={<TopShelfFallback />}>
+              <RightPanel />
+            </Suspense>
+          </StudioErrorBoundary>
         </div>
       )}
     </section>

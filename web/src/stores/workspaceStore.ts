@@ -51,13 +51,7 @@ export function buildWorkspaceDocumentSnapshot(
   return {
     ...document,
     graph_ui_state: graphUiState,
-    workspace_ui_state: workspace?.ui_state ?? {},
-    stage_ui_state: Object.fromEntries(
-      (workspace?.stages ?? []).map((stage) => [stage.id, stage.ui_state])
-    ),
-    scenario_ui_state: Object.fromEntries(
-      Object.entries(workspace?.scenarios ?? {}).map(([id, scenario]) => [id, scenario.ui_state])
-    ),
+    ...workspacePresentation(workspace),
     analysis_pages: analysisPagesFromSnapshot(
       analysisSnapshot
     ) as unknown as WorkspaceDocument['analysis_pages'],
@@ -66,6 +60,23 @@ export function buildWorkspaceDocumentSnapshot(
       document.analysis_canvas_layout,
       workspace,
       analysisSnapshot,
+    ),
+  };
+}
+
+type WorkspacePresentation = Pick<
+  WorkspaceDocument,
+  'workspace_ui_state' | 'stage_ui_state' | 'scenario_ui_state'
+>;
+
+function workspacePresentation(workspace: StudioWorkspaceSpec | null): WorkspacePresentation {
+  return {
+    workspace_ui_state: workspace?.ui_state ?? {},
+    stage_ui_state: Object.fromEntries(
+      (workspace?.stages ?? []).map((stage) => [stage.id, stage.ui_state])
+    ),
+    scenario_ui_state: Object.fromEntries(
+      Object.entries(workspace?.scenarios ?? {}).map(([id, scenario]) => [id, scenario.ui_state])
     ),
   };
 }
@@ -93,7 +104,7 @@ export function buildNewWorkspaceDocumentSnapshot(
 
 export function hydrateWorkspacePresentation(
   workspace: StudioWorkspaceSpec | null,
-  document: WorkspaceDocument,
+  document: WorkspacePresentation,
 ): StudioWorkspaceSpec | null {
   if (!workspace) return null;
   return {
@@ -1158,10 +1169,20 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((baseSet) => {
     }),
 
   setTrainingExecutionPreparation: (preparation) =>
-    set((state) => ({
-      lastTrainingExecutionPreparation: preparation,
-      workspace: preparation?.workspace ?? state.workspace,
-    })),
+    set((state) => {
+      if (!preparation) {
+        return { lastTrainingExecutionPreparation: preparation };
+      }
+      return {
+        lastTrainingExecutionPreparation: preparation,
+        workspace: state.workspace
+          ? hydrateWorkspacePresentation(
+              { ...preparation.workspace, active_stage_id: state.workspace.active_stage_id },
+              workspacePresentation(state.workspace),
+            )
+          : preparation.workspace,
+      };
+    }),
 
   setPipelineMaterializationResult: (result) =>
     set((state) => ({

@@ -1095,7 +1095,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(updatedEvalStage?.metadata.dirty).toBe(true);
   });
 
-  it('stores prepared invocations and backend plans without dropping workspace state', () => {
+  it('shows the training plan while retaining the active tab and editor projection', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph,
@@ -1107,6 +1107,7 @@ describe('buildWorkspaceSnapshot', () => {
     });
     const prepared = {
       ...workspace,
+      ui_state: {},
       stages: workspace.stages.map((stage) =>
         stage.kind === 'train'
           ? {
@@ -1129,6 +1130,8 @@ describe('buildWorkspaceSnapshot', () => {
     };
 
     useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setActiveStage('stage:eval');
+    useWorkspaceStore.getState().setTopPaneProjection('task');
     useWorkspaceStore.getState().setTrainingExecutionPreparation({
       workspace: prepared,
       graph,
@@ -1162,6 +1165,8 @@ describe('buildWorkspaceSnapshot', () => {
       'studio-plan'
     );
     expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
+    expect(getActiveStage(state.workspace)?.kind).toBe('eval');
+    expect(getTopPaneState(state.workspace).active_projection).toBe('task');
   });
 
   it('stores pipeline materialization results and downstream stage refs', () => {

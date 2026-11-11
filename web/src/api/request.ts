@@ -4,43 +4,40 @@ export class ApiRequestError extends Error {
   readonly kind: ApiRequestErrorKind;
   readonly status: number | null;
   readonly path: string;
+  readonly detail: unknown;
 
   constructor(
     kind: ApiRequestErrorKind,
     path: string,
     message: string,
-    options: { status?: number | null; cause?: unknown } = {},
+    options: { status?: number | null; cause?: unknown; detail?: unknown } = {},
   ) {
     super(message);
     this.name = 'ApiRequestError';
     this.kind = kind;
     this.status = options.status ?? null;
     this.path = path;
+    this.detail = options.detail;
     (this as Error & { cause?: unknown }).cause = options.cause;
   }
 }
 
-async function parseErrorBody(response: Response): Promise<string> {
+async function parseErrorBody(response: Response): Promise<unknown> {
   try {
-    const text = await response.text();
-    try {
-      const parsed = JSON.parse(text) as { detail?: unknown };
-      if (typeof parsed.detail === 'string') return parsed.detail.trim();
-      if (
-        parsed.detail &&
-        typeof parsed.detail === 'object' &&
-        'message' in parsed.detail &&
-        typeof parsed.detail.message === 'string'
-      ) {
-        return parsed.detail.message.trim();
-      }
-    } catch {
-      // Fall through to the raw body below.
-    }
-    return text.trim();
+    const body: unknown = await response.json();
+    if (body && typeof body === 'object' && 'detail' in body) return body.detail;
   } catch {
-    return '';
+    return undefined;
   }
+}
+
+function detailMessage(detail: unknown): string {
+  if (typeof detail === 'string') return detail.trim();
+  if (detail && typeof detail === 'object' && 'message' in detail &&
+      typeof detail.message === 'string') {
+    return detail.message.trim();
+  }
+  return '';
 }
 
 export async function requestResponse(path: string, options?: RequestInit): Promise<Response> {
@@ -56,7 +53,7 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
     throw new ApiRequestError(
       'network',
       path,
-      'Backend unavailable. Check that the Feedbax Studio backend is running.',
+      'Service unreachable',
       { cause: error },
     );
   }
@@ -66,8 +63,8 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
     throw new ApiRequestError(
       'http',
       path,
-      detail || `Request failed with status ${response.status}`,
-      { status: response.status },
+      detailMessage(detail) || `Request failed with status ${response.status}`,
+      { status: response.status, detail },
     );
   }
 

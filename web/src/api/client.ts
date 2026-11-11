@@ -76,7 +76,7 @@ export function buildStudioPersistenceDocument({
   return studioPersistenceDocument({
     graph,
     workspace_document: workspaceDocument,
-    workspace: semanticWorkspaceForSave(workspace),
+    workspace: semanticWorkspace(workspace),
   });
 }
 
@@ -267,7 +267,7 @@ export async function compileGraphNode(
   }
 }
 
-export function semanticWorkspaceForSave(
+export function semanticWorkspace(
   workspace: StudioWorkspaceSpec | null,
 ): Record<string, unknown> | null {
   if (!workspace) return null;
@@ -321,7 +321,7 @@ export async function prepareStudioTrainingExecution(payload: {
     "/api/provider/studio/training/plan",
     {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, workspace: semanticWorkspace(payload.workspace) }),
     },
   );
 }
