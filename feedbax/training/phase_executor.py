@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from operator import index
 import time
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import equinox as eqx
@@ -34,6 +35,7 @@ UpdateKernel = Callable[
 ]
 ProgressCallback = Callable[[ProgressCoordinate], None]
 MethodObservationCallback = Callable[[ProgressCoordinate], None]
+CommittedUpdateCallback = Callable[[ProgressCoordinate, int, Mapping[str, Any]], None]
 StepGuard = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any], "_StepObservation"],
     "StepGuardResult | None",
@@ -681,6 +683,7 @@ class PhaseProgramExecutor:
         progress_callback: ProgressCallback | None = None,
         retain_progress: bool = True,
         method_observation_callback: MethodObservationCallback | None = None,
+        committed_update_callback: CommittedUpdateCallback | None = None,
         step_guard: StepGuard | None = None,
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
@@ -701,6 +704,8 @@ class PhaseProgramExecutor:
         while still delivering them to `progress_callback`.
 
         ``start_callback`` receives the entry batch after restoration and before updates.
+        ``committed_update_callback`` receives the accepted coordinate, batch count,
+        and read-only slot mapping after each update, independent of history cadence.
 
         A checkpoint restored by external custody can be passed directly as
         ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
@@ -885,6 +890,10 @@ class PhaseProgramExecutor:
                         f"previous={previous_completed_batch}, current={completed_batches}",
                     )
                 previous_completed_batch = completed_batches
+                if committed_update_callback is not None:
+                    committed_update_callback(
+                        coordinate, completed_batches, MappingProxyType(current_slots)
+                    )
                 if method_observation_callback is not None:
                     method_observation_callback(
                         _copy_progress_coordinate(
