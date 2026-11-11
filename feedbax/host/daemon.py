@@ -16,12 +16,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from feedbax.host.client import HostError
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
-from feedbax.host.protocol import MAX_RPC_BYTES, VERSION
+from feedbax.host.protocol import MAX_RPC_BYTES, VERSION, HostError
 from feedbax.host.store import Store
 
 LOG_LINE_LIMIT = 8192
@@ -528,8 +527,8 @@ class Host:
     async def _announce(self) -> None:
         head = self.store.db.execute("SELECT coalesce(max(cursor), 0) FROM events").fetchone()[0]
         if head != self.store.event_head:
+            self.store.event_head = head
             async with self.changed:
-                self.store.event_head = head
                 self.changed.notify_all()
 
     async def _events(self, after: int, projects: list[str], limit: int, wait: float) -> dict:

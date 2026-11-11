@@ -7,8 +7,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from feedbax.host.client import HostError
-from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES
+from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -395,14 +394,16 @@ class Store:
                 FROM events e JOIN jobs j ON j.id=e.job
                 WHERE cursor>? {project_filter} ORDER BY cursor LIMIT ?""",
             (after, *projects, limit + 1),
-        ).fetchall()
+        )
         events, remaining = [], 8 * 1024 * 1024
-        for row in rows[:limit]:
+        for row in rows:
             remaining -= len(row["data"].encode())
-            if remaining < 0 and events:
+            if len(events) == limit or (remaining < 0 and events):
+                cursor = events[-1]["cursor"]
                 break
             events.append({**row, "data": json.loads(row["data"])})
-        cursor = events[-1]["cursor"] if len(rows) > len(events) else max(after, self.event_head)
+        else:
+            cursor = max(after, self.event_head)
         return {"events": events, "cursor": cursor, "head": self.event_head, "oldest_cursor": 0}
 
     def jobs_snapshot(self, **filters) -> dict:

@@ -19,18 +19,13 @@ from feedbax.host.protocol import (
     AdmissionItem,
     Edge,
     EventPage,
+    HostError,
     JobsSnapshot,
     Json,
     JsonObject,
     Launch,
     StopMode,
 )
-
-
-class HostError(RuntimeError):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
 
 
 def default_root() -> Path:
@@ -185,6 +180,7 @@ class HostClient:
     ) -> EventPage:
         return cast(
             EventPage,
+            HostError,
             self._call(
                 "events",
                 after=after,

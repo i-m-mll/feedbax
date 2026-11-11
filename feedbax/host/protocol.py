@@ -26,6 +26,12 @@ LIVE_STATES = ("queued", "assigned", "running", "stopping")
 TERMINAL_STATES = ("succeeded", "stopped", "failed", "interrupted", "blocked")
 
 
+class HostError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True, slots=True)
 class Launch:
     argv: tuple[str, ...]
