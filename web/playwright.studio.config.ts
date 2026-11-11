@@ -26,6 +26,7 @@ export default defineConfig({
   },
   webServer: {
     command: `../scripts/dev.sh --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}`,
+    env: { FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid) },
     url: `${baseURL}/api/provider/health`,
     reuseExistingServer: false,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },

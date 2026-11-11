@@ -40,6 +40,7 @@ test('reports that the backend stopped and recovers in the same window', async (
   const start = (...args: string[]) => {
     const child = spawn('./scripts/dev.sh', [...backendArgs, ...args], {
       cwd: repo,
+      env: { ...process.env, FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     for (const stream of [child.stdout, child.stderr]) {
