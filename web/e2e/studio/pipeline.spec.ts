@@ -104,26 +104,47 @@ test('adds a composite with Train open and reopens the saved graph from another 
     }
   });
 
-test('stages two pending rows at the authored learning rates', async ({ page, request }) => {
+test('stages and reopens two pending rows at the authored rates', async ({ page, browser, baseURL, request }) => {
   const document = await reachingDocument();
-  const { metadata } = await saveFixture(request, document);
+  const { id, metadata } = await saveFixture(request, document);
   await page.goto('/');
   await openSavedProject(page, metadata.name);
   const plan = await stageSweep(page);
   expect(plan.ok(), await plan.text()).toBe(true);
   const { workspace } = await plan.json() as StudioTrainingExecutionPreparation;
   const rows = workspace.stages.find((stage) => stage.kind === 'train')?.output_collections
-    .find((collection) => collection.kind === 'training_runs')?.item_refs;
+    .find((collection) => collection.kind === 'training_runs')?.item_refs ?? [];
   const labels = sweepRates.map((rate) => `Learning rate=${rate}`);
-  expect(rows?.map((row) => [row.metadata.label, row.metadata.status])).toEqual(
+  expect(rows.map((row) => [row.metadata.label, row.metadata.status])).toEqual(
     expect.arrayContaining(labels.map((label) => [label, 'pending'])),
   );
   expect(rows).toHaveLength(labels.length);
-  await expect(page.getByRole('button', { name: /^Show details for Learning rate=/ })).toHaveCount(labels.length);
-  for (const label of labels) {
-    const details = page.getByRole('button', { name: `Show details for ${label}`, exact: true });
-    await expect(details).toBeVisible();
-    await expect(details.locator('xpath=../..').getByText('Pending', { exact: true })).toBeVisible();
+  async function expectPending(view: Page) {
+    await expect(view.getByRole('button', { name: /^Show details for Learning rate=/ })).toHaveCount(labels.length);
+    for (const label of labels) {
+      const details = view.getByRole('button', { name: `Show details for ${label}`, exact: true });
+      await expect(details).toBeVisible();
+      await expect(details.locator('xpath=../..').getByText('Pending', { exact: true })).toBeVisible();
+    }
+  }
+  await expectPending(page);
+  await page.getByTitle('Save', { exact: true }).click();
+  await expect.poll(async () => {
+    const persisted = await request.get(`/api/graphs/${id}`);
+    expect(persisted.ok()).toBe(true);
+    const { data } = await persisted.json() as GraphDetailResponse;
+    const persistedTrain = data.workspace?.stages.find((stage) => stage.kind === 'train');
+    return persistedTrain?.output_collections.find((collection) => collection.kind === 'training_runs')
+      ?.item_refs.map((row) => row.id).sort();
+  }).toEqual(rows.map((row) => row.id).sort());
+
+  const fresh = await browser.newPage({ baseURL, serviceWorkers: 'block' });
+  try {
+    await fresh.goto('/');
+    await openSavedProject(fresh, metadata.name);
+    await expectPending(fresh);
+  } finally {
+    await fresh.close();
   }
 });
 
