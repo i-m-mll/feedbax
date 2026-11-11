@@ -18,6 +18,7 @@ type Dimensions = tuple[str, ...]
 type Index = tuple[int | slice, ...]
 type TensorLoader = Callable[[str, Index], Array]
 type ProjectionField = tuple[str, Dimensions]
+type Label = str | int | float | bool | None
 
 
 @dataclass(frozen=True, eq=False)
@@ -110,6 +111,8 @@ class Dataset:
         tensors: dict[str, Array] = {}
         for name, variable in (*variables.items(), *coordinate_fields.items()):
             data = variable.data
+            if isinstance(data, np.ma.MaskedArray):
+                raise ValueError(f"field {name!r} needs a separate validity variable")
             if len(variable.dims) != data.ndim:
                 raise ValueError(
                     f"field {name!r} has dimensions {variable.dims!r} for shape {data.shape}"
@@ -179,9 +182,38 @@ class Dataset:
             return _select(_inline_array(deepcopy(description.inline_values), shape), index)
 
         data = self._load_tensor(name, index)
-        if data.shape != selected_shape or not _is_numeric(data):
+        if (
+            isinstance(data, np.ma.MaskedArray)
+            or data.shape != selected_shape
+            or not _is_numeric(data)
+        ):
             raise ValueError(f"loader returned an incompatible value for field {name!r}")
         return data
+
+    def select(self, name: str, *, labels: Mapping[str, Label]) -> Array:
+        """Resolve one matching index per dimension using one-dimensional coordinates."""
+        dims = self._descriptor.field(name).dims
+        candidates: dict[int, set[int]] = {}
+        for coordinate, label in labels.items():
+            coordinate_dims = self._descriptor.coords[coordinate].dims
+            if len(coordinate_dims) != 1 or coordinate_dims[0] not in dims:
+                raise ValueError(f"coordinate {coordinate!r} cannot select a dimension of {name!r}")
+            axis = dims.index(coordinate_dims[0])
+            matches = {
+                index
+                for index, value in enumerate(np.asarray(self.data(coordinate)).tolist())
+                if value == label and (type(value) is bool) == (type(label) is bool)
+            }
+            candidates.setdefault(axis, matches).intersection_update(matches)
+
+        index: list[int | slice] = [slice(None)] * (max(candidates, default=-1) + 1)
+        for axis, matches in candidates.items():
+            if len(matches) != 1:
+                raise ValueError(
+                    f"labels select {len(matches)} positions on dimension {dims[axis]!r}"
+                )
+            index[axis] = next(iter(matches))
+        return self.data(name, tuple(index))
 
     def project(self, *names: str, coordinates: Sequence[str] = ()) -> Projection:
         """Load the declared numerical variables and coordinates for a JAX call."""

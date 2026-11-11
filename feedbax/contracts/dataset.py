@@ -106,12 +106,19 @@ class DatasetDescriptor(StrictModel):
             if field.inline_values is None
         )
 
+    def json_value(self) -> dict[str, JsonValue]:
+        """The semantic metadata value embedded by the array container."""
+        return self.model_dump(mode="json", exclude_none=True)
+
     def to_json(self) -> bytes:
-        return canonical_json_v2_bytes(self.model_dump(mode="json", exclude_none=True))
+        return canonical_json_v2_bytes(self.json_value())
 
     @classmethod
-    def from_json(cls, payload: bytes | str) -> DatasetDescriptor:
-        value = strict_json_loads(payload)
+    def from_json_value(cls, value: JsonValue) -> DatasetDescriptor:
         if not isinstance(value, dict) or "schema_version" not in value:
             raise ValueError("dataset descriptor requires a schema_version")
         return cls.model_validate(value)
+
+    @classmethod
+    def from_json(cls, payload: bytes | str) -> DatasetDescriptor:
+        return cls.from_json_value(strict_json_loads(payload))
