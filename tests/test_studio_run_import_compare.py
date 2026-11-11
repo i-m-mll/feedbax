@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.analysis.bundles import iter_candidate_manifests
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     canonical_manifest_path,
@@ -139,7 +138,7 @@ def test_runs_dir_import_copies_manifest_with_import_provenance(
 
 
 @pytest.mark.parametrize("index_state", ["missing", "partial", "stale"])
-def test_selection_uses_manifest_files(tmp_path: Path, monkeypatch, index_state: str) -> None:
+def test_training_list_uses_current_manifest_files(tmp_path: Path, monkeypatch, index_state: str) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     _write_training_run(tmp_path, "run:unindexed", learning_rate=0.01, loss=0.4, index=False)
     if index_state != "missing":
@@ -152,29 +151,19 @@ def test_selection_uses_manifest_files(tmp_path: Path, monkeypatch, index_state:
             current.model_copy(update={"status": "cancelled"}), root=tmp_path, index=False
         )
 
-    expected = {"run:unindexed"} if index_state == "missing" else {"run:unindexed", "run:indexed"}
+    expected = {"run:unindexed": "completed"}
+    if index_state != "missing":
+        expected["run:indexed"] = "completed"
+    if index_state == "stale":
+        expected["run:changed"] = "cancelled"
     with TestClient(create_app()) as client:
-        preview = client.post(
-            "/api/runs/selection/preview",
-            json={
-                "selection_spec": {
-                    "mode": "query",
-                    "manifest_kind": "TrainingRunManifest",
-                    "query": {"manifest_kind": "TrainingRunManifest", "statuses": ["completed"]},
-                },
-            },
-        )
+        listed = client.get("/api/runs/training")
         exact = client.get("/api/runs/training/run:unindexed/manifest")
 
-    assert preview.status_code == 200
-    assert {ref["id"] for ref in preview.json()["parent_refs"]} == expected
+    assert listed.status_code == 200
+    assert {row["id"]: row["status"] for row in listed.json()} == expected
     assert exact.status_code == 200
     assert exact.json()["id"] == "run:unindexed"
-    assert {
-        manifest.id
-        for manifest in iter_candidate_manifests(tmp_path, manifest_kind="TrainingRunManifest")
-        if manifest.status == "completed"
-    } == expected
 
 
 def test_repeated_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, monkeypatch) -> None:

@@ -34,14 +34,6 @@ from feedbax.contracts.manifest_packet import (
     ManifestPacketValidationError,
     import_manifest_packet,
 )
-from feedbax.contracts.selection import (
-    SelectionPreview,
-    SelectionRefreshDiff,
-    SelectionSpec,
-    manifest_index_rows_from_records,
-    preview_selection_spec,
-    refresh_selection_spec,
-)
 from feedbax.orchestration.staged_training import (
     require_unclaimed_training_receipt,
     staged_training_display_status,
@@ -57,7 +49,6 @@ from feedbax.persistence.manifest_discovery import (
     iter_manifests_by_kind,
     manifest_record,
     manifest_records_by_kind,
-    manifest_records_for_predicate,
 )
 from feedbax.persistence.manifest_index import (
     connect_index,
@@ -132,21 +123,6 @@ class SupersedeTrainingRunRequest(BaseModel):
 
     superseded_by: Optional[str] = None
     reason: Optional[str] = None
-
-
-class SelectionPreviewRequest(BaseModel):
-    """Body for previewing a SelectionSpec over manifest files."""
-
-    selection_spec: SelectionSpec
-    limit: int = Field(default=50, ge=0)
-
-
-class SelectionRefreshRequest(BaseModel):
-    """Body for comparing a frozen SelectionSpec with current manifest matches."""
-
-    selection_spec: SelectionSpec
-    failed_parent_ids: list[str] = Field(default_factory=list)
-    stale_parent_ids: list[str] = Field(default_factory=list)
 
 
 class TrainingRunCompareRequest(BaseModel):
@@ -445,12 +421,6 @@ def _load_training_manifest(training_run_id: str) -> tuple[TrainingRunManifest, 
     return manifest, path
 
 
-def _selection_index_rows(spec: SelectionSpec):
-    if spec.query is None:
-        return []
-    return manifest_index_rows_from_records(manifest_records_for_predicate(spec.query))
-
-
 def _load_evaluation_manifest(eval_run_id: str) -> tuple[EvaluationRunManifest, Path]:
     match = _find_run_manifest(eval_run_id)
     if match is None:
@@ -673,27 +643,6 @@ async def list_training_runs() -> list[TrainingRunInfo]:
     for live in live_runs:
         by_id.setdefault(live["id"], TrainingRunInfo.model_validate(live))
     return list(by_id.values())
-
-
-@router.post("/selection/preview", response_model=SelectionPreview)
-async def preview_selection(request: SelectionPreviewRequest) -> SelectionPreview:
-    """Preview the current manifest matches for a selection spec."""
-
-    rows = _selection_index_rows(request.selection_spec) if request.selection_spec.mode == "query" else []
-    return preview_selection_spec(request.selection_spec, rows, limit=request.limit)
-
-
-@router.post("/selection/refresh", response_model=SelectionRefreshDiff)
-async def refresh_selection(request: SelectionRefreshRequest) -> SelectionRefreshDiff:
-    """Compare a frozen selection snapshot with current manifest matches."""
-
-    rows = _selection_index_rows(request.selection_spec)
-    return refresh_selection_spec(
-        request.selection_spec,
-        rows,
-        failed_parent_ids=request.failed_parent_ids,
-        stale_parent_ids=request.stale_parent_ids,
-    )
 
 
 @router.post("/training/compare", response_model=TrainingRunCompareResponse)

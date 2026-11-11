@@ -1,45 +1,20 @@
 import { create } from 'zustand';
 
-type EdgeStyle = 'default' | 'straight' | 'step';
-
 interface SettingsState {
   showMinimap: boolean;
-  snapToGrid: boolean;
-  snapGridSize: number;
-  showGridBackground: boolean;
   showDomainLegend: boolean;
-  reduceAnimations: boolean;
-  defaultEdgeStyle: EdgeStyle;
   toggleMinimap: () => void;
-  setSnapToGrid: (value: boolean) => void;
-  setSnapGridSize: (value: number) => void;
-  setShowGridBackground: (value: boolean) => void;
   setShowDomainLegend: (value: boolean) => void;
-  setReduceAnimations: (value: boolean) => void;
-  setDefaultEdgeStyle: (value: EdgeStyle) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
   showMinimap: false,
-  snapToGrid: false,
-  snapGridSize: 20,
-  showGridBackground: false,
   showDomainLegend: false,
-  reduceAnimations: false,
-  defaultEdgeStyle: 'default',
   toggleMinimap: () => set((state) => ({ showMinimap: !state.showMinimap })),
-  setSnapToGrid: (value) => set({ snapToGrid: value }),
-  setSnapGridSize: (value) => set({ snapGridSize: value }),
-  setShowGridBackground: (value) => set({ showGridBackground: value }),
   setShowDomainLegend: (value) => set({ showDomainLegend: value }),
-  setReduceAnimations: (value) => set({ reduceAnimations: value }),
-  setDefaultEdgeStyle: (value) => set({ defaultEdgeStyle: value }),
 }));
 
-const preferenceKeys = [
-  'showMinimap', 'snapToGrid', 'snapGridSize', 'showGridBackground',
-  'showDomainLegend', 'reduceAnimations', 'defaultEdgeStyle',
-] as const;
+const preferenceKeys = ['showMinimap', 'showDomainLegend'] as const;
 
 export function synchronizeDesktopPreferences(onError: (message: string) => void) {
   const endpoint = '/api/desktop/preferences';
@@ -66,9 +41,7 @@ export function synchronizeDesktopPreferences(onError: (message: string) => void
     if (stopped) return;
     const state = useSettingsStore.getState();
     const accepted = preferenceKeys.filter((key) =>
-      !edited.has(key) && typeof preferences[key] === typeof state[key]
-      && (key !== 'defaultEdgeStyle' || ['default', 'straight', 'step'].includes(String(preferences[key])))
-      && (key !== 'snapGridSize' || Number(preferences[key]) > 0),
+      !edited.has(key) && typeof preferences[key] === typeof state[key],
     );
     hydrating = true;
     useSettingsStore.setState(Object.fromEntries(accepted.map((key) => [key, preferences[key]])));

@@ -1,7 +1,5 @@
 import type {
   ManifestPredicate,
-  ParentRef,
-  SelectionRefreshDiff,
   SelectionSpec,
 } from '@/generated/studioContracts';
 
@@ -36,24 +34,6 @@ export function querySelectionSpec(query: ManifestPredicate): SelectionSpec {
   };
 }
 
-export function frozenSelectionSpec(
-  query: ManifestPredicate,
-  refs: ParentRef[],
-  frozenAt: string,
-): SelectionSpec {
-  return {
-    schema_id: SELECTION_SPEC_SCHEMA_ID,
-    schema_version: SELECTION_SPEC_SCHEMA_VERSION,
-    mode: 'frozen',
-    manifest_kind: query.manifest_kind,
-    ids: [],
-    query,
-    frozen_refs: refs,
-    frozen_at: frozenAt,
-    metadata: {},
-  };
-}
-
 export function migrateLegacySelectionSpec(
   payload: Record<string, unknown>,
 ): SelectionSpec | null {
@@ -80,24 +60,6 @@ export function selectedParentIds(spec: SelectionSpec): string[] {
   if (spec.mode === 'explicit') return spec.ids;
   if (spec.mode === 'frozen') return spec.frozen_refs.map((ref) => ref.id);
   return [];
-}
-
-export function selectionRefreshCounts(diff: SelectionRefreshDiff): {
-  newCount: number;
-  goneCount: number;
-  missing: number;
-  missingFailed: number;
-  all: number;
-  stale: number;
-} {
-  return {
-    newCount: diff.new_refs.length,
-    goneCount: diff.gone_refs.length,
-    missing: diff.reprocess_counts.missing ?? 0,
-    missingFailed: diff.reprocess_counts.missing_failed ?? 0,
-    all: diff.reprocess_counts.all ?? 0,
-    stale: diff.reprocess_counts.stale ?? 0,
-  };
 }
 
 function selectionIds(payload: Record<string, unknown>, key: string): string[] {

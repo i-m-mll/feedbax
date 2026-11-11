@@ -85,8 +85,8 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
-            // Graph state must never be served from cache (Cache-Control: no-store is ignored by NetworkFirst)
-            urlPattern: /^https?:\/\/.*\/api\/graphs(\/.*)?$/i,
+            // Graphs and connectivity must reflect the live service even when offline.
+            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs(?:\/.*)?|provider\/health)$/i,
             handler: 'NetworkOnly',
           },
           {

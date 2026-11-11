@@ -178,33 +178,6 @@ async def update_graph(
     return GraphUpdateResponse(data={"success": True, "metadata": record.project.metadata})
 
 
-@router.post("/{graph_id}/beacon")
-async def beacon_update_graph(
-    graph_id: str,
-    payload: dict[str, Any],
-    request: Request,
-):
-    """sendBeacon endpoint for pagehide saves; returns 204 No Content."""
-    admitted = _admit_save(payload)
-    try:
-        service.update_graph(
-            graph_id,
-            admitted.graph,
-            workspace=admitted.workspace,
-            workspace_document=admitted.workspace_document,
-            expected_save_revision=admitted.expected_save_revision,
-            require_save_revision=True,
-            component_registry=_component_registry(request),
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Graph not found") from exc
-    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except GraphSaveConflictError as exc:
-        raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc
-    return Response(status_code=204)
-
-
 @router.delete("/{graph_id}", response_model=SuccessResponse)
 async def delete_graph(graph_id: str) -> SuccessResponse:
     service.delete_graph(graph_id)

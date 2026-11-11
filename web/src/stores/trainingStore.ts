@@ -155,9 +155,7 @@ interface TrainingStoreState {
   setSelectedLossPath: (path: string[] | null) => void;
   setLossValidationErrors: (errors: LossValidationError[]) => void;
   setHighlightedProbeSelector: (selector: string | null) => void;
-  updateLossTerm: (path: string[], updates: Partial<LossTermSpec>) => void;
   addLossTerm: (parentPath: string[], key: string, term: LossTermSpec) => void;
-  removeLossTerm: (path: string[]) => void;
   // Worker actions
   setWorkerConfig: (mode: WorkerMode, url: string | null, connected: boolean) => void;
   // Orchestration actions
@@ -260,32 +258,12 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   setSelectedLossPath: (path) => set({ selectedLossPath: path }),
   setLossValidationErrors: (errors) => set({ lossValidationErrors: errors }),
   setHighlightedProbeSelector: (selector) => set({ highlightedProbeSelector: selector }),
-  updateLossTerm: (path, updates) => {
-    const state = get();
-    const base = currentWorkspaceTrainingSpec(state.trainingSpec);
-    const trainingSpec = {
-      ...base,
-      loss: updateLossTermAtPath(base.loss, path, updates),
-    };
-    set({ trainingSpec });
-    persistTrainingSpecDraft(trainingSpec);
-  },
   addLossTerm: (parentPath, key, term) => {
     const state = get();
     const base = currentWorkspaceTrainingSpec(state.trainingSpec);
     const trainingSpec = {
       ...base,
       loss: addLossTermAtPath(base.loss, parentPath, key, term),
-    };
-    set({ trainingSpec });
-    persistTrainingSpecDraft(trainingSpec);
-  },
-  removeLossTerm: (path) => {
-    const state = get();
-    const base = currentWorkspaceTrainingSpec(state.trainingSpec);
-    const trainingSpec = {
-      ...base,
-      loss: removeLossTermAtPath(base.loss, path),
     };
     set({ trainingSpec });
     persistTrainingSpecDraft(trainingSpec);
@@ -312,27 +290,6 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
 
 // Helper functions for loss term manipulation
 
-function updateLossTermAtPath(
-  term: LossTermSpec,
-  path: string[],
-  updates: Partial<LossTermSpec>
-): LossTermSpec {
-  if (path.length === 0) {
-    return { ...term, ...updates };
-  }
-  if (!term.children) return term;
-  const [head, ...rest] = path;
-  const child = term.children[head];
-  if (!child) return term;
-  return {
-    ...term,
-    children: {
-      ...term.children,
-      [head]: updateLossTermAtPath(child, rest, updates),
-    },
-  };
-}
-
 function addLossTermAtPath(
   term: LossTermSpec,
   parentPath: string[],
@@ -357,32 +314,6 @@ function addLossTermAtPath(
     children: {
       ...term.children,
       [head]: addLossTermAtPath(child, rest, key, newTerm),
-    },
-  };
-}
-
-function removeLossTermAtPath(term: LossTermSpec, path: string[]): LossTermSpec {
-  if (path.length === 0) {
-    // Cannot remove root
-    return term;
-  }
-  if (path.length === 1) {
-    if (!term.children) return term;
-    const { [path[0]]: _removed, ...remaining } = term.children;
-    return {
-      ...term,
-      children: Object.keys(remaining).length > 0 ? remaining : undefined,
-    };
-  }
-  if (!term.children) return term;
-  const [head, ...rest] = path;
-  const child = term.children[head];
-  if (!child) return term;
-  return {
-    ...term,
-    children: {
-      ...term.children,
-      [head]: removeLossTermAtPath(child, rest),
     },
   };
 }

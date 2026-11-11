@@ -57,15 +57,7 @@ revision through `expected_save_revision`/`If-Match`; stale saves return HTTP
 409 with expected/current revision details. The frontend fetches the server copy
 where possible and shows concrete local-versus-server conflict sections.
 
-Autosave is debounced in `web/src/App.tsx`. The pagehide path uses the beacon
-save endpoint so refresh/close events still attempt to persist the semantic
-graph and its separate `WorkspaceDocument`. That document is the durable
-authority for graph layout, viewport, analysis-page presentation, and
-workspace-, stage-, and scenario-level view state, plus revision-pinned
-semantic anchors. The semantic workspace sent to the backend contains no UI
-state; Studio composes the presentation fields into its runtime view model when
-loading a project. Same-project multi-tab editing is warned through
-`BroadcastChannel`.
+The persistence coordinator debounces backend writes. On pagehide Studio records the local project tabs synchronously, so a reload can resume a pending save. The separate `WorkspaceDocument` is the durable authority for graph layout, viewport, analysis-page presentation, workspace-, stage-, and scenario-level view state, and revision-pinned semantic anchors. The backend receives the semantic workspace without UI state. Studio composes the presentation fields into its runtime view when loading a project. Same-project editing is detected through `BroadcastChannel`.
 
 Local UI preferences are intentionally persisted where visible state should
 survive refreshes. Examples include shelf/sidebar sizing and mode in

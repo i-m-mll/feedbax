@@ -886,32 +886,3 @@ def test_graph_update_api_rejects_stale_and_missing_revisions(tmp_path, monkeypa
     assert stale.status_code == 409
     assert stale.json()["detail"]["expected_save_revision"] == 0
     assert stale.json()["detail"]["current_save_revision"] == 1
-
-
-def test_beacon_update_uses_payload_save_revision(tmp_path, monkeypatch):
-    service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(_graph())
-    monkeypatch.setattr(graphs_api, "service", service)
-    client = TestClient(create_app())
-    workspace_document = record.project.workspace_document.model_dump(mode="json")
-
-    stale = client.post(
-        f"/api/graphs/{record.graph_id}/beacon",
-        json=_save_payload(
-            graph=_graph().model_dump(),
-            workspace_document=workspace_document,
-            expected_save_revision=1,
-        ),
-    )
-    assert stale.status_code == 409
-
-    ok = client.post(
-        f"/api/graphs/{record.graph_id}/beacon",
-        json=_save_payload(
-            graph=_graph().model_dump(),
-            workspace_document=workspace_document,
-            expected_save_revision=0,
-        ),
-    )
-    assert ok.status_code == 204
-    assert service.get_graph(record.graph_id).project.metadata.save_revision == 1

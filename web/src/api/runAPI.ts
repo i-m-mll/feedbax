@@ -12,11 +12,6 @@ import type {
   TrainingRunCompareResponse,
   TrainingRunInfo,
 } from '@/types/runs';
-import type {
-  SelectionPreview,
-  SelectionRefreshDiff,
-  SelectionSpec,
-} from '@/generated/studioContracts';
 import { parseContract } from '@/generated/studioContracts';
 import { asApiRequestError, requestJson } from '@/api/request';
 
@@ -236,44 +231,6 @@ export async function importRunsDir(pathname: string): Promise<ManifestImportRes
     return importResponseFromWire(result);
   } catch (error) {
     throw asApiRequestError(error, path, 'Runs directory import response did not match the expected shape.');
-  }
-}
-
-/** Preview the current manifest-index matches for a SelectionSpec. */
-export async function previewSelectionSpec(
-  selectionSpec: SelectionSpec,
-  limit = 50,
-): Promise<SelectionPreview> {
-  const path = '/api/runs/selection/preview';
-  const result = await requestJson(path, {
-    method: 'POST',
-    body: JSON.stringify({ selection_spec: selectionSpec, limit }),
-  });
-  try {
-    return parseContract('SelectionPreview', result);
-  } catch (error) {
-    throw asApiRequestError(error, path, 'Selection preview response did not match the Studio contract.');
-  }
-}
-
-/** Compare a frozen SelectionSpec with current manifest-index matches. */
-export async function refreshSelectionSpec(
-  selectionSpec: SelectionSpec,
-  payload: { failedParentIds?: string[]; staleParentIds?: string[] } = {},
-): Promise<SelectionRefreshDiff> {
-  const path = '/api/runs/selection/refresh';
-  const result = await requestJson(path, {
-    method: 'POST',
-    body: JSON.stringify({
-      selection_spec: selectionSpec,
-      failed_parent_ids: payload.failedParentIds ?? [],
-      stale_parent_ids: payload.staleParentIds ?? [],
-    }),
-  });
-  try {
-    return parseContract('SelectionRefreshDiff', result);
-  } catch (error) {
-    throw asApiRequestError(error, path, 'Selection refresh response did not match the Studio contract.');
   }
 }
 

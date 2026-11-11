@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { ManifestPredicate, ParentRef, SelectionRefreshDiff } from '@/generated/studioContracts';
+import type { ManifestPredicate, SelectionSpec } from '@/generated/studioContracts';
 import {
   explicitSelectionSpec,
-  frozenSelectionSpec,
   migrateLegacySelectionSpec,
   querySelectionSpec,
   selectedParentIds,
-  selectionRefreshCounts,
 } from '@/utils/selectionSpec';
 
 describe('SelectionSpec utilities', () => {
@@ -23,7 +21,7 @@ describe('SelectionSpec utilities', () => {
     expect(migrateLegacySelectionSpec({ selected: ['unknown'] })).toBeNull();
   });
 
-  it('constructs query and frozen specs without deriving P5 selection state', () => {
+  it('constructs a query and reads selected IDs from explicit and saved frozen specs', () => {
     const query: ManifestPredicate = {
       manifest_kind: 'TrainingRunManifest',
       source_set_ids: ['sweep-a'],
@@ -35,40 +33,14 @@ describe('SelectionSpec utilities', () => {
       params_equals: {},
       path_equals: {},
     };
-    const ref: ParentRef = {
-      kind: 'TrainingRunManifest',
-      id: 'run-a',
-      role: 'training_run',
-      metadata: {},
-    };
-
     expect(querySelectionSpec(query)).toMatchObject({ mode: 'query', query });
-    expect(frozenSelectionSpec(query, [ref], '2026-07-07T00:00:00Z')).toMatchObject({
-      mode: 'frozen',
-      frozen_refs: [ref],
-    });
     expect(selectedParentIds(explicitSelectionSpec(['run-a']))).toEqual(['run-a']);
-    expect(selectedParentIds(frozenSelectionSpec(query, [ref], '2026-07-07T00:00:00Z')))
-      .toEqual(['run-a']);
-  });
-
-  it('summarizes refresh reprocess counts', () => {
-    const diff: SelectionRefreshDiff = {
-      frozen_refs: [],
-      current_refs: [],
-      new_refs: [{ kind: 'TrainingRunManifest', id: 'run-new', metadata: {} }],
-      gone_refs: [{ kind: 'TrainingRunManifest', id: 'run-gone', metadata: {} }],
-      unchanged_refs: [],
-      reprocess_counts: { missing: 1, missing_failed: 2, all: 3, stale: 1 },
+    const frozen: SelectionSpec = {
+      ...querySelectionSpec(query),
+      mode: 'frozen',
+      frozen_refs: [{ kind: 'TrainingRunManifest', id: 'run-a', metadata: {} }],
+      frozen_at: '2026-07-07T00:00:00Z',
     };
-
-    expect(selectionRefreshCounts(diff)).toEqual({
-      newCount: 1,
-      goneCount: 1,
-      missing: 1,
-      missingFailed: 2,
-      all: 3,
-      stale: 1,
-    });
+    expect(selectedParentIds(frozen)).toEqual(['run-a']);
   });
 });
