@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
-import errno
 import fcntl
 import hashlib
 import json
@@ -24,6 +22,9 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from feedbax.host.io import TOKEN_ENV as FEEDBAX_PROCESS_IDENTITY_ENV
+from feedbax.host.process import process_group_member_pids as _process_group_member_pids
+from feedbax.host.process import process_has_launch_token as _process_has_launch_token
 from feedbax.contracts.base import sha256_file
 from feedbax.contracts.strict_json import (
     StrictJsonError,
@@ -103,7 +104,6 @@ class LocalDriverError(RuntimeError):
 JAX_COMPILATION_CACHE_DIR_ENV = "JAX_COMPILATION_CACHE_DIR"
 FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV = "FEEDBAX_JAX_COMPILATION_CACHE_DIR"
 FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV = "FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"
-FEEDBAX_PROCESS_IDENTITY_ENV = "FEEDBAX_PROCESS_IDENTITY"
 
 _LOCAL_PROCESS_LAUNCH_SCRIPT = r"""
 import json
@@ -1574,112 +1574,6 @@ def _verified_local_process_identity(
         if inspection_error is not None or not remaining or not set(remaining) <= verified:
             return None, "live process group does not carry the recorded launch token"
     return identity, "verified"
-
-
-def _process_has_launch_token(pid: int, token: str) -> bool:
-    expected = f"{FEEDBAX_PROCESS_IDENTITY_ENV}={token}".encode()
-    if sys.platform == "darwin":
-        # CTL_KERN/KERN_PROCARGS2 returns argc, executable, argv, and environment.
-        sysctl = ctypes.CDLL(None).sysctl
-        mib = (ctypes.c_int * 3)(1, 49, pid)
-        size = ctypes.c_size_t()
-        if sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 4:
-            return False
-        buffer = ctypes.create_string_buffer(size.value)
-        if sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0 or size.value < 4:
-            return False
-        argc = int.from_bytes(buffer.raw[:4], sys.byteorder, signed=True)
-        arguments = buffer.raw[4:size.value].partition(b"\0")[2].lstrip(b"\0")
-        if argc < 1:
-            return False
-        return expected in arguments.split(b"\0")[argc:]
-    try:
-        return expected in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-    except OSError:
-        return False
-
-
-def _process_group_member_pids(
-    process_group_id: int,
-) -> tuple[tuple[int, ...], str | None]:
-    if sys.platform == "darwin":
-        try:
-            return _darwin_process_group_members(process_group_id), None
-        except OSError as exc:
-            return (), f"process group membership inspection failed: {exc}"
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,pgid=,stat="],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return (), f"process group membership inspection failed: {exc}"
-    if result.returncode != 0:
-        return (), f"process group membership inspection exited {result.returncode}"
-    members = []
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) != 3:
-            continue
-        try:
-            pid, group = (int(value) for value in fields[:2])
-        except ValueError:
-            continue
-        if group == process_group_id and not fields[2].startswith("Z"):
-            members.append(pid)
-    return tuple(members), None
-
-
-@cache
-def _darwin_libproc() -> ctypes.CDLL:
-    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-    libproc.proc_listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
-    libproc.proc_listpids.restype = ctypes.c_int
-    libproc.proc_pidinfo.argtypes = [
-        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
-    ]
-    libproc.proc_pidinfo.restype = ctypes.c_int
-    return libproc
-
-
-def _darwin_process_group_members(process_group_id: int) -> tuple[int, ...]:
-    """Inspect the requested group without spawning a host-wide process listing."""
-    proc_pgrp_only = 2
-    proc_pidt_shortbsdinfo = 13
-    zombie = 5
-    libproc = _darwin_libproc()
-    capacity = 16
-    pid_size = ctypes.sizeof(ctypes.c_int)
-    while True:
-        pids = (ctypes.c_int * capacity)()
-        size = ctypes.sizeof(pids)
-        ctypes.set_errno(0)
-        used = libproc.proc_listpids(proc_pgrp_only, process_group_id, pids, size)
-        if not 0 <= used <= size or used % pid_size or (used == 0 and ctypes.get_errno()):
-            error = ctypes.get_errno() or errno.EIO
-            raise OSError(error, os.strerror(error), "proc_listpids")
-        if used < size:
-            break
-        capacity *= 2
-
-    # struct proc_bsdshortinfo starts with pid, ppid, pgid and status in sys/proc_info.h.
-    info = (ctypes.c_uint32 * 16)()
-    size = ctypes.sizeof(info)
-    members = []
-    for pid in pids[:used // pid_size]:
-        ctypes.set_errno(0)
-        used = libproc.proc_pidinfo(pid, proc_pidt_shortbsdinfo, 0, info, size)
-        if used != size:
-            error = ctypes.get_errno() or errno.EIO
-            if error == errno.ESRCH:
-                continue
-            raise OSError(error, os.strerror(error), "proc_pidinfo")
-        if info[2] == process_group_id and info[3] != zombie:
-            members.append(pid)
-    return tuple(members)
 
 
 def _authorize_local_signal(
