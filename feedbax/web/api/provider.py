@@ -120,7 +120,7 @@ async def prepare_studio_training_plan(
         raise HTTPException(
             status_code=422,
             detail={
-                "message": str(exc),
+                "message": exc.summary,
                 "errors": [issue.model_dump(mode="json") for issue in exc.issues],
             },
         ) from exc

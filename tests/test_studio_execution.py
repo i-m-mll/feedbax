@@ -16,6 +16,7 @@ from feedbax.studio.execution import (
     StudioEvaluationCheckpointPolicy,
     StudioEvaluationMatrixRequest,
     StudioTrainingExecutionRequest,
+    StudioTrainingValidationError,
     _build_pending_training_manifest,
     _write_pending_training_manifest,
     _write_pending_training_manifest_for_matrix_row,
@@ -702,9 +703,11 @@ def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
         issues=["c199a9c"],
     )
 
-    with pytest.raises(StudioExecutionPreparationError, match="n_batches must be positive"):
+    with pytest.raises(StudioTrainingValidationError) as rejected:
         prepare_studio_training_execution(request, registry_bundle=registry_bundle)
 
+    (problem,) = [issue for issue in rejected.value.issues if issue.type == "invalid_n_batches"]
+    assert problem.location == {"path": "/training_spec/n_batches"}
     assert not (tmp_path / "manifests").exists()
 
 
@@ -1161,7 +1164,7 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
     assert load_manifest(ref["uri"]).metadata["condition_label"] == "Feedback gain=0"
 
 
-def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_client):
+def test_studio_training_plan_endpoint_identifies_missing_scenario_inputs(studio_client):
     workspace = build_default_studio_workspace(label="Missing spec")
     client = studio_client
 
@@ -1174,7 +1177,11 @@ def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_clie
     )
 
     assert response.status_code == 422
-    assert "training_spec" in response.json()["detail"]
+    errors = response.json()["detail"]["errors"]
+    assert {(error["type"], error["location"]["path"]) for error in errors} == {
+        ("missing_training_spec", "/training_spec"),
+        ("missing_task_spec", "/task_spec"),
+    }
 
 
 def test_task_binding_spec_rejects_legacy_v1_contract():

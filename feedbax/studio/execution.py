@@ -296,8 +296,9 @@ class StudioExecutionPreparationError(ValueError):
 class StudioTrainingValidationError(StudioExecutionPreparationError):
     """A training plan refusal with issues that identify the affected definitions."""
 
-    def __init__(self, message: str, issues: list[StudioValidationIssue]) -> None:
-        super().__init__(message)
+    def __init__(self, summary: str, issues: list[StudioValidationIssue]) -> None:
+        super().__init__(f"{summary}: {'; '.join(issue.message for issue in issues)}")
+        self.summary = summary
         self.issues = issues
 
 
@@ -319,13 +320,21 @@ def prepare_studio_training_execution(
         raise StudioExecutionPreparationError(
             f"{stage.label} references missing scenario {stage.scenario_id!r}"
         )
-    if scenario.training_spec is None:
-        raise StudioExecutionPreparationError(
-            f"{scenario.label} has no training settings"
-        )
-    if scenario.task_spec is None:
-        raise StudioExecutionPreparationError(
-            f"{scenario.label} has no task"
+    if scenario.training_spec is None or scenario.task_spec is None:
+        raise StudioTrainingValidationError(
+            f"{scenario.label} is incomplete",
+            [
+                StudioValidationIssue(
+                    type=f"missing_{field}",
+                    message=f"{label} is missing",
+                    location={"path": f"/{field}"},
+                )
+                for field, label, spec in (
+                    ("training_spec", "Training settings", scenario.training_spec),
+                    ("task_spec", "Task", scenario.task_spec),
+                )
+                if spec is None
+            ],
         )
 
     validation = _validate_training_scenario(
