@@ -61,8 +61,9 @@ test('adds a composite with Train open and reopens the saved graph from another 
     const components = await request.get('/api/components');
     expect(components.ok()).toBe(true);
     const { data } = await components.json();
-    const category = data.components.find(({ name }: { name: string }) =>
-      name === 'feedbax.SimpleFeedbackLoop').category;
+    const { category, template_graph: model } = data.components.find(({ name }: { name: string }) =>
+      name === 'feedbax.SimpleFeedbackLoop');
+    const count = Object.keys(model.nodes).length;
     const group = page.getByRole('button', { name: category, exact: true });
     await expect(group).toBeVisible();
     if (!await template.isVisible()) {
@@ -70,7 +71,7 @@ test('adds a composite with Train open and reopens the saved graph from another 
     }
     await template.click();
     const nodes = page.locator('.react-flow__node');
-    await expect(nodes).toHaveCount(1);
+    await expect(nodes).toHaveCount(count);
     await expect(page.getByRole('button', { name: /^Stage / })).toBeVisible();
 
     const saving = page.waitForResponse((response) => {
@@ -78,7 +79,7 @@ test('adds a composite with Train open and reopens the saved graph from another 
       if (!/\/api\/graphs(?:\/[^/]+)?$/.test(new URL(response.url()).pathname) ||
           !['POST', 'PUT'].includes(request.method())) return false;
       const graph = (request.postDataJSON() as StudioPersistenceDocument).graph;
-      return graph?.metadata?.name === name && Object.keys(graph.nodes).length === 1;
+      return graph?.metadata?.name === name && Object.keys(graph.nodes).length === count;
     });
     await page.getByTitle('Save', { exact: true }).click();
     const save = await saving;
@@ -89,7 +90,7 @@ test('adds a composite with Train open and reopens the saved graph from another 
     const response = await request.get(`/api/graphs/${id}`);
     expect(response.ok()).toBe(true);
     const { data: persisted } = await response.json() as GraphDetailResponse;
-    expect(Object.keys(persisted.graph.nodes)).toHaveLength(1);
+    expect(Object.keys(persisted.graph.nodes)).toHaveLength(count);
     const interior = Object.values(persisted.graph.subgraphs ?? {}).find((graph) => 'wires' in graph);
     expect(interior).toBeDefined();
 
@@ -99,22 +100,30 @@ test('adds a composite with Train open and reopens the saved graph from another 
       const loaded = fresh.waitForResponse((response) => response.url().endsWith(`/api/graphs/${id}`));
       await openSavedProject(fresh, name);
       expect((await (await loaded).json() as GraphDetailResponse).data.graph).toEqual(persisted.graph);
-      await expect(fresh.locator('.react-flow__node')).toHaveCount(1);
+      await expect(fresh.locator('.react-flow__node')).toHaveCount(count);
     } finally {
       await fresh.close();
     }
   });
 
-test('stages two real rows for the CPU reaching project', async ({ page, request }) => {
-  const { metadata } = await saveFixture(request, await reachingDocument());
+test('stages two rows and runs the CPU reaching project', async ({ page, request }) => {
+  const document = await reachingDocument();
+  const { metadata } = await saveFixture(request, document);
   await page.goto('/');
   await openSavedProject(page, metadata.name);
   const plan = await stageSweep(page);
   expect(plan.ok(), await plan.text()).toBe(true);
-  await expect(page.getByRole('button', { name: /^Launch / })).toHaveCount(2);
-  for (const launch of await page.getByRole('button', { name: /^Launch / }).all()) {
-    await expect(launch).toBeEnabled();
-  }
+  const launches = page.getByRole('button', { name: /^Launch / });
+  await expect(launches).toHaveCount(2);
+  await expect(launches.first()).toBeEnabled();
+  await expect(launches.last()).toBeEnabled();
+  const accepted = page.waitForResponse((response) =>
+    response.url().endsWith('/api/provider/studio/training/dispatch'));
+  await launches.first().click();
+  const dispatch = await accepted;
+  expect(dispatch.ok(), await dispatch.text()).toBe(true);
+  const batches = document.workspace!.scenarios['scenario:train'].training_spec!.n_batches;
+  await expect(page.getByText(`${batches}/${batches}`, { exact: true })).toBeVisible({ timeout: 20_000 });
 });
 
 test('reports the project object that prevents staging', async ({ page, request }) => {

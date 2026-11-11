@@ -61,7 +61,7 @@ test('reports that the backend stopped and recovers in the same window', async (
     const pid = Number(await readFile(join(home, 'cache', 'backend.pid'), 'utf8'));
     await page.goto(origin);
     const connection = page.getByRole('status', { name: 'Studio connection' });
-    await expect(connection).toHaveText(/connected/i);
+    await expect(connection).toHaveText(/^connected$/i);
     process.kill(pid, 'SIGTERM');
     await expect.poll(healthy).toBe(false);
 
@@ -69,14 +69,14 @@ test('reports that the backend stopped and recovers in the same window', async (
     const failure = page.getByRole('alert').filter({ hasText: /service unreachable/i });
     await expect(failure).toBeVisible();
     await expect(connection).toHaveText(/service unreachable/i);
-    const retry = failure.getByRole('button', { name: 'Retry', exact: true });
+    const retry = page.getByRole('button', { name: 'Retry', exact: true });
     await expect(retry).toBeEnabled();
 
     restarted = start('--backend-only');
     await expect.poll(healthy, { timeout: 10_000 }).toBe(true);
     await retry.click();
     await expect(failure).toHaveCount(0);
-    await expect(connection).toHaveText(/connected/i);
+    await expect(connection).toHaveText(/^connected$/i);
   } finally {
     if (restarted) await stop(restarted);
     await stop(studio);
