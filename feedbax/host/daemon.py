@@ -114,6 +114,7 @@ class Host:
                 "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
                 "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
                 "JAX_COMPILATION_CACHE_MAX_SIZE": str(1024**3),
+                "JAX_RAISE_PERSISTENT_CACHE_ERRORS": "true",
             }
         )
         ours, theirs = socket.socketpair()
