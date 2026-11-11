@@ -29,21 +29,30 @@ async function saveFixture(request: APIRequestContext, document: StudioPersisten
   return data;
 }
 
+function openOverlay(page: Page) {
+  const navigation = page.getByRole('navigation').filter({
+    has: page.getByRole('button', { name: 'Projects', exact: true }),
+  });
+  return navigation.locator('xpath=..');
+}
+
 async function openSavedProject(page: Page, name: string) {
   await page.getByTitle('Open project', { exact: true }).click();
-  await page.getByRole('button', { name: new RegExp(`^${RegExp.escape(name)}(?: |$)`) }).click();
-  await expect(page.getByRole('button', { name: 'Projects', exact: true })).toHaveCount(0);
+  const overlay = openOverlay(page);
+  await overlay.getByRole('button', { name: new RegExp(`^${RegExp.escape(name)}(?: |$)`) }).click();
+  await expect(overlay).toHaveCount(0);
   await expect(page.getByRole('banner').getByText(name, { exact: true }).first()).toBeVisible();
 }
 
 async function stageSweep(page: Page) {
   await page.getByRole('button', { name: 'Train', exact: true }).click();
-  await page.getByLabel('Path', { exact: true }).fill('training_spec.optimizer.params.learning_rate');
-  await page.getByLabel('Values', { exact: true }).fill('0.001, 0.0003');
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  const matrix = page.getByText('Matrix builder', { exact: true }).locator('xpath=ancestor::section[1]');
+  await matrix.getByLabel('Path', { exact: true }).fill('training_spec.optimizer.params.learning_rate');
+  await matrix.getByLabel('Values', { exact: true }).fill('0.001, 0.0003');
+  await matrix.getByRole('button', { name: 'Add', exact: true }).click();
   const plan = page.waitForResponse((response) =>
     response.url().endsWith('/api/provider/studio/training/plan') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Stage 2 runs', exact: true }).click();
+  await matrix.getByRole('button', { name: 'Stage 2 runs', exact: true }).click();
   return plan;
 }
 
@@ -56,24 +65,21 @@ test('adds a composite with Train open and reopens the saved graph from another 
     await page.getByPlaceholder('Tab name...').press('Enter');
     await page.getByRole('button', { name: 'Train', exact: true }).click();
     await page.getByRole('button', { name: 'Templates', exact: true }).click();
-    await page.getByPlaceholder('Search templates...').fill('SimpleFeedbackLoop');
-    const template = page.getByTitle('Add feedbax.SimpleFeedbackLoop', { exact: true });
+    const search = page.getByPlaceholder('Search templates...');
+    await search.fill('SimpleFeedbackLoop');
+    const library = search.locator('xpath=../..');
+    const template = library.getByTitle('Add feedbax.SimpleFeedbackLoop', { exact: true });
     const components = await request.get('/api/components');
     expect(components.ok()).toBe(true);
     const { data } = await components.json();
     const { category, template_graph: model } = data.components.find(({ name }: { name: string }) =>
       name === 'feedbax.SimpleFeedbackLoop');
     const count = Object.keys(model.nodes).length;
-    const group = page.getByRole('button', { name: category, exact: true });
+    const group = library.getByRole('button', { name: category, exact: true });
     await expect(group).toBeVisible();
     if (!await template.isVisible()) {
       await group.click();
     }
-    await template.click();
-    const nodes = page.locator('.react-flow__node');
-    await expect(nodes).toHaveCount(count);
-    await expect(page.getByRole('button', { name: /^Stage / })).toBeVisible();
-
     const saving = page.waitForResponse((response) => {
       const request = response.request();
       if (!/\/api\/graphs(?:\/[^/]+)?$/.test(new URL(response.url()).pathname) ||
@@ -81,6 +87,9 @@ test('adds a composite with Train open and reopens the saved graph from another 
       const graph = (request.postDataJSON() as StudioPersistenceDocument).graph;
       return graph?.metadata?.name === name && Object.keys(graph.nodes).length === count;
     });
+    await template.click();
+    await expect(page.locator('.react-flow__node')).toHaveCount(count);
+    await expect(page.getByRole('button', { name: /^Stage / })).toBeVisible();
     await page.getByTitle('Save', { exact: true }).click();
     const save = await saving;
     expect(save.ok(), await save.text()).toBe(true);
@@ -96,8 +105,8 @@ test('adds a composite with Train open and reopens the saved graph from another 
 
     const fresh = await browser.newPage({ baseURL, serviceWorkers: 'block' });
     try {
-      await fresh.goto('/');
       const loaded = fresh.waitForResponse((response) => response.url().endsWith(`/api/graphs/${id}`));
+      await fresh.goto('/');
       await openSavedProject(fresh, name);
       expect((await (await loaded).json() as GraphDetailResponse).data.graph).toEqual(persisted.graph);
       await expect(fresh.locator('.react-flow__node')).toHaveCount(count);
@@ -137,7 +146,7 @@ test('reports the project object that prevents staging', async ({ page, request 
   const plan = await stageSweep(page);
   expect(plan.status()).toBe(422);
   const problems = page.getByRole('list', { name: 'Problems' });
-  await expect(problems.getByRole('listitem').filter({ hasText: /cell.*missing_input/i })).toBeVisible();
+  await expect(problems.getByRole('listitem').filter({ hasText: /cell\.missing_input/i }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: /^Launch / })).toHaveCount(0);
 });
 
@@ -155,12 +164,13 @@ test('opens a readable project beside an older unreadable one', async ({ page, r
   try {
     await page.goto('/');
     await page.getByTitle('Open project', { exact: true }).click();
-    const unreadable = page.getByText(legacyName, { exact: true });
+    const overlay = openOverlay(page);
+    const unreadable = overlay.getByText(legacyName, { exact: true });
     await expect(unreadable).toBeVisible();
-    await expect(page.getByText(/unversioned.*Linear/i)).toBeVisible();
-    await expect(page.getByRole('button', { name: new RegExp(`^${legacyName}`) })).toHaveCount(0);
-    await page.getByRole('button', { name: new RegExp(`^${metadata.name}`) }).click();
-    await expect(page.getByRole('button', { name: 'Projects', exact: true })).toHaveCount(0);
+    await expect(unreadable.locator('xpath=..').getByText(/unversioned.*Linear/i)).toBeVisible();
+    await expect(overlay.getByRole('button', { name: new RegExp(`^${legacyName}`) })).toHaveCount(0);
+    await overlay.getByRole('button', { name: new RegExp(`^${metadata.name}`) }).click();
+    await expect(overlay).toHaveCount(0);
     await expect(page.getByRole('banner').getByText(metadata.name, { exact: true }).first()).toBeVisible();
   } finally {
     await rm(legacyPath, { force: true });
