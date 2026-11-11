@@ -33,6 +33,20 @@ def exit_on_signal(signum: int, _frame: object) -> None:
     raise SystemExit(128 + signum)
 
 
+def wait_for_exit(process: subprocess.Popen, owner: int | None) -> int:
+    if owner is None:
+        return process.wait()
+    while True:
+        try:
+            os.kill(owner, 0)
+        except ProcessLookupError:
+            raise SystemExit(0) from None
+        try:
+            return process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def serve(args: argparse.Namespace, scope: ExitStack) -> int:
     if args.home is None:
         home = Path(scope.enter_context(TemporaryDirectory(prefix="feedbax-studio-"))).resolve()
@@ -51,14 +65,15 @@ def serve(args: argparse.Namespace, scope: ExitStack) -> int:
     print(f"Studio data home: {home}", flush=True)
 
     backend = [sys.executable, "-B", "-m", "uvicorn", "feedbax.web.app:app"]
-    if args.backend_only:
-        os.execv(sys.executable, [*backend, "--host", HOST, "--port", str(args.backend_port)])
-
     vite = ["bun", "--bun", "vite"]
     front = vite
     if args.preview:
         dist = str(paths.cache / "dist")
-        subprocess.run([*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB, check=True)
+        build = subprocess.Popen([*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB)
+        scope.callback(stop, build)
+        build_code = wait_for_exit(build, args.owner)
+        if build_code:
+            return build_code
         front = [*vite, "preview", "--outDir", dist]
     port = args.port or (3009 if args.preview else 3008)
 
@@ -68,12 +83,14 @@ def serve(args: argparse.Namespace, scope: ExitStack) -> int:
         fd = listener.fileno()
         api = subprocess.Popen([*backend, "--fd", str(fd)], cwd=ROOT, pass_fds=(fd,))
     scope.callback(stop, api)
+    if args.backend_only:
+        return wait_for_exit(api, args.owner)
     pid_file = paths.cache / "backend.pid"
     pid_file.write_text(f"{api.pid}\n")
     scope.callback(pid_file.unlink, missing_ok=True)
     web = subprocess.Popen([*front, "--host", HOST, "--port", str(port), "--strictPort"], cwd=WEB)
     scope.callback(stop, web)
-    return web.wait()
+    return wait_for_exit(web, args.owner)
 
 
 def main() -> int:
@@ -87,6 +104,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.backend_only and args.home is None:
         parser.error("--backend-only requires --home")
+    raw_owner = os.environ.get("FEEDBAX_STUDIO_TEST_OWNER_PID")
+    args.owner = None
+    if raw_owner is not None:
+        if not raw_owner.isdecimal() or int(raw_owner) <= 1:
+            parser.error("FEEDBAX_STUDIO_TEST_OWNER_PID must identify a test runner process")
+        args.owner = int(raw_owner)
 
     signal.signal(signal.SIGINT, exit_on_signal)
     signal.signal(signal.SIGTERM, exit_on_signal)
