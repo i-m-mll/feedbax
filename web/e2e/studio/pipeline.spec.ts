@@ -11,6 +11,7 @@ import type {
   GraphProject,
   StudioPersistenceDocument,
 } from '../../src/generated/studioContracts';
+import { openOverlay, openSavedProject } from './projectControls';
 import type { StudioTrainingExecutionPreparation } from '../../src/types/workspace';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -29,21 +30,6 @@ async function saveFixture(request: APIRequestContext, document: StudioPersisten
   expect(response.ok(), await response.text()).toBe(true);
   const { data } = await response.json() as GraphCreateResponse;
   return data;
-}
-
-function openOverlay(page: Page) {
-  const navigation = page.getByRole('navigation').filter({
-    has: page.getByRole('button', { name: 'Projects', exact: true }),
-  });
-  return navigation.locator('xpath=..');
-}
-
-async function openSavedProject(page: Page, name: string) {
-  await page.getByTitle('Open project', { exact: true }).click();
-  const overlay = openOverlay(page);
-  await overlay.getByRole('button', { name: new RegExp(`^${RegExp.escape(name)}(?: |$)`) }).click();
-  await expect(overlay).toHaveCount(0);
-  await expect(page.getByRole('banner').getByText(name, { exact: true }).first()).toBeVisible();
 }
 
 async function stageSweep(page: Page) {

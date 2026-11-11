@@ -4,6 +4,7 @@ import type {
   NodeUIState,
   StudioPersistenceDocument,
 } from '../../src/generated/studioContracts';
+import { openSavedProject } from './projectControls';
 
 const measure = process.env.FEEDBAX_STUDIO_MEASURE === '1';
 
@@ -83,8 +84,7 @@ async function openMeasurementGraph(page: Page, componentCount: number) {
   const created = await page.request.post('/api/graphs', { data: project });
   await expect(created).toBeOK();
   const { data: { id } } = await created.json() as { data: { id: string } };
-  await page.getByTitle('Open project', { exact: true }).click();
-  await page.getByRole('dialog').getByRole('button', { name: label, exact: false }).click();
+  await openSavedProject(page, label);
   await expect(page.locator('.react-flow__node')).toHaveCount(componentCount);
   return id;
 }
