@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,14 +8,14 @@ const port = Number(process.env.FEEDBAX_STUDIO_E2E_PORT ?? 3109);
 const backendPort = Number(process.env.FEEDBAX_STUDIO_E2E_API_PORT ?? 8109);
 const baseURL = `http://127.0.0.1:${port}`;
 const ownsHome = process.env.FEEDBAX_STUDIO_TEST_HOME === undefined;
-const home = process.env.FEEDBAX_STUDIO_TEST_HOME ??= mkdtempSync(join(tmpdir(), 'feedbax-studio-test-'));
+const home = process.env.FEEDBAX_STUDIO_TEST_HOME ??= join(tmpdir(), `feedbax-studio-test-${randomUUID()}`);
 const preview = process.env.FEEDBAX_STUDIO_E2E_PREVIEW === '1' ? ' --preview' : '';
+const dispose = ownsHome ? ' --remove-test-home' : '';
 
 export default defineConfig({
   testDir: './e2e/studio',
   outputDir: mkdtempSync(join(tmpdir(), 'feedbax-studio-results-')),
-  globalTeardown: './e2e/studio/teardown.ts',
-  metadata: { home, ownsHome, backendPort },
+  metadata: { home, backendPort },
   workers: 1,
   timeout: 30_000,
   use: {
@@ -26,11 +27,11 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `../scripts/dev.sh --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}`,
+    command: `exec ../scripts/dev.sh --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}${dispose}`,
     env: { FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid) },
     url: `${baseURL}/api/provider/health`,
     reuseExistingServer: false,
-    gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
     timeout: 55_000,
   },
 });

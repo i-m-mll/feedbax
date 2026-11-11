@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,16 +26,20 @@ async function loopbackPorts() {
 }
 
 async function stop(child: ChildProcess) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  await exited;
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, 'exit');
+    child.kill('SIGTERM');
+    await exited;
+  }
+  if (child.exitCode !== 0 && child.exitCode !== 143) {
+    throw new Error(`Studio launcher exited with ${child.exitCode ?? child.signalCode}`);
+  }
 }
 
 test('reports that the backend stopped and recovers in the same window', async ({ page }, testInfo) => {
   const [webPort, backendPort] = await loopbackPorts();
   const origin = `http://127.0.0.1:${webPort}`;
-  const home = await mkdtemp(join(tmpdir(), 'feedbax-studio-recovery-'));
+  const home = join(tmpdir(), `feedbax-studio-recovery-${randomUUID()}`);
   const backendArgs = ['--home', home, '--backend-port', String(backendPort)];
   const log: string[] = [];
   const start = (...args: string[]) => {
@@ -55,7 +60,7 @@ test('reports that the backend stopped and recovers in the same window', async (
       return false;
     }
   };
-  const studio = start('--port', String(webPort));
+  const studio = start('--port', String(webPort), '--remove-test-home');
   let restarted: ChildProcess | undefined;
   try {
     await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
@@ -79,9 +84,11 @@ test('reports that the backend stopped and recovers in the same window', async (
     await expect(failure).toHaveCount(0);
     await expect(connection).toHaveText(/^connected$/i);
   } finally {
-    if (restarted) await stop(restarted);
-    await stop(studio);
-    await rm(home, { recursive: true, force: true });
+    const launchers = restarted ? [restarted, studio] : [studio];
+    const stopped = await Promise.allSettled(launchers.map(stop));
     await testInfo.attach('Studio process log', { body: log.join(''), contentType: 'text/plain' });
+    for (const result of stopped) {
+      if (result.status === 'rejected') throw result.reason;
+    }
   }
 });
