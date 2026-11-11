@@ -26,6 +26,10 @@ from feedbax.contracts.jobs import (
     StudioJobSubmission,
     StudioJobSubmissionRequest,
     StudioLocalSession,
+    StudioPreviewIssue,
+    StudioPreviewRow,
+    StudioRunPreview,
+    StudioRunPreviewRequest,
     StudioSubmissionItem,
 )
 from feedbax.contracts.manifest import canonical_manifest_path
@@ -91,6 +95,34 @@ class JobService:
         self._launch_lock = Lock()
         self._accepting = True
         self._warmed = False
+
+    def preview(self, request: StudioRunPreviewRequest) -> StudioRunPreview:
+        rows: dict[str, StudioPreviewRow] = {}
+        issues: list[StudioPreviewIssue] = []
+        for selection in request.selections:
+            try:
+                lowered = lower_studio_training_runs(
+                    request.workspace,
+                    request.graph,
+                    stage_id=selection.stage_id,
+                    run_keys=selection.run_keys,
+                    registry_bundle=self.registries,
+                )
+            except StudioTrainingLoweringError as exc:
+                issues.append(
+                    StudioPreviewIssue(stage_id=selection.stage_id, path=exc.path, message=exc.message)
+                )
+                continue
+            for run in lowered:
+                rows[run.run_key] = StudioPreviewRow(
+                    run_key=run.run_key,
+                    request_id=run.request_id,
+                    stage_id=run.stage_id,
+                    scenario_id=run.scenario_id,
+                    label=run.label,
+                    coordinates=dict(run.coordinates),
+                )
+        return StudioRunPreview(rows=list(rows.values()), issues=issues)
 
     def admit(self, request: StudioJobSubmissionRequest) -> StudioJobSubmission:
         project = request.project_id

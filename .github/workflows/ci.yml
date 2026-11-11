@@ -98,6 +98,9 @@ jobs:
       - name: Check Studio source reachability
         run: bun scripts/check-reachability.ts
 
+      - name: Check Studio vocabulary
+        run: bun scripts/check-studio-vocabulary.ts
+
       - name: Install Playwright browsers
         run: bun x --bun --no-install playwright install --with-deps chromium
 

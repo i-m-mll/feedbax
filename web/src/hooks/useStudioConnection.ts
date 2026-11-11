@@ -1,12 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
-import { checkStudioConnection } from '@/api/client';
+import { useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
 
 export function useStudioConnection() {
-  return useQuery({
-    queryKey: ['studio-connection'],
-    queryFn: ({ signal }) => checkStudioConnection(signal),
-    networkMode: 'always',
-    refetchInterval: 3000,
-    retry: false,
-  });
+  const state = useStudioJobConnection();
+  const { refresh } = useStudioJobActions();
+  const { error } = useStudioJobs();
+  return {
+    isError: state === 'disconnected',
+    isSuccess: state === 'connected',
+    error,
+    refetch: refresh,
+  };
 }

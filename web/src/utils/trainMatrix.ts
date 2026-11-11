@@ -244,6 +244,20 @@ export function initialMatrixSpec(
   };
 }
 
+export function upsertTrainMatrixAxis(
+  matrix: TrainMatrixSpec,
+  draft: Pick<TrainMatrixAxisDraft, 'label' | 'path' | 'values'>,
+  editingId?: string,
+): TrainMatrixSpec {
+  const existing = editingId ?? matrix.axes.find((axis) => axis.path === draft.path)?.id;
+  const id = existing ?? uniqueAxisId(stableAxisId(draft.path), new Set(matrix.axes.map((axis) => axis.id)));
+  const next: TrainMatrixAxisDraft = { ...draft, id, source: 'manual' };
+  const axes = matrix.axes.some((axis) => axis.id === id)
+    ? matrix.axes.map((axis) => axis.id === id ? next : axis)
+    : [...matrix.axes, next];
+  return { ...matrix, manualCoordinates: undefined, axes: dedupeAxes(axes) };
+}
+
 function dedupeAxes(axes: TrainMatrixAxisDraft[]): TrainMatrixAxisDraft[] {
   const seenPaths = new Set<string>();
   const seenIds = new Set<string>();

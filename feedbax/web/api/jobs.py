@@ -11,6 +11,8 @@ from starlette.concurrency import run_in_threadpool
 
 from feedbax.contracts.jobs import (
     StudioActivityJob,
+    StudioEventReset,
+    StudioEventWatermark,
     StudioJobEventHistory,
     StudioJobResumeRequest,
     StudioJobSnapshot,
@@ -19,6 +21,8 @@ from feedbax.contracts.jobs import (
     StudioJobSubmission,
     StudioJobSubmissionRequest,
     StudioLocalSession,
+    StudioRunPreview,
+    StudioRunPreviewRequest,
 )
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
@@ -44,6 +48,11 @@ def admit_submission(body: StudioJobSubmissionRequest, request: Request) -> Stud
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+
+
+@router.post("/submissions/preview")
+def preview_submission(body: StudioRunPreviewRequest, request: Request) -> StudioRunPreview:
+    return _jobs(request).preview(body)
 
 
 @router.get("/submissions")
@@ -159,22 +168,20 @@ async def job_events(
         replay_complete = False
         while True:
             if cursor < page.oldest_cursor or cursor > head:
-                yield (
-                    "event: reset\n"
-                    f'data: {{"oldest_cursor":{page.oldest_cursor},"cursor":{head}}}\n\n'
-                )
+                reset = StudioEventReset(oldest_cursor=page.oldest_cursor, cursor=head)
+                yield f"event: reset\ndata: {reset.model_dump_json()}\n\n"
                 return
             for event in page.events:
                 if not replay_complete and event.cursor > boundary:
                     replay_complete = True
-                    yield f'id: {boundary}\nevent: replay_complete\ndata: {{"cursor":{boundary}}}\n\n'
+                    yield _watermark_event("replay_complete", boundary)
                 yield f"id: {event.cursor}\ndata: {event.model_dump_json()}\n\n"
             cursor = page.cursor
             if not replay_complete and cursor >= boundary:
                 replay_complete = True
-                yield f'id: {boundary}\nevent: replay_complete\ndata: {{"cursor":{boundary}}}\n\n'
+                yield _watermark_event("replay_complete", boundary)
             if not page.events:
-                yield f'id: {cursor}\nevent: heartbeat\ndata: {{"cursor":{cursor}}}\n\n'
+                yield _watermark_event("heartbeat", cursor)
             try:
                 head, page = await run_in_threadpool(
                     service.events,
@@ -191,3 +198,7 @@ async def job_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+def _watermark_event(kind: str, cursor: int) -> str:
+    return f"id: {cursor}\nevent: {kind}\ndata: {StudioEventWatermark(cursor=cursor).model_dump_json()}\n\n"

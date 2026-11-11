@@ -43,7 +43,7 @@ import type {
   ScatterResponse,
   DiagnosticsResponse,
 } from "@/types/statistics";
-import { asApiRequestError, requestJson, requestResponse } from "@/api/request";
+import { asApiRequestError, requestJson } from "@/api/request";
 
 export const STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID =
   'feedbax.spec.studio.persistence_document' as const;
@@ -215,11 +215,6 @@ export async function inspectPenzaiNode(
 }
 
 export const SERVICE_UNREACHABLE = 'Service unreachable';
-
-export async function checkStudioConnection(signal: AbortSignal) {
-  await requestResponse("/api/provider/health", { cache: "no-store", signal });
-  return true;
-}
 
 export async function fetchGraphs(signal?: AbortSignal) {
   const response = parseContract(

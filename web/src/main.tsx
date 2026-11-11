@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactFlowProvider } from '@xyflow/react';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
+import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import App from './App';
 import './index.css';
 import '@xyflow/react/dist/style.css';
@@ -17,9 +18,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <StudioErrorBoundary region="Studio">
       <QueryClientProvider client={queryClient}>
-        <ReactFlowProvider>
-          <App />
-        </ReactFlowProvider>
+        <StudioJobsProvider>
+          <ReactFlowProvider>
+            <App />
+          </ReactFlowProvider>
+        </StudioJobsProvider>
       </QueryClientProvider>
     </StudioErrorBoundary>
   </React.StrictMode>
