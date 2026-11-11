@@ -493,11 +493,16 @@ def _generated_key_value(value: JsonValue) -> JsonValue:
     return value
 
 
+def sweep_value_identity_bytes(value: JsonValue) -> bytes:
+    """Compare authored axis values under the generated-coordinate identity rule."""
+    return canonical_json_v2_bytes(_generated_key_value(value))
+
+
 def _generated_choices(
     path: str, values: Sequence[JsonValue] | Iterator[JsonValue]
 ) -> Iterator[_AxisChoice]:
     for value in values:
-        key = "value-" + sha256_bytes(canonical_json_v2_bytes(_generated_key_value(value)))
+        key = "value-" + sha256_bytes(sweep_value_identity_bytes(value))
         yield _AxisChoice(
             key, SweepCoordinate(key, str(value), value), {path: SetValue(value=value)}
         )
