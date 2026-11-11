@@ -75,7 +75,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
 );
 
 test('M1 runs only the selected row of a sweep authored in Studio', async ({ page, request }) => {
-  const project = await saveFixture(request, await reachingDocument());
+  const project = await saveFixture(request, await reachingDocument(30, 'Learning rate sweep'));
   await page.goto('/');
   await openSavedProject(page, project.metadata.name);
   await page.getByRole('button', { name: 'Train', exact: true }).click();

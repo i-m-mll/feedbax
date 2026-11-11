@@ -7,6 +7,7 @@ const web = resolve(import.meta.dir, '..');
 const src = resolve(web, 'src');
 const sources = [
   ...new Bun.Glob('components/activity/*.tsx').scanSync({ cwd: src, absolute: true }),
+  resolve(src, 'components/layout/HeaderActivity.tsx'),
   resolve(src, 'components/panels/StudioTrainPanel.tsx'),
 ];
 const errors: string[] = [];

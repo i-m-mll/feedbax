@@ -1,5 +1,4 @@
-import { Activity, X } from 'lucide-react';
-import { useId, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { StudioActivityJob } from '@/generated/studioContracts';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
@@ -151,15 +150,21 @@ function ActivityCommand({
   );
 }
 
-function ActivityContent({
-  projectNames,
-  onOpenRun,
-  onClose,
-}: {
+interface StudioActivityPaneProps {
   projectNames: ReadonlyMap<string, string>;
   onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
   onClose: () => void;
-}) {
+}
+
+export function StudioActivityPane(props: StudioActivityPaneProps) {
+  return (
+    <StudioRegionBoundary name="activity">
+      <ActivityContent {...props} />
+    </StudioRegionBoundary>
+  );
+}
+
+function ActivityContent({ projectNames, onOpenRun, onClose }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
   const actions = useStudioJobActions();
   const connection = useStudioJobConnection();
@@ -223,72 +228,8 @@ function ActivityContent({
   );
 }
 
-export function StudioActivity({
-  open,
-  onToggle,
-  onClose,
-  onOpenRun,
-  projectNames,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  onClose: () => void;
-  onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
-  projectNames: ReadonlyMap<string, string>;
-}) {
-  const panelId = useId();
-  const trigger = useRef<HTMLButtonElement | null>(null);
+export function useStudioActivityCount() {
   const snapshot = useStudioJobs();
   const connection = useStudioJobConnection();
-  const running = connection === 'connected' ? snapshot.data?.jobs.filter(isLive).length ?? 0 : 0;
-  const closePanel = () => {
-    onClose();
-    trigger.current?.focus();
-  };
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        ref={trigger}
-        aria-label={studioName('activity')}
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        onClick={onToggle}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
-      >
-        <Activity aria-hidden="true" className="size-4" />
-        {studioName('activity')}
-        {running > 0 && <span className="tabular-nums">{running}</span>}
-      </button>
-      {open && (
-        <section
-          id={panelId}
-          aria-label={studioName('activity')}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.stopPropagation();
-              closePanel();
-            }
-          }}
-          className="absolute right-0 top-full z-50 mt-2 grid max-h-[calc(100vh-5rem)] w-[min(34rem,85vw)] gap-3 overflow-auto rounded-lg border border-slate-200 bg-white p-4 text-slate-900 shadow-xl"
-        >
-          <header className="flex items-center justify-between">
-            <h2 className="font-semibold">{studioName('activity')}</h2>
-            <button
-              type="button"
-              aria-label={studioName('close')}
-              onClick={closePanel}
-              className="rounded p-1 hover:bg-slate-100"
-            >
-              <X aria-hidden="true" className="size-4" />
-            </button>
-          </header>
-          <StudioRegionBoundary name="activity">
-            <ActivityContent projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} />
-          </StudioRegionBoundary>
-        </section>
-      )}
-    </div>
-  );
+  return connection === 'connected' ? snapshot.data?.jobs.filter(isLive).length ?? 0 : 0;
 }

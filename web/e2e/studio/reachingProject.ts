@@ -7,10 +7,10 @@ import type { GraphCreateResponse, StudioPersistenceDocument } from '../../src/g
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
 
-export async function reachingDocument(batches = 30): Promise<StudioPersistenceDocument> {
+export async function reachingDocument(batches = 30, name = 'Point-mass reach'): Promise<StudioPersistenceDocument> {
   const { stdout } = await run('uv', [
     'run', '--no-sync', 'python', '-B', 'web/e2e/studio/fixtures/reaching_project.py',
-    '--batches', String(batches),
+    '--batches', String(batches), '--name', name,
   ], { cwd: repo, timeout: 10_000 });
   return JSON.parse(stdout);
 }

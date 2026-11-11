@@ -27,7 +27,7 @@ import { defaultTaskSpec, defaultTrainingSpec, useTrainingStore } from '@/stores
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
 import { buildWorkspaceSnapshot, hydrateWorkspacePresentation, useWorkspaceStore } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
-import { StudioActivity } from '@/components/activity/StudioActivity';
+import { HeaderActivity } from './HeaderActivity';
 import { focusForJob, useStudioRunFocus } from '@/components/activity/studioRunFocus';
 import type { StudioActivityJob } from '@/generated/studioContracts';
 import type { AnalysisSnapshot } from '@/types/analysis';
@@ -401,7 +401,7 @@ export function Header() {
 
       {/* Right-side action buttons */}
       <div className="flex-none flex items-center gap-3 text-slate-500">
-        <StudioActivity
+        <HeaderActivity
           open={activityOpen}
           onToggle={activityOpen ? () => setActivityOpen(false) : openActivity}
           onClose={() => setActivityOpen(false)}
