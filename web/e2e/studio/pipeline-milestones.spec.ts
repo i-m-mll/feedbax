@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('runs one row and resumes at its checkpoint after a restart', async ({ page }) => {
-  test.fixme(true, 'M1 · f6f0bdd, de9e2ac, 5737f56, f61e141');
+  test.fixme(true, 'M1 · f6f0bdd, de9e2ac, 5737f56 (launch ordinary and authored sweep rows), f61e141');
   await page.goto('/');
   // Use the reaching project with no sweep, then watch live loss, stop and resume the same run.
   // Restart the backend and host, reload the window, and verify one completion and restored history.

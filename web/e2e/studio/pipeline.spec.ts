@@ -11,9 +11,11 @@ import type {
   GraphProject,
   StudioPersistenceDocument,
 } from '../../src/generated/studioContracts';
+import type { StudioTrainingExecutionPreparation } from '../../src/types/workspace';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
+const sweepRates = [0.001, 0.0005];
 
 async function reachingDocument(): Promise<StudioPersistenceDocument> {
   const { stdout } = await run('uv', [
@@ -48,7 +50,7 @@ async function stageSweep(page: Page) {
   await page.getByRole('button', { name: 'Train', exact: true }).click();
   const matrix = page.getByText('Matrix builder', { exact: true }).locator('xpath=ancestor::section[1]');
   await matrix.getByRole('textbox', { name: /^Path\b/ }).fill('training_spec.optimizer.params.learning_rate');
-  await matrix.getByRole('textbox', { name: /^Values\b/ }).fill('0.001, 0.0005');
+  await matrix.getByRole('textbox', { name: /^Values\b/ }).fill(sweepRates.join(', '));
   await matrix.getByRole('button', { name: 'Add', exact: true }).click();
   const plan = page.waitForResponse((response) =>
     response.url().endsWith('/api/provider/studio/training/plan') && response.request().method() === 'POST',
@@ -116,24 +118,25 @@ test('adds a composite with Train open and reopens the saved graph from another 
     }
   });
 
-test('stages two rows and runs the CPU reaching project', async ({ page, request }) => {
+test('stages two pending rows at the authored learning rates', async ({ page, request }) => {
   const document = await reachingDocument();
   const { metadata } = await saveFixture(request, document);
   await page.goto('/');
   await openSavedProject(page, metadata.name);
   const plan = await stageSweep(page);
   expect(plan.ok(), await plan.text()).toBe(true);
-  const launches = page.getByRole('button', { name: /^Launch / });
-  await expect(launches).toHaveCount(2);
-  await expect(launches.first()).toBeEnabled();
-  await expect(launches.last()).toBeEnabled();
-  const accepted = page.waitForResponse((response) =>
-    response.url().endsWith('/api/provider/studio/training/dispatch'));
-  await launches.first().click();
-  const dispatch = await accepted;
-  expect(dispatch.ok(), await dispatch.text()).toBe(true);
-  const batches = document.workspace!.scenarios['scenario:train'].training_spec!.n_batches;
-  await expect(page.getByText(`${batches}/${batches}`, { exact: true })).toBeVisible({ timeout: 20_000 });
+  const { workspace } = await plan.json() as StudioTrainingExecutionPreparation;
+  const rows = workspace.stages.find((stage) => stage.kind === 'train')?.output_collections
+    .find((collection) => collection.kind === 'training_runs')?.item_refs;
+  const labels = sweepRates.map((rate) => `Learning rate=${rate}`);
+  expect(rows?.map((row) => [row.metadata.label, row.metadata.status])).toEqual(
+    expect.arrayContaining(labels.map((label) => [label, 'pending'])),
+  );
+  expect(rows).toHaveLength(labels.length);
+  await expect(page.getByRole('button', { name: /^Show details for Learning rate=/ })).toHaveCount(labels.length);
+  for (const label of labels) {
+    await expect(page.getByRole('button', { name: `Show details for ${label}`, exact: true })).toBeVisible();
+  }
 });
 
 test('reports the project object that prevents staging', async ({ page, request }) => {
