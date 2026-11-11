@@ -518,13 +518,14 @@ def compile_graph(
     component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
     *,
+    initialization_key: PRNGKeyArray | None = None,
     initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
 ) -> ExecutableGraph:
     """Compile one exact graph document through resolution and realization.
 
-    Stochastic builders receive a key derived from seed zero and their
-    scoped occurrence ID. An explicit
+    Stochastic builders receive a key derived from the root initialization key
+    (seed zero by default) and their scoped occurrence ID. An explicit
     ``initialization_keys`` entry overrides derivation for one leaf. Use a node
     ID for a top-level leaf or a tuple of IDs for a nested leaf. These keys
     do not change the resolved topology.
@@ -644,7 +645,7 @@ def compile_graph(
             graph,
             component_registry,
             resolution,
-            construction_key=jr.PRNGKey(0),
+            construction_key=jr.PRNGKey(0) if initialization_key is None else initialization_key,
             initialization_keys=leaf_keys,
             artifact_provider=artifact_provider,
         )
