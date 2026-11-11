@@ -677,12 +677,14 @@ class StageEngine:
         reserve = self.bundle.budget.teardown_reserve_seconds
         if reserve is None:
             return state, None
+        wall_clock_limit = self.bundle.budget.max_wall_clock_seconds
+        assert wall_clock_limit is not None
         counters = dict(state.budget_counters)
         if "provisioning_deadline_at" not in counters:
             start = self._wall_time()
             counters.update(
                 provisioning_started_at=start,
-                provisioning_deadline_at=start + self.bundle.budget.max_wall_clock_seconds,
+                provisioning_deadline_at=start + wall_clock_limit,
             )
             state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
             self.store.save(state)
@@ -1806,11 +1808,16 @@ class StageEngine:
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
             return state, outputs
 
+        wall_clock_limit = self.bundle.budget.max_wall_clock_seconds
+        if wall_clock_limit is None:
+            raise OrchestrationStageError(
+                "driver-governed provisioning requires a wall-clock budget"
+            )
         counters = dict(state.budget_counters)
         started_at = float(counters.setdefault("provisioning_started_at", self._wall_time()))
         deadline = float(
             counters.setdefault(
-                "provisioning_deadline_at", started_at + self.bundle.budget.max_wall_clock_seconds
+                "provisioning_deadline_at", started_at + wall_clock_limit
             )
         )
         deadline -= self.bundle.budget.teardown_reserve_seconds or 0
@@ -2096,6 +2103,7 @@ class StageEngine:
 
     def _stage_monitor(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         started_at = self._wall_time()
+        wall_clock_limit = self.bundle.budget.max_wall_clock_seconds
         counters = dict(state.budget_counters)
         counters.setdefault("monitor_started_at", started_at)
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
@@ -2118,7 +2126,7 @@ class StageEngine:
             state = self._apply_pending_interruption(state)
             if self._all_terminal(state):
                 break
-            if self._wall_time() - started_at > self.bundle.budget.max_wall_clock_seconds:
+            if wall_clock_limit is not None and self._wall_time() - started_at > wall_clock_limit:
                 budget_exceeded = True
                 state = self._stop_unfinished(state, reason="budget-exceeded")
                 break
@@ -4051,12 +4059,14 @@ def _run_static_preflight_checks(
     else:
         checks.append(_check("feedbax-revision-pin", True, observed=observed_revision))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
-    budget_present = bundle.budget.max_wall_clock_seconds > 0
+    budget_valid = (
+        bundle.deployment_policy.venue == "local" or bundle.budget.max_wall_clock_seconds is not None
+    )
     checks.append(
         _check(
             "budget-presence",
-            budget_present,
-            detail=None if budget_present else "budget.max_wall_clock_seconds must be positive",
+            budget_valid,
+            detail=None if budget_valid else "remote bundles require a wall-clock budget",
         )
     )
     if include_deployment_policy:

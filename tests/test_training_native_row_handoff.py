@@ -1495,6 +1495,8 @@ def test_studio_dispatch_executes_only_the_selected_staged_native_row(
         attempt = accepted.json()
         assert attempt["row_id"] == "selected"
         run_set_dir = orchestration_root / attempt["run_set_id"]
+        bundle = RunBundle.model_validate_json((run_set_dir / "bundle.json").read_bytes())
+        assert bundle.budget.max_wall_clock_seconds is None
         duplicate = client.post(dispatch_path, json=dispatch_request)
         assert duplicate.status_code == 409, duplicate.text
         assert list(orchestration_root.glob("*/state.json")) == [run_set_dir / "state.json"]
@@ -1505,7 +1507,6 @@ def test_studio_dispatch_executes_only_the_selected_staged_native_row(
             while not latest.is_file():
                 assert time.monotonic() < deadline, client.get(run_path).json()
                 time.sleep(0.01)
-            bundle = RunBundle.model_validate_json((run_set_dir / "bundle.json").read_bytes())
             state = RunSetStateStore(run_set_dir / "state.json").load()
             driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
             driver.request_stop_at_checkpoint(bundle, bundle.row(attempt["row_id"]), state)

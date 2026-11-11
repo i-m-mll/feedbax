@@ -709,7 +709,7 @@ def _assembly_parts(
     *,
     rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
-    max_wall_clock_seconds: float = 10.0,
+    max_wall_clock_seconds: float | None = 10.0,
     max_spend_usd: float | None = None,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
@@ -767,7 +767,7 @@ def _bundle(
     *,
     rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
-    max_wall_clock_seconds: float = 10.0,
+    max_wall_clock_seconds: float | None = 10.0,
     max_spend_usd: float | None = None,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
@@ -2628,6 +2628,16 @@ def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
     }
 
 
+def test_preflight_rejects_remote_bundle_without_wall_clock_budget(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, driver="runpod", max_wall_clock_seconds=None)
+    driver = _as_remote_fake_driver(FakeDriver())
+
+    with pytest.raises(PreflightFailed, match="budget-presence"):
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    assert driver.calls == []
+
+
 def test_preflight_rejects_registered_native_row_without_canonical_collection(
     tmp_path: Path,
 ) -> None:
@@ -3395,7 +3405,7 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
     assert checks["lr_trace"]["status"] == "fail"
 
 
-def test_local_driver_warm_first_max_parallel_budget_and_demo(tmp_path: Path) -> None:
+def test_local_driver_warm_first_collects_and_registers(tmp_path: Path) -> None:
     script = tmp_path / "row_script.py"
     script.write_text(
         """
@@ -3457,25 +3467,35 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert (bundle.run_set_dir / "events" / "warm.events.jsonl").exists()
     assert (bundle.run_set_dir / "collected" / "second" / "payload.json").exists()
 
-    slow = tmp_path / "slow.py"
-    slow.write_text("import time; time.sleep(2)\n", encoding="utf-8")
-    budget_bundle = _bundle(
-        tmp_path / "budget",
-        rows=[_compiled_row("slow", command=[sys.executable, str(slow)])],
-        max_wall_clock_seconds=0.05,
-        run_set_id="2026-01-02-badf00d",
+
+@pytest.mark.parametrize(
+    ("wall_clock_limit", "row_status", "abort_reason", "registration_status"),
+    [(0.05, "stopped", "budget-exceeded", "aborted"), (None, "completed", None, "completed")],
+)
+def test_local_driver_enforces_only_explicit_wall_clock_budget(
+    tmp_path: Path,
+    wall_clock_limit: float | None,
+    row_status: str,
+    abort_reason: str | None,
+    registration_status: str,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("slow", command=[sys.executable, "-c", "import time; time.sleep(2)"])],
+        max_wall_clock_seconds=wall_clock_limit,
     )
-    budget_state = StageEngine(
-        bundle=budget_bundle,
+    state = StageEngine(
+        bundle=bundle,
         driver=LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",)),
         conformance_registry=_fixture_pass_registry(),
         poll_interval_seconds=0.01,
     ).run()
 
-    assert budget_state.abort_reason == "budget-exceeded"
-    assert budget_state.rows["slow"].status == "stopped"
-    assert budget_state.registration_payload
-    assert budget_state.registration_payload["status"] == "aborted"
+    assert state.abort_reason == abort_reason
+    assert state.rows["slow"].status == row_status
+    assert state.rows["slow"].error == abort_reason
+    assert state.registration_payload
+    assert state.registration_payload["status"] == registration_status
 
 
 @pytest.mark.parametrize("status", ["launched", "ready", "running"])

@@ -26,7 +26,6 @@ from feedbax.contracts.spec_storage import (
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.orchestration.assembly import AssemblyContext, persist_compiled_row
 from feedbax.orchestration.bundle import (
-    BudgetPolicy,
     CheckpointCustodyArchiveMaterializer,
     DeploymentPolicy,
     EnvironmentDeclaration,
@@ -158,7 +157,6 @@ def prepare_native_training_dispatch(
             review_authorized=False,
         ),
         environment=EnvironmentDeclaration(python_version=python_version()),
-        budget=BudgetPolicy(max_wall_clock_seconds=3600),
         rows=[RunRowSpec(row_id=stored.row_id, execution=stored.execution, launch=stored.launch)],
         resolved_inputs=[checkpoint] if checkpoint is not None else [],
         orchestration_root=str(run_set_root.parent),
