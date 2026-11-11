@@ -9,6 +9,7 @@ import type { Plugin } from 'vite';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
+const apiAddress = `127.0.0.1:${process.env.VITE_FEEDBAX_API_PORT ?? 8000}`;
 
 const plotlyPackage = 'plotly.js-dist-min';
 const desktopPlotlyAsset = 'vendor/plotly.mjs';
@@ -68,6 +69,7 @@ function desktopResources(): Plugin {
 }
 
 export default defineConfig({
+  cacheDir: process.env.FEEDBAX_VITE_CACHE_DIR,
   test: {
     // Transform Zod's ESM re-exports in Vitest instead of loading them through Bun's SSR interop.
     server: { deps: { inline: ['zod'] } },
@@ -150,11 +152,11 @@ export default defineConfig({
       ? undefined
       : {
           '/api': {
-            target: 'http://localhost:8000',
+            target: `http://${apiAddress}`,
             changeOrigin: true,
           },
           '/ws': {
-            target: 'ws://localhost:8000',
+            target: `ws://${apiAddress}`,
             ws: true,
           },
         },

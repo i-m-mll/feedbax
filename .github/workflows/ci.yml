@@ -101,5 +101,22 @@ jobs:
       - name: Run Playwright smoke
         run: bun run test:e2e
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Studio backend
+        working-directory: .
+        run: uv sync --locked --extra web --extra mjx
+
+      - name: Run Studio walkthrough against the backend
+        run: bun run test:studio
+
       - name: Build
         run: bun run build

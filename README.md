@@ -50,23 +50,17 @@ Documentation is available [here](https://docs.lprt.ca/feedbax).
 
 ## Web UI
 
-Feedbax includes a web interface for visually constructing and training models. Install the Bun version in `.bun-version`, then start the backend API and frontend dev server:
+Feedbax includes a web interface for visually constructing and training models. Install the Bun version in `.bun-version` and the locked dependencies.
 
 ```bash
+uv sync --locked --extra web --extra mjx
+bun install --cwd web --frozen-lockfile
 ./scripts/dev.sh
 ```
 
-Or run them separately:
+Open http://127.0.0.1:3008 in your browser. Each launch uses a fresh temporary data home. Use `./scripts/dev.sh --home /path/to/studio-data` to keep projects and runs across launches, or add `--preview` to serve a production build at http://127.0.0.1:3009.
 
-```bash
-# Backend (FastAPI on port 8000)
-uv run uvicorn feedbax.web.app:app --reload --port 8000
-
-# Frontend (Vite/React on port 3008)
-cd web && bun install --frozen-lockfile && bun run dev
-```
-
-Then open http://localhost:3008 in your browser.
+Run the isolated browser walkthrough with `cd web && bun run test:studio`. Set `FEEDBAX_STUDIO_E2E_PREVIEW=1` to exercise the production frontend.
 
 ## Building application packages on feedbax
 
