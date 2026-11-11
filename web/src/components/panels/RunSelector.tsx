@@ -3,6 +3,13 @@ import clsx from 'clsx';
 import { AlertCircle, ChevronDown } from 'lucide-react';
 import { useRunStore } from '@/stores/runStore';
 
+function formatTimestamp(iso: string): string {
+  const date = new Date(iso);
+  const day = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return `${day} ${time}`;
+}
+
 interface EvalRunSelectorProps {
   /** Currently selected eval run ID for the page. */
   selectedEvalRunId: string | null;
