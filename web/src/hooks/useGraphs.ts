@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchGraph, fetchGraphs } from '@/api/client';
 
-export function useGraphsList() {
+export function useGraphsList(enabled = true) {
   return useQuery({
     queryKey: ['graphs'],
-    queryFn: fetchGraphs,
-    staleTime: 30 * 1000,
+    queryFn: ({ signal }) => fetchGraphs(signal),
+    enabled,
+    networkMode: 'always',
+    retry: false,
   });
 }
 

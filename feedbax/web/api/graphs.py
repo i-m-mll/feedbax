@@ -83,13 +83,13 @@ def _admit_save(payload: dict[str, Any]) -> StudioPersistenceDocument:
 @router.get("", response_model=GraphListResponse)
 async def list_graphs(request: Request, response: Response) -> GraphListResponse:
     response.headers["Cache-Control"] = "no-store"
-    return GraphListResponse(
-        data={
-            "graphs": service.list_graphs(
-                component_registry=_component_registry(request),
-            )
-        }
-    )
+    try:
+        graphs = await run_in_threadpool(
+            service.list_graphs, component_registry=_component_registry(request)
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Project directory unreadable") from exc
+    return GraphListResponse(data={"graphs": graphs})
 
 
 @router.post("/assets/mujoco", response_model=ContentObjectRef)
@@ -119,7 +119,7 @@ async def create_graph(payload: dict[str, Any], request: Request) -> GraphCreate
             workspace_document=admitted.workspace_document,
             component_registry=component_registry,
         )
-    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return GraphCreateResponse(data={"id": record.graph_id, "metadata": record.project.metadata})
 
@@ -171,7 +171,7 @@ async def update_graph(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
-    except (GraphCompilationError, UnsupportedComponentMigration) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GraphSaveConflictError as exc:
         raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc

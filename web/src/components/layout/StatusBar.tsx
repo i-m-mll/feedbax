@@ -8,6 +8,8 @@ import { projectStudioSchema } from '@/features/schema/project';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useComponents } from '@/hooks/useComponents';
+import { SERVICE_UNREACHABLE } from '@/api/client';
+import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { isAcausalGraphSpec } from '@/types/graph';
 import {
   compileActiveLayer,
@@ -19,6 +21,7 @@ import {
 import { useProjectsStore } from '@/stores/projectsStore';
 
 export function StatusBar() {
+  const connection = useStudioConnection();
   const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
   const rootGraph = useRootGraph();
@@ -65,9 +68,12 @@ export function StatusBar() {
 
   return (
     <footer className="h-6 px-4 border-t border-slate-100 bg-white/80 text-xs text-slate-500 flex items-center gap-4">
-      <div className="flex items-center gap-1">
-        <Circle className="w-2.5 h-2.5 text-mint-500" fill="currentColor" />
-        Connected
+      <div className="flex items-center gap-1" role="status" aria-label="Studio connection">
+        <Circle
+          className={`w-2.5 h-2.5 ${connection.isError ? 'text-red-600' : connection.isSuccess ? 'text-mint-500' : 'text-slate-400'}`}
+          fill="currentColor"
+        />
+        {connection.isError ? SERVICE_UNREACHABLE : connection.isSuccess ? 'Connected' : 'Connecting'}
       </div>
       <div className="flex items-center gap-1">
         {validation.valid ? (

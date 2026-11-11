@@ -3,10 +3,11 @@ import {
   buildStudioPersistenceDocument,
   fetchGraph,
   persistStudioDocument,
+  SERVICE_UNREACHABLE,
   type StudioPersistenceEnvelope,
   type StudioPersistenceResult,
 } from '@/api/client';
-import { isHttpConflict } from '@/api/request';
+import { ApiRequestError, apiErrorMessage, isHttpConflict } from '@/api/request';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import {
   capturePersistedGraphFromSnapshot,
@@ -255,7 +256,10 @@ export class StudioPersistenceCoordinator {
       }
     } catch (error) {
       const kind = isHttpConflict(error) ? 'conflict' : 'error';
-      let message = `Could not save "${draft.label}". Its changes remain local.`;
+      const reason = error instanceof ApiRequestError && error.kind === 'network'
+        ? SERVICE_UNREACHABLE
+        : apiErrorMessage(error, 'Save failed');
+      let message = `${draft.label} unsaved · ${reason}`;
       if (kind === 'conflict' && destination) {
         const server = await this.dependencies.fetch(destination.graphId).catch(() => null);
         const localDocument = draft.envelope.workspace_document;

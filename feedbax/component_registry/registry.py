@@ -542,6 +542,8 @@ class ComponentRegistry:
         return replace(meta, serialization=serialization)
 
     def _to_definition(self, meta: DeclaredComponent) -> ComponentDefinition:
+        from feedbax.compiler.normalization import stamp_component_versions
+
         meta = deepcopy(meta)
         return ComponentDefinition(
             name=meta.name,
@@ -557,7 +559,11 @@ class ComponentRegistry:
             domain=meta.domain,
             interior_domain=meta.interior_domain,
             is_composite=meta.is_composite,
-            template_graph=meta.template_graph,
+            template_graph=(
+                stamp_component_versions(meta.template_graph, self)
+                if meta.template_graph is not None
+                else None
+            ),
             template_ui_state=meta.template_ui_state,
             template_id=meta.template_id,
             template_kind=meta.template_kind,

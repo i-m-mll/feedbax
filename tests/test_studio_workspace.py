@@ -121,6 +121,40 @@ def test_graph_ui_state_accepts_payloads_without_assembly_view():
     assert state.viewport.x == 1
 
 
+def test_projects_remain_readable_beside_an_unversioned_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(graphs_api, "service", GraphService(storage_dir=tmp_path))
+    with TestClient(create_app()) as client:
+        response = client.get("/api/components/feedbax.RecurrentController")
+        assert response.status_code == 200, response.text
+        template_nodes = response.json()["data"]["template_graph"]["nodes"]
+        readout = next(node for node in template_nodes.values() if node["type"] == "feedbax.Linear")
+        assert readout["revision"] > 0
+
+        draft = _graph().model_copy(update={"nodes": {"readout": ComponentSpec.model_validate(readout)}})
+        response = client.post("/api/graphs", json=_save_payload(graph=draft.model_dump(mode="json")))
+        assert response.status_code == 200, response.text
+        project_id = response.json()["data"]["id"]
+
+        legacy = json.loads((tmp_path / f"{project_id}.json").read_text(encoding="utf-8"))
+        legacy["metadata"]["name"] = "Earlier reaching model"
+        del legacy["graph"]["nodes"]["readout"]["revision"]
+        (tmp_path / "earlier.json").write_text(json.dumps(legacy), encoding="utf-8")
+        (tmp_path / "truncated.json").write_text("{", encoding="utf-8")
+
+        response = client.get("/api/graphs")
+        assert response.status_code == 200, response.text
+        projects = {project["id"]: project for project in response.json()["data"]["graphs"]}
+        assert projects[project_id]["metadata"]["name"] == draft.metadata.name
+        assert projects["earlier"]["name"] == "Earlier reaching model"
+        assert "feedbax.Linear" in projects["earlier"]["reason"]
+        assert projects["truncated"]["name"] == "truncated"
+        assert projects["truncated"]["detail"]
+
+        response = client.get(f"/api/graphs/{project_id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["graph"]["nodes"]["readout"] == readout
+
+
 def test_create_graph_persists_default_workspace(tmp_path):
     service = GraphService(storage_dir=tmp_path)
 
