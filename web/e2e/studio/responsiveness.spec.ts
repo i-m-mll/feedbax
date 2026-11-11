@@ -44,11 +44,13 @@ async function openMeasurementGraph(page: Page, componentCount: number) {
   const name = page.getByPlaceholder('Tab name...');
   await name.fill('Measurement seed');
   await name.press('Enter');
-  await page.getByTitle('Add feedbax.Linear', { exact: true }).click();
-
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click();
   const save = page.waitForRequest((request) =>
-    new URL(request.url()).pathname === '/api/graphs' && request.method() === 'POST',
+    new URL(request.url()).pathname === '/api/graphs' && request.method() === 'POST'
+      && Object.values((request.postDataJSON() as StudioPersistenceDocument).graph?.nodes ?? {})
+        .some((node) => node.type === 'feedbax.Linear'),
   );
+  await page.getByTitle('Add feedbax.Linear', { exact: true }).click();
   await page.getByTitle('Save', { exact: true }).click();
   const seed = (await save).postDataJSON() as StudioPersistenceDocument;
   const component = Object.values(seed.graph?.nodes ?? {})[0];
@@ -82,7 +84,7 @@ async function openMeasurementGraph(page: Page, componentCount: number) {
   await expect(created).toBeOK();
   const { data: { id } } = await created.json() as { data: { id: string } };
   await page.getByTitle('Open project', { exact: true }).click();
-  await page.getByRole('button', { name: label, exact: false }).click();
+  await page.getByRole('dialog').getByRole('button', { name: label, exact: false }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(componentCount);
   return id;
 }
@@ -95,7 +97,9 @@ test.describe('Studio responsiveness baseline', () => {
       const id = await openMeasurementGraph(page, componentCount);
       const first = page.locator('.react-flow__node[data-id="linear_1"]');
       await first.click();
-      const size = page.getByRole('textbox', { name: /^out size\b/i });
+      const properties = page.getByRole('button', { name: 'Show properties panel', exact: true });
+      if (await properties.isVisible()) await properties.click();
+      const size = page.getByRole('textbox', { name: /^output size\b/i });
       await expect(size).toBeVisible();
 
       const sample = await scriptSampler(page);
@@ -104,13 +108,13 @@ test.describe('Studio responsiveness baseline', () => {
       for (const digit of '123') keystrokeMs.push(await sample(() => size.press(digit)));
       await expect(size).toHaveValue('123');
 
-      const commitMs = await sample(() => size.press('Enter'));
       const committed = page.waitForResponse((response) => {
         const request = response.request();
         return new URL(response.url()).pathname === `/api/graphs/${id}`
           && request.method() === 'PUT'
-          && request.postDataJSON().graph?.nodes?.linear_1?.params?.out_size === 123;
+          && request.postDataJSON().graph?.nodes?.linear_1?.params?.output_size === 123;
       });
+      const commitMs = await sample(() => size.press('Enter'));
       await page.getByTitle('Save', { exact: true }).click();
       await expect(await committed).toBeOK();
 
@@ -145,7 +149,7 @@ test.describe('Studio responsiveness baseline', () => {
     test.skip(headless, 'Playback timing requires a visible browser (--headed)');
     await page.goto('/');
     await page.getByRole('button', { name: 'Workspace', exact: true }).click();
-    await page.getByRole('button', { name: 'Playback', exact: true }).click();
+    await page.getByRole('button', { name: 'playback', exact: true }).click();
     const play = page.getByTitle('Play', { exact: true });
     await expect(play).toBeEnabled();
     await play.click();
