@@ -47,11 +47,12 @@ async function openSavedProject(page: Page, name: string) {
 async function stageSweep(page: Page) {
   await page.getByRole('button', { name: 'Train', exact: true }).click();
   const matrix = page.getByText('Matrix builder', { exact: true }).locator('xpath=ancestor::section[1]');
-  await matrix.getByLabel('Path', { exact: true }).fill('training_spec.optimizer.params.learning_rate');
-  await matrix.getByLabel('Values', { exact: true }).fill('0.001, 0.0003');
+  await matrix.getByRole('textbox', { name: /^Path\b/ }).fill('training_spec.optimizer.params.learning_rate');
+  await matrix.getByRole('textbox', { name: /^Values\b/ }).fill('0.001, 0.0005');
   await matrix.getByRole('button', { name: 'Add', exact: true }).click();
   const plan = page.waitForResponse((response) =>
-    response.url().endsWith('/api/provider/studio/training/plan') && response.request().method() === 'POST');
+    response.url().endsWith('/api/provider/studio/training/plan') && response.request().method() === 'POST',
+    { timeout: 8_000 });
   await matrix.getByRole('button', { name: 'Stage 2 runs', exact: true }).click();
   return plan;
 }

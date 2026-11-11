@@ -20,6 +20,7 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     baseURL,
+    actionTimeout: 5_000,
     serviceWorkers: 'block',
     trace: 'retain-on-failure',
   },
