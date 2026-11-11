@@ -8,8 +8,8 @@
     "generate:contracts": "cd .. && uv run python scripts/generate_studio_contracts.py",
     "build": "bun --bun tsc -b && bun --bun vite build",
     "test": "bun --bun vitest run",
-    "test:e2e": "bun --bun playwright test",
-    "test:studio": "bun --bun playwright test --config playwright.studio.config.ts",
+    "test:e2e": "bun scripts/run-browser-tests.ts",
+    "test:studio": "bun scripts/run-browser-tests.ts --config playwright.studio.config.ts",
     "preview": "bun --bun vite preview"
   },
   "dependencies": {

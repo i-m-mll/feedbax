@@ -82,10 +82,24 @@ async function openMeasurementGraph(page: Page, componentCount: number) {
     },
   };
   const created = await page.request.post('/api/graphs', { data: project });
-  await expect(created).toBeOK();
+  expect(created.ok(), `Project creation returned ${created.status()}`).toBe(true);
   const { data: { id } } = await created.json() as { data: { id: string } };
   await openSavedProject(page, label);
   await expect(page.locator('.react-flow__node')).toHaveCount(componentCount);
+  return id;
+}
+
+async function visibleComponentId(page: Page) {
+  const id = await page.locator('.react-flow').evaluate((canvas) => {
+    const view = canvas.getBoundingClientRect();
+    const nodes = [...canvas.querySelectorAll<HTMLElement>('.react-flow__node[data-id]')];
+    return nodes.find((node) => {
+      const bounds = node.getBoundingClientRect();
+      return bounds.left >= view.left && bounds.top >= view.top
+        && bounds.right + 48 < view.right && bounds.bottom + 24 < view.bottom;
+    })?.dataset.id;
+  });
+  if (!id) throw new Error('The graph has no component with room to drag inside the canvas');
   return id;
 }
 
@@ -95,8 +109,9 @@ test.describe('Studio responsiveness baseline', () => {
   for (const componentCount of [20, 100]) {
     test(`edit and drag with ${componentCount} components`, async ({ page }, testInfo) => {
       const id = await openMeasurementGraph(page, componentCount);
-      const first = page.locator('.react-flow__node[data-id="linear_1"]');
-      await first.click();
+      const nodeId = await visibleComponentId(page);
+      const node = page.getByTestId(`rf__node-${nodeId}`);
+      await node.click();
       const properties = page.getByRole('button', { name: 'Show properties panel', exact: true });
       if (await properties.isVisible()) await properties.click();
       const size = page.getByRole('textbox', { name: /^output size\b/i });
@@ -112,13 +127,14 @@ test.describe('Studio responsiveness baseline', () => {
         const request = response.request();
         return new URL(response.url()).pathname === `/api/graphs/${id}`
           && request.method() === 'PUT'
-          && request.postDataJSON().graph?.nodes?.linear_1?.params?.output_size === 123;
+          && request.postDataJSON().graph?.nodes?.[nodeId]?.params?.output_size === 123;
       });
       const commitMs = await sample(() => size.press('Enter'));
       await page.getByTitle('Save', { exact: true }).click();
-      await expect(await committed).toBeOK();
+      const saved = await committed;
+      expect(saved.ok(), `Project save returned ${saved.status()}`).toBe(true);
 
-      const origin = await first.boundingBox();
+      const origin = await node.boundingBox();
       if (!origin) throw new Error('Linear is outside the canvas');
       await page.mouse.move(origin.x + origin.width / 2, origin.y + 16);
       await page.mouse.down();
@@ -132,7 +148,7 @@ test.describe('Studio responsiveness baseline', () => {
       } finally {
         await page.mouse.up();
       }
-      await expect.poll(async () => (await first.boundingBox())?.x).toBeGreaterThan(origin.x);
+      await expect.poll(async () => (await node.boundingBox())?.x).toBeGreaterThan(origin.x);
       await testInfo.attach('script-duration-ms', {
         contentType: 'application/json',
         body: JSON.stringify({

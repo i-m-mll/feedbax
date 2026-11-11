@@ -121,7 +121,9 @@ test('stages two pending rows at the authored learning rates', async ({ page, re
   expect(rows).toHaveLength(labels.length);
   await expect(page.getByRole('button', { name: /^Show details for Learning rate=/ })).toHaveCount(labels.length);
   for (const label of labels) {
-    await expect(page.getByRole('button', { name: `Show details for ${label}`, exact: true })).toBeVisible();
+    const details = page.getByRole('button', { name: `Show details for ${label}`, exact: true });
+    await expect(details).toBeVisible();
+    await expect(details.locator('xpath=../..').getByText('Pending', { exact: true })).toBeVisible();
   }
 });
 
