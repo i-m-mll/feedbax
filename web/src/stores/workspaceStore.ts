@@ -1177,7 +1177,11 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((baseSet) => {
         lastTrainingExecutionPreparation: preparation,
         workspace: state.workspace
           ? hydrateWorkspacePresentation(
-              { ...preparation.workspace, active_stage_id: state.workspace.active_stage_id },
+              {
+                ...preparation.workspace,
+                active_stage_id: state.workspace.active_stage_id,
+                scenarios: state.workspace.scenarios,
+              },
               workspacePresentation(state.workspace),
             )
           : preparation.workspace,

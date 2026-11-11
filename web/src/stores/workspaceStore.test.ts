@@ -1095,7 +1095,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(updatedEvalStage?.metadata.dirty).toBe(true);
   });
 
-  it('shows the training plan while retaining the active tab and editor projection', () => {
+  it('shows the training plan while retaining current scenario edits and presentation', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph,
@@ -1132,6 +1132,7 @@ describe('buildWorkspaceSnapshot', () => {
     useWorkspaceStore.getState().setWorkspace(workspace);
     useWorkspaceStore.getState().setActiveStage('stage:eval');
     useWorkspaceStore.getState().setTopPaneProjection('task');
+    useWorkspaceStore.getState().updateActiveScenarioTrainingSpec({ ...trainingSpec, n_batches: 123 });
     useWorkspaceStore.getState().setTrainingExecutionPreparation({
       workspace: prepared,
       graph,
@@ -1165,6 +1166,7 @@ describe('buildWorkspaceSnapshot', () => {
       'studio-plan'
     );
     expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
+    expect(getTrainingScenario(state.workspace)?.training_spec?.n_batches).toBe(123);
     expect(getActiveStage(state.workspace)?.kind).toBe('eval');
     expect(getTopPaneState(state.workspace).active_projection).toBe('task');
   });
