@@ -21,13 +21,36 @@ class StudioRunSelection(StrictModel):
     run_keys: list[str] | None = Field(default=None, min_length=1)
 
 
-class StudioJobSubmissionRequest(StrictModel):
-    token: Token
+class StudioRunPreviewRequest(StrictModel):
     project_id: str = Field(min_length=1, max_length=128)
     workspace: StudioWorkspaceSpec
     graph: GraphSpec
     selections: list[StudioRunSelection] = Field(min_length=1)
+
+
+class StudioJobSubmissionRequest(StudioRunPreviewRequest):
+    token: Token
     policy: Literal["out_of_date", "all"] = "out_of_date"
+
+
+class StudioPreviewRow(StrictModel):
+    run_key: str
+    request_id: str
+    stage_id: str
+    scenario_id: str
+    label: str
+    coordinates: dict[str, JsonValue]
+
+
+class StudioPreviewIssue(StrictModel):
+    stage_id: str
+    path: str
+    message: str
+
+
+class StudioRunPreview(StrictModel):
+    rows: list[StudioPreviewRow]
+    issues: list[StudioPreviewIssue]
 
 
 class JobStatus(StrEnum):
@@ -150,3 +173,11 @@ class StudioJobEventHistory(StrictModel):
     cursor: int = Field(ge=0)
     oldest_cursor: int = Field(ge=0)
     events: list[StudioJobEvent]
+
+
+class StudioEventWatermark(StrictModel):
+    cursor: int = Field(ge=0)
+
+
+class StudioEventReset(StudioEventWatermark):
+    oldest_cursor: int = Field(ge=0)

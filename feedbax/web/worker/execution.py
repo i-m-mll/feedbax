@@ -162,8 +162,8 @@ def compile_training_run(
         binding_model = task_binding_spec
     else:
         binding_payload = migrate_studio_task_binding_spec(task_binding_spec).payload
-        _reject_unsupported_task_data_value_spec_modes(binding_payload)
         binding_model = StudioTaskBindingSpec.model_validate(binding_payload)
+    binding_model = _execution_task_bindings(binding_model, task_model.timeline)
     _validate_authored_execution_inputs(binding_model, task_spec, cfg)
     _validate_epoch_value_targets(task_model.timeline, binding_model)
     binding_errors = [
@@ -923,19 +923,31 @@ def _materialize_epoch_value(
     )
 
 
-def _reject_unsupported_task_data_value_spec_modes(task_binding_spec: Mapping[str, Any]) -> None:
-    for item in task_binding_spec.get("exposed_data", []):
-        if not isinstance(item, Mapping):
-            continue
-        value_spec = item.get("value_spec")
-        if not isinstance(value_spec, Mapping):
-            continue
-        mode = value_spec.get("mode")
-        if mode is not None and mode not in {"constant", "function"}:
+def _execution_task_bindings(
+    task_binding_spec: StudioTaskBindingSpec,
+    timeline: StudioTaskTimelineSpec | None,
+) -> StudioTaskBindingSpec:
+    """Omit unused Studio catalog entries that describe a schema without a value."""
+    inputs = {binding.source_data_id for binding in task_binding_spec.bindings}
+    if timeline is not None:
+        inputs.update(entry.target_id for entry in timeline.epoch_value_specs)
+    exposed_data = []
+    for item in task_binding_spec.exposed_data:
+        spec = item.value_spec
+        if spec is not None and spec.mode not in {"constant", "function"}:
+            if (
+                spec.mode == "reference"
+                and spec.reference is None
+                and "value_schema" in spec.metadata
+                and item.id not in inputs
+            ):
+                continue
             raise ValueError(
-                f"Task data {item.get('id')!r} at {item.get('path')!r} uses unsupported "
-                f"value_spec mode={mode!r}"
+                f"Task data {item.id!r} at {item.path!r} uses unsupported "
+                f"value_spec mode={spec.mode!r}"
             )
+        exposed_data.append(item)
+    return task_binding_spec.model_copy(update={"exposed_data": exposed_data})
 
 
 def _materialize_one_task_data(

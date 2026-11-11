@@ -154,6 +154,14 @@ export default defineConfig({
           '/api': {
             target: `http://${apiAddress}`,
             changeOrigin: true,
+            configure(proxy) {
+              proxy.on('proxyRes', (upstream, _request, downstream) => {
+                if (!upstream.headers['content-type']?.startsWith('text/event-stream')) return;
+                upstream.once('close', () => {
+                  if (!upstream.complete && !downstream.writableEnded) downstream.destroy();
+                });
+              });
+            },
           },
           '/ws': {
             target: `ws://${apiAddress}`,

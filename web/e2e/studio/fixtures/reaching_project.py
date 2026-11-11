@@ -30,7 +30,7 @@ STEPS = 100
 BATCHES = 30
 
 
-def reaching_project(*, batches: int = BATCHES) -> StudioPersistenceDocument:
+def reaching_project(*, batches: int = BATCHES, name: str = NAME) -> StudioPersistenceDocument:
     graph = network_template_graph({"input_size": 2, "hidden_size": 100, "out_size": 2})
     del graph.nodes["input_mux"]
     graph.wires = [wire for wire in graph.wires if wire.source_node != "input_mux"]
@@ -50,13 +50,13 @@ def reaching_project(*, batches: int = BATCHES) -> StudioPersistenceDocument:
     graph.output_ports = ["effector"]
     graph.output_bindings = {"effector": ("plant", "effector")}
     graph.metadata = GraphMetadata(
-        name=NAME,
+        name=name,
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
     )
     graph = stamp_component_versions(graph, ComponentRegistry())
 
-    workspace = build_default_studio_workspace(label=NAME)
+    workspace = build_default_studio_workspace(label=name)
     scenario = workspace.scenarios["scenario:train"]
     scenario.task_spec = {"type": "SimpleReaches", "params": {"n_steps": STEPS}}
     scenario.task_binding_spec = StudioTaskBindingSpec(
@@ -122,4 +122,6 @@ def reaching_project(*, batches: int = BATCHES) -> StudioPersistenceDocument:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batches", type=int, default=BATCHES)
-    print(reaching_project(batches=parser.parse_args().batches).model_dump_json(exclude_none=True))
+    parser.add_argument("--name", default=NAME)
+    args = parser.parse_args()
+    print(reaching_project(batches=args.batches, name=args.name).model_dump_json(exclude_none=True))

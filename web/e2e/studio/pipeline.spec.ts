@@ -1,10 +1,7 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
+import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type {
   GraphCreateResponse,
   GraphDetailResponse,
@@ -12,38 +9,8 @@ import type {
   StudioPersistenceDocument,
 } from '../../src/generated/studioContracts';
 import { openOverlay, openSavedProject } from './projectControls';
-import type { StudioTrainingExecutionPreparation } from '../../src/types/workspace';
 
-const repo = fileURLToPath(new URL('../../../', import.meta.url));
-const run = promisify(execFile);
-const sweepRates = [0.001, 0.0005];
-
-async function reachingDocument(): Promise<StudioPersistenceDocument> {
-  const { stdout } = await run('uv', [
-    'run', '--no-sync', 'python', '-B', 'web/e2e/studio/fixtures/reaching_project.py',
-  ], { cwd: repo, timeout: 10_000 });
-  return JSON.parse(stdout);
-}
-
-async function saveFixture(request: APIRequestContext, document: StudioPersistenceDocument) {
-  const response = await request.post('/api/graphs', { data: document });
-  expect(response.ok(), await response.text()).toBe(true);
-  const { data } = await response.json() as GraphCreateResponse;
-  return data;
-}
-
-async function stageSweep(page: Page) {
-  await page.getByRole('button', { name: 'Train', exact: true }).click();
-  const matrix = page.getByText('Matrix builder', { exact: true }).locator('xpath=ancestor::section[1]');
-  await matrix.getByRole('textbox', { name: /^Path\b/ }).fill('training_spec.optimizer.params.learning_rate');
-  await matrix.getByRole('textbox', { name: /^Values\b/ }).fill(sweepRates.join(', '));
-  await matrix.getByRole('button', { name: 'Add', exact: true }).click();
-  const plan = page.waitForResponse((response) =>
-    response.url().endsWith('/api/provider/studio/training/plan') && response.request().method() === 'POST',
-    { timeout: 8_000 });
-  await matrix.getByRole('button', { name: 'Stage 2 runs', exact: true }).click();
-  return plan;
-}
+import { reachingDocument, saveFixture } from './reachingProject';
 
 test('adds a composite with Train open and reopens the saved graph from another browser context',
   async ({ page, browser, baseURL, request }) => {
@@ -78,7 +45,7 @@ test('adds a composite with Train open and reopens the saved graph from another 
     });
     await template.click();
     await expect(page.locator('.react-flow__node')).toHaveCount(count);
-    await expect(page.getByRole('button', { name: /^Stage / })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeVisible();
     await page.getByTitle('Save', { exact: true }).click();
     const save = await saving;
     expect(save.ok(), await save.text()).toBe(true);
@@ -103,65 +70,6 @@ test('adds a composite with Train open and reopens the saved graph from another 
       await fresh.close();
     }
   });
-
-test('stages and reopens two pending rows at the authored rates', async ({ page, browser, baseURL, request }) => {
-  const document = await reachingDocument();
-  const { id, metadata } = await saveFixture(request, document);
-  await page.goto('/');
-  await openSavedProject(page, metadata.name);
-  const plan = await stageSweep(page);
-  expect(plan.ok(), await plan.text()).toBe(true);
-  const { workspace } = await plan.json() as StudioTrainingExecutionPreparation;
-  const rows = workspace.stages.find((stage) => stage.kind === 'train')?.output_collections
-    .find((collection) => collection.kind === 'training_runs')?.item_refs ?? [];
-  const labels = sweepRates.map((rate) => `Learning rate=${rate}`);
-  expect(rows.map((row) => [row.metadata.label, row.metadata.status])).toEqual(
-    expect.arrayContaining(labels.map((label) => [label, 'pending'])),
-  );
-  expect(rows).toHaveLength(labels.length);
-  async function expectPending(view: Page) {
-    await expect(view.getByRole('button', { name: /^Show details for Learning rate=/ })).toHaveCount(labels.length);
-    for (const label of labels) {
-      const details = view.getByRole('button', { name: `Show details for ${label}`, exact: true });
-      await expect(details).toBeVisible();
-      await expect(details.locator('xpath=../..').getByText('Pending', { exact: true })).toBeVisible();
-    }
-  }
-  await expectPending(page);
-  await page.getByTitle('Save', { exact: true }).click();
-  await expect.poll(async () => {
-    const persisted = await request.get(`/api/graphs/${id}`);
-    expect(persisted.ok()).toBe(true);
-    const { data } = await persisted.json() as GraphDetailResponse;
-    const persistedTrain = data.workspace?.stages.find((stage) => stage.kind === 'train');
-    return persistedTrain?.output_collections.find((collection) => collection.kind === 'training_runs')
-      ?.item_refs.map((row) => row.id).sort();
-  }).toEqual(rows.map((row) => row.id).sort());
-
-  const fresh = await browser.newPage({ baseURL, serviceWorkers: 'block' });
-  try {
-    await fresh.goto('/');
-    await openSavedProject(fresh, metadata.name);
-    await expectPending(fresh);
-  } finally {
-    await fresh.close();
-  }
-});
-
-test('reports the project object that prevents staging', async ({ page, request }) => {
-  const document = await reachingDocument();
-  document.graph!.metadata!.name = 'Unwired reach';
-  const training = document.workspace!.scenarios['scenario:train'];
-  training.task_binding_spec!.bindings[0].target_port = 'missing_input';
-  const { metadata } = await saveFixture(request, document);
-  await page.goto('/');
-  await openSavedProject(page, metadata.name);
-  const plan = await stageSweep(page);
-  expect(plan.status()).toBe(422);
-  const problems = page.getByRole('list', { name: 'Problems' });
-  await expect(problems.getByRole('listitem').filter({ hasText: /cell\.missing_input/i }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Launch / })).toHaveCount(0);
-});
 
 test('opens a readable project beside an older unreadable one', async ({ page, request }, testInfo) => {
   const document = await reachingDocument();

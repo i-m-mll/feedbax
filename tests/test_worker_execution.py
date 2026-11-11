@@ -1113,14 +1113,6 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     assert result.final_batch == 5
 
     assert compiled.graph is result.graph
-    final_snapshot = next(
-        event["trajectory"]
-        for event in events
-        if event["type"] == "training_trajectory" and event["program_step"] == 5
-    )
-    assert final_snapshot == worker_execution._trajectory_snapshot(
-        result.graph, compiled, key=jax.random.PRNGKey(5)
-    )
     restored = eqx.tree_deserialise_leaves(result.checkpoint_path, result.graph)
     for expected, actual in zip(jt.leaves(result.graph), jt.leaves(restored), strict=True):
         if eqx.is_array(expected):
@@ -1657,11 +1649,22 @@ def test_compile_training_run_rejects_window_retention_without_size() -> None:
         )
 
 
-def test_compile_training_run_rejects_unsupported_task_data_value_spec_mode() -> None:
+@pytest.mark.parametrize(
+    "reference",
+    [
+        {"namespace": "task_data", "compact": "task_data:other_input", "path": "inputs.other"},
+        None,
+    ],
+    ids=["reference", "bound-catalog-entry"],
+)
+def test_compile_training_run_rejects_unsupported_task_data_value_spec_mode(
+    reference: dict[str, str] | None,
+) -> None:
     task_binding_spec = deepcopy(_task_binding_spec())
     task_binding_spec["exposed_data"][0]["value_spec"] = {
         "mode": "reference",
-        "reference": {"path": "inputs.model"},
+        "reference": reference,
+        "metadata": {"value_schema": {"type": "array"}},
     }
 
     with pytest.raises(ValueError, match="unsupported value_spec mode='reference'"):

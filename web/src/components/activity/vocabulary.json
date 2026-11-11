@@ -1,0 +1,111 @@
+{
+  "name": {
+    "activity": "Activity",
+    "add": "Add",
+    "analyze": "Analyze",
+    "axis": "Axis",
+    "clearSelection": "Clear Selection",
+    "close": "Close",
+    "connection": "Connection",
+    "cross": "Cross",
+    "details": "Details",
+    "dismiss": "Dismiss",
+    "edit": "Edit",
+    "effector": "Effector",
+    "evaluate": "Evaluate",
+    "forceStop": "Force Stop",
+    "goal": "Goal",
+    "inspect": "Inspect",
+    "inspector": "Run Inspector",
+    "learningRate": "Learning Rate",
+    "log": "Log",
+    "loss": "Loss",
+    "machine": "Machine",
+    "mode": "Mode",
+    "name": "Name",
+    "openRun": "Open Run",
+    "path": "Path",
+    "previousRuns": "Previous Runs",
+    "progress": "Progress",
+    "project": "Project",
+    "reason": "Reason",
+    "remaining": "Remaining",
+    "remove": "Remove",
+    "report": "Report",
+    "resume": "Resume",
+    "retry": "Retry",
+    "run": "Run",
+    "runAll": "Run All",
+    "runs": "Runs",
+    "scene": "Scene",
+    "select": "Select",
+    "service": "Service",
+    "status": "Status",
+    "step": "Step",
+    "stop": "Stop",
+    "sweep": "Sweep",
+    "thisMac": "This Mac",
+    "train": "Train",
+    "updates": "Updates",
+    "values": "Values",
+    "zip": "Zip"
+  },
+  "unit": {
+    "second": "s",
+    "minute": "min"
+  },
+  "status": {
+    "run": {
+      "not_run": "Not run",
+      "cannot_run": "Can't run",
+      "stale": "Out of date",
+      "queued": "Queued",
+      "awaiting_authorization": "Needs approval",
+      "blocked": "Blocked",
+      "starting": "Starting",
+      "running": "Running",
+      "stopping": "Stopping",
+      "collecting": "Downloading",
+      "succeeded": "Done",
+      "failed": "Failed",
+      "stopped": "Stopped",
+      "interrupted": "Interrupted",
+      "corrupt": "Damaged"
+    },
+    "machine": { "open": "Open" },
+    "connection": {
+      "connecting": "Connecting",
+      "connected": "Connected",
+      "disconnected": "Unreachable"
+    },
+    "definition": { "earlier": "Earlier definition" },
+    "phase": {
+      "importing": "Loading",
+      "building": "Building",
+      "compiling": "Compiling",
+      "restoring": "Restoring",
+      "finalizing": "Finishing"
+    }
+  },
+  "reason": {
+    "observed": "{value}",
+    "unavailable": "{value} unavailable",
+    "unreachable": "{value} unreachable",
+    "renderFailed": "{value} failed to render",
+    "noStep": "{value} removed",
+    "canResume": "{value} can resume",
+    "changed": "{value} changed",
+    "invalidPath": "{value} is invalid"
+  },
+  "step": {
+    "train": { "glyph": "flask", "tint": "#c4b5fd" },
+    "evaluate": { "glyph": "play", "tint": "#f5add8" },
+    "analyze": { "glyph": "chart", "tint": "#f0abfc" },
+    "report": { "glyph": "page", "tint": "#cbd5e1" }
+  },
+  "retired": [
+    "node", "stage", "scenario", "request", "receipt", "reference", "trace", "store",
+    "manifest", "collection", "coordinate", "job", "launch", "host", "session", "target",
+    "submission", "claim", "admission"
+  ]
+}

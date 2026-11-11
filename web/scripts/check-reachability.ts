@@ -34,7 +34,8 @@ function visitModule(path: string) {
   seen.add(source);
 
   for (const { fileName } of ts.preProcessFile(source.text, true, true).importedFiles) {
-    const imported = ts.resolveModuleName(fileName, path, options, ts.sys, resolutionCache)
+    const specifier = fileName.replace(/\?sharedworker$/, '');
+    const imported = ts.resolveModuleName(specifier, path, options, ts.sys, resolutionCache)
       .resolvedModule?.resolvedFileName;
     if (imported?.startsWith(src)) visitModule(imported);
   }

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { useStudioRunFocus } from '@/components/activity/studioRunFocus';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
 import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
@@ -44,6 +45,11 @@ const EvaluateCollectionPanel = lazy(() =>
 const TrainCollectionPanel = lazy(() =>
   import('@/components/panels/RunCollectionStagePanel').then((module) => ({
     default: module.TrainCollectionPanel,
+  }))
+);
+const StudioTrainPanel = lazy(() =>
+  import('@/components/panels/StudioTrainPanel').then((module) => ({
+    default: module.StudioTrainPanel,
   }))
 );
 const StageDraftPanel = lazy(() =>
@@ -93,22 +99,37 @@ export function BottomShelf({
   } = useLayoutStore();
   const mode = bottomShelfMode as WorkspaceMode;
   const tabId = useProjectsStore((state) => state.activeTabId);
+  const projectId = useGraphStore((state) => state.graphId);
+  const focus = useStudioRunFocus((state) => state.focus);
   const workspace = useWorkspaceStore((state) => state.workspace);
   const stages = workspace?.stages ?? [];
-  const activeStage = getActiveStage(workspace);
+  const focusedStage = focus?.projectId === projectId
+    ? stages.find((stage) => stage.id === focus?.stageId)
+    : undefined;
+  const activeStage = focusedStage ?? getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const markDirty = useGraphStore((state) => state.markDirty);
   const tabsRef = useRef<HTMLDivElement | null>(null);
+  const latestHeight = useRef(availableHeight);
+  latestHeight.current = availableHeight;
+  const heightReady = availableHeight > 0;
   const [fadeState, setFadeState] = useState({ left: false, right: false });
   const isAnalysisMode = mode === 'stage' && activeStage?.kind === 'analysis';
   const LeftSidebarIcon = bottomSidebarCollapsed ? PanelLeftOpen : PanelLeftClose;
   const RightSidebarIcon = bottomRightSidebarCollapsed ? PanelRightOpen : PanelRightClose;
   const BottomIcon = bottomCollapsed ? UnfoldVertical : FoldVertical;
 
+  useEffect(() => {
+    if (!focusedStage?.id || !heightReady) return;
+    const layout = useLayoutStore.getState();
+    if (layout.bottomCollapsed) layout.toggleBottom(latestHeight.current);
+    if (layout.bottomShelfMode !== 'stage') layout.setBottomShelfMode('stage');
+  }, [focus, focusedStage?.id, heightReady]);
+
   const activeContent = useMemo(() => {
     if (mode === 'console') return <ConsolePanel />;
-    if (activeStage?.kind === 'train') return <TrainCollectionPanel />;
+    if (activeStage?.kind === 'train') return <StudioTrainPanel stageId={activeStage.id} />;
     if (activeStage?.kind === 'compare') return <TrainCollectionPanel />;
     if (activeStage?.kind === 'eval') return <EvaluateCollectionPanel />;
     if (activeStage?.kind === 'analysis') return <AnalysisPanel />;
@@ -117,6 +138,7 @@ export function BottomShelf({
 
   const selectStage = useCallback(
     (stageId: string) => {
+      useStudioRunFocus.getState().select(null);
       if (bottomCollapsed) toggleBottom(availableHeight);
       setBottomShelfMode('stage');
       setActiveStage(stageId);
@@ -190,6 +212,7 @@ export function BottomShelf({
             <div className="mx-2 mb-2 h-5 w-px shrink-0 bg-slate-200" />
             <button
               onClick={() => {
+                useStudioRunFocus.getState().select(null);
                 if (bottomCollapsed) toggleBottom(availableHeight);
                 setBottomShelfMode('console');
               }}

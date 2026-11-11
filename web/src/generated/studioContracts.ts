@@ -4,7 +4,163 @@
 import { z } from 'zod';
 
 export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)]));
 export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;
+
+export interface JobError {
+  code: string;
+  message: string;
+  phase?: string | null;
+  path?: string | null;
+}
+
+export interface JobOutcome {
+  outcome: "succeeded" | "stopped" | "failed" | "interrupted" | "blocked";
+  error?: JobError | null;
+  receipt?: JobReceipt | null;
+  signal?: number | null;
+  exit?: number | null;
+}
+
+export interface JobProgress {
+  completed_updates: number;
+  total_updates: number;
+}
+
+export interface JobReceipt {
+  manifest_id: string;
+  manifest_sha256: string;
+}
+
+export interface StudioActivityJob {
+  job_id: string;
+  project_id: string;
+  request_id: string;
+  run_key: string;
+  stage_id: string;
+  scenario_id: string;
+  label: string;
+  coordinates: Record<string, JsonValue>;
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  phase?: string | null;
+  reason?: string | null;
+  can_resume?: boolean;
+  allowed_actions: Array<"checkpoint" | "force" | "resume">;
+  continues?: string | null;
+  progress?: JobProgress | null;
+  eta_seconds?: number | null;
+  outcome?: JobOutcome | null;
+  earlier_definition?: boolean;
+  seen?: boolean;
+}
+
+export interface StudioEventReset {
+  cursor: number;
+  oldest_cursor: number;
+}
+
+export interface StudioEventWatermark {
+  cursor: number;
+}
+
+export interface StudioJobEvent {
+  cursor: number;
+  job_id: string;
+  project_id: string;
+  request_id: string;
+  kind: string;
+  data: Record<string, JsonValue>;
+  activity?: StudioActivityJob | null;
+}
+
+export interface StudioJobEventHistory {
+  cursor: number;
+  oldest_cursor: number;
+  events: StudioJobEvent[];
+}
+
+export interface StudioJobResumeRequest {
+  token: string;
+}
+
+export interface StudioJobSnapshot {
+  jobs: StudioActivityJob[];
+  cursor: number;
+  oldest_cursor: number;
+  sessions: StudioLocalSession[];
+}
+
+export interface StudioJobStopItem {
+  job_id: string;
+  job?: StudioActivityJob | null;
+  error?: JobError | null;
+}
+
+export interface StudioJobStopRequest {
+  job_ids: string[];
+  mode: "checkpoint" | "force";
+}
+
+export interface StudioJobSubmission {
+  id: string;
+  token: string;
+  project_id: string;
+  items: StudioSubmissionItem[];
+}
+
+export interface StudioJobSubmissionRequest {
+  project_id: string;
+  workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
+  selections: StudioRunSelection[];
+  token: string;
+  policy?: "out_of_date" | "all";
+}
+
+export interface StudioLocalSession {
+  id?: "local";
+  state?: "open";
+}
+
+export interface StudioPreviewIssue {
+  stage_id: string;
+  path: string;
+  message: string;
+}
+
+export interface StudioPreviewRow {
+  run_key: string;
+  request_id: string;
+  stage_id: string;
+  scenario_id: string;
+  label: string;
+  coordinates: Record<string, JsonValue>;
+}
+
+export interface StudioRunPreview {
+  rows: StudioPreviewRow[];
+  issues: StudioPreviewIssue[];
+}
+
+export interface StudioRunPreviewRequest {
+  project_id: string;
+  workspace: StudioWorkspaceSpec;
+  graph: GraphSpec;
+  selections: StudioRunSelection[];
+}
+
+export interface StudioRunSelection {
+  stage_id: string;
+  run_keys?: string[] | null;
+}
+
+export interface StudioSubmissionItem {
+  run_key: string;
+  job_id?: string | null;
+  disposition: "admitted" | "attached" | "reused" | "rejected";
+  reason?: string | null;
+}
 
 export interface SparseCooEntrySpec {
   coordinate: number[];
@@ -2170,6 +2326,248 @@ function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): b
   };
   return dtype in floatMax && Math.abs(value) > floatMax[dtype];
 }
+
+export const JobErrorSchema: z.ZodType<JobError> = z.lazy(() =>
+  z
+    .object({
+      "code": z.string(),
+      "message": z.string(),
+      "phase": z.string().nullable().optional(),
+      "path": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<JobError>;
+
+export const JobOutcomeSchema: z.ZodType<JobOutcome> = z.lazy(() =>
+  z
+    .object({
+      "outcome": z.union([z.literal("succeeded"), z.literal("stopped"), z.literal("failed"), z.literal("interrupted"), z.literal("blocked")]),
+      "error": JobErrorSchema.nullable().optional(),
+      "receipt": JobReceiptSchema.nullable().optional(),
+      "signal": z.number().int().safe().nullable().optional(),
+      "exit": z.number().int().safe().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<JobOutcome>;
+
+export const JobProgressSchema: z.ZodType<JobProgress> = z.lazy(() =>
+  z
+    .object({
+      "completed_updates": z.number().int().safe().gte(0),
+      "total_updates": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<JobProgress>;
+
+export const JobReceiptSchema: z.ZodType<JobReceipt> = z.lazy(() =>
+  z
+    .object({
+      "manifest_id": z.string(),
+      "manifest_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+    })
+    .strict()
+) as unknown as z.ZodType<JobReceipt>;
+
+export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "project_id": z.string(),
+      "request_id": z.string(),
+      "run_key": z.string(),
+      "stage_id": z.string(),
+      "scenario_id": z.string(),
+      "label": z.string(),
+      "coordinates": z.record(z.string(), jsonValueSchema),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "phase": z.string().nullable().optional(),
+      "reason": z.string().nullable().optional(),
+      "can_resume": z.boolean().optional(),
+      "allowed_actions": z.array(z.union([z.literal("checkpoint"), z.literal("force"), z.literal("resume")])),
+      "continues": z.string().nullable().optional(),
+      "progress": JobProgressSchema.nullable().optional(),
+      "eta_seconds": z.number().finite().nullable().optional(),
+      "outcome": JobOutcomeSchema.nullable().optional(),
+      "earlier_definition": z.boolean().optional(),
+      "seen": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioActivityJob>;
+
+export const StudioEventResetSchema: z.ZodType<StudioEventReset> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(0),
+      "oldest_cursor": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEventReset>;
+
+export const StudioEventWatermarkSchema: z.ZodType<StudioEventWatermark> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEventWatermark>;
+
+export const StudioJobEventSchema: z.ZodType<StudioJobEvent> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(1),
+      "job_id": z.string(),
+      "project_id": z.string(),
+      "request_id": z.string(),
+      "kind": z.string(),
+      "data": z.record(z.string(), jsonValueSchema),
+      "activity": StudioActivityJobSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobEvent>;
+
+export const StudioJobEventHistorySchema: z.ZodType<StudioJobEventHistory> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(0),
+      "oldest_cursor": z.number().int().safe().gte(0),
+      "events": z.array(StudioJobEventSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobEventHistory>;
+
+export const StudioJobResumeRequestSchema: z.ZodType<StudioJobResumeRequest> = z.lazy(() =>
+  z
+    .object({
+      "token": z.string().min(1).max(128),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobResumeRequest>;
+
+export const StudioJobSnapshotSchema: z.ZodType<StudioJobSnapshot> = z.lazy(() =>
+  z
+    .object({
+      "jobs": z.array(StudioActivityJobSchema),
+      "cursor": z.number().int().safe().gte(0),
+      "oldest_cursor": z.number().int().safe().gte(0),
+      "sessions": z.array(StudioLocalSessionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobSnapshot>;
+
+export const StudioJobStopItemSchema: z.ZodType<StudioJobStopItem> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "job": StudioActivityJobSchema.nullable().optional(),
+      "error": JobErrorSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobStopItem>;
+
+export const StudioJobStopRequestSchema: z.ZodType<StudioJobStopRequest> = z.lazy(() =>
+  z
+    .object({
+      "job_ids": z.array(z.string()).min(1),
+      "mode": z.union([z.literal("checkpoint"), z.literal("force")]),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobStopRequest>;
+
+export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "token": z.string(),
+      "project_id": z.string(),
+      "items": z.array(StudioSubmissionItemSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobSubmission>;
+
+export const StudioJobSubmissionRequestSchema: z.ZodType<StudioJobSubmissionRequest> = z.lazy(() =>
+  z
+    .object({
+      "project_id": z.string().min(1).max(128),
+      "workspace": StudioWorkspaceSpecSchema,
+      "graph": GraphSpecSchema,
+      "selections": z.array(StudioRunSelectionSchema).min(1),
+      "token": z.string().min(1).max(128),
+      "policy": z.union([z.literal("out_of_date"), z.literal("all")]).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobSubmissionRequest>;
+
+export const StudioLocalSessionSchema: z.ZodType<StudioLocalSession> = z.lazy(() =>
+  z
+    .object({
+      "id": z.literal("local").optional(),
+      "state": z.literal("open").optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioLocalSession>;
+
+export const StudioPreviewIssueSchema: z.ZodType<StudioPreviewIssue> = z.lazy(() =>
+  z
+    .object({
+      "stage_id": z.string(),
+      "path": z.string(),
+      "message": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPreviewIssue>;
+
+export const StudioPreviewRowSchema: z.ZodType<StudioPreviewRow> = z.lazy(() =>
+  z
+    .object({
+      "run_key": z.string(),
+      "request_id": z.string(),
+      "stage_id": z.string(),
+      "scenario_id": z.string(),
+      "label": z.string(),
+      "coordinates": z.record(z.string(), jsonValueSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPreviewRow>;
+
+export const StudioRunPreviewSchema: z.ZodType<StudioRunPreview> = z.lazy(() =>
+  z
+    .object({
+      "rows": z.array(StudioPreviewRowSchema),
+      "issues": z.array(StudioPreviewIssueSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRunPreview>;
+
+export const StudioRunPreviewRequestSchema: z.ZodType<StudioRunPreviewRequest> = z.lazy(() =>
+  z
+    .object({
+      "project_id": z.string().min(1).max(128),
+      "workspace": StudioWorkspaceSpecSchema,
+      "graph": GraphSpecSchema,
+      "selections": z.array(StudioRunSelectionSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRunPreviewRequest>;
+
+export const StudioRunSelectionSchema: z.ZodType<StudioRunSelection> = z.lazy(() =>
+  z
+    .object({
+      "stage_id": z.string().min(1),
+      "run_keys": z.array(z.string()).min(1).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRunSelection>;
+
+export const StudioSubmissionItemSchema: z.ZodType<StudioSubmissionItem> = z.lazy(() =>
+  z
+    .object({
+      "run_key": z.string(),
+      "job_id": z.string().nullable().optional(),
+      "disposition": z.union([z.literal("admitted"), z.literal("attached"), z.literal("reused"), z.literal("rejected")]),
+      "reason": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSubmissionItem>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -5622,6 +6020,28 @@ export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | 
 export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingStoppedEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
 
 export const contractSchemas = {
+  JobError: JobErrorSchema,
+  JobOutcome: JobOutcomeSchema,
+  JobProgress: JobProgressSchema,
+  JobReceipt: JobReceiptSchema,
+  StudioActivityJob: StudioActivityJobSchema,
+  StudioEventReset: StudioEventResetSchema,
+  StudioEventWatermark: StudioEventWatermarkSchema,
+  StudioJobEvent: StudioJobEventSchema,
+  StudioJobEventHistory: StudioJobEventHistorySchema,
+  StudioJobResumeRequest: StudioJobResumeRequestSchema,
+  StudioJobSnapshot: StudioJobSnapshotSchema,
+  StudioJobStopItem: StudioJobStopItemSchema,
+  StudioJobStopRequest: StudioJobStopRequestSchema,
+  StudioJobSubmission: StudioJobSubmissionSchema,
+  StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
+  StudioLocalSession: StudioLocalSessionSchema,
+  StudioPreviewIssue: StudioPreviewIssueSchema,
+  StudioPreviewRow: StudioPreviewRowSchema,
+  StudioRunPreview: StudioRunPreviewSchema,
+  StudioRunPreviewRequest: StudioRunPreviewRequestSchema,
+  StudioRunSelection: StudioRunSelectionSchema,
+  StudioSubmissionItem: StudioSubmissionItemSchema,
   GraphListResponse: GraphListResponseSchema,
   GraphCreateResponse: GraphCreateResponseSchema,
   GraphUpdateResponse: GraphUpdateResponseSchema,
@@ -5676,6 +6096,28 @@ export const contractSchemas = {
 
 export type ContractName = keyof typeof contractSchemas;
 export interface ContractTypeMap {
+  JobError: JobError;
+  JobOutcome: JobOutcome;
+  JobProgress: JobProgress;
+  JobReceipt: JobReceipt;
+  StudioActivityJob: StudioActivityJob;
+  StudioEventReset: StudioEventReset;
+  StudioEventWatermark: StudioEventWatermark;
+  StudioJobEvent: StudioJobEvent;
+  StudioJobEventHistory: StudioJobEventHistory;
+  StudioJobResumeRequest: StudioJobResumeRequest;
+  StudioJobSnapshot: StudioJobSnapshot;
+  StudioJobStopItem: StudioJobStopItem;
+  StudioJobStopRequest: StudioJobStopRequest;
+  StudioJobSubmission: StudioJobSubmission;
+  StudioJobSubmissionRequest: StudioJobSubmissionRequest;
+  StudioLocalSession: StudioLocalSession;
+  StudioPreviewIssue: StudioPreviewIssue;
+  StudioPreviewRow: StudioPreviewRow;
+  StudioRunPreview: StudioRunPreview;
+  StudioRunPreviewRequest: StudioRunPreviewRequest;
+  StudioRunSelection: StudioRunSelection;
+  StudioSubmissionItem: StudioSubmissionItem;
   GraphListResponse: GraphListResponse;
   GraphCreateResponse: GraphCreateResponse;
   GraphUpdateResponse: GraphUpdateResponse;

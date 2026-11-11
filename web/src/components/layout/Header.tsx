@@ -6,7 +6,7 @@ import {
   Download,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import { toast } from 'sonner';
@@ -25,9 +25,11 @@ import {
 import { useRunStore } from '@/stores/runStore';
 import { defaultTaskSpec, defaultTrainingSpec, useTrainingStore } from '@/stores/trainingStore';
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
-import { buildWorkspaceSnapshot, hydrateWorkspacePresentation } from '@/stores/workspaceStore';
+import { buildWorkspaceSnapshot, hydrateWorkspacePresentation, useWorkspaceStore } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
-import { DesktopJobs } from '@/components/layout/DesktopJobs';
+import { HeaderActivity } from './HeaderActivity';
+import { focusForJob, useStudioRunFocus } from '@/components/activity/studioRunFocus';
+import type { StudioActivityJob } from '@/generated/studioContracts';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import { isCausalGraphSpec } from '@/types/graph';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
@@ -41,6 +43,7 @@ import {
 type ProjectOverlaySection = 'projects' | 'examples' | 'import';
 
 export function Header() {
+  const [activityOpen, setActivityOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectOverlaySection, setProjectOverlaySection] = useState<ProjectOverlaySection | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -77,6 +80,16 @@ export function Header() {
     renameTab,
   } = useProjectsStore();
   const inSubgraph = graphStack.length > 0;
+  const projectNames = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const project of graphsQuery.data?.graphs ?? []) {
+      names.set(project.id, 'metadata' in project ? project.metadata.name : project.name);
+    }
+    for (const tab of tabs) {
+      if (tab.graphSnapshot.graphId) names.set(tab.graphSnapshot.graphId, tab.label);
+    }
+    return names;
+  }, [graphsQuery.data, tabs]);
 
   // Focus pending tab input when it appears
   useEffect(() => {
@@ -111,12 +124,13 @@ export function Header() {
   };
 
   const handleNewProject = () => {
+    setActivityOpen(false);
     setProjectOverlaySection(null);
     setSettingsOpen(false);
     setPendingTab({ name: '' });
   };
 
-  const handleOpen = async (id: string, options?: { replaceActiveTab?: boolean }) => {
+  const handleOpen = async (id: string, options?: { replaceActiveTab?: boolean; throwOnFailure?: boolean }) => {
     try {
       const data = await fetchGraph(id);
       const hydratedWorkspace = hydrateWorkspacePresentation(
@@ -135,7 +149,7 @@ export function Header() {
         analysisSnapshot,
         hydratedWorkspace,
         {
-          ...options,
+          replaceActiveTab: options?.replaceActiveTab,
           saveRevision: data.metadata?.save_revision ?? null,
           workspaceDocument: data.workspace_document,
         },
@@ -171,12 +185,33 @@ export function Header() {
       setLastProjectId(id);
       return true;
     } catch (error) {
+      if (options?.throwOnFailure) throw error;
       console.error(error);
       toast.error(actionErrorMessage(error, 'Failed to open project.'), {
         id: `open-project-error-${id}`,
       });
       return false;
     }
+  };
+
+  const openActivity = () => {
+    setSettingsOpen(false);
+    setProjectOverlaySection(null);
+    setActivityOpen(true);
+  };
+
+  const openActivityRun = async (job: StudioActivityJob) => {
+    const project = useProjectsStore.getState().tabs.find((tab) => tab.graphSnapshot.graphId === job.project_id);
+    if (project) {
+      switchTab(project.tabId);
+      setLastProjectId(job.project_id);
+    } else {
+      await handleOpen(job.project_id, { throwOnFailure: true });
+    }
+    const stage = useWorkspaceStore.getState().workspace?.stages.find((item) => item.id === job.stage_id);
+    if (stage?.kind !== 'train') return false;
+    useStudioRunFocus.getState().select(focusForJob(job));
+    return true;
   };
 
   // Auto-load the last opened project on mount. In a fresh browser session the
@@ -366,7 +401,13 @@ export function Header() {
 
       {/* Right-side action buttons */}
       <div className="flex-none flex items-center gap-3 text-slate-500">
-        {import.meta.env.VITE_FEEDBAX_DESKTOP === '1' && <DesktopJobs />}
+        <HeaderActivity
+          open={activityOpen}
+          onToggle={activityOpen ? () => setActivityOpen(false) : openActivity}
+          onClose={() => setActivityOpen(false)}
+          onOpenRun={openActivityRun}
+          projectNames={projectNames}
+        />
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="New project"
@@ -398,6 +439,7 @@ export function Header() {
           className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500"
           title="Open project"
           onClick={() => {
+            setActivityOpen(false);
             setSettingsOpen(false);
             setProjectOverlaySection('projects');
           }}
@@ -408,6 +450,7 @@ export function Header() {
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="Settings"
           onClick={() => {
+            setActivityOpen(false);
             setProjectOverlaySection(null);
             setSettingsOpen((prev) => !prev);
           }}
