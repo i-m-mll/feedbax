@@ -35,7 +35,6 @@ from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import (
     TrainingProgramRegistry,
     TrainingRunSpec,
-    resolve_training_run_spec,
     validate_training_run_spec_semantics,
 )
 from feedbax.governance.science_surface import (
@@ -49,14 +48,6 @@ from feedbax.training.executor import (
     prepare_training_manifest_metadata_projection,
 )
 from feedbax.training.interruption import CHECKPOINT_STOP_FILE_ENV, RunInterruptionController
-from feedbax.training.preparation import (
-    ExecutionPreparationPlan,
-    ExecutionPreparationRequest,
-    lower_zero_level_preparation_plan,
-    materialize_execution_preparation,
-    require_execution_preparation_provider,
-)
-from feedbax.training.worker_validation import resolve_execution_mapping
 from feedbax.training.manifest_preflight import (
     preflight_training_run_manifest_payloads,
     validate_training_run_spec,
@@ -827,97 +818,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "execute-experiment-workflow":
         return _execute_experiment_workflow(args, registries)
     if args.command == "execute-training-run-spec":
-        run_spec = validate_training_run_spec(_read_json(args.spec))
-        resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
-        if run_spec.graph.inline is None:
-            raise ValueError("execute-training-run-spec requires an inline graph document")
-        from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
-        from feedbax.compiler.prototypes import prototypes_from_task_bindings
-        from feedbax.contracts.authored_canonical import canonical_sha256
-        from feedbax.contracts.graph import GraphSpec
-        from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
-        from feedbax.web.model_assets import model_artifact_provider
+        from feedbax.training.invocation import prepare_training_invocation
 
-        graph_document = GraphDocument(
-            graph=run_spec.graph.inline,
-            trial_root=DocumentRoot(
-                schema_id="feedbax.spec.training.task",
-                schema_version="1",
-                content_sha256=canonical_sha256(run_spec.task.model_dump(mode="json")),
-            ),
-            objective_root=DocumentRoot(
-                schema_id=run_spec.objective.schema_id or "feedbax.objective_slot",
-                schema_version=run_spec.objective.schema_version or "1",
-                content_sha256=canonical_sha256(
-                    run_spec.objective.model_dump(mode="json", exclude_none=True)
-                ),
-            ),
-        )
-        executable_graph = compile_graph(
-            graph_document,
-            registries.components,
-            input_prototypes=(
-                prototypes_from_task_bindings(run_spec.task_binding_spec)
-                if run_spec.task_binding_spec is not None else None
-            ),
-            artifact_provider=(
-                model_artifact_provider(GraphSpec.model_validate(graph_document.graph))
-                if run_spec.method_ref == STUDIO_GRAPH_METHOD else None
-            ),
-        )
-        method_registration = resolved_method.registration
-        preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
-        mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
-        if method_registration.requires_execution_preparation:
-            require_execution_preparation_provider(
-                method_ref=run_spec.method_ref.key,
-                preparation_registry=registries.execution_preparations,
-            )
-        if mapping_levels and args.initial_slots:
-            raise ValueError(
-                "--initial-slots is invalid when mapping_levels are active; mapped runs require "
-                "a Feedbax-owned execution-preparation plan"
-            )
-        if preparation_registration is not None and args.initial_slots:
-            raise ValueError(
-                "--initial-slots cannot be combined with an execution-preparation provider for "
-                f"method_ref {run_spec.method_ref.key!r}"
-            )
+        run_spec = validate_training_run_spec(_read_json(args.spec))
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
-        preparation = None
-        if preparation_registration is not None:
-            prepared = registries.execution_preparations.prepare(
-                ExecutionPreparationRequest(
-                    run_spec=run_spec,
-                    executable_graph=executable_graph,
-                    method_payload=resolved_method.payload,
-                    method_contract=resolved_method.contract,
-                    effective_phase=resolved_method.effective_phase,
-                    run_id=args.run_id,
-                    resume=args.resume,
-                )
-            )
-            if isinstance(prepared, ExecutionPreparationPlan):
-                if mapping_levels:
-                    prepared = materialize_execution_preparation(
-                        ExecutionPreparationRequest(
-                            run_spec=run_spec,
-                            executable_graph=executable_graph,
-                            method_payload=resolved_method.payload,
-                            method_contract=resolved_method.contract,
-                            effective_phase=resolved_method.effective_phase,
-                            run_id=args.run_id,
-                            resume=args.resume,
-                        ),
-                        prepared,
-                        provider_identity=preparation_registration.owner,
-                    )
-                else:
-                    prepared = lower_zero_level_preparation_plan(
-                        prepared, resume_template=args.resume
-                    )
-            preparation = prepared
-            initial_slots = None
+        preparation = prepare_training_invocation(
+            run_spec,
+            registries,
+            run_id=args.run_id,
+            resume=args.resume,
+            initial_slots=initial_slots,
+        )
         training_payload = _read_json(args.training_payload) if args.training_payload else None
         metadata_projection = (
             _read_json(args.manifest_metadata_projection)

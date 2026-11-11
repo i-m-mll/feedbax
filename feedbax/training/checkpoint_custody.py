@@ -41,6 +41,7 @@ import numpy as np
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from feedbax._atomic import sync_parent_directories
 from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
 from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
 from feedbax._secure_fs import (
@@ -3385,6 +3386,7 @@ def write_checkpoint_transaction(
         os.replace(tmp_dir, final_dir)
         manifest_path = final_dir / MANIFEST_NAME
         checkpoint_set_path = final_dir / CHECKPOINT_SET_NAME
+        sync_parent_directories(manifest_path)
         latest_pointer = CheckpointLatestPointer(
             run_id=coordinate.run_id,
             transaction_id=transaction_id,
@@ -3442,10 +3444,11 @@ def load_latest_checkpoint(
     resume_slot_transform: ResumeSlotTransform | None = None,
     continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     allow_new_lineage_override: bool = False,
+    published_pointer: CheckpointLatestPointer | None = None,
 ) -> CheckpointResumeResult:
-    """Load and validate the latest published transaction before resume."""
+    """Resume from a bound publication or resolve the current latest pointer."""
     root_path = Path(root)
-    latest = _load_latest_pointer(root_path)
+    latest = published_pointer if published_pointer is not None else _load_latest_pointer(root_path)
     return _load_checkpoint_from_pointer(
         root_path,
         latest,
@@ -3642,9 +3645,15 @@ def _manifest_from_latest_pointer(
         raise CheckpointIntegrityError(
             f"latest pointer references missing manifest: {latest.manifest_relative_path}"
         )
-    if sha256_file(manifest_path) != latest.manifest_sha256:
+    try:
+        raw_manifest = manifest_path.read_bytes()
+    except OSError as exc:
+        raise CheckpointIntegrityError(
+            f"latest pointer references unreadable manifest: {latest.manifest_relative_path}"
+        ) from exc
+    if sha256_bytes(raw_manifest) != latest.manifest_sha256:
         raise CheckpointIntegrityError("latest pointer manifest hash does not match bytes")
-    manifest = _load_transaction_manifest(manifest_path)
+    manifest = load_checkpoint_transaction_manifest_json(raw_manifest, path=str(manifest_path)).document
     if manifest.transaction_id != latest.transaction_id:
         raise CheckpointIntegrityError("latest pointer transaction_id does not match manifest")
     if manifest.content_integrity_digest.transaction_root_sha256 != (
