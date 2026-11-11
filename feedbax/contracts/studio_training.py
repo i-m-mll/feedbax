@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from pydantic import Field, field_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
     TrainingRunExecutionCapsule,
     training_spec_sha256,
 )
-from feedbax.contracts.training import MethodRefSpec, OptimizerSpec
+from feedbax.contracts.training import MethodRefSpec, OptimizerSpec, TrainingRunSpec
 
 if TYPE_CHECKING:
     from feedbax.orchestration.assembly import (
@@ -39,6 +41,7 @@ class StudioGraphMethodPayload(StrictModel):
 
     optimizer: OptimizerSpec
     target_total: int = Field(gt=0)
+    seed: int = Field(default=0, ge=0, lt=2**32, strict=True)
 
     @field_validator("optimizer")
     @classmethod
@@ -46,6 +49,21 @@ class StudioGraphMethodPayload(StrictModel):
         if optimizer.lr_schedule is not None:
             raise ValueError("checkpointable Studio graph training requires a constant learning rate")
         return optimizer
+
+
+class PublishedTrainingCheckpoint(StrictModel):
+    checkpoint_root: Path
+    completed_updates: int = Field(ge=0)
+    pointer: CheckpointLatestPointer
+
+
+class StudioTrainingJobInput(StrictModel):
+    spec: TrainingRunSpec
+    project_id: str
+    request_id: str
+    manifest_root: Path
+    bootstrap_modules: tuple[str, ...] = ()
+    resume: PublishedTrainingCheckpoint | None = None
 
 
 class StudioTrainingAssemblySpec(StrictModel):

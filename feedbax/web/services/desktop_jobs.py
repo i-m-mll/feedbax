@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from feedbax.orchestration.bundle import RunBundle, canonical_run_bundle_sha256
 from feedbax.orchestration.staged_training import (
@@ -33,6 +33,9 @@ from feedbax.studio.native_training_projection import project_owned_native_train
 from feedbax.training.interruption import CancellationDecision
 from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.training_service import TrainingService
+
+if TYPE_CHECKING:
+    from feedbax.jobs import JobService
 
 logger = logging.getLogger(__name__)
 StopDisposition = Literal["defer", "checkpoint", "force"]
@@ -267,16 +270,17 @@ class NativeTrainingJobs:
 
 
 class StudioJobLifecycle:
-    """Coordinate service stop across the existing training and analysis owners."""
+    """Quiesce jobs using the installed runtime before native service shutdown."""
 
     def __init__(
         self, analysis: AnalysisJobService, training: NativeTrainingJobs, legacy: TrainingService,
-        job_root: Path,
+        job_root: Path, hosted: JobService,
     ) -> None:
         self.analysis = analysis
         self.training = training
         self._legacy = legacy
         self._job_root = job_root
+        self._hosted = hosted
         self._lock = asyncio.Lock()
         self._closing = False
 
@@ -305,6 +309,11 @@ class StudioJobLifecycle:
             active = not self.training.idle or not self.analysis.idle or bool(legacy_active)
             if disposition == "defer" and active:
                 return {"status": "deferred", "disposition": disposition, "jobs": jobs}
+            if not await asyncio.to_thread(self._hosted.begin_runtime_shutdown, disposition):
+                jobs["hosted"] = [
+                    job["id"] for job in await asyncio.to_thread(self._hosted.live_runtime_jobs)
+                ]
+                return {"status": "deferred", "disposition": disposition, "jobs": jobs}
             self._closing = True
             force = disposition == "force"
             self.training.begin_stop(force=force)
@@ -323,11 +332,12 @@ class StudioJobLifecycle:
                         "pending", "launched", "ready", "running"
                     ) for job in jobs["training"]
                 )
-                if self.training.idle and self.analysis.idle and (force or not legacy_running):
+                hosted = await asyncio.to_thread(self._hosted.live_runtime_jobs)
+                if self.training.idle and self.analysis.idle and (force or not legacy_running) and not hosted:
                     return {"status": "ready_to_stop", "disposition": disposition, "jobs": jobs}
                 if time.monotonic() >= deadline:
                     return {
                         "status": "timed_out", "disposition": disposition, "jobs": jobs,
-                        "unsettled_training": self.training.unsettled(),
+                        "unsettled_training": self.training.unsettled() + [row["id"] for row in hosted],
                     }
                 await asyncio.sleep(0.1)

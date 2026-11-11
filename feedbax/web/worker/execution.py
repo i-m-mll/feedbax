@@ -380,7 +380,7 @@ def run_training_graph(
                     "job_id": job_id,
                     "batch": batch,
                     "program_step": program_step,
-                    "trajectory": _trajectory_snapshot(
+                    "trajectory": training_trajectory_snapshot(
                         current_graph,
                         compiled,
                         key=jr.PRNGKey(program_step),
@@ -1183,7 +1183,7 @@ def _rollout_trace_map(rollout: dict[str, Any]) -> dict[str, Any]:
     return trace
 
 
-def _trajectory_snapshot(
+def training_trajectory_snapshot(
     graph: Graph,
     compiled: CompiledTrainingRun,
     key: jax.Array,

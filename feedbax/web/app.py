@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from feedbax.host import HostClient
+from feedbax.jobs import JobService
 from feedbax.plugins.composition import compose_application
 
 from feedbax.web.api import (
@@ -19,6 +21,7 @@ from feedbax.web.api import (
     figures,
     graphs,
     inspection,
+    jobs,
     orchestration,
     penzai,
     provider,
@@ -48,6 +51,9 @@ def create_app(
     async def _lifespan(app: FastAPI):
         app.state.bootstrap_modules = bootstrap_modules
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
+        app.state.job_service = JobService(
+            HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
+        )
         if desktop_job_root is None:
             try:
                 training_service.rebuild_cache_from_state_docs()
@@ -61,7 +67,9 @@ def create_app(
         if desktop_job_root is not None:
             await asyncio.to_thread(training_service.reconcile_desktop_worker, desktop_job_root)
             native_jobs = NativeTrainingJobs(app.state.bootstrap_state, _orchestration_parent_root())
-            desktop_jobs = StudioJobLifecycle(analysis_jobs, native_jobs, training_service, desktop_job_root)
+            desktop_jobs = StudioJobLifecycle(
+                analysis_jobs, native_jobs, training_service, desktop_job_root, app.state.job_service,
+            )
             app.state.desktop_jobs = desktop_jobs
             native_jobs.recover()
         controller = studio_controller or StudioController(training_service=training_service)
@@ -98,6 +106,7 @@ def create_app(
     app.include_router(penzai.router, prefix="/api/penzai", tags=["penzai"])
     app.include_router(provider.router, prefix="/api/provider", tags=["provider"])
     app.include_router(training.router, prefix="/api/training", tags=["training"])
+    app.include_router(jobs.router)
     app.include_router(execution.router, prefix="/api/execution", tags=["execution"])
     app.include_router(inspection.router, prefix="/api/inspection", tags=["inspection"])
     app.include_router(

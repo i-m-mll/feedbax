@@ -23,6 +23,7 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 from feedbax.contracts.publication import CheckpointSet
@@ -39,6 +40,7 @@ from feedbax.contracts.checkpoint_initialization import (
 from feedbax.contracts.checkpoints import (
     PHASE_BOUNDARY_DECISION_METADATA_KEY,
     CheckpointForkPlan,
+    CheckpointLatestPointer,
     CheckpointSegmentLineage,
     CheckpointLineageRef,
     CheckpointTransactionManifest,
@@ -146,6 +148,7 @@ from feedbax.training.phase_executor import (
     _StepObservation,
     _metric_nan_flags,
     _next_checkpoint_visit_ordinal,
+    CommittedUpdateCallback,
     PhaseBoundaryDecision,
     PhaseCheckpoint,
     PhaseProgramExecutor,
@@ -509,6 +512,7 @@ class StreamingCheckpointStore:
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
         resume_checkpoint: PhaseCheckpoint | None = None,
+        checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
     ) -> None:
         self.root = Path(root)
         self.artifact_root = Path(artifact_root)
@@ -524,6 +528,7 @@ class StreamingCheckpointStore:
         self.run_event_emitter = run_event_emitter
         self.checkpoint_initialization = dict(checkpoint_initialization or {})
         self.content_provider = content_provider
+        self._checkpoint_published = checkpoint_published
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
         }
@@ -618,6 +623,8 @@ class StreamingCheckpointStore:
             content_provider=self.content_provider,
         )
         self._writes.append(write)
+        if self._checkpoint_published is not None:
+            self._checkpoint_published(write)
         self._visit_ordinals[saved.barrier] = ordinal
         if self.run_event_emitter is not None:
             coordinate_payload, checkpoint_metrics = normalize_serialized_metrics(
@@ -673,6 +680,7 @@ def execute_training_run_spec(
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
+    checkpoint_source_pointer: CheckpointLatestPointer | None = None,
     checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
     checkpoint_fork_plan: CheckpointForkPlan | None = None,
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
@@ -702,6 +710,10 @@ def execute_training_run_spec(
     run_event_emitter: RunEventEmitter | None = None,
     cancellation_probe: CancellationProbe | None = None,
     stop_before_update: Callable[[], bool] | None = None,
+    start_callback: Callable[[int], None] | None = None,
+    committed_update_callback: CommittedUpdateCallback | None = None,
+    checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
+    before_finalize: Callable[[], None] | None = None,
     execution_started_at_monotonic: float | None = None,
     execution_start_semantics: str = "executor_entry",
     execution_context: NativeExecutionProducerContext | Mapping[str, Any] | None = None,
@@ -733,6 +745,8 @@ def execute_training_run_spec(
     explicit initialization/fork plan. Plan-driven execution additionally
     requires the source's canonical content binding and publishes every output
     checkpoint through that immutable content provider.
+    For same-request resume, ``checkpoint_source_pointer`` authenticates one
+    specific published transaction without consulting a mutable latest pointer.
     """
     started_at = (
         time.perf_counter()
@@ -994,6 +1008,12 @@ def execute_training_run_spec(
             "checkpoint_source_root requires resume=True; it names a read-only "
             "checkpoint source that is distinct from the checkpoint output namespace"
         )
+    if checkpoint_source_pointer is not None and (
+        checkpoint_source_root is None or not resume or initialization_authorities
+    ):
+        raise TrainingRunExecutorError(
+            "an exact checkpoint pointer requires a source root and same-request resume"
+        )
     resume_source_root = (
         Path(checkpoint_source_root).expanduser()
         if checkpoint_source_root is not None
@@ -1063,6 +1083,7 @@ def execute_training_run_spec(
             resume_slot_transform=resume_slot_transform,
             continuation_request=run_spec.checkpoint_progress.continuation,
             allow_new_lineage_override=(run_spec.checkpoint_progress.continuation is not None),
+            published_pointer=checkpoint_source_pointer,
         )
         legacy_resume_parent = loaded.parent_ref
         resolved_initialization = _ResolvedCheckpointInitialization(
@@ -1153,6 +1174,7 @@ def execute_training_run_spec(
         ),
         content_provider=checkpoint_content_provider,
         resume_checkpoint=loaded_resume_checkpoint,
+        checkpoint_published=checkpoint_published,
     )
     resolved_checkpoint_parents = (
         [resolved_initialization.source] if resolved_initialization is not None else []
@@ -1294,6 +1316,11 @@ def execute_training_run_spec(
             flush_method_observations(coordinate)
             live_progress_callback(coordinate)
 
+        def start_execution(initial_batch: int) -> None:
+            begin_segment(initial_batch)
+            if start_callback is not None:
+                start_callback(initial_batch)
+
         execution = executor.run(
             slots,
             run_id=resolved_run_id,
@@ -1304,12 +1331,13 @@ def execute_training_run_spec(
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
-            start_callback=begin_segment,
+            start_callback=start_execution,
             progress_callback=publish_progress,
             retain_progress=False,
             method_observation_callback=(
                 record_method_observation if declaration is not None else None
             ),
+            committed_update_callback=committed_update_callback,
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
                 run_id=resolved_run_id,
@@ -1340,6 +1368,8 @@ def execute_training_run_spec(
             update_budget=update_budget,
             stop_before_update=stop_before_update,
         )
+        if before_finalize is not None:
+            before_finalize()
         status = "cancelled" if execution.interrupted or cancellation is not None else "completed"
         if method_observation_buffer is not None:
             method_observation_buffer.flush()
@@ -1489,6 +1519,8 @@ def execute_training_run_spec(
     except _NanGuardFailure as failure:
         assert segment_start_batch is not None
         try:
+            if before_finalize is not None:
+                before_finalize()
             failed_result = _finalize_nan_guard_failure(
                 failure,
                 run_spec=run_spec,
@@ -4186,8 +4218,7 @@ def _emit_manifest(
         return path
     if path == root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json":
         return write_manifest(manifest, root=root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
+    write_bytes_atomic(path, payload.encode("utf-8"), replace=False)
     return path
 
 

@@ -33,8 +33,17 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
+from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.training.preparation import ExecutionPreparationRequest, ExecutionPreparationResult
+
+
+def studio_training_key(seed: int, stream: str) -> jax.Array:
+    """Give authored seeds independent streams and retain v1 seed-zero numerics."""
+    root = jr.PRNGKey(seed)
+    if seed == 0 and stream in {"model", "update"}:
+        return root
+    return derive_key(root, "studio_training", stream)
 
 
 def executor_method_contract(*, total_batches: int):
@@ -93,6 +102,7 @@ class StudioUpdateKernel:
         frozen_arrays, frozen_structure = eqx.partition(frozen, eqx.is_array)
         self._frozen_arrays = jax.device_put(frozen_arrays)
         self._frozen_structure = frozen_structure
+        self._compiled = compiled
         trainable_filter = compiled.trainable_filter
         self._filter = trainable_filter
 
@@ -167,6 +177,11 @@ class StudioUpdateKernel:
             step_time_ms=(time.perf_counter() - started) * 1000.0,
         )
         return updated
+
+    def trajectory_snapshot(self, graph: Any, key: jax.Array) -> dict[str, Any]:
+        from feedbax.web.worker.execution import training_trajectory_snapshot
+
+        return training_trajectory_snapshot(graph, self._compiled, key)
 
 
 def studio_training_registry(
@@ -282,7 +297,7 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
             initial_slots={
                 "model": compiled.graph,
                 "optimizer": optimizer.init(trainable),
-                "prng": jr.PRNGKey(0),
+                "prng": studio_training_key(payload.seed, "update"),
                 "batch_counter": jnp.array(0, dtype=jnp.int32),
             },
             kernel_context={"studio_graph_update": kernel},

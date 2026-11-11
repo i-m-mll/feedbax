@@ -27,6 +27,10 @@ from feedbax.studio.execution import (
     stage_studio_evaluation_matrix,
 )
 from feedbax.studio.draft_hash import studio_draft_digest_v2
+from feedbax.studio.training_requests import (
+    StudioTrainingLoweringError,
+    lower_studio_training_runs,
+)
 from feedbax.analysis.evaluation import (
     EvaluationRecipeExecutionError,
     EvaluationRecipeResult,
@@ -221,6 +225,54 @@ def _workspace_with_analysis_type(analysis_type: str):
 @pytest.fixture
 def registry_bundle():
     return new_application_registry_bundle()
+
+
+def test_lower_studio_training_runs_preserves_identity_and_selection(tmp_path, registry_bundle):
+    graph = _graph()
+    workspace = _workspace()
+    stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[stage.scenario_id]
+    scenario.training_spec["batch_size"] = 1
+    scenario.task_spec["params"]["n_steps"] = 4
+
+    def lower(*keys):
+        return lower_studio_training_runs(
+            workspace,
+            graph,
+            stage_id=stage.id,
+            registry_bundle=registry_bundle,
+            run_keys=keys or None,
+        )
+
+    (ordinary,) = lower()
+    assert json.loads(ordinary.run_key) == [stage.id]
+    assert ordinary.scenario_id == scenario.id
+    assert ordinary.spec.task.params["n_steps"] == 4
+    assert ordinary.spec.task_binding_spec == scenario.task_binding_spec
+    graph.metadata.save_revision += 1
+    assert lower()[0].request_id == ordinary.request_id
+
+    stage.selection_spec["matrix"] = {
+        "axes": [
+            {
+                "id": "batch_size",
+                "label": "Batch size",
+                "path": "training_spec.batch_size",
+                "values": [1, 2],
+            }
+        ],
+        "mode": "cross",
+    }
+    first_key = json.dumps([stage.id, "row-0000"], separators=(",", ":"))
+    second_key = json.dumps([stage.id, "row-0001"], separators=(",", ":"))
+    (selected,) = lower(first_key)
+    assert selected.run_key == first_key
+    assert selected.coordinates == {"batch_size": 1}
+    assert selected.request_id == ordinary.request_id
+    with pytest.raises(StudioTrainingLoweringError) as refusal:
+        lower(second_key)
+    assert refusal.value.path == "/training_spec/batch_size"
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.fixture

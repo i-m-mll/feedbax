@@ -110,6 +110,7 @@ class AppPaths:
             FEEDBAX_ORCHESTRATION_ROOT=str(self.workspace / "orchestration"),
             FEEDBAX_CONTROLLER_EVENT_LOG=str(self.state / "controller" / "events.jsonl"),
             FEEDBAX_RUNS_DIR=str(self.workspace / "runs"),
+            FEEDBAX_HOST_ROOT=str(self.state / "host"),
             FEEDBAX_JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_PLATFORMS="cpu",

@@ -87,8 +87,8 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
-            // Graphs and connectivity must reflect the live service even when offline.
-            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs(?:\/.*)?|provider\/health)$/i,
+            // Project state, job snapshots, and event streams must reach the live service.
+            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs|jobs|submissions|events|sessions|provider\/health)(?:[/?].*)?$/i,
             handler: 'NetworkOnly',
           },
           {
