@@ -8,6 +8,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: '**/studio/**',
   outputDir: mkdtempSync(join(tmpdir(), 'feedbax-playwright-')),
   timeout: 30_000,
   expect: {

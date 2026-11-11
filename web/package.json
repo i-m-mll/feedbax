@@ -9,6 +9,7 @@
     "build": "bun --bun tsc -b && bun --bun vite build",
     "test": "bun --bun vitest run",
     "test:e2e": "bun --bun playwright test",
+    "test:studio": "bun --bun playwright test --config playwright.studio.config.ts",
     "preview": "bun --bun vite preview"
   },
   "dependencies": {
