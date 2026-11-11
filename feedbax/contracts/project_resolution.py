@@ -24,6 +24,8 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.project_inputs import InputBinding
 from feedbax.contracts.project_sweep import (
+    ExpandedRow,
+    PatchValue,
     Sweep,
     SweepInheritanceError,
     inherit_sweep,
@@ -50,6 +52,7 @@ class ResolutionCode(StrEnum):
     UNBOUND_REQUIRED = "unbound_required"
     UNKNOWN_SCHEMA = "unknown_schema"
     INVALID_DOCUMENT = "invalid_document"
+    UNSUPPORTED_PLAN = "unsupported_plan"
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,7 @@ class ProjectDiagnostic:
     step: str | None = None
     layer: str | None = None
     document: str | None = None
+    row: str | None = None
 
 
 @dataclass(frozen=True)
@@ -362,25 +366,7 @@ class _Resolver:
         assert base.row is not None
         row = parent.sweep.rows.get(base.row) if parent.sweep is not None else None
         if row is not None:
-            payload = deepcopy(parent.payload)
-            for patch in sweep_patches(row.patches):
-                try:
-                    if not isinstance(payload, dict):
-                        raise ValueError("a root document reference is atomic")
-                    if patch.op != "remove":
-                        patch = patch.model_copy(
-                            update={"value": _pack(patch.value, patch.path, child)}
-                        )
-                    apply_override_patch_in_place(payload, patch)
-                except ValueError as error:
-                    raise _Problem(
-                        ResolutionCode.INVALID_SWEEP,
-                        patch.path,
-                        str(error),
-                        step=base.step,
-                        layer=base.row,
-                    ) from error
-            state = _StepState(payload, inputs=parent.inputs, requires=parent.requires)
+            state = self.apply_row(base.step, parent, base.row, row.patches)
         elif self.readers.row is not None:
             parent_step = self.finish(base.step, parent, check_requires=False)
             try:
@@ -400,6 +386,27 @@ class _Resolver:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
         selected = self.finish(base.step, state)
         return _StepState(selected.payload, inputs=selected.inputs)
+
+    def apply_row(
+        self,
+        name: str,
+        state: _StepState,
+        row: str,
+        patches: Mapping[str, PatchValue | None],
+    ) -> _StepState:
+        payload = deepcopy(state.payload)
+        for patch in sweep_patches(patches):
+            try:
+                if not isinstance(payload, dict):
+                    raise ValueError("a root document reference is atomic")
+                if patch.op != "remove":
+                    patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
+                apply_override_patch_in_place(payload, patch)
+            except ValueError as error:
+                raise _Problem(
+                    ResolutionCode.INVALID_SWEEP, patch.path, str(error), step=name, layer=row
+                ) from error
+        return _StepState(payload, inputs=state.inputs, requires=state.requires)
 
     def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
         payload = _Documents(self.project, name).inline(state.payload, "payload")
@@ -432,15 +439,55 @@ class _Resolver:
         )
 
 
+@dataclass(frozen=True)
+class StepTemplate:
+    """Composed step whose requirements are checked on each final row."""
+
+    _resolver: _Resolver
+    name: str
+    _state: _StepState
+
+    @property
+    def sweep(self) -> Sweep | None:
+        return self._state.sweep
+
+    @property
+    def inputs(self) -> Mapping[str, InputBinding]:
+        return self._state.inputs
+
+    @property
+    def requires(self) -> tuple[str, ...]:
+        return self._state.requires
+
+    def resolve(self, row: ExpandedRow | None = None) -> ResolvedStep | ProjectDiagnostic:
+        try:
+            state = self._state
+            if row is not None:
+                state = self._resolver.apply_row(self.name, state, row.id, row.patches)
+            return self._resolver.finish(self.name, state)
+        except _Problem as error:
+            if row is not None:
+                return replace(error.diagnostic, row=row.id)
+            return error.diagnostic
+
+
+def compose_step(
+    project: Project, step: str, *, readers: BaseReaders = BaseReaders()
+) -> StepTemplate | ProjectDiagnostic:
+    """Compose inherited layers and prepare a step for sweep expansion."""
+    resolver = _Resolver(project, readers)
+    try:
+        return StepTemplate(resolver, step, resolver.state(step))
+    except _Problem as error:
+        return error.diagnostic
+
+
 def resolve_step(
     project: Project, step: str, *, readers: BaseReaders = BaseReaders()
 ) -> ResolvedStep | ProjectDiagnostic:
     """Resolve one named step through base composition and static sweep refinement."""
-    resolver = _Resolver(project, readers)
-    try:
-        return resolver.finish(step, resolver.state(step))
-    except _Problem as error:
-        return error.diagnostic
+    template = compose_step(project, step, readers=readers)
+    return template if isinstance(template, ProjectDiagnostic) else template.resolve()
 
 
 def validate_project_documents(
