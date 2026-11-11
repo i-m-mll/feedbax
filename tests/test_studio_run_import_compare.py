@@ -17,6 +17,12 @@ from feedbax.persistence.manifest_index import find_manifest_paths_by_id
 from feedbax.web.app import create_app
 
 
+@pytest.fixture(autouse=True)
+def _isolate_studio_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller" / "events.jsonl"))
+
+
 def _write_training_run(
     root: Path,
     run_id: str,
@@ -89,7 +95,6 @@ def test_manifest_packet_import_route_indexes_typed_run_rows(
     source = tmp_path / "source"
     packet = tmp_path / "packet"
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(target))
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     _write_training_run(
         source,
         "feedbax-training-run:packet",

@@ -853,7 +853,7 @@ export interface RepresentationFrameProvider {
 export interface RepresentationAnchorSpec {
   id: string;
   semantic_role: "origin" | "insertion" | "center" | "endpoint" | "joint" | "body" | "target" | "path" | "region" | "glyph" | "vector_start" | "vector_end" | "label" | "custom";
-  interaction_roles?: "selectable" | "hoverable" | "draggable" | "editable" | "connectable" | "snap_target" | "read_only"[];
+  interaction_roles?: Array<"selectable" | "hoverable" | "draggable" | "editable" | "connectable" | "snap_target" | "read_only">;
   label?: string | null;
   binding?: RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding | null;
   frame?: string | null;
@@ -1294,10 +1294,19 @@ export interface GraphListItem {
   metadata: GraphMetadata;
 }
 
+export interface UnreadableGraphListItem {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v3";
+  id: string;
+  name: string;
+  reason: string;
+  detail: string;
+}
+
 export interface GraphListPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
-  graphs: GraphListItem[];
+  graphs: Array<GraphListItem | UnreadableGraphListItem>;
 }
 
 export interface GraphListResponse {
@@ -4486,12 +4495,25 @@ export const GraphListItemSchema: z.ZodType<GraphListItem> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<GraphListItem>;
 
+export const UnreadableGraphListItemSchema: z.ZodType<UnreadableGraphListItem> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
+      "id": z.string(),
+      "name": z.string(),
+      "reason": z.string(),
+      "detail": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<UnreadableGraphListItem>;
+
 export const GraphListPayloadSchema: z.ZodType<GraphListPayload> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "graphs": z.array(GraphListItemSchema),
+      "graphs": z.array(z.union([GraphListItemSchema, UnreadableGraphListItemSchema])),
     })
     .strict()
 ) as unknown as z.ZodType<GraphListPayload>;

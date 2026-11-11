@@ -12,7 +12,8 @@ import clsx from 'clsx';
 import { toast } from 'sonner';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphsList } from '@/hooks/useGraphs';
-import { fetchGraph, exportGraph } from '@/api/client';
+import { useStudioConnection } from '@/hooks/useStudioConnection';
+import { fetchGraph, exportGraph, SERVICE_UNREACHABLE } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
 import { actionErrorMessage } from '@/stores/storeActions';
 import {
@@ -109,6 +110,12 @@ export function Header() {
     }
   };
 
+  const handleNewProject = () => {
+    setProjectOverlaySection(null);
+    setSettingsOpen(false);
+    setPendingTab({ name: '' });
+  };
+
   const handleOpen = async (id: string, options?: { replaceActiveTab?: boolean }) => {
     try {
       const data = await fetchGraph(id);
@@ -179,23 +186,18 @@ export function Header() {
     if (graphId !== null) return;
     if (hasRestoredLocalTabs) return;
     if (startupAutoloadAttemptedRef.current) return;
-    if (graphsQuery.isLoading) return;
+    if (!graphsQuery.isSuccess || graphsQuery.isFetching) return;
 
-    const savedGraphs = graphsQuery.data?.graphs ?? [];
+    const savedGraphs = graphsQuery.data.graphs.filter((item) => 'metadata' in item);
     const lastId = getLastProjectId();
     const soleProjectId = savedGraphs.length === 1 ? savedGraphs[0].id : null;
-    const preferredId = lastId ?? soleProjectId;
+    const preferredId = savedGraphs.find((item) => item.id === lastId)?.id ?? soleProjectId;
     if (!preferredId) return;
 
     startupAutoloadAttemptedRef.current = true;
-    void (async () => {
-      const opened = await handleOpen(preferredId, { replaceActiveTab: true });
-      if (!opened && lastId && soleProjectId && soleProjectId !== lastId) {
-        await handleOpen(soleProjectId, { replaceActiveTab: true });
-      }
-    })();
+    void handleOpen(preferredId, { replaceActiveTab: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphId, hasRestoredLocalTabs, graphsQuery.isLoading, graphsQuery.data]);
+  }, [graphId, hasRestoredLocalTabs, graphsQuery.isSuccess, graphsQuery.isFetching, graphsQuery.data]);
 
   const handleExport = async () => {
     if (!graphId) return;
@@ -226,6 +228,7 @@ export function Header() {
       <ProjectOpenOverlay
         initialSection={projectOverlaySection}
         onClose={() => setProjectOverlaySection(null)}
+        onNewProject={handleNewProject}
         onOpenSaved={handleOpen}
       />
     )}
@@ -367,11 +370,7 @@ export function Header() {
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="New project"
-          onClick={() => {
-            setProjectOverlaySection(null);
-            setSettingsOpen(false);
-            setPendingTab({ name: '' });
-          }}
+          onClick={handleNewProject}
         >
           <FilePlus className="w-4 h-4" />
         </button>
@@ -423,14 +422,24 @@ export function Header() {
 function ProjectOpenOverlay({
   initialSection,
   onClose,
+  onNewProject,
   onOpenSaved,
 }: {
   initialSection: ProjectOverlaySection;
   onClose: () => void;
+  onNewProject: () => void;
   onOpenSaved: (id: string) => Promise<boolean>;
 }) {
   const [activeSection, setActiveSection] = useState<ProjectOverlaySection>(initialSection);
-  const graphsQuery = useGraphsList();
+  const graphsQuery = useGraphsList(activeSection === 'projects');
+  const connection = useStudioConnection();
+  const projects = graphsQuery.data?.graphs ?? [];
+  const projectListFailure = connection.isError
+    ? SERVICE_UNREACHABLE
+    : graphsQuery.isError
+      ? actionErrorMessage(graphsQuery.error, 'Projects unavailable')
+      : null;
+  const projectListDetail = actionErrorMessage(graphsQuery.error ?? connection.error, '');
   const { openProjectInTab } = useProjectsStore();
   const { components, isLoading: loadingExamples, error: examplesError } = useComponents();
   const [openingExample, setOpeningExample] = useState(false);
@@ -547,30 +556,57 @@ function ProjectOpenOverlay({
         {activeSection === 'projects' && (
           <div className="max-w-3xl">
             <div className="grid gap-2">
-              {(graphsQuery.data?.graphs ?? []).map((item: any) => (
+              {graphsQuery.isFetching ? (
+                <div
+                  role="status"
+                  aria-label="Loading projects"
+                  className="h-16 animate-pulse rounded-lg bg-slate-100"
+                />
+              ) : projectListFailure ? (
+                <div className="rounded-lg border border-slate-200 px-4 py-3 text-sm">
+                  <p role="alert" className="text-red-700">{projectListFailure}</p>
+                  <button
+                    type="button"
+                    className="mt-2 rounded border border-slate-200 px-2 py-1 hover:bg-slate-50"
+                    onClick={() => {
+                      void connection.refetch();
+                      void graphsQuery.refetch();
+                    }}
+                  >
+                    Retry
+                  </button>
+                  {projectListDetail && projectListDetail !== projectListFailure && (
+                    <ProjectReadDetails detail={projectListDetail} />
+                  )}
+                </div>
+              ) : projects.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={onNewProject}
+                  className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-600 hover:bg-slate-50"
+                >
+                  <FilePlus className="h-4 w-4" />
+                  New project
+                </button>
+              ) : projects.map((item) => 'metadata' in item ? (
                 <button
                   key={item.id}
                   type="button"
                   onClick={async () => {
-                    const opened = await onOpenSaved(item.id);
-                    if (opened) onClose();
+                    if (await onOpenSaved(item.id)) onClose();
                   }}
                   className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:border-brand-200 hover:bg-slate-50"
                 >
                   <div className="font-medium text-slate-800">{item.metadata.name}</div>
-                  <div className="mt-1 text-xs text-slate-400">{item.metadata.updated_at}</div>
+                  <div className="mt-1 text-xs text-slate-500">{item.metadata.updated_at}</div>
                 </button>
+              ) : (
+                <div key={item.id} className="rounded-lg border border-slate-200 px-4 py-3">
+                  <div className="font-medium text-slate-800">{item.name}</div>
+                  <p className="mt-1 text-sm text-red-700">{item.reason}</p>
+                  {item.detail !== item.reason && <ProjectReadDetails detail={item.detail} />}
+                </div>
               ))}
-              {graphsQuery.isLoading && (
-                <div className="rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-400">
-                  Loading projects...
-                </div>
-              )}
-              {!graphsQuery.isLoading && (graphsQuery.data?.graphs?.length ?? 0) === 0 && (
-                <div className="rounded-lg border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-400">
-                  No saved projects yet.
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -609,5 +645,14 @@ function ProjectOpenOverlay({
         )}
       </div>
     </div>
+  );
+}
+
+function ProjectReadDetails({ detail }: { detail: string }) {
+  return (
+    <details className="mt-2 text-xs text-slate-600">
+      <summary className="cursor-pointer">Details</summary>
+      <pre className="mt-1 whitespace-pre-wrap break-words">{detail}</pre>
+    </details>
   );
 }

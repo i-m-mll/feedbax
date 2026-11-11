@@ -65,10 +65,19 @@ class GraphListItem(StudioApiModel):
     metadata: GraphMetadata
 
 
+class UnreadableGraphListItem(StudioApiModel):
+    """A project whose persisted document could not be read."""
+
+    id: str
+    name: str
+    reason: str
+    detail: str
+
+
 class GraphListPayload(StudioApiModel):
     """Payload for ``GET /api/graphs``."""
 
-    graphs: list[GraphListItem]
+    graphs: list[GraphListItem | UnreadableGraphListItem]
 
 
 class GraphListResponse(StudioApiModel):

@@ -10,6 +10,7 @@ import uuid
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+from feedbax.compiler.graph import GraphCompilationError
 from feedbax.compiler.penzai_compiler import (
     compile_penzai_authoring_report,
     inspect_penzai_model,
@@ -20,7 +21,11 @@ from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
 )
-from feedbax.contracts.migrations import migrate_graph_project_payload
+from feedbax.contracts.migrations import (
+    UnsupportedComponentMigration,
+    UnsupportedSpecVersion,
+    migrate_graph_project_payload,
+)
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import (
@@ -40,7 +45,12 @@ from feedbax.contracts.graph import (
     studio_semantic_document_sha256,
 )
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.contracts.studio_api import PenzaiInspectorPayload, PenzaiNodeRequest
+from feedbax.contracts.studio_api import (
+    GraphListItem,
+    PenzaiInspectorPayload,
+    PenzaiNodeRequest,
+    UnreadableGraphListItem,
+)
 
 
 @dataclass
@@ -75,17 +85,65 @@ class GraphSaveConflictError(RuntimeError):
         super().__init__(message)
 
 
+def _read_project_payload(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError("The project document must be a JSON object")
+    return payload
+
+
+def _admit_project(
+    payload: dict[str, Any], *, component_registry: object | None
+) -> GraphProject:
+    canonical_json_v2_bytes(payload)
+    migrated = migrate_graph_project_payload(payload, component_registry=component_registry)
+    return GraphProject.model_validate(migrated)
+
+
+def _unreadable_project(
+    path: Path, payload: dict[str, Any], error: Exception
+) -> UnreadableGraphListItem:
+    metadata = payload.get("metadata")
+    name = metadata.get("name") if isinstance(metadata, dict) else None
+    if isinstance(error, UnsupportedComponentMigration):
+        reason = str(error)
+    elif isinstance(error, UnsupportedSpecVersion):
+        reason = "Unsupported project format"
+    elif isinstance(error, (json.JSONDecodeError, UnicodeError)):
+        reason = "Invalid project JSON"
+    elif isinstance(error, OSError):
+        reason = "Project file unreadable"
+    else:
+        reason = "Invalid project data"
+    return UnreadableGraphListItem(
+        id=path.stem,
+        name=name if isinstance(name, str) and name.strip() else path.stem,
+        reason=reason,
+        detail=str(error),
+    )
+
+
 class GraphService:
     def __init__(self, storage_dir: Path = GRAPHS_DIR) -> None:
         self._storage_dir = storage_dir
         ensure_dirs()
 
-    def list_graphs(self, *, component_registry: object | None = None) -> List[dict]:
-        ensure_dirs()
-        results: List[dict] = []
-        for path in self._storage_dir.glob("*.json"):
-            project = self._load_project(path, component_registry=component_registry)
-            results.append({"id": path.stem, "metadata": project.metadata})
+    def list_graphs(
+        self, *, component_registry: object | None = None
+    ) -> list[GraphListItem | UnreadableGraphListItem]:
+        results: list[GraphListItem | UnreadableGraphListItem] = []
+        for path in sorted(self._storage_dir.iterdir()):
+            if path.suffix != ".json":
+                continue
+            payload: dict[str, Any] = {}
+            try:
+                payload = _read_project_payload(path)
+                project = _admit_project(payload, component_registry=component_registry)
+            except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                results.append(_unreadable_project(path, payload, error))
+            else:
+                results.append(GraphListItem(id=path.stem, metadata=project.metadata))
         return results
 
     def create_graph(
@@ -371,12 +429,8 @@ class GraphService:
         *,
         component_registry: object | None = None,
     ) -> GraphProject:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        canonical_json_v2_bytes(data)
-        data = migrate_graph_project_payload(data, component_registry=component_registry)
         project = normalize_project_for_studio_authoring(
-            GraphProject.model_validate(data),
+            _admit_project(_read_project_payload(path), component_registry=component_registry),
             component_registry=component_registry,
             component_versions="historical",
         )
@@ -457,16 +511,21 @@ class GraphService:
         document_sha256 = studio_semantic_document_sha256(graph, workspace)
         semantic_anchors: dict[str, SemanticAnchor] = {}
         if component_registry is not None:
-            compilation = compile_graph(
-                document, component_registry, artifact_provider=model_artifact_provider(graph),
-            )
-            semantic_anchors = {
-                entry.resolved_path: SemanticAnchor(
-                    semantic_document_sha256=document_sha256,
-                    authored_path=entry.authored_anchor.authored_path,
+            try:
+                compilation = compile_graph(
+                    document, component_registry, artifact_provider=model_artifact_provider(graph),
                 )
-                for entry in compilation.record.source_map.entries
-            }
+            except GraphCompilationError:
+                # Incomplete drafts are documents even when no resolved model exists.
+                pass
+            else:
+                semantic_anchors = {
+                    entry.resolved_path: SemanticAnchor(
+                        semantic_document_sha256=document_sha256,
+                        authored_path=entry.authored_anchor.authored_path,
+                    )
+                    for entry in compilation.record.source_map.entries
+                }
         return WorkspaceDocument(
             semantic_root=SemanticAnchor(
                 semantic_document_sha256=document_sha256,

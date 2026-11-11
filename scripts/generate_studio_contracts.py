@@ -172,6 +172,7 @@ from feedbax.contracts.studio_api import (
     GraphListItem,
     GraphListPayload,
     GraphListResponse,
+    UnreadableGraphListItem,
     GraphUpdatePayload,
     GraphUpdateResponse,
     GraphValidationResponse,
@@ -432,6 +433,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     SuccessPayload,
     SuccessResponse,
     GraphListItem,
+    UnreadableGraphListItem,
     GraphListPayload,
     GraphListResponse,
     GraphCreatePayload,
@@ -731,8 +733,11 @@ def ts_type(annotation: Any) -> str:
     args = get_args(annotation)
 
     if origin is list or (origin is tuple and len(args) == 2 and args[1] is Ellipsis):
-        item = args[0] if args else Any
-        return f"{ts_type(item)}[]"
+        item = _unwrap_annotated(args[0]) if args else Any
+        item_type = ts_type(item)
+        if _is_union(item) or (get_origin(item) is Literal and len(get_args(item)) > 1):
+            return f"Array<{item_type}>"
+        return f"{item_type}[]"
     if origin is dict:
         value = args[1] if len(args) == 2 else Any
         return f"Record<string, {ts_type(value)}>"

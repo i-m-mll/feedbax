@@ -509,17 +509,25 @@ function setEdgeSelection(edges: Edge<GraphEdgeData>[], selectedId: string | nul
   return changed ? next : edges;
 }
 
+const authoredGraphSchema = {
+  schema_id: 'feedbax.spec.graph',
+  schema_version: 'feedbax.spec.graph.v6',
+} as const satisfies Pick<GraphSpec, 'schema_id' | 'schema_version'>;
+
 export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
+    ...authoredGraphSchema,
     nodes: {
       input_mux: {
         type: 'feedbax.Mux',
+        revision: 1,
         params: { n_inputs: 2 },
         input_ports: ['in_0', 'in_1'],
         output_ports: ['output'],
       },
       cell: {
         type: 'feedbax.GRU',
+        revision: 1,
         params: {
           input_size: 6,
           hidden_size: 100,
@@ -529,6 +537,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
       },
       readout: {
         type: 'feedbax.Linear',
+        revision: 2,
         params: {
           input_size: 100,
           output_size: 2,
@@ -540,6 +549,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
       },
       mechanics: {
         type: 'feedbax.TwoLinkArm',
+        revision: 1,
         params: {
           dt: 0.01,
         },
@@ -548,6 +558,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
       },
       feedback: {
         type: 'feedbax.Channel',
+        revision: 2,
         params: {
           delay: 5,
           noise_std: 0.01,
@@ -641,6 +652,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
 export function createBlankGraph(): GraphSpec {
   const now = new Date().toISOString();
   return {
+    ...authoredGraphSchema,
     nodes: {},
     wires: [],
     input_ports: [],
