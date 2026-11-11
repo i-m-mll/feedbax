@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type {
   StudioActivityJob,
+  StudioJobEventHistory,
   StudioJobSnapshot,
   StudioJobSubmission,
 } from '../../src/generated/studioContracts';
@@ -66,9 +67,17 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     });
     expect(attempt.job_id).not.toBe(stoppedJobId);
 
+    const replayed = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/events/history' && url.searchParams.get('project') === project.id;
+    }, { timeout: 10_000 });
     await page.reload();
     const runs = page.getByRole('table', { name: 'Runs', exact: true });
     await runs.getByRole('button', { name: 'Train', exact: true }).click();
+    const replay = await replayed;
+    expect(replay.ok(), await replay.text()).toBe(true);
+    const history = await replay.json() as StudioJobEventHistory;
+    expect(history.events.some((event) => event.job_id === stoppedJobId && event.kind === 'progress')).toBe(true);
     await expect(lossMarks(page).first()).toBeVisible({ timeout: 10_000 });
     await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
   },

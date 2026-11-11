@@ -42,6 +42,12 @@ function useStudioJobsContext() {
 export function StudioJobsProvider({ children }: PropsWithChildren) {
   const cache = useQueryClient();
   const projectId = useGraphStore((state) => state.graphId);
+  // The window owns replay. Closing its last inspector must not cancel it.
+  useQuery<StudioJobEvent[]>({
+    queryKey: historyKey(projectId),
+    queryFn: skipToken,
+    notifyOnChangeProps: [],
+  });
   const [connection, setConnection] = useState<StudioJobConnection>('connecting');
   const retry = useRef<(() => void) | null>(null);
   const activePort = useRef<MessagePort | null>(null);
@@ -154,8 +160,11 @@ export function StudioJobsProvider({ children }: PropsWithChildren) {
       generation += 1;
       void cache.cancelQueries({ queryKey: jobsKey, exact: true });
       void cache.cancelQueries({ queryKey: history, exact: true });
-      port?.postMessage({ type: 'release' } satisfies StudioJobWorkerCommand);
-      port?.close();
+      if (port) {
+        port.onmessage = null;
+        port.postMessage({ type: 'release' } satisfies StudioJobWorkerCommand);
+        port.close();
+      }
       activePort.current = null;
       port = null;
     }
