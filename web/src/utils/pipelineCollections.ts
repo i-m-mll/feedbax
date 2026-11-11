@@ -734,6 +734,12 @@ function trainingRunSummary(
     stagingDraftHashes ?? specHashesFromMetadata(ref.metadata),
     options.currentSpecHashes
   );
+  const binding = specHashComparisons.find((comparison) => comparison.key === 'task_binding_spec');
+  if (stagingDraftHashes != null && binding?.status === 'changed' &&
+      binding.currentHash === ref.metadata.staging_saved_task_binding_hash) {
+    binding.snapshotHash = binding.currentHash;
+    binding.status = 'unchanged';
+  }
   const draftChanged = specHashComparisons.some((comparison) =>
     comparison.status === 'changed' ||
     (stagingDraftHashes != null && options.currentSpecHashes != null &&

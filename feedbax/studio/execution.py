@@ -100,7 +100,7 @@ from feedbax.training.run_matrix import MaterializedMatrixRow
 from feedbax.studio.native_training import STAGED_NATIVE_ROW_KEY
 from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
-from feedbax.studio.draft_hash import StudioDraftHashes, studio_draft_hashes
+from feedbax.studio.draft_hash import StudioDraftHashes, studio_draft_digest_v2, studio_draft_hashes
 from feedbax.contracts.graph import (
     GraphSpec,
     StudioArtifactRef,
@@ -1473,6 +1473,11 @@ def _stage_pending_training_manifests(
             else None,
         }
     )
+    persisted_binding_hash = (
+        studio_draft_digest_v2(authored_binding.model_dump(mode="json"))
+        if authored_binding is not None
+        else None
+    )
     run_refs: list[StudioManifestRef] = []
     run_paths: dict[str, str] = {}
     for row in materialized.rows:
@@ -1488,6 +1493,8 @@ def _stage_pending_training_manifests(
         )
         run_ref = _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
         run_ref.metadata["staging_draft_spec_hashes"] = staging_draft_spec_hashes
+        if persisted_binding_hash != staging_draft_spec_hashes["hashes"].get("task_binding_spec"):
+            run_ref.metadata["staging_saved_task_binding_hash"] = persisted_binding_hash
         run_refs.append(run_ref)
         run_paths[manifest.id] = str(path)
 
@@ -1793,11 +1800,10 @@ def _queue_training_manifest_subset(
                 "generation. Refresh the queue before launching."
             )
         selected_ref = _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
-        staging_draft_spec_hashes = stage_refs[manifest_id].metadata.get(
-            "staging_draft_spec_hashes"
-        )
-        if staging_draft_spec_hashes is not None:
-            selected_ref.metadata["staging_draft_spec_hashes"] = staging_draft_spec_hashes
+        for key in ("staging_draft_spec_hashes", "staging_saved_task_binding_hash"):
+            comparison = stage_refs[manifest_id].metadata.get(key)
+            if comparison is not None:
+                selected_ref.metadata[key] = comparison
         selected_refs.append(selected_ref)
 
     now = utc_now().isoformat()

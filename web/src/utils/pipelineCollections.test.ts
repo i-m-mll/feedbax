@@ -13,7 +13,7 @@ import {
   trainingInputSummaries,
   trainingRunSummaries,
 } from '@/utils/pipelineCollections';
-import { studioDraftHashes } from '@/utils/studioDraftHash';
+import { studioDraftDigestV2, studioDraftHashes } from '@/utils/studioDraftHash';
 
 describe('pipeline collection summaries', () => {
   it('summarizes training runs by user-facing variant and metrics', () => {
@@ -116,7 +116,14 @@ describe('pipeline collection summaries', () => {
   });
 
   it('checks native matrix launch against the staging draft instead of the varied row', () => {
-    const stagedDraft = studioDraftHashes({ training_spec: { n_batches: 10 } });
+    const authoredBinding = { exposed_data: [{ id: 'targets', units: 'm' }] };
+    const savedBinding = {
+      exposed_data: [{ id: 'targets', units: 'm', value_spec: null }],
+    };
+    const stagedDraft = studioDraftHashes({
+      training_spec: { n_batches: 10 },
+      task_binding_spec: authoredBinding,
+    });
     const metadata = {
       status: 'pending',
       planned: true,
@@ -124,6 +131,7 @@ describe('pipeline collection summaries', () => {
       execution_target: 'local',
       staging_generation: 'generation-a',
       staging_draft_spec_hashes: stagedDraft,
+      staging_saved_task_binding_hash: studioDraftDigestV2(savedBinding),
       spec_hashes: studioDraftHashes({ training_spec: { n_batches: 2 } }),
     };
     const summarize = (patch: Partial<typeof metadata> = {}, currentSpecHashes = stagedDraft) =>
@@ -137,7 +145,25 @@ describe('pipeline collection summaries', () => {
       } as any, { currentSpecHashes })[0];
 
     expect(summarize().nativeLaunchGeneration).toBe('generation-a');
-    expect(summarize({}, studioDraftHashes({ training_spec: { n_batches: 12 } })))
+    const openedDraft = studioDraftHashes({
+      training_spec: { n_batches: 10 },
+      task_binding_spec: savedBinding,
+    });
+    expect(summarize({}, openedDraft)).toMatchObject({
+      status: 'pending',
+      nativeLaunchGeneration: 'generation-a',
+    });
+    expect(summarize({ staging_saved_task_binding_hash: undefined }, openedDraft))
+      .toMatchObject({ status: 'stale', nativeLaunchGeneration: undefined });
+    expect(summarize({}, studioDraftHashes({
+      training_spec: { n_batches: 12 },
+      task_binding_spec: savedBinding,
+    })))
+      .toMatchObject({ status: 'stale', nativeLaunchGeneration: undefined });
+    expect(summarize({}, studioDraftHashes({
+      training_spec: { n_batches: 10 },
+      task_binding_spec: { exposed_data: [{ id: 'targets', units: 'cm', value_spec: null }] },
+    })))
       .toMatchObject({ status: 'stale', nativeLaunchGeneration: undefined });
     expect(summarize({ execution_target: 'runpod' }).nativeLaunchGeneration).toBeUndefined();
     expect(summarize({ native_launch_supported: false }).nativeLaunchGeneration).toBeUndefined();

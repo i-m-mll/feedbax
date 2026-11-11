@@ -557,10 +557,20 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     assert len(run_set.axes.runs) == 2
     assert len(run_refs) == 2
     assert {ref.id for ref in training_collection.item_refs} == {ref.id for ref in run_refs}
+    saved_binding_wire = {
+        **binding_wire,
+        "exposed_data": [
+            {**binding_wire["exposed_data"][0], "units": None},
+            *binding_wire["exposed_data"][1:],
+        ],
+    }
     for ref in training_collection.item_refs:
         hashes = ref.metadata["staging_draft_spec_hashes"]["hashes"]
         assert hashes["graph_spec"] == studio_draft_digest_v2(graph_wire)
         assert hashes["task_binding_spec"] == studio_draft_digest_v2(binding_wire)
+        assert ref.metadata["staging_saved_task_binding_hash"] == studio_draft_digest_v2(
+            saved_binding_wire
+        )
     assert {ref.metadata["execution_target"] for ref in run_refs} == {"runpod"}
     assert run_set_ref.metadata["execution_target"] == "runpod"
     assert all(isinstance(run, TrainingRunManifest) for run in runs)
