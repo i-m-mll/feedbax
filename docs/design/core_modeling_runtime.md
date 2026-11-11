@@ -171,7 +171,7 @@ A condition is a typed patch of task fields or eligible model numerical paramete
 
 Never restore the model slot after applying conditions. For example, checkpoint mass 1 and condition mass 2 must execute mass 2 while retaining the checkpoint's trained weights. If mass requires an engine-derived inertia matrix to change, the binder updates both; independently patching a stale derived buffer is invalid.
 
-An ordinary evaluate condition cannot change neural width, component topology, parameter/state layout, or a model port's semantic shape. Reject that condition at plan when known, or at bind when only the actual checkpoint exposes it. Initializing a different model from selected checkpoint parameters is an explicit new training request with a transfer mapping and its own identity; ordinary evaluation must not invent padding, dropping, or reinitialization rules.
+An ordinary evaluate condition preserves the source model's checkpoint layout, component topology, and semantic port shapes. A task horizon or supported intervention can require a fresh executable while preserving that model layout. Reject an incompatible model edit at plan when known, or at bind when only the actual checkpoint exposes it. Initializing a different model from selected checkpoint parameters is an explicit new training request with a transfer mapping and its own identity.
 
 A stale successful model receipt can still supply values under the umbrella's freshness policy. That permission is not a compatibility waiver. Reconstruct its original authored source using current registered migrations/implementations, check the descriptor, and report any incompatibility at its path. A compatible changed-code evaluation records the actual current code and the exact source checkpoint; it does not claim historical numerical replay. An unavailable component schema, unresolved function binding, missing asset, or incompatible layout prevents execution. Accepting a code difference does not remove these failures.
 
@@ -229,13 +229,13 @@ Metrics travel from committed updates. Emit available metrics at 2 Hz or better 
 
 Stop is observed before the next pending update. Finish an in-flight transition, commit its coherent state, and publish a checkpoint at that boundary regardless of normal cadence. A device call cannot be cooperatively interrupted halfway through. Forced termination returns to the last published checkpoint; it cannot claim that unsaved in-memory progress is resumable.
 
-A rehearsal uses the exact preparation and method path on a separate bounded request/attempt with explicit reduced update/trial limits. It cannot advance the production request's ref or source checkpoint. Core supplies bounded shapes and execution functions; jobs owns rehearsal admission, outcome and cleanup.
+A rehearsal uses the exact preparation and method path on a separate bounded request/attempt with explicit reduced update/trial limits. Its checkpoint and receipt go to scratch. Core supplies bounded shapes and execution functions; jobs owns rehearsal admission, outcome and cleanup.
 
 ## 8. Checkpoint reconstruction and continuation
 
 The kernel array container ([issue:129ede5]) is the one storage implementation. Core owns the scientific layout and reconstruction bindings; each method owns its declared state layout. There is no separate core checkpoint writer.
 
-A checkpoint content root names its exact source scientific definitions, model descriptor, slot digests, and deterministic completed coordinate/barrier. The producing job/attempt, publication time, and supersession belong to the publication record and eventual receipt, outside this content root. Equal checkpoint content at the same scientific coordinate therefore retains one digest when published by different attempts. The model descriptor defines typed semantic leaf paths, shapes/dtypes, allowed changing scalar/union leaf types, component schema bindings, and the template/asset closure. The root and model-only projection retain enough document and asset closure to rebuild the model even when published as progress and no successful receipt exists.
+A checkpoint content root names its exact source scientific definitions, model descriptor, slot digests, and deterministic completed cursor and barrier. The descriptor reflects the effective model at that phase, including any supported explicit phase transition. The producing attempt, publication time, and supersession belong to the publication record and eventual receipt. Equal checkpoint content at the same scientific cursor therefore retains one digest when published by different attempts. The model descriptor defines typed semantic leaf paths, shapes/dtypes, allowed changing scalar/union leaf types, component schema bindings, and the template/asset closure. The root and model-only projection retain enough document and asset closure to rebuild the model even when published as progress and no successful receipt exists.
 
 The model slot includes everything needed for fresh-trial inference. It does not include a previous episode's transient hidden state merely because both use Equinox State. Components declare which state is persistent inference state and which resets per trial. A continuing-episode method stores its complete RunCarry in a separate named continuation slot. Optimizer, method state, RNG/sampler state, phase/schedule counters, and update cursor belong to their own slots.
 
@@ -273,7 +273,7 @@ The proof fixture is the exact Studio-authored model/task used by [issue:2d24abe
 
 Use execute_training_run_spec through the actual preparation path. Compare uninterrupted and stopped/restored completion under the same locked environment, seeds and update schedule: model, optimizer/method state, cursor/schedule/RNG slots, loss/term sequence, and terminal outputs. Stop between ordinary checkpoint cadences, not only at a convenient pre-existing checkpoint. Rebuild the model in a fresh process on restore.
 
-The existing executor distinguishes [stop_before_update from cancellation_probe](../../feedbax/training/executor.py#L709). Adapt host Stop to stop_before_update, which finalizes the last committed state, instead of waiting for the next scheduled checkpoint through cancellation_probe. App/daemon survival and event replay remain jobs acceptance.
+Adapt host Stop to [the existing stop_before_update seam](../../feedbax/training/executor.py#L709), which finalizes the last committed state independently of scheduled checkpoint cadence. In M1 the first update may complete to establish the first resumable checkpoint if the current format requires it. M2 supports publishing the initialized state at update zero. App/daemon survival and event replay remain jobs acceptance.
 
 ## 11. Delivery and realistic gates
 
@@ -282,7 +282,7 @@ All performance numbers below are targets unless linked to an existing measureme
 ### Before M2 consumers
 
 1. Publish this core contract in [issue:f02fdbe] and the executor-side agreement on [issue:30fae90]. Resolve slot ownership, inference state, method requirements, phase/stop semantics, mapped axes and reconstruction in both descriptions before the train and evaluate request consumers build.
-2. Complete the three independent foundation proofs already owned by this bundle: request canonical identity ([issue:d601693]), execution trace ([issue:fca88cd]), and project conversion ([issue:26cf5d3]). This design does not restate or weaken their gates.
+2. Complete the request identity ([issue:d601693]), execution trace ([issue:fca88cd]), and project conversion ([issue:26cf5d3]) gates.
 3. Freeze a shared smallest complete train→checkpoint→restore→evaluate fixture, plus the MLP and condition-order adversarial cases. Reuse historical downstream exact-resume evidence as an acceptance source; migration of that downstream corpus remains M5 and the user's choice.
 
 ### M2 core acceptance
