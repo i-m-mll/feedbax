@@ -1,8 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
 import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 import type { StudioStageKind } from '@/types/workspace';
 import {
   BarChart3,
@@ -90,6 +92,7 @@ export function BottomShelf({
     setBottomShelfMode,
   } = useLayoutStore();
   const mode = bottomShelfMode as WorkspaceMode;
+  const tabId = useProjectsStore((state) => state.activeTabId);
   const workspace = useWorkspaceStore((state) => state.workspace);
   const stages = workspace?.stages ?? [];
   const activeStage = getActiveStage(workspace);
@@ -242,25 +245,34 @@ export function BottomShelf({
           )}
         >
           {mode === 'stage' && activeStage?.kind === 'analysis' && (
-            <Suspense fallback={null}>
-              <BottomSidebar />
-            </Suspense>
+            <StudioErrorBoundary region="Analysis library">
+              <Suspense fallback={null}>
+                <BottomSidebar />
+              </Suspense>
+            </StudioErrorBoundary>
           )}
           <div className="flex-1 min-w-0 h-full">
-            <Suspense fallback={<PanelLoading />}>{activeContent}</Suspense>
+            <StudioErrorBoundary
+              key={`${tabId}:${mode}:${activeStage?.id ?? ''}`}
+              region={mode === 'console' ? 'Console' : activeStage?.label ?? 'Pipeline'}
+            >
+              <Suspense fallback={<PanelLoading />}>{activeContent}</Suspense>
+            </StudioErrorBoundary>
           </div>
           {mode === 'stage' &&
             activeStage?.kind !== 'train' &&
             activeStage?.kind !== 'compare' &&
             activeStage?.kind !== 'eval' &&
             activeStage?.kind !== 'analysis' && (
-            <Suspense fallback={null}>
-              <StageProvenancePanel
-                stage={activeStage}
-                scenario={activeScenario}
-                workspace={workspace}
-              />
-            </Suspense>
+            <StudioErrorBoundary region="Provenance">
+              <Suspense fallback={null}>
+                <StageProvenancePanel
+                  stage={activeStage}
+                  scenario={activeScenario}
+                  workspace={workspace}
+                />
+              </Suspense>
+            </StudioErrorBoundary>
           )}
         </div>
       )}

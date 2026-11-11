@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactFlowProvider } from '@xyflow/react';
+import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import App from './App';
 import './index.css';
 import '@xyflow/react/dist/style.css';
@@ -14,10 +15,12 @@ if (import.meta.env.VITE_FEEDBAX_E2E === '1') {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ReactFlowProvider>
-        <App />
-      </ReactFlowProvider>
-    </QueryClientProvider>
+    <StudioErrorBoundary region="Studio">
+      <QueryClientProvider client={queryClient}>
+        <ReactFlowProvider>
+          <App />
+        </ReactFlowProvider>
+      </QueryClientProvider>
+    </StudioErrorBoundary>
   </React.StrictMode>
 );

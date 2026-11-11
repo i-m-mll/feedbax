@@ -36,6 +36,7 @@ from feedbax.studio.execution import (
     StudioNativeTrainingDispatchRequest,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
+    StudioTrainingValidationError,
     materialize_studio_pipeline,
     prepare_studio_training_execution,
     preview_studio_evaluation_matrix,
@@ -115,6 +116,14 @@ async def prepare_studio_training_plan(
             payload,
             registry_bundle=request.app.state.bootstrap_state.bundle,
         )
+    except StudioTrainingValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(exc),
+                "errors": [issue.model_dump(mode="json") for issue in exc.issues],
+            },
+        ) from exc
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

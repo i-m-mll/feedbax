@@ -293,6 +293,14 @@ class StudioExecutionPreparationError(ValueError):
     """Raised when a workspace cannot be bound to an invocation and backend plan."""
 
 
+class StudioTrainingValidationError(StudioExecutionPreparationError):
+    """A training plan refusal with issues that identify the affected definitions."""
+
+    def __init__(self, message: str, issues: list[StudioValidationIssue]) -> None:
+        super().__init__(message)
+        self.issues = issues
+
+
 def prepare_studio_training_execution(
     request: StudioTrainingExecutionRequest,
     *,
@@ -304,20 +312,20 @@ def prepare_studio_training_execution(
     stage = _select_train_stage(workspace, request.stage_id)
     if stage.scenario_id is None:
         raise StudioExecutionPreparationError(
-            f"Train stage {stage.id!r} does not reference a scenario"
+            f"{stage.label} has no scenario"
         )
     scenario = workspace.scenarios.get(stage.scenario_id)
     if scenario is None:
         raise StudioExecutionPreparationError(
-            f"Train stage {stage.id!r} references missing scenario {stage.scenario_id!r}"
+            f"{stage.label} references missing scenario {stage.scenario_id!r}"
         )
     if scenario.training_spec is None:
         raise StudioExecutionPreparationError(
-            f"Scenario {scenario.id!r} cannot execute without a training_spec"
+            f"{scenario.label} has no training settings"
         )
     if scenario.task_spec is None:
         raise StudioExecutionPreparationError(
-            f"Scenario {scenario.id!r} cannot execute without a task_spec"
+            f"{scenario.label} has no task"
         )
 
     validation = _validate_training_scenario(
@@ -330,12 +338,7 @@ def prepare_studio_training_execution(
         else None,
     )
     if validation.errors:
-        stage.validation = validation
-        stage.status = "invalid"
-        _replace_stage(workspace, stage)
-        raise StudioExecutionPreparationError(
-            "Studio train scenario is not valid for provider execution"
-        )
+        raise StudioTrainingValidationError(f"{scenario.label} is invalid", validation.errors)
 
     job_id = request.job_id or f"studio-train-{uuid.uuid4().hex[:12]}"
     execution_target = _request_execution_target(stage, request)
@@ -1606,16 +1609,8 @@ def _validate_materialized_training_row(
     )
     if not validation.errors:
         return
-    details = "; ".join(
-        f"{issue.location.get('path') if issue.location else '<unknown>'}: {issue.message}"
-        for issue in validation.errors
-    )
-    raise StudioExecutionPreparationError(
-        "Expanded sweep training run is invalid: "
-        f"run_id={row.planned_run_id!r}, coordinate="
-        f"{row.coordinate.values if row.coordinate is not None else row.row_id!r}; "
-        f"{details}"
-    )
+    coordinate = row.coordinate.label if row.coordinate is not None else row.row_id
+    raise StudioTrainingValidationError(f"{coordinate} is invalid", validation.errors)
 
 
 def _materialized_row_specs(

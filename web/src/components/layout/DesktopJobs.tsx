@@ -81,7 +81,7 @@ export function DesktopJobs() {
               const active = ['claimed', 'pending', 'launched', 'ready', 'running'].includes(job.status);
               return (
                 <li key={`${job.family}:${job.id}`} className="mt-2 border-t pt-2">
-                  <p className="capitalize">{job.family} · {job.status.replaceAll('_', ' ')}</p>
+                  <p className="capitalize">{job.family} · {job.status.replace(/_/g, ' ')}</p>
                   <p className="break-all text-xs text-slate-600">{job.manifest_id ?? job.id}</p>
                   {job.completed_batches != null && (
                     <p>{job.completed_batches}{job.total_batches ? ` of ${job.total_batches}` : ''} batches</p>

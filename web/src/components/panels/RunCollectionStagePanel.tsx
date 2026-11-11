@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
 import clsx from 'clsx';
+import { z } from 'zod';
 import {
   Activity,
   BarChart3,
@@ -28,8 +29,10 @@ import {
   XCircle,
 } from 'lucide-react';
 import { ValueCountBadge } from '@/components/ui/ValueCountBadge';
+import { StudioValidationIssueSchema, type StudioValidationIssue } from '@/generated/studioContracts';
 import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 import {
   frozenSnapshotProvenanceMetadata,
   useSelectionContextStore,
@@ -161,6 +164,47 @@ function isUncertainNativeRunRequest(error: unknown): boolean {
     (error.kind === 'network' || (error.status !== null && error.status >= 500));
 }
 
+type TrainingPlanFailure = {
+  message: string;
+  issues: StudioValidationIssue[];
+};
+
+const trainingPlanFailureDetail = z.object({ errors: z.array(StudioValidationIssueSchema) });
+
+function trainingPlanFailure(error: unknown): TrainingPlanFailure {
+  const validation = trainingPlanFailureDetail.safeParse(
+    error instanceof ApiRequestError ? error.detail : undefined
+  );
+  return {
+    message: apiErrorMessage(error, 'Training plan failed'),
+    issues: validation.success ? validation.data.errors : [],
+  };
+}
+
+function TrainingFailure({ failure }: { failure: string | TrainingPlanFailure }) {
+  return (
+    <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+      {typeof failure === 'string' ? failure : (
+        <>
+          <p>{failure.message}</p>
+          {failure.issues.length > 0 && (
+            <ul aria-label="Problems" className="mt-1 list-disc space-y-1 pl-4">
+              {failure.issues.map((issue, index) => {
+                const node = issue.location?.path?.match(/\/nodes\/([^/]+)/)?.[1];
+                return (
+                  <li key={index}>
+                    {node && !issue.message.includes(node) && <strong>{node} · </strong>}
+                    {issue.message}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 export function TrainCollectionPanel() {
   const workspace = useWorkspaceStore((state) => state.workspace);
@@ -220,7 +264,10 @@ export function TrainCollectionPanel() {
   const [bulkVerb, setBulkVerb] = useState<BulkEditVerb>('keep');
   const [bulkAxisId, setBulkAxisId] = useState<string>('');
   const [bulkValues, setBulkValues] = useState('0.001, 0.0003');
-  const [stageState, setStageState] = useState({ busy: false, error: null as string | null });
+  const [stageState, setStageState] = useState({
+    busy: false,
+    error: null as string | TrainingPlanFailure | null,
+  });
   const [runActionState, setRunActionState] = useState({ busy: false, error: null as string | null });
   const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
   const [launchErrors, setLaunchErrors] = useState<Record<string, string>>({});
@@ -229,7 +276,7 @@ export function TrainCollectionPanel() {
   const [queueConfirmed, setQueueConfirmed] = useState(false);
   const [queueLaunchState, setQueueLaunchState] = useState({
     busy: false,
-    error: null as string | null,
+    error: null as string | TrainingPlanFailure | null,
   });
 
   const trainStage = getStageByKind(workspace, 'train');
@@ -520,6 +567,7 @@ export function TrainCollectionPanel() {
     metadata: Record<string, unknown>
   ) => {
     if (!nextWorkspace) return false;
+    const tabId = useProjectsStore.getState().activeTabId;
     setStageState({ busy: true, error: null });
     try {
       setWorkspace(nextWorkspace);
@@ -531,6 +579,7 @@ export function TrainCollectionPanel() {
         issues: ['3a6d02e'],
         metadata,
       });
+      if (useProjectsStore.getState().activeTabId !== tabId) return false;
       setTrainingExecutionPreparation(preparation);
       markDirty();
       setStageState({ busy: false, error: null });
@@ -538,7 +587,7 @@ export function TrainCollectionPanel() {
     } catch (error) {
       setStageState({
         busy: false,
-        error: error instanceof Error ? error.message : 'Failed to stage training runs.',
+        error: trainingPlanFailure(error),
       });
       return false;
     }
@@ -868,6 +917,7 @@ export function TrainCollectionPanel() {
         item.stageKind === 'train' &&
         item.stageId === trainItem.stageId
     );
+    const tabId = useProjectsStore.getState().activeTabId;
     setQueueLaunchState({ busy: true, error: null });
     try {
       const preparation = await prepareStudioTrainingExecution({
@@ -892,7 +942,7 @@ export function TrainCollectionPanel() {
           },
         },
       });
-      setWorkspace(preparation.workspace);
+      if (useProjectsStore.getState().activeTabId !== tabId) return;
       setTrainingExecutionPreparation(preparation);
       markDirty();
       setQueueConfirmed(false);
@@ -900,7 +950,7 @@ export function TrainCollectionPanel() {
     } catch (error) {
       setQueueLaunchState({
         busy: false,
-        error: error instanceof Error ? error.message : 'Failed to prepare queue launch.',
+        error: trainingPlanFailure(error),
       });
     }
   }, [
@@ -909,7 +959,6 @@ export function TrainCollectionPanel() {
     queueProjection.items,
     queueSpecLock,
     setTrainingExecutionPreparation,
-    setWorkspace,
     workspace,
   ]);
 
@@ -974,11 +1023,7 @@ export function TrainCollectionPanel() {
               onStage={stageMatrix}
             />
 
-            {stageState.error && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                {stageState.error}
-              </div>
-            )}
+            {stageState.error && <TrainingFailure failure={stageState.error} />}
 
             <ManifestImportPanel
               packetPath={importState.packetPath}
@@ -1925,11 +1970,6 @@ function MatrixBuilderStrip({
             </button>
           </div>
         ))}
-        {matrix.axes.length === 0 && (
-          <div className="rounded-md border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-400">
-            Add one sweep axis to preview staged runs.
-          </div>
-        )}
       </div>
 
       <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 md:grid-cols-[minmax(8rem,0.7fr)_minmax(14rem,1.2fr)_minmax(12rem,1fr)_auto] md:items-end">
@@ -2144,7 +2184,7 @@ function QueueProjectionPanel({
   specLock: BillableSpecLock;
   confirmed: boolean;
   busy: boolean;
-  error: string | null;
+  error: string | TrainingPlanFailure | null;
   onConfirmChange: (confirmed: boolean) => void;
   onTargetChange: (target: ExecutionTargetChoice | null) => void;
   onPrepareLaunch: () => void;
@@ -2293,8 +2333,8 @@ function QueueProjectionPanel({
       )}
 
       {error && (
-        <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-          {error}
+        <div className="mt-3">
+          <TrainingFailure failure={error} />
         </div>
       )}
 

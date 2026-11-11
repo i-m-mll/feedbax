@@ -379,6 +379,34 @@ def test_studio_training_plan_endpoint_returns_updated_workspace(studio_client):
     assert train_stage["artifact_refs"][0]["role"] == "backend_plan"
 
 
+def test_studio_training_plan_refusal_identifies_invalid_binding(
+    studio_client: TestClient, tmp_path: Path
+) -> None:
+    workspace = _workspace()
+    train = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train.scenario_id]
+    assert scenario.task_binding_spec is not None
+    scenario.task_binding_spec.bindings[0].target_port = "missing"
+
+    response = studio_client.post(
+        "/api/provider/studio/training/plan",
+        json={
+            "workspace": workspace.model_dump(mode="json", exclude_none=True),
+            "graph": _graph().model_dump(mode="json", exclude_none=True),
+        },
+    )
+
+    assert response.status_code == 422
+    (problem,) = [
+        issue for issue in response.json()["detail"]["errors"]
+        if issue["type"] == "unknown_task_binding_target_port"
+    ]
+    assert problem["location"]["path"] == "/task_binding_spec/bindings/0/target_port"
+    assert "network.missing" in problem["message"]
+    receipts = canonical_manifest_path("TrainingRunManifest", "test", root=tmp_path).parent
+    assert not list(receipts.glob("*.json"))
+
+
 def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

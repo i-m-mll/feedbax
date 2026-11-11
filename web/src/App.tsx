@@ -5,6 +5,7 @@ import { StatusBar } from '@/components/layout/StatusBar';
 import { TopShelf } from '@/components/layout/TopShelf';
 import { BottomShelf } from '@/components/layout/BottomShelf';
 import { Divider } from '@/components/layout/Divider';
+import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
 import { useGraphStore } from '@/stores/graphStore';
 import { persistLocalProjectTabs } from '@/stores/projectsStore';
@@ -138,7 +139,9 @@ export default function App() {
     <>
     <Toaster theme="dark" position="bottom-right" />
     <div className="flex min-h-screen w-full max-w-full flex-col overflow-hidden">
-      <Header />
+      <StudioErrorBoundary region="Project controls">
+        <Header />
+      </StudioErrorBoundary>
       <div ref={containerRef} className="min-w-0 flex-1 min-h-0">
         <div
           className="grid h-full min-h-0 w-full max-w-full overflow-hidden"
@@ -150,19 +153,25 @@ export default function App() {
           }}
         >
           <div className="min-w-0 min-h-0 overflow-hidden">
-            <TopShelf
-              height={topHeight ?? TOP_COLLAPSED_HEIGHT}
-              availableHeight={availableHeight}
-            />
+            <StudioErrorBoundary region="Model editor">
+              <TopShelf
+                height={topHeight ?? TOP_COLLAPSED_HEIGHT}
+                availableHeight={availableHeight}
+              />
+            </StudioErrorBoundary>
           </div>
           <Divider availableHeight={availableHeight} />
-          <BottomShelf
-            height={bottomEffectiveHeight ?? BOTTOM_COLLAPSED_HEIGHT}
-            availableHeight={availableHeight}
-          />
+          <StudioErrorBoundary region="Pipeline">
+            <BottomShelf
+              height={bottomEffectiveHeight ?? BOTTOM_COLLAPSED_HEIGHT}
+              availableHeight={availableHeight}
+            />
+          </StudioErrorBoundary>
         </div>
       </div>
-      <StatusBar />
+      <StudioErrorBoundary region="Status">
+        <StatusBar />
+      </StudioErrorBoundary>
     </div>
     </>
   );
