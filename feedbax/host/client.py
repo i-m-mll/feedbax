@@ -180,7 +180,6 @@ class HostClient:
     ) -> EventPage:
         return cast(
             EventPage,
-            HostError,
             self._call(
                 "events",
                 after=after,
