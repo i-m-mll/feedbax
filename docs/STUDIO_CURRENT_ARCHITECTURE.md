@@ -30,8 +30,7 @@ The main surfaces are:
 - `web/src/components/canvas/`: React Flow canvas, node renderers, routed
   edges, state-flow edges, tap nodes, subgraph nodes, and port context menus.
 - `web/src/components/panels/`: training/evaluation/analysis/report stage
-  panels, properties, validation, console, trajectory/statistics/figure views,
-  and pipeline-stage workspaces.
+  panels, properties, validation, console, and pipeline-stage workspaces.
 - `web/src/components/scenario/`: the top-pane Workspace view, task projection,
   observable/objective projections, and scenario inspection.
 - `web/src/components/ui/`, `web/src/components/primitives/` if present, and
@@ -43,6 +42,8 @@ The top shelf owns the model/task/scenario workspace. The bottom shelf owns the
 stage workspace and console mode. Stage panels should read and write through
 `workspaceStore` and the generated contract types rather than inventing local
 payload shapes.
+
+The figure gallery, statistics panel, and standalone trajectory viewer are reserved for upcoming surfaces. CI checks imports from the production entry point and those reserved modules, and checks that exported client functions have a caller.
 
 Generated frontend contracts live in
 `web/src/generated/studioContracts.ts` and are produced by
