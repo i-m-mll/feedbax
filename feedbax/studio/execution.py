@@ -1353,7 +1353,7 @@ def _stage_pending_training_manifests(
     *,
     workspace: StudioWorkspaceSpec,
     stage: StudioStageSpec,
-    scenario_id: str | None,
+    scenario_id: str,
     graph_spec: dict[str, Any],
     training_spec: dict[str, Any],
     task_spec: dict[str, Any],
@@ -1462,12 +1462,15 @@ def _stage_pending_training_manifests(
         }
     )
     run_set_path = write_manifest(run_set, root=root_path)
+    authored_binding = workspace.scenarios[scenario_id].task_binding_spec
     staging_draft_spec_hashes = _ui_spec_hashes(
         {
-            "graph_spec": graph_spec,
+            "graph_spec": request.graph.model_dump(mode="json", exclude_unset=True),
             "training_spec": training_spec,
             "task_spec": task_spec,
-            "task_binding_spec": task_binding_spec,
+            "task_binding_spec": authored_binding.model_dump(mode="json", exclude_unset=True)
+            if authored_binding is not None
+            else None,
         }
     )
     run_refs: list[StudioManifestRef] = []

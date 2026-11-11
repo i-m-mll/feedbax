@@ -26,6 +26,7 @@ from feedbax.studio.execution import (
     run_studio_evaluation_local_execution,
     stage_studio_evaluation_matrix,
 )
+from feedbax.studio.draft_hash import studio_draft_digest_v2
 from feedbax.analysis.evaluation import (
     EvaluationRecipeExecutionError,
     EvaluationRecipeResult,
@@ -520,9 +521,15 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
         ],
         "mode": "cross",
     }
+    graph_wire = _graph().model_dump(mode="json")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    assert scenario.task_binding_spec is not None
+    binding_wire = scenario.task_binding_spec.model_dump(mode="json")
+    del binding_wire["exposed_data"][0]["units"]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(binding_wire)
     request = StudioTrainingExecutionRequest(
         workspace=workspace,
-        graph=_graph(),
+        graph=GraphSpec.model_validate(graph_wire),
         job_id="studio-plan",
         local_cwd="/tmp/feedbax-studio",
         issues=["c199a9c"],
@@ -550,6 +557,10 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     assert len(run_set.axes.runs) == 2
     assert len(run_refs) == 2
     assert {ref.id for ref in training_collection.item_refs} == {ref.id for ref in run_refs}
+    for ref in training_collection.item_refs:
+        hashes = ref.metadata["staging_draft_spec_hashes"]["hashes"]
+        assert hashes["graph_spec"] == studio_draft_digest_v2(graph_wire)
+        assert hashes["task_binding_spec"] == studio_draft_digest_v2(binding_wire)
     assert {ref.metadata["execution_target"] for ref in run_refs} == {"runpod"}
     assert run_set_ref.metadata["execution_target"] == "runpod"
     assert all(isinstance(run, TrainingRunManifest) for run in runs)
