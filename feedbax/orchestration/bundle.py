@@ -330,7 +330,7 @@ class LaunchPolicy(StrictModel):
 class BudgetPolicy(StrictModel):
     """Run-set budget guards enforced by the stage engine."""
 
-    max_wall_clock_seconds: FiniteFloat = Field(gt=0.0)
+    max_wall_clock_seconds: FiniteFloat | None = Field(default=None, gt=0.0)
     max_spend_usd: FiniteFloat | None = Field(default=None, ge=0.0)
     max_create_attempts: int | None = Field(default=None, strict=True, ge=1)
     teardown_reserve_seconds: FiniteFloat | None = Field(default=None, gt=0.0)
@@ -338,11 +338,11 @@ class BudgetPolicy(StrictModel):
 
     @model_validator(mode="after")
     def _validate_teardown_reserve(self) -> "BudgetPolicy":
-        if (
-            self.teardown_reserve_seconds is not None
-            and self.teardown_reserve_seconds >= self.max_wall_clock_seconds
-        ):
-            raise ValueError("teardown reserve must be shorter than the run budget")
+        if self.teardown_reserve_seconds is not None:
+            if self.max_wall_clock_seconds is None:
+                raise ValueError("teardown reserve requires a wall-clock budget")
+            if self.teardown_reserve_seconds >= self.max_wall_clock_seconds:
+                raise ValueError("teardown reserve must be shorter than the run budget")
         if self.discard_uncollected_on_abort and self.teardown_reserve_seconds is None:
             raise ValueError("abort-time output discard requires a teardown reserve")
         return self
@@ -511,7 +511,7 @@ class RunBundle(StrictModel):
     rows: list[RunRowSpec] = Field(min_length=1)
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
-    budget: BudgetPolicy
+    budget: BudgetPolicy = Field(default_factory=BudgetPolicy)
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
     staged_training: StagedTrainingBinding | None = None
