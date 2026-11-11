@@ -234,20 +234,6 @@ export async function importRunsDir(pathname: string): Promise<ManifestImportRes
   }
 }
 
-/** Create a new training run. */
-export async function createTrainingRun(name: string): Promise<TrainingRun> {
-  const path = '/api/runs/training';
-  const result = await requestJson(path, {
-    method: 'POST',
-    body: JSON.stringify({ name }),
-  });
-  try {
-    return trainingRunFromWire(parseContract('TrainingRunInfo', result));
-  } catch (error) {
-    throw asApiRequestError(error, path, 'Created training run did not match the Studio contract.');
-  }
-}
-
 /** Withdraw a staged training run before a runner claims it. */
 export async function cancelTrainingRun(trainingRunId: string): Promise<TrainingRun> {
   const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}/cancel`;
@@ -307,14 +293,4 @@ export async function createEvalRun(
   } catch (error) {
     throw asApiRequestError(error, path, 'Created evaluation run did not match the Studio contract.');
   }
-}
-
-/** Build a short human-readable summary from eval params. */
-export function summarizeEvalParams(params: Record<string, unknown>): string {
-  const parts: string[] = [];
-  if (params.perturbation_type) parts.push(String(params.perturbation_type));
-  if (Array.isArray(params.perturbation_amplitudes) && params.perturbation_amplitudes.length > 0) {
-    parts.push(`amp=[${params.perturbation_amplitudes.join(',')}]`);
-  }
-  return parts.join(', ') || 'Custom evaluation';
 }

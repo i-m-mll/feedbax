@@ -6,7 +6,6 @@ import {
   type AcausalGraphSpec,
   type DomainCompileReport,
   type DomainMeta,
-  type PenzaiBuilderInfo,
   type PenzaiInspectorPayload,
   type PenzaiNodeRequest,
   type SelectionSpec,
@@ -15,7 +14,6 @@ import {
   type WorkspaceDocument,
 } from "@/generated/studioContracts";
 import type {
-  StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
   StudioEvaluationCheckpointPolicy,
   StudioEvaluationLocalRunResult,
@@ -27,12 +25,9 @@ import type {
 // Note: analysis_pages in the API uses snake_case wire format (graph_spec, eval_params).
 // See analysisAPI.ts for the conversion to camelCase AnalysisPageSpec.
 import type {
-  LossTermSpec,
-  ProbeInfo,
   TrainingSpec,
   TaskSpec,
   TrainingConfig,
-  LossValidationResult,
   TrainingProgress,
 } from "@/types/training";
 import type { TrajectorySnapshot } from "@/stores/trainingStore";
@@ -200,14 +195,6 @@ export async function fetchDomains(): Promise<DomainMeta[]> {
     await requestJson("/api/domains"),
   );
   return response.data.domains;
-}
-
-export async function fetchPenzaiBuilders(): Promise<PenzaiBuilderInfo[]> {
-  const response = parseContract(
-    "PenzaiBuilderListResponse",
-    await requestJson("/api/penzai/builders"),
-  );
-  return response.data.builders;
 }
 
 export async function inspectPenzaiNode(
@@ -419,23 +406,6 @@ export async function runStudioEvaluationLocalExecution(payload: {
   );
 }
 
-export async function materializeStudioPipeline(payload: {
-  workspace: StudioWorkspaceSpec;
-  stages?: Array<"eval" | "analysis" | "report">;
-  job_id?: string | null;
-  root?: string | null;
-  issues?: string[];
-  metadata?: Record<string, unknown>;
-}) {
-  return request<StudioPipelineMaterializationResult>(
-    "/api/provider/studio/pipeline/materialize",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
 export interface SampledTaskTrialCue {
   label: string;
   step: number;
@@ -552,61 +522,6 @@ export async function fetchWorkerStatus() {
     await requestJson("/api/training/worker/status"),
   );
   return response.data;
-}
-
-// --- Probe and Loss API ---
-
-export async function fetchProbes(graphId: string): Promise<ProbeInfo[]> {
-  const path = `/api/training/probes/${graphId}`;
-  return parseContractArray("ProbeResponse", path, await requestJson(path));
-}
-
-export async function validateLossSpec(
-  graphId: string,
-  lossSpec: LossTermSpec,
-): Promise<LossValidationResult> {
-  const path = "/api/training/loss/validate";
-  return parseContractResponse(
-    "ValidateLossResponse",
-    path,
-    await requestJson(path, {
-      method: "POST",
-      body: JSON.stringify({ graph_id: graphId, loss_spec: lossSpec }),
-    }),
-  );
-}
-
-export async function resolveSelector(
-  graphId: string,
-  selector: string,
-): Promise<Record<string, unknown>> {
-  return request<Record<string, unknown>>(
-    "/api/training/loss/resolve-selector",
-    {
-      method: "POST",
-      body: JSON.stringify({ graph_id: graphId, selector }),
-    },
-  );
-}
-
-export async function fetchCheckpoint(jobId: string) {
-  return request<{ batch: number; loss: number; weights_available: boolean }>(
-    `/api/training/${jobId}/checkpoint`,
-  );
-}
-
-export async function downloadCheckpoint(jobId: string): Promise<void> {
-  const response = await fetch(`/api/training/${jobId}/checkpoint/download`);
-  if (!response.ok) throw new Error(`Download failed: ${response.status}`);
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `feedbax_checkpoint_${jobId}.eqx`;
-  document.body.appendChild(a); // Firefox requires an attached element
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 
 // --- Orchestration API ---

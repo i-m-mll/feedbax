@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiRequestError } from '@/api/request';
 import {
   cancelTrainingRun,
   compareTrainingRuns,
   createEvalRun,
-  createTrainingRun,
   deleteTrainingRun,
   fetchEvalRunManifest,
   fetchEvalRuns,
@@ -152,12 +150,6 @@ describe('runAPI failure behavior', () => {
     const [path, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(path).toBe('/api/runs/evaluation/feedbax-evaluation-run%3Acompleted/manifest');
     expect(new Headers(options.headers).get('Content-Type')).toBe('application/json');
-  });
-
-  it('does not fabricate successful training-run creation', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not implemented', { status: 405 })));
-
-    await expect(createTrainingRun('new run')).rejects.toBeInstanceOf(ApiRequestError);
   });
 
   it('does not fabricate successful eval-run creation', async () => {

@@ -13,12 +13,9 @@ import type {
 import type {
   AnalysisPackage,
   AnalysisClassDef,
-  AnalysisSnapshot,
 } from '@/types/analysis';
-import { fetchGraph } from '@/api/client';
 import { asApiRequestError, requestJson } from '@/api/request';
 import { parseContract } from '@/generated/studioContracts';
-import { analysisSnapshotFromWorkspaceDocument } from '@/utils/analysisCanvasLayout';
 
 /**
  * Fetch available analysis packages.
@@ -60,15 +57,4 @@ export async function dryRunAnalysisBundle(payload: {
   } catch (error) {
     throw asApiRequestError(error, path, 'Analysis bundle dry-run response did not match the Studio contract.');
   }
-}
-
-/**
- * Fetch analysis pages for a project from the graph endpoint.
- * Returns null if no analysis pages exist yet.
- */
-export async function fetchAnalysisPages(
-  graphId: string
-): Promise<AnalysisSnapshot | null> {
-  const data = await fetchGraph(graphId);
-  return analysisSnapshotFromWorkspaceDocument(data.workspace_document, data.workspace);
 }

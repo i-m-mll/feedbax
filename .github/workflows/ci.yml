@@ -95,6 +95,9 @@ jobs:
       - name: Run tests
         run: bun run test
 
+      - name: Check Studio source reachability
+        run: bun scripts/check-reachability.ts
+
       - name: Install Playwright browsers
         run: bun x --bun --no-install playwright install --with-deps chromium
 

@@ -1275,15 +1275,6 @@ export interface SelectionPreview {
   truncated?: boolean;
 }
 
-export interface SelectionRefreshDiff {
-  frozen_refs: ParentRef[];
-  current_refs: ParentRef[];
-  new_refs: ParentRef[];
-  gone_refs: ParentRef[];
-  unchanged_refs: ParentRef[];
-  reprocess_counts: Record<string, number>;
-}
-
 export interface SuccessPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
@@ -1878,17 +1869,6 @@ export interface ManifestImportResponse {
   index_path?: string | null;
   training_runs?: TrainingRunInfo[];
   eval_runs?: EvalRunInfo[];
-}
-
-export interface SelectionPreviewRequest {
-  selection_spec: SelectionSpec;
-  limit?: number;
-}
-
-export interface SelectionRefreshRequest {
-  selection_spec: SelectionSpec;
-  failed_parent_ids?: string[];
-  stale_parent_ids?: string[];
 }
 
 export interface DatasetInfo {
@@ -4475,19 +4455,6 @@ export const SelectionPreviewSchema: z.ZodType<SelectionPreview> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<SelectionPreview>;
 
-export const SelectionRefreshDiffSchema: z.ZodType<SelectionRefreshDiff> = z.lazy(() =>
-  z
-    .object({
-      "frozen_refs": z.array(ParentRefSchema),
-      "current_refs": z.array(ParentRefSchema),
-      "new_refs": z.array(ParentRefSchema),
-      "gone_refs": z.array(ParentRefSchema),
-      "unchanged_refs": z.array(ParentRefSchema),
-      "reprocess_counts": z.record(z.string(), z.number().int().safe()),
-    })
-    .strict()
-) as unknown as z.ZodType<SelectionRefreshDiff>;
-
 export const SuccessPayloadSchema: z.ZodType<SuccessPayload> = z.lazy(() =>
   z
     .object({
@@ -5392,25 +5359,6 @@ export const ManifestImportResponseSchema: z.ZodType<ManifestImportResponse> = z
     .strict()
 ) as unknown as z.ZodType<ManifestImportResponse>;
 
-export const SelectionPreviewRequestSchema: z.ZodType<SelectionPreviewRequest> = z.lazy(() =>
-  z
-    .object({
-      "selection_spec": SelectionSpecSchema,
-      "limit": z.number().int().safe().gte(0).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<SelectionPreviewRequest>;
-
-export const SelectionRefreshRequestSchema: z.ZodType<SelectionRefreshRequest> = z.lazy(() =>
-  z
-    .object({
-      "selection_spec": SelectionSpecSchema,
-      "failed_parent_ids": z.array(z.string()).optional(),
-      "stale_parent_ids": z.array(z.string()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<SelectionRefreshRequest>;
-
 export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
   z
     .object({
@@ -5684,9 +5632,6 @@ export const contractSchemas = {
   ManifestImportResponse: ManifestImportResponseSchema,
   SelectionSpec: SelectionSpecSchema,
   SelectionPreview: SelectionPreviewSchema,
-  SelectionRefreshDiff: SelectionRefreshDiffSchema,
-  SelectionPreviewRequest: SelectionPreviewRequestSchema,
-  SelectionRefreshRequest: SelectionRefreshRequestSchema,
   DatasetInfo: DatasetInfoSchema,
   TrajectoryMetadata: TrajectoryMetadataSchema,
   FilterResult: FilterResultSchema,
@@ -5741,9 +5686,6 @@ export interface ContractTypeMap {
   ManifestImportResponse: ManifestImportResponse;
   SelectionSpec: SelectionSpec;
   SelectionPreview: SelectionPreview;
-  SelectionRefreshDiff: SelectionRefreshDiff;
-  SelectionPreviewRequest: SelectionPreviewRequest;
-  SelectionRefreshRequest: SelectionRefreshRequest;
   DatasetInfo: DatasetInfo;
   TrajectoryMetadata: TrajectoryMetadata;
   FilterResult: FilterResult;
