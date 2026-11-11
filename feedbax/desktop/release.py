@@ -101,6 +101,10 @@ class AppPaths:
     def logs(self) -> Path:
         return self.cache / "logs"
 
+    @property
+    def host(self) -> Path:
+        return self.state / "host"
+
     def configure_studio(self, *, desktop: bool = True) -> None:
         """Bind the existing Studio authorities before loading its Python modules."""
         os.environ.update(
@@ -110,7 +114,7 @@ class AppPaths:
             FEEDBAX_ORCHESTRATION_ROOT=str(self.workspace / "orchestration"),
             FEEDBAX_CONTROLLER_EVENT_LOG=str(self.state / "controller" / "events.jsonl"),
             FEEDBAX_RUNS_DIR=str(self.workspace / "runs"),
-            FEEDBAX_HOST_ROOT=str(self.state / "host"),
+            FEEDBAX_HOST_ROOT=str(self.host),
             FEEDBAX_JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_PLATFORMS="cpu",
