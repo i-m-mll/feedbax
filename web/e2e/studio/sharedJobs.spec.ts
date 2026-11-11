@@ -187,3 +187,65 @@ raise TimeoutError("No isolated sibling published a checkpoint")
     await observer.close();
   }
 });
+
+test('opens a ninth project window while one stream serves active projects', async ({
+  context, page, request, baseURL,
+}) => {
+  test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
+  test.setTimeout(45_000);
+  if (!baseURL) throw new Error('The real Studio origin is required');
+  const projects = await Promise.all(['A', 'B', 'C', 'D'].map(async (label) =>
+    saveFixture(request, await reachingDocument(12_000, `Shared reach ${label}`)),
+  ));
+  const runningProjects = projects.slice(0, 3);
+  const observer = await observeJobStreams(baseURL);
+  const windows: Page[] = [page];
+  const open = async (window: Page, name: string) => {
+    await window.goto(observer.origin);
+    await openSavedProject(window, name);
+    await window.getByTitle('train: Train', { exact: true }).click();
+  };
+  const openWindow = async (name: string) => {
+    const window = await context.newPage();
+    windows.push(window);
+    await open(window, name);
+    return window;
+  };
+  const subscriptions = () => observer.subscriptions().map((stream) => [...stream.projects].sort());
+  try {
+    const owners = await Promise.all(runningProjects.map((project, index) =>
+      index === 0 ? open(page, project.metadata.name).then(() => page) : openWindow(project.metadata.name),
+    ));
+    await Promise.all(owners.map(async (window) => {
+      const submitted = post(window, '/api/submissions');
+      await window.getByRole('region', { name: 'Runs', exact: true })
+        .getByRole('button', { name: 'Run', exact: true }).click();
+      const response = await submitted;
+      expect(response.status(), await response.text()).toBe(202);
+      const { items } = await response.json() as StudioJobSubmission;
+      expect(items.map((item) => item.disposition)).toEqual(['admitted']);
+    }));
+    await Promise.all(Array.from({ length: 5 }, (_, index) =>
+      openWindow(runningProjects[index % runningProjects.length].metadata.name),
+    ));
+    await expect.poll(subscriptions).toEqual([runningProjects.map((project) => project.id).sort()]);
+    await Promise.all(windows.map((window) =>
+      expect(row(window, 'Train').getByRole('progressbar')).toHaveAttribute('value', /[1-9]/),
+    ));
+    expect(windows).toHaveLength(8);
+
+    const opening = performance.now();
+    const ninth = await openWindow(projects[3].metadata.name);
+    console.log(`Ninth project window opened in ${Math.round(performance.now() - opening)} ms`);
+    await expect.poll(subscriptions).toEqual([projects.map((project) => project.id).sort()]);
+    await ninth.getByRole('button', { name: 'Activity', exact: true }).click();
+    const activity = ninth.getByRole('region', { name: 'Activity', exact: true });
+    for (const project of runningProjects) {
+      const run = activity.getByRole('listitem').filter({ hasText: project.metadata.name });
+      await expect(run.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+    }
+  } finally {
+    await Promise.all(windows.map((window) => window.close()));
+    await observer.close();
+  }
+});
