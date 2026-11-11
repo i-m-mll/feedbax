@@ -279,7 +279,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             latest_model = slots["model"]
             now = events.elapsed()
             pending = coordinate, now
-            if now - last_progress >= 0.5:
+            if now - last_progress >= 0.4:
                 publish_progress()
             if completed % snapshot_interval == 0:
                 publish_frame()

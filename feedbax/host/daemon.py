@@ -477,8 +477,14 @@ class Host:
         self.store.settle_blocked()
         for row in self.store.ready():
             self._assign(row)
-        self._maintain_pool()
         running = self.store.active()
+        if recovering:
+            for row in running:
+                launch = json.loads(row["launch"])
+                if launch["warm_entrypoint"]:
+                    key, profile = self._profile(launch, row["slot"])
+                    self.profiles[key] = profile
+        self._maintain_pool()
         self.file_changes.watch(
             {
                 self._paths(row)[name]

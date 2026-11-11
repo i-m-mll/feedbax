@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
@@ -78,6 +79,11 @@ class JobService:
         self.manifest_root = default_manifest_root().resolve()
         self._training_worker = Launch(
             argv=(sys.executable,),
+            env={
+                key: os.environ[key]
+                for key in ("JAX_PLATFORMS", "JAX_ENABLE_X64", "XLA_FLAGS")
+                if key in os.environ
+            },
             cwd=str(Path.cwd()),
             warm_entrypoint="feedbax.training_host_worker:main",
             preload=("jax", "feedbax.training.invocation", "feedbax.plugins.composition"),
