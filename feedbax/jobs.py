@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Collection, Mapping, Sequence
@@ -10,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from feedbax._secure_fs import (
@@ -21,6 +22,7 @@ from feedbax._secure_fs import (
     recheck_directory_chain,
 )
 from feedbax.contracts.base import default_manifest_root
+from feedbax.contracts.intent_diff import layered_semantic_diff
 from feedbax.contracts.jobs import (
     JobError,
     JobOutcome,
@@ -48,15 +50,27 @@ from feedbax.contracts.manifest import (
     load_manifest_bytes,
     training_run_manifest_id,
 )
+from feedbax.contracts.project_plan import ProjectPlan, RunKey
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import RequestId
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, HostClient, HostError, Job, Launch
 from feedbax.host.protocol import can_resume_attempt
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import ApplicationRegistryBundle
+from feedbax.studio.canonical_train import (
+    BoundStudioTrainingJobInput,
+    CanonicalTrainRequestBinding,
+    bind_canonical_train,
+)
 from feedbax.studio.training_requests import (
     StudioTrainingLoweringError,
     lower_studio_training_runs,
     studio_training_run_key,
 )
+
+if TYPE_CHECKING:
+    from feedbax.web.services.project_folder import ProjectFolderService, SettledProjectPlan
 
 
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
@@ -195,26 +209,8 @@ class JobService:
                     "coordinates": dict(run.coordinates),
                 }
                 runs[key] = data | {"request_id": run.request_id}
-                launch = replace(
-                    self._training_worker,
-                    payload={
-                        "spec": run.spec.model_dump(mode="json", exclude_none=True),
-                        "project_id": project,
-                        "request_id": run.request_id,
-                        "manifest_root": str(self.manifest_root),
-                        "bootstrap_modules": list(self.bootstrap_modules),
-                    },
-                )
-                items[key] = AdmissionItem(
-                    run_key=key,
-                    job=Job(
-                        id=uuid4().hex,
-                        project=project,
-                        request=run.request_id,
-                        launch=launch,
-                        data=data
-                        | {"manifest_root": str(self.manifest_root), "runtime": sys.executable},
-                    ),
+                items[key] = self._training_item(
+                    project, run.request_id, run.spec, data, self.manifest_root
                 )
             for key in keys or ():
                 if key in selected:
@@ -229,6 +225,116 @@ class JobService:
         else:
             admitted = self._admit_with_reuse(request.token, candidates, record)
         return self._submission_for_action(admitted, project=project, continues=None)
+
+    def admit_plan(
+        self,
+        folders: ProjectFolderService,
+        reviewed: SettledProjectPlan,
+        *,
+        run_keys: Sequence[RunKey],
+        token: str,
+    ) -> StudioJobSubmission:
+        """Admit selected independent Train rows from a server-issued saved Plan."""
+        selected = {
+            json.dumps((key.variant, key.step, key.row), separators=(",", ":")): key
+            for key in run_keys
+        }
+        if not selected or not token:
+            raise JobConflict("Plan admission requires selected runs and a submission token.")
+        project = reviewed.project_id
+        before = {run.key: run for run in reviewed.plan.runs}
+        command = {
+            "kind": "canonical_train",
+            "reviewed_revision": reviewed.revision,
+            "semantic_root": reviewed.semantic_root,
+            "store": str(reviewed.store_path),
+            "requests": {
+                name: before[key].request_id if key in before else None
+                for name, key in selected.items()
+            },
+        }
+        if previous := self._retry(token, project=project, continues=None, command=command):
+            return previous
+
+        items = []
+        runs = {}
+        with folders.admission_plan(project) as current:
+            if current.store_path != reviewed.store_path:
+                raise JobConflict("The saved project's store changed since the reviewed Plan.")
+            after = {run.key: run for run in current.plan.runs}
+            store = ImmutableArtifactBlobProvider(current.store_path)
+            for name, key in selected.items():
+                old, run = before.get(key), after.get(key)
+                if old is None or old.kind != "train":
+                    items.append(_rejected(name, "The reviewed row is not a runnable Train request."))
+                    continue
+                if run is None:
+                    items.append(_rejected(name, "The reviewed Train row is no longer runnable."))
+                    continue
+                if old.request_id != run.request_id:
+                    path = _changed_train_path(reviewed.plan, old.request_id, current.plan, run.request_id)
+                    items.append(_rejected(name, f"The selected Train request changed at {path}."))
+                    continue
+                if run.requires:
+                    items.append(_rejected(name, "/requires: Train has unresolved capabilities."))
+                    continue
+                try:
+                    spec, binding = bind_canonical_train(
+                        run.request_id,
+                        current.plan.requests[run.request_id],
+                        current.plan.documents,
+                        self.registries.training_programs,
+                        store,
+                    )
+                except (ValueError, KeyError) as error:
+                    items.append(_rejected(name, str(error)))
+                    continue
+                data = {
+                    "run_key": name,
+                    "stage_id": key.step,
+                    "scenario_id": key.variant,
+                    "label": run.label or key.step,
+                    "coordinates": {axis: coordinate.value for axis, coordinate in run.coordinates.items()},
+                }
+                runs[name] = data | {"request_id": run.request_id}
+                items.append(self._training_item(
+                    project, run.request_id, spec, data, current.store_path, canonical_request=binding
+                ))
+            admitted = self._admit(token, items, {
+                "project": project, "continues": None, "runs": runs, "command": command,
+            })
+        return self._submission_for_action(
+            admitted, project=project, continues=None, command=command
+        )
+
+    def _training_item(
+        self,
+        project: str,
+        request_id: str,
+        spec: TrainingRunSpec,
+        data: dict[str, Any],
+        root: Path,
+        *,
+        canonical_request: CanonicalTrainRequestBinding | None = None,
+    ) -> AdmissionItem:
+        payload = BoundStudioTrainingJobInput(
+            spec=spec,
+            project_id=project,
+            request_id=request_id,
+            manifest_root=root,
+            bootstrap_modules=self.bootstrap_modules,
+            canonical_request=canonical_request,
+        ).model_dump(mode="json", exclude_none=True)
+        return AdmissionItem(
+            run_key=data["run_key"],
+            job=Job(
+                id=uuid4().hex,
+                project=project,
+                request=request_id,
+                launch=replace(self._training_worker, payload=payload),
+                data=data | {"manifest_root": str(root), "runtime": sys.executable},
+            ),
+        )
 
     def _admit_with_reuse(
         self,
@@ -472,10 +578,11 @@ class JobService:
         *,
         continues: str | None,
         project: str | None = None,
+        command: dict[str, Any] | None = None,
     ) -> StudioJobSubmission | None:
         rows = self.host.submissions(token=token)
         return (
-            self._submission_for_action(rows[0], project=project, continues=continues)
+            self._submission_for_action(rows[0], project=project, continues=continues, command=command)
             if rows
             else None
         )
@@ -486,11 +593,12 @@ class JobService:
         *,
         project: str | None,
         continues: str | None,
+        command: dict[str, Any] | None = None,
     ) -> StudioJobSubmission:
         record = response["record"]
         if not _is_studio_submission(response) or record["continues"] != continues or (
             project is not None and project != record["project"]
-        ):
+        ) or record.get("command") != command:
             raise JobConflict("This submission token belongs to another action.")
         return _project_submission(response)
 
@@ -548,6 +656,17 @@ class JobService:
                 earlier_definition=current.get(key, request_id) != request_id,
             )
         return result
+
+
+def _changed_train_path(before: ProjectPlan, old: str, after: ProjectPlan, new: str) -> str:
+    earlier = decode_request(before.requests[old], before.documents.__getitem__)
+    current = decode_request(after.requests[new], after.documents.__getitem__)
+    differences = layered_semantic_diff(
+        earlier.spec.model_dump(mode="json"), current.spec.model_dump(mode="json")
+    )
+    if differences:
+        return f"payload.{differences[0].path}"
+    return "inputs" if earlier.inputs != current.inputs else "request_id"
 
 
 def _rejected(run_key: str, reason: str) -> AdmissionItem:

@@ -246,11 +246,12 @@ class ProjectFolderService:
         return self._snapshot(project_id, text)
 
     def read_plan(
-        self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = ()
+        self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = ()
     ) -> SettledProjectPlan:
         """Compile the acknowledged folder snapshot without opening the result store."""
         text = self._load(self._folder(project_id))
-        _check_revision("project", revision, text.revision)
+        if revision is not None:
+            _check_revision("project", revision, text.revision)
         return SettledProjectPlan(
             project_id,
             text.revision,
@@ -261,6 +262,12 @@ class ProjectFolderService:
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id)
             ),
         )
+
+    @contextmanager
+    def admission_plan(self, project_id: str) -> Iterator[SettledProjectPlan]:
+        """Hold the managed folder's writer lock through comparison and Host admission."""
+        with _writer_lock(self._folder(project_id)):
+            yield self.read_plan(project_id, revision=None)
 
     def new(self) -> StudioProjectDocument:
         project_id = f"untitled-{uuid4().hex}"
