@@ -25,6 +25,7 @@ from feedbax.studio.canonical_train import (
 from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
     authenticate_checkpoint_custody_ref,
+    checkpoint_slot_files,
     validate_checkpoint_run_contract,
 )
 
@@ -156,8 +157,9 @@ def verify_training_completion(
             ]
         files.extend(_file(root, path, ref.sha256, ref.size_bytes) for path, ref in request_files)
         files.extend(
-            _file(root, transaction_path.parent / slot.relative_path, slot.sha256, slot.size_bytes)
+            _file(root, path, digest, size)
             for slot in transaction.slots
+            for path, (digest, size) in checkpoint_slot_files(transaction_path.parent, slot).items()
         )
         return {
             "producer_job_id": producer_job_id,

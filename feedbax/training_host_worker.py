@@ -178,6 +178,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax._atomic import write_bytes_atomic
     from feedbax.contracts.base import ParentRef, sha256_file
     from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
+    from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.manifest import (
         TrainingRunManifest,
         canonical_manifest_path,
@@ -210,12 +211,19 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.training.checkpoint_custody import (
         CheckpointCustodyError,
         bind_published_checkpoint_content,
+        open_published_model_slot,
     )
     from feedbax.training.executor import execute_training_run_spec
     from feedbax.training.invocation import prepare_training_invocation
     from feedbax.training.manifest_preflight import build_training_run_manifest_spec_payloads
+    from feedbax.training.model_checkpoint import (
+        ModelCheckpointError,
+        SemanticModelWriter,
+        effective_model_graph,
+    )
     from feedbax.training.preparation import ExecutionPreparationResult
     from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
+    from feedbax.web.model_assets import model_artifact_provider
 
     events.current_phase = "binding"
     launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
@@ -307,6 +315,16 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         return {"manifest_id": manifest_id, "manifest_sha256": sha256(raw).hexdigest()}
 
     try:
+        graph = GraphSpec.model_validate(launch.spec.graph.inline)
+        if resume is not None:
+            events.current_phase = "restoring"
+        source_model = (
+            open_published_model_slot(resume.checkpoint_root, resume.pointer)
+            if resume is not None else None
+        )
+        model_assets = (
+            source_model.provider if source_model is not None else model_artifact_provider(graph)
+        )
         events.phase("building")
         registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
         preparation = prepare_training_invocation(
@@ -314,10 +332,16 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             registries,
             run_id=job_id,
             resume=resume is not None,
+            model_assets=model_assets,
             phase=lambda phase: events.phase(phase) if phase != events.current_phase else None,
         )
         if not isinstance(preparation, ExecutionPreparationResult):
             raise ValueError("Studio graph training requires scalar execution preparation")
+        if source_model is not None and source_model.graph != effective_model_graph(
+            graph, preparation.initial_slots["model"],
+        ):
+            events.current_phase = "restoring"
+            raise ModelCheckpointError("/graph", "Exact Resume graph differs from the bound model graph")
         kernel = preparation.kernel_context["studio_graph_update"]
         if not isinstance(kernel, StudioUpdateKernel):
             raise ValueError("Studio graph training requires the registered numerical update")
@@ -458,6 +482,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             checkpoint_initialization_request=initialization,
             checkpoint_content_provider=provider,
             checkpoint_source_content_binding=source_content,
+            semantic_model=SemanticModelWriter.for_graph(graph, model_assets),
             resume=resume is not None,
             registry=registries.training_programs,
             stop_before_update=stop_before_update,

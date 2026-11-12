@@ -165,6 +165,7 @@ from feedbax.training.manifest_preflight import (
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.model_checkpoint import SemanticModelWriter
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
@@ -514,6 +515,7 @@ class StreamingCheckpointStore:
         run_event_emitter: RunEventEmitter | None = None,
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
+        semantic_model: SemanticModelWriter | None = None,
         resume_checkpoint: PhaseCheckpoint | None = None,
         checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
     ) -> None:
@@ -531,6 +533,7 @@ class StreamingCheckpointStore:
         self.run_event_emitter = run_event_emitter
         self.checkpoint_initialization = dict(checkpoint_initialization or {})
         self.content_provider = content_provider
+        self.semantic_model = semantic_model
         self._checkpoint_published = checkpoint_published
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -632,6 +635,7 @@ class StreamingCheckpointStore:
             history_availability={"progress": True},
             metadata=checkpoint_metadata,
             content_provider=self.content_provider,
+            semantic_model=self.semantic_model,
         )
         self._writes.append(write)
         if self._checkpoint_published is not None:
@@ -699,6 +703,7 @@ def execute_training_run_spec(
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
     checkpoint_fork_target_id: str | None = None,
     checkpoint_content_provider: ArtifactBlobProvider | None = None,
+    semantic_model: SemanticModelWriter | None = None,
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
     loss_service: LossService | None = None,
@@ -1201,6 +1206,7 @@ def execute_training_run_spec(
             else None
         ),
         content_provider=checkpoint_content_provider,
+        semantic_model=semantic_model,
         resume_checkpoint=loaded_resume_checkpoint,
         checkpoint_published=checkpoint_published,
     )

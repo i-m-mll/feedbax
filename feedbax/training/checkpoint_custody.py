@@ -157,6 +157,14 @@ from feedbax.contracts.worker import (
     derive_consistency_predicate,
 )
 from feedbax.orchestration.events import normalize_serialized_metrics
+from feedbax.training.checkpoint_errors import CheckpointCustodyError
+from feedbax.training.model_checkpoint import (
+    MODEL_TREE_MEDIA_TYPE,
+    MODEL_TREE_SERIALIZER,
+    SemanticModelSlot,
+    SemanticModelWriter,
+    semantic_model_member_files,
+)
 from feedbax.training.worker_validation import resolve_execution_mapping
 
 
@@ -321,10 +329,6 @@ class _FrozenList(list[Any]):
         return copied
 
 
-class CheckpointCustodyError(ValueError):
-    """Base class for checkpoint custody failures."""
-
-
 def _validate_program_step_units(
     coordinate: ProgressCoordinate,
     metadata: Mapping[str, Any],
@@ -468,7 +472,11 @@ def _published_checkpoint_set(
             name=slot.slot,
             state_type=slot.role,
             array_structure_id=slot.structural_abi_fingerprint.fingerprint_sha256,
-            codec_schema_id="feedbax.training.checkpoint_custody.pickle",
+            codec_schema_id=(
+                MODEL_TREE_SERIALIZER.removesuffix(".v1")
+                if slot.media_type == MODEL_TREE_MEDIA_TYPE
+                else "feedbax.training.checkpoint_custody.pickle"
+            ),
             codec_schema_version=_supported_slot_serializer(slot),
             blob=BlobRef(digest=slot.sha256, size_bytes=slot.size_bytes),
         )
@@ -700,6 +708,11 @@ def _publish_checkpoint_content(
         else:
             member = source
         members[(transaction_prefix / slot.relative_path).as_posix()] = member
+        if slot.media_type == MODEL_TREE_MEDIA_TYPE:
+            for relative in semantic_model_member_files(slot, _read_blob(slot, source)):
+                members[(transaction_prefix / relative.as_posix()).as_posix()] = (
+                    manifest_path.parent / relative
+                )
 
     tree_ref, content_root = provider.publish_rooted_tree(
         members,
@@ -1277,6 +1290,15 @@ def produce_checkpoint_custody_archive(
         payload.append(
             (f"checkpoint/{PurePosixPath(manifest_name).parent / slot_name}", blob_path, blob_bytes)
         )
+        if slot.media_type == MODEL_TREE_MEDIA_TYPE:
+            for relative, ref in semantic_model_member_files(slot, blob_bytes).items():
+                member_path = transaction_dir / relative
+                raw = _read_archive_source(member_path, context="semantic model member")
+                if len(raw) != ref.size_bytes or sha256_bytes(raw) != ref.sha256:
+                    raise CheckpointReferenceResolutionError(f"semantic model member {relative} changed")
+                payload.append(
+                    (f"checkpoint/{PurePosixPath(manifest_name).parent / relative}", member_path, raw)
+                )
     checkpoint_set_path = transaction_dir / CHECKPOINT_SET_NAME
     checkpoint_set_bytes = _read_archive_source(
         checkpoint_set_path,
@@ -1656,13 +1678,15 @@ def materialize_checkpoint_custody_archive(
                 "checkpoint archive documents must already use current schemas"
             )
         manifest = resolved.manifest
+        transaction_dir = staging / PurePosixPath(expected_parent_ref.uri).parent
         expected_names = {
             f"checkpoint/{LATEST_POINTER_NAME}",
             f"checkpoint/{_canonical_archive_relative_path(expected_parent_ref.uri, context='ParentRef uri')}",
             f"checkpoint/{PurePosixPath(expected_parent_ref.uri).parent / CHECKPOINT_SET_NAME}",
             *(
-                f"checkpoint/{PurePosixPath(expected_parent_ref.uri).parent / _canonical_archive_relative_path(slot.relative_path, context='slot relative_path')}"
+                f"checkpoint/{path.relative_to(staging).as_posix()}"
                 for slot in manifest.slots
+                for path in checkpoint_slot_files(transaction_dir, slot)
             ),
         }
         if payload_names != expected_names:
@@ -2241,7 +2265,7 @@ def _resolve_checkpoint_custody_ref(
             allowed_root=root_path,
         )
         try:
-            value = _deserialize_checkpoint_slot(slot, blob_path)
+            value = _deserialize_checkpoint_slot(slot, transaction_dir, blob_path=blob_path)
         except (CheckpointIntegrityError, CheckpointCompatibilityError, OSError) as exc:
             raise CheckpointReferenceResolutionError(str(exc)) from exc
         try:
@@ -2358,7 +2382,7 @@ def _authenticate_checkpoint_custody_bytes(
     slots_by_name = _validate_checkpoint_transaction_integrity_records(manifest)
     transaction_parts = manifest_parts[:-1]
     for slot in slots_by_name.values():
-        if slot.media_type != "application/x-python-pickle":
+        if slot.media_type not in {"application/x-python-pickle", MODEL_TREE_MEDIA_TYPE}:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {slot.slot!r} has unsupported media_type {slot.media_type!r}"
             )
@@ -2375,6 +2399,14 @@ def _authenticate_checkpoint_custody_bytes(
             raise CheckpointReferenceResolutionError(f"checkpoint slot {slot.slot!r} size mismatch")
         if sha256_bytes(blob_bytes) != slot.sha256:
             raise CheckpointReferenceResolutionError(f"checkpoint slot {slot.slot!r} hash mismatch")
+        if slot.media_type == MODEL_TREE_MEDIA_TYPE:
+            for relative, member in semantic_model_member_files(slot, blob_bytes).items():
+                raw = _read_checkpoint_custody_member(
+                    root_descriptor, (*transaction_parts, *relative.parts),
+                    context=f"semantic model member {relative}",
+                )
+                if len(raw) != member.size_bytes or sha256_bytes(raw) != member.sha256:
+                    raise CheckpointReferenceResolutionError(f"semantic model member {relative} changed")
 
     return AuthenticatedCheckpointTransaction(
         parent_ref=_immutable_model_snapshot(ref),
@@ -2677,7 +2709,7 @@ def _resolve_checkpoint_slot_path(
     transaction_dir: Path,
     allowed_root: Path,
 ) -> Path:
-    if slot.media_type != "application/x-python-pickle":
+    if slot.media_type not in {"application/x-python-pickle", MODEL_TREE_MEDIA_TYPE}:
         raise CheckpointReferenceResolutionError(
             f"checkpoint slot {slot.slot!r} has unsupported media_type {slot.media_type!r}"
         )
@@ -3257,6 +3289,7 @@ def write_checkpoint_transaction(
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
     content_provider: ArtifactBlobProvider | None = None,
+    semantic_model: SemanticModelWriter | None = None,
 ) -> CheckpointWriteResult:
     """Write one atomic multi-slot checkpoint transaction and publish latest.
 
@@ -3314,15 +3347,26 @@ def write_checkpoint_transaction(
                 materialized_axes,
                 error_cls=CheckpointCompatibilityError,
             )
-            blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-            blob_sha256 = sha256_bytes(blob_bytes)
-            blob_size_bytes = len(blob_bytes)
-            blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
-            _write_bytes_atomic(blob_path, blob_bytes)
-            # The serialized payload is durable on disk now; release it before
-            # hashing leaves so the two payload-sized buffers never coexist.
-            del blob_bytes
+            media_type = "application/x-python-pickle"
+            metadata_for_slot = dict(spec.metadata)
+            if spec.slot == "model" and semantic_model is not None:
+                relative, tree, encoding = semantic_model.publish(tmp_dir, value)
+                blob_sha256, blob_size_bytes = tree.sha256, tree.size_bytes
+                media_type = MODEL_TREE_MEDIA_TYPE
+                metadata_for_slot["semantic_model"] = encoding
+            else:
+                blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+                blob_sha256 = sha256_bytes(blob_bytes)
+                blob_size_bytes = len(blob_bytes)
+                relative = Path("blobs", f"{spec.slot}-{blob_sha256}.pkl")
+                _write_bytes_atomic(tmp_dir / relative, blob_bytes)
+                del blob_bytes
             integrity = _slot_integrity_records(value)
+            structural_abi = integrity.structural_abi_fingerprint
+            if media_type == MODEL_TREE_MEDIA_TYPE:
+                structural_abi = structural_abi.model_copy(update={
+                    "environment_provenance": _serializer_versions(MODEL_TREE_SERIALIZER),
+                })
             population = _population_record(
                 spec.slot,
                 value,
@@ -3344,19 +3388,20 @@ def write_checkpoint_transaction(
                 slot=spec.slot,
                 role=role,
                 required=spec.required,
-                relative_path=str(blob_path.relative_to(tmp_dir)),
+                media_type=media_type,
+                relative_path=relative.as_posix(),
                 sha256=blob_sha256,
                 size_bytes=blob_size_bytes,
                 coordinate=_checkpoint_coordinate(
                     (slot_coordinates or {}).get(spec.slot, coordinate),
                     resolved_axes,
                 ),
-                structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+                structural_abi_fingerprint=structural_abi,
                 semantic_abi=semantic_abis[spec.slot],
                 content_digest=content_digest,
                 materialized_axes=materialized_axes,
                 population=population,
-                metadata=dict(spec.metadata),
+                metadata=metadata_for_slot,
             )
             slot_records.append(slot_record)
             slot_digests.append(content_digest)
@@ -3518,13 +3563,7 @@ def bind_published_checkpoint_content(
     authenticated = authenticate_checkpoint_custody_ref(
         _checkpoint_latest_parent_ref(pointer), allowed_root=root,
     )
-    manifest_path, manifest = _manifest_from_latest_pointer(root, pointer)
-    if (
-        manifest.run_id != pointer.run_id
-        or manifest.completed_coordinate != pointer.completed_coordinate
-        or manifest.completed_training_batches != pointer.completed_training_batches
-    ):
-        raise CheckpointIntegrityError("Bound checkpoint disagrees with the published coordinate.")
+    manifest_path, manifest = _bound_checkpoint_manifest(root, pointer)
     checkpoint_set = load_checkpoint_set(root, pointer.transaction_id)
     latest = provider.store_object(_durable_json_bytes(
         pointer.model_dump(mode="json", exclude_none=True)
@@ -3544,6 +3583,45 @@ def bind_published_checkpoint_content(
         ),
     })
     return source, binding
+
+
+def open_published_model_slot(
+    root: Path, pointer: CheckpointLatestPointer,
+) -> SemanticModelSlot | None:
+    """Select a model from one exact publication without reading sibling slots."""
+    manifest_path, manifest = _bound_checkpoint_manifest(root, pointer)
+    slot = _validate_checkpoint_transaction_integrity_records(manifest).get("model")
+    if slot is None or slot.media_type != MODEL_TREE_MEDIA_TYPE:
+        return None
+    _supported_slot_serializer(slot)
+    return SemanticModelSlot.open(manifest_path.parent, slot)
+
+
+def _bound_checkpoint_manifest(
+    root: Path, pointer: CheckpointLatestPointer,
+) -> tuple[Path, CheckpointTransactionManifest]:
+    manifest_path, manifest = _manifest_from_latest_pointer(root, pointer)
+    if (
+        manifest.run_id != pointer.run_id
+        or manifest.completed_coordinate != pointer.completed_coordinate
+        or manifest.completed_training_batches != pointer.completed_training_batches
+    ):
+        raise CheckpointIntegrityError("Bound checkpoint disagrees with the published coordinate.")
+    return manifest_path, manifest
+
+
+def checkpoint_slot_files(
+    transaction_dir: Path, slot: CheckpointSlotBlobRef,
+) -> dict[Path, tuple[str, int]]:
+    """Return each file in a slot's exact byte closure."""
+    path = transaction_dir / slot.relative_path
+    files = {path: (slot.sha256, slot.size_bytes)}
+    if slot.media_type == MODEL_TREE_MEDIA_TYPE:
+        files.update({
+            transaction_dir / relative: (ref.sha256, ref.size_bytes)
+            for relative, ref in semantic_model_member_files(slot, _read_blob(slot, path)).items()
+        })
+    return files
 
 
 def migrate_path_backed_checkpoint(
@@ -3646,8 +3724,9 @@ def _load_checkpoint_from_pointer(
     loaded_slots: dict[str, Any] = {}
     transaction_dir = manifest_path.parent
     for slot in manifest.slots:
-        blob_path = transaction_dir / slot.relative_path
-        loaded_slots[slot.slot] = _deserialize_checkpoint_slot(slot, blob_path)
+        loaded_slots[slot.slot] = _deserialize_checkpoint_slot(
+            slot, transaction_dir, model_template=expected_slots.get("model"),
+        )
     provenance_notices, loaded_fingerprints = _validate_manifest_structural_abi(
         manifest,
         loaded_slots,
@@ -4904,7 +4983,7 @@ def _prepare_checkpoint_fork_plan(
     digest_classification = classify_checkpoint_fork_plan_derived_digests(plan, bindings)
     _raise_for_fork_digest_classifications(digest_classification.classifications)
 
-    source = _load_latest_checkpoint_transaction(source_root)
+    source = _load_latest_checkpoint_transaction(source_root, operation="fork")
     source_axes = {
         record.slot: record.materialized_axes
         for record in source.manifest.slots
@@ -5191,7 +5270,7 @@ def _fork_checkpoint_transaction_from_path(
     aliases for ``source_slot_transforms`` and ``source_transform_metadata``.
     Callers must not supply both forms.
     """
-    source = _load_latest_checkpoint_transaction(source_root)
+    source = _load_latest_checkpoint_transaction(source_root, operation="fork")
     source_axes = {
         record.slot: record.materialized_axes
         for record in source.manifest.slots
@@ -5878,15 +5957,21 @@ def materialize_checkpoint_content(
         provider.release_lease(lease_id)
 
 
-def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTransaction:
+def _load_latest_checkpoint_transaction(
+    root: str | Path, *, operation: Literal["fork", "history"],
+) -> _LoadedCheckpointTransaction:
     root_path = Path(root)
     latest = _load_latest_pointer(root_path)
     manifest_path, manifest = _manifest_from_latest_pointer(root_path, latest)
+    if operation == "fork" and any(slot.media_type == MODEL_TREE_MEDIA_TYPE for slot in manifest.slots):
+        raise CheckpointCompatibilityError(
+            "Checkpoint fork does not support semantic model trees in this candidate. "
+            "Use the exact Studio Resume or the declared chained Train initialization."
+        )
     loaded_slots: dict[str, Any] = {}
     transaction_dir = manifest_path.parent
     for slot in manifest.slots:
-        blob_path = transaction_dir / slot.relative_path
-        loaded_slots[slot.slot] = _deserialize_checkpoint_slot(slot, blob_path)
+        loaded_slots[slot.slot] = _deserialize_checkpoint_slot(slot, transaction_dir)
     provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
     return _LoadedCheckpointTransaction(
         root=root_path,
@@ -5936,7 +6021,7 @@ def _load_checkpoint_transaction_by_id(
             )
         manifest_sha256 = sha256_file(manifest_path)
         slots = {
-            slot.slot: _deserialize_checkpoint_slot(slot, manifest_path.parent / slot.relative_path)
+            slot.slot: _deserialize_checkpoint_slot(slot, manifest_path.parent)
             for slot in manifest.slots
         }
     return _LoadedCheckpointTransaction(
@@ -5967,7 +6052,7 @@ def concatenate_checkpoint_histories(
     ``parent_roots`` deliberately resolves transaction identities outside the
     manifests: local paths are deployment details, not durable artifact identity.
     """
-    newest = _load_latest_checkpoint_transaction(terminal_root)
+    newest = _load_latest_checkpoint_transaction(terminal_root, operation="history")
     reversed_segments = [newest]
     seen = {newest.manifest.transaction_id}
     while newest.manifest.segment_lineage.parent_transaction_id is not None:
@@ -6909,7 +6994,14 @@ def _validate_manifest_structural_abi(
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale{diff_suffix}"
             )
-        notice = _environment_provenance_notice(slot.slot, slot.structural_abi_fingerprint)
+        notice = _environment_provenance_notice(
+            slot.slot, slot.structural_abi_fingerprint,
+            serializer=(
+                MODEL_TREE_SERIALIZER
+                if slot.media_type == MODEL_TREE_MEDIA_TYPE
+                else CHECKPOINT_SLOT_SERIALIZER
+            ),
+        )
         if notice is not None:
             _LOGGER.warning(notice.message)
             notices.append(notice)
@@ -7261,8 +7353,10 @@ def _legacy_training_run_spec_payload(
 def _environment_provenance_notice(
     slot: str,
     fingerprint: StructuralAbiFingerprint,
+    *,
+    serializer: str = CHECKPOINT_SLOT_SERIALIZER,
 ) -> CheckpointProvenanceNotice | None:
-    current = _serializer_versions().model_dump(mode="json", exclude_none=True)
+    current = _serializer_versions(serializer).model_dump(mode="json", exclude_none=True)
     if fingerprint.environment_provenance is None:
         return CheckpointProvenanceNotice(
             code="environment_provenance_unverifiable",
@@ -7345,6 +7439,14 @@ def _validate_population_identities(
 def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
     provenance = slot.structural_abi_fingerprint.environment_provenance
     serializer = None if provenance is None else provenance.serializer
+    if slot.media_type == MODEL_TREE_MEDIA_TYPE:
+        if slot.slot != "model" or slot.role != "model" or serializer != MODEL_TREE_SERIALIZER:
+            raise CheckpointCompatibilityError("Invalid semantic model slot codec declaration")
+        return MODEL_TREE_SERIALIZER
+    if slot.media_type != "application/x-python-pickle":
+        raise CheckpointCompatibilityError(
+            f"checkpoint slot {slot.slot!r} has unsupported media_type {slot.media_type!r}"
+        )
     if serializer != CHECKPOINT_SLOT_SERIALIZER:
         raise CheckpointCompatibilityError(
             f"checkpoint slot {slot.slot!r} uses unsupported serializer {serializer!r}; "
@@ -7379,10 +7481,16 @@ def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
     return serializer
 
 
-def _deserialize_checkpoint_slot(slot: CheckpointSlotBlobRef, path: Path) -> Any:
+def _deserialize_checkpoint_slot(
+    slot: CheckpointSlotBlobRef, transaction_dir: Path, *,
+    blob_path: Path | None = None, model_template: Any = None,
+) -> Any:
     """Deserialize one hash-verified slot blob without resume transformations."""
-    _supported_slot_serializer(slot)
-    blob_bytes = _read_blob(slot, path)
+    if _supported_slot_serializer(slot) == MODEL_TREE_SERIALIZER:
+        value = SemanticModelSlot.open(transaction_dir, slot).restore(model_template)
+        _validate_decoded_slot_integrity(slot, value)
+        return value
+    blob_bytes = _read_blob(slot, blob_path or transaction_dir / slot.relative_path)
     try:
         return pickle.loads(blob_bytes)
     except _LegacyWrapperLayoutError as exc:
@@ -7987,9 +8095,9 @@ def require_checkpoint_semantic_state_equal(
         )
 
 
-def _serializer_versions() -> SerializerVersionRecord:
+def _serializer_versions(serializer: str = CHECKPOINT_SLOT_SERIALIZER) -> SerializerVersionRecord:
     return SerializerVersionRecord(
-        serializer=CHECKPOINT_SLOT_SERIALIZER,
+        serializer=serializer,
         feedbax_version=feedbax_version(),
         jax_version=getattr(jax, "__version__", None),
         equinox_version=_package_version("equinox"),

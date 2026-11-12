@@ -173,6 +173,11 @@ def _validate_digest(digest: object) -> str:
     return digest
 
 
+def content_object_relative_path(digest: str) -> Path:
+    digest = _validate_digest(digest)
+    return Path("artifacts", "sha256", digest[:2], digest)
+
+
 def _validate_size(size_bytes: object, *, field: str) -> int:
     if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
         raise ArtifactBlobReferenceError(f"{field} must be a non-negative integer")
@@ -661,10 +666,15 @@ def read_content_tree_descriptor(path: Path, tree_ref: ContentTreeRef) -> Conten
         raise ArtifactBlobReferenceError("tree_ref must be a ContentTreeRef")
     digest, expected_size = _object_identity(tree_ref.descriptor)
     raw = _read_content_object(_validate_explicit_root(path), digest, expected_size)
-    return _parse_content_tree(raw, tree_ref)
+    return decode_content_tree_descriptor(raw, tree_ref)
 
 
-def _parse_content_tree(raw: bytes, tree_ref: ContentTreeRef) -> ContentTree:
+def decode_content_tree_descriptor(raw: bytes, tree_ref: ContentTreeRef) -> ContentTree:
+    """Parse canonical content-tree bytes after checking their pinned identity."""
+    if len(raw) != tree_ref.descriptor.size_bytes or hashlib.sha256(raw).hexdigest() != (
+        tree_ref.descriptor.sha256
+    ):
+        raise ArtifactBlobIntegrityError(f"content-tree descriptor identity changed: {tree_ref.tree_id}")
     try:
         payload = strict_json_loads(raw.decode("utf-8"), ref=tree_ref.tree_id)
         tree = ContentTree.model_validate(payload)
@@ -1162,7 +1172,7 @@ class ImmutableArtifactBlobProvider:
         """Resolve and revalidate one exact role-free content-tree descriptor."""
         if not isinstance(tree_ref, ContentTreeRef):
             raise ArtifactBlobReferenceError("tree_ref must be a ContentTreeRef")
-        return _parse_content_tree(self.get_object(tree_ref.descriptor), tree_ref)
+        return decode_content_tree_descriptor(self.get_object(tree_ref.descriptor), tree_ref)
 
     def bind_manifest(
         self,
@@ -1575,7 +1585,7 @@ class ImmutableArtifactBlobProvider:
             _close_directory_chain(records)
 
     def _canonical_path(self, digest: str) -> Path:
-        return self.root / "artifacts" / "sha256" / digest[:2] / digest
+        return self.root / content_object_relative_path(digest)
 
     def _validated_reference(
         self,

@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+from shutil import copytree
 import subprocess
 import sys
 
@@ -18,6 +19,7 @@ import numpy as np
 import optax
 import pytest
 
+from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.graph import STUDIO_TASK_TIMELINE_SCHEMA_VERSION
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
@@ -28,8 +30,10 @@ from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     load_checkpoint_custody_documents,
+    open_published_model_slot,
     require_checkpoint_semantic_state_equal,
 )
+from feedbax.training.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.training.optimizers import build_optimizer
 from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
 from feedbax.web.worker import execution
@@ -138,15 +142,24 @@ def _reference_gradient(compiled, scalar_trial, slots, result, keys, grad_clip):
     return {"grad_norm": grad_norm, "max_absolute_state_error": errors}
 
 
-def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: bool) -> int:
+def _observe_worker(
+    audit_path: Path, stop_after: int, distinct_preparation: bool, legacy_writer: bool,
+) -> int:
     from feedbax import training_host_worker
-    from feedbax.training import executor
+    from feedbax.training import checkpoint_custody, executor
 
     compile_run = execution.compile_training_run
     update = StudioUpdateKernel.reported_update
     execute = executor.execute_training_run_spec
     scalar_trial = None
     pending_evidence = None
+    legacy_reads = []
+    read_blob = checkpoint_custody._read_blob
+
+    def record_legacy_read(slot, path):
+        if slot.media_type == "application/x-python-pickle":
+            legacy_reads.append(slot.slot)
+        return read_blob(slot, path)
 
     def prepare(*args, **kwargs):
         nonlocal scalar_trial
@@ -174,6 +187,7 @@ def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: boo
             "prepared_readout": _array_digests(_readout(compiled.graph)),
             "input_readout": _array_digests(_readout(model)),
             "output_readout": _array_digests(_readout(result["model"])),
+            "legacy_slot_reads": list(legacy_reads),
             "metrics": {
                 name: result[name] for name in (*_SCIENTIFIC_METRICS, "step_time_ms")
             },
@@ -207,12 +221,16 @@ def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: boo
             if completed == stop_after:
                 Path(os.environ["FEEDBAX_HOST_STOP_FILE"]).touch()
 
-        return execute(*args, **{**kwargs, "committed_update_callback": observe_commit})
+        kwargs["committed_update_callback"] = observe_commit
+        if legacy_writer:
+            kwargs.pop("semantic_model")
+        return execute(*args, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(execution, "compile_training_run", prepare)
         patch.setattr(StudioUpdateKernel, "reported_update", observe)
         patch.setattr(executor, "execute_training_run_spec", stop_at_commit)
+        patch.setattr(checkpoint_custody, "_read_blob", record_legacy_read)
         # Force an immediate first emission and one final partial interval.
         patch.setattr(training_host_worker._Events, "elapsed", lambda _events: 0.1)
         return training_host_worker.main([])
@@ -261,7 +279,9 @@ def _authored_run(*, batches=8, batch_size=1, sampled_hold=False):
     return row
 
 
-def _launch(root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=False):
+def _launch(
+    root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=False, legacy_writer=False,
+):
     control = root / job
     control.mkdir()
     log = control / "events.jsonl"
@@ -289,7 +309,10 @@ def _launch(root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=
         JAX_COMPILATION_CACHE_MAX_SIZE=str(32 * 1024 * 1024),
     )
     child = subprocess.run(
-        [sys.executable, __file__, str(audit), str(stop_after), str(int(resume is not None))],
+        [
+            sys.executable, __file__, str(audit), str(stop_after), str(int(resume is not None)),
+            str(int(legacy_writer)),
+        ],
         cwd=source, env=env, capture_output=True, text=True, timeout=30, check=False,
     )
     events = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -388,11 +411,34 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
             assert actual["metrics"][name] == expected["metrics"][name]
     for updates in (middle, suffix):
         assert all(entry["prepared_readout"] != entry["input_readout"] for entry in updates)
+        assert all(
+            set(entry["legacy_slot_reads"]) == {"optimizer", "prng", "batch_counter"}
+            for entry in updates
+        )
 
     assert second_manifest.parent_lineage[0].transaction_id == first_manifest.transaction_id
     assert last_manifest.parent_lineage[0].transaction_id == second_manifest.transaction_id
     for name in _STATE:
         require_checkpoint_semantic_state_equal(reference, last_manifest, name)
+    model_refs = [
+        next(slot for slot in manifest.slots if slot.slot == "model")
+        for manifest in (first_manifest, reference, last_manifest)
+    ]
+    assert all(slot.media_type == MODEL_TREE_MEDIA_TYPE for slot in model_refs)
+    assert model_refs[1].sha256 == model_refs[2].sha256
+    assert reference.transaction_id != last_manifest.transaction_id
+    assert model_refs[1].metadata == model_refs[2].metadata
+
+    model_only = copytree(first["checkpoint_root"], tmp_path / "model-only")
+    pointer = CheckpointLatestPointer.model_validate(first["pointer"])
+    transaction = (model_only / pointer.manifest_relative_path).parent
+    for slot in first_manifest.slots:
+        if slot.slot != "model":
+            (transaction / slot.relative_path).unlink()
+    (model_only / "latest.json").unlink()
+    selected = open_published_model_slot(model_only, pointer)
+    assert selected is not None
+    assert _array_digests(selected.restore()) == prefix[-1]["after"]["model"]
     assert first_receipt.read_bytes() == first_bytes
     assert second_receipt.read_bytes() == second_bytes
     for events, updates, start in (
@@ -406,6 +452,23 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
     rejected = _launch(tmp_path, "old-seed-zero-start", legacy, fail=True)
     assert rejected["error"]["code"] == "invalid_request"
     assert "Create a new Studio request" in rejected["error"]["message"]
+
+    old, old_manifest, _, _, _ = _launch(
+        tmp_path, "legacy-writer", row.spec, stop_after=6, legacy_writer=True,
+    )
+    assert next(slot for slot in old_manifest.slots if slot.slot == "model").media_type == (
+        "application/x-python-pickle"
+    )
+    _, migrated, after_legacy, _, _ = _launch(
+        tmp_path, "legacy-reader", row.spec, resume=old,
+    )
+    assert set(after_legacy[0]["legacy_slot_reads"]) == set(_STATE)
+    assert after_legacy[0]["after"] == whole[6]["after"]
+    assert next(slot for slot in migrated.slots if slot.slot == "model").media_type == (
+        MODEL_TREE_MEDIA_TYPE
+    )
+    for name in _STATE:
+        require_checkpoint_semantic_state_equal(reference, migrated, name)
 
 
 def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes(tmp_path):
@@ -448,4 +511,6 @@ def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes
 
 
 if __name__ == "__main__":
-    raise SystemExit(_observe_worker(Path(sys.argv[1]), int(sys.argv[2]), bool(int(sys.argv[3]))))
+    raise SystemExit(_observe_worker(
+        Path(sys.argv[1]), int(sys.argv[2]), bool(int(sys.argv[3])), bool(int(sys.argv[4])),
+    ))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.graph import GraphSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -22,10 +22,4 @@ def import_mujoco_asset(data: bytes) -> ContentObjectRef:
 
 def model_artifact_provider(graph: GraphSpec) -> ImmutableArtifactBlobProvider | None:
     """Resolve the same Studio content store for project and training compilers."""
-    pending = list((graph.subgraphs or {}).values())
-    while pending:
-        interior = pending.pop()
-        if isinstance(interior, AcausalGraphSpec) and interior.mujoco_asset is not None:
-            return _provider()
-        pending.extend((interior.subgraphs or {}).values())
-    return None
+    return _provider() if next(model_asset_refs(graph), None) is not None else None
