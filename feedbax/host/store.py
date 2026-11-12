@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.host.checkpoint_selection import (
+    EVALUATION_ENTRYPOINT, finite_coordinates, selector_sha256, verify_selected_publication,
+)
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
@@ -92,7 +95,7 @@ JSON_COLUMNS = ("data", "phase", "progress", "checkpoint", "outcome")
 
 class _CompletionRejection(NamedTuple):
     candidate_job_id: str
-    stage: Literal["continuation", "completion"]
+    stage: Literal["continuation", "completion", "checkpoint_selection"]
     message: str
 
 
@@ -100,8 +103,13 @@ def dump(value, *, sort_keys: bool = False) -> str:
     return json.dumps(value, sort_keys=sort_keys, separators=(",", ":"), allow_nan=False)
 
 
-def _train_binding_conflicts(payload: dict, stored_launch: str, *, live: bool = False) -> bool:
-    stored = json.loads(stored_launch)["payload"]
+def _canonical_binding_conflicts(
+    launch: dict, stored_launch: str, *, evaluate: bool, live: bool = False,
+) -> bool:
+    recorded = json.loads(stored_launch)
+    if evaluate:
+        return dump(launch, sort_keys=True) != dump(recorded, sort_keys=True)
+    payload, stored = launch["payload"], recorded["payload"]
     if payload.get("canonical_request") is None and stored.get("canonical_request") is None:
         return False
     if live:
@@ -173,6 +181,8 @@ class Store:
         elif kind in ("progress", "phase"):
             self.db.execute(f"UPDATE jobs SET {kind}=? WHERE id=?", (dump(data), job_id))
         elif kind == "publication":
+            if self.get(job_id)["state"] in TERMINAL_STATES:
+                return
             key = require_text(data.get("key"), "publication key")
             self.db.execute("INSERT OR IGNORE INTO publications VALUES (?,?)", (job_id, key))
             self.db.execute(
@@ -255,31 +265,55 @@ class Store:
                 self._validate_job(job)
                 payload = job["launch"]["payload"]
                 canonical_request = payload.get("canonical_request")
+                evaluate = job["request"].startswith("evaluate:") and canonical_request is not None
+                input_path = "/inputs/subject" if evaluate else "/inputs/checkpoint"
                 if canonical_request is not None and not isinstance(canonical_request, dict):
-                    raise HostError("invalid_request", "Invalid canonical Train binding.")
+                    raise HostError("invalid_request", "Invalid canonical request binding.")
                 if canonical_request is not None and (
                     payload.get("project_id"), payload.get("request_id")
                 ) != (job["project"], job["request"]):
-                    raise HostError("invalid_request", "Canonical Train launch identity differs from its job.")
+                    raise HostError("invalid_request", "Canonical launch identity differs from its job.")
                 for edge in job["edges"]:
                     completion = edge.get("authenticated_completion", False)
                     if type(completion) is not bool or (
                         completion and (edge["publication"] is not None or not allow_completion)
                     ):
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
+                if job["launch"].get("warm_entrypoint") == EVALUATION_ENTRYPOINT:
+                    try:
+                        selected = finite_coordinates(payload["coordinates"])
+                        edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
+                        if len(edges) != 1 or job["continues"] is not None:
+                            raise ValueError("Private evaluation requires one exact producer edge.")
+                        producer = self.get(aliases.get(edges[0]["job_id"], edges[0]["job_id"]))
+                        source = json.loads(producer["launch"])["payload"] if producer is not None else {}
+                        if (
+                            producer is None or producer["project"] != job["project"]
+                            or producer["request"] != payload["producer_request"]
+                            or source.get("manifest_root") != payload["manifest_root"]
+                            or source.get("canonical_request") is None
+                            or not set(selected) <= set(source.get("checkpoint_catalog", ()))
+                        ):
+                            raise ValueError("Private evaluation differs from its admitted Train catalogue.")
+                    except (ValueError, KeyError, TypeError) as exc:
+                        raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
                 checkpoint_parent = None
+                if evaluate and (
+                    checkpoint is None or job["continues"] is not None or len(job["edges"]) != 1
+                ):
+                    raise HostError("invalid_request", f"{input_path}: Evaluate requires a Train subject.")
                 if checkpoint is not None and job["continues"] is None:
                     edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
                     if len(edges) != 1 or not isinstance(checkpoint, dict):
-                        raise HostError("invalid_request", "Train requires one authenticated checkpoint edge.")
+                        raise HostError("invalid_request", f"{input_path}: requires one authenticated checkpoint edge.")
                     parent_id = edges[0]["job_id"]
                     checkpoint_parent = aliases.get(parent_id, parent_id)
                     source = self.get(checkpoint_parent)
                     if source is None:
                         results.append({
                             "run_key": run_key, "job_id": None, "disposition": "rejected",
-                            "reason": "/inputs/checkpoint: the selected predecessor was not admitted",
+                            "reason": f"{input_path}: the selected predecessor was not admitted",
                         })
                         continue
                     source_payload = json.loads(source["launch"])["payload"]
@@ -289,7 +323,7 @@ class Store:
                         or source_payload.get("manifest_root") != payload.get("manifest_root")
                         or source_payload.get("canonical_request") is None
                     ):
-                        raise HostError("invalid_request", "Train checkpoint edge differs from its canonical input.")
+                        raise HostError("invalid_request", f"{input_path}: checkpoint edge differs from its canonical input.")
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
@@ -301,16 +335,18 @@ class Store:
                         raise HostError(
                             "job_id_conflict", "Job id already names a different request."
                         )
-                    if _train_binding_conflicts(payload, by_id["launch"]) or (
+                    if _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
                         checkpoint_parent is not None
                         and self._completion_parent(by_id["id"]) != checkpoint_parent
                     ):
                         raise HostError(
-                            "job_id_conflict", "Job id already names a different Train binding."
+                            "job_id_conflict", "Job id already names a different canonical binding."
                         )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
-                    if _train_binding_conflicts(payload, live["launch"], live=True) or (
+                    if _canonical_binding_conflicts(
+                        job["launch"], live["launch"], evaluate=evaluate, live=True,
+                    ) or (
                         checkpoint_parent is not None
                         and self._completion_parent(live["id"]) != checkpoint_parent
                     ):
@@ -318,7 +354,11 @@ class Store:
                             "run_key": run_key,
                             "job_id": None,
                             "disposition": "rejected",
-                            "reason": "The live Train request has a different store or execution binding.",
+                            "reason": (
+                                f"{input_path}: the live Evaluate has a different execution binding."
+                                if evaluate else
+                                "The live Train request has a different store or execution binding."
+                            ),
                         })
                         continue
                     if job["continues"] is not None and live["continues"] != job["continues"]:
@@ -709,10 +749,81 @@ class Store:
         verify_completion_files(completion)
         return completion, None
 
+    def _finite_checkpoint_members(
+        self, path: tuple[sqlite3.Row, ...], coordinates: tuple[int, ...],
+    ) -> tuple[list[int], list[dict]]:
+        """Collect one path through exact ancestor recovery pointers."""
+        found = {}
+        keys = [f"checkpoint:{coordinate}" for coordinate in coordinates]
+        placeholders = ",".join("?" for _ in keys)
+        for index, attempt in enumerate(path):
+            boundary = (
+                json.loads(path[index + 1]["launch"])["payload"]["resume"]
+                if index + 1 < len(path) else None
+            )
+            if index + 1 < len(path) and boundary is None:
+                continue
+            upper = boundary["completed_updates"] if boundary is not None else None
+            resume = json.loads(attempt["launch"])["payload"].get("resume")
+            lower = resume["completed_updates"] if resume is not None else 0
+            rows = self.db.execute(
+                f"""SELECT cursor, data FROM events WHERE job=? AND kind='publication'
+                    AND json_extract(data, '$.key') IN ({placeholders})
+                    AND cursor < COALESCE(
+                        (SELECT MIN(cursor) FROM events WHERE job=? AND kind='terminal'),
+                        9223372036854775807
+                    ) ORDER BY cursor""",
+                (attempt["id"], *keys, attempt["id"]),
+            )
+            for row in rows:
+                publication = json.loads(row["data"])
+                coordinate = int(publication["key"].split(":")[1])
+                if coordinate <= lower or (upper is not None and (
+                    coordinate > upper
+                    or (coordinate == upper and publication.get("checkpoint") != boundary)
+                )):
+                    continue
+                previous = found.get(coordinate)
+                if previous is not None:
+                    previous_attempt, previous_publication, _ = previous
+                    if (
+                        previous_attempt["id"] != attempt["id"]
+                        or previous_publication.get("checkpoint") != publication.get("checkpoint")
+                        or previous_publication.get("checkpoint_product") != publication.get("checkpoint_product")
+                    ):
+                        raise CompletionFileError(f"Ambiguous checkpoint publication at batch {coordinate}.")
+                    continue
+                found[coordinate] = (attempt, publication, row["cursor"])
+        missing = [coordinate for coordinate in coordinates if coordinate not in found]
+        if missing:
+            return missing, []
+        members = []
+        for coordinate in coordinates:
+            attempt, publication, cursor = found[coordinate]
+            binding = self.db.execute(
+                "SELECT data FROM events WHERE job=? AND kind='binding' ORDER BY cursor LIMIT 1",
+                (attempt["id"],),
+            ).fetchone()
+            if binding is None:
+                raise CompletionFileError("Checkpoint publication has no admitted binding event.")
+            launch = json.loads(attempt["launch"])["payload"]
+            if "checkpoint_product_error" in publication:
+                raise CompletionFileError(publication["checkpoint_product_error"])
+            digest = json.loads(binding[0]).get("binding_sha256")
+            if not isinstance(digest, str):
+                raise CompletionFileError("Checkpoint publication lacks a valid binding digest.")
+            member = verify_selected_publication(
+                publication,
+                attempt=attempt["id"], project=attempt["project"], request=attempt["request"],
+                root=launch["manifest_root"], binding_sha256=digest,
+            )
+            members.append(member | {"publication_cursor": cursor})
+        return [], members
+
     def _completion_candidate(
-        self, anchor: str
+        self, anchor: str, coordinates: tuple[int, ...] | None = None,
     ) -> tuple[dict | None, dict | None, list[_CompletionRejection]]:
-        """Select the first authenticated success in admission order.
+        """Select an authenticated final product or one exact finite publication set.
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
         """
@@ -725,6 +836,7 @@ class Store:
             (anchor,),
         )
         resume_checkpoints: dict[str, str] = {}
+        paths: dict[str, tuple[sqlite3.Row, ...]] = {}
         pending = False
         rejections: list[_CompletionRejection] = []
         missing = None
@@ -750,8 +862,30 @@ class Store:
                     ))
                     continue
 
+            if coordinates is not None:
+                prior = paths.get(attempt["continues"], ()) if attempt_id != anchor else ()
+                path = (*prior, attempt)
+                paths[attempt_id] = path
+                try:
+                    absent, members = self._finite_checkpoint_members(path, coordinates)
+                except CompletionFileError as error:
+                    rejections.append(_CompletionRejection(attempt_id, "checkpoint_selection", str(error)))
+                else:
+                    if members:
+                        return {
+                            "dependency_job_id": anchor,
+                            "checkpoint_selection": {
+                                "requested": list(coordinates),
+                                "selector_sha256": selector_sha256(anchor, coordinates),
+                                "lineage_tip": attempt_id,
+                                "lineage": [member["id"] for member in path],
+                                "members": members,
+                            },
+                        }, None, rejections
+                    missing = f"Producer closed without checkpoint coordinates {absent}."
+
             state = attempt["state"]
-            if state == "succeeded":
+            if state == "succeeded" and coordinates is None:
                 try:
                     completion, message = self._completed_product(attempt)
                 except CompletionFileError as error:
@@ -817,9 +951,15 @@ class Store:
                 if job["state"] != "queued":
                     continue
                 anchor = edge["parent"]
-                if anchor not in candidates:
-                    candidates[anchor] = self._completion_candidate(anchor)
-                binding, error, rejections = candidates[anchor]
+                launch = json.loads(job["launch"])
+                coordinates = (
+                    finite_coordinates(launch["payload"]["coordinates"])
+                    if launch.get("warm_entrypoint") == EVALUATION_ENTRYPOINT else None
+                )
+                key = anchor, coordinates
+                if key not in candidates:
+                    candidates[key] = self._completion_candidate(anchor, coordinates)
+                binding, error, rejections = candidates[key]
                 self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:
                     self.finished(job, {"outcome": "blocked", "error": error})

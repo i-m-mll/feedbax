@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping
 from math import isfinite
 from pathlib import Path
 
+from pydantic import Field, field_validator
+
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
 from feedbax.contracts.request_identity import decode_request
@@ -24,6 +26,7 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
 )
+from feedbax.host.checkpoint_selection import finite_coordinates
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.protocol import infer_task_n_steps
 
@@ -45,6 +48,12 @@ class BoundStudioTrainingJobInput(StudioTrainingJobInput):
 
     canonical_request: CanonicalTrainRequestBinding | None = None
     checkpoint_input: PinnedTrainCheckpoint | None = None
+    checkpoint_catalog: tuple[int, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+    @field_validator("checkpoint_catalog", mode="before")
+    @classmethod
+    def _validate_catalog(cls, value):
+        return finite_coordinates(value) if value else ()
 
 
 def _decode_train(

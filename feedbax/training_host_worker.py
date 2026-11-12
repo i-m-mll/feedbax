@@ -195,6 +195,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.host.completion import CompletionFileError
     from feedbax.job_completion import (
         CompletionUnavailable,
+        attest_checkpoint_publication,
         training_binding_path,
         verify_bound_training_completion,
         verify_training_completion,
@@ -442,15 +443,19 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                 completed_updates=completed,
                 pointer=write.latest_pointer,
             )
-            events.append(
-                "publication",
-                {
-                    "key": f"checkpoint:{completed}",
-                    "checkpoint": checkpoint.model_dump(mode="json"),
-                    "elapsed_seconds": events.elapsed(),
-                },
-                sync=True,
-            )
+            publication = {
+                "key": f"checkpoint:{completed}",
+                "checkpoint": checkpoint.model_dump(mode="json"),
+                "elapsed_seconds": events.elapsed(),
+            }
+            if completed in launch.checkpoint_catalog:
+                try:
+                    publication["checkpoint_product"] = attest_checkpoint_publication(
+                        launch=launch, binding_sha256=binding_sha256, checkpoint=checkpoint, write=write,
+                    )
+                except (ValueError, OSError) as exc:
+                    publication["checkpoint_product_error"] = str(exc)
+            events.append("publication", publication, sync=True)
             events.checkpoint = checkpoint
 
         def stop_before_update() -> bool:

@@ -20,6 +20,7 @@ from feedbax._secure_fs import (
     open_existing_file,
     recheck_directory_chain,
 )
+from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import default_manifest_root
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.intent_diff import first_request_change
@@ -46,17 +47,19 @@ from feedbax.contracts.jobs import (
     StudioTrainCheckpointSource,
 )
 from feedbax.contracts.manifest import (
+    OverridePatch,
     TrainingRunManifest,
     canonical_manifest_path,
     load_manifest_bytes,
     training_run_manifest_id,
 )
-from feedbax.contracts.project_plan import ProjectPlan, RunKey
+from feedbax.contracts.project_plan import PlannedRun, ProjectPlan, RunKey
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import RequestId
+from feedbax.contracts.request_refs import ProductRef, RequestId
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
+from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, finite_coordinates
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -72,6 +75,7 @@ from feedbax.studio.training_requests import (
 )
 
 if TYPE_CHECKING:
+    from feedbax.studio.canonical_evaluate import EvaluationResult
     from feedbax.web.services.project_folder import ProjectFolderService, SettledProjectPlan
 
 
@@ -111,6 +115,7 @@ class PlanJobAttempt:
     binding_sha256: str | None = None
     continues: str | None = None
     checkpoint_source: StudioTrainCheckpointSource | None = None
+    output_size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -131,10 +136,12 @@ class JobService:
         registries: ApplicationRegistryBundle,
         *,
         bootstrap_modules: tuple[str, ...] = (),
+        enable_evaluation_candidate: bool = False,
     ) -> None:
         self.host = host
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
+        self._enable_evaluation_candidate = enable_evaluation_candidate
         self.manifest_root = default_manifest_root().resolve()
         self._training_worker = Launch(
             argv=(sys.executable,),
@@ -239,8 +246,9 @@ class JobService:
         *,
         run_keys: Sequence[RunKey],
         token: str,
+        checkpoint_catalog: tuple[int, ...] = (),
     ) -> StudioJobSubmission:
-        """Admit selected Train rows from a server-issued saved Plan."""
+        """Admit selected rows from a server-issued saved Plan."""
         selected = {
             plan_run_key(key.variant, key.step, key.row): key
             for key in run_keys
@@ -249,8 +257,12 @@ class JobService:
             raise JobConflict("Plan admission requires selected runs and a submission token.")
         project = reviewed.project_id
         before = {run.key: run for run in reviewed.plan.runs}
+        kinds = {before[key].kind for key in selected.values() if key in before}
+        evaluate = self._enable_evaluation_candidate and kinds == {"evaluate"}
+        if self._enable_evaluation_candidate and {"train", "evaluate"} <= kinds:
+            raise JobConflict("/runs: submit the Train and Evaluate rows in separate actions.")
         command = {
-            "kind": "canonical_train",
+            "kind": "canonical_evaluate" if evaluate else "canonical_train",
             "reviewed_revision": reviewed.revision,
             "semantic_root": reviewed.semantic_root,
             "store": str(reviewed.store_path),
@@ -259,6 +271,11 @@ class JobService:
                 for name, key in selected.items()
             },
         }
+        if checkpoint_catalog:
+            if evaluate:
+                raise JobConflict("/inputs/subject/checkpoint: the candidate supports terminal last.")
+            checkpoint_catalog = finite_coordinates(checkpoint_catalog)
+            command["checkpoint_catalog"] = list(checkpoint_catalog)
         if previous := self._retry(token, project=project, continues=None, command=command):
             return previous
 
@@ -273,6 +290,39 @@ class JobService:
             store = ImmutableArtifactBlobProvider(current.store_path)
             for name, key in selected.items():
                 old, run = before.get(key), after.get(key)
+                if old is not None and old.kind == "evaluate":
+                    if not evaluate:
+                        items[name] = _rejected(
+                            name, "cannot_run /evaluation_type: Evaluate activation is held."
+                        )
+                        continue
+                    if run is None:
+                        items[name] = _rejected(name, "/runs: the reviewed Evaluate row is no longer runnable.")
+                        continue
+                    if old.request_id != run.request_id:
+                        path = _changed_request_path(
+                            reviewed.plan, old.request_id, current.plan, run.request_id,
+                        )
+                        items[name] = _rejected(name, f"The selected Evaluate request changed at {path}.")
+                        continue
+                    if run.requires:
+                        items[name] = _rejected(name, "cannot_run /requires: Evaluate has unresolved capabilities.")
+                        continue
+                    data = _plan_run_data(name, run)
+                    try:
+                        item, checkpoint = self._evaluation_item(
+                            project, run.request_id, current.plan.requests[run.request_id], data, store,
+                        )
+                    except (ValueError, KeyError) as error:
+                        items[name] = _rejected(name, f"cannot_run {error}")
+                        continue
+                    planned = run.inputs.get("subject")
+                    if planned is None or planned.member.reference != checkpoint:
+                        raise ValueError("The saved Plan disagrees with the encoded Evaluate subject.")
+                    checkpoints[name] = (planned.producer, checkpoint.request_id)
+                    runs[name] = data | {"request_id": run.request_id}
+                    items[name] = item
+                    continue
                 if old is None or old.kind != "train":
                     items[name] = _rejected(name, "The reviewed row is not a runnable Train request.")
                     continue
@@ -280,7 +330,7 @@ class JobService:
                     items[name] = _rejected(name, "The reviewed Train row is no longer runnable.")
                     continue
                 if old.request_id != run.request_id:
-                    path = _changed_train_path(reviewed.plan, old.request_id, current.plan, run.request_id)
+                    path = _changed_request_path(reviewed.plan, old.request_id, current.plan, run.request_id)
                     items[name] = _rejected(name, f"The selected Train request changed at {path}.")
                     continue
                 if run.requires:
@@ -302,16 +352,11 @@ class JobService:
                     if planned is None or planned.member.reference != binding.checkpoint:
                         raise ValueError("The saved Plan disagrees with the encoded checkpoint input.")
                     checkpoints[name] = (planned.producer, binding.checkpoint.request_id)
-                data = {
-                    "run_key": name,
-                    "stage_id": key.step,
-                    "scenario_id": key.variant,
-                    "label": run.label or key.step,
-                    "coordinates": {axis: coordinate.value for axis, coordinate in run.coordinates.items()},
-                }
+                data = _plan_run_data(name, run)
                 runs[name] = data | {"request_id": run.request_id}
                 items[name] = self._training_item(
-                    project, run.request_id, spec, data, current.store_path, canonical_request=binding
+                    project, run.request_id, spec, data, current.store_path,
+                    canonical_request=binding, checkpoint_catalog=checkpoint_catalog,
                 )
             order = list(selected)
             if checkpoints:
@@ -330,7 +375,10 @@ class JobService:
                     assert job is not None
                     if anchor is None:
                         items[name] = _rejected(
-                            name, "/inputs/checkpoint: select an unambiguous admitted Train predecessor"
+                            name,
+                            "cannot_run /inputs/subject: select an unambiguous admitted Train subject"
+                            if evaluate else
+                            "/inputs/checkpoint: select an unambiguous admitted Train predecessor",
                         )
                         runs.pop(name)
                     else:
@@ -340,7 +388,7 @@ class JobService:
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
             }
-            if runs:
+            if runs and not evaluate:
                 requests = {
                     plan_run_key(key.variant, key.step, key.row): run.request_id
                     for key, run in after.items()
@@ -362,6 +410,40 @@ class JobService:
             admitted, project=project, continues=None, command=command
         )
 
+    def admit_private_checkpoint_evaluation(
+        self, producer: str, coordinates: tuple[int, ...], *, evaluate_update: int,
+        variation: OverridePatch, token: str,
+    ) -> str:
+        """Admit the private CPU qualification over one explicit Train lineage."""
+        from feedbax.training.private_evaluation import PrivateEvaluationRequest
+
+        rows = self.host.jobs(job_id=producer, include_launch=True)
+        if not rows or not _is_studio_job(rows[0]):
+            raise JobNotFound(producer)
+        source = rows[0]
+        root = source["launch"]["payload"]["manifest_root"]
+        request = PrivateEvaluationRequest(
+            manifest_root=Path(root), producer=producer, producer_request=source["request"],
+            coordinates=finite_coordinates(coordinates), evaluate_update=evaluate_update,
+            variation=variation,
+        )
+        payload = request.model_dump(mode="json")
+        request_id = "private-checkpoint-evaluation:" + canonical_sha256(payload)
+        record = {"kind": "private_checkpoint_evaluation", "request": request_id}
+        item = AdmissionItem(
+            run_key=request_id,
+            job=Job(
+                id=uuid4().hex, project=source["project"], request=request_id,
+                launch=replace(self._training_worker, warm_entrypoint=EVALUATION_ENTRYPOINT, payload=payload),
+                data={"private_evaluation_root": root},
+                edges=(Edge(producer, authenticated_completion=True),),
+            ),
+        )
+        admitted = self._admit(token, [item], record)
+        if admitted["record"] != record:
+            raise JobConflict("This submission token belongs to another action.")
+        return admitted["items"][0]["job_id"]
+
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         anchors = [
             row["id"]
@@ -372,6 +454,61 @@ class JobService:
         ]
         return anchors[0] if len(anchors) == 1 else None
 
+    def _evaluation_item(
+        self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
+        store: ImmutableArtifactBlobProvider,
+    ) -> tuple[AdmissionItem, ProductRef]:
+        from feedbax.studio.canonical_evaluate import (
+            BoundEvaluationJobInput,
+            EvaluationRequestBinding,
+            decode_rollout_request,
+        )
+
+        _, _, checkpoint = decode_rollout_request(request_id, raw)
+        root = store.root
+        payload = BoundEvaluationJobInput(
+            project_id=project,
+            request_id=request_id,
+            manifest_root=root,
+            canonical_request=EvaluationRequestBinding(
+                request=store.store_rooted_object(raw, namespace="studio-evaluate-request"),
+                checkpoint=checkpoint,
+            ),
+        )
+        launch = replace(
+            self._training_worker,
+            warm_entrypoint="feedbax.training.evaluate_worker:main",
+            payload=payload.model_dump(mode="json"),
+        )
+        return AdmissionItem(
+            run_key=data["run_key"],
+            job=Job(
+                id=uuid4().hex, project=project, request=request_id, launch=launch,
+                data=data | {"manifest_root": str(root), "runtime": sys.executable},
+            ),
+        ), checkpoint
+
+    def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
+        """Locate an authenticated candidate result by exact project and attempt."""
+        from feedbax.studio.canonical_evaluate import EvaluationResult
+
+        if not self._enable_evaluation_candidate:
+            raise JobNotFound(job_id)
+        rows = self.host.jobs_snapshot(job_id=job_id, project=project, start_host=False)["jobs"]
+        if not rows:
+            raise JobNotFound(job_id)
+        (job,) = rows
+        if (
+            job["project"] != project or job["data"].get("manifest_root") != str(store)
+            or not job["request"].startswith("evaluate:") or job["state"] != "succeeded"
+        ):
+            raise JobNotFound(job_id)
+        result = _verified_evaluation_result(job, store)
+        if result is None:
+            raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
+        receipt, _ = result
+        return EvaluationResult(store, job_id, job["request"], receipt)
+
     def _training_item(
         self,
         project: str,
@@ -381,6 +518,7 @@ class JobService:
         root: Path,
         *,
         canonical_request: CanonicalTrainRequestBinding | None = None,
+        checkpoint_catalog: tuple[int, ...] = (),
     ) -> AdmissionItem:
         payload = BoundStudioTrainingJobInput(
             spec=spec,
@@ -389,6 +527,7 @@ class JobService:
             manifest_root=root,
             bootstrap_modules=self.bootstrap_modules,
             canonical_request=canonical_request,
+            checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
         return AdmissionItem(
             run_key=data["run_key"],
@@ -487,7 +626,7 @@ class JobService:
     def read_plan_attempts(
         self, *, project: str, store: Path, requests: Collection[RequestId]
     ) -> PlanJobAttempts:
-        """Read Train attempt facts at the settled store locator from one Host snapshot."""
+        """Read saved Plan attempt facts at the settled store locator from one Host snapshot."""
         manifest_root = str(store)
         key = plan_ref_key(project, manifest_root)
         snapshot = self.host.jobs_snapshot(project=project, start_host=False, record_keys=(key,))
@@ -506,8 +645,16 @@ class JobService:
             request_id = job["request"]
             if request_id not in wanted:
                 continue
+            evaluate = request_id.startswith("evaluate:")
+            if evaluate and not self._enable_evaluation_candidate:
+                continue
             succeeded = job["state"] == "succeeded"
-            receipt = _verified_training_receipt(job, store) if succeeded else None
+            size = None
+            if evaluate:
+                result = _verified_evaluation_result(job, store) if succeeded else None
+                receipt, size = result if result is not None else (None, None)
+            else:
+                receipt = _verified_training_receipt(job, store) if succeeded else None
             completion = (job.get("outcome") or {}).get("completion") or {}
             binding_sha256 = (
                 completion.get("binding_sha256")
@@ -529,6 +676,7 @@ class JobService:
                     progress, reason, receipt, binding_sha256,
                     continues=job["continues"],
                     checkpoint_source=_train_checkpoint_source(job, by_id),
+                    output_size_bytes=size,
                 )
             )
         return PlanJobAttempts(
@@ -570,6 +718,8 @@ class JobService:
             if not rows or not _is_studio_job(rows[0]):
                 raise JobNotFound(job_id)
             row = rows[0]
+            if row["request"].startswith("evaluate:"):
+                raise JobConflict("/runs: resubmit the saved Evaluate row to run it again.")
             if not _can_resume(row):
                 raise JobConflict("This run has no checkpoint to resume.")
             launch_data = row["launch"]
@@ -707,6 +857,8 @@ class JobService:
         receipt = (job.get("outcome") or {}).get("receipt")
         if not receipt:
             return False
+        if job["request"].startswith("evaluate:"):
+            return _verified_evaluation_result(job, Path(job["data"]["manifest_root"])) is not None
         path = canonical_manifest_path(
             "TrainingRunManifest", receipt["manifest_id"], root=job["data"]["manifest_root"]
         )
@@ -747,7 +899,17 @@ class JobService:
         return result
 
 
-def _changed_train_path(before: ProjectPlan, old: str, after: ProjectPlan, new: str) -> str:
+def _plan_run_data(name: str, run: PlannedRun) -> dict[str, Any]:
+    return {
+        "run_key": name,
+        "stage_id": run.key.step,
+        "scenario_id": run.key.variant,
+        "label": run.label or run.key.step,
+        "coordinates": {axis: coordinate.value for axis, coordinate in run.coordinates.items()},
+    }
+
+
+def _changed_request_path(before: ProjectPlan, old: str, after: ProjectPlan, new: str) -> str:
     earlier = decode_request(before.requests[old], before.documents.__getitem__)
     current = decode_request(after.requests[new], after.documents.__getitem__)
     return first_request_change(earlier, current).path
@@ -758,7 +920,9 @@ def _rejected(run_key: str, reason: str) -> AdmissionItem:
 
 
 def _can_resume(job: dict[str, Any]) -> bool:
-    return can_resume_attempt(job["state"], job.get("checkpoint"), job["delivery"])
+    return not job["request"].startswith("evaluate:") and can_resume_attempt(
+        job["state"], job.get("checkpoint"), job["delivery"],
+    )
 
 
 def _is_studio_job(row: dict[str, Any]) -> bool:
@@ -778,7 +942,9 @@ def _is_studio_submission(submission: dict[str, Any]) -> bool:
 def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
     record = response["record"]
     items = response["items"]
-    if (command := record.get("command")) and command.get("kind") == "canonical_train":
+    if (command := record.get("command")) and command.get("kind") in {
+        "canonical_train", "canonical_evaluate",
+    }:
         by_key = {item["run_key"]: item for item in items}
         items = [by_key[key] for key in command["requests"]]
     return StudioJobSubmission(
@@ -811,6 +977,11 @@ def _project_event(
             key: value for key, value in data.items()
             if key not in {"completion", "completion_error"}
         }
+    if kind == "publication":
+        data = {
+            key: value for key, value in data.items()
+            if key not in {"checkpoint_product", "checkpoint_product_error"}
+        }
     return StudioJobEvent(
         cursor=event["cursor"],
         job_id=event["job_id"],
@@ -824,6 +995,34 @@ def _project_event(
 
 def _seen_key(job_id: str) -> str:
     return f"activity/seen/{job_id}"
+
+
+def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobReceipt, int] | None:
+    from feedbax.studio.canonical_evaluate import read_evaluation_manifest, states_ref
+
+    try:
+        receipt = JobReceipt.model_validate((job.get("outcome") or {}).get("receipt"))
+        manifest, subject = read_evaluation_manifest(store, job["id"], job["request"], receipt)
+        (edge,) = (edge for edge in job["edges"] if edge.get("authenticated_completion"))
+        completion = edge["binding"]["completion"]
+        source = completion["receipt"]
+        (train,) = manifest.input_training_runs
+        (model,) = manifest.provenance.parents
+        pointer = completion["checkpoint"]["pointer"]
+        if (
+            not edge["satisfied"]
+            or completion["request_id"] != subject.request_id
+            or completion["project_id"] != job["project"]
+            or completion["manifest_root"] != str(store)
+            or (train.id, train.metadata.get("manifest_sha256"))
+            != (source["manifest_id"], source["manifest_sha256"])
+            or (model.id, model.metadata.get("manifest_sha256"))
+            != (pointer["transaction_id"], pointer["manifest_sha256"])
+        ):
+            return None
+        return receipt, states_ref(manifest).content.size
+    except (OSError, TypeError, ValueError, KeyError):
+        return None
 
 
 def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
@@ -903,12 +1102,18 @@ def _job_status(
     state = job["state"]
     outcome = job.get("outcome") or {}
     reason = (outcome.get("error") or {}).get("message")
+    evaluate = job["request"].startswith("evaluate:")
     if state == "succeeded" and not receipt_intact:
-        return JobStatus.CORRUPT, "The training receipt is missing or has changed."
-    if state == "assigned" or (state == "running" and not (progress and progress.completed_updates)):
+        return JobStatus.CORRUPT, (
+            "The evaluation receipt is missing or has changed." if evaluate
+            else "The training receipt is missing or has changed."
+        )
+    if state == "assigned" or (state == "running" and not evaluate and not (
+        progress and progress.completed_updates
+    )):
         return JobStatus.STARTING, reason
     if state == "queued":
-        return JobStatus.QUEUED, "Waiting for a training slot."
+        return JobStatus.QUEUED, "Waiting for an evaluation slot." if evaluate else "Waiting for a training slot."
     return JobStatus(state), reason
 
 
