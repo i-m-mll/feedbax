@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { readStudioTrainAuthoring } from '@/api/studioAuthoring';
 import {
@@ -22,7 +22,7 @@ interface Props {
   readonly component?: string;
   readonly picker?: () => void;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
-  readonly onRemoveSweep?: (sweepId: string) => void;
+  readonly renderAdditionalFields?: (projected: ReadonlySet<string>) => ReactNode;
   readonly view?: 'model' | 'task' | 'objective' | 'training';
 }
 
@@ -110,7 +110,7 @@ function validateRecipe(
 }
 
 export function StudioTrainAuthoringForm(props: Props) {
-  const { editor, stepId, picker, onChooseSweepValue, onRemoveSweep } = props;
+  const { editor, stepId, picker, onChooseSweepValue, renderAdditionalFields } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
@@ -165,7 +165,7 @@ export function StudioTrainAuthoringForm(props: Props) {
       const address = { kind: 'step', id: stepId } as const;
       editor.edit(address, field.label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
       await editor.flush();
-      if (edit.kind === 'toField') onRemoveSweep?.(edit.sweepId);
+      lifetime.signal.throwIfAborted();
       picker?.();
     } catch (error) {
       if (!lifetime.signal.aborted) setEditError(apiErrorMessage(error));
@@ -191,6 +191,7 @@ export function StudioTrainAuthoringForm(props: Props) {
           </fieldset>
         )
         : !error && <p role="status">Loading Train definition</p>}
+      {shown && renderAdditionalFields?.(new Set(fields.map(({ id }) => id)))}
     </>
   );
 }

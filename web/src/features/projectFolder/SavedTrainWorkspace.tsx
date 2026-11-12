@@ -12,7 +12,7 @@ import { StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource 
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import { selectRun, selectStep, selectSweepGroup, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
+import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import {
   projectWindowSlotView, projectWindowViews, showProjectWindowView, useProjectWindowState, type ProjectWindowView,
@@ -25,7 +25,7 @@ import { useManagedProjectDetails } from './managedProjectDetails';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
-import { useProjectWindowSelection } from './projectWindowSelection';
+import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
@@ -136,7 +136,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const variant = selection.variantId && variants.includes(selection.variantId) ? selection.variantId : variants[0] ?? null;
   const plan = useMemo(() => projectWindowPlan(saved.project, data, variant), [saved.project, data, variant]);
   const step = plan.steps.find(({ id }) => id === selection.stepId);
-  const state = selection.pipeline;
+  const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
   latestState.current = state;
   const canAuthor = (id: string) => selection.variantId === null && directTrainStep(saved.project, id) !== null;
@@ -145,20 +145,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
     },
-    onRemoveSweep: (sweepId: string) => {
-      const current = latestState.current;
-      const target = current.selection;
-      if (!target || target.kind === 'steps' || target.stepId !== step.id) return;
-      const terms = target.kind === 'values' ? target.terms.filter((term) => term.sweepId !== sweepId) : [];
-      if (target.kind === 'values' && terms.length === target.terms.length) return;
-      selection.select(terms.length ? selectSweepGroup(step.id, terms) : selectStep(current, step.id));
-    },
   } : null;
   const availableViews = step ? viewsByKind[step.kind] : emptyViews;
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
   const detailInputs = { editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, variantId: selection.variantId,
-    onChooseSweepValue: authoring?.onChooseSweepValue, onRemoveSweep: authoring?.onRemoveSweep };
+    onChooseSweepValue: authoring?.onChooseSweepValue };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });
   const selected = step ? selectedRuns(step, state.selection) : [];

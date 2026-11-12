@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import type { PlanView } from '@/features/pipeline/planView';
 import {
-  emptyPipelineSelection, selectStep, type PipelineSelectionState,
+  emptyPipelineSelection, selectStep, selectSweepGroup, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
 
 interface SelectionEntry {
@@ -14,6 +15,31 @@ function subject(pipeline: PipelineSelectionState, current: string | null) {
   if (!selection) return null;
   if (selection.kind !== 'steps') return selection.stepId;
   return current && selection.stepIds.includes(current) ? current : selection.stepIds.at(-1) ?? null;
+}
+
+export function settledWindowSelection(plan: PlanView, state: PipelineSelectionState): PipelineSelectionState {
+  const selection = state.selection;
+  if (!selection || selection.kind === 'steps') return state;
+  const step = plan.steps.find(({ id }) => id === selection.stepId);
+  if (!step) return state;
+  if (selection.kind === 'rows') {
+    const available = new Set(step.runs.map(({ id }) => id));
+    const runIds = selection.runIds.filter((id) => available.has(id));
+    if (runIds.length === selection.runIds.length) return state;
+    if (!runIds.length) return selectStep(state, step.id);
+    const focus = state.focus && runIds.includes(state.focus.runId) ? state.focus
+      : { stepId: step.id, runId: runIds[runIds.length - 1] };
+    return { selection: { ...selection, runIds }, focus };
+  }
+  const terms = selection.terms.flatMap((term) => {
+    const sweep = step.sweeps.find(({ id }) => id === term.sweepId);
+    const available = new Set(sweep?.values.map(({ id }) => id));
+    const valueIds = term.valueIds.filter((id) => available.has(id));
+    if (valueIds.length === term.valueIds.length) return [term];
+    return valueIds.length ? [{ ...term, valueIds }] : [];
+  });
+  if (terms.length === selection.terms.length && terms.every((term, index) => term === selection.terms[index])) return state;
+  return terms.length ? selectSweepGroup(step.id, terms) : selectStep(state, step.id);
 }
 
 export function useProjectWindowSelection(initialStepId: string | null) {

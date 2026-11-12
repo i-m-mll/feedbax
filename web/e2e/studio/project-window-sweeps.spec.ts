@@ -126,6 +126,10 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');
   await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Forward', exact: true }).click();
+  await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
+  await expect(selected).toHaveCount(2);
   const { plan: reduced, snapshot: kept } = await readPlan(request, projectPath);
   expect(reduced.rows).toHaveLength(2);
   expect(reduced.window_map!.rows.map(({ coordinates }) => Object.keys(coordinates))).toEqual([['seed'], ['seed']]);

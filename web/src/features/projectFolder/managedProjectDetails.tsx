@@ -48,7 +48,6 @@ interface DetailInputs {
   readonly activeView?: string;
   readonly step?: PlanStepView;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
-  readonly onRemoveSweep?: (sweepId: string) => void;
 }
 
 function mentionsDocument(value: unknown, id: string): boolean {
@@ -333,17 +332,18 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     const issue = change.issue('graph');
     const inline = stepId && !definition.id && !definition.shared;
     const raw = component.params ?? {};
-    const params = inline ? Object.fromEntries(Object.entries(raw).filter(([name, value]) =>
-      !(typeof value === 'number' && schemas.some((item) => item.name === name && (item.type === 'int' || item.type === 'float'))))) : raw;
+    const parameterDetails = (projected: ReadonlySet<string>) => <ParameterDetails
+      params={Object.fromEntries(Object.entries(raw).filter(([name]) => !projected.has(authoredPointer(['graph', 'nodes', id, 'params', name]))))}
+      definition={definition} selection={selected} schemas={schemas}
+      onEdit={canEdit && !definition.shared ? (field, value) => change.edit('graph', definition, field, ['nodes', id, 'params', field], value) : undefined} />;
     return <section key={id} aria-label={studioName('details')} className="space-y-2 p-2">
       <h3 className="font-medium">{id}</h3>
       <p className="text-sm">{component.type}</p>
       {definition.shared && <DetailReason reason="definitionReadOnly" name="model" />}
       {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
-      {inline && <StudioTrainAuthoringForm editor={editor} stepId={stepId} component={id}
-        step={input.step} selection={selected} onChooseSweepValue={input.onChooseSweepValue} onRemoveSweep={input.onRemoveSweep} />}
-      <ParameterDetails params={params} definition={definition} selection={selected} schemas={schemas}
-        onEdit={canEdit && !definition.shared ? (field, value) => change.edit('graph', definition, field, ['nodes', id, 'params', field], value) : undefined} />
+      {inline ? <StudioTrainAuthoringForm editor={editor} stepId={stepId} component={id}
+        step={input.step} selection={selected} onChooseSweepValue={input.onChooseSweepValue} renderAdditionalFields={parameterDetails} />
+        : parameterDetails(new Set())}
       {issue && <p role="alert">{issue}</p>}
     </section>;
   }
