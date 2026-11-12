@@ -173,16 +173,17 @@ def emit_authored_contracts(
         if name in shared:
             previous = shared[name].model_json_schema()
             previous_definitions = previous.pop("$defs", {})
-                if previous.get("$ref") == f"#/$defs/{name}":
+            if previous.get("$ref") == f"#/$defs/{name}":
                 previous = previous_definitions[name]
             if definition != previous:
-                    diff = "\n".join(unified_diff(
-                        json.dumps(previous, indent=2, sort_keys=True).splitlines(),
-                        json.dumps(definition, indent=2, sort_keys=True).splitlines(),
-                        fromfile="registered contract",
-                        tofile="authored contract",
-                    ))
-                    raise ValueError(f"Conflicting Studio JSON Schema definition: {name}\n{diff}")
+                diff = "\n".join(unified_diff(
+                    json.dumps(previous, indent=2, sort_keys=True).splitlines(),
+                    json.dumps(definition, indent=2, sort_keys=True).splitlines(),
+                    fromfile="registered contract",
+                    tofile="authored contract",
+                    lineterm="",
+                ))
+                raise ValueError(f"Conflicting Studio JSON Schema definition: {name}\n{diff}")
             continue
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name):
             raise ValueError(f"Invalid Studio contract name: {name}")
