@@ -250,26 +250,25 @@ def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
 
 def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     data = _chained_train_data()
+    data["steps"]["rewarm"]["base"]["step"] = "flat"
+    data["steps"]["rewarm"]["inputs"]["checkpoint"]["step"] = "flat"
     checkpoint = data["steps"]["flat"]["inputs"]["checkpoint"]
     checkpoint["where"] = {"axes": {"seed": ["b"]}}
-    plan = compile_project(Project.model_validate(data))
-    assert {problem.row for problem in plan.diagnostics} == {
-        "manual",
-        "rate=fast--seed=a",
-        "rate=slow--seed=a",
-    }
-    assert all(
-        problem.step == "flat" and problem.path == "inputs.checkpoint"
-        and "Candidates: seed=b." in problem.detail
-        for problem in plan.diagnostics
-    )
+    memo = ProjectPlanMemo()
+    plan = compile_project(Project.model_validate(data), memo=memo)
+    assert not plan.diagnostics
     flat = [run for run in plan.runs if run.key.step == "flat"]
     assert {run.key.row for run in flat} == {"rate=fast--seed=b", "rate=slow--seed=b"}
+    assert [row for row in plan.rows if row.key.step == "flat"] == flat
     assert all(run.inputs["checkpoint"].producer.row == "seed=b" for run in flat)
+    rewarm = [run for run in plan.runs if run.key.step == "rewarm"]
+    assert [row for row in plan.rows if row.key.step == "rewarm"] == rewarm
+    assert [run.inputs["checkpoint"].producer for run in rewarm] == [run.key for run in flat]
 
     del checkpoint["where"]
     checkpoint["row"] = "seed=b"
-    explicit = compile_project(Project.model_validate(data))
+    explicit = compile_project(Project.model_validate(data), memo=memo)
+    assert explicit == compile_project(Project.model_validate(data))
     assert not explicit.diagnostics
     flat = [run for run in explicit.runs if run.key.step == "flat"]
     assert len(flat) == 5

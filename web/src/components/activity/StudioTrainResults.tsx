@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import type { StudioJobEvent, StudioSavedTrainAttempt, StudioSavedTrainRow } from '@/generated/studioContracts';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue } from './StudioRegion';
-import { LossPlot, studioRunHistory } from './StudioTrainingLoss';
+import { LossPlot, studioRunHistory, type LossStage } from './StudioTrainingLoss';
 import { studioName, studioReason } from './studioVocabulary';
 
 type Stage = {
@@ -45,23 +45,34 @@ function TrainLoss({ project, rows, row, attempt }: {
   const stages = useMemo(() => {
     const lineage = checkpointLineage(rows, row, attempt);
     if (!lineage) return null;
+    const projected: LossStage[] = [];
     let offset = 0;
-    return lineage.map((stage) => {
-      const completed = stage.through ?? stage.attempt.progress?.completed_updates ?? 0;
-      const { loss } = studioRunHistory(stage.attempt, stage.row.attempts, events);
-      const points = stage.through === null ? loss : loss.filter(({ end }) => end <= completed);
-      const projected = { label: stage.row.key.step, offset, completed, points };
+    for (const stage of lineage) {
+      const through = stage.through ?? stage.attempt.progress?.completed_updates ?? 0;
+      const { loss, stageStart } = studioRunHistory(stage.attempt, stage.row.attempts, events);
+      const source = stage.attempt.checkpoint_source;
+      // A stateful worker reports the source's update clock. Resume keeps the
+      // original stage origin, even when a later attempt starts at another checkpoint.
+      if (source && through > 0 && stageStart !== 0 && stageStart !== source.completed_updates) return null;
+      const origin = stageStart ?? 0;
+      const completed = Math.max(0, through - origin);
+      const points = loss.filter(({ end }) => end > origin && (stage.through === null || end <= through)).map((point) => ({
+        ...point,
+        end: point.end - origin,
+        interval: point.interval && { ...point.interval, start: point.interval.start - origin },
+      }));
+      projected.push({ label: stage.row.key.step, offset, completed, points });
       offset += completed;
-      return projected;
-    });
+    }
+    return projected;
   }, [rows, row, attempt, events]);
   const retry = () => { actions.refresh(); };
-  const state = !stages
-    ? { kind: 'failed' as const, issue: { reason: studioReason('unavailable', studioName('checkpoint')) }, retry }
-    : history.isError || connection === 'disconnected'
-      ? { kind: 'failed' as const, issue: studioRegionIssue('results', history.error, connection === 'disconnected'), retry }
-      : history.isPending
-        ? { kind: 'loading' as const }
+  const state = history.isError || connection === 'disconnected'
+    ? { kind: 'failed' as const, issue: studioRegionIssue('results', history.error, connection === 'disconnected'), retry }
+    : history.isPending
+      ? { kind: 'loading' as const }
+      : !stages
+        ? { kind: 'failed' as const, issue: { reason: studioReason('unavailable', studioName('checkpoint')) }, retry }
         : { kind: 'result' as const, missing: [] };
   return (
     <section aria-label={studioName('results')} className="mt-3 rounded border border-slate-200 p-3">

@@ -370,6 +370,7 @@ class _Compiler:
         self.authored_inputs: dict[str, _AuthoredInputs] = {}
         self.steps: dict[tuple[str, str], PlannedStep] = {}
         self.rows: dict[RunKey, PlannedRow] = {}
+        self.excluded_checkpoint_rows: set[RunKey] = set()
         self.runs: dict[tuple[str, str], tuple[PlannedRun, ...]] = {}
         self.swept_step_axes: dict[tuple[str, str], tuple[str, ...]] = {}
         self.requests: dict[RequestId, bytes] = {}
@@ -709,8 +710,6 @@ class _Compiler:
         result = []
         for row in rows:
             run_key = RunKey(variant, name, row.id)
-            coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
             key = row.input_keys.get(role.name)
             chosen = by_key[key] if key is not None else None
             if chosen is None and paired_step is not None:
@@ -720,6 +719,16 @@ class _Compiler:
                 )
                 if inherited_id is not None:
                     chosen = by_key.get(inherited_id)
+                    producer_key = RunKey(variant, paired_step, inherited_id)
+                    if chosen is None and (
+                        producer_key in self.excluded_checkpoint_rows
+                        or (subset is not None and isinstance(self.rows.get(producer_key), PlannedRun))
+                    ):
+                        # Carry an intentional subset exclusion through inherited checkpoint pairs.
+                        self.excluded_checkpoint_rows.add(run_key)
+                        continue
+            coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
+            self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
             if chosen is None and (paired_step is not None or len(members) > 1):
                 candidates = ", ".join(by_key) or "none"
                 detail = f"role requires one row; candidates are {candidates}"

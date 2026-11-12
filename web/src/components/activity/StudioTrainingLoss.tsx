@@ -50,11 +50,15 @@ export function studioRunHistory(
   }
   const attemptCutoffs = new Map([[job.job_id, Infinity]]);
   let cutoff = startByAttempt.get(job.job_id) ?? Infinity;
-  let previous = job.continues;
+  let root = job;
+  let previous = root.continues;
   while (previous && !attemptCutoffs.has(previous)) {
     attemptCutoffs.set(previous, cutoff);
     cutoff = Math.min(cutoff, startByAttempt.get(previous) ?? Infinity);
-    previous = byId.get(previous)?.continues;
+    const predecessor = byId.get(previous);
+    if (!predecessor) break;
+    root = predecessor;
+    previous = root.continues;
   }
 
   const loss = new Map<number, LossObservation>();
@@ -93,6 +97,7 @@ export function studioRunHistory(
   }
   return {
     loss: [...loss.values()].sort((first, second) => first.end - second.end),
+    stageStart: root.continues ? undefined : startByAttempt.get(root.job_id),
     log: log.join('\n'),
     trajectory,
   };

@@ -8,8 +8,9 @@ from pydantic import Field, JsonValue, StrictFloat, StrictInt
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.studio_project import SetProjectValue
+from feedbax.contracts.project_inputs import NonemptyText, ProjectName
+from feedbax.contracts.project_sweep import RangeValues, SampleValues
+from feedbax.contracts.studio_project import ProjectValueEdit
 
 
 class StudioAuthoringMethod(StrictModel):
@@ -52,6 +53,33 @@ class StudioAuthoringSource(StrictModel):
     path: str
 
 
+class StudioSweepValue(StrictModel):
+    id: ProjectName
+    label: str | None
+    value: int | float
+
+
+class StudioSweepList(StrictModel):
+    kind: Literal["list"]
+    id: ProjectName
+    values: list[StudioSweepValue]
+    editable: bool
+
+
+class StudioSweepRange(StrictModel):
+    kind: Literal["range"]
+    id: ProjectName
+    rule: RangeValues
+    can_list: bool
+
+
+class StudioSweepSampler(StrictModel):
+    kind: Literal["sampler"]
+    id: ProjectName
+    rule: SampleValues
+    can_list: bool
+
+
 class StudioAuthoringField(StrictModel):
     id: str
     label: str
@@ -62,14 +90,55 @@ class StudioAuthoringField(StrictModel):
     )
 
 
+    sweep: Annotated[StudioSweepList | StudioSweepRange | StudioSweepSampler, Field(discriminator="kind")] | None = None
+    can_sweep: bool = False
+
+
 class StudioAuthoringChange(StrictModel):
     field: str
     value: str | StrictInt | StrictFloat
 
 
+class StudioToSweep(StrictModel):
+    kind: Literal["toSweep"]
+
+
+class StudioSweepEdit(StrictModel):
+    kind: Literal["addValue", "toList"]
+    sweep_id: ProjectName
+
+
+class StudioToField(StrictModel):
+    kind: Literal["toField"]
+    sweep_id: ProjectName
+    value_id: ProjectName
+
+
+class StudioSetSweepValue(StrictModel):
+    kind: Literal["setSweepValue"]
+    sweep_id: ProjectName
+    value_id: ProjectName
+    value: StrictInt | StrictFloat
+
+
+class StudioNameSweepValue(StrictModel):
+    kind: Literal["nameSweepValue"]
+    sweep_id: ProjectName
+    value_id: ProjectName
+    label: NonemptyText | None
+
+
+class StudioAuthoringSweepChange(StrictModel):
+    field: str
+    edit: Annotated[
+        StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue,
+        Field(discriminator="kind"),
+    ]
+
+
 class StudioTrainAuthoringRequest(StrictModel):
     revision: Sha256
-    change: StudioAuthoringChange | None = None
+    change: StudioAuthoringChange | StudioAuthoringSweepChange | None = None
 
 
 class StudioTrainAuthoring(StrictModel):
@@ -77,5 +146,5 @@ class StudioTrainAuthoring(StrictModel):
     step_id: ProjectName
     revision: Sha256
     fields: list[StudioAuthoringField]
-    patches: list[SetProjectValue]
+    patches: list[ProjectValueEdit]
     documents: list[ProjectName]

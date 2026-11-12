@@ -86,9 +86,11 @@ def read_train_authoring(
 
     def project_fields() -> StudioTrainAuthoring:
         snapshot = request.app.state.project_folders.read(project_id, revision=body.revision)
-        registry = request.app.state.bootstrap_state.bundle.training_programs
+        bundle = request.app.state.bootstrap_state.bundle
         try:
-            fields, patches, documents = project_train_fields(snapshot.project, step_id, registry, body.change)
+            fields, patches, documents = project_train_fields(
+                snapshot.project, step_id, bundle.training_programs, body.change, components=bundle.components,
+            )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
         return StudioTrainAuthoring(

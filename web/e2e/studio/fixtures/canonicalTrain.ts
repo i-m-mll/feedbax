@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -41,4 +41,24 @@ export async function openResultsSlot(page: Page) {
   await page.locator('[data-slot="secondary"] > section').focus();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
   await rail.getByRole('button', { name: 'Results', exact: true }).click();
+}
+
+export async function enter(field: Locator, value: string) {
+  await field.fill(value);
+  await field.press('Enter');
+}
+
+export async function authorLearningRateSweep(rate: Locator) {
+  await rate.getByRole('button', { name: 'To Sweep Learning Rate', exact: true }).click();
+  await expect(rate.getByRole('spinbutton')).toHaveValue('0.001');
+  await enter(rate.getByRole('textbox'), 'Slow');
+  await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Slow' })).toBeEnabled();
+  for (const [index, [value, label]] of [['0.002', 'Medium'], ['0.003', 'Fast']].entries()) {
+    await rate.getByRole('button', { name: 'Add Value Learning Rate' }).click();
+    await expect(rate.getByRole('spinbutton')).toHaveCount(index + 2);
+    await enter(rate.getByRole('spinbutton').last(), value);
+    await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${value}`, exact: true })).toBeEnabled();
+    await enter(rate.getByRole('textbox').last(), label);
+    await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${label}`, exact: true })).toBeEnabled();
+  }
 }

@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
+from feedbax.component_registry.registry import ComponentRegistry
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.manifest import OverridePatch
@@ -29,6 +30,7 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringOption,
     StudioAuthoringSource,
     StudioAuthoringSurface,
+    StudioAuthoringSweepChange,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_training import (
@@ -50,6 +52,7 @@ from feedbax.contracts.training import (
 from feedbax.objectives.spec import TargetStateLossSpec
 from feedbax.plugins.application import TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.studio.schema import retained_observable_selector
 from feedbax.training.optimizers import optimizer_types
@@ -169,7 +172,10 @@ class _TrainFields:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
-        direct = isinstance(step.base, InlineBase) and not (step.sweep or step.deltas or step.inputs)
+        direct = isinstance(step.base, InlineBase) and not (
+            step.deltas or step.inputs
+            or (step.sweep is not None and (step.sweep.rows or step.sweep.exceptions))
+        )
         checkpoint = step.inputs.get("checkpoint")
         linked = (
             isinstance(step.base, StepBase) and step.base.row is None
@@ -281,6 +287,25 @@ class _TrainFields:
         if ref is not None and not ref.pointer:
             return documents.get(ref.document)
         return _read(model, raw)
+
+    def inline_component_fields(self, graph: GraphSpec, components: ComponentRegistry) -> None:
+        for node, component in graph.nodes.items():
+            meta = components.get(component.type)
+            if meta is None or (component.revision is not None and component.revision != meta.revision):
+                continue
+            for schema in meta.param_schema:
+                path = ("graph", "nodes", node, "params", schema.name)
+                value = _get(self.payload, path)
+                if type(value) not in (int, float) or schema.type not in ("int", "float"):
+                    continue
+                self.field(
+                    path, schema.name.replace("_", " ").capitalize(), value,
+                    StudioAuthoringNumber(
+                        kind="number", min=schema.min, max=schema.max,
+                        step=1 if schema.type == "int" else None,
+                    ),
+                    lambda value, path=path: [self.set(path, value)],
+                )
 
     def objective(self, graph: GraphSpec | None) -> None:
         binding = _read(StudioTaskBindingSpec, self.payload.get("task_binding_spec"))
@@ -412,7 +437,7 @@ class _TrainFields:
             self.field(
                 seed_path,
                 seed_schema["title"],
-                _get(self.payload, seed_path),
+                method.seed,
                 StudioAuthoringNumber(
                     kind="number",
                     min=seed_schema["minimum"],
@@ -435,7 +460,10 @@ class _TrainFields:
             include={"batch_size", "n_reach_steps"},
         )
         if method is not None:
-            initial_config["n_batches"] = method.target_total
+            initial_config["n_batches"] = (
+                method.continuation.progress.additional_batches
+                if method.continuation is not None else method.target_total
+            )
             rate = method.optimizer.params.get("learning_rate")
             if type(rate) in (int, float) and 0 < rate <= sys.float_info.max:
                 initial_config["learning_rate"] = rate
@@ -452,6 +480,13 @@ class _TrainFields:
             if method is not None and mirror is not None:
                 if name == "learning_rate" and raw_params is None:
                     patches.append(self.set(rate_path, {"learning_rate": value}))
+                elif name == "n_batches" and method.continuation is not None:
+                    assert type(value) is int
+                    method_path = ("method_payload", "payload")
+                    patches.extend((
+                        self.set((*method_path, *mirror), method.continuation.progress.source_completed_batches + value),
+                        self.set((*method_path, "checkpoint_initialization", "progress", "additional_batches"), value),
+                    ))
                 else:
                     patches.append(self.set(("method_payload", "payload", *mirror), value))
             return patches
@@ -484,7 +519,9 @@ def project_train_fields(
     project: Project,
     step_id: str,
     registry: TrainingProgramRegistry,
-    change: StudioAuthoringChange | None,
+    change: StudioAuthoringChange | StudioAuthoringSweepChange | None,
+    *,
+    components: ComponentRegistry | None = None,
 ) -> tuple[list[StudioAuthoringField], list[SetProjectValue], list[str]]:
     """Project the supported fields and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
@@ -492,29 +529,45 @@ def project_train_fields(
     task = definition.document("task", TaskSpec, _DOCUMENT_FIELDS["task"][1])
     definition.objective(graph)
     definition.training(task)
+    if graph is not None and components is not None and not definition.named_documents("graph"):
+        definition.inline_component_fields(graph, components)
+
+    sweeps = {}
+    for field_id, field in definition.fields.items():
+        target = SweepTarget.from_field(field.view.value, field.view.control, field.write)
+        if target is not None and not definition.linked:
+            sweep = TrainFieldSweeps(definition.step, target, field.view.label)
+            sweeps[field_id] = sweep
+            field.view.sweep = sweep.view()
+            field.view.can_sweep = sweep.can_sweep
+        if not definition.linked and definition.step.sweep is not None and (
+            target is None
+            or not sweeps[field_id].can_sweep
+        ):
+            # Keep the typed editor for the sweep's own values.
+            if field.view.sweep is None:
+                field.view.control = None
+
     patches = []
     documents: set[str] = set()
-    if change is not None:
+    if isinstance(change, StudioAuthoringSweepChange):
+        sweep = sweeps.get(change.field)
+        if sweep is None:
+            raise ValueError(f"Field {change.field!r} has no supported sweep edit")
+        field = definition.fields[change.field]
+        patches = sweep.edit(change, lambda value: _number(field.view, value))
+        documents.update(field.documents)
+    elif change is not None:
         field = definition.fields.get(change.field)
         control = field.view.control if field is not None else None
-        if field is None or control is None:
+        if field is None or control is None or field.view.sweep is not None:
             raise ValueError(f"Field {change.field!r} has no supported edit")
         value = change.value
         if isinstance(control, StudioAuthoringChoice):
             if value not in {option.value for option in control.options}:
                 raise ValueError(f"{field.view.label} requires a declared choice")
-        elif (
-            type(value) not in (int, float)
-            or (type(value) is int and abs(value) > 2**53 - 1)
-            or not math.isfinite(value)
-            or (control.step == 1 and (value != int(value) or abs(value) > 2**53 - 1))
-            or (control.min is not None and value < control.min)
-            or (control.max is not None and value > control.max)
-            or (control.step is None and value <= 0)
-        ):
-            raise ValueError(f"{field.view.label} requires a number in the supported range")
-        if isinstance(control, StudioAuthoringNumber) and control.step == 1:
-            value = int(value)
+        else:
+            value = _number(field.view, value)
         if value != field.view.value:
             patches = field.write(value)
             documents.update(field.documents)
@@ -528,3 +581,19 @@ def project_train_fields(
         definition.authored_edits(change.field, patches) if change is not None else [],
         sorted(documents),
     )
+
+
+def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
+    control = field.control
+    if not isinstance(control, StudioAuthoringNumber) or (
+        type(value) not in (int, float)
+        or (type(value) is int and abs(value) > 2**53 - 1)
+        or not math.isfinite(value)
+        or (control.step == 1 and (value != int(value) or abs(value) > 2**53 - 1))
+        or (control.min is not None and value < control.min)
+        or (control.max is not None and value > control.max)
+    ):
+        raise ValueError(f"{field.label} requires a number in the supported range")
+    if field.id == "/training_config/learning_rate" and value <= 0:
+        raise ValueError(f"{field.label} requires a positive number")
+    return int(value) if control.step == 1 else value

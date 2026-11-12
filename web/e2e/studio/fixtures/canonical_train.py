@@ -190,17 +190,6 @@ def history_files():
     return [model, task, train, sibling]
 
 
-def swept_files():
-    model, task, train, _ = authored_files()
-    train["step"]["sweep"] = {"axes": {"seed": {"values": {
-        name: {"label": label, "patches": {
-            "method_payload.payload.seed": {"op": "add", "value": seed},
-        }}
-        for name, label, seed in (("a", "Replicate A", 71), ("b", "Replicate B", 72), ("c", "Replicate C", 73))
-    }}}}
-    return [model, task, train]
-
-
 def observe_swept(home: Path, project: str, successors: list[str]):
     host = HostClient(AppPaths.resolve(instance_root=home).host)
     jobs = {job["id"]: job for job in host.jobs_snapshot(project=project, start_host=False)["jobs"]}
@@ -217,10 +206,21 @@ def observe_swept(home: Path, project: str, successors: list[str]):
         assert (completion["producer_job_id"], completion["request_id"]) == (attempt, job["request"])
         verify_bound_training_completion(source)
         verify_bound_training_completion(completion)
+        manifest = load_manifest(canonical_manifest_path(
+            "TrainingRunManifest", completion["receipt"]["manifest_id"], root=Path(completion["manifest_root"]),
+        ))
+        initialization = manifest.provenance.metadata["checkpoint_initialization"]
+        transform = initialization["transformation"]
+        pointer = source["checkpoint"]["pointer"]
+        producer_source = transform["producer_source"]
+        assert producer_source["id"] == pointer["transaction_id"]
+        assert producer_source["metadata"]["manifest_sha256"] == pointer["manifest_sha256"]
         interval = last_train_interval(events, attempt)
         result[attempt] = {
             "producer": producer,
             "receipt": completion["receipt"],
+            "completed_updates": completion["checkpoint"]["completed_updates"],
+            "initialization": {"mode": initialization["mode"], **transform},
             "last_loss": interval["metrics"]["train_loss"]["last"],
         }
     return result
@@ -257,8 +257,6 @@ if __name__ == "__main__":
         print(json.dumps(authored_files()))
     elif action == "history-files" and not arguments:
         print(json.dumps(history_files()))
-    elif action == "swept-files" and not arguments:
-        print(json.dumps(swept_files()))
     elif action == "observe":
         home, project, revision, attempt, stopped_attempt, successor_attempt = arguments
         print(json.dumps(observe(Path(home), project, revision, attempt, stopped_attempt, successor_attempt)))

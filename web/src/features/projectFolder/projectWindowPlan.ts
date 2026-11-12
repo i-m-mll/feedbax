@@ -36,7 +36,10 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
       let entries = sweeps.get(sweep);
       if (!entries) sweeps.set(sweep, entries = new Map());
-      entries.set(coordinate.value_id, coordinate.label ?? coordinate.value_id);
+      const number = typeof coordinate.value === 'number' ? String(coordinate.value) : undefined;
+      const label = coordinate.label;
+      entries.set(coordinate.value_id, number && label && label !== number
+        ? `${label} · ${number}` : label ?? number ?? coordinate.value_id);
       values[sweep] = coordinate.value_id;
     }
     byRun.set(savedRunId(row.key), values);
@@ -47,7 +50,11 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     const id = savedRunId(row.key);
     let runs = runsByStep.get(row.key.step);
     if (!runs) runsByStep.set(row.key.step, runs = []);
-    runs.push({ id, label: row.label, values: byRun.get(id) ?? {}, status: row.status, reason: row.reason ?? undefined,
+    const change = row.change;
+    const reason = change && row.status === 'stale'
+      ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
+      : row.reason ?? undefined;
+    runs.push({ id, label: row.label, values: byRun.get(id) ?? {}, status: row.status, reason,
       progress: row.attempts.at(-1)?.progress ?? undefined, variant: row.key.variant });
   }
   const source = map
