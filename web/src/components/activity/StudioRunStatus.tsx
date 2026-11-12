@@ -28,10 +28,14 @@ const statusColors: Record<StudioRunStatusId, string> = {
 
 const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
+export function studioRunMarkClass(status: StudioRunStatusId) {
+  return statusColors[status];
+}
+
 export function StudioRunStatus({ status }: { status: StudioRunStatusId }) {
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-slate-700" aria-live="polite">
-      <span aria-hidden="true" className={`size-2 rounded-full ${statusColors[status]}`} />
+      <span aria-hidden="true" className={`size-2 rounded-full ${studioRunMarkClass(status)}`} />
       {studioRunStatus(status)}
     </span>
   );

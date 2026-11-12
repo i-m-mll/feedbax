@@ -17,6 +17,14 @@ const entries = [
   'components/panels/FigureGalleryPanel.tsx', // a5da2ff
   'components/panels/StatisticsPanel.tsx', // b2db05b
   'components/panels/TrajectoryViewer.tsx', // b2db05b
+  // M2 view entry points. Mount when the project window and plan reader land.
+  'components/scene/SceneRegion.tsx', // 1479f9c
+  'components/scene/SceneClockControls.tsx', // 1479f9c
+  'components/pipeline/StudioPipelineMap.tsx', // 3e0ceba
+  'components/pipeline/StudioRuns.tsx', // 339d687
+  'components/pipeline/StudioRunInputs.tsx', // 339d687
+  'components/pipeline/StudioDefinitionForm.tsx', // 339d687
+  'components/pipeline/StudioSweepOverview.tsx', // 3a7b0c4
   // Owned by the legacy worker and controller removal issues.
   'hooks/useOrchestration.ts', // 2d1ed17
   'hooks/useTraining.ts', // 216f817

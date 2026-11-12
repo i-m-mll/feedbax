@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
 import clsx from 'clsx';
 import {
   Pause,
@@ -13,26 +13,7 @@ import type {
   WorkspaceReplayTimelineBand,
 } from '@/features/scenario/workspaceReplay';
 
-const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 2, 4] as const;
-
-function boundedPosition(position: number, duration: number): number {
-  if (!Number.isFinite(position)) return 0;
-  return Math.max(0, Math.min(Math.max(duration, 0), position));
-}
-
-function timelineOffset(value: number, duration: number): string {
-  if (!Number.isFinite(value) || !Number.isFinite(duration) || duration <= 0) return '0%';
-  return `${Math.max(0, Math.min(1, value / duration)) * 100}%`;
-}
-
-function nextFramePosition(frameTimes: number[], position: number, direction: -1 | 1): number {
-  if (frameTimes.length === 0) return 0;
-  const sorted = [...frameTimes].sort((left, right) => left - right);
-  if (direction > 0) {
-    return sorted.find((time) => time > position + 1e-8) ?? sorted[sorted.length - 1];
-  }
-  return [...sorted].reverse().find((time) => time < position - 1e-8) ?? sorted[0];
-}
+import { SPEED_OPTIONS, timelineOffset, usePlaybackTransport } from './usePlaybackTransport';
 
 function shouldIgnoreShortcut(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -62,78 +43,41 @@ export function PlaybackControls({
   onPositionChange: (position: number) => void;
   onSpeedChange: (speed: number) => void;
 }) {
-  const [playing, setPlaying] = useState(false);
-  const [looping, setLooping] = useState(true);
-  const lastFrameRef = useRef<number | null>(null);
-  const bounded = boundedPosition(position, duration);
-  const hasTimeline = !disabled && duration > 0 && frameTimes.length > 0;
-
-  useEffect(() => {
-    if (!playing || !hasTimeline) {
-      lastFrameRef.current = null;
-      return;
-    }
-    let rafId = 0;
-    const tick = (time: number) => {
-      const last = lastFrameRef.current ?? time;
-      lastFrameRef.current = time;
-      const deltaSeconds = Math.max(0, (time - last) / 1000);
-      const next = bounded + deltaSeconds * speed;
-      if (next >= duration) {
-        if (looping) {
-          onPositionChange(0);
-        } else {
-          onPositionChange(duration);
-          setPlaying(false);
-        }
-      } else {
-        onPositionChange(next);
-      }
-      rafId = window.requestAnimationFrame(tick);
-    };
-    rafId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(rafId);
-  }, [bounded, duration, hasTimeline, looping, onPositionChange, playing, speed]);
-
-  useEffect(() => {
-    if (!hasTimeline) setPlaying(false);
-  }, [hasTimeline]);
+  const { bounded, hasTimeline, playing, looping, seek, step, togglePlay, toggleLoop } = usePlaybackTransport({
+    position,
+    duration,
+    speed,
+    frameTimes,
+    onPositionChange,
+    enabled: !disabled,
+  });
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (disabled || shouldIgnoreShortcut(event.target)) return;
       if (event.key === ' ') {
         event.preventDefault();
-        setPlaying((current) => !current);
+        togglePlay();
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
-        setPlaying(false);
-        onPositionChange(nextFramePosition(frameTimes, bounded, 1));
+        step(1);
       } else if (event.key === 'ArrowLeft') {
         event.preventDefault();
-        setPlaying(false);
-        onPositionChange(nextFramePosition(frameTimes, bounded, -1));
+        step(-1);
       } else if (event.key === 'Home') {
         event.preventDefault();
-        setPlaying(false);
-        onPositionChange(0);
+        seek(0);
       } else if (event.key === 'End') {
         event.preventDefault();
-        setPlaying(false);
-        onPositionChange(duration);
+        seek(duration);
       } else if (event.key.toLowerCase() === 'l') {
         event.preventDefault();
-        setLooping((current) => !current);
+        toggleLoop();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [bounded, disabled, duration, frameTimes, onPositionChange]);
-
-  const step = (direction: -1 | 1) => {
-    setPlaying(false);
-    onPositionChange(nextFramePosition(frameTimes, bounded, direction));
-  };
+  }, [disabled, duration, seek, step, toggleLoop, togglePlay]);
 
   const timeText = `${bounded.toFixed(2)} / ${Math.max(duration, 0).toFixed(2)} s`;
 
@@ -187,10 +131,7 @@ export function PlaybackControls({
           step="any"
           value={bounded}
           disabled={!hasTimeline}
-          onChange={(event) => {
-            setPlaying(false);
-            onPositionChange(Number.parseFloat(event.target.value));
-          }}
+          onChange={(event) => seek(Number.parseFloat(event.target.value))}
           className="absolute inset-x-0 bottom-0 h-5 accent-slate-900 disabled:opacity-40"
           aria-label="Playback position"
           title="Playback position"
@@ -218,7 +159,7 @@ export function PlaybackControls({
           </button>
           <button
             type="button"
-            onClick={() => setPlaying((current) => !current)}
+            onClick={togglePlay}
             disabled={!hasTimeline}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             title={playing ? 'Pause' : 'Play'}
@@ -236,7 +177,7 @@ export function PlaybackControls({
           </button>
           <button
             type="button"
-            onClick={() => setLooping((current) => !current)}
+            onClick={toggleLoop}
             disabled={!hasTimeline}
             className={clsx(
               'inline-flex h-8 w-8 items-center justify-center rounded-md disabled:cursor-not-allowed disabled:text-slate-300',
