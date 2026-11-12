@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchProjectFolder, patchProjectFolder, writeProjectPresentation } from '@/api/projectFolders';
+import {
+  createProjectFolder, openProjectFolder, patchProjectFolder, renameProjectFolder, writeProjectPresentation,
+} from '@/api/projectFolders';
 import type { StudioProjectSnapshot } from '@/generated/studioContracts';
 
 const revision = 'a'.repeat(64);
@@ -36,21 +38,42 @@ function snapshot(): StudioProjectSnapshot {
 
 afterEach(() => vi.unstubAllGlobals());
 
+function document(project = 'reaches', data = snapshot()) {
+  return { configuration: { project, store: 'results' }, snapshot: data };
+}
+
 describe('Studio project folder HTTP contracts', () => {
   it('keeps authored aliases, omissions and JSON keys through a validated read', async () => {
-    const response = snapshot();
+    const response = document();
     const fetch = vi.fn().mockResolvedValue(Response.json(response));
     vi.stubGlobal('fetch', fetch);
     const signal = new AbortController().signal;
 
-    const read = await fetchProjectFolder('reaches', signal);
+    const { snapshot: read } = await openProjectFolder('reaches', signal);
     expect(read.project.steps?.train.sweep?.rows?.reference?.from).toBe('baseline');
     expect(read.project.steps?.train).not.toHaveProperty('inputs');
     expect(Object.entries(read.project.documents?.model.payload as object)).toContainEqual(['__proto__', { named: 1 }]);
-    expect(fetch).toHaveBeenCalledWith('/api/projects/reaches', expect.objectContaining({
+    expect(fetch).toHaveBeenCalledWith('/api/projects/reaches/open', expect.objectContaining({
       cache: 'no-store',
       signal,
     }));
+  });
+
+  it('uses the same validated envelope for New and Rename and refuses a mismatched folder', async () => {
+    const renamed = document('renamed');
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json(document(), { status: 201 }))
+      .mockResolvedValueOnce(Response.json(renamed))
+      .mockResolvedValueOnce(Response.json(document('renamed', { ...snapshot(), project_id: 'other' })));
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await createProjectFolder()).toEqual(document());
+    expect(fetch).toHaveBeenNthCalledWith(1, '/api/projects', expect.objectContaining({ method: 'POST' }));
+    expect(await renameProjectFolder('reaches', { revision, name: 'renamed' })).toEqual(renamed);
+    expect(fetch).toHaveBeenNthCalledWith(2, '/api/projects/reaches/rename', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ revision, name: 'renamed' }),
+    }));
+    await expect(openProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
   });
 
   it('rejects an unvalidated write operation before sending it', async () => {
@@ -71,11 +94,11 @@ describe('Studio project folder HTTP contracts', () => {
     Object.assign(train.base, { unsupported: true });
     const detail = { message: 'The presentation changed', current: 'd'.repeat(64), resource: 'presentation' };
     const fetch = vi.fn()
-      .mockResolvedValueOnce(Response.json(bad))
+      .mockResolvedValueOnce(Response.json(document('reaches', bad)))
       .mockResolvedValueOnce(Response.json({ detail }, { status: 409 }));
     vi.stubGlobal('fetch', fetch);
 
-    await expect(fetchProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
+    await expect(openProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
     await expect(writeProjectPresentation('reaches', {
       revision: presentationRevision,
       presentation: { visible_groups: ['calibration'] },

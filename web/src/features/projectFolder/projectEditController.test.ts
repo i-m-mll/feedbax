@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
-import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectSnapshot } from '@/generated/studioContracts';
+import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 
@@ -23,7 +23,9 @@ const initial: StudioProjectSnapshot = {
 
 function fixture(settleMs = 400) {
   let current = initial;
+  let name = 'reach';
   let sequence = 6;
+  const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
   const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[]) => {
     const { project } = applyAuthoredEdits(current.project, address, edits);
     current = {
@@ -39,12 +41,51 @@ function fixture(settleMs = 400) {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach', 'Changed', { status: 409 });
     return external(body.address, body.patches);
   });
-  const read = vi.fn<ProjectEditTransport['read']>(async () => current);
-  const editor = new ProjectEditController(initial, { read, write }, settleMs);
-  return { editor, write, read, external, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
+  const externalRename = (next: string) => {
+    name = next;
+    current = { ...current, revision: hex(sequence++) };
+    return document();
+  };
+  const read = vi.fn<ProjectEditTransport['read']>(async () => document());
+  const rename = vi.fn<ProjectEditTransport['rename']>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach/rename', 'Changed', { status: 409 });
+    return externalRename(body.name);
+  });
+  const editor = new ProjectEditController(document(), { read, write, rename }, settleMs);
+  return { editor, write, read, rename, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
 }
 
 afterEach(() => vi.useRealTimers());
+
+it('advances a delayed metadata observation without discarding an edit typed during Open', async () => {
+  const { editor, read, write, externalRename } = fixture();
+  const renamed = externalRename('outside-name');
+  let finish!: (document: StudioProjectDocument) => void;
+  read.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  const flushed = editor.flush();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  editor.edit(model, 'Model value', [value(2)]);
+  finish(renamed);
+
+  await flushed;
+  expect(write.mock.calls[0][1].revision).toBe(renamed.snapshot.revision);
+  expect(editor.getSnapshot()).toMatchObject({
+    configuration: { project: 'outside-name' }, outside: null, pending: 0, undoName: 'Model value',
+  });
+  editor.dispose();
+});
+
+it('reports a Rename conflict after reading the current name and never retries the command', async () => {
+  const { editor, rename, externalRename } = fixture();
+  rename.mockImplementationOnce(async () => {
+    externalRename('other-name');
+    throw new ApiRequestError('http', '/api/projects/reach/rename', 'Changed', { status: 409 });
+  });
+  await expect(editor.rename('my-name')).rejects.toMatchObject({ status: 409 });
+  expect(editor.getSnapshot().configuration.project).toBe('other-name');
+  expect(rename).toHaveBeenCalledTimes(1);
+  editor.dispose();
+});
 
 it('coalesces settled edits per file and preserves one undo entry per gesture', async () => {
   vi.useFakeTimers();

@@ -2,15 +2,18 @@ import { ApiRequestError, isHttpConflict } from '@/api/request';
 import type {
   AuthoredFileAddress,
   ProjectValueEdit,
+  StudioProjectDocument,
   StudioProjectPatch,
+  StudioProjectRename,
   StudioProjectRevision,
   StudioProjectSnapshot,
 } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 
 export interface ProjectEditTransport {
-  read: (id: string, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
+  read: (id: string, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   write: (id: string, body: StudioProjectPatch, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
+  rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
 }
 
 interface Gesture {
@@ -35,6 +38,7 @@ interface PendingEdit {
 
 export interface ProjectEditSnapshot {
   readonly saved: StudioProjectSnapshot;
+  readonly configuration: StudioProjectDocument['configuration'];
   readonly draft: AuthoredProject;
   readonly pending: number;
   readonly saving: boolean;
@@ -85,11 +89,11 @@ export class ProjectEditController {
   private readonly abort = new AbortController();
   private readonly listeners = new Set<() => void>();
   private readonly queued: PendingEdit[] = [];
-  private saved: StudioProjectSnapshot;
+  private document: StudioProjectDocument;
   private draft: AuthoredProject;
   private history: History = emptyHistory;
   private savedHistory: History = emptyHistory;
-  private outside: StudioProjectSnapshot | null = null;
+  private outside: StudioProjectDocument | null = null;
   private error: unknown = null;
   private saving = false;
   private snapshot: ProjectEditSnapshot;
@@ -99,14 +103,16 @@ export class ProjectEditController {
   private observationScheduled = false;
 
   constructor(
-    initial: StudioProjectSnapshot,
+    initial: StudioProjectDocument,
     private readonly transport: ProjectEditTransport,
     private readonly settleMs = 400,
   ) {
-    this.saved = initial;
-    this.draft = initial.project;
+    this.document = initial;
+    this.draft = initial.snapshot.project;
     this.snapshot = this.capture();
   }
+
+  private get saved() { return this.document.snapshot; }
 
   getSnapshot = () => this.snapshot;
 
@@ -150,6 +156,31 @@ export class ProjectEditController {
     });
   }
 
+  rename(name: StudioProjectRename['name']): Promise<StudioProjectDocument> {
+    this.cancelSettle();
+    return this.sequence(async () => {
+      await this.refresh();
+      await this.drain();
+      let renamed: StudioProjectDocument;
+      try {
+        renamed = await this.transport.rename(this.saved.project_id, {
+          revision: this.saved.revision, name,
+        }, this.abort.signal);
+      } catch (error) {
+        this.abort.signal.throwIfAborted();
+        const ambiguous = canRetryOnReconnect(error);
+        if (ambiguous || isHttpConflict(error)) {
+          const latest = await this.refresh().catch(() => undefined);
+          if (ambiguous && latest?.configuration.project === name) return latest;
+        }
+        throw error;
+      }
+      this.abort.signal.throwIfAborted();
+      this.receive(renamed);
+      return renamed;
+    });
+  }
+
   observe(revision: StudioProjectRevision) {
     if (revision.project_id !== this.saved.project_id || this.abort.signal.aborted) return;
     this.observation = revision;
@@ -159,7 +190,7 @@ export class ProjectEditController {
       const current = this.observation;
       this.observation = undefined;
       this.observationScheduled = false;
-      if (current && !versionsMatch(current, this.outside ?? this.saved)) await this.refresh();
+      if (current && !versionsMatch(current, this.outside?.snapshot ?? this.saved)) await this.refresh();
     }).catch(() => {});
   }
 
@@ -181,14 +212,14 @@ export class ProjectEditController {
         throw error;
       });
       this.outside = latest;
-      const unchanged = unchangedFiles(this.saved, latest);
+      const unchanged = unchangedFiles(this.saved, latest.snapshot);
       const kept = withoutChangedFiles(this.savedHistory, unchanged);
       if (choice === 'disk') {
         this.queued.length = 0;
         this.adopt(latest, kept);
         return;
       }
-      let project = latest.project;
+      let project = latest.snapshot.project;
       let history = kept;
       const rebased: PendingEdit[] = [];
       const alreadyOnDisk = new Set<string>();
@@ -199,7 +230,7 @@ export class ProjectEditController {
           const sameFile = unchanged.has(key);
           // A save response can be lost after the file was written. Keep the
           // observed value without attributing an unacknowledged write to undo.
-          if (!sameFile && (alreadyOnDisk.has(key) || sameAuthoredFile(this.draft, latest.project, address))) {
+          if (!sameFile && (alreadyOnDisk.has(key) || sameAuthoredFile(this.draft, latest.snapshot.project, address))) {
             alreadyOnDisk.add(key);
             continue;
           }
@@ -218,7 +249,7 @@ export class ProjectEditController {
         throw error;
       }
       this.queued.splice(0, this.queued.length, ...rebased);
-      this.saved = latest;
+      this.document = latest;
       this.savedHistory = kept;
       this.history = history;
       this.draft = project;
@@ -238,11 +269,12 @@ export class ProjectEditController {
   private capture(): ProjectEditSnapshot {
     return {
       saved: this.saved,
+      configuration: this.document.configuration,
       draft: this.draft,
       pending: this.queued.length,
       saving: this.saving,
       error: this.error,
-      outside: this.outside,
+      outside: this.outside?.snapshot ?? null,
       undoName: this.history.undo[this.history.undo.length - 1]?.name ?? null,
       redoName: this.history.redo[this.history.redo.length - 1]?.name ?? null,
     };
@@ -298,9 +330,9 @@ export class ProjectEditController {
     return snapshot;
   }
 
-  private adopt(snapshot: StudioProjectSnapshot, history: History) {
-    this.saved = snapshot;
-    this.draft = snapshot.project;
+  private adopt(document: StudioProjectDocument, history: History) {
+    this.document = document;
+    this.draft = document.snapshot.project;
     this.savedHistory = history;
     this.history = history;
     this.outside = null;
@@ -308,29 +340,39 @@ export class ProjectEditController {
     this.publish();
   }
 
+  private receive(document: StudioProjectDocument) {
+    const { snapshot: latest } = document;
+    const unchanged = unchangedFiles(this.saved, latest);
+    const sameAuthoredFiles = latest.semantic_root === this.saved.semantic_root &&
+      unchanged.size === latest.file_revisions.length &&
+      unchanged.size === this.saved.file_revisions.length;
+    if (latest.revision === this.saved.revision || sameAuthoredFiles) {
+      const wasConflicted = this.outside !== null;
+      this.document = document;
+      this.outside = null;
+      if (!this.queued.length) {
+        this.draft = latest.project;
+        this.error = null;
+      } else if (wasConflicted) {
+        this.error = null;
+        this.scheduleSettle();
+      }
+      this.publish();
+    } else if (this.queued.length) {
+      this.cancelSettle();
+      this.outside = document;
+      this.error = null;
+      this.publish();
+    } else {
+      this.adopt(document, withoutChangedFiles(this.savedHistory, unchanged));
+    }
+  }
+
   private async refresh() {
     try {
       const latest = await this.read();
-      if (latest.revision === this.saved.revision) {
-        const wasConflicted = this.outside !== null;
-        this.saved = latest;
-        this.outside = null;
-        if (!this.queued.length) {
-          this.draft = latest.project;
-          this.error = null;
-        } else if (wasConflicted) {
-          this.error = null;
-          this.scheduleSettle();
-        }
-        this.publish();
-      } else if (this.queued.length) {
-        this.cancelSettle();
-        this.outside = latest;
-        this.error = null;
-        this.publish();
-      } else {
-        this.adopt(latest, withoutChangedFiles(this.savedHistory, unchangedFiles(this.saved, latest)));
-      }
+      this.receive(latest);
+      return latest;
     } catch (error) {
       this.error = error;
       this.publish();
@@ -357,7 +399,7 @@ export class ProjectEditController {
           patches: batch.flatMap(({ edits }) => edits),
         }, this.abort.signal);
         this.abort.signal.throwIfAborted();
-        this.saved = latest;
+        this.document = { ...this.document, snapshot: latest };
         this.savedHistory = batch[batch.length - 1].historyAfter;
         this.queued.splice(0, batch.length);
         if (!this.queued.length) this.draft = latest.project;

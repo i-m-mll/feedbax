@@ -86,7 +86,7 @@ def put_project_presentation(
     )
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model_exclude_unset=True)
 def new_project(request: Request, response: Response) -> StudioProjectDocument:
     document = _project_response(response, request.app.state.project_folders.new)
     response.headers["Location"] = request.url_for(
@@ -95,12 +95,12 @@ def new_project(request: Request, response: Response) -> StudioProjectDocument:
     return document
 
 
-@router.get("/{project_id}/open")
+@router.get("/{project_id}/open", response_model_exclude_unset=True)
 def open_project(project_id: ProjectName, request: Request, response: Response) -> StudioProjectDocument:
     return _project_response(response, lambda: request.app.state.project_folders.open(project_id))
 
 
-@router.post("/{project_id}/rename")
+@router.post("/{project_id}/rename", response_model_exclude_unset=True)
 def rename_project(
     project_id: ProjectName, body: StudioProjectRename, request: Request, response: Response
 ) -> StudioProjectDocument:

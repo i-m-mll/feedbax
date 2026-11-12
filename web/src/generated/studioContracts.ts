@@ -2334,6 +2334,12 @@ export type Project = {
   "sweep"?: Sweep | null;
 };
 
+export type ProjectConfiguration = {
+  "project": string;
+  "store": string;
+  "settings"?: Payload;
+};
+
 export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
 
 export type RangeAxis = {
@@ -2454,10 +2460,20 @@ export type StudioPresentationWrite = {
   "presentation": PresentationDocument;
 };
 
+export type StudioProjectDocument = {
+  "configuration": ProjectConfiguration;
+  "snapshot": StudioProjectSnapshot;
+};
+
 export type StudioProjectPatch = {
   "revision": Sha256;
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
+};
+
+export type StudioProjectRename = {
+  "revision": Sha256;
+  "name": string;
 };
 
 export type StudioProjectRevision = {
@@ -6547,6 +6563,14 @@ export const ProjectSchema: z.ZodType<Project> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Project>;
 
+export const ProjectConfigurationSchema: z.ZodType<ProjectConfiguration> = z.lazy(() =>
+  z.object({
+    "project": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "store": z.string().min(1),
+    "settings": PayloadSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<ProjectConfiguration>;
+
 export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
   z.union([SetProjectValueSchema, RemoveProjectValueSchema])
 ) as unknown as z.ZodType<ProjectValueEdit>;
@@ -6713,6 +6737,13 @@ export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> =
   }).strict()
 ) as unknown as z.ZodType<StudioPresentationWrite>;
 
+export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.lazy(() =>
+  z.object({
+    "configuration": ProjectConfigurationSchema,
+    "snapshot": StudioProjectSnapshotSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectDocument>;
+
 export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -6720,6 +6751,13 @@ export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(()
     "patches": z.array(ProjectValueEditSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatch>;
+
+export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectRename>;
 
 export const StudioProjectRevisionSchema: z.ZodType<StudioProjectRevision> = z.lazy(() =>
   z.object({
@@ -6809,7 +6847,9 @@ export const contractSchemas = {
   SetProjectValue: SetProjectValueSchema,
   StudioAuthoredFileRevision: StudioAuthoredFileRevisionSchema,
   StudioPresentationWrite: StudioPresentationWriteSchema,
+  StudioProjectDocument: StudioProjectDocumentSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
+  StudioProjectRename: StudioProjectRenameSchema,
   StudioProjectRevision: StudioProjectRevisionSchema,
   StudioProjectSnapshot: StudioProjectSnapshotSchema,
   ProjectValueEdit: ProjectValueEditSchema,
@@ -6894,7 +6934,9 @@ export interface ContractTypeMap {
   SetProjectValue: SetProjectValue;
   StudioAuthoredFileRevision: StudioAuthoredFileRevision;
   StudioPresentationWrite: StudioPresentationWrite;
+  StudioProjectDocument: StudioProjectDocument;
   StudioProjectPatch: StudioProjectPatch;
+  StudioProjectRename: StudioProjectRename;
   StudioProjectRevision: StudioProjectRevision;
   StudioProjectSnapshot: StudioProjectSnapshot;
   ProjectValueEdit: ProjectValueEdit;

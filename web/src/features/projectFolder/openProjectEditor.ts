@@ -1,12 +1,24 @@
-import { fetchProjectFolder, patchProjectFolder, writeProjectPresentation } from '@/api/projectFolders';
-import type { PresentationDocument } from '@/generated/studioContracts';
+import {
+  createProjectFolder, openProjectFolder, patchProjectFolder, renameProjectFolder, writeProjectPresentation,
+} from '@/api/projectFolders';
+import type { PresentationDocument, StudioProjectDocument } from '@/generated/studioContracts';
 import { watchProjectFolder } from '@/jobs/watchProjectFolder';
 import { ProjectEditController } from './projectEditController';
 
 export async function openProjectEditor(projectId: string, signal?: AbortSignal) {
-  const initial = await fetchProjectFolder(projectId, signal);
+  return bindProjectEditor(await openProjectFolder(projectId, signal), signal);
+}
+
+export async function newProjectEditor(signal?: AbortSignal) {
+  return bindProjectEditor(await createProjectFolder(signal), signal);
+}
+
+function bindProjectEditor(initial: StudioProjectDocument, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  const editor = new ProjectEditController(initial, { read: fetchProjectFolder, write: patchProjectFolder });
+  const { project_id: projectId } = initial.snapshot;
+  const editor = new ProjectEditController(initial, {
+    read: openProjectFolder, write: patchProjectFolder, rename: renameProjectFolder,
+  });
   let unwatch: () => void;
   try {
     unwatch = watchProjectFolder(projectId, {
