@@ -80,6 +80,12 @@ class ProjectPlanRead:
         for rows in (self.history, self.evaluations):
             for key, row in rows.items():
                 counts[key.variant, key.step][row.status.value] += 1
+        executable = {run.key for run in plan.runs}
+        rejected = {(problem.variant, problem.step, problem.row) for problem in plan.diagnostics}
+        for row in plan.rows:
+            key = row.key
+            if key not in executable and (key.variant, key.step, key.row) in rejected:
+                counts[key.variant, key.step][JobStatus.CANNOT_RUN.value] += 1
 
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
             step = plan.steps[variant, step_id]

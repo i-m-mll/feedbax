@@ -178,19 +178,22 @@ export function StudioJobsProvider({ children, folderProjectId }: PropsWithChild
       }));
     }
 
-    retry.current = () => {
+    function retryConnection() {
       if (!port) open();
       else {
         port.postMessage({ type: 'retry' } satisfies StudioJobWorkerCommand);
         void hydrate();
       }
-    };
+    }
+    retry.current = retryConnection;
     open();
     window.addEventListener('pagehide', close);
     window.addEventListener('pageshow', open);
+    window.addEventListener('studio-native-reconnected', retryConnection);
     return () => {
       window.removeEventListener('pagehide', close);
       window.removeEventListener('pageshow', open);
+      window.removeEventListener('studio-native-reconnected', retryConnection);
       retry.current = null;
       close();
     };

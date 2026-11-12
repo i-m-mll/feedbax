@@ -104,14 +104,17 @@ def read_train_authoring(
     return _project_response(response, project_fields)
 
 
-@router.post("/{project_id}/authoring/document")
+@router.post("/{project_id}/authoring/document", response_model_exclude_unset=True)
 def read_document_authoring(
     project_id: ProjectName, body: StudioDocumentAuthoringRequest, request: Request, response: Response,
 ) -> StudioDocumentAuthoring:
     from feedbax.web.services.document_authoring import document_authoring
 
     return _project_response(
-        response, lambda: document_authoring(request.app.state.project_folders, project_id, body),
+        response, lambda: document_authoring(
+            request.app.state.project_folders, project_id, body,
+            components=request.app.state.bootstrap_state.bundle.components,
+        ),
     )
 
 

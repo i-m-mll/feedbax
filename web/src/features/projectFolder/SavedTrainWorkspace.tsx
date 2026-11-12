@@ -1,6 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { TriangleAlert } from 'lucide-react';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
@@ -14,11 +13,14 @@ import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from 
 import type { PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { StudioProblems } from '@/features/projectWindow/StudioProblems';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
-import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type {
+  PresentationDocument, PresentationPosition, StudioActivityJob, StudioProjectWindowMapProblem, StudioSavedTrainRuns,
+} from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
@@ -28,11 +30,16 @@ import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
+import { problemReason, problemTarget, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
-type MapProblem = NonNullable<StudioSavedTrainRuns['window_map']>['problems'][number];
+type WindowPanel = { kind: 'activity' } | {
+  kind: 'problems';
+  scope: { step: string; variant: string | null } | null;
+  opener: HTMLElement | null;
+};
 export interface ProjectWindowCommandScope {
   readonly editor: ProjectEditController;
   readonly selection: PipelineSelectionState;
@@ -134,12 +141,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const [panel, setPanel] = useState<'activity' | 'problems' | null>(null);
+  const [panel, setPanel] = useState<WindowPanel | null>(null);
   const [focusRequest, requestSlotFocus] = useState(0);
   const [pivotSlots, setPivotSlots] = useState<Partial<Record<ProjectWindowSlot, string>>>({});
-  const [problemStep, setProblemStep] = useState<string>();
+  const [problemReveal, setProblemReveal] = useState<{
+    revision: string;
+    variant: string | null;
+    runId: string | null;
+    reveal: ProblemReveal;
+  }>();
   const [excludedUsers, setExcludedUsers] = useState<Readonly<Record<string, readonly string[]>>>({});
-  const problemCountId = useId();
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
   const [firstStepRevision, setFirstStepRevision] = useState<string>();
@@ -179,6 +190,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
   const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
   const focusView = focusSlot === 'secondary' ? secondaryView : primaryView;
+  const revealed = problemReveal?.revision === saved.revision && problemReveal.variant === variant &&
+    problemReveal.reveal.problem.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
+    ? problemReveal.reveal : undefined;
   function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
     const document = step?.documentIds?.[`payload.${field}`];
     if (!document || !step || !wholeStep || saved.project.sweep || step.kind !== 'train') return undefined;
@@ -202,6 +216,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       return;
     }
     if (!extend) setExcludedUsers({});
+    setProblemReveal(undefined);
     selection.select(selectStep(state, id, extend));
   }
   const row = data?.rows.find(({ key }) => key.step === step?.id && savedRunId(key) === state.focus?.runId);
@@ -228,13 +243,27 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
   const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const namedRun = definitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ?? definitionRows[0]?.key;
+  function saveComponentPosition(document: string, node: string, position: PresentationPosition) {
+    const { outside, saved } = editor.getSnapshot();
+    const current = (outside ?? saved).presentation ?? {};
+    const prior = current.documents?.[document];
+    return session.savePresentation({
+      ...current, documents: { ...current.documents, [document]: {
+        ...prior, positions: { ...prior?.positions, [node]: position },
+      } },
+    });
+  }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes,
+    namedRun, documentScopes, saveComponentPosition,
   };
-  const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
-  const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });
+  const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
+    problemReveal: focusSlot === 'primary' ? revealed : undefined });
+  const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden',
+    problemReveal: focusSlot === 'secondary' ? revealed : undefined });
+  const focusedModel = windowState.mode !== 'map' && focusView === 'model'
+    ? (focusSlot === 'primary' ? primary : secondary).model : undefined;
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const selectedJobs = state.selection ? runRows.flatMap((item) => {
     const latest = item.attempts.at(-1);
@@ -285,18 +314,36 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     });
   }
 
-  function openProblems(stepId?: string) {
-    setProblemStep(stepId);
-    setPanel('problems');
+  const problemPanel = panel?.kind === 'problems' ? panel : null;
+  const problemScope = problemPanel?.scope;
+  const problems = data?.window_map?.problems ?? [];
+  const problemSteps = new Set(problems.flatMap((problem) =>
+    problem.step && (problem.variant === null || problem.variant === variant) ? [problem.step] : []));
+  const shownProblems = problemScope ? problems.filter((problem) =>
+    problem.step === problemScope.step &&
+    (problem.variant === null || problem.variant === problemScope.variant)) : problems;
+  function openProjectProblems(opener: HTMLElement | null = null) {
+    setPanel({ kind: 'problems', scope: null, opener });
   }
-  const problems = (data?.window_map?.problems ?? []).filter((problem) => !problem.variant || problem.variant === variant);
-  function revealProblem(problem: MapProblem) {
-    if (!problem.step || !plan.steps.some(({ id }) => id === problem.step)) return;
-    const target = data?.rows.find(({ key }) => key.step === problem.step && key.row === problem.row && key.variant === variant);
-    selection.select(target
-      ? selectRun(state, { stepId: target.key.step, runId: savedRunId(target.key) })
-      : selectStep(state, problem.step));
-    setWindowState((current) => showProjectWindowView(current, 'runs'));
+  function addressedStep(problem: StudioProjectWindowMapProblem) {
+    return data?.window_map?.steps.find(({ step_id, variant: scope }) =>
+      step_id === problem.step && scope === (problem.variant ?? variant));
+  }
+  function revealProblem(problem: StudioProjectWindowMapProblem) {
+    const destination = addressedStep(problem);
+    if (!destination) return;
+    const { step_id: stepId, variant: scope, kind } = destination;
+    const row = data?.window_map?.rows.find(({ key }) =>
+      key.step === stepId && key.row === problem.row && key.variant === scope);
+    const target = problemTarget(problem);
+    const view = viewsByKind[kind].some((item) => item === target.view) ? target.view : 'runs';
+    const runId = row ? savedRunId(row.key) : null;
+    selection.select(runId
+      ? selectRun(state, { stepId, runId })
+      : selectStep(state, stepId), scope === variants[0] ? null : scope);
+    setExcludedUsers({});
+    setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { problem, target: { ...target, view } } });
+    setWindowState((current) => showProjectWindowView(current, view, focusSlot));
     requestSlotFocus((count) => count + 1);
     setPanel(null);
   }
@@ -386,12 +433,17 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   }
 
   const mapProps = {
-    plan, state, onSelectionChange: selection.select, onProblems: openProblems,
+    plan, state, problemSteps,
+    onSelectionChange: (value: PipelineSelectionState) => {
+      setProblemReveal(undefined);
+      selection.select(value);
+    },
+    onProblems: (step: string, opener: HTMLButtonElement) => setPanel({ kind: 'problems', scope: { step, variant }, opener }),
     newStepCommand, newSweepCommand, onChooseStep: chooseMapStep,
     documentScope: activeDocumentScope && activeDocumentScope.users.size > 1 ? activeDocumentScope : undefined,
   };
-  const activity = bindStudioCommand('activity', () => setPanel((current) => current === 'activity' ? null : 'activity'));
-  const problemCommand = bindStudioCommand('problems', () => openProblems());
+  const activity = bindStudioCommand('activity', () => setPanel((current) => current?.kind === 'activity' ? null : { kind: 'activity' }));
+  const problemCommand = bindStudioCommand('problems', () => openProjectProblems());
   const retryCommand = bindStudioCommand('retry', retry);
   const runCommand = bindStudioCommand('run', run, { enabled: ready && !busy && runnableRows.length > 0 });
   const runCommands: StudioCommand[] = [runCommand];
@@ -424,6 +476,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const folded = step && selectedAxis ? foldedMapSweep(step, orderedMapSweeps(step, cardPresentation), cardPresentation) : undefined;
   const commands = [
     ...runCommands,
+    ...(focusedModel?.commands ?? []),
     newStepCommand(),
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
@@ -449,6 +502,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>}
       overlay={<>
+        {focusedModel?.overlay}
         {firstStepRevision && <Dialog ariaLabel={studioName('newStep')} onClose={() => setFirstStepRevision(undefined)} manageFocus
           panelClassName="w-[min(20rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           <button type="button" className={`${control} flex w-full items-center gap-2 text-sm`} data-dialog-autofocus onClick={chooseFirstTrain}>
@@ -473,21 +527,26 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         <span className="min-w-0 break-words">{failure}</span>
         <button type="button" className={control} {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</button>
       </div>}
-      problems={<>
-        <button type="button" className={control} aria-expanded={panel === 'problems'} aria-describedby={problemCountId} {...commandAttributes(problemCommand)} onClick={problemCommand.invoke}>
-          <TriangleAlert aria-hidden="true" size={14} className="mr-1 inline" />{studioName('problems')} <span id={problemCountId}>{problems.length}</span>
-        </button>
-        {panel === 'problems' && <Dialog ariaLabel={studioName('problems')} onClose={() => setPanel(null)} manageFocus
-          panelClassName="grid max-h-[75dvh] w-[min(34rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
-          <button type="button" className={`${control} justify-self-end`} data-dialog-autofocus onClick={() => setPanel(null)}>{studioName('close')}</button>
-          <ProblemList problems={problems.filter((problem) => !problemStep || problem.step === problemStep)} onChoose={revealProblem} />
-        </Dialog>}
-      </>}
-      activity={<HeaderActivity placement="above" open={panel === 'activity'} command={activity}
+      problems={<StudioProblems command={problemCommand} count={problems.length} open={!!problemPanel}
+        opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}
+        onOpen={(opener) => {
+          if (problemPanel && !problemPanel.scope) {
+            setPanel(null);
+            opener.focus();
+          } else {
+            openProjectProblems(opener);
+          }
+        }}>
+        <ProblemList problems={shownProblems} canReveal={(problem) => !!addressedStep(problem)}
+          onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
+      </StudioProblems>}
+      activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
         onToggle={activity.invoke}
         onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} />}
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
+        const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
+          ? <ProblemDestination reveal={revealed}>{body}</ProblemDestination> : body;
         if (view === 'model' || view === 'task' || view === 'scene') {
           const header = view !== 'scene' && authoring && wholeStep
             ? <StudioTrainAuthoringForm {...authoring} view={view} documentPicker />
@@ -498,11 +557,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
               {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
             </span>}
-          </>, body: <StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary> };
+          </>, body: withProblem(<StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary>) };
         }
         if (!step) return { body: null };
-        if (view === 'runs') return { body: <StudioErrorBoundary region={studioName('runs')}>
-          <StudioRuns plan={plan} step={step} state={state} onSelectionChange={selection.select}
+        if (view === 'runs') return { body: withProblem(<StudioErrorBoundary region={studioName('runs')}>
+          <StudioRuns plan={plan} step={step} state={state} onSelectionChange={mapProps.onSelectionChange}
             region={step.kind === 'train' || step.kind === 'evaluate' && step.runs.length
               ? { kind: 'result', missing: [] } : { kind: 'empty' }}
             definition={authoring && <StudioTrainAuthoringForm {...authoring}
@@ -510,22 +569,40 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
               onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
             commands={step.kind === 'train' || step.kind === 'evaluate' ? runCommands : undefined}
             pivotCommand={pivotCommand(slot)} pivotActive={pivotSlots[slot] === step.id} />
-        </StudioErrorBoundary> };
+        </StudioErrorBoundary>) };
         if ((view === 'training' || view === 'objective') && authoring) {
-          return { body: <StudioTrainAuthoringForm {...authoring} view={view} /> };
+          return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} />) };
         }
         if (view === 'results' && row && ready) return { body: <div className="p-3">
           {attempt && <StudioTrainResults project={saved.project_id} rows={data!.rows} row={row} attempt={attempt} />}
           <TrainReceipts key={savedRunId(row.key)} row={row} />
         </div> };
-        return { body: noView };
+        return { body: withProblem(noView) };
       }}
     />
   );
 }
 
-function ProblemList({ problems, onChoose }: { problems: readonly MapProblem[]; onChoose(problem: MapProblem): void }) {
-  const groups = new Map<string | null, MapProblem[]>();
+function ProblemDestination({ reveal, children }: { reveal: ProblemReveal; children: ReactNode }) {
+  const reason = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    reason.current?.focus();
+  }, [reveal]);
+  return <div className="flex h-full min-h-0 flex-col">
+    <p ref={reason} tabIndex={-1} className="border-b border-shell-divider px-3 py-2 text-sm">
+      <span className="font-medium">{reveal.target.label}</span>{' · '}{problemReason(reveal.problem)}
+    </p>
+    <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+  </div>;
+}
+
+function ProblemList({ problems, onChoose, canReveal, showVariant }: {
+  problems: readonly StudioProjectWindowMapProblem[];
+  onChoose(problem: StudioProjectWindowMapProblem): void;
+  canReveal(problem: StudioProjectWindowMapProblem): boolean;
+  showVariant: boolean;
+}) {
+  const groups = new Map<string | null, StudioProjectWindowMapProblem[]>();
   for (const problem of problems) {
     const name = problem.document ?? problem.step ?? null;
     if (!groups.has(name)) groups.set(name, []);
@@ -533,10 +610,17 @@ function ProblemList({ problems, onChoose }: { problems: readonly MapProblem[]; 
   }
   return <div className="space-y-2">{[...groups].map(([name, entries]) => <section key={name ?? ''}>
     {name && <h2 className="font-medium">{name}</h2>}
-    <ul>{entries.map((problem, index) => <li key={index}>
-      {problem.step
-        ? <button className={control} type="button" onClick={() => onChoose(problem)}>{problem.path}: {problem.detail}</button>
-        : <span>{problem.path}: {problem.detail}</span>}
-    </li>)}</ul>
+    <ul>{entries.map((problem, index) => {
+      const { label } = problemTarget(problem);
+      const context = [problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].filter(Boolean);
+      const entry = <><span className="font-medium">{label}</span>{' · '}{problemReason(problem)}
+        {context.length > 0 && <span className="block text-xs text-shell-muted">{context.join(' · ')}</span>}
+      </>;
+      return <li key={index} className="break-words">
+        {canReveal(problem)
+          ? <button className={`${control} w-full text-left`} type="button" onClick={() => onChoose(problem)}>{entry}</button>
+          : <div className="px-2 py-1">{entry}</div>}
+      </li>;
+    })}</ul>
   </section>)}</div>;
 }

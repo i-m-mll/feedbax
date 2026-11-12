@@ -152,6 +152,7 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
         "kind": "report", "base": {"inline": {}}, "inputs": {"source": {"step": "evaluate"}},
     }
     data["steps"]["broken"] = {"kind": "train", "base": {"document": "missing"}}
+    data["steps"]["invalid"] = {"kind": "train", "base": {"inline": {}}}
     for name, content in dump_text_project(
         Project.model_validate(data), ProjectConfiguration(project="reach", store="results")
     ).items():
@@ -178,6 +179,9 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     steps = {step["step_id"]: step for step in window["steps"]}
     assert steps["fit"]["document_ids"] == {"payload.graph": "model"}
     assert steps["fit"]["status_counts"] == {"not_run": 2}
+    assert steps["broken"]["status_counts"] == {}
+    assert steps["invalid"]["status_counts"] == {"cannot_run": 1}
+    assert sum(problem["step"] == "invalid" for problem in window["problems"]) > 1
     [subject] = steps["evaluate"]["inputs"]
     assert subject["source_step_id"] == "fit"
     assert subject["subset"]["terms"]["rows"] == ["seed=a"]

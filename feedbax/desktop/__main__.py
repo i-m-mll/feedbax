@@ -103,11 +103,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
             "runtime": runtime,
         }
 
-    @app.post(CONTROL_ROUTE + "/ticket")
-    async def ticket():
-        if server.should_exit:
-            raise HTTPException(503, "Studio service is stopping")
-        return {"ticket": transport.issue_ticket()}
+    transport.register_ticket_route(lambda: server.should_exit)
 
     @app.get("/api/desktop/jobs")
     async def jobs():
@@ -177,7 +173,12 @@ def main() -> None:
     parser.add_argument("action", choices=("serve", "paths", "health", "ticket", "stop"))
     parser.add_argument("--wait", type=float, default=0)
     parser.add_argument("--disposition", choices=("defer", "checkpoint", "force"), default="defer")
+    project = parser.add_mutually_exclusive_group()
+    project.add_argument("--project-folder")
+    project.add_argument("--project-id")
     args = parser.parse_args()
+    if args.action != "ticket" and (args.project_folder is not None or args.project_id is not None):
+        parser.error("project selection requires ticket")
     os.umask(0o077)
     release = Release.load(args.contents)
     if Path(sys.executable).resolve(strict=True) != release.resource("python"):
@@ -190,12 +191,15 @@ def main() -> None:
             "logs": str(paths.logs),
             "settings": str(paths.settings),
             "control": str(paths.control),
+            "projects": str(paths.web / "projects"),
             "storage_id": list(storage_id),
         }))
         return
     if args.action != "serve":
-        print(json.dumps(connect(release, paths, seconds=args.wait, action=args.action,
-                                 disposition=args.disposition)))
+        print(json.dumps(connect(
+            release, paths, seconds=args.wait, action=args.action, disposition=args.disposition,
+            project_folder=args.project_folder, project_id=args.project_id,
+        )))
         return
     os.environ["FEEDBAX_DESKTOP_RELEASE_ROOT"] = str(release.contents)
     os.chdir(paths.workspace)

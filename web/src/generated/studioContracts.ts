@@ -2674,6 +2674,7 @@ export type StudioDocumentAuthoring = {
   "payload": JsonValue;
   "sources": Record<string, StudioAuthoringSource>;
   "files": Array<StudioProjectFilePatch>;
+  "created_component"?: string | null;
 };
 
 export type StudioDocumentAuthoringChange = {
@@ -2686,7 +2687,29 @@ export type StudioDocumentAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "field": "graph" | "task";
-  "change"?: StudioDocumentAuthoringChange | null;
+  "change"?: StudioDocumentAuthoringChange | StudioModelAuthoringChange | null;
+};
+
+export type StudioModelAddComponent = {
+  "kind": "addComponent";
+  "component": "feedbax.GRU" | "feedbax.Linear" | "feedbax.PointMass";
+  "revision": number;
+};
+
+export type StudioModelAuthoringChange = {
+  "lit_steps": Array<string>;
+  "operation": StudioModelAddComponent | StudioModelConnectPorts | StudioModelExposeOutput;
+};
+
+export type StudioModelConnectPorts = {
+  "kind": "connectPorts";
+  "wire": WireSpec;
+};
+
+export type StudioModelExposeOutput = {
+  "kind": "exposeOutput";
+  "source_node": string;
+  "source_port": string;
 };
 
 export type StudioNameSweepValue = {
@@ -7437,6 +7460,7 @@ export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> =
     "payload": jsonValueSchema,
     "sources": z.record(z.string(), StudioAuthoringSourceSchema),
     "files": z.array(StudioProjectFilePatchSchema),
+    "created_component": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioDocumentAuthoring>;
 
@@ -7453,9 +7477,39 @@ export const StudioDocumentAuthoringRequestSchema: z.ZodType<StudioDocumentAutho
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "field": z.union([z.literal("graph"), z.literal("task")]),
-    "change": z.union([StudioDocumentAuthoringChangeSchema, z.null()]).optional(),
+    "change": z.union([StudioDocumentAuthoringChangeSchema, StudioModelAuthoringChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioDocumentAuthoringRequest>;
+
+export const StudioModelAddComponentSchema: z.ZodType<StudioModelAddComponent> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("addComponent"),
+    "component": z.union([z.literal("feedbax.GRU"), z.literal("feedbax.Linear"), z.literal("feedbax.PointMass")]),
+    "revision": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<StudioModelAddComponent>;
+
+export const StudioModelAuthoringChangeSchema: z.ZodType<StudioModelAuthoringChange> = z.lazy(() =>
+  z.object({
+    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+    "operation": z.union([StudioModelAddComponentSchema, StudioModelConnectPortsSchema, StudioModelExposeOutputSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioModelAuthoringChange>;
+
+export const StudioModelConnectPortsSchema: z.ZodType<StudioModelConnectPorts> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("connectPorts"),
+    "wire": WireSpecSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioModelConnectPorts>;
+
+export const StudioModelExposeOutputSchema: z.ZodType<StudioModelExposeOutput> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("exposeOutput"),
+    "source_node": z.string().min(1),
+    "source_port": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioModelExposeOutput>;
 
 export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
   z.object({

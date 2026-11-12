@@ -3,19 +3,63 @@ mod native_frame;
 mod service;
 mod studio_menu;
 
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::{
+    io,
+    path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 use tauri::{
     menu::{MenuItem, PredefinedMenuItem, Submenu},
     webview::NewWindowResponse,
-    App, AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    App, AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 const TITLE: &str = "Feedbax Studio";
+const PROJECT_PREFIX: &str = "project-";
+const CONNECT_PATH: &str = "/_desktop/connect";
+
+#[derive(Default)]
+struct Windows {
+    projects_root: Option<PathBuf>,
+    status: Option<(String, String)>,
+}
+
+#[derive(Deserialize)]
+struct OpenedProject {
+    id: String,
+    title: String,
+}
+
+#[derive(Deserialize)]
+struct StudioTicket {
+    url: Url,
+    generation: String,
+    project: Option<OpenedProject>,
+}
+
+impl StudioTicket {
+    fn label(&self) -> String {
+        self.project.as_ref().map_or_else(
+            || "studio".into(),
+            |project| format!("{PROJECT_PREFIX}{}", project.id),
+        )
+    }
+}
+
+#[derive(Default)]
+enum Entry {
+    #[default]
+    Legacy,
+    Folder(PathBuf),
+    Reconnect(String),
+}
 
 fn status_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     if let Some(window) = app.get_webview_window("status") {
@@ -25,41 +69,150 @@ fn status_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .title(TITLE)
         .inner_size(640., 440.)
         .devtools(false)
+        .on_page_load(|window, page| {
+            if page.event() == tauri::webview::PageLoadEvent::Finished {
+                if let Err(error) = render_status(&window) {
+                    eprintln!("{error}");
+                }
+            }
+        })
         .on_new_window(|_, _| NewWindowResponse::Deny)
         .build()
 }
 
 fn status(app: &AppHandle, summary: &str, detail: &str) -> tauri::Result<()> {
+    app.state::<Mutex<Windows>>().lock().unwrap().status =
+        Some((summary.to_owned(), detail.to_owned()));
     let window = status_window(app)?;
-    let summary = serde_json::to_string(summary).expect("serialize string");
-    let detail = serde_json::to_string(detail).expect("serialize string");
-    window.eval(format!(
-        "document.getElementById('summary').textContent = {summary};\
-         document.getElementById('detail').textContent = {detail};"
-    ))?;
+    render_status(&window)?;
+    focus(&window)
+}
+
+fn render_status(window: &WebviewWindow) -> tauri::Result<()> {
+    let message = window
+        .state::<Mutex<Windows>>()
+        .lock()
+        .unwrap()
+        .status
+        .clone();
+    if let Some((summary, detail)) = message {
+        let summary = json!(summary);
+        let detail = json!(detail);
+        window.eval(format!(
+            "if (document.getElementById('summary')) {{\
+               document.getElementById('summary').textContent = {summary};\
+               document.getElementById('detail').textContent = {detail};\
+             }}"
+        ))?;
+    }
+    Ok(())
+}
+
+fn focus(window: &WebviewWindow) -> tauri::Result<()> {
+    window.show()?;
+    window.unminimize()?;
     window.set_focus()
 }
 
-fn show_studio(app: &AppHandle, url: &str, paths: service::Paths) -> tauri::Result<()> {
-    let url = url
-        .parse::<tauri::Url>()
-        .map_err(tauri::Error::InvalidUrl)?;
-    if let Some(window) = app.get_webview_window("studio") {
-        window.navigate(url)?;
-        window.set_focus()?;
+fn refresh_project_session(
+    window: &WebviewWindow,
+    ticket: &StudioTicket,
+    project: &str,
+    reconnect: bool,
+) -> tauri::Result<()> {
+    let url = &ticket.url;
+    let current = window.url()?;
+    if current.origin() != url.origin() {
+        return Err(
+            io::Error::other("The service address changed. Close and reopen the project.").into(),
+        );
+    }
+    if current.path() == CONNECT_PATH {
+        return window.navigate(url.clone());
+    }
+    if !studio_menu::is_project_route(&current, project) {
+        return Err(io::Error::other("The window is outside its assigned project.").into());
+    }
+    let token = url
+        .fragment()
+        .ok_or_else(|| io::Error::other("Missing Studio connection ticket."))?;
+    window.eval(project_reconnect_script(ticket, project, token, reconnect))
+}
+
+fn project_reconnect_script(
+    ticket: &StudioTicket,
+    project: &str,
+    token: &str,
+    reconnect: bool,
+) -> String {
+    let origin = json!(ticket.url.origin().ascii_serialization());
+    let project = json!(project);
+    let token = json!(token);
+    let generation = json!(ticket.generation);
+    format!(
+        r#"
+        if (location.origin === {origin} && location.pathname === '/'
+            && new URLSearchParams(location.search).get('project') === {project}
+            && ({reconnect} || window.__FEEDBAX_STUDIO_GENERATION__ !== {generation})) {{
+            fetch('/_desktop/exchange', {{method: 'POST', headers: {{'X-Feedbax-Ticket': {token}}}}})
+                .then(response => {{
+                    if (response.status !== 204 || response.headers.get('X-Feedbax-Project') !== {project})
+                        throw new Error('Studio project reauthentication failed');
+                    window.__FEEDBAX_STUDIO_GENERATION__ = {generation};
+                    dispatchEvent(new Event('studio-native-reconnected'));
+                }}).catch(error => console.error(error));
+        }}
+    "#
+    )
+}
+
+fn show_studio(
+    app: &AppHandle,
+    ticket: StudioTicket,
+    storage_id: [u8; 16],
+    reconnect: bool,
+) -> tauri::Result<()> {
+    let label = ticket.label();
+    let windows = app.state::<Mutex<Windows>>();
+    let title = ticket
+        .project
+        .as_ref()
+        .map_or(TITLE, |project| project.title.as_str());
+    if let Some(window) = app.get_webview_window(&label) {
+        if let Some(project) = &ticket.project {
+            refresh_project_session(&window, &ticket, &project.id, reconnect)?;
+            window.set_title(title)?;
+        } else {
+            window.navigate(ticket.url)?;
+        }
+        focus(&window)?;
     } else {
-        let origin = url.origin();
+        let origin = ticket.url.origin();
         #[cfg(target_os = "macos")]
-        let frame = native_frame::StudioFrame::new(&url)?;
-        let menu_script = studio_menu::attach(app, "studio", &url)?;
-        let builder = WebviewWindowBuilder::new(app, "studio", WebviewUrl::External(url))
-            .title(TITLE)
+        let frame = native_frame::StudioFrame::new(&ticket.url)?;
+        let project_id = ticket.project.as_ref().map(|project| project.id.as_str());
+        let menu_script = studio_menu::attach(app, &label, &ticket.url, project_id)?;
+        let script = if project_id.is_some() {
+            let origin = json!(ticket.url.origin().ascii_serialization());
+            let generation = json!(ticket.generation);
+            format!("{menu_script}; if (location.origin === {origin}) window.__FEEDBAX_STUDIO_GENERATION__ = {generation};")
+        } else {
+            menu_script
+        };
+        let project_id = project_id.map(str::to_owned);
+        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url))
+            .title(title)
             .inner_size(1350., 910.)
             .min_inner_size(820., 560.)
             .devtools(false)
-            .data_store_identifier(paths.storage_id)
-            .initialization_script(menu_script)
-            .on_navigation(move |url| url.origin() == origin)
+            .data_store_identifier(storage_id)
+            .initialization_script(script)
+            .on_navigation(move |url| {
+                url.origin() == origin
+                    && project_id.as_ref().is_none_or(|id| {
+                        url.path() == CONNECT_PATH || studio_menu::is_project_route(url, id)
+                    })
+            })
             .on_new_window(|_, _| NewWindowResponse::Deny);
         #[cfg(target_os = "macos")]
         let builder = {
@@ -78,7 +231,7 @@ fn show_studio(app: &AppHandle, url: &str, paths: service::Paths) -> tauri::Resu
         };
         let window = builder
             .build()
-            .inspect_err(|_| studio_menu::clear(app, "studio", true))?;
+            .inspect_err(|_| studio_menu::clear(app, &label, true))?;
         #[cfg(target_os = "macos")]
         if let Err(error) = frame.install(&window) {
             window.destroy()?;
@@ -86,39 +239,67 @@ fn show_studio(app: &AppHandle, url: &str, paths: service::Paths) -> tauri::Resu
         }
     }
     if let Some(window) = app.get_webview_window("status") {
+        windows.lock().unwrap().status = None;
         window.destroy()?;
     }
     Ok(())
 }
 
+type ServiceResult = Result<(Value, service::Paths), Box<dyn std::error::Error + Send + Sync>>;
+
+fn reserve_operation(app: &AppHandle) -> bool {
+    if BUSY.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    if let Err(error) = studio_menu::set_open_enabled(app, false) {
+        eprintln!("{error}");
+    }
+    true
+}
+
+fn release_operation(app: &AppHandle) {
+    BUSY.store(false, Ordering::Release);
+    if let Err(error) = studio_menu::set_open_enabled(app, true) {
+        eprintln!("{error}");
+    }
+}
+
 fn run_operation(
     app: &AppHandle,
-    operation: impl FnOnce() -> std::result::Result<
-            (Value, service::Paths),
-            Box<dyn std::error::Error + Send + Sync>,
-        > + Send
-        + 'static,
+    operation: impl FnOnce() -> ServiceResult + Send + 'static,
     show: impl FnOnce(&AppHandle, Value, service::Paths) -> tauri::Result<()> + Send + 'static,
 ) {
-    if BUSY.swap(true, Ordering::AcqRel) {
-        return;
+    if reserve_operation(app) {
+        run_reserved_operation(app, operation, show);
     }
+}
+
+fn run_reserved_operation(
+    app: &AppHandle,
+    operation: impl FnOnce() -> ServiceResult + Send + 'static,
+    show: impl FnOnce(&AppHandle, Value, service::Paths) -> tauri::Result<()> + Send + 'static,
+) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let result = operation();
         let callback_app = app.clone();
         let scheduled = app.run_on_main_thread(move || {
             let result = match result {
-                Ok((answer, paths)) => show(&callback_app, answer, paths),
-                Err(error) => status(
-                    &callback_app,
-                    "Studio service action failed.",
-                    &error.to_string(),
-                ),
+                Ok((answer, paths)) => {
+                    callback_app
+                        .state::<Mutex<Windows>>()
+                        .lock()
+                        .unwrap()
+                        .projects_root = Some(paths.projects.clone());
+                    show(&callback_app, answer, paths).map_err(|error| error.to_string())
+                }
+                Err(error) => Err(error.to_string()),
             };
-            BUSY.store(false, Ordering::Release);
+            release_operation(&callback_app);
             if let Err(error) = result {
-                eprintln!("{error}");
+                if let Err(error) = status(&callback_app, "Studio service action failed.", &error) {
+                    eprintln!("{error}");
+                }
             }
         });
         if let Err(error) = scheduled {
@@ -128,16 +309,28 @@ fn run_operation(
     });
 }
 
-fn connect(app: &AppHandle) {
-    run_operation(
+fn connect_reserved(app: &AppHandle, entry: Entry) {
+    let reconnect = matches!(entry, Entry::Reconnect(_));
+    run_reserved_operation(
         app,
-        || {
+        move || {
             let release = service::Release::load()?;
-            Ok((release.connect()?, release.paths()?))
+            let args: &[&str] = match &entry {
+                Entry::Legacy => &[],
+                Entry::Folder(folder) => &[
+                    "--project-folder",
+                    folder
+                        .to_str()
+                        .ok_or("The selected folder path is not valid Unicode.")?,
+                ],
+                Entry::Reconnect(id) => &["--project-id", id],
+            };
+            Ok((release.connect(args)?, release.paths()?))
         },
-        |app, answer, paths| {
-            if let Some(url) = answer["url"].as_str() {
-                return show_studio(app, url, paths);
+        move |app, answer, paths| {
+            if answer["url"].is_string() {
+                let ticket = serde_json::from_value(answer).map_err(io::Error::other)?;
+                return show_studio(app, ticket, paths.storage_id, reconnect);
             }
             let summary = match answer["status"].as_str() {
             Some("requires_approval") => {
@@ -154,6 +347,91 @@ fn connect(app: &AppHandle) {
             status(app, summary, &paths.logs.display().to_string())
         },
     );
+}
+
+fn connect(app: &AppHandle, entry: Entry) {
+    if reserve_operation(app) {
+        connect_reserved(app, entry);
+    }
+}
+
+fn reconnect(app: &AppHandle) {
+    let entry = match studio_menu::focused_webview(app)
+        .as_ref()
+        .map(|window| window.label())
+    {
+        Some("studio") => Entry::Legacy,
+        Some(label) if label.starts_with(PROJECT_PREFIX) => {
+            Entry::Reconnect(label[PROJECT_PREFIX.len()..].to_owned())
+        }
+        _ => app
+            .webview_windows()
+            .into_keys()
+            .filter_map(|label| label.strip_prefix(PROJECT_PREFIX).map(str::to_owned))
+            .min()
+            .map(Entry::Reconnect)
+            .unwrap_or_default(),
+    };
+    connect(app, entry);
+}
+
+#[cfg(target_os = "macos")]
+fn open_project(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponse, NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{NSString, NSURL};
+
+    if !reserve_operation(app) {
+        return;
+    }
+    let Some(main) = MainThreadMarker::new() else {
+        open_failed(app, "Open requires the main thread.");
+        return;
+    };
+    let root = app
+        .state::<Mutex<Windows>>()
+        .lock()
+        .unwrap()
+        .projects_root
+        .clone();
+    let panel = NSOpenPanel::openPanel(main);
+    panel.setTitle(Some(&NSString::from_str("Open Studio Project")));
+    panel.setCanChooseFiles(false);
+    panel.setCanChooseDirectories(true);
+    panel.setAllowsMultipleSelection(false);
+    panel.setCanCreateDirectories(false);
+    panel.setResolvesAliases(false);
+    if let Some(root) = root.as_deref().and_then(Path::to_str) {
+        panel.setDirectoryURL(Some(&NSURL::fileURLWithPath_isDirectory(
+            &NSString::from_str(root),
+            true,
+        )));
+    }
+
+    let app = app.clone();
+    let picker = panel.clone();
+    let completion = RcBlock::new(move |response: NSModalResponse| {
+        picker.orderOut(None);
+        if response == NSModalResponseCancel {
+            release_operation(&app);
+        } else if response != NSModalResponseOK {
+            open_failed(&app, "The project folder picker could not open.");
+        } else if let Some(path) = picker.URL().and_then(|url| url.path()) {
+            connect_reserved(&app, Entry::Folder(PathBuf::from(path.to_string())));
+        } else {
+            open_failed(&app, "The selected project folder has no local path.");
+        }
+    });
+    panel.beginWithCompletionHandler(&completion);
+}
+
+#[cfg(target_os = "macos")]
+fn open_failed(app: &AppHandle, detail: &str) {
+    release_operation(app);
+    if let Err(error) = status(app, "Could not open a Studio project.", detail) {
+        eprintln!("{error}");
+    }
 }
 
 fn stop(app: &AppHandle, disposition: &'static str) {
@@ -195,6 +473,7 @@ fn stop(app: &AppHandle, disposition: &'static str) {
 }
 
 fn setup(app: &mut App) -> tauri::Result<()> {
+    app.manage(Mutex::new(Windows::default()));
     let reconnect = MenuItem::with_id(app, "reconnect", "Reconnect", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Stop Service When Idle", true, None::<&str>)?;
     let checkpoint = MenuItem::with_id(
@@ -231,7 +510,7 @@ fn setup(app: &mut App) -> tauri::Result<()> {
     )?;
     studio_menu::install(app.handle(), studio)?;
     status_window(app.handle())?;
-    connect(app.handle());
+    connect(app.handle(), Entry::Legacy);
     Ok(())
 }
 
@@ -262,12 +541,14 @@ fn main() {
                 studio_menu::refresh_on_main_thread(window.app_handle())
             }
             tauri::WindowEvent::Destroyed => {
-                studio_menu::clear(window.app_handle(), window.label(), true)
+                studio_menu::clear(window.app_handle(), window.label(), true);
             }
             _ => {}
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "reconnect" => connect(app),
+            "reconnect" => reconnect(app),
+            #[cfg(target_os = "macos")]
+            studio_menu::OPEN_PROJECT_ID => open_project(app),
             "stop" => stop(app, "defer"),
             "checkpoint" => stop(app, "checkpoint"),
             "force" => stop(app, "force"),
@@ -305,9 +586,32 @@ fn main() {
                 if let Err(error) = status_window(app) {
                     eprintln!("{error}");
                 }
-                connect(app);
+                connect(app, Entry::Legacy);
             }
         }),
         Err(error) => service::fail(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(id: &str, title: &str) -> StudioTicket {
+        serde_json::from_value(json!({
+            "url": "http://127.0.0.1:41000/_desktop/connect#test-ticket",
+            "generation": "a",
+            "project": { "id": id, "title": title },
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn reopening_uses_the_stable_folder_identity() {
+        let first = project("first", "Shared title");
+        let second = project("second", "Shared title");
+        let renamed = project("first", "Renamed title");
+        assert_eq!(first.label(), renamed.label());
+        assert_ne!(first.label(), second.label());
     }
 }

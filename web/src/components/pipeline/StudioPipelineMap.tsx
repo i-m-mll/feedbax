@@ -83,7 +83,8 @@ export interface StudioPipelineMapProps {
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
-  onProblems?: (stepId: string) => void;
+  problemSteps?: ReadonlySet<string>;
+  onProblems?: (stepId: string, opener: HTMLButtonElement) => void;
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
@@ -95,15 +96,24 @@ function stepSelection(selection: PipelineSelection | null, stepId: string) {
   return selection.stepId === stepId ? selection : null;
 }
 
-function StatusCounts({ id, counts, onProblems }: { id?: string; counts: PlanStepView['statusCounts']; onProblems?: () => void }) {
+function StatusCounts({ id, counts, onProblems }: {
+  id?: string;
+  counts: PlanStepView['statusCounts'];
+  onProblems?: (opener: HTMLButtonElement) => void;
+}) {
+  const className = 'inline-flex items-center gap-1 whitespace-nowrap';
+  const statuses = Object.entries(counts) as [StudioRunStatusId, number][];
+  if (onProblems && counts.cannot_run === undefined) statuses.push(['cannot_run', 0]);
   return (
     <span id={id} className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-slate-700">
-      {(Object.entries(counts) as [StudioRunStatusId, number][]).map(([status, count]) => {
-        if (count <= 0) return null;
-        const mark = <><span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${studioRunMarkClass(status)}`} />{count} {studioRunStatus(status)}</>;
-        const className = 'inline-flex items-center gap-1 whitespace-nowrap';
-        return status === 'cannot_run' && onProblems
-          ? <button type="button" key={status} className={`${className} underline`} onClick={onProblems}>{mark}</button>
+      {statuses.map(([status, count]) => {
+        const problem = status === 'cannot_run' && onProblems;
+        if (count <= 0 && !problem) return null;
+        const mark = <><span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${studioRunMarkClass(status)}`} />
+          {count > 0 ? `${count} ` : ''}{studioRunStatus(status)}</>;
+        return problem
+          ? <button type="button" key={status} className={`${className} underline`} aria-haspopup="dialog"
+            onClick={(event) => problem(event.currentTarget)}>{mark}</button>
           : <span key={status} className={className}>{mark}</span>;
       })}
     </span>
@@ -321,7 +331,7 @@ const StepCard = memo(function StepCard({
         onPresentationChange={onPresentationChange}
         newSweep={newSweep}
       />
-      <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} />
+      <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={onProblems && ((opener) => onProblems(step.id, opener))} />
       {selection && (
         <p className="flex items-baseline gap-x-1 rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
           {terms.length > 0 && <span className="min-w-0 truncate">{terms.join(' · ')}</span>}
@@ -426,6 +436,7 @@ function MapDrawer({
   chooseStep,
   documentScope,
   newStep,
+  problemSteps,
   onProblems,
   framed = false,
 }: {
@@ -436,6 +447,7 @@ function MapDrawer({
   chooseStep: ChooseStep;
   documentScope?: MapDocumentScope;
   newStep?: StudioCommand;
+  problemSteps?: StudioPipelineMapProps['problemSteps'];
   onProblems?: StudioPipelineMapProps['onProblems'];
   framed?: boolean;
 }) {
@@ -470,7 +482,8 @@ function MapDrawer({
                 <StepName step={step} />
                 {related && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
               </button>
-              <div className="px-1.5"><StatusCounts counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} /></div>
+              <div className="px-1.5"><StatusCounts counts={step.statusCounts}
+                onProblems={problemSteps?.has(step.id) && onProblems ? (opener) => onProblems(step.id, opener) : undefined} /></div>
             </li>
           );
         })}</ul></li>))}
@@ -488,14 +501,14 @@ function MapDrawer({
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, onProblems, documentScope, onChooseStep }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'onProblems' | 'documentScope' | 'onChooseStep'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, problemSteps, onProblems, documentScope, onChooseStep }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'problemSteps' | 'onProblems' | 'documentScope' | 'onChooseStep'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope}
     chooseStep={chooseMapStep((change) => onSelectionChange(change(state)), onChooseStep)}
-    newStep={plan.steps.length ? newStepCommand?.() : undefined} onProblems={onProblems} framed />;
+    newStep={plan.steps.length ? newStepCommand?.() : undefined} problemSteps={problemSteps} onProblems={onProblems} framed />;
 }
 
 function MapLine({
@@ -554,6 +567,7 @@ export function StudioPipelineMap({
   onPresentationChange,
   newStepCommand,
   newSweepCommand,
+  problemSteps,
   onProblems,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
@@ -604,6 +618,7 @@ export function StudioPipelineMap({
               chooseStep={chooseStep}
               documentScope={documentScope}
               newStep={firstStep}
+              problemSteps={problemSteps}
               onProblems={onProblems}
             />
           )}
@@ -624,7 +639,7 @@ export function StudioPipelineMap({
                       selection: state.selection?.kind !== 'steps' && state.selection?.stepId === step.id ? state.selection : null,
                     }, step.label)}
                     newSweep={newSweepCommand?.(step.id, step.label)}
-                    onProblems={onProblems}
+                    onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                   />
                 ))}
               </div>

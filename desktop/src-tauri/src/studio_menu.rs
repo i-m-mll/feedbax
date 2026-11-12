@@ -7,6 +7,7 @@ use tauri::{
 };
 
 const PREFIX: &str = "studio-command:";
+pub const OPEN_PROJECT_ID: &str = "open-project";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +52,26 @@ struct Item {
 
 struct StudioWindow {
     origin: String,
+    project_id: Option<String>,
     snapshot: Option<Snapshot>,
+}
+
+impl StudioWindow {
+    fn permits(&self, url: &Url) -> bool {
+        url.origin().ascii_serialization() == self.origin
+            && self
+                .project_id
+                .as_ref()
+                .is_none_or(|project| is_project_route(url, project))
+    }
+}
+
+pub fn is_project_route(url: &Url, project: &str) -> bool {
+    url.path() == "/"
+        && url
+            .query_pairs()
+            .find(|(key, _)| key == "project")
+            .is_some_and(|(_, value)| value == project)
 }
 
 struct Presented {
@@ -103,6 +123,8 @@ impl Routing {
 
 struct StudioMenu {
     service: Submenu<tauri::Wry>,
+    file: Submenu<tauri::Wry>,
+    open: MenuItem<tauri::Wry>,
     routing: Mutex<Routing>,
 }
 
@@ -150,6 +172,7 @@ fn append_commands(
 fn build_menu(
     app: &AppHandle,
     service: &Submenu<tauri::Wry>,
+    file: &Submenu<tauri::Wry>,
     snapshot: Option<&Snapshot>,
     menu_number: u64,
 ) -> tauri::Result<Menu<tauri::Wry>> {
@@ -161,7 +184,7 @@ fn build_menu(
                 .iter()
                 .find(|section| matches!(section.title, Group::Edit))
         });
-    let menu = Menu::with_items(app, &[service, &edit_menu(app, menu_number, edit)?])?;
+    let menu = Menu::with_items(app, &[service, file, &edit_menu(app, menu_number, edit)?])?;
     if let Some(snapshot) = snapshot {
         for section in snapshot
             .sections
@@ -177,15 +200,28 @@ fn build_menu(
 }
 
 pub fn install(app: &AppHandle, service: Submenu<tauri::Wry>) -> tauri::Result<()> {
-    app.set_menu(build_menu(app, &service, None, 0)?)?;
+    let open = MenuItem::with_id(app, OPEN_PROJECT_ID, "Open…", true, Some("CmdOrCtrl+O"))?;
+    let file = Submenu::with_items(app, "File", true, &[&open])?;
+    app.set_menu(build_menu(app, &service, &file, None, 0)?)?;
     app.manage(StudioMenu {
         service,
+        file,
+        open,
         routing: Mutex::new(Routing::default()),
     });
     Ok(())
 }
 
-pub fn attach(app: &AppHandle, label: &str, url: &Url) -> tauri::Result<String> {
+pub fn set_open_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
+    app.state::<StudioMenu>().open.set_enabled(enabled)
+}
+
+pub fn attach(
+    app: &AppHandle,
+    label: &str,
+    url: &Url,
+    project_id: Option<&str>,
+) -> tauri::Result<String> {
     let origin = url.origin().ascii_serialization();
     app.add_capability(capability(label, &origin))?;
     app.state::<StudioMenu>()
@@ -197,6 +233,7 @@ pub fn attach(app: &AppHandle, label: &str, url: &Url) -> tauri::Result<String> 
             label.to_string(),
             StudioWindow {
                 origin: origin.clone(),
+                project_id: project_id.map(str::to_owned),
                 snapshot: None,
             },
         );
@@ -219,7 +256,7 @@ fn capability(label: &str, origin: &str) -> CapabilityBuilder {
         .permission("allow-publish-studio-menu")
 }
 
-fn focused_webview(app: &AppHandle) -> Option<WebviewWindow> {
+pub fn focused_webview(app: &AppHandle) -> Option<WebviewWindow> {
     app.webview_windows()
         .into_values()
         .find(|window| window.is_focused().unwrap_or(false))
@@ -247,6 +284,7 @@ fn refresh(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(
         app,
         &state.service,
+        &state.file,
         target.map(|(_, snapshot)| snapshot),
         menu_number,
     )?;
@@ -289,18 +327,14 @@ pub fn publish_studio_menu(
     window: WebviewWindow,
     snapshot: Option<Snapshot>,
 ) -> Result<(), String> {
-    let origin = window
-        .url()
-        .map_err(|error| error.to_string())?
-        .origin()
-        .ascii_serialization();
+    let url = window.url().map_err(|error| error.to_string())?;
     let state = window.state::<StudioMenu>();
     let mut routing = state.routing.lock().unwrap();
     let target = routing
         .windows
         .get_mut(window.label())
-        .filter(|target| target.origin == origin)
-        .ok_or("Studio menu requires its registered service origin and window")?;
+        .filter(|target| target.permits(&url))
+        .ok_or("Studio menu requires its registered service origin and project window")?;
     target.snapshot = snapshot;
     drop(routing);
     refresh_on_main_thread(window.app_handle());
@@ -314,15 +348,21 @@ pub fn dispatch(app: &AppHandle, menu_id: &str) -> tauri::Result<()> {
     let Some(window) = focused_webview(app) else {
         return Ok(());
     };
+    let url = window.url()?;
     let script = {
         let state = app.state::<StudioMenu>();
         let routing = state.routing.lock().unwrap();
         let Some((origin, command)) = routing.destination(window.label(), menu_id) else {
             return Ok(());
         };
+        let target = &routing.windows[window.label()];
+        if !target.permits(&url) {
+            return Ok(());
+        }
         let origin = serde_json::json!(origin);
         let command = serde_json::json!(command);
-        format!("if (location.origin === {origin}) dispatchEvent(new CustomEvent('studio-native-command', {{detail: {command}}}));")
+        let project = serde_json::json!(target.project_id);
+        format!("if (location.origin === {origin} && ({project} === null || (location.pathname === '/' && new URLSearchParams(location.search).get('project') === {project}))) dispatchEvent(new CustomEvent('studio-native-command', {{detail: {command}}}));")
     };
     window.eval(script)
 }
@@ -376,6 +416,24 @@ mod tests {
     }
 
     #[test]
+    fn managed_window_publishes_commands_only_at_its_own_project_route() {
+        let window = StudioWindow {
+            origin: "http://127.0.0.1:41000".into(),
+            project_id: Some("one".into()),
+            snapshot: None,
+        };
+        assert!(window.permits(&"http://127.0.0.1:41000/?project=one".parse().unwrap()));
+        for url in [
+            "http://127.0.0.1:41000/",
+            "http://127.0.0.1:41000/?project=two",
+            "http://127.0.0.1:41000/_desktop/connect#ticket",
+            "http://127.0.0.1:41001/?project=one",
+        ] {
+            assert!(!window.permits(&url.parse().unwrap()));
+        }
+    }
+
+    #[test]
     fn delivers_only_the_enabled_command_from_the_focused_menu_generation() {
         let mut routing = Routing::default();
         for (label, scope) in [
@@ -386,6 +444,7 @@ mod tests {
                 label.into(),
                 StudioWindow {
                     origin: "http://127.0.0.1:41000".into(),
+                    project_id: Some(scope.into()),
                     snapshot: Some(snapshot(scope)),
                 },
             );
