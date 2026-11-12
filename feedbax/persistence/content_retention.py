@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -23,6 +23,7 @@ from feedbax.contracts.artifact_custody import (
     ContentGcRequest,
     ContentHoldRecord,
     ContentLeaseRecord,
+    ContentObjectRef,
     ContentPendingGc,
     ContentRetentionIndex,
     ContentRetentionTarget,
@@ -156,30 +157,26 @@ def _replace_record(
     return index.model_copy(update={field: tuple(records), "generation": index.generation + 1})
 
 
-def _target_digests(
+def _target_objects(
     provider: ImmutableArtifactBlobProvider,
     target: ContentRetentionTarget,
-) -> set[str]:
+) -> Iterator[ContentObjectRef]:
     if target.ref_kind == "object":
         assert target.object is not None
-        provider.verify_object(target.object)
-        return {target.object.sha256}
-    if target.ref_kind == "tree":
+        yield target.object
+    elif target.ref_kind == "tree":
         assert target.tree is not None
         tree = provider.get_tree(target.tree)
-        digests = {target.tree.descriptor.sha256}
-        for member in tree.files:
-            provider.verify_object(member.object)
-            digests.add(member.object.sha256)
-        return digests
-    assert target.manifest is not None
-    resolved = provider._resolve_manifest_ref(target.manifest.kind, target.manifest.id)
-    provider.verify_object(resolved.object)
-    if resolved != target.manifest:
-        raise ContentRetentionError(
-            f"manifest retention target identity drifted: {target.manifest.ref}"
-        )
-    return {target.manifest.object.sha256}
+        yield target.tree.descriptor
+        yield from (member.object for member in tree.files)
+    else:
+        assert target.manifest is not None
+        resolved = provider._resolve_manifest_ref(target.manifest.kind, target.manifest.id)
+        if resolved != target.manifest:
+            raise ContentRetentionError(
+                f"manifest retention target identity drifted: {target.manifest.ref}"
+            )
+        yield resolved.object
 
 
 def _validate_targets(
@@ -188,7 +185,9 @@ def _validate_targets(
 ) -> set[str]:
     digests: set[str] = set()
     for target in targets:
-        digests.update(_target_digests(provider, target))
+        for ref in _target_objects(provider, target):
+            provider.verify_object(ref)
+            digests.add(ref.sha256)
     return digests
 
 
@@ -546,7 +545,7 @@ def _release_record(provider, field: str, key: str, record_id: str, *, owner: st
         return released
 
 
-def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int], list[str]]:
+def _inventory_stats(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, os.stat_result], list[str]]:
     root = provider.root / "artifacts" / "sha256"
     try:
         root_mode = root.lstat().st_mode
@@ -554,7 +553,7 @@ def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int],
         return {}, []
     if not stat.S_ISDIR(root_mode):
         return {}, ["canonical object namespace is not one directory"]
-    objects: dict[str, int] = {}
+    objects: dict[str, os.stat_result] = {}
     errors: list[str] = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
@@ -569,7 +568,16 @@ def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int],
         if not expected or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
             errors.append(f"unsafe or unknown object-store entry: {relative}")
             continue
+        objects[digest] = current
+    return objects, errors
+
+
+def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int], list[str]]:
+    stats, errors = _inventory_stats(provider)
+    objects = {}
+    for digest, current in stats.items():
         try:
+            path = provider._canonical_path(digest)
             provider._verify_blob(path, sha256=digest, size_bytes=current.st_size)
         except (ArtifactBlobCustodyError, OSError) as exc:
             errors.append(f"object identity drift: {digest}: {exc}")

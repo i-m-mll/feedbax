@@ -546,6 +546,8 @@ def _published_checkpoint_set(
 def load_checkpoint_set(
     root: str | Path,
     transaction_id: str,
+    *,
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> CheckpointSet:
     """Load one native checkpoint publication bound to its exact manifest bytes."""
     transaction_root = Path(root).expanduser().resolve() / TRANSACTIONS_DIR_NAME
@@ -561,14 +563,16 @@ def load_checkpoint_set(
     manifest_path = transaction_dir / MANIFEST_NAME
     checkpoint_set_path = transaction_dir / CHECKPOINT_SET_NAME
     try:
-        manifest_bytes = manifest_path.read_bytes()
-        checkpoint_set_bytes = checkpoint_set_path.read_bytes()
+        manifest_bytes = read_bytes(manifest_path)
+        checkpoint_set_bytes = read_bytes(checkpoint_set_path)
     except OSError as exc:
         raise CheckpointCustodyError(
             "native checkpoint transaction is missing its manifest or CheckpointSet; "
             f"transaction={transaction_id!r}"
         ) from exc
-    manifest = _load_transaction_manifest(manifest_path)
+    manifest = load_checkpoint_transaction_manifest_json(
+        manifest_bytes, path=str(manifest_path),
+    ).document
     if manifest.transaction_id != transaction_id:
         raise CheckpointCustodyError(
             "native checkpoint manifest does not match its transaction directory"
@@ -3602,8 +3606,9 @@ def open_published_model_slot(
 
 def _bound_checkpoint_manifest(
     root: Path, pointer: CheckpointLatestPointer,
+    *, read_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> tuple[Path, CheckpointTransactionManifest]:
-    manifest_path, manifest = _manifest_from_latest_pointer(root, pointer)
+    manifest_path, manifest = _manifest_from_latest_pointer(root, pointer, read_bytes=read_bytes)
     if (
         manifest.run_id != pointer.run_id
         or manifest.completed_coordinate != pointer.completed_coordinate
@@ -3615,6 +3620,7 @@ def _bound_checkpoint_manifest(
 
 def checkpoint_slot_files(
     transaction_dir: Path, slot: CheckpointSlotBlobRef,
+    *, read_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> dict[Path, tuple[str, int]]:
     """Return each file in a slot's exact byte closure."""
     path = transaction_dir / slot.relative_path
@@ -3622,7 +3628,9 @@ def checkpoint_slot_files(
     if slot.media_type == MODEL_TREE_MEDIA_TYPE:
         files.update({
             transaction_dir / relative: (ref.sha256, ref.size_bytes)
-            for relative, ref in semantic_model_member_files(slot, _read_blob(slot, path)).items()
+            for relative, ref in semantic_model_member_files(
+                slot, _read_blob(slot, path, read_bytes=read_bytes),
+            ).items()
         })
     return files
 
@@ -3814,6 +3822,8 @@ def validate_checkpoint_continuation_source_count(
 def _manifest_from_latest_pointer(
     root_path: Path,
     latest: CheckpointLatestPointer,
+    *,
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> tuple[Path, CheckpointTransactionManifest]:
     manifest_path = _resolve_latest_manifest_path(root_path.resolve(), latest)
     if not manifest_path.is_file():
@@ -3821,7 +3831,7 @@ def _manifest_from_latest_pointer(
             f"latest pointer references missing manifest: {latest.manifest_relative_path}"
         )
     try:
-        raw_manifest = manifest_path.read_bytes()
+        raw_manifest = read_bytes(manifest_path)
     except OSError as exc:
         raise CheckpointIntegrityError(
             f"latest pointer references unreadable manifest: {latest.manifest_relative_path}"
@@ -7656,10 +7666,13 @@ def _deserialize_checkpoint_slot(
         ) from exc
 
 
-def _read_blob(slot: CheckpointSlotBlobRef, path: Path) -> bytes:
+def _read_blob(
+    slot: CheckpointSlotBlobRef, path: Path,
+    *, read_bytes: Callable[[Path], bytes] = Path.read_bytes,
+) -> bytes:
     if not path.is_file():
         raise CheckpointIntegrityError(f"checkpoint slot {slot.slot!r} blob is missing")
-    data = path.read_bytes()
+    data = read_bytes(path)
     if len(data) != slot.size_bytes:
         raise CheckpointIntegrityError(f"checkpoint slot {slot.slot!r} size mismatch")
     if sha256_bytes(data) != slot.sha256:
