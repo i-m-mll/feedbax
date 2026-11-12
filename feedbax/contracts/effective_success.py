@@ -9,11 +9,15 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.request_identity import DecodedRequest, decode_request
 from feedbax.contracts.request_refs import (
     ContentRef,
     EffectiveBindingId,
     EffectiveInputMember,
+    LastMember,
     Name,
+    NamedMember,
+    ProductRef,
     ReferenceValue,
     RequestId,
     Sha256,
@@ -110,10 +114,55 @@ def read_committed_success(
     ref: ContentObjectRef,
     read_object: Callable[[ContentObjectRef], bytes],
 ) -> Success:
+    receipt = read_success_object(ref, read_object)
+    if index.attempts.get(receipt.attempt) != ref:
+        raise ValueError("Receipt has no attempt in this committed Store generation")
+    return receipt
+
+
+def read_success_object(
+    ref: ContentObjectRef,
+    read_object: Callable[[ContentObjectRef], bytes],
+) -> Success:
+    """Read the immutable receipt bytes at an already authorized exact ref."""
     raw = read_object(ref)
     receipt = Success.model_validate_json(raw)
     if raw != canonical_json_v2_bytes(receipt.model_dump(mode="json")):
         raise ValueError("Successful receipt bytes are not canonical")
-    if index.attempts.get(receipt.attempt) != ref:
-        raise ValueError("Receipt has no attempt in this committed Store generation")
     return receipt
+
+
+def read_success_request(
+    request: RequestObject,
+    read_object: Callable[[ContentObjectRef], bytes],
+) -> DecodedRequest:
+    documents = {ref.sha256: ref for ref in request.documents}
+    used = set()
+
+    def read_document(digest: str) -> bytes:
+        if digest not in documents:
+            raise ValueError(f"Request document is unavailable: {digest}")
+        used.add(digest)
+        return read_object(documents[digest])
+
+    decoded = decode_request(read_object(request.object), read_document)
+    if decoded.id != request.id or used != documents.keys() or len(used) != len(request.documents):
+        raise ValueError("Stored request differs from its authored ID or document closure")
+    return decoded
+
+
+def select_success_product(reference: ProductRef, receipt: Success) -> Product:
+    """Resolve exactly one authored role member from this immutable producer."""
+    members = receipt.products.get(reference.role)
+    if receipt.request.id != reference.request_id or members is None:
+        raise ValueError(f"Receipt does not supply {reference.request_id}/{reference.role}")
+    match reference.select:
+        case None if len(members) == 1:
+            return members[0]
+        case LastMember():
+            return members[-1]
+        case NamedMember(member=name):
+            for product in members:
+                if product.name == name:
+                    return product
+    raise ValueError(f"Product selector has no supported member for {reference.role!r}")

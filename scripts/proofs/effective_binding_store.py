@@ -11,7 +11,7 @@ from feedbax.contracts.effective_success import (
     INDEX_REF as INDEX_REF,
     Bindings,
     BoundMember,
-    Product,
+    Product as Product,
     Products,
     RequestObject,
     Selection,
@@ -19,20 +19,19 @@ from feedbax.contracts.effective_success import (
     SuccessIndex,
     decode_success_index,
     read_committed_success,
+    read_success_request,
+    select_success_product,
     success_blob_ref,
 )
 from feedbax.contracts.request_identity import (
     DecodedRequest,
     EncodedRequest,
-    decode_request,
     effective_binding_id,
 )
 from feedbax.contracts.request_refs import (
     ContentRef,
     EffectiveBindingId,
     InputMember,
-    LastMember,
-    NamedMember,
     ProductRef,
     RequestId,
 )
@@ -69,23 +68,7 @@ class SuccessView:
         self._index = decode_success_index(self._expected)
 
     def _decode(self, request: RequestObject) -> DecodedRequest:
-        documents = {ref.sha256: ref for ref in request.documents}
-        used = set()
-
-        def read_document(digest: str) -> bytes:
-            if digest not in documents:
-                raise ValueError(f"Request document is unavailable: {digest}")
-            used.add(digest)
-            return self.store.get_object(documents[digest])
-
-        decoded = decode_request(self.store.get_object(request.object), read_document)
-        if (
-            decoded.id != request.id
-            or used != documents.keys()
-            or len(used) != len(request.documents)
-        ):
-            raise ValueError("Stored request differs from its authored ID or document closure")
-        return decoded
+        return read_success_request(request, self.store.get_object)
 
     def _verify_content(self, content: ContentRef) -> None:
         self.store.verify_object(success_blob_ref(content))
@@ -101,10 +84,8 @@ class SuccessView:
         if origin is None:
             raise ValueError(f"Producer success is unavailable for {member.key!r}")
         producer = self._receipt(origin)
-        if producer.request.id != reference.request_id or reference.role not in producer.products:
-            raise ValueError(f"Receipt does not supply product for {member.key!r}")
         self._decode(producer.request)
-        product = _select_product(reference, producer.products[reference.role])
+        product = select_success_product(reference, producer)
         self._verify_content(product.content)
         return BoundMember(
             key=member.key,
@@ -204,16 +185,3 @@ class SuccessView:
             ):
                 raise PublicationConflict("Successful-result index moved during publication")
         return PublishedSuccess(ref, receipt)
-
-
-def _select_product(reference: ProductRef, members: tuple[Product, ...]) -> Product:
-    match reference.select:
-        case None if len(members) == 1:
-            return members[0]
-        case LastMember():
-            return members[-1]
-        case NamedMember(member=name):
-            for product in members:
-                if product.name == name:
-                    return product
-    raise ValueError(f"Product selector has no supported member for {reference.role!r}")

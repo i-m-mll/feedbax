@@ -21,8 +21,12 @@ from feedbax.contracts.effective_success import (
     INDEX_REF,
     Success,
     decode_success_index,
-    read_committed_success,
-    success_blob_ref,
+)
+from feedbax.contracts.store_closure import (
+    STORE_CLOSURE_REF_SCHEMA,
+    ReceiptRoot,
+    StoreClosureRef,
+    read_store_closure_ref,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import (
@@ -36,6 +40,7 @@ from feedbax.persistence.content_retention import (
     _read_index,
     _target_objects,
 )
+from feedbax.persistence.receipt_closure import ReceiptClosure
 
 
 FRESH_OBJECT_GRACE_SECONDS = 24 * 60 * 60
@@ -101,10 +106,11 @@ def _success_roots(
     gaps: list[str],
 ) -> Iterator[RootObservation]:
     index = decode_success_index(value)
+    closure = ReceiptClosure(store, index)
     receipts: dict[str, tuple[ContentObjectRef, Success]] = {}
     for attempt, ref in index.attempts.items():
         try:
-            receipt = read_committed_success(index, ref, store.get_object)
+            receipt = closure.receipt_at(ref)
             if receipt.attempt != attempt:
                 raise ContentRetentionError("receipt differs from the indexed attempt")
             receipts[ref.sha256] = ref, receipt
@@ -118,30 +124,8 @@ def _success_roots(
         return found[1]
 
     def targets(ref: ContentObjectRef) -> tuple[ContentRetentionTarget, ...]:
-        objects: dict[str, ContentObjectRef] = {}
-        visited: set[str] = set()
-        pending = [ref]
-        while pending:
-            receipt_ref = pending.pop()
-            receipt = receipt_at(receipt_ref)
-            if receipt_ref.sha256 in visited:
-                continue
-            visited.add(receipt_ref.sha256)
-            members = tuple(member for group in receipt.inputs.values() for member in group)
-            contents = (
-                *(member.content for member in members),
-                *(product.content for group in receipt.products.values() for product in group),
-            )
-            for item in (
-                receipt_ref,
-                receipt.request.object,
-                *receipt.request.documents,
-                *(success_blob_ref(content) for content in contents),
-            ):
-                if objects.setdefault(item.sha256, item) != item:
-                    raise ContentRetentionError(f"conflicting object evidence: {item.sha256}")
-            pending.extend(member.selection.receipt for member in members if member.selection)
-        return tuple(object_target(item) for item in objects.values())
+        selection = StoreClosureRef(roots=(ReceiptRoot(receipt=ref),), include_ancestry=True)
+        return tuple(object_target(item) for item in closure.walk(selection))
 
     current: dict[str, ContentObjectRef] = {}
     for key, ref in index.authored.items():
@@ -161,7 +145,7 @@ def _success_roots(
     for ref in current.values():
         try:
             yield RootObservation(f"success:{receipt_at(ref).attempt}", targets(ref))
-        except ValueError as error:
+        except (ValueError, OSError) as error:
             gaps.append(f"success {ref.sha256}: {error}")
 
     predecessors: set[str] = set()
@@ -188,7 +172,7 @@ def _success_roots(
                 targets(previous),
                 when,
             )
-        except ValueError as error:
+        except (ValueError, OSError) as error:
             gaps.append(f"success {successor.attempt}: {error}")
 
 
@@ -221,6 +205,12 @@ def _store_refs(
             if name == INDEX_REF:
                 yield from _success_roots(store, value, gaps)
                 continue
+            if name == "plan" or name.startswith("runs/"):
+                gaps.append(f"ref {name}: plan or result root contract is unavailable")
+            if value.get("schema_version") == STORE_CLOSURE_REF_SCHEMA:
+                closure = ReceiptClosure(store).walk(read_store_closure_ref(value))
+                yield RootObservation(f"ref:{name}", tuple(object_target(item) for item in closure))
+                continue
             match value.get("schema_id"):
                 case identity if identity == CONTENT_OBJECT_REF_SCHEMA_ID:
                     target = object_target(ContentObjectRef.model_validate(value))
@@ -239,8 +229,6 @@ def _store_refs(
                     )
                 case _:
                     raise ContentRetentionError("no known typed root contract")
-            if name == "plan" or name.startswith("runs/"):
-                gaps.append(f"ref {name}: plan or result root contract is unavailable")
             yield RootObservation(f"ref:{name}", (target,))
         except (ValueError, OSError) as error:
             gaps.append(f"ref {name}: {error}")
