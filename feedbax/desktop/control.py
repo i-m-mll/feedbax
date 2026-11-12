@@ -119,7 +119,8 @@ def bind_studio(paths: AppPaths) -> socket.socket:
 
 
 def connect(
-    release: Release, paths: AppPaths, *, seconds: float, action: str, disposition: str
+    release: Release, paths: AppPaths, *, seconds: float, action: str, disposition: str,
+    project_folder: str | None = None, project_id: str | None = None,
 ) -> dict:
     deadline = time.monotonic() + seconds
     while True:
@@ -137,8 +138,12 @@ def connect(
         ):
             return {"status": "release_mismatch", "service": health}
         if action == "ticket":
-            result = call(paths, "ticket", body={})
-            return {**health, "url": f"{health['origin']}{CONTROL_ROUTE}/connect#{result['ticket']}"}
+            body = {key: value for key, value in (
+                ("project_folder", project_folder), ("project_id", project_id),
+            ) if value is not None}
+            result = call(paths, "ticket", body=body)
+            token = result.pop("ticket")
+            return {**health, **result, "url": f"{health['origin']}{CONTROL_ROUTE}/connect#{token}"}
         if action == "stop":
             return call(paths, "stop", body={"disposition": disposition}, timeout=50)
         return health

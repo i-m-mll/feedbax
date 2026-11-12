@@ -37,6 +37,7 @@ pub struct Release {
 pub struct Paths {
     pub logs: PathBuf,
     pub control: PathBuf,
+    pub projects: PathBuf,
     pub storage_id: [u8; 16],
 }
 
@@ -201,7 +202,7 @@ impl Release {
         }
     }
 
-    pub fn connect(&self) -> Result<Value> {
+    pub fn connect(&self, ticket_args: &[&str]) -> Result<Value> {
         let paths = self.paths()?;
         let Some(_activation) = activation_lock(&paths)? else {
             return Ok(json!({"status": "installing"}));
@@ -211,7 +212,7 @@ impl Release {
         }
         let health = self.call("health", &[])?;
         match health["status"].as_str() {
-            Some("ready") => return self.call("ticket", &[]),
+            Some("ready") => return self.call("ticket", ticket_args),
             Some("unavailable") => {}
             _ => return Ok(health),
         }
@@ -219,7 +220,9 @@ impl Release {
         if status != "enabled" {
             return Ok(json!({"status": status}));
         }
-        self.call("ticket", &["--wait", "20"])
+        let mut wait = vec!["--wait", "20"];
+        wait.extend_from_slice(ticket_args);
+        self.call("ticket", &wait)
     }
 
     pub fn stop(&self, disposition: &str) -> Result<Value> {

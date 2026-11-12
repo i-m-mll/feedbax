@@ -5,11 +5,18 @@ from __future__ import annotations
 import hmac
 import secrets
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
+from fastapi import HTTPException
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
+from feedbax.contracts.base import StrictModel
 from feedbax.desktop.control import CONTROL_ROUTE, Endpoint
+from feedbax.web.services.project_folder import ProjectFolderNotFound
 
 _COOKIE = "feedbax_studio"
 _CONNECT = CONTROL_ROUTE + "/connect"
@@ -23,7 +30,8 @@ history.replaceState(null, "", location.pathname);
 fetch("/_desktop/exchange", { method: "POST", headers: {"X-Feedbax-Ticket": ticket} })
   .then(response => {
     if (!response.ok) throw Error();
-    location.replace("/");
+    const project = response.headers.get("X-Feedbax-Project");
+    location.replace(project ? "/?project=" + encodeURIComponent(project) : "/");
   })
   .catch(() => {
     document.querySelector("#status").textContent =
@@ -39,23 +47,60 @@ _BROWSER_HEADERS = {
 }
 
 
+class _TicketRequest(StrictModel):
+    project_folder: Path | None = None
+    project_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _Ticket:
+    expires: float
+    project_id: str | None
+
+
 class DesktopTransport:
     def __init__(self, app, endpoint: Endpoint) -> None:
         self.app = app
         self.endpoint = endpoint
         self.host = f"127.0.0.1:{endpoint.port}"
         self.session = secrets.token_urlsafe(32)
-        self.tickets: dict[str, float] = {}
+        self.tickets: dict[str, _Ticket] = {}
 
-    def issue_ticket(self) -> str:
+    def issue_ticket(self, project_id: str | None = None) -> str:
         now = time.monotonic()
-        self.tickets = {ticket: expiration for ticket, expiration in self.tickets.items()
-                        if expiration > now}
+        self.tickets = {token: ticket for token, ticket in self.tickets.items() if ticket.expires > now}
         if len(self.tickets) >= 32:
             del self.tickets[next(iter(self.tickets))]
-        ticket = secrets.token_urlsafe(32)
-        self.tickets[ticket] = now + 20
-        return ticket
+        token = secrets.token_urlsafe(32)
+        self.tickets[token] = _Ticket(now + 20, project_id)
+        return token
+
+    def register_ticket_route(self, is_stopping: Callable[[], bool]) -> None:
+        @self.app.post(CONTROL_ROUTE + "/ticket")
+        async def ticket(request: _TicketRequest):
+            if is_stopping():
+                raise HTTPException(503, "Studio service is stopping")
+            if request.project_folder is not None and request.project_id is not None:
+                raise HTTPException(422, "Select a folder or reconnect to one project.")
+            folders = self.app.state.project_folders
+            try:
+                if request.project_folder is not None:
+                    document = await run_in_threadpool(folders.open_selected_folder, request.project_folder)
+                elif request.project_id is not None:
+                    document = await run_in_threadpool(folders.open, request.project_id)
+                else:
+                    return {"ticket": self.issue_ticket()}
+            except ProjectFolderNotFound as error:
+                raise HTTPException(404, "The selected Studio project folder is missing.") from error
+            except (OSError, ValueError) as error:
+                raise HTTPException(422, str(error)) from error
+            if is_stopping():
+                raise HTTPException(503, "Studio service is stopping")
+            project_id = document.snapshot.project_id
+            return {
+                "ticket": self.issue_ticket(project_id),
+                "project": {"id": project_id, "title": document.configuration.project},
+            }
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "lifespan":
@@ -93,12 +138,14 @@ class DesktopTransport:
                 },
             )
         elif path == _EXCHANGE and method == "POST" and origin == self.endpoint.origin:
-            ticket = connection.headers.get("x-feedbax-ticket", "")
-            expiration = self.tickets.pop(ticket, 0)
-            if expiration <= time.monotonic():
+            token = connection.headers.get("x-feedbax-ticket", "")
+            ticket = self.tickets.pop(token, None)
+            if ticket is None or ticket.expires <= time.monotonic():
                 await self._deny(scope, receive, send)
                 return
             response = Response(status_code=204, headers=_BROWSER_HEADERS)
+            if ticket.project_id is not None:
+                response.headers["x-feedbax-project"] = ticket.project_id
             response.set_cookie(_COOKIE, self.session, httponly=True, samesite="strict")
         elif (
             path.startswith(f"{CONTROL_ROUTE}/")

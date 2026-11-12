@@ -294,6 +294,16 @@ class ProjectFolderService:
     def open(self, project_id: str) -> StudioProjectDocument:
         return self._document(project_id, self._read_text(project_id))
 
+    def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
+        """Open the managed direct child selected by the native folder picker."""
+        try:
+            inside = folder.is_absolute() and folder.parent.resolve(strict=True) == self.root
+        except (OSError, RuntimeError, ValueError):
+            inside = False
+        if not inside:
+            raise ProjectFolderInvalid("Choose a project folder inside the Studio projects directory.")
+        return self.open(folder.name)
+
     def _read_text(self, project_id: str) -> TextProject:
         root = self._folder(project_id)
         with _folder_lock(root, write=False):
