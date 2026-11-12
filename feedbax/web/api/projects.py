@@ -9,7 +9,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_project import (
     StudioPresentationWrite,
+    StudioProjectDocument,
     StudioProjectPatch,
+    StudioProjectRename,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
@@ -25,9 +27,9 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
-def _project_response(
-    response: Response, operation: Callable[[], StudioProjectSnapshot]
-) -> StudioProjectSnapshot:
+def _project_response[Result: StudioProjectDocument | StudioProjectSnapshot](
+    response: Response, operation: Callable[[], Result]
+) -> Result:
     try:
         snapshot = operation()
     except ProjectFolderNotFound as exc:
@@ -81,6 +83,29 @@ def put_project_presentation(
 ) -> StudioProjectSnapshot:
     return _project_response(
         response, lambda: request.app.state.project_folders.write_presentation(project_id, body)
+    )
+
+
+@router.post("", status_code=201)
+def new_project(request: Request, response: Response) -> StudioProjectDocument:
+    document = _project_response(response, request.app.state.project_folders.new)
+    response.headers["Location"] = request.url_for(
+        "open_project", project_id=document.snapshot.project_id
+    ).path
+    return document
+
+
+@router.get("/{project_id}/open")
+def open_project(project_id: ProjectName, request: Request, response: Response) -> StudioProjectDocument:
+    return _project_response(response, lambda: request.app.state.project_folders.open(project_id))
+
+
+@router.post("/{project_id}/rename")
+def rename_project(
+    project_id: ProjectName, body: StudioProjectRename, request: Request, response: Response
+) -> StudioProjectDocument:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.rename(project_id, body)
     )
 
 

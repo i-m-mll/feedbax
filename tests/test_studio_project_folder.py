@@ -13,6 +13,7 @@ import pytest
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import compile_project
 from feedbax.host import HostError
@@ -99,6 +100,146 @@ def _gain(root: Path):
         .project.documents["model"]
         .payload["nodes"]["gain"]["params"]["gain"]
     )
+
+
+def test_new_projects_are_durable_openable_and_distinct(tmp_path):
+    projects = tmp_path / "projects"
+    app = create_app(projects_dir=projects)
+
+    def create():
+        client = TestClient(app)
+        try:
+            response = client.post("/api/projects")
+            assert response.status_code == 201, response.text
+            assert response.headers["Cache-Control"] == "no-store"
+            document = response.json()
+            project_id = document["snapshot"]["project_id"]
+            assert response.headers["Location"] == f"/api/projects/{project_id}/open"
+            return document
+        finally:
+            client.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        creates = [pool.submit(create) for _ in range(2)]
+        documents = [creation.result() for creation in creates]
+
+    ids = {document["snapshot"]["project_id"] for document in documents}
+    assert len(ids) == 2
+    assert {entry.name for entry in projects.iterdir()} == ids
+    reopened = TestClient(create_app(projects_dir=projects))
+    for document in documents:
+        snapshot = document["snapshot"]
+        project_id = snapshot["project_id"]
+        folder = projects / project_id
+        text = load_text_project(folder)
+        assert text.project == Project()
+        assert text.configuration.project == project_id
+        assert text.store_path == folder / "results"
+        assert text.revision == snapshot["revision"]
+        assert json.loads((folder / "presentation.json").read_bytes()) == {}
+        response = reopened.get(f"/api/projects/{project_id}/open")
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.json() == document
+        assert reopened.get(f"/api/projects/{project_id}").json() == snapshot
+
+
+def test_rename_changes_only_the_declaration_and_checks_authored_revision(study):
+    root, client = study
+    initial = client.get(f"{_URL}/open").json()
+    presentation = {"documents": {"model": {"camera": {"x": 1, "y": 2, "zoom": 1.5}}}}
+    response = client.put(f"{_URL}/presentation", json={
+        "revision": initial["snapshot"]["presentation_revision"],
+        "presentation": presentation,
+    })
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    store = root / "results"
+    store.mkdir()
+    (store / "retained").write_bytes(b"existing store contents")
+    before = load_text_project(root)
+    plan = compile_project(before.project)
+    assert not plan.diagnostics
+    declaration = root / PROJECT_DECLARATION_FILENAME
+    original_declaration = json.loads(declaration.read_bytes())
+    untouched = {
+        path: path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file() and path != declaration
+    }
+
+    response = client.post(f"{_URL}/rename", json={"revision": saved["revision"], "name": "renamed"})
+    assert response.status_code == 200, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    renamed = response.json()
+    assert renamed["configuration"] == {**initial["configuration"], "project": "renamed"}
+    current = renamed["snapshot"]
+    assert current["revision"] != saved["revision"]
+    assert current == {**saved, "revision": current["revision"]}
+    assert json.loads(declaration.read_bytes()) == {**original_declaration, "project": "renamed"}
+    assert all(path.read_bytes() == data for path, data in untouched.items())
+    after = load_text_project(root)
+    assert after.store_path == before.store_path
+    assert compile_project(after.project) == plan
+
+    stale = client.post(f"{_URL}/rename", json={"revision": saved["revision"], "name": "stale"})
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current"] == current["revision"]
+    assert _patch(client, saved["revision"], 9).status_code == 409
+    assert client.post(
+        f"{_URL}/rename", json={"revision": current["revision"], "name": "renamed"}
+    ).json() == renamed
+    reopened = TestClient(create_app(projects_dir=root.parent))
+    assert reopened.get(f"{_URL}/open").json() == renamed
+    assert reopened.get("/api/projects/renamed/open").status_code == 404
+
+
+def test_open_uses_managed_folder_ids_and_refuses_directory_symlinks(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    for name, content in dump_text_project(
+        Project(), ProjectConfiguration(project="external", store="results")
+    ).items():
+        (external / name).write_bytes(content)
+    (projects / "alias").symlink_to(external, target_is_directory=True)
+    client = TestClient(create_app(projects_dir=projects))
+    assert client.get("/api/projects/alias/open").status_code == 422
+    assert client.get("/api/projects/external/open").status_code == 404
+    assert client.get("/api/projects/external.json/open").status_code == 422
+
+
+def test_rename_and_patch_from_one_revision_have_one_winner(study):
+    root, client = study
+    original = _read(client)
+    start = Barrier(2)
+
+    def rename():
+        start.wait(timeout=4)
+        return client.post(f"{_URL}/rename", json={
+            "revision": original["revision"], "name": "renamed",
+        })
+
+    def patch():
+        start.wait(timeout=4)
+        return _patch(client, original["revision"], 3)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rename_request, patch_request = pool.submit(rename), pool.submit(patch)
+        renamed, patched = rename_request.result(), patch_request.result()
+
+    assert sorted([renamed.status_code, patched.status_code]) == [200, 409]
+    opened = client.get(f"{_URL}/open").json()
+    if renamed.is_success:
+        assert opened == renamed.json()
+        assert patched.json()["detail"]["current"] == opened["snapshot"]["revision"]
+        assert opened["snapshot"]["semantic_root"] == original["semantic_root"]
+    else:
+        assert opened["snapshot"] == patched.json()
+        assert renamed.json()["detail"]["current"] == opened["snapshot"]["revision"]
+        assert opened["configuration"]["project"] == "reach"
+        assert _gain(root) == 3
 
 
 def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(study):

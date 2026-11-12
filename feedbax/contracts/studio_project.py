@@ -9,6 +9,7 @@ from pydantic import Field, FiniteFloat, JsonValue
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project import Pointer, Project, Sha256
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_io import ProjectConfiguration
 
 
 class PresentationPosition(StrictModel):
@@ -80,3 +81,13 @@ class StudioProjectPatch(StrictModel):
 class StudioPresentationWrite(StrictModel):
     revision: Sha256
     presentation: PresentationDocument
+
+
+class StudioProjectDocument(StrictModel):
+    configuration: ProjectConfiguration
+    snapshot: StudioProjectSnapshot
+
+
+class StudioProjectRename(StrictModel):
+    revision: Sha256
+    name: ProjectName

@@ -8,21 +8,27 @@ import fcntl
 import os
 from pathlib import Path
 import stat
+from tempfile import TemporaryDirectory
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from feedbax._atomic import write_bytes_atomic
+from feedbax._atomic import sync_parent_directories, write_bytes_atomic
+from feedbax._secure_fs import directory_open_flags, rename_no_replace
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.project import Project, json_pointer_parts
+from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
+    ProjectConfiguration,
     ProjectReadError,
     TextProject,
     dump_text_project,
     load_text_project,
     project_semantic_root,
+    rename_text_project_declaration,
     text_project_paths,
 )
 from feedbax.contracts.strict_json import strict_json_loads
@@ -30,7 +36,9 @@ from feedbax.contracts.studio_project import (
     PresentationDocument,
     SetProjectValue,
     StudioPresentationWrite,
+    StudioProjectDocument,
     StudioProjectPatch,
+    StudioProjectRename,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
@@ -112,6 +120,10 @@ def _read_presentation(root: Path) -> tuple[bytes | None, str]:
     return data, sha256_bytes(b"feedbax.presentation.v1\1" + data)
 
 
+def _encode_presentation(presentation: PresentationDocument) -> bytes:
+    return (presentation.model_dump_json(indent=2, exclude_unset=True) + "\n").encode()
+
+
 class ProjectFolderService:
     """Own revision guards for project folders under the app-managed root."""
 
@@ -185,8 +197,65 @@ class ProjectFolderService:
             presentation_error=presentation_error,
         )
 
+    def _document(self, project_id: str, text: TextProject) -> StudioProjectDocument:
+        return StudioProjectDocument(
+            configuration=text.configuration,
+            snapshot=self._snapshot(project_id, text),
+        )
+
+    def open(self, project_id: str) -> StudioProjectDocument:
+        return self._document(project_id, self._load(self._folder(project_id)))
+
     def read(self, project_id: str) -> StudioProjectSnapshot:
-        return self._snapshot(project_id, self._load(self._folder(project_id)))
+        return self.open(project_id).snapshot
+
+    def new(self) -> StudioProjectDocument:
+        project_id = f"untitled-{uuid4().hex}"
+        configuration = ProjectConfiguration(project=project_id, store="results")
+        files = dump_text_project(Project(), configuration)
+        files[_PRESENTATION] = _encode_presentation(PresentationDocument())
+        self.root.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".studio-project-", dir=self.root) as staged:
+            staging = Path(staged)
+            for relative, data in files.items():
+                write_bytes_atomic(staging / relative, data, replace=False)
+            parent = os.open(self.root, directory_open_flags(error_factory=OSError))
+            try:
+                rename_no_replace(
+                    staging.name,
+                    project_id,
+                    source_dir_fd=parent,
+                    destination_dir_fd=parent,
+                    error_factory=OSError,
+                    context="new Studio project",
+                )
+            finally:
+                os.close(parent)
+            sync_parent_directories(self.root / project_id)
+        return self.open(project_id)
+
+    def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
+        root = self._folder(project_id)
+        with _writer_lock(root):
+            text = self._load(root)
+            _check_revision("project", body.revision, text.revision)
+            if body.name != text.configuration.project:
+                declaration = root / PROJECT_DECLARATION_FILENAME
+                mode = stat.S_IMODE(_regular(declaration).st_mode)
+                try:
+                    replacement = rename_text_project_declaration(declaration.read_bytes(), body.name)
+                except ProjectReadError as error:
+                    raise ProjectFolderInvalid(str(error)) from error
+                write_bytes_atomic(
+                    declaration,
+                    replacement,
+                    mode=mode,
+                    before_publish=lambda: _check_revision(
+                        "project", text.revision, self._load(root).revision
+                    ),
+                )
+                text = self._load(root)
+            return self._document(project_id, text)
 
     def revision(self, project_id: str) -> StudioProjectRevision:
         root = self._folder(project_id)
@@ -243,9 +312,7 @@ class ProjectFolderService:
             text = self._load(root)
             data, revision = _read_presentation(root)
             _check_revision("presentation", body.revision, revision)
-            replacement = (
-                body.presentation.model_dump_json(indent=2, exclude_unset=True) + "\n"
-            ).encode()
+            replacement = _encode_presentation(body.presentation)
             if replacement != data:
                 path = root / _PRESENTATION
                 mode = stat.S_IMODE(_regular(path).st_mode) if data is not None else 0o600

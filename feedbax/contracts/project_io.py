@@ -188,3 +188,9 @@ def dump_text_project(project: Project, configuration: ProjectConfiguration) -> 
         **{f"steps/{name}.json": _encode(step) for name, step in project.steps.items()},
         **{f"variants/{name}.json": _encode(row) for name, row in rows.items() if row is not None},
     }
+
+
+def rename_text_project_declaration(data: bytes, name: ProjectName) -> bytes:
+    """Change the declared name while preserving the other authored fields and omissions."""
+    manifest = _parse(TextProjectManifest, data, PROJECT_DECLARATION_FILENAME)
+    return _encode(manifest.model_copy(update={"project": name}))
