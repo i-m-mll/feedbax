@@ -229,7 +229,7 @@ export function Header() {
         onOpenSaved={handleOpen}
       />
     )}
-    <header className="relative z-40 h-12 flex items-center gap-2 px-3 border-b border-slate-100 bg-white/80 backdrop-blur">
+    <header className="relative z-40 h-12 flex items-center gap-2 pr-3 pl-[calc(0.75rem+var(--studio-native-controls))] border-b border-slate-100 bg-white/80 backdrop-blur">
       {/* Logo — fixed width */}
       <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600 pr-2">
         <img src="/icon.svg" alt="feedbax studio logo" className="h-7 w-7" />

@@ -1,0 +1,3 @@
+[submodule "window-shell"]
+	path = vendor/window-shell
+	url = ../window-shell.git

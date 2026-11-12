@@ -54,6 +54,7 @@ LOCKED_BUILD_INPUTS = (
     "desktop/src-tauri", "desktop/shell", "desktop/bun.lock", "desktop/package.json",
     "web/public/icon.svg",
 )
+WINDOW_SHELL = "vendor/window-shell"
 WHEEL_SCHEMA = "feedbax.desktop.wheels.v1"
 
 
@@ -84,11 +85,35 @@ def desktop_icon_source() -> bytes:
     return ElementTree.tostring(artwork)
 
 
+def checked_window_shell() -> str:
+    entry = git("ls-tree", "HEAD", "--", WINDOW_SHELL)
+    match = re.fullmatch(rf"160000 commit ([0-9a-f]{{40}})\t{re.escape(WINDOW_SHELL)}", entry)
+    if match is None:
+        raise ValueError("The shared window shell must be pinned as one Git submodule")
+    pin = match[1]
+    source = ROOT / WINDOW_SHELL
+    if not source.is_dir() or source.resolve() != source:
+        raise ValueError("Initialize the pinned shared window shell submodule before building")
+
+    def shell_git(*args: str) -> str:
+        return run("git", *args, cwd=source, capture=True).strip()
+
+    if shell_git("rev-parse", "--show-toplevel") != str(source):
+        raise ValueError("Initialize the pinned shared window shell submodule before building")
+    if shell_git("rev-parse", "HEAD") != pin or shell_git(
+        "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none",
+    ):
+        raise ValueError("The shared window shell checkout must be clean and match the pinned commit")
+    return pin
+
+
 def native_inputs() -> dict:
+    inputs = {path: git("rev-parse", f"HEAD:{path}") for path in LOCKED_BUILD_INPUTS}
+    inputs[WINDOW_SHELL] = checked_window_shell()
     return {
         "target": TARGET,
         "minimum_macos": MINIMUM_MACOS,
-        "inputs": {path: git("rev-parse", f"HEAD:{path}") for path in LOCKED_BUILD_INPUTS},
+        "inputs": inputs,
         "desktop_icon_sha256": hashlib.sha256(desktop_icon_source()).hexdigest(),
         "rustc": run("rustc", "-vV", capture=True).strip(),
         "xcode_sdk": run("xcrun", "--sdk", "macosx", "--show-sdk-version", capture=True).strip(),
@@ -117,6 +142,8 @@ def build_native(timeout: int) -> None:
         stamp.write_text(icon_source)
     run(*TAURI, "build", "--target", TARGET, "--no-bundle", "--ci", "--", "--locked",
         cwd=DESKTOP, env=native_environment(), timeout=timeout)
+    if checked_window_shell() != inputs["inputs"][WINDOW_SHELL]:
+        raise ValueError("shared window shell pin changed during the native build")
     (SCRATCH / "native.json.tmp").write_bytes(json_bytes(inputs | {"sha256": sha256(NATIVE_BINARY)}))
     (SCRATCH / "native.json.tmp").replace(NATIVE_RECEIPT)
 
@@ -389,6 +416,8 @@ def package(args: argparse.Namespace) -> None:
         } | fixture
         if clean_revision() != revision:
             raise ValueError("source revision changed during packaging")
+        if checked_window_shell() != expected["inputs"][WINDOW_SHELL]:
+            raise ValueError("shared window shell pin changed during packaging")
         receipt = seal(app, manifest, args.signing_identity)
         archive = stage / "Feedbax-Studio-macos-arm64.zip"
         run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, archive)

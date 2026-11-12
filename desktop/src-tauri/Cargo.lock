@@ -671,12 +671,15 @@ dependencies = [
  "block2",
  "libc",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "objc2-service-management",
+ "objc2-web-kit",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "window-shell-geometry",
 ]
 
 [[package]]
@@ -4149,6 +4152,14 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "window-shell-geometry"
+version = "0.1.0"
+dependencies = [
+ "objc2-app-kit",
+ "serde",
+]
 
 [[package]]
 name = "window-vibrancy"

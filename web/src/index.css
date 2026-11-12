@@ -5,6 +5,7 @@
 @tailwind utilities;
 
 :root {
+  --studio-native-controls: 0px;
   --gray-50: #fafafa;
   --gray-100: #f4f4f5;
   --gray-200: #e4e4e7;
