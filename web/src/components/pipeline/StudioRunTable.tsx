@@ -139,7 +139,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
                 data-selected={lit || undefined}
                 data-related={relatedIds?.has(run.id) || undefined}
                 aria-rowindex={item.index + 2}
-                className="data-[related=true]:bg-slate-100 data-[selected=true]:bg-violet-50"
+                className="studio-run-row data-[related=true]:bg-slate-100 data-[selected=true]:bg-violet-50"
               >
                 <th scope="row" className="border-t border-slate-200 p-2 font-medium">
                   <button

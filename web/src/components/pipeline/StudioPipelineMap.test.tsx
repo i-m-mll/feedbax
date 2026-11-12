@@ -102,7 +102,8 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
 
   fireEvent.click(card.getByRole('button', { name: select('rate 0.003') }));
   expect(header.getAttribute('aria-pressed')).toBe('false');
-  expect(card.getByText(`rate 0.003 · ${studioCountOf(2, 6)}`)).toBeTruthy();
+  expect(card.getByText('rate 0.003')).toBeTruthy();
+  expect(card.getByText(studioCountOf(2, 6))).toBeTruthy();
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('true');
 
@@ -226,7 +227,8 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   const view = mapWithState(plan, { drawerOpen: true });
   const card = within(screen.getByRole('article', { name: studioAccessibleName('train', train.label) }));
   const evaluation = within(screen.getByRole('article', { name: studioAccessibleName('evaluate', evalStep.label) }));
-  expect(evaluation.getByText(`rate 0.003 · ${studioCountOf(2, 6)}`)).toBeTruthy();
+  expect(evaluation.getByText('rate 0.003')).toBeTruthy();
+  expect(evaluation.getByText(studioCountOf(2, 6))).toBeTruthy();
   expect(view.container.querySelectorAll('path[stroke="currentColor"]')).toHaveLength(2);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
   const evalRow = within(drawer.getByRole('button', { name: select(evalStep.label) }));

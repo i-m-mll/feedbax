@@ -431,7 +431,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         const details = slot === 'primary' ? primary : secondary;
         if (view === 'model' || view === 'task' || view === 'scene') {
           const header = view !== 'scene' && authoring && wholeStep
-            ? <StudioTrainAuthoringForm {...authoring} view={view} />
+            ? <StudioTrainAuthoringForm {...authoring} view={view} documentPicker />
             : details[view].header;
           return { ...details[view], header, body: <StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary> };
         }

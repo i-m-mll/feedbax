@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { StudioActivityJob, StudioJobEvent } from '@/generated/studioContracts';
-import { PlotTrack, plotHeight, plotWidth, projectSeries } from './studioPlot';
+import { useElementSize } from '@/hooks/useElementSize';
+import { PlotTrack, formatTrainingLoss } from './studioPlot';
 import { studioFormat, studioName } from './studioVocabulary';
 
 type Attempt = Pick<StudioActivityJob, 'job_id' | 'continues'>;
@@ -32,8 +33,6 @@ const lossIntervalSchema = z.object({
     }),
   }),
 });
-const formatLoss = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 5 });
-
 export function studioRunHistory(
   job: Attempt,
   jobs: readonly Attempt[],
@@ -104,25 +103,41 @@ export function studioRunHistory(
 }
 
 export function LossPlot({ stages }: { stages: LossStage[] }) {
+  const { ref, width } = useElementSize<HTMLElement>();
   const chained = stages.length > 1;
   const samples = stages.flatMap((stage) => stage.points.map((point) => ({
     ...point, stage, update: stage.offset + point.end,
   })));
   const ranges = samples.flatMap((sample) => sample.interval ? [{ ...sample, ...sample.interval }] : []);
   const latest = samples.at(-1);
-  const [plot, minima, maxima, boundaries] = projectSeries([
-    samples.map(({ update, value }) => [update, value]),
-    ranges.map(({ update, min }) => [update, min]),
-    ranges.map(({ update, max }) => [update, max]),
-    latest ? stages.slice(1).map(({ offset }) => [offset, latest.value]) : [],
-  ]);
+  const plotWidth = width || 320;
+  const plotHeight = 148;
+  const left = 58;
+  const right = Math.max(left + 1, plotWidth - 16);
+  const top = 12;
+  const bottom = plotHeight - 26;
+  const endUpdate = Math.max(latest?.update ?? 0, ...stages.map(({ offset, completed }) => offset + completed));
+  const x = (update: number) => left + (right - left) * update / Math.max(1, endUpdate);
+  const [minLoss, maxLoss] = samples.reduce(([min, max], { value, interval }) =>
+    [Math.min(min, value, interval?.min ?? value), Math.max(max, value, interval?.max ?? value)],
+  [Infinity, -Infinity]);
+  const log = minLoss > 0;
+  const transform = log ? Math.log10 : (value: number) => value;
+  const low = transform(minLoss);
+  const span = transform(maxLoss) - low;
+  const y = (value: number) => span > 0
+    ? bottom - (bottom - top) * (transform(value) - low) / span
+    : (top + bottom) / 2;
+  const yTicks = !latest ? [] : span > 0
+    ? [minLoss, log ? 10 ** (low + span / 2) : minLoss + span / 2, maxLoss] : [minLoss];
+  const xTicks = [...new Set([0, Math.round(endUpdate / 3), Math.round(endUpdate * 2 / 3), endUpdate])];
   return (
-    <section aria-label={studioName('loss')} className="min-w-0 space-y-1">
+    <section ref={ref} aria-label={studioName('loss')} className="min-w-0 space-y-1">
       <div className="flex justify-between gap-2 text-xs font-medium">
         <h4>{studioName('loss')}</h4>
         {latest && (
           <span className="tabular-nums" title={studioFormat('lastLossAtUpdate', { end: latest.update })}>
-            {formatLoss.format(latest.last)}
+            {formatTrainingLoss(latest.last)}
           </span>
         )}
       </div>
@@ -130,21 +145,34 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
         viewBox={`0 0 ${plotWidth} ${plotHeight}`}
         role="img"
         aria-label={studioName('loss')}
-        className="h-28 w-full rounded border border-slate-200 bg-white"
+        className="h-[148px] w-full rounded border border-slate-200 bg-white"
       >
         {ranges.length > 0 && <desc>{studioFormat('lossIntervalDescription')}</desc>}
-        {boundaries.map(([x], index) => (
-          <line key={stages[index + 1].offset} x1={x} x2={x} y1={0} y2={plotHeight}
+        <g aria-hidden="true" className="fill-slate-700 text-[11px] tabular-nums">
+          {yTicks.map((value) => (
+            <g key={value}>
+              <line x1={left} x2={right} y1={y(value)} y2={y(value)} className="stroke-slate-200" />
+              <text x={left - 6} y={y(value)} dominantBaseline="middle" textAnchor="end">{formatTrainingLoss(value)}</text>
+            </g>
+          ))}
+          {latest && <line x1={left} x2={right} y1={bottom} y2={bottom} className="stroke-slate-200" />}
+          {latest && xTicks.map((update) => (
+            <text key={update} x={x(update)} y={plotHeight - 8}
+              textAnchor={update === endUpdate ? 'end' : update === 0 ? 'start' : 'middle'}>{update.toLocaleString()}</text>
+          ))}
+        </g>
+        {latest && stages.slice(1).map(({ offset }) => (
+          <line key={offset} x1={x(offset)} x2={x(offset)} y1={top} y2={bottom}
             className="text-slate-300" stroke="currentColor" strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke" />
         ))}
-        {ranges.map(({ update, end, start, count, min, max, stage, jobId }, index) => (
+        {ranges.map(({ update, end, start, count, min, max, stage, jobId }) => (
           <line
             key={update}
-            x1={minima[index][0]}
-            x2={maxima[index][0]}
-            y1={minima[index][1]}
-            y2={maxima[index][1]}
+            x1={x(update)}
+            x2={x(update)}
+            y1={y(min)}
+            y2={y(max)}
             className="text-blue-400"
             stroke="currentColor"
             vectorEffect="non-scaling-stroke"
@@ -152,13 +180,13 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
             <title>{[
               studioFormat('lossInterval', {
                 start: stage.offset + start + 1, end: update, count,
-                min: formatLoss.format(min), max: formatLoss.format(max),
+                min: formatTrainingLoss(min), max: formatTrainingLoss(max),
               }),
               chained && studioFormat('lossStageSample', { stage: stage.label, start: start + 1, end, attempt: jobId }),
             ].filter(Boolean).join(' · ')}</title>
           </line>
         ))}
-        <PlotTrack points={plot} stroke="text-blue-700" />
+        <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} stroke="text-blue-700" />
       </svg>
       <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-slate-700">
         {chained && (

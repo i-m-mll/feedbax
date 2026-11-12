@@ -47,12 +47,13 @@ export function sceneBounds(scene: ResolvedScene): SceneBounds {
   };
 }
 
-export function fitScale(bounds: SceneBounds): number {
+export function fitScale(bounds: SceneBounds, viewportWidth = WORKSPACE_SVG_WIDTH, viewportHeight = WORKSPACE_SVG_HEIGHT): number {
   const width = Math.max(bounds.max[0] - bounds.min[0], 0.1);
   const height = Math.max(bounds.max[1] - bounds.min[1], 0.1);
+  const padding = Math.min(WORKSPACE_PADDING, Math.min(viewportWidth, viewportHeight) / 8);
   return Math.min(
-    (WORKSPACE_SVG_WIDTH - WORKSPACE_PADDING * 2) / width,
-    (WORKSPACE_SVG_HEIGHT - WORKSPACE_PADDING * 2) / height
+    (viewportWidth - padding * 2) / width,
+    (viewportHeight - padding * 2) / height
   );
 }
 

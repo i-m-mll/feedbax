@@ -103,6 +103,17 @@ function ScalarEditor({ control, name, value, onChange }: {
   );
 }
 
+export function StudioDocumentPicker({ field, selection, onEdit }: Pick<FormProps, 'selection' | 'onEdit'> & {
+  field: StudioDefinitionField;
+}) {
+  const value = field.resolved[0];
+  if (!value) return null;
+  const change = field.actions.includes('set') && field.resolved.length === 1
+    ? (next: JsonPrimitive) => onEdit({ fieldId: field.id, selection, edit: { kind: 'set', value: next } })
+    : undefined;
+  return <ScalarEditor name={field.label} value={value} control={field.control} onChange={change} />;
+}
+
 function ValueSource({ value }: { value: FieldValue }) {
   return (
     <>
@@ -141,7 +152,7 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
   const sweep = field.sweep;
   const onlyValue = field.resolved.length === 1 ? field.resolved[0] : undefined;
   return (
-    <div className="grid gap-1 rounded border border-slate-200 p-2 sm:grid-cols-[minmax(8rem,1fr)_3fr]" role="group" aria-labelledby={labelId}>
+    <div className="studio-definition-field grid gap-1 rounded border border-slate-200 p-2 sm:grid-cols-[minmax(8rem,1fr)_3fr]" role="group" aria-labelledby={labelId}>
       <div className="flex items-start gap-1">
         <span id={labelId} className="font-medium">{field.label}</span>
         {!sweep && onlyValue && can("toSweep") && (

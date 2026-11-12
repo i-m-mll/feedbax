@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { join } from 'node:path';
 import type { StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -70,6 +70,10 @@ test('the managed window shares selection and restores the folded slot without e
   const width = await separator.getAttribute('aria-valuenow');
   const before = await prefs();
   await page.setViewportSize({ width: 620, height: 850 });
+  await expect(separator).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Details Drawer' })).toBeHidden();
+  expect(await prefs()).toEqual(before);
+  await page.setViewportSize({ width: 520, height: 850 });
   await expect(separator).toBeHidden();
   await expect(page.locator('.studio-window-slot__strip')).toBeVisible();
   expect(await prefs()).toEqual(before);
@@ -122,6 +126,58 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(upper).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
   const primary = page.locator('[data-slot="primary"] > section');
+  await primary.focus();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await scene.focus();
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await scene.focus();
+  const model = primary.locator('.react-flow');
+  const centeredModel = () => model.evaluate((canvas) => {
+    const bounds = canvas.getBoundingClientRect();
+    const nodes = [...canvas.querySelectorAll('.react-flow__node')];
+    if (nodes.length !== 1) return false;
+    const rect = nodes[0].getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.left >= bounds.left && rect.right <= bounds.right
+      && rect.top >= bounds.top && rect.bottom <= bounds.bottom
+      && Math.abs((rect.left + rect.right) - (bounds.left + bounds.right)) < 6
+      && Math.abs((rect.top + rect.bottom) - (bounds.top + bounds.bottom)) < 6;
+  });
+  await expect.poll(centeredModel).toBe(true);
+  const drawing = scene.getByRole('group', { name: 'Scene', exact: true });
+  await expect.poll(() => drawing.evaluate((svg: SVGSVGElement) =>
+    Math.abs(svg.viewBox.baseVal.width - svg.clientWidth) + Math.abs(svg.viewBox.baseVal.height - svg.clientHeight),
+  )).toBeLessThanOrEqual(2);
+  await expect(primary.getByRole('heading', { name: 'Model', exact: true })).toBeVisible();
+  await expect(primary.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
+  await expect(scene.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
+  await captureStudioWindow(page, info, '02-model-scene');
+  await page.setViewportSize({ width: 1240, height: 820 });
+  await expect.poll(centeredModel).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect.poll(centeredModel).toBe(true);
+
+  const sceneScale = () => upper.evaluate((limb: SVGGraphicsElement) => limb.getBBox().width);
+  const initialScale = await sceneScale();
+  await scene.getByRole('button', { name: 'Zoom In', exact: true }).click();
+  await expect.poll(sceneScale).toBeGreaterThan(initialScale);
+  const deliberateScale = await sceneScale();
+  await primary.focus();
+  const zoom = () => model.locator('.react-flow__viewport').evaluate((viewport) =>
+    new DOMMatrix(getComputedStyle(viewport).transform).a);
+  const initialZoom = await zoom();
+  await model.hover();
+  await page.mouse.wheel(0, 180);
+  await expect.poll(zoom).toBeLessThan(initialZoom);
+  const deliberateZoom = await zoom();
+  const modelWidth = await model.evaluate(({ clientWidth }) => clientWidth);
+  await page.setViewportSize({ width: 1160, height: 820 });
+  await expect.poll(() => model.evaluate(({ clientWidth }) => clientWidth)).toBeLessThan(modelWidth);
+  expect(await zoom()).toBeCloseTo(deliberateZoom);
+  expect(await sceneScale()).toBeCloseTo(deliberateScale);
+  await scene.getByRole('button', { name: 'Fit View', exact: true }).click();
+  await expect.poll(sceneScale).toBeLessThan(deliberateScale);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   await primary.focus();
   await page.keyboard.press('Control+3');
   await expect(primary.getByRole('heading', { name: 'Task', exact: true })).toBeVisible();
