@@ -21,6 +21,7 @@ from feedbax.contracts.project import (
     RunBase,
     StepBase,
     StepKind,
+    json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InputBinding
 from feedbax.contracts.project_sources import (
@@ -131,12 +132,6 @@ class _Problem(Exception):
         super().__init__(detail)
 
 
-def _json_pointer(pointer: str | None) -> tuple[str, ...]:
-    if not pointer:
-        return ()
-    return tuple(token.replace("~1", "/").replace("~0", "~") for token in pointer[1:].split("/"))
-
-
 def _select(value: Any, parts: tuple[str, ...]) -> Any:
     for part in parts:
         if isinstance(value, dict):
@@ -184,7 +179,7 @@ class _Documents:
                 document=reference.document,
             )
         try:
-            return _select(document.payload, _json_pointer(reference.pointer))
+            return _select(document.payload, json_pointer_parts(reference.pointer))
         except KeyError as error:
             raise _Problem(
                 ResolutionCode.BAD_POINTER,
@@ -222,7 +217,7 @@ class _Documents:
         return value, reference
 
     def source(self, reference: DocumentReference, value: Any) -> Any:
-        parts = _json_pointer(reference.pointer)
+        parts = json_pointer_parts(reference.pointer)
         return source_shape(
             value,
             ValueSource("document", reference.document, pointer(parts)),
@@ -446,7 +441,7 @@ class _Resolver:
                 ResolutionCode.BAD_EXTERNAL_CONTENT, "base.path", str(error), step=step
             ) from error
         try:
-            return _select(payload, _json_pointer(base.pointer))
+            return _select(payload, json_pointer_parts(base.pointer))
         except KeyError as error:
             raise _Problem(
                 ResolutionCode.BAD_POINTER, "base.pointer", base.pointer or "", step=step

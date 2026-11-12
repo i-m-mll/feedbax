@@ -24,15 +24,18 @@ from feedbax.web.api import (
     jobs,
     orchestration,
     penzai,
+    projects,
     provider,
     runs,
     statistics,
     training,
     trajectories,
 )
+from feedbax.web.config import BASE_DIR
 from feedbax.web.orchestration.controller import StudioController
 from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.desktop_jobs import NativeTrainingJobs, StudioJobLifecycle
+from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.training_service import _orchestration_parent_root, training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
@@ -46,6 +49,7 @@ def create_app(
     bootstrap_modules: tuple[str, ...] = (),
     studio_controller: StudioController | None = None,
     desktop_job_root: Path | None = None,
+    projects_dir: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
@@ -91,6 +95,9 @@ def create_app(
         description="API for Feedbax model construction and training",
         lifespan=_lifespan,
     )
+    app.state.project_folders = ProjectFolderService(
+        projects_dir if projects_dir is not None else BASE_DIR / "projects"
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -107,6 +114,7 @@ def create_app(
     app.include_router(provider.router, prefix="/api/provider", tags=["provider"])
     app.include_router(training.router, prefix="/api/training", tags=["training"])
     app.include_router(jobs.router)
+    app.include_router(projects.router)
     app.include_router(execution.router, prefix="/api/execution", tags=["execution"])
     app.include_router(inspection.router, prefix="/api/inspection", tags=["inspection"])
     app.include_router(
