@@ -97,7 +97,7 @@ test('Train authoring completes the real reaching Plan through the folder contro
   const baseline = await saved();
   const before = await plan(root, baseline.revision);
   expect(before).toEqual({
-    revision: baseline.revision, rows: 1, runs: 0,
+    revision: baseline.revision, semanticRoot: baseline.semantic_root, storeExists: false, rows: 1, runs: 0,
     diagnostics: ['method_payload', 'method_ref', 'objective', 'training_config'].map(
       (field) => ['invalid_payload', `payload.${field}`],
     ),
@@ -159,7 +159,9 @@ test('Train authoring completes the real reaching Plan through the folder contro
   expect(await mount(page, id)).toEqual(finished);
   const after = await plan(root, finished.revision);
   expect(after).toEqual({
-    revision: finished.revision, rows: 1, runs: 1, diagnostics: [], requestId: expect.any(String),
+    revision: finished.revision, semanticRoot: finished.semantic_root, storeExists: false,
+    rows: 1, runs: 1, diagnostics: [],
+    requestId: 'train:4460007977edbeb5724fb129d505b3b7d211a3a4610454eb9c2b69264f015028',
     model: 'feedbax.PointMass', task: { type: 'SimpleReaches', params: { n_steps: 100 } }, binding: 'reach_target',
     objective: ['target_state', 'Endpoint position', 'path:plant.effector.pos', 'task_data:reach_target', 'final'],
     method: 'feedbax/studio_graph/v1', optimizer: 'sgd', seed: 7,
@@ -174,5 +176,5 @@ test('Train authoring completes the real reaching Plan through the folder contro
     ],
   });
   await page.evaluate(() => (window as Probe).trainAuthoring.close());
-  console.info(`Train Plan ${baseline.revision} (0 runs) → ${finished.revision} (1 run), request ${after.requestId}`);
+  console.info('Train Plan', JSON.stringify({ before, after }));
 });

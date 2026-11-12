@@ -253,12 +253,27 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             finished = _until(current_attempt, lambda row: row.status in {
                 JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CORRUPT,
             })
-            assert finished.status is JobStatus.SUCCEEDED, (finished, host.jobs(job_id=attempt_id))
+            fixture_job, = host.jobs(job_id=attempt_id)
+            assert finished.status is JobStatus.SUCCEEDED, (finished, fixture_job)
             assert JobStatus.STARTING.value in seen and finished.progress is not None
             assert finished.progress.completed_updates == 160
             legacy_finished, = host.jobs(job_id=legacy_id)
             assert legacy_finished["state"] == "succeeded"
-            legacy_receipt = JobReceipt.model_validate(legacy_finished["outcome"]["receipt"])
+            legacy_outcome = legacy_finished["outcome"]
+            legacy_receipt = JobReceipt.model_validate(legacy_outcome["receipt"])
+            legacy_completion = legacy_outcome["completion"]
+            assert legacy_completion["request_id"] == lowered.request_id
+            assert legacy_completion["receipt"] == legacy_outcome["receipt"]
+            assert legacy_completion["checkpoint"]["completed_updates"] == 160
+
+            # The fixture's Plan key scopes the observation. It cannot attest to
+            # a native launch identity for the same legacy worker payload.
+            fixture_outcome = fixture_job["outcome"]
+            assert "completion" not in fixture_outcome
+            assert fixture_outcome["completion_error"] == {
+                "code": "dependency_corrupt",
+                "message": "Training launch does not match its authored request id.",
+            }
             legacy_path = canonical_manifest_path(
                 "TrainingRunManifest", legacy_receipt.manifest_id, root=store
             )
@@ -268,7 +283,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
                 kinds = {event["kind"] for event in events if event["job_id"] == job_id}
                 assert {"queued", "accepted", "binding", "progress", "terminal"} <= kinds
 
-            receipt = JobReceipt.model_validate(host.jobs(job_id=attempt_id)[0]["outcome"]["receipt"])
+            receipt = JobReceipt.model_validate(fixture_outcome["receipt"])
             assert finished.successful_receipt == receipt
             path = canonical_manifest_path("TrainingRunManifest", receipt.manifest_id, root=store)
             raw = path.read_bytes()
@@ -327,6 +342,8 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
                 "receipt": receipt.model_dump(mode="json"),
                 "receipt_bytes": len(raw),
                 "legacy_receipt": legacy_receipt.model_dump(mode="json"),
+                "legacy_completion_update": legacy_completion["checkpoint"]["completed_updates"],
+                "canonical_fixture_completion_error": fixture_outcome["completion_error"]["code"],
                 "host_cursor": reopened.jobs.cursor,
                 "cold_joined_ms": cold_ms,
                 "warm_timings": timing,

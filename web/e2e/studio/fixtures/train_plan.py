@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import TrainingRequestSpec
 from feedbax.contracts.studio_training import StudioGraphMethodPayload
 from feedbax.plugins.application import new_application_registry_bundle
@@ -21,6 +21,8 @@ def inspect(root: Path, revision: str) -> dict:
     plan = settled.plan
     result = {
         "revision": settled.revision,
+        "semanticRoot": settled.semantic_root,
+        "storeExists": settled.store_path.exists(),
         "rows": len(plan.rows),
         "runs": len(plan.runs),
         "diagnostics": sorted([problem.code, problem.path] for problem in plan.diagnostics),
@@ -30,11 +32,14 @@ def inspect(root: Path, revision: str) -> dict:
 
     (run,) = plan.runs
     assert run.key == key
-    decoded = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+    request_bytes = plan.requests[run.request_id]
+    decoded = decode_request(request_bytes, plan.documents.__getitem__)
     spec = decoded.spec
     assert isinstance(spec, TrainingRequestSpec)
     assert decoded.id == run.request_id
     assert not decoded.inputs
+    encoded = encode_request(spec, decoded.inputs)
+    assert (encoded.id, encoded.data) == (run.request_id, request_bytes)
     loss = spec.objective.loss
     assert loss is not None and loss.time_agg is not None
     assert spec.task_binding_spec is not None
