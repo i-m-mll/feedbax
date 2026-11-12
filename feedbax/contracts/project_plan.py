@@ -1,4 +1,4 @@
-"""Compile authored training and evaluation requests without result access."""
+"""Compile authored project requests without result access."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from threading import Lock
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
 from feedbax.contracts.project_inputs import (
@@ -66,12 +67,22 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import TrainingRequestSpec
 
+if TYPE_CHECKING:
+    from feedbax.analysis.operations import OperationRegistry
+    from feedbax.contracts.operation import DatasetPort
+
 
 @dataclass(frozen=True)
 class RunKey:
     variant: str
     step: str
     row: str
+
+
+@dataclass(frozen=True)
+class ElementKey:
+    run: RunKey
+    name: str
 
 
 @dataclass(frozen=True)
@@ -86,6 +97,11 @@ class PlannedSubset:
 class PlannedInput:
     producer: RunKey
     member: InputMember
+    producer_element: str | None = None
+
+    @property
+    def element(self) -> ElementKey | None:
+        return ElementKey(self.producer, self.producer_element) if self.producer_element else None
 
 
 @dataclass(frozen=True)
@@ -113,6 +129,34 @@ class PlannedRun(PlannedRow):
     omissions: Mapping[str, str]
     requires: tuple[str, ...]
     admission_problem: RunProblem | None = None
+
+
+@dataclass(frozen=True)
+class PlannedElement:
+    key: ElementKey
+    kind: Literal["analyze", "render"]
+    request_id: RequestId
+    inputs: Mapping[str, PlannedInput]
+    datasets: Mapping[str, DatasetPort]
+
+    @property
+    def path(self) -> str:
+        family = "operations" if self.kind == "analyze" else "views"
+        return f"payload.{family}.{self.key.name}"
+
+
+@dataclass(frozen=True)
+class PlannedAnalyzeRun(PlannedRow):
+    elements: Mapping[str, PlannedElement]
+    requires: tuple[str, ...]
+    states: PlannedInput
+
+
+@dataclass(frozen=True)
+class ElementChange:
+    state: Literal["unchanged", "changed", "added", "removed"]
+    path: str | None = None
+    upstream: ElementKey | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +191,14 @@ class ProjectPlan:
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
     selected_definitions: Mapping[RunKey, SelectedRunDefinition]
 
+    @property
+    def elements(self) -> Mapping[ElementKey, PlannedElement]:
+        return MappingProxyType({
+            element.key: element
+            for row in self.rows if isinstance(row, PlannedAnalyzeRun)
+            for element in row.elements.values()
+        })
+
     def document_users(self, variant: str, document: str) -> frozenset[str]:
         return frozenset(
             row.key.step for row in self.rows if row.key.variant == variant and document in row.document_uses
@@ -170,6 +222,7 @@ class _Role:
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
     "evaluate": _Role("subject", True, "train", "checkpoint"),
+    "analyze": _Role("states", True, "evaluate", "states"),
 }
 
 
@@ -381,10 +434,12 @@ class _Compiler:
         readers: BaseReaders,
         source_runs: Iterable[RunKey],
         previous: _PlanWork | None = None,
+        operations: OperationRegistry | None = None,
     ):
         self.project = project
         self.readers = readers
         self.previous = previous
+        self.operations = operations
         self.work = _PlanWork()
         if previous is not None:
             self.work.inline_origins.update(previous.inline_origins)
@@ -688,7 +743,7 @@ class _Compiler:
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
-        if role is None:
+        if role is None or (kind == "analyze" and self.operations is None):
             self.diagnostics.append(
                 ProjectDiagnostic(
                     ResolutionCode.UNSUPPORTED_PLAN,
@@ -791,6 +846,10 @@ class _Compiler:
                     replace(definition, payload=deepcopy(definition.payload))
                     if self.previous is not None else definition
                 )
+            if kind == "analyze":
+                assert chosen is not None
+                self.lower_analyze_row(template, run_key, row, chosen, definition)
+                continue
             lowered = self.lower_row(template, run_key, row, kind, role, chosen, basis, definition)
             self.diagnostics.extend(lowered.diagnostics)
             if (encoded := lowered.request) is None:
@@ -816,6 +875,46 @@ class _Compiler:
             self.rows[run_key] = run
             result.append(run)
         return tuple(result)
+
+    def lower_analyze_row(
+        self,
+        template: StepComposition,
+        key: RunKey,
+        row: ExpandedRow,
+        source: PlannedInput,
+        definition: SelectedRunDefinition | None,
+    ) -> None:
+        from feedbax.contracts.project_analyze import lower_analyze
+
+        assert self.operations is not None
+        resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
+        if isinstance(resolved, ProjectDiagnostic):
+            self.diagnostics.append(replace(resolved, variant=key.variant))
+            return
+        producer = source.member.reference
+        assert isinstance(producer, ProductRef)
+        evaluation = request_identity.decode_request(
+            self.requests[producer.request_id], self.documents.__getitem__,
+        )
+        elements, encoded, problems = lower_analyze(
+            key,
+            resolved.payload,
+            resolved.document_ids,
+            source,
+            evaluation.spec,
+            self.operations,
+        )
+        self.diagnostics.extend(problems)
+        for request in encoded:
+            self.requests[request.id] = request.data
+            self.documents.update(request.documents)
+        original = self.rows[key]
+        self.rows[key] = PlannedAnalyzeRun(
+            key, original.kind, original.label, original.coordinates,
+            MappingProxyType(elements), template.requires, source,
+            document_ids=MappingProxyType(dict(resolved.document_ids)),
+            document_uses=resolved.document_uses,
+        )
 
     def select_input(
         self,
@@ -938,6 +1037,11 @@ class _Compiler:
                 f"no plannable rows for {reference.step!r}",
                 name,
             )
+        if reference.checkpoint is not None and role.product_role != "checkpoint":
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
+                "a dataset input does not take a Train checkpoint selector", name,
+            )
         selector = _checkpoint(reference.checkpoint)
         if isinstance(selector, BatchSetMember) and role.name != "subject":
             return ProjectDiagnostic(
@@ -979,14 +1083,60 @@ def compile_project(
     readers: BaseReaders = BaseReaders(),
     source_runs: Iterable[RunKey] = (),
     memo: ProjectPlanMemo | None = None,
+    operations: OperationRegistry | None = None,
 ) -> ProjectPlan:
-    """Plan static requests and project value sources for the named run keys."""
+    """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
     if memo is None or any(reader is not None for reader in (readers.run, readers.external, readers.row)):
-        return _Compiler(project, readers, source_runs).plan()
+        return _Compiler(project, readers, source_runs, operations=operations).plan()
     authority = _compiler_authority()
     ticket, previous = memo._begin(authority)
-    compiler = _Compiler(project, readers, source_runs, previous)
+    compiler = _Compiler(project, readers, source_runs, previous, operations)
     plan = compiler.plan()
     if authority == _compiler_authority():
         memo._publish(ticket, authority, compiler.work)
     return plan
+
+
+def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[ElementKey, ElementChange]:
+    """Compare element requests and locate the authored edit or changed input."""
+    old, new = before.elements, after.elements
+    changes = {}
+    for key in dict.fromkeys((*old, *new)):
+        left, right = old.get(key), new.get(key)
+        if left is None:
+            changes[key] = ElementChange("added")
+        elif right is None:
+            changes[key] = ElementChange("removed")
+        elif left.request_id == right.request_id:
+            changes[key] = ElementChange("unchanged")
+        elif left.kind != right.kind:
+            changes[key] = ElementChange("changed", right.path)
+        else:
+            changes[key] = _element_change(before, after, left, right)
+    return MappingProxyType(changes)
+
+
+def _element_change(
+    before: ProjectPlan, after: ProjectPlan, left: PlannedElement, right: PlannedElement,
+) -> ElementChange:
+    old = request_identity.decode_request(before.requests[left.request_id], before.documents.__getitem__)
+    new = request_identity.decode_request(after.requests[right.request_id], after.documents.__getitem__)
+    change = first_request_change(old, new)
+    if change.path == "inputs":
+        role = next(
+            role for role in sorted(old.inputs.keys() | new.inputs.keys())
+            if old.inputs.get(role) != new.inputs.get(role)
+        )
+        earlier, later = left.inputs.get(role), right.inputs.get(role)
+        cause = (
+            later.element
+            if later is not None and earlier is not None and later.element == earlier.element
+            else None
+        )
+        return ElementChange("changed", f"{right.path}.inputs.{role}", cause)
+    relative = change.path.removeprefix("payload.")
+    if relative == "analysis_type":
+        relative = "operation"
+    elif right.kind == "render" and relative.startswith("document."):
+        relative = "figure." + relative.removeprefix("document.")
+    return ElementChange("changed", f"{right.path}.{relative}")

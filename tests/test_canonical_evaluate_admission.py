@@ -9,6 +9,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from feedbax.analysis.builtin_operations import (
+    AlignedVelocityParameters,
+    VelocitySummaryParameters,
+    aligned_velocity,
+    summarize_velocity,
+)
+from feedbax.analysis.figure_presets import velocity_summary_figure
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetProductRef
@@ -21,6 +28,7 @@ from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, Studi
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plot.dataset_figure import render
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, ROLLOUT_TYPE, STATES_SCHEMA, state_key
@@ -303,6 +311,25 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         np.testing.assert_array_equal(dataset.data("transition_start"), dataset.data("state_time")[:-1])
         np.testing.assert_array_equal(dataset.data("transition_end"), dataset.data("state_time")[1:])
         state_fields = {key: dataset.data(key)[0, 0, 0, :4] for key in (*plant_fields, *cell_fields, carry)}
+        velocity_key = state_key("plant", "effector/velocity")
+        projected = aligned_velocity(dataset, AlignedVelocityParameters(
+            position=position, velocity=velocity_key, target=target,
+        ))
+        summary = summarize_velocity(projected, VelocitySummaryParameters(ddof=1))
+        reach = base_tgt[:, -1] - base_pos[:, 0]
+        direction = reach / np.linalg.norm(reach, axis=-1, keepdims=True)
+        expected = np.einsum("sti,si->st", dataset.data(velocity_key)[0, 0], direction)
+        np.testing.assert_allclose(summary.data("mean")[0, 0], expected.mean(axis=0), atol=1e-6)
+        np.testing.assert_allclose(
+            summary.data("standard_deviation")[0, 0], expected.std(axis=0, ddof=1), atol=1e-6,
+        )
+        np.testing.assert_array_equal(summary.data("state_time"), dataset.data("state_time"))
+        figure = render(velocity_summary_figure(), {"summary": summary})
+        center, upper, lower = figure.data
+        assert center.name == dataset.data("condition")[0]
+        for trace, name in ((center, "mean"), (upper, "upper"), (lower, "lower")):
+            np.testing.assert_array_equal(trace.x, dataset.data("state_time"))
+            np.testing.assert_array_equal(trace.y, summary.data(name)[0, 0])
     for sample in range(4):
         plant_state = state.get(restored.nodes["plant"].state_index)
         cell_state = state.get(restored.nodes["cell"].state_index)

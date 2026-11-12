@@ -54,10 +54,15 @@ def create_app(
     projects_dir: Path | None = None,
     enable_evaluation_candidate: bool = False,
 ) -> FastAPI:
+    project_root = projects_dir if projects_dir is not None else BASE_DIR / "projects"
+
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
         app.state.bootstrap_modules = bootstrap_modules
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
+        app.state.project_folders = ProjectFolderService(
+            project_root, operations=app.state.bootstrap_state.bundle.operations,
+        )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
             enable_evaluation_candidate=enable_evaluation_candidate,
@@ -100,9 +105,7 @@ def create_app(
         description="API for Feedbax model construction and training",
         lifespan=_lifespan,
     )
-    app.state.project_folders = ProjectFolderService(
-        projects_dir if projects_dir is not None else BASE_DIR / "projects"
-    )
+    app.state.project_folders = ProjectFolderService(project_root)
 
     app.add_middleware(
         CORSMiddleware,

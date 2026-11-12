@@ -48,6 +48,8 @@ from feedbax.contracts.acausal import (
     SpatialSite,
 )
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_scene import (
     ScenePlanarLink,
     ScenePlanarModel,
@@ -391,6 +393,9 @@ JOB_MODELS = (
 )
 
 AUTHORED_CONTRACT_MODELS = (
+    AnalysisDocument,
+    StudioAnalyzeAuthoring,
+    StudioAnalyzeRequest,
     StudioAuthoringSurface,
     StudioDocumentAuthoring,
     StudioDocumentAuthoringRequest,

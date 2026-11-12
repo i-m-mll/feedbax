@@ -2313,6 +2313,12 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export type AnalysisDocument = {
+  "schema_version"?: "feedbax.analysis_document.v1";
+  "operations"?: Record<string, OperationElement>;
+  "views"?: Record<string, FigureElement>;
+};
+
 export type AuthoredFileAddress = {
   "kind": "document" | "step" | "variant";
   "id": string;
@@ -2325,10 +2331,43 @@ export type AxisGroup = {
   "mode": "cross" | "zip";
 };
 
+export type AxisLabels = {
+  "x"?: string | null;
+  "y"?: string | null;
+  "z"?: string | null;
+};
+
 export type AxisValue = {
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
+};
+
+export type BandEncodings = {
+  "x": Name | VariableBinding;
+  "y": Name | VariableBinding;
+  "lower": Name | VariableBinding;
+  "upper": Name | VariableBinding;
+};
+
+export type BandLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "band";
+  "encode": BandEncodings;
+  "style"?: BandStyle;
+};
+
+export type BandStyle = {
+  "label"?: string | null;
+  "color"?: string | null;
+  "line_dash"?: "solid" | "dot" | "dash" | "longdash" | "dashdot" | "longdashdot" | null;
+  "line_width"?: number | null;
+  "showlegend"?: boolean | null;
+  "band_alpha"?: number;
 };
 
 export type BarrierCheckpoint = {
@@ -2371,10 +2410,24 @@ export type CreateNamedDocument = {
   "document": Document;
 };
 
-export type CreateNamedTrain = {
+export type CreateNamedStep = {
   "kind": "step";
   "id": string;
-  "step": StudioTrainStep;
+  "step": StudioTrainStep | StudioAnalyzeStep;
+};
+
+export type DataDerivedAxisRange = {
+  "schema_id"?: string;
+  "schema_version"?: string;
+  "group": string;
+  "padding_fraction": number;
+};
+
+export type DatasetPort = {
+  "schema_ids": Array<string>;
+  "variables"?: Record<string, FieldDescriptor>;
+  "selected_variables"?: Record<string, FieldDescriptor>;
+  "coordinates"?: Record<string, FieldDescriptor>;
 };
 
 export type Document = {
@@ -2402,8 +2455,73 @@ export type ExternalBase = {
   "pointer"?: Pointer | null;
 };
 
+export type FieldDescriptor = {
+  "dims": Array<Name>;
+  "units"?: string | null;
+  "quantity"?: string | null;
+  "frame"?: string | null;
+  "inline_values"?: Array<JsonValue> | null;
+};
+
+export type FigureDocument = {
+  "schema_version"?: "feedbax.figure_document.v1";
+  "data": Array<Name>;
+  "layout": Array<FigurePanel>;
+  "layers": Array<LineLayer | BandLayer>;
+  "theme"?: Name;
+  "view"?: FigureDocumentView;
+  "caption"?: string | null;
+};
+
+export type FigureDocumentView = {
+  "shared_xaxes"?: boolean | string;
+  "shared_yaxes"?: boolean | string;
+  "horizontal_spacing"?: number | null;
+  "vertical_spacing"?: number | null;
+  "width"?: number | null;
+  "height"?: number | null;
+  "title"?: string | null;
+  "legend_tracegroupgap"?: number | null;
+  "legend_x"?: number | null;
+  "legend_y"?: number | null;
+  "legend_xanchor"?: "auto" | "left" | "center" | "right" | null;
+  "legend_yanchor"?: "auto" | "top" | "middle" | "bottom" | null;
+  "margin"?: FigureMarginParams | null;
+  "hovermode"?: "x" | "y" | "closest" | "x unified" | "y unified" | false | null;
+  "row_label_gutter"?: number | null;
+  "legend_gutter"?: number | null;
+};
+
+export type FigureElement = {
+  "figure": FigureDocument;
+  "inputs": Record<string, StepDataset | OperationDataset>;
+};
+
+export type FigureMarginParams = {
+  "l"?: number | null;
+  "r"?: number | null;
+  "t"?: number | null;
+  "b"?: number | null;
+  "pad"?: number | null;
+  "autoexpand"?: boolean | null;
+};
+
+export type FigurePanel = {
+  "name": Name;
+  "row": number;
+  "col": number;
+  "title"?: string | null;
+  "axes_labels"?: AxisLabels | null;
+  "x_axis"?: PanelAxis | null;
+  "y_axis"?: PanelAxis | null;
+};
+
 export type GroupCombination = {
   "groups": Record<string, AxisGroup>;
+};
+
+export type IndexSelection = {
+  "index": number;
 };
 
 export type InlineBase = {
@@ -2417,6 +2535,30 @@ export type InputAxis = {
 export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
 
 export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+
+export type LineEncodings = {
+  "x": Name | VariableBinding;
+  "y": Name | VariableBinding;
+};
+
+export type LineLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "line";
+  "encode": LineEncodings;
+  "style"?: LineStyle;
+};
+
+export type LineStyle = {
+  "label"?: string | null;
+  "color"?: string | null;
+  "line_dash"?: "solid" | "dot" | "dash" | "longdash" | "dashdot" | "longdashdot" | null;
+  "line_width"?: number | null;
+  "showlegend"?: boolean | null;
+};
 
 export type ListedAxis = {
   "path": PatchPath;
@@ -2435,11 +2577,13 @@ export type MatrixCompositionDelta = {
   "schema_version"?: string | null;
 };
 
+export type Name = string;
+
 export type NamedAxis = {
   "values": Record<string, AxisValue | null>;
 };
 
-export type NamedFileCreation = CreateNamedDocument | CreateNamedTrain;
+export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
 
 export type NamedSubset = {
   "subset": string;
@@ -2449,10 +2593,42 @@ export type OmittedReference = {
   "not_applicable": string;
 };
 
+export type OperationDataset = {
+  "element": string;
+  "product": string;
+};
+
+export type OperationDefinition = {
+  "key": string;
+  "owner": string;
+  "label": string;
+  "description": string;
+  "param_schema": Array<ParamSchema>;
+  "parameter_json_schema": Record<string, JsonValue>;
+  "static_parameters": Array<string>;
+  "inputs": Record<string, DatasetPort>;
+  "outputs": Record<string, DatasetPort>;
+};
+
+export type OperationElement = {
+  "operation": string;
+  "inputs": Record<string, StepDataset | OperationDataset>;
+  "params"?: Record<string, JsonValue>;
+};
+
 export type OverridePatch = {
   "path": string;
   "value"?: JsonValue;
   "op"?: "add" | "replace" | "remove";
+};
+
+export type PanelAxis = {
+  "type"?: "linear" | "log" | null;
+  "range"?: [number, number] | null;
+  "derived_range"?: DataDerivedAxisRange | null;
+  "quantity"?: string | null;
+  "unit"?: string | null;
+  "frame"?: string | null;
 };
 
 export type PatchPath = string;
@@ -2574,6 +2750,10 @@ export type StepBase = {
   "row"?: string | null;
 };
 
+export type StepDataset = {
+  "input": string;
+};
+
 export type StepKind = "train" | "evaluate" | "analyze" | "report";
 
 export type StepNote = {
@@ -2601,6 +2781,40 @@ export type StoreSubset = {
   "best"?: Best | null;
   "when"?: When | null;
   "query": ManifestPredicate;
+};
+
+export type StudioAnalyzeAuthoring = {
+  "revision": Sha256;
+  "document": string;
+  "operations": Array<OperationDefinition>;
+  "states": DatasetPort;
+  "variables": Record<string, Record<string, Array<string>>>;
+  "figure": FigureDocument;
+  "files"?: Array<StudioProjectFilePatch>;
+};
+
+export type StudioAnalyzeRequest = {
+  "revision": Sha256;
+  "key": StudioSavedTrainKey;
+  "wire"?: StudioAnalyzeWire | null;
+};
+
+export type StudioAnalyzeStep = {
+  "kind": "analyze";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, Record<string, JsonValue>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StudioAnalyzeWire = {
+  "element": string;
+  "role": string;
+  "source": StepDataset | OperationDataset;
 };
 
 export type StudioAuthoredFileRevision = {
@@ -2779,6 +2993,7 @@ export type StudioProjectWindowMap = {
   "edges": Array<StudioProjectWindowMapEdge>;
   "problems": Array<StudioProjectWindowMapProblem>;
   "evaluations"?: Array<StudioSavedEvaluationRow>;
+  "analysis_elements"?: Array<StudioProjectWindowMapElement>;
 };
 
 export type StudioProjectWindowMapCoordinate = {
@@ -2790,6 +3005,14 @@ export type StudioProjectWindowMapCoordinate = {
 export type StudioProjectWindowMapEdge = {
   "from_key": StudioSavedTrainKey;
   "to_key": StudioSavedTrainKey;
+};
+
+export type StudioProjectWindowMapElement = {
+  "key": StudioSavedTrainKey;
+  "name": string;
+  "kind": "analyze" | "render";
+  "request_id": string;
+  "status": "not_run";
 };
 
 export type StudioProjectWindowMapInput = {
@@ -2806,12 +3029,14 @@ export type StudioProjectWindowMapProblem = {
   "step": string | null;
   "row": string | null;
   "document": string | null;
+  "element"?: string | null;
 };
 
 export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
   "label": string;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
+  "status"?: "not_run" | "cannot_run" | null;
 };
 
 export type StudioProjectWindowMapStep = {
@@ -2944,6 +3169,11 @@ export type SweepException = {
   "patches"?: Record<string, PatchValue | null>;
   "where"?: SubsetTerms | null;
   "exclude"?: boolean;
+};
+
+export type VariableBinding = {
+  "variable": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
 };
 
 export type When = {
@@ -6968,6 +7198,14 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
+export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
+    "operations": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), OperationElementSchema).optional(),
+    "views": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), FigureElementSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<AnalysisDocument>;
+
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
     "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
@@ -6986,6 +7224,14 @@ export const AxisGroupSchema: z.ZodType<AxisGroup> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AxisGroup>;
 
+export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
+  z.object({
+    "x": z.union([z.string(), z.null()]).optional(),
+    "y": z.union([z.string(), z.null()]).optional(),
+    "z": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<AxisLabels>;
+
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
     "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
@@ -6993,6 +7239,39 @@ export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
     "value": jsonValueSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<AxisValue>;
+
+export const BandEncodingsSchema: z.ZodType<BandEncodings> = z.lazy(() =>
+  z.object({
+    "x": z.union([NameSchema, VariableBindingSchema]),
+    "y": z.union([NameSchema, VariableBindingSchema]),
+    "lower": z.union([NameSchema, VariableBindingSchema]),
+    "upper": z.union([NameSchema, VariableBindingSchema]),
+  }).strict()
+) as unknown as z.ZodType<BandEncodings>;
+
+export const BandLayerSchema: z.ZodType<BandLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("band"),
+    "encode": BandEncodingsSchema,
+    "style": BandStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<BandLayer>;
+
+export const BandStyleSchema: z.ZodType<BandStyle> = z.lazy(() =>
+  z.object({
+    "label": z.union([z.string(), z.null()]).optional(),
+    "color": z.union([z.string(), z.null()]).optional(),
+    "line_dash": z.union([z.union([z.literal("solid"), z.literal("dot"), z.literal("dash"), z.literal("longdash"), z.literal("dashdot"), z.literal("longdashdot")]), z.null()]).optional(),
+    "line_width": z.union([z.number().finite().gt(0), z.null()]).optional(),
+    "showlegend": z.union([z.boolean(), z.null()]).optional(),
+    "band_alpha": z.number().finite().min(0).max(1).optional(),
+  }).strict()
+) as unknown as z.ZodType<BandStyle>;
 
 export const BarrierCheckpointSchema: z.ZodType<BarrierCheckpoint> = z.lazy(() =>
   z.object({
@@ -7054,13 +7333,31 @@ export const CreateNamedDocumentSchema: z.ZodType<CreateNamedDocument> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<CreateNamedDocument>;
 
-export const CreateNamedTrainSchema: z.ZodType<CreateNamedTrain> = z.lazy(() =>
+export const CreateNamedStepSchema: z.ZodType<CreateNamedStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("step"),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "step": StudioTrainStepSchema,
+    "step": z.union([StudioTrainStepSchema, StudioAnalyzeStepSchema]),
   }).strict()
-) as unknown as z.ZodType<CreateNamedTrain>;
+) as unknown as z.ZodType<CreateNamedStep>;
+
+export const DataDerivedAxisRangeSchema: z.ZodType<DataDerivedAxisRange> = z.lazy(() =>
+  z.object({
+    "schema_id": z.string().optional(),
+    "schema_version": z.string().optional(),
+    "group": z.string().min(1),
+    "padding_fraction": z.number().finite().min(0.0),
+  }).strict()
+) as unknown as z.ZodType<DataDerivedAxisRange>;
+
+export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
+  z.object({
+    "schema_ids": z.array(z.string()).min(1),
+    "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetPort>;
 
 export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
   z.object({
@@ -7099,11 +7396,90 @@ export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ExternalBase>;
 
+export const FieldDescriptorSchema: z.ZodType<FieldDescriptor> = z.lazy(() =>
+  z.object({
+    "dims": z.array(NameSchema),
+    "units": z.union([z.string(), z.null()]).optional(),
+    "quantity": z.union([z.string(), z.null()]).optional(),
+    "frame": z.union([z.string(), z.null()]).optional(),
+    "inline_values": z.union([z.array(jsonValueSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FieldDescriptor>;
+
+export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.figure_document.v1").optional(),
+    "data": z.array(NameSchema).min(1),
+    "layout": z.array(FigurePanelSchema).min(1),
+    "layers": z.array(z.union([LineLayerSchema, BandLayerSchema])).min(1),
+    "theme": NameSchema.optional(),
+    "view": FigureDocumentViewSchema.optional(),
+    "caption": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureDocument>;
+
+export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(() =>
+  z.object({
+    "shared_xaxes": z.union([z.boolean(), z.string()]).optional(),
+    "shared_yaxes": z.union([z.boolean(), z.string()]).optional(),
+    "horizontal_spacing": z.union([z.number().finite(), z.null()]).optional(),
+    "vertical_spacing": z.union([z.number().finite(), z.null()]).optional(),
+    "width": z.union([z.number().int().safe(), z.null()]).optional(),
+    "height": z.union([z.number().int().safe(), z.null()]).optional(),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "legend_tracegroupgap": z.union([z.number().int().safe(), z.null()]).optional(),
+    "legend_x": z.union([z.number().finite(), z.null()]).optional(),
+    "legend_y": z.union([z.number().finite(), z.null()]).optional(),
+    "legend_xanchor": z.union([z.union([z.literal("auto"), z.literal("left"), z.literal("center"), z.literal("right")]), z.null()]).optional(),
+    "legend_yanchor": z.union([z.union([z.literal("auto"), z.literal("top"), z.literal("middle"), z.literal("bottom")]), z.null()]).optional(),
+    "margin": z.union([FigureMarginParamsSchema, z.null()]).optional(),
+    "hovermode": z.union([z.union([z.literal("x"), z.literal("y"), z.literal("closest"), z.literal("x unified"), z.literal("y unified"), z.literal(false)]), z.null()]).optional(),
+    "row_label_gutter": z.union([z.number().finite().min(0.0).max(256.0), z.null()]).optional(),
+    "legend_gutter": z.union([z.number().finite().min(0.0).max(512.0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureDocumentView>;
+
+export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
+  z.object({
+    "figure": FigureDocumentSchema,
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepDatasetSchema, OperationDatasetSchema])),
+  }).strict()
+) as unknown as z.ZodType<FigureElement>;
+
+export const FigureMarginParamsSchema: z.ZodType<FigureMarginParams> = z.lazy(() =>
+  z.object({
+    "l": z.union([z.number().finite(), z.null()]).optional(),
+    "r": z.union([z.number().finite(), z.null()]).optional(),
+    "t": z.union([z.number().finite(), z.null()]).optional(),
+    "b": z.union([z.number().finite(), z.null()]).optional(),
+    "pad": z.union([z.number().finite(), z.null()]).optional(),
+    "autoexpand": z.union([z.boolean(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureMarginParams>;
+
+export const FigurePanelSchema: z.ZodType<FigurePanel> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "row": z.number().int().safe().gt(0),
+    "col": z.number().int().safe().gt(0),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "axes_labels": z.union([AxisLabelsSchema, z.null()]).optional(),
+    "x_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+    "y_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigurePanel>;
+
 export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
   z.object({
     "groups": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), AxisGroupSchema),
   }).strict()
 ) as unknown as z.ZodType<GroupCombination>;
+
+export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
+  z.object({
+    "index": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<IndexSelection>;
 
 export const InlineBaseSchema: z.ZodType<InlineBase> = z.lazy(() =>
   z.object({
@@ -7124,6 +7500,36 @@ export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
   z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
+
+export const LineEncodingsSchema: z.ZodType<LineEncodings> = z.lazy(() =>
+  z.object({
+    "x": z.union([NameSchema, VariableBindingSchema]),
+    "y": z.union([NameSchema, VariableBindingSchema]),
+  }).strict()
+) as unknown as z.ZodType<LineEncodings>;
+
+export const LineLayerSchema: z.ZodType<LineLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("line"),
+    "encode": LineEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<LineLayer>;
+
+export const LineStyleSchema: z.ZodType<LineStyle> = z.lazy(() =>
+  z.object({
+    "label": z.union([z.string(), z.null()]).optional(),
+    "color": z.union([z.string(), z.null()]).optional(),
+    "line_dash": z.union([z.union([z.literal("solid"), z.literal("dot"), z.literal("dash"), z.literal("longdash"), z.literal("dashdot"), z.literal("longdashdot")]), z.null()]).optional(),
+    "line_width": z.union([z.number().finite().gt(0), z.null()]).optional(),
+    "showlegend": z.union([z.boolean(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<LineStyle>;
 
 export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   z.object({
@@ -7148,6 +7554,10 @@ export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z
   }).strict()
 ) as unknown as z.ZodType<MatrixCompositionDelta>;
 
+export const NameSchema: z.ZodType<Name> = z.lazy(() =>
+  z.string()
+) as unknown as z.ZodType<Name>;
+
 export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
   z.object({
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
@@ -7155,7 +7565,7 @@ export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
 ) as unknown as z.ZodType<NamedAxis>;
 
 export const NamedFileCreationSchema: z.ZodType<NamedFileCreation> = z.lazy(() =>
-  z.union([CreateNamedDocumentSchema, CreateNamedTrainSchema])
+  z.union([CreateNamedDocumentSchema, CreateNamedStepSchema])
 ) as unknown as z.ZodType<NamedFileCreation>;
 
 export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
@@ -7170,6 +7580,35 @@ export const OmittedReferenceSchema: z.ZodType<OmittedReference> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<OmittedReference>;
 
+export const OperationDatasetSchema: z.ZodType<OperationDataset> = z.lazy(() =>
+  z.object({
+    "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "product": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<OperationDataset>;
+
+export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "owner": z.string(),
+    "label": z.string(),
+    "description": z.string(),
+    "param_schema": z.array(ParamSchemaSchema),
+    "parameter_json_schema": z.record(z.string(), jsonValueSchema),
+    "static_parameters": z.array(z.string()),
+    "inputs": z.record(z.string(), DatasetPortSchema),
+    "outputs": z.record(z.string(), DatasetPortSchema),
+  }).strict()
+) as unknown as z.ZodType<OperationDefinition>;
+
+export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
+  z.object({
+    "operation": z.string().min(1),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepDatasetSchema, OperationDatasetSchema])),
+    "params": z.record(z.string(), jsonValueSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<OperationElement>;
+
 export const OverridePatchSchema: z.ZodType<OverridePatch> = z.lazy(() =>
   z.object({
     "path": z.string(),
@@ -7177,6 +7616,17 @@ export const OverridePatchSchema: z.ZodType<OverridePatch> = z.lazy(() =>
     "op": z.union([z.literal("add"), z.literal("replace"), z.literal("remove")]).optional(),
   }).strict()
 ) as unknown as z.ZodType<OverridePatch>;
+
+export const PanelAxisSchema: z.ZodType<PanelAxis> = z.lazy(() =>
+  z.object({
+    "type": z.union([z.union([z.literal("linear"), z.literal("log")]), z.null()]).optional(),
+    "range": z.union([z.tuple([z.number().finite(), z.number().finite()]), z.null()]).optional(),
+    "derived_range": z.union([DataDerivedAxisRangeSchema, z.null()]).optional(),
+    "quantity": z.union([z.string().min(1).max(128), z.null()]).optional(),
+    "unit": z.union([z.string().min(1).max(128), z.null()]).optional(),
+    "frame": z.union([z.string().min(1).max(128), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<PanelAxis>;
 
 export const PatchPathSchema: z.ZodType<PatchPath> = z.lazy(() =>
   z.string().regex(new RegExp("^[^.]+(?:\\.[^.]+)*$"))
@@ -7347,6 +7797,12 @@ export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StepBase>;
 
+export const StepDatasetSchema: z.ZodType<StepDataset> = z.lazy(() =>
+  z.object({
+    "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StepDataset>;
+
 export const StepKindSchema: z.ZodType<StepKind> = z.lazy(() =>
   z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("report")])
 ) as unknown as z.ZodType<StepKind>;
@@ -7385,6 +7841,48 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
+
+export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "operations": z.array(OperationDefinitionSchema),
+    "states": DatasetPortSchema,
+    "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
+    "figure": FigureDocumentSchema,
+    "files": z.array(StudioProjectFilePatchSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
+
+export const StudioAnalyzeRequestSchema: z.ZodType<StudioAnalyzeRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "key": StudioSavedTrainKeySchema,
+    "wire": z.union([StudioAnalyzeWireSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeRequest>;
+
+export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("analyze"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(DocumentOverridePathSchema, jsonValueSchema)).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeStep>;
+
+export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =>
+  z.object({
+    "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "role": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "source": z.union([StepDatasetSchema, OperationDatasetSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeWire>;
 
 export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevision> = z.lazy(() =>
   z.object({
@@ -7617,6 +8115,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "edges": z.array(StudioProjectWindowMapEdgeSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema),
     "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
+    "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 
@@ -7635,6 +8134,16 @@ export const StudioProjectWindowMapEdgeSchema: z.ZodType<StudioProjectWindowMapE
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapEdge>;
 
+export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowMapElement> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "name": z.string(),
+    "kind": z.union([z.literal("analyze"), z.literal("render")]),
+    "request_id": z.string(),
+    "status": z.literal("not_run"),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapElement>;
+
 export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMapInput> = z.lazy(() =>
   z.object({
     "id": z.string(),
@@ -7652,6 +8161,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "step": z.union([z.string(), z.null()]),
     "row": z.union([z.string(), z.null()]),
     "document": z.union([z.string(), z.null()]),
+    "element": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -7660,6 +8170,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "key": StudioSavedTrainKeySchema,
     "label": z.string(),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
+    "status": z.union([z.union([z.literal("not_run"), z.literal("cannot_run")]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
 
@@ -7833,6 +8344,13 @@ export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SweepException>;
 
+export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
+  z.object({
+    "variable": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+  }).strict()
+) as unknown as z.ZodType<VariableBinding>;
+
 export const WhenSchema: z.ZodType<When> = z.lazy(() =>
   z.object({
     "metric": z.string().min(1),
@@ -7879,6 +8397,9 @@ export const contractSchemas = {
   StudioRunPreviewRequest: StudioRunPreviewRequestSchema,
   StudioRunSelection: StudioRunSelectionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
+  AnalysisDocument: AnalysisDocumentSchema,
+  StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
+  StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
   StudioDocumentAuthoring: StudioDocumentAuthoringSchema,
   StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequestSchema,
@@ -7988,6 +8509,9 @@ export interface ContractTypeMap {
   StudioRunPreviewRequest: StudioRunPreviewRequest;
   StudioRunSelection: StudioRunSelection;
   StudioSubmissionItem: StudioSubmissionItem;
+  AnalysisDocument: AnalysisDocument;
+  StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
+  StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringSurface: StudioAuthoringSurface;
   StudioDocumentAuthoring: StudioDocumentAuthoring;
   StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequest;

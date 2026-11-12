@@ -4,6 +4,7 @@ import type { StudioProjectWindowMapProblem } from '@/generated/studioContracts'
 
 type ProblemElement =
   | { kind: 'component'; id: string }
+  | { kind: 'analysisElement'; id: string }
   | { kind: 'wire'; index: number }
   | { kind: 'taskParameter'; name: string };
 
@@ -19,6 +20,12 @@ export function problemTarget(problem: StudioProjectWindowMapProblem) {
     : problem.path.split('.');
   if (parts[0] === 'payload') parts.shift();
   const [field, group, id] = parts;
+  if (problem.element && (field === 'operations' || field === 'views')) {
+    return {
+      view: 'analysis', label: group ? humanizeLabel(group) : studioName('analysis'),
+      element: { kind: 'analysisElement', id: problem.element },
+    } as const;
+  }
   if (field === 'graph') {
     if (group === 'nodes') {
       if (pointer && id) {
@@ -59,7 +66,7 @@ export function problemTarget(problem: StudioProjectWindowMapProblem) {
 export interface ProblemReveal {
   readonly problem: StudioProjectWindowMapProblem;
   readonly target: {
-    readonly view: 'model' | 'task' | 'objective' | 'training' | 'runs';
+    readonly view: 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'runs';
     readonly label: string;
     readonly element?: ProblemElement;
   };

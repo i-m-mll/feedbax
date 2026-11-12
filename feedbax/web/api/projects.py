@@ -7,6 +7,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringSurface,
     StudioDocumentAuthoring,
@@ -115,6 +116,17 @@ def read_document_authoring(
             request.app.state.project_folders, project_id, body,
             components=request.app.state.bootstrap_state.bundle.components,
         ),
+    )
+
+
+@router.post("/{project_id}/authoring/analyze")
+def read_analyze_authoring(
+    project_id: ProjectName, body: StudioAnalyzeRequest, request: Request, response: Response,
+) -> StudioAnalyzeAuthoring:
+    from feedbax.web.services.analyze_authoring import analyze_authoring
+
+    return _project_response(
+        response, lambda: analyze_authoring(request.app.state.project_plan, project_id, body),
     )
 
 

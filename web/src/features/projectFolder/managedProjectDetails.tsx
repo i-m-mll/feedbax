@@ -1,5 +1,3 @@
-import dagre from '@dagrejs/dagre';
-import { ReactFlow, ReactFlowProvider, getNodesBounds, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchComponents } from '@/api/client';
@@ -32,6 +30,7 @@ import type { ProblemReveal } from './projectWindowProblems';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { useModelAuthoring } from './useModelAuthoring';
+import { ManagedDocumentCanvas, useElementSelection } from './ManagedDocumentCanvas';
 
 type DetailName = 'model' | 'task' | 'scene';
 type DefinitionField = 'graph' | 'task';
@@ -98,20 +97,6 @@ function DetailReason({ reason, name }: { reason: StudioReasonId; name: StudioNa
   return <p role="status" className="px-3 py-2 text-sm text-slate-600">{studioReason(reason, studioName(name))}</p>;
 }
 
-function useElementSelection(scope: string, reveal?: ProblemReveal, revealedId?: string) {
-  const [selection, setSelection] = useState<{ scope: string; id: string | null }>();
-  const handled = useRef<ProblemReveal>();
-  useEffect(() => {
-    if (!reveal || revealedId === undefined || handled.current === reveal) return;
-    handled.current = reveal;
-    setSelection({ scope, id: revealedId });
-  }, [scope, reveal, revealedId]);
-  return {
-    selectedId: selection?.scope === scope ? selection.id : null,
-    onSelect: (id: string | null) => setSelection({ scope, id }),
-  };
-}
-
 function DetailList({ name, items, selectedId, onSelect }: ReturnType<typeof useElementSelection> & {
   name: StudioNameId;
   items: readonly { id: string; label: string }[];
@@ -133,80 +118,6 @@ function DetailList({ name, items, selectedId, onSelect }: ReturnType<typeof use
 }
 
 const endpoint = (node: string, port: string) => `${node}.${port}`;
-
-function ModelCanvas({ graph, positions, selectedId, onSelect, openAt, rememberPoint, placing }: ReturnType<typeof useElementSelection> & {
-  graph: GraphSpec;
-  positions?: Record<string, PresentationPosition>;
-  openAt?: (point: PresentationPosition) => void;
-  rememberPoint: (point: PresentationPosition | null) => void;
-  placing: boolean;
-}) {
-  const { fitBounds, viewportInitialized, screenToFlowPosition } = useReactFlow();
-  const width = useStore((state) => state.width);
-  const height = useStore((state) => state.height);
-  // The graph owns authored nodes. React Flow owns their rendered dimensions.
-  const bounds = useStore(({ nodeLookup }) => {
-    const rendered = [...nodeLookup.values()];
-    return rendered.length > 0 && rendered.every((node) => !!node.measured.width && !!node.measured.height)
-      ? getNodesBounds(rendered) : null;
-  }, (first, second) => first?.x === second?.x && first?.y === second?.y &&
-    first?.width === second?.width && first?.height === second?.height);
-  const navigated = useRef(false);
-  const { nodes, edges } = useMemo(() => {
-    const entries = Object.entries(graph.nodes ?? {});
-    const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
-    entries.forEach(([id]) => layout.setNode(id, { width: 150, height: 50 }));
-    const edges = (graph.wires ?? []).flatMap((wire, index): Edge[] => {
-      if (!layout.hasNode(wire.source_node) || !layout.hasNode(wire.target_node)) return [];
-      layout.setEdge(wire.source_node, wire.target_node);
-      return [{ id: `wire:${index}`, source: wire.source_node, target: wire.target_node }];
-    });
-    dagre.layout(layout);
-    const nodes = entries.map(([id, node]): Node => {
-      const { x, y } = layout.node(id);
-      return { id, ariaLabel: studioAccessibleName('select', id),
-        data: { label: <span className="break-words">{id}<br />{node.type}</span> },
-        position: positions?.[id] ?? { x: x - 75, y: y - 25 } };
-    });
-    return { nodes, edges };
-  }, [graph, positions]);
-  const shownNodes = useMemo(() => nodes.map((node) => ({ ...node, selected: selectedId === `component:${node.id}` })), [nodes, selectedId]);
-  const shownEdges = useMemo(() => edges.map((edge) => ({ ...edge, selected: selectedId === edge.id })), [edges, selectedId]);
-  useEffect(() => {
-    if (placing) navigated.current = true;
-    if (!bounds || !viewportInitialized || !width || !height) return;
-    const frame = requestAnimationFrame(() => {
-      if (!navigated.current) void fitBounds(bounds, { padding: 0.14 });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [fitBounds, bounds, viewportInitialized, width, height, placing]);
-  return (
-    <div className="h-full min-h-0"
-      onPointerMove={(event) => {
-        if (openAt) rememberPoint(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-      }}
-      onPointerLeave={() => rememberPoint(null)}
-      onDoubleClick={(event) => {
-        if (openAt && event.target instanceof Element && event.target.classList.contains('react-flow__pane')) {
-          openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-        }
-      }}>
-      <ReactFlow nodes={shownNodes} edges={shownEdges}
-        nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null} zoomOnDoubleClick={!openAt}
-        proOptions={{ hideAttribution: true }}
-        onMove={(event) => { if (event) navigated.current = true; }}
-        onNodesChange={(changes) => {
-          const change = changes.find((item) => item.type === 'select' && item.selected);
-          if (change?.type === 'select') onSelect(`component:${change.id}`);
-        }}
-        onEdgesChange={(changes) => {
-          const change = changes.find((item) => item.type === 'select' && item.selected);
-          if (change?.type === 'select') onSelect(change.id);
-        }}
-        onPaneClick={() => onSelect(null)} />
-    </div>
-  );
-}
 
 function WireDetails({ wire }: { wire: WireSpec }) {
   return <dl className="space-y-1 text-sm">
@@ -497,6 +408,12 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       : !definition.shared);
   }
   const components = Object.entries(graph?.nodes ?? {});
+  const modelItems = useMemo(() => Object.entries(graph?.nodes ?? {}).map(([id, node]) => ({
+    id, selectionId: `component:${id}`, label: <>{id}<br />{node.type}</>,
+  })), [graph]);
+  const modelConnections = useMemo(() => (graph?.wires ?? []).map((wire, index) => ({
+    id: `wire:${index}`, source: wire.source_node, target: wire.target_node,
+  })), [graph]);
   const component = components.find(([id]) => modelSelection.selectedId === `component:${id}`);
   const wire = graph?.wires?.find((_, index) => modelSelection.selectedId === `wire:${index}`);
   const registry = useQuery({ queryKey: ['components'], queryFn: fetchComponents, staleTime: 5 * 60 * 1000,
@@ -546,10 +463,12 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       header: detailHeader(model),
       body: graph ? <div className="flex h-full min-h-0 flex-col">
         {authorModel.issue}
-        <div className="min-h-0 flex-1"><ReactFlowProvider key={JSON.stringify([saved.project_id, model?.id ?? stepId])}>
-          <ModelCanvas graph={graph} positions={positions} openAt={authorModel.openAt} rememberPoint={authorModel.rememberPoint}
+        <div className="min-h-0 flex-1">
+          <ManagedDocumentCanvas key={JSON.stringify([saved.project_id, model?.id ?? stepId])}
+            items={modelItems} connections={modelConnections} positions={positions}
+            openAt={authorModel.openAt} rememberPoint={authorModel.rememberPoint}
             placing={authorModel.placing} {...modelSelection} />
-        </ReactFlowProvider></div>
+        </div>
       </div> : <DetailReason reason="definitionUnavailable" name="model" />,
       drawer: graph && (registry.error || authorModel.drawer || components.length > 0 || (graph.wires?.length ?? 0) > 0) ? <>
         {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}

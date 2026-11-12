@@ -101,6 +101,16 @@ def _project(schema: dict[str, Any], path: str) -> _Projection:
         )
 
     if kind == "array":
+        if "prefixItems" in schema:
+            check("type", "prefixItems", "minItems", "maxItems")
+            definitions = schema["prefixItems"]
+            if schema.get("minItems") != len(definitions) or schema.get("maxItems") != len(definitions):
+                raise ValueError(f"Unbounded Studio tuple at {path}")
+            items = [_project(item, f"{path}[{index}]") for index, item in enumerate(definitions)]
+            return _Projection(
+                "[" + ", ".join(item.typescript for item in items) + "]",
+                "z.tuple([" + ", ".join(item.zod for item in items) + "])",
+            )
         check("type", "items", "minItems", "maxItems")
         item = _project(schema["items"], f"{path}[]")
         zod = _bounds(f"z.array({item.zod})", schema, {"minItems": "min", "maxItems": "max"})
@@ -161,7 +171,9 @@ def emit_authored_contracts(
             continue
         if name in shared:
             previous = shared[name].model_json_schema()
-            previous.pop("$defs", None)
+            previous_definitions = previous.pop("$defs", {})
+            if previous == {"$ref": f"#/$defs/{name}"}:
+                previous = previous_definitions[name]
             if definition != previous:
                 raise ValueError(f"Conflicting Studio JSON Schema definition: {name}")
             continue

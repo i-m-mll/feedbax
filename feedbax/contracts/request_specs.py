@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.request_identity_guard import IdentityWideInteger
@@ -61,11 +62,14 @@ class AnalysisRequestSpec(RequestSpec):
 
 
 class RenderRequestSpec(RequestSpec):
-    figure: FigureSpec
+    figure: FigureSpec | None
+    document: FigureDocument | None = None
 
     @model_validator(mode="after")
     def _require_lowered_inputs(self) -> RenderRequestSpec:
-        if self.figure.inputs or self.figure.input_authorities:
+        if (self.figure is None) == (self.document is None):
+            raise ValueError("Declare one render figure or dataset figure document.")
+        if self.figure is not None and (self.figure.inputs or self.figure.input_authorities):
             raise ValueError("Lower figure input authorities to kernel inputs before encoding")
         return self
 

@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import stat
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
@@ -50,6 +50,9 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+
+if TYPE_CHECKING:
+    from feedbax.analysis.operations import OperationRegistry
 
 
 _PRESENTATION = "presentation.json"
@@ -205,8 +208,9 @@ def _encode_presentation(presentation: PresentationDocument) -> bytes:
 class ProjectFolderService:
     """Own revision guards for project folders under the app-managed root."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, operations: OperationRegistry | None = None) -> None:
         self.root = root.resolve()
+        self.operations = operations
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
 
     def _folder(self, project_id: str) -> Path:
@@ -334,7 +338,8 @@ class ProjectFolderService:
             text.configuration,
             text.store_path,
             compile_project(
-                text.project, source_runs=source_runs, memo=self._plan_memo(project_id)
+                text.project, source_runs=source_runs, memo=self._plan_memo(project_id),
+                operations=self.operations,
             ),
         )
 

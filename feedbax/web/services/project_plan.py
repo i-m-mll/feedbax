@@ -14,6 +14,7 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMap,
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapEdge,
+    StudioProjectWindowMapElement,
     StudioProjectWindowMapInput,
     StudioProjectWindowMapProblem,
     StudioProjectWindowMapRow,
@@ -28,7 +29,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project_inputs import InputBinding, StepReference
 from feedbax.contracts.request_refs import BatchSetMember
-from feedbax.contracts.project_plan import PlannedRun, RunKey
+from feedbax.contracts.project_plan import PlannedAnalyzeRun, PlannedRun, RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
@@ -82,10 +83,23 @@ class ProjectPlanRead:
                 counts[key.variant, key.step][row.status.value] += 1
         executable = {run.key for run in plan.runs}
         rejected = {(problem.variant, problem.step, problem.row) for problem in plan.diagnostics}
+        analyze_status: dict[RunKey, JobStatus] = {}
         for row in plan.rows:
             key = row.key
-            if key not in executable and (key.variant, key.step, key.row) in rejected:
+            invalid = (key.variant, key.step, key.row) in rejected
+            if row.kind == "analyze":
+                status = JobStatus.CANNOT_RUN if invalid else JobStatus.NOT_RUN
+                analyze_status[key] = status
+                counts[key.variant, key.step][status.value] += 1
+            elif key not in executable and invalid:
                 counts[key.variant, key.step][JobStatus.CANNOT_RUN.value] += 1
+
+        edge_keys = [
+            (binding.producer, run.key) for run in plan.runs for binding in run.inputs.values()
+        ]
+        edge_keys.extend(
+            (row.states.producer, row.key) for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+        )
 
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
             step = plan.steps[variant, step_id]
@@ -117,6 +131,7 @@ class ProjectPlanRead:
                 StudioProjectWindowMapRow(
                     key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
                     label=row.label or row.key.row,
+                    status=analyze_status.get(row.key),
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True
@@ -128,11 +143,10 @@ class ProjectPlanRead:
             ],
             edges=[
                 StudioProjectWindowMapEdge(
-                    from_key=StudioSavedTrainKey.model_validate(binding.producer, from_attributes=True),
-                    to_key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
+                    from_key=StudioSavedTrainKey.model_validate(producer, from_attributes=True),
+                    to_key=StudioSavedTrainKey.model_validate(consumer, from_attributes=True),
                 )
-                for run in plan.runs
-                for binding in run.inputs.values()
+                for producer, consumer in edge_keys
             ],
             problems=[
                 *(StudioProjectWindowMapProblem.model_validate(problem, from_attributes=True)
@@ -145,6 +159,13 @@ class ProjectPlanRead:
                 *self.evaluation_problems,
             ],
             evaluations=list(self.evaluations.values()),
+            analysis_elements=[
+                StudioProjectWindowMapElement(
+                    key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
+                    name=element.key.name, kind=element.kind, request_id=element.request_id, status="not_run",
+                )
+                for element in plan.elements.values()
+            ],
         )
 
 

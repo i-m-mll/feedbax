@@ -111,20 +111,24 @@ class StudioTrainStep(Step):
     kind: Literal["train"]
 
 
+class StudioAnalyzeStep(Step):
+    kind: Literal["analyze"]
+
+
 class CreateNamedDocument(StrictModel):
     kind: Literal["document"]
     id: ProjectName
     document: Document
 
 
-class CreateNamedTrain(StrictModel):
+class CreateNamedStep(StrictModel):
     kind: Literal["step"]
     id: ProjectName
-    step: StudioTrainStep
+    step: Annotated[StudioTrainStep | StudioAnalyzeStep, Field(discriminator="kind")]
 
 
 type NamedFileCreation = Annotated[
-    CreateNamedDocument | CreateNamedTrain, Field(discriminator="kind")
+    CreateNamedDocument | CreateNamedStep, Field(discriminator="kind")
 ]
 
 

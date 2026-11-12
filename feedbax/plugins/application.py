@@ -12,6 +12,7 @@ from feedbax.analysis.evaluation_compaction import EvaluationBatchConsumerRegist
 from feedbax.analysis.evaluation_product_union import (
     EvaluationCompactProductUnionFinalizerRegistry,
 )
+from feedbax.analysis.operations import OperationRegistry
 from feedbax.analysis.reports import ReportRecipeRegistry, register_builtin_report_recipes
 from feedbax.analysis.specs import AnalysisRecipeRegistry
 from feedbax.analysis.warp_qualification import register_warp_qualification
@@ -75,6 +76,7 @@ class ApplicationRegistryBundle:
     execution_preparations: ExecutionPreparationProviderRegistry
     experiment_packages: ExperimentRegistry
     analysis_recipes: AnalysisRecipeRegistry
+    operations: OperationRegistry
     evaluation_recipes: EvaluationRecipeRegistry
     evaluation_batch_consumers: EvaluationBatchConsumerRegistry
     evaluation_product_union_finalizers: EvaluationCompactProductUnionFinalizerRegistry
@@ -90,6 +92,7 @@ class ApplicationRegistryBundle:
         self.execution_preparations.seal()
         self.experiment_packages.seal()
         self.analysis_recipes.seal()
+        self.operations.seal()
         self.evaluation_recipes.seal()
         self.evaluation_batch_consumers.seal()
         self.evaluation_product_union_finalizers.seal()
@@ -119,6 +122,9 @@ ANALYSIS_RECIPES = RegistryKey(
     "analysis_recipes",
     AnalysisRecipeRegistry,
     registered_keys=lambda value: value.keys(),
+)
+OPERATIONS = RegistryKey(
+    "operations", "operations", OperationRegistry, registered_keys=lambda value: value.keys()
 )
 EVALUATION_RECIPES = RegistryKey(
     "evaluation_recipes",
@@ -165,6 +171,7 @@ APPLICATION_REGISTRY_KEYS = (
     TRAINING_PROGRAMS,
     EXPERIMENT_PACKAGES,
     ANALYSIS_RECIPES,
+    OPERATIONS,
     EVALUATION_RECIPES,
     EVALUATION_BATCH_CONSUMERS,
     EVALUATION_PRODUCT_UNION_FINALIZERS,
@@ -177,7 +184,11 @@ APPLICATION_REGISTRY_KEYS = (
 
 def new_application_registry_bundle() -> ApplicationRegistryBundle:
     """Construct fresh built-in registries before plugin registration."""
+    from feedbax.analysis.builtin_operations import register_builtin_operations
+
     components = ComponentRegistry()
+    operations = OperationRegistry()
+    register_builtin_operations(operations)
     figures = FigureRegistry()
     register_default_figure_constructors(figures)
     reports = ReportRecipeRegistry()
@@ -197,6 +208,7 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
         execution_preparations=preparations,
         experiment_packages=ExperimentRegistry(),
         analysis_recipes=AnalysisRecipeRegistry(),
+        operations=operations,
         evaluation_recipes=evaluations,
         evaluation_batch_consumers=evaluation_consumers,
         evaluation_product_union_finalizers=EvaluationCompactProductUnionFinalizerRegistry(),

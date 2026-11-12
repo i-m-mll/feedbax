@@ -26,6 +26,7 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
 import { createCheckpointTrain } from './createCheckpointTrain';
+import { createAnalyze } from './createAnalyze';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
@@ -33,6 +34,7 @@ import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as Save
 import { problemReason, problemTarget, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
+import { useManagedAnalyze } from './useManagedAnalyze';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
 type WindowPanel = { kind: 'activity' } | {
@@ -47,7 +49,7 @@ export interface ProjectWindowCommandScope {
   readonly plan: PlanView;
   readonly projection: StudioSavedTrainRuns | undefined;
   onSelectionChange(selection: PipelineSelectionState): void;
-  selectCreatedStep(stepId: string, view?: 'model' | 'runs'): void;
+  selectCreatedStep(stepId: string, view?: 'model' | 'runs' | 'analysis'): void;
 }
 
 export type ProjectWindowCommands = {
@@ -243,7 +245,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
   const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const namedRun = definitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ?? definitionRows[0]?.key;
-  function saveComponentPosition(document: string, node: string, position: PresentationPosition) {
+  function saveElementPosition(document: string, node: string, position: PresentationPosition) {
     const { outside, saved } = editor.getSnapshot();
     const current = (outside ?? saved).presentation ?? {};
     const prior = current.documents?.[document];
@@ -256,7 +258,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes, saveComponentPosition,
+    namedRun, documentScopes, saveComponentPosition: saveElementPosition,
   };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
     problemReveal: focusSlot === 'primary' ? revealed : undefined });
@@ -264,6 +266,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     problemReveal: focusSlot === 'secondary' ? revealed : undefined });
   const focusedModel = windowState.mode !== 'map' && focusView === 'model'
     ? (focusSlot === 'primary' ? primary : secondary).model : undefined;
+  const analyze = useManagedAnalyze({
+    editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
+    focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition,
+  });
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const selectedJobs = state.selection ? runRows.flatMap((item) => {
     const latest = item.attempts.at(-1);
@@ -336,7 +342,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     const row = data?.window_map?.rows.find(({ key }) =>
       key.step === stepId && key.row === problem.row && key.variant === scope);
     const target = problemTarget(problem);
-    const view = viewsByKind[kind].some((item) => item === target.view) ? target.view : 'runs';
+    const view = kind === 'analyze' ? 'analysis'
+      : viewsByKind[kind].some((item) => item === target.view) ? target.view : 'runs';
     const runId = row ? savedRunId(row.key) : null;
     selection.select(runId
       ? selectRun(state, { stepId, runId })
@@ -397,7 +404,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     selectCreatedStep: (id, view = 'runs') => {
       selection.select(selectStep(state, id));
       if (view === 'model') setFocusFirstModel(id);
-      else setFocusCreatedStep(id);
+      if (view === 'runs') setFocusCreatedStep(id);
+      if (view === 'analysis') requestSlotFocus((count) => count + 1);
       setWindowState((current) => showProjectWindowView(current, view));
     },
   };
@@ -413,10 +421,27 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
 
   function newStepCommand(source?: PipelineMapStepSource, subject?: string) {
     if (!source) {
+      if (step?.kind === 'evaluate' && (state.selection?.kind !== 'steps' || state.selection.stepIds.length === 1)) {
+        return newStepCommand({
+          stepId: step.id,
+          selection: state.selection && 'stepId' in state.selection && state.selection.stepId === step.id
+            ? state.selection : null,
+        });
+      }
       if (!canCreateFirstTrain(saved.project)) return undefined;
       return bindStudioCommand('newStep', () => setFirstStepRevision(saved.revision), { enabled: ready && !busy });
     }
     const sourceStep = plan.steps.find(({ id }) => id === source.stepId);
+    if (sourceStep?.kind === 'evaluate' && !saved.project.sweep && variant === 'default') {
+      const rows = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
+      const evaluation = rows.length === 1 && data?.window_map?.evaluations?.find((row) =>
+        row.result && savedRunId(row.key) === rows[0].id);
+      if (!evaluation) return undefined;
+      return bindStudioCommand('newStep', () => { void perform(async () => {
+        const id = await createAnalyze(editor, saved.revision, evaluation.key);
+        commandScope.selectCreatedStep(id, 'analysis');
+      }); }, { enabled: ready && !busy, name: 'analyze', subject });
+    }
     if (!onNewStep || sourceStep?.kind !== 'train') return undefined;
     const runs = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
     const runnable = runs.some(({ status }) => status !== 'cannot_run');
@@ -477,6 +502,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const commands = [
     ...runCommands,
     ...(focusedModel?.commands ?? []),
+    ...analyze.commands,
     newStepCommand(),
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
@@ -503,6 +529,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       </select>}
       overlay={<>
         {focusedModel?.overlay}
+        {analyze.overlay}
         {firstStepRevision && <Dialog ariaLabel={studioName('newStep')} onClose={() => setFirstStepRevision(undefined)} manageFocus
           panelClassName="w-[min(20rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           <button type="button" className={`${control} flex w-full items-center gap-2 text-sm`} data-dialog-autofocus onClick={chooseFirstTrain}>
@@ -547,6 +574,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         const details = slot === 'primary' ? primary : secondary;
         const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
           ? <ProblemDestination reveal={revealed}>{body}</ProblemDestination> : body;
+        if (view === 'analysis' || view === 'figures') {
+          const detail = analyze[view];
+          return { ...detail, body: withProblem(<StudioErrorBoundary region={studioName(view)}>{detail.body}</StudioErrorBoundary>) };
+        }
         if (view === 'model' || view === 'task' || view === 'scene') {
           const header = view !== 'scene' && authoring && wholeStep
             ? <StudioTrainAuthoringForm {...authoring} view={view} documentPicker />

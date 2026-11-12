@@ -326,6 +326,244 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.BandEncodings": {
+      "lower": {},
+      "upper": {},
+      "x": {},
+      "y": {}
+    },
+    "feedbax.contracts.figure_document.BandLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "band"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.BandStyle": {
+      "band_alpha": {
+        "absent": 0.2
+      },
+      "color": {
+        "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.FigureDocument": {
+      "caption": {
+        "absent": null
+      },
+      "data": {},
+      "layers": {
+        "families": [
+          "feedbax.contracts.figure_document.BandLayer",
+          "feedbax.contracts.figure_document.LineLayer"
+        ]
+      },
+      "layout": {},
+      "theme": {
+        "absent": "plotly_white"
+      },
+      "view": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.FigureDocumentView": {
+      "height": {
+        "absent": null
+      },
+      "horizontal_spacing": {
+        "absent": null
+      },
+      "hovermode": {
+        "absent": null,
+        "values": [
+          "closest",
+          "x unified",
+          "x",
+          "y unified",
+          "y",
+          false
+        ]
+      },
+      "legend_gutter": {
+        "absent": null
+      },
+      "legend_tracegroupgap": {
+        "absent": null
+      },
+      "legend_x": {
+        "absent": null
+      },
+      "legend_xanchor": {
+        "absent": null,
+        "values": [
+          "auto",
+          "center",
+          "left",
+          "right"
+        ]
+      },
+      "legend_y": {
+        "absent": null
+      },
+      "legend_yanchor": {
+        "absent": null,
+        "values": [
+          "auto",
+          "bottom",
+          "middle",
+          "top"
+        ]
+      },
+      "margin": {
+        "absent": null
+      },
+      "row_label_gutter": {
+        "absent": null
+      },
+      "shared_xaxes": {
+        "absent": false
+      },
+      "shared_yaxes": {
+        "absent": "all"
+      },
+      "title": {
+        "absent": null
+      },
+      "vertical_spacing": {
+        "absent": null
+      },
+      "width": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.FigurePanel": {
+      "axes_labels": {
+        "absent": null
+      },
+      "col": {},
+      "name": {},
+      "row": {},
+      "title": {
+        "absent": null
+      },
+      "x_axis": {
+        "absent": null
+      },
+      "y_axis": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.IndexSelection": {
+      "index": {}
+    },
+    "feedbax.contracts.figure_document.LineEncodings": {
+      "x": {},
+      "y": {}
+    },
+    "feedbax.contracts.figure_document.LineLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "line"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.LineStyle": {
+      "color": {
+        "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.VariableBinding": {
+      "select": {
+        "absent": {}
+      },
+      "variable": {}
+    },
+    "feedbax.contracts.figure_layout.FigureMarginParams": {
+      "autoexpand": {
+        "absent": null
+      },
+      "b": {
+        "absent": null
+      },
+      "l": {
+        "absent": null
+      },
+      "pad": {
+        "absent": null
+      },
+      "r": {
+        "absent": null
+      },
+      "t": {
+        "absent": null
+      }
+    },
     "feedbax.contracts.figures.AxisLabels": {
       "x": {
         "absent": null
@@ -1507,6 +1745,9 @@
       }
     },
     "feedbax.contracts.request_specs.RenderRequestSpec": {
+      "document": {
+        "absent": null
+      },
       "figure": {},
       "numerical_settings": {
         "absent": {}

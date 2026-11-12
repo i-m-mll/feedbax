@@ -84,6 +84,7 @@ class ProjectDiagnostic:
     document: str | None = None
     row: str | None = None
     variant: str | None = None
+    element: str | None = None
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,7 @@ class _StepState:
     written: set[str] = field(default_factory=set)
     origins: Any = None
     document_uses: frozenset[str] = frozenset()
+    root_document: str | None = None
 
 
 class _Resolver:
@@ -418,10 +420,14 @@ class _Resolver:
             if base.row is not None:
                 parent = self.select_row(name, base, parent)
         else:
+            root_document = None
+            document_uses = frozenset()
             if isinstance(base, DocumentReference):
                 documents = self.documents(name)
                 payload, reference = documents.base(base)
                 origins = documents.source(reference, payload) if self.track_sources else None
+                root_document = reference.document
+                document_uses = frozenset(documents.used)
             else:
                 payload = self.read_base(name, base)
                 origins = self.base_origins(name, base, payload) if self.track_sources else None
@@ -437,6 +443,8 @@ class _Resolver:
                 if isinstance(base, (DocumentReference, RunBase))
                 else _pack(payload, "payload", name),
                 origins=origins,
+                document_uses=document_uses,
+                root_document=root_document,
             )
         payload = parent.payload
         written = parent.written
@@ -500,6 +508,7 @@ class _Resolver:
             written,
             origins,
             parent.document_uses,
+            parent.root_document,
         )
 
     def read_base(self, step: str, base: InlineBase | RunBase | ExternalBase) -> JsonValue:
@@ -571,6 +580,7 @@ class _Resolver:
                 inputs=generated.inputs,
                 requires=parent.requires,
                 document_uses=parent_step.document_uses,
+                root_document=parent.root_document,
             )
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
@@ -587,6 +597,7 @@ class _Resolver:
         )
         return _StepState(
             selected.payload, inputs=selected.inputs, origins=origins, document_uses=selected.document_uses,
+            root_document=state.root_document,
         )
 
     def row_source(self, author: str, row: ExpandedRow, path: str) -> tuple[ValueSource, Any]:
@@ -656,13 +667,14 @@ class _Resolver:
                 ) from error
         return _StepState(
             payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=state.document_uses,
+            root_document=state.root_document,
         )
 
     def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
         documents = _Documents(
             self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
         )
-        document_ids: dict[str, str] = {}
+        document_ids = {"payload": state.root_document} if state.root_document is not None else {}
         payload = documents.inline(state.payload, "payload", document_ids=document_ids)
         if not isinstance(payload, dict):
             raise _Problem(

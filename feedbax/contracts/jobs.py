@@ -173,6 +173,7 @@ class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
+    status: Literal["not_run", "cannot_run"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapSubset(StrictModel):
@@ -212,6 +213,15 @@ class StudioProjectWindowMapProblem(StrictModel):
     step: str | None
     row: str | None
     document: str | None
+    element: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioProjectWindowMapElement(StrictModel):
+    key: StudioSavedTrainKey
+    name: str
+    kind: Literal["analyze", "render"]
+    request_id: str
+    status: Literal["not_run"]
 
 
 class StudioProjectWindowMap(StrictModel):
@@ -221,6 +231,7 @@ class StudioProjectWindowMap(StrictModel):
     edges: list[StudioProjectWindowMapEdge]
     problems: list[StudioProjectWindowMapProblem]
     evaluations: list[StudioSavedEvaluationRow] = Field(default_factory=list)
+    analysis_elements: list[StudioProjectWindowMapElement] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class StudioSavedTrainRuns(StrictModel):
