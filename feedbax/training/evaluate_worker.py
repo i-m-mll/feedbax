@@ -7,7 +7,6 @@ import os
 from collections.abc import Sequence
 from dataclasses import replace
 from hashlib import sha256
-from math import isfinite
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
@@ -71,15 +70,13 @@ def _rollouts(
     params: RolloutParameters,
     stop: Path,
 ):
-    import equinox as eqx
     import jax
     import numpy as np
 
-    from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.graph import GraphSpec
-    from feedbax.contracts.matrix_core import apply_override_patches
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.contracts.training import TrainingSpec
     from feedbax.dataset import Dataset, Variable
@@ -88,9 +85,11 @@ def _rollouts(
     from feedbax.runtime._graph_key_schedule import derive_key
     from feedbax.runtime.model_values import MODEL_OWNERS
     from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
-    from feedbax.training.model_checkpoint import ModelCheckpointError
+    from feedbax.training.evaluation_variant import resolve_evaluation_variant
+    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
     from feedbax.training.checkpoint_custody import open_published_model_slot
     from feedbax.training.studio_executor import studio_training_key
+    from feedbax.web.worker.diagnostics import GraphCompilationError as WorkerCompilationError
     from feedbax.web.worker.execution import (
         _evaluate_loss,
         compile_training_run,
@@ -112,9 +111,10 @@ def _rollouts(
         raise CannotRun("/inputs/subject/graph/subgraphs", "nested state owners are unavailable")
     for name, node in authored_graph.nodes.items():
         declaration = MODEL_OWNERS.get(node.type)
-        if declaration is None or declaration.states is None or node.revision not in {
-            None, declaration.revision,
-        }:
+        if (
+            declaration is None or not declaration.checkpointable or declaration.states is None
+            or node.revision not in {None, declaration.revision}
+        ):
             raise CannotRun(
                 json_pointer(("inputs", "subject", "graph", "nodes", name)),
                 "owner revision has no declared raw-state layout",
@@ -122,14 +122,15 @@ def _rollouts(
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
-    outputs = slot.graph.output_bindings
+    variant = resolve_evaluation_variant(slot.graph, spec.task, params.variation)
+    outputs = variant.graph.output_bindings
     point_mass = [
         (name, node)
         for name, (node, port) in outputs.items()
-        if port == "effector" and node in slot.graph.nodes
-        and slot.graph.nodes[node].type == "feedbax.PointMass"
+        if port == "effector" and node in variant.graph.nodes
+        and variant.graph.nodes[node].type == "feedbax.PointMass"
     ]
-    if len(point_mass) != 1 or slot.graph.subgraphs:
+    if len(point_mass) != 1 or variant.graph.subgraphs:
         raise CannotRun(
             "/inputs/subject/graph/output_bindings",
             "requires one declared root PointMass effector output and a single-clock graph",
@@ -147,66 +148,67 @@ def _rollouts(
         )
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
-    executable = compile_graph(
-        GraphDocument(graph=slot.graph),
-        registry.components,
-        input_prototypes=prototypes_from_task_bindings(spec.task_binding_spec),
-        initialization_key=studio_training_key(method.seed, "model"),
-        artifact_provider=slot.provider,
+    prototypes = prototypes_from_task_bindings(spec.task_binding_spec)
+    key = studio_training_key(method.seed, "model")
+    source_executable = compile_graph(
+        GraphDocument(graph=slot.graph), registry.components,
+        input_prototypes=prototypes, initialization_key=key, artifact_provider=slot.provider,
     )
+    executable = source_executable
+    if variant.graph != slot.graph:
+        try:
+            executable = compile_graph(
+                GraphDocument(graph=variant.graph), registry.components,
+                input_prototypes=prototypes, initialization_key=key, artifact_provider=slot.provider,
+            )
+        except GraphCompilationError as error:
+            path = error.record.diagnostics[0].source_anchor.authored_path
+            raise CannotRun("/params/variation" + path, str(error)) from error
+    target = None
+    if executable is not source_executable or variant.source_overrides:
+        target = ModelRestoreTarget(executable.resolved.graph, executable.graph, variant.source_overrides)
     try:
-        restored = slot.restore(executable.graph)
+        graph = slot.restore(source_executable.graph, target=target)
     except ModelCheckpointError as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
-    plant = restored.nodes[owner]
+
+    plant = graph.nodes[owner]
     if not isinstance(plant, PointMass):
         raise CannotRun(f"/inputs/subject/graph/nodes/{owner}", "requires the PointMass owner")
-    for name, component in restored.nodes.items():
-        clock = MODEL_OWNERS[slot.graph.nodes[name].type].clock
+    for name, component in graph.nodes.items():
+        clock = MODEL_OWNERS[executable.resolved.graph.nodes[name].type].clock
         if clock is not None and getattr(component, clock) != plant.dt:
             raise CannotRun(
                 json_pointer(("inputs", "subject", "graph", "nodes", name, "params", clock)),
                 "declared owner clock differs from the PointMass control period",
             )
-    graph = restored
-    if params.variation:
-        (patch,) = params.variation
-        if (
-            patch.path != f"nodes.{owner}.params.mass"
-            or patch.op != "replace"
-            or type(patch.value) not in (int, float)
-            or not isfinite(patch.value)
-            or patch.value <= 0
-        ):
-            raise CannotRun("/params/variation/0", "requires a positive PointMass mass replacement")
-        document = GraphSpec.model_validate(
-            apply_override_patches(slot.graph.model_dump(mode="json"), [patch]),
+    try:
+        compiled = compile_training_run(
+            graph_spec=variant.graph,
+            training_spec=TrainingSpec(
+                optimizer=method.optimizer,
+                loss=spec.objective.loss,
+                n_batches=spec.training_config.n_batches,
+                batch_size=1,
+            ),
+            task_spec=variant.task.model_dump(mode="json", exclude_none=True),
+            task_binding_spec=spec.task_binding_spec,
+            cfg=spec.training_config,
+            component_registry=registry.components,
+            executable_graph=replace(executable, graph=graph),
         )
-        config = plant.configuration_values() | {"mass": document.nodes[owner].params["mass"]}
-        variant = PointMass.from_config(config)
-        graph = eqx.tree_at(lambda value: value.nodes[owner], restored, variant).prepare()
-
-    compiled = compile_training_run(
-        graph_spec=slot.graph,
-        training_spec=TrainingSpec(
-            optimizer=method.optimizer,
-            loss=spec.objective.loss,
-            n_batches=spec.training_config.n_batches,
-            batch_size=1,
-        ),
-        task_spec=spec.task.model_dump(mode="json", exclude_none=True),
-        task_binding_spec=spec.task_binding_spec,
-        cfg=spec.training_config,
-        component_registry=registry.components,
-        executable_graph=replace(executable, graph=graph),
-    )
-    plant = graph.nodes[owner]
+    except WorkerCompilationError as error:
+        location = error.diagnostics[0].location if error.diagnostics else None
+        path = location.get("path", "") if location else ""
+        raise CannotRun("/params/variation" + path, str(error)) from error
+    graph = compiled.graph
     position = state_key(owner, "effector/position")
     velocity = state_key(owner, "effector/velocity")
     raw = params.retention == "raw_states"
     try:
         layout = bind_raw_state(
-            graph, slot.graph, selected=None if raw else frozenset({position, velocity}),
+            graph, executable.resolved.graph,
+            selected=None if raw else frozenset({position, velocity}),
         )
     except StateLayoutError as error:
         raise CannotRun(error.path, str(error)) from error
@@ -246,6 +248,7 @@ def _rollouts(
         "objective/terms" + json_pointer((name,)): field(values)
         for name, values in terms_by_id.items()
     })
+    variation_sha256 = canonical_sha256(params.model_dump(mode="json")["variation"])
     attrs = {"scene_position": position}
     if raw:
         attrs.update({
@@ -255,6 +258,18 @@ def _rollouts(
                 canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
             ).hexdigest(),
         })
+        if variant.task != spec.task or any(patch.path.startswith("graph.") for patch in params.variation):
+            attrs.update({
+                "effective_graph_sha256": canonical_sha256({
+                    "resolved_graph": executable.resolved.resolved_sha256,
+                    "checkpoint_values": slot.arrays.sha256,
+                    "source_overrides": variant.source_overrides,
+                }),
+                "effective_task_sha256": sha256(
+                    canonical_json_v2_bytes(variant.task.model_dump(mode="json"))
+                ).hexdigest(),
+                "variation_sha256": variation_sha256,
+            })
         if any(name.startswith("/v1/model/carry/") for name in variables):
             attrs["carry_address_migration"] = "legacy-gru-hidden-self-loop.v1"
     return Dataset.from_arrays(
@@ -262,7 +277,7 @@ def _rollouts(
         coords={
             "checkpoint": Variable(np.asarray([checkpoint.completed_updates]), ("checkpoint",)),
             "condition": Variable(
-                np.asarray([canonical_sha256(params.model_dump(mode="json")["variation"])]),
+                np.asarray([variation_sha256]),
                 ("condition",),
             ),
             "trial": Variable(np.asarray(params.trials), ("trial",)),

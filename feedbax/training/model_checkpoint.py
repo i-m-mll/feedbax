@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from operator import attrgetter
 from pathlib import Path
@@ -113,7 +114,7 @@ class SemanticModelWriter:
             return None
         for name, node in graph.nodes.items():
             owner = MODEL_OWNERS.get(node.type)
-            if owner is None or node.revision not in {None, owner.revision}:
+            if owner is None or not owner.checkpointable or node.revision not in {None, owner.revision}:
                 return None
             interior = (graph.subgraphs or {}).get(name)
             if node.type != SPATIAL_OWNER and interior is None:
@@ -165,6 +166,15 @@ def semantic_model_member_files(
 
 
 @dataclass(frozen=True)
+class ModelRestoreTarget:
+    """A resolved variant and its authorized scalar source-value overrides."""
+
+    graph: GraphSpec
+    template: Graph
+    source_overrides: Mapping[str, float]
+
+
+@dataclass(frozen=True)
 class SemanticModelSlot:
     provider: ImmutableArtifactBlobProvider
     graph: GraphSpec
@@ -205,7 +215,10 @@ class SemanticModelSlot:
             artifact_provider=self.provider,
         ).graph
 
-    def restore(self, template: Graph | None = None) -> Graph:
+    def restore(
+        self, template: Graph | None = None, *, target: ModelRestoreTarget | None = None,
+    ) -> Graph:
+        """Verify the source slot, then bind compatible retained values to the target."""
         if template is None:
             template = self.template()
         try:
@@ -219,31 +232,36 @@ class SemanticModelSlot:
         actual = decoded.descriptor.metadata
         if not isinstance(actual, dict):
             raise ModelCheckpointError("/v1/model", "missing value declarations")
-        keys = expected.keys()
-        unexpected = (keys ^ actual.keys()) | (keys ^ decoded.tensors.keys())
-        if unexpected:
-            raise ModelCheckpointError(min(unexpected), "missing or unexpected authoritative value")
-        for path, value in expected.items():
-            restored = decoded.tensors[path]
-            if actual[path] != declarations[path]:
-                raise ModelCheckpointError(path, "owner, revision or value schema differs")
-            if restored.shape != value.shape or restored.dtype != value.dtype:
-                raise ModelCheckpointError(path, "authoritative value shape or dtype differs")
+        _verify_values(expected, declarations, decoded.tensors, actual)
+
+        retained = self.graph.nodes.keys()
+        overrides: Mapping[str, float] = {}
+        if target is not None:
+            destination, destination_declarations = _describe(
+                target.graph, target.template, retained=retained,
+            )
+            _verify_values(destination, destination_declarations, decoded.tensors, actual)
+            template, overrides = target.template, target.source_overrides
 
         nodes = dict(template.nodes)
-        for name, component in template.nodes.items():
+        applied = set()
+        for name in retained:
+            component = nodes[name]
             binding = template.component_bindings[name]
             values = MODEL_OWNERS[binding.type_id].values
             source = {}
             learned = []
             for value in values:
                 address = semantic_key("model", "value", (name,), value.symbol)
-                if address in decoded.tensors:
-                    data = decoded.tensors[address]
-                    if value.kind == "source":
-                        source[value.symbol] = float(data)
-                    else:
-                        learned.append((value.field, jnp.asarray(data)))
+                if address not in decoded.tensors:
+                    continue
+                data = decoded.tensors[address]
+                if value.kind == "source":
+                    if address in overrides:
+                        applied.add(address)
+                    source[value.symbol] = overrides.get(address, float(data))
+                else:
+                    learned.append((value.field, jnp.asarray(data)))
             if source:
                 component = type(component).from_config(component.configuration_values() | source)
             if learned:
@@ -253,19 +271,47 @@ class SemanticModelSlot:
                     component, tensors,
                 )
             nodes[name] = component
+        if unexpected := overrides.keys() - applied:
+            raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
         return eqx.tree_at(lambda graph: graph.nodes, template, nodes).prepare()
 
 
-def _describe(graph: GraphSpec, model: Graph) -> tuple[dict, dict]:
+def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
+    keys = expected.keys()
+    unexpected = (keys ^ saved_declarations.keys()) | (keys ^ tensors.keys())
+    if unexpected:
+        raise ModelCheckpointError(min(unexpected), "missing or unexpected authoritative value")
+    for path in sorted(keys):
+        current, restored = expected[path], tensors[path]
+        if saved_declarations[path] != declarations[path]:
+            raise ModelCheckpointError(path, "owner, revision or value schema differs")
+        if restored.shape != current.shape or restored.dtype != current.dtype:
+            raise ModelCheckpointError(
+                path, f"authoritative value shape or dtype differs: "
+                f"checkpoint {restored.shape} {restored.dtype}, destination {current.shape} {current.dtype}",
+            )
+
+
+def _describe(
+    graph: GraphSpec, model: Graph, *, retained: Set[str] | None = None,
+) -> tuple[dict, dict]:
     if model.nodes.keys() != graph.nodes.keys() or model.component_bindings.keys() != graph.nodes.keys():
         raise ModelCheckpointError("/v1/model", "effective graph and realized owner occurrences differ")
     arrays, declarations = {}, {}
-    for name, component in model.nodes.items():
+    if retained is None:
+        retained = graph.nodes.keys()
+    if missing := retained - graph.nodes.keys():
+        raise ModelCheckpointError(
+            semantic_key("model", "value", (), min(missing)),
+            "retained owner has no destination",
+        )
+    for name in sorted(retained):
+        component = model.nodes[name]
         binding = model.component_bindings[name]
         owner_path = semantic_key("model", "value", (), name)
         owner = MODEL_OWNERS.get(binding.type_id)
         if (
-            owner is None or graph.nodes[name].type != binding.type_id
+            owner is None or not owner.checkpointable or graph.nodes[name].type != binding.type_id
             or binding.revision != owner.revision
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")

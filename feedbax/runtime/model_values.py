@@ -26,6 +26,7 @@ class ModelOwner:
     values: tuple[ModelValue, ...]
     states: tuple[StateValue, ...] | None = None
     clock: str | None = None
+    checkpointable: bool = True
 
 
 def _learned(*values: tuple[str, str]) -> tuple[ModelValue, ...]:
@@ -85,5 +86,6 @@ MODEL_OWNERS = {
         states=(StateValue("activation", (), "1", "muscle"),),
         clock="dt",
     ),
+    "feedbax.Scale": ModelOwner(1, _source("scale"), states=(), checkpointable=False),
     SPATIAL_OWNER: ModelOwner(1, ()),
 }

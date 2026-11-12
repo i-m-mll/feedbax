@@ -55,7 +55,7 @@ class RolloutParameters(StrictModel):
     trials: tuple[str, ...] = Field(min_length=1)
     trial_policy: Literal["paired"]
     retention: Literal["raw_states", "observations"] = "raw_states"
-    variation: tuple[OverridePatch, ...] = Field(max_length=1)
+    variation: tuple[OverridePatch, ...]
 
     @field_validator("trials")
     @classmethod
@@ -109,8 +109,9 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
-    if params.variation and "op" not in params.variation[0].model_fields_set:
-        raise CannotRun("/params/variation/0/op", "declare the override operation explicitly")
+    for index, patch in enumerate(params.variation):
+        if "op" not in patch.model_fields_set:
+            raise CannotRun(f"/params/variation/{index}/op", "declare the override operation explicitly")
     return spec, params, subject
 
 
