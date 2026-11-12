@@ -54,7 +54,7 @@ from feedbax.contracts.project_plan import ProjectPlan, RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.training import TrainingRunSpec
-from feedbax.host import Admission, AdmissionItem, HostClient, HostError, Job, Launch
+from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -237,7 +237,7 @@ class JobService:
         run_keys: Sequence[RunKey],
         token: str,
     ) -> StudioJobSubmission:
-        """Admit selected independent Train rows from a server-issued saved Plan."""
+        """Admit selected Train rows from a server-issued saved Plan."""
         selected = {
             plan_run_key(key.variant, key.step, key.row): key
             for key in run_keys
@@ -259,8 +259,10 @@ class JobService:
         if previous := self._retry(token, project=project, continues=None, command=command):
             return previous
 
-        items = []
+        items = {}
         runs = {}
+        checkpoints = {}
+        names_by_key = {key: name for name, key in selected.items()}
         with folders.admission_plan(project) as current:
             if current.store_path != reviewed.store_path:
                 raise JobConflict("The saved project's store changed since the reviewed Plan.")
@@ -269,17 +271,17 @@ class JobService:
             for name, key in selected.items():
                 old, run = before.get(key), after.get(key)
                 if old is None or old.kind != "train":
-                    items.append(_rejected(name, "The reviewed row is not a runnable Train request."))
+                    items[name] = _rejected(name, "The reviewed row is not a runnable Train request.")
                     continue
                 if run is None:
-                    items.append(_rejected(name, "The reviewed Train row is no longer runnable."))
+                    items[name] = _rejected(name, "The reviewed Train row is no longer runnable.")
                     continue
                 if old.request_id != run.request_id:
                     path = _changed_train_path(reviewed.plan, old.request_id, current.plan, run.request_id)
-                    items.append(_rejected(name, f"The selected Train request changed at {path}."))
+                    items[name] = _rejected(name, f"The selected Train request changed at {path}.")
                     continue
                 if run.requires:
-                    items.append(_rejected(name, "/requires: Train has unresolved capabilities."))
+                    items[name] = _rejected(name, "/requires: Train has unresolved capabilities.")
                     continue
                 try:
                     spec, binding = bind_canonical_train(
@@ -290,8 +292,13 @@ class JobService:
                         store,
                     )
                 except (ValueError, KeyError) as error:
-                    items.append(_rejected(name, str(error)))
+                    items[name] = _rejected(name, str(error))
                     continue
+                if binding.checkpoint is not None:
+                    planned = run.inputs.get("checkpoint")
+                    if planned is None or planned.member.reference != binding.checkpoint:
+                        raise ValueError("The saved Plan disagrees with the encoded checkpoint input.")
+                    checkpoints[name] = (planned.producer, binding.checkpoint.request_id)
                 data = {
                     "run_key": name,
                     "stage_id": key.step,
@@ -300,9 +307,33 @@ class JobService:
                     "coordinates": {axis: coordinate.value for axis, coordinate in run.coordinates.items()},
                 }
                 runs[name] = data | {"request_id": run.request_id}
-                items.append(self._training_item(
+                items[name] = self._training_item(
                     project, run.request_id, spec, data, current.store_path, canonical_request=binding
-                ))
+                )
+            order = list(selected)
+            if checkpoints:
+                order = [names_by_key[run.key] for run in current.plan.runs if run.key in names_by_key]
+                order.extend(name for name, key in selected.items() if key not in after)
+                for name in order:
+                    if name not in checkpoints:
+                        continue
+                    producer, request_id = checkpoints[name]
+                    if producer in names_by_key:
+                        source = items[names_by_key[producer]].job
+                        anchor = source.id if source is not None else None
+                    else:
+                        anchor = self._checkpoint_producer(project, current.store_path, request_id)
+                    job = items[name].job
+                    assert job is not None
+                    if anchor is None:
+                        items[name] = _rejected(
+                            name, "/inputs/checkpoint: select an unambiguous admitted Train predecessor"
+                        )
+                        runs.pop(name)
+                    else:
+                        items[name] = replace(
+                            items[name], job=replace(job, edges=(Edge(anchor, authenticated_completion=True),))
+                        )
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
             }
@@ -323,10 +354,20 @@ class JobService:
                 record["authored_train_plan"] = {
                     "object": plan.model_dump(mode="json"), "requests": requests,
                 }
-            admitted = self._admit(token, items, record)
+            admitted = self._admit(token, [items[name] for name in order], record)
         return self._submission_for_action(
             admitted, project=project, continues=None, command=command
         )
+
+    def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
+        anchors = [
+            row["id"]
+            for row in self.host.jobs(project=project, request=request, include_launch=True)
+            if row["continues"] is None
+            and row["launch"]["payload"].get("canonical_request") is not None
+            and row["launch"]["payload"].get("manifest_root") == str(root)
+        ]
+        return anchors[0] if len(anchors) == 1 else None
 
     def _training_item(
         self,
@@ -727,6 +768,10 @@ def _is_studio_submission(submission: dict[str, Any]) -> bool:
 
 def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
     record = response["record"]
+    items = response["items"]
+    if (command := record.get("command")) and command.get("kind") == "canonical_train":
+        by_key = {item["run_key"]: item for item in items}
+        items = [by_key[key] for key in command["requests"]]
     return StudioJobSubmission(
         id=response["id"],
         token=response["token"],
@@ -739,7 +784,7 @@ def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
                 disposition=item["disposition"],
                 reason=item.get("reason"),
             )
-            for item in response["items"]
+            for item in items
         ],
     )
 

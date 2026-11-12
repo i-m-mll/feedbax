@@ -91,6 +91,21 @@ def verify_training_completion(
             or TrainingRunSpec.model_validate(manifest.training_spec.inline) != launch.spec
         ):
             raise CompletionFileError("Receipt does not bind the admitted Train execution payload.")
+        checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
+        if (checkpoint_ref is None) != (launch.checkpoint_input is None):
+            raise CompletionFileError("Completion does not bind its declared Train checkpoint.")
+        if launch.checkpoint_input is not None and launch.resume is None:
+            provenance = manifest.provenance.metadata if manifest.provenance is not None else {}
+            initialization = provenance.get("checkpoint_initialization")
+            if not isinstance(initialization, dict) or initialization.get("mode") != "initialize_from":
+                raise CompletionFileError("Completion lacks its Train initialization provenance.")
+            source = ParentRef.model_validate(initialization["source"])
+            expected = launch.checkpoint_input.checkpoint.pointer
+            if (
+                source.id != expected.transaction_id
+                or source.metadata.get("manifest_sha256") != expected.manifest_sha256
+            ):
+                raise CompletionFileError("Completion initialized from a different checkpoint.")
         terminal = manifest.terminal_checkpoint
         if terminal is None or checkpoint is None:
             raise CompletionUnavailable("Successful producer has no terminal checkpoint.")

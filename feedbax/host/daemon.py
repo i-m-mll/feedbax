@@ -242,9 +242,12 @@ class Host:
         # No worker has received this delivery, so those bytes can be overwritten.
         paths["scratch"].mkdir(parents=True, exist_ok=True)
         write_json(paths["input"], launch["payload"])
+        completion_bindings_sha256 = None
         if bindings:
             paths["completion_bindings"] = paths["directory"] / "completion-bindings.json"
-            write_json(paths["completion_bindings"], {"bindings": bindings})
+            delivery_bindings = {"bindings": bindings}
+            completion_bindings_sha256 = hashlib.sha256(encode(delivery_bindings)).hexdigest()
+            write_json(paths["completion_bindings"], delivery_bindings)
         with self.store.db:
             self.store.db.execute(
                 """UPDATE jobs SET state='assigned', delivery=?, worker_pid=?, worker_token=?,
@@ -261,6 +264,7 @@ class Host:
                 "job_id": row["id"],
                 "paths": {name: str(path) for name, path in paths.items()},
                 "argv": launch["argv"],
+                "completion_bindings_sha256": completion_bindings_sha256,
                 "startup_log": str(worker.profile_dir / "startup.log"),
             }
         )

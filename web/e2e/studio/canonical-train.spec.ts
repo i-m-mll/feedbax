@@ -24,7 +24,8 @@ function submitted(page: Page, path: string) {
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-test('Mounted saved Train runs the selected canonical row through Jobs', async ({ page, request }, info) => {
+test('Mounted saved Train runs a canonical successor through Jobs', async ({ page, request }, info) => {
+  test.setTimeout(45_000);
   const created = await request.post('/api/projects');
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
@@ -73,19 +74,34 @@ test('Mounted saved Train runs the selected canonical row through Jobs', async (
   await table.getByRole('button').first().click();
   const chained = submitted(page, path);
   await runButton.click();
-  const refusal = await chained;
-  expect(refusal.status(), await refusal.text()).toBe(202);
-  const rejected = await refusal.json() as StudioJobSubmission;
-  expect(rejected.items).toEqual([expect.objectContaining({
-    run_key: '["default","successor","default"]', disposition: 'rejected', job_id: null,
-    reason: '/inputs: canonical Studio Train admission requires independent requests',
+  const successorAdmission = await chained;
+  expect(successorAdmission.status(), await successorAdmission.text()).toBe(202);
+  const successorSubmission = await successorAdmission.json() as StudioJobSubmission;
+  expect(successorSubmission.items).toEqual([expect.objectContaining({
+    run_key: '["default","successor","default"]', disposition: 'admitted', job_id: expect.any(String),
   })]);
-  await expect(page.getByText(rejected.items[0].reason!, { exact: true })).toBeVisible();
-  const evidence = await fixture('observe', String(info.config.metadata.home), id, snapshot.revision, job);
+  const successorJob = successorSubmission.items[0].job_id!;
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  const replay = await request.post(path, { data: successorAdmission.request().postDataJSON() });
+  expect(replay.status(), await replay.text()).toBe(202);
+  expect(await replay.json()).toEqual(successorSubmission);
+
+  await page.reload();
+  await step.selectOption('successor');
+  await expect(table.getByText('Done', { exact: true })).toBeVisible();
+  await table.getByRole('button').first().click();
+  const evidence = await fixture(
+    'observe', String(info.config.metadata.home), id, snapshot.revision, job, successorJob,
+  );
   expect(evidence).toMatchObject({
     request: original.request_id, attempt: job, delivery: 1,
     completion_updates: 2, joined_status: 'succeeded',
+    successor: { attempt: successorJob, delivery: 1, completion_updates: 2, joined_status: 'succeeded' },
   });
+  await page.locator('summary').filter({ hasText: /^Current result$/ }).click();
+  const successorResult = page.getByRole('region', { name: 'Current result' });
+  await expect(successorResult).toContainText(evidence.successor.request);
+  await expect(successorResult).toContainText(evidence.successor.receipt.manifest_sha256);
 
   await step.selectOption('train');
   await table.getByRole('button').first().click();
@@ -106,7 +122,7 @@ test('Mounted saved Train runs the selected canonical row through Jobs', async (
   expect(await conflict.json()).toMatchObject({ detail: { resource: 'project', current: edited!.revision } });
   await expect(page.getByText('Project changed before this edit.', { exact: true }).first()).toBeVisible();
   const jobs = await (await request.get(`/api/jobs?project=${id}`)).json() as StudioJobSnapshot;
-  expect(jobs.jobs.map(({ job_id }) => job_id)).toEqual([job]);
+  expect(jobs.jobs.map(({ job_id }) => job_id).sort()).toEqual([job, successorJob].sort());
   console.info('Mounted canonical Train', JSON.stringify({ ...evidence, refused_revision: edited!.revision }));
 });
 

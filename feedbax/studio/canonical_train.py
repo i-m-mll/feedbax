@@ -9,10 +9,12 @@ from pathlib import Path
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.request_specs import TrainingRequestSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
+    PublishedTrainingCheckpoint,
     StudioGraphMethodPayload,
     StudioTrainingJobInput,
 )
@@ -29,23 +31,51 @@ from feedbax.studio.protocol import infer_task_n_steps
 class CanonicalTrainRequestBinding(StrictModel):
     request: ContentObjectRef
     documents: tuple[ContentObjectRef, ...]
+    checkpoint: ProductRef | None = None
+
+
+class PinnedTrainCheckpoint(StrictModel):
+    producer_job_id: str
+    receipt: dict[str, str]
+    checkpoint: PublishedTrainingCheckpoint
 
 
 class BoundStudioTrainingJobInput(StudioTrainingJobInput):
     """Internal Host payload and attempt sidecar, with canonical custody when admitted by Plan."""
 
     canonical_request: CanonicalTrainRequestBinding | None = None
+    checkpoint_input: PinnedTrainCheckpoint | None = None
 
 
 def _decode_train(
     request_id: str, data: bytes, read_document: Callable[[str], bytes]
-) -> TrainingRequestSpec:
+) -> tuple[TrainingRequestSpec, ProductRef | None]:
     decoded = decode_request(data, read_document)
     if decoded.id != request_id or not isinstance(decoded.spec, TrainingRequestSpec):
         raise ValueError("Training launch does not match its canonical Train request.")
+    checkpoint = None
     if decoded.inputs:
-        raise ValueError("/inputs: canonical Studio Train admission requires independent requests")
-    return decoded.spec
+        members = decoded.inputs.get("checkpoint", ())
+        if decoded.inputs.keys() != {"checkpoint"} or len(members) != 1:
+            raise ValueError("/inputs/checkpoint: expected one predecessor checkpoint")
+        reference = members[0].reference
+        if (
+            not isinstance(reference, ProductRef)
+            or reference.role != "checkpoint"
+            or not reference.request_id.startswith("train:")
+            or not isinstance(reference.select, LastMember)
+        ):
+            raise ValueError("/inputs/checkpoint: expected the last checkpoint of a Train request")
+        checkpoint = reference
+    policy = decoded.spec.method_payload.payload.get("checkpoint_initialization")
+    if checkpoint is None and policy is not None:
+        raise ValueError("/inputs/checkpoint: initialize_from requires a predecessor checkpoint")
+    if checkpoint is not None and policy != "initialize_from":
+        raise ValueError(
+            "/method_payload/payload/checkpoint_initialization: declare initialize_from "
+            "to carry the model and initialize fresh optimizer, RNG and counters"
+        )
+    return decoded.spec, checkpoint
 
 
 def lower_canonical_train(
@@ -123,7 +153,8 @@ def bind_canonical_train(
         closure[digest] = raw
         return raw
 
-    spec = lower_canonical_train(_decode_train(request_id, data, read_document), registry)
+    request, checkpoint = _decode_train(request_id, data, read_document)
+    spec = lower_canonical_train(request, registry)
     refs = tuple(
         store.store_rooted_object(raw, namespace="studio-train-document")
         for _, raw in sorted(closure.items())
@@ -131,6 +162,7 @@ def bind_canonical_train(
     return spec, CanonicalTrainRequestBinding(
         request=store.store_rooted_object(data, namespace="studio-train-request"),
         documents=refs,
+        checkpoint=checkpoint,
     )
 
 
@@ -163,7 +195,11 @@ def verify_training_request_binding(
         used.add(digest)
         return read_object(documents[digest])
 
-    request = _decode_train(launch.request_id, read_object(binding.request), read_document)
+    request, checkpoint = _decode_train(
+        launch.request_id, read_object(binding.request), read_document
+    )
+    if checkpoint != binding.checkpoint:
+        raise ValueError("Canonical Train binding does not match its checkpoint input.")
     if used != documents.keys():
         raise ValueError("Canonical Train binding does not name its exact document closure.")
     expected = lower_canonical_train(request, launch.spec.worker_execution)

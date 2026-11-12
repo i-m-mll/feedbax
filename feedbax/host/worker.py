@@ -93,8 +93,11 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
         }
     )
     os.environ.pop("FEEDBAX_HOST_COMPLETION_BINDINGS", None)
+    os.environ.pop("FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256", None)
     if "completion_bindings" in paths:
         os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"] = paths["completion_bindings"]
+        if digest := message.get("completion_bindings_sha256"):
+            os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"] = digest
     try:
         if import_error is not None:
             error, detail = import_error

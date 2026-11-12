@@ -6,11 +6,13 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import TrainingRequestSpec
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
+from feedbax.host.plan_history import plan_run_key
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -53,12 +55,20 @@ def authored_files():
         {"kind": "step", "id": "successor", "step": {
             "kind": "train", "base": {"step": "train"},
             "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
+            "deltas": [{
+                "layer_id": "initialize",
+                "patches": [{
+                    "path": "method_payload.payload.checkpoint_initialization",
+                    "op": "add",
+                    "value": "initialize_from",
+                }],
+            }],
         }},
     ])
     return files
 
 
-def observe(home: Path, project: str, revision: str, attempt: str):
+def observe(home: Path, project: str, revision: str, attempt: str, successor_attempt: str):
     paths = AppPaths.resolve(instance_root=home)
     folders = ProjectFolderService(paths.web / "projects")
     host = HostClient(paths.host)
@@ -70,7 +80,9 @@ def observe(home: Path, project: str, revision: str, attempt: str):
     rows = {run.key: run for run in plan.runs}
     assert not plan.diagnostics
     snapshot = host.jobs_snapshot(project=project, include_launch=True, start_host=False)
-    (job,) = snapshot["jobs"]
+    jobs = {job["id"]: job for job in snapshot["jobs"]}
+    assert set(jobs) == {attempt, successor_attempt}
+    job = jobs[attempt]
     assert (job["id"], job["request"], job["delivery"]) == (attempt, rows[train].request_id, 1)
     launch = BoundStudioTrainingJobInput.model_validate(job["launch"]["payload"])
     assert launch.canonical_request is not None and launch.resume is None
@@ -88,19 +100,58 @@ def observe(home: Path, project: str, revision: str, attempt: str):
     (joined,) = view.attempts_by_run[train]
     assert joined.job_id == attempt
     assert joined.successful_receipt.model_dump(mode="json") == completion["receipt"]
-    assert successor not in view.attempts_by_run
     child = rows[successor]
     assert child.inputs["checkpoint"].producer == train
     decoded = decode_request(plan.requests[child.request_id], plan.documents.__getitem__)
     (checkpoint,) = decoded.inputs["checkpoint"]
     assert checkpoint.reference.request_id == launch.request_id
+    child_job = jobs[successor_attempt]
+    assert child_job["request"] == child.request_id
+    (edge,) = child_job["edges"]
+    assert edge["satisfied"] and edge["authenticated_completion"]
+    assert edge["binding"] == {"dependency_job_id": attempt, "completion": completion}
+    child_completion = child_job["outcome"]["completion"]
+    verify_bound_training_completion(child_completion)
+    assert child_completion["producer_job_id"] == successor_attempt
+    assert child_completion["request_id"] == child.request_id
+    (joined_child,) = view.attempts_by_run[successor]
+    assert joined_child.job_id == successor_attempt
+    assert joined_child.successful_receipt.model_dump(mode="json") == child_completion["receipt"]
+    assert view.history[successor].result.receipt == joined_child.successful_receipt
+
+    child_manifest = load_manifest(canonical_manifest_path(
+        "TrainingRunManifest", child_completion["receipt"]["manifest_id"], root=view.settled.store_path,
+    ))
+    initialization = child_manifest.provenance.metadata["checkpoint_initialization"]
+    pointer = completion["checkpoint"]["pointer"]
+    assert initialization["mode"] == "initialize_from"
+    assert initialization["source"]["id"] == pointer["transaction_id"]
+    assert initialization["source"]["metadata"]["manifest_sha256"] == pointer["manifest_sha256"]
+
+    ref = view.jobs.plan_ref
+    assert ref is not None
+    admitted_plan = json.loads(store.get_object(ContentObjectRef.model_validate(ref["plan"])))
+    assert admitted_plan == {
+        "revision": revision,
+        "semantic_root": view.settled.semantic_root,
+        "requests": {
+            plan_run_key(key.variant, key.step, key.row): row.request_id for key, row in rows.items()
+        },
+    }
     return {
         "project": project, "revision": revision, "semantic_root": view.settled.semantic_root,
         "request": launch.request_id, "attempt": attempt, "delivery": job["delivery"],
         "completion_updates": completion["checkpoint"]["completed_updates"],
         "receipt": completion["receipt"], "joined_status": joined.status,
         "worker_request_object": launch.canonical_request.request.sha256,
-        "successor": child.request_id, "checkpoint_input": checkpoint.reference.model_dump(mode="json"),
+        "successor": {
+            "request": child.request_id, "attempt": successor_attempt, "delivery": child_job["delivery"],
+            "completion_updates": child_completion["checkpoint"]["completed_updates"],
+            "receipt": child_completion["receipt"], "joined_status": joined_child.status,
+            "initialization": initialization,
+        },
+        "admitted_plan": admitted_plan,
+        "checkpoint_input": checkpoint.reference.model_dump(mode="json"),
     }
 
 
@@ -144,8 +195,8 @@ if __name__ == "__main__":
     elif action == "history-files" and not arguments:
         print(json.dumps(history_files()))
     elif action == "observe":
-        home, project, revision, attempt = arguments
-        print(json.dumps(observe(Path(home), project, revision, attempt)))
+        home, project, revision, attempt, successor_attempt = arguments
+        print(json.dumps(observe(Path(home), project, revision, attempt, successor_attempt)))
     elif action == "observe-history":
         home, project, revision = arguments
         print(json.dumps(observe_history(Path(home), project, revision)))

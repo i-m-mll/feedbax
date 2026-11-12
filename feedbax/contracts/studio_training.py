@@ -47,6 +47,10 @@ class StudioGraphMethodPayload(StrictModel):
         default=None, exclude_if=lambda value: value is None
     )
 
+    checkpoint_initialization: Literal["initialize_from"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     def require_supported_launch(self, *, resume: bool) -> None:
         # A resume takes its model and carried update key from checkpoint custody.
         # An unstarted legacy seed-zero request would silently change numerics.

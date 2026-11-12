@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from feedbax.host import AdmissionItem, HostError, Job, Launch
+from feedbax.host import AdmissionItem, Edge, HostError, Job, Launch
 from feedbax.host.plan_history import advance_plan, plan_ref_key, plan_run_key, settled_results
 from feedbax.host.store import Store
 
@@ -45,7 +45,11 @@ def test_plan_ref_and_attempt_share_one_admission_commit(tmp_path):
     sibling_id = "train:" + "2" * 64
     edited_id = "train:" + "3" * 64
 
-    def admit(token, job_id, job_request, requests):
+    def admit(token, job_id, job_request, requests, *, checkpoint_parent=None):
+        canonical_request = (
+            {"checkpoint": {"request_id": first_id}}
+            if checkpoint_parent else {"test": "admission metadata"}
+        )
         job = Job(
             id=job_id,
             project="project",
@@ -56,22 +60,26 @@ def test_plan_ref_and_attempt_share_one_admission_commit(tmp_path):
                     "project_id": "project",
                     "request_id": job_request,
                     "manifest_root": root,
-                    "canonical_request": {"test": "admission metadata"},
+                    "canonical_request": canonical_request,
                 },
             ),
             data={"manifest_root": root},
+            edges=(Edge(checkpoint_parent, authenticated_completion=True),) if checkpoint_parent else (),
         )
         return store.admit(token, [asdict(AdmissionItem(run_key=selected, job=job))], {
             "project": "project",
             "command": {"kind": "canonical_train", "store": root},
             "authored_train_plan": {"object": {"token": token}, "requests": requests},
-        })
+        }, allow_completion=checkpoint_parent is not None)
 
     key = plan_ref_key("project", root)
     first = admit("first", "first", first_id, {selected: first_id, sibling: sibling_id})
     original = store.record_get(key)
     with pytest.raises(HostError, match="does not match the authored Plan"):
-        admit("conflict", "conflict", edited_id, {selected: first_id, sibling: edited_id})
+        admit(
+            "conflict", "conflict", edited_id, {selected: first_id, sibling: edited_id},
+            checkpoint_parent="first",
+        )
     assert store.get("conflict") is None and store.record_get(key) == original
     next_plan = admit("edit", "unused", first_id, {selected: first_id, sibling: edited_id})
     assert next_plan["items"][0]["disposition"] == "attached"

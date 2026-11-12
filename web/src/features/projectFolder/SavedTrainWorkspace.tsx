@@ -88,7 +88,6 @@ function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
   const stepId = steps.find(([id]) => id === requestedStep)?.[0] ?? steps[0]?.[0];
   const projection = useQuery({
     queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor],
-    enabled: jobs.data !== undefined,
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal),
     placeholderData: keepPreviousData,
     gcTime: 0,
