@@ -229,9 +229,9 @@ export function Header() {
         onOpenSaved={handleOpen}
       />
     )}
-    <header className="relative z-40 h-12 flex items-center gap-2 pr-3 pl-[calc(0.75rem+var(--studio-native-controls))] border-b border-slate-100 bg-white/80 backdrop-blur">
+    <header className="relative z-40 h-shell-header flex items-center gap-2 pr-shell-inset pl-[calc(var(--space-3)+var(--studio-native-controls))] border-b border-shell-divider bg-shell-chrome text-shell-foreground backdrop-blur">
       {/* Logo — fixed width */}
-      <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600 pr-2">
+      <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-shell-muted pr-2">
         <img src="/icon.svg" alt="feedbax studio logo" className="h-7 w-7" />
       </div>
 
@@ -246,10 +246,10 @@ export function Header() {
             <div
               key={tab.tabId}
               className={[
-                'flex-none flex items-center gap-1.5 h-8 px-3 rounded-lg text-sm font-medium max-w-[160px] group transition-colors cursor-pointer',
+                'flex-none flex items-center gap-1.5 h-8 px-3 rounded-shell-control text-sm font-medium max-w-[160px] group transition-colors cursor-pointer',
                 isActive
-                  ? 'bg-slate-100 text-slate-900'
-                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700',
+                  ? 'bg-shell-selected text-shell-accent'
+                  : 'text-shell-muted hover:bg-shell-hover hover:text-shell-foreground',
               ].join(' ')}
               onClick={() => switchTab(tab.tabId)}
             >
@@ -362,10 +362,10 @@ export function Header() {
       </div>
 
       {/* Right-side action buttons */}
-      <div className="flex-none flex items-center gap-3 text-slate-500">
+      <div className="flex-none flex items-center gap-3 text-shell-muted">
         {import.meta.env.VITE_FEEDBAX_DESKTOP === '1' && <DesktopJobs />}
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100"
+          className="p-1.5 rounded-full hover:bg-shell-hover"
           title="New project"
           onClick={() => {
             setProjectOverlaySection(null);
@@ -376,7 +376,7 @@ export function Header() {
           <FilePlus className="w-4 h-4" />
         </button>
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="p-1.5 rounded-full hover:bg-shell-hover disabled:opacity-40 disabled:cursor-not-allowed"
           title={
             inSubgraph
               ? 'Return to model root to save'
@@ -388,7 +388,7 @@ export function Header() {
           <Save className="w-4 h-4" />
         </button>
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="p-1.5 rounded-full hover:bg-shell-hover disabled:opacity-40 disabled:cursor-not-allowed"
           title={inSubgraph ? 'Return to model root to export' : 'Export JSON'}
           onClick={handleExport}
           disabled={!graphId || exporting || inSubgraph}
@@ -396,7 +396,7 @@ export function Header() {
           <Download className="w-4 h-4" />
         </button>
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500"
+          className="p-1.5 rounded-full hover:bg-shell-hover text-shell-muted"
           title="Open project"
           onClick={() => {
             setSettingsOpen(false);
@@ -406,7 +406,7 @@ export function Header() {
           <FolderOpen className="w-4 h-4" />
         </button>
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100"
+          className="p-1.5 rounded-full hover:bg-shell-hover"
           title="Settings"
           onClick={() => {
             setProjectOverlaySection(null);
@@ -514,7 +514,7 @@ function ProjectOpenOverlay({
   ];
 
   return (
-    <div className="fixed inset-x-0 bottom-0 top-12 z-50 flex bg-white">
+    <div className="fixed inset-x-0 bottom-0 top-shell-header z-50 flex bg-white">
       <nav className="w-48 shrink-0 border-r border-slate-100 bg-slate-50 px-4 py-6">
         <div className="space-y-1">
           {navItems.map((item) => (

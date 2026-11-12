@@ -1,11 +1,15 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Work+Sans:wght@400;500;600&display=swap');
 
+@import "@window-shell/browser/tokens.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   --studio-native-controls: 0px;
+  --studio-shell-accent: #5d4b87;
+  --studio-shell-selection: rgba(93, 75, 135, 0.12);
   --gray-50: #fafafa;
   --gray-100: #f4f4f5;
   --gray-200: #e4e4e7;
@@ -22,6 +26,11 @@
   --red-500: #ef4444;
   --yellow-500: #eab308;
   --purple-500: #a855f7;
+}
+
+:root[data-theme='dark'] {
+  --studio-shell-accent: #c1aedf;
+  --studio-shell-selection: rgba(193, 174, 223, 0.18);
 }
 
 * {

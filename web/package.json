@@ -26,6 +26,7 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@window-shell/browser": "file:../vendor/window-shell/browser",
     "@playwright/test": "^1.61.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

@@ -2,7 +2,7 @@
 
 Feedbax Studio uses Tauri, macOS 14 or newer on Apple Silicon, and bundled CPython 3.12.9 with MJX on JAX CPU. Each Studio bundle contains Feedbax from the same source commit and version as the release. The app reads its resources from the signed bundle and requires no developer checkout, virtual environment, or dependency installer at runtime.
 
-The native build uses the signed shared window shell pinned in `vendor/window-shell`. Initialize that submodule before building. For a local-only source, set the submodule URL for the checkout to the registered shell repository and initialize with Git's file transport allowed for that command. The native receipt records the pin.
+The native build and Studio web styles use the signed shared window shell pinned in `vendor/window-shell`. Initialize that submodule before installing dependencies or building. For a local-only source, set the submodule URL for the checkout to the registered shell repository and initialize with Git's file transport allowed for that command. The native receipt records the pin.
 
 ## Build a private candidate
 
