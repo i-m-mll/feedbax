@@ -88,6 +88,7 @@ class SettledProjectPlan:
     revision: str
     semantic_root: str
     configuration: ProjectConfiguration
+    store_path: Path
     plan: ProjectPlan
 
 
@@ -252,6 +253,7 @@ class ProjectFolderService:
             text.revision,
             project_semantic_root(text.project),
             text.configuration,
+            text.store_path,
             compile_project(
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id)
             ),

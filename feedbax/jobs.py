@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    close_directory_chain,
+    open_directory_chain,
+    open_existing_file,
+    recheck_directory_chain,
+)
 from feedbax.contracts.base import default_manifest_root
 from feedbax.contracts.jobs import (
     JobOutcome,
     JobProgress,
+    JobReceipt,
     JobStatus,
     StopMode,
     StudioActivityJob,
@@ -32,7 +41,13 @@ from feedbax.contracts.jobs import (
     StudioRunPreviewRequest,
     StudioSubmissionItem,
 )
-from feedbax.contracts.manifest import canonical_manifest_path
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    canonical_manifest_path,
+    load_manifest_bytes,
+    training_run_manifest_id,
+)
+from feedbax.contracts.request_refs import RequestId
 from feedbax.host import Admission, AdmissionItem, HostClient, HostError, Job, Launch
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.studio.training_requests import (
@@ -65,6 +80,24 @@ class JobNotFound(LookupError):
 
 class JobConflict(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class PlanJobAttempt:
+    job_id: str
+    status: JobStatus
+    phase: str | None
+    progress: JobProgress | None
+    reason: str | None
+    successful_receipt: JobReceipt | None
+
+
+@dataclass(frozen=True)
+class PlanJobAttempts:
+    """Attempt evidence at one Host cursor, keyed by canonical request ID."""
+
+    cursor: int
+    by_request: Mapping[RequestId, tuple[PlanJobAttempt, ...]]
 
 
 class JobService:
@@ -271,6 +304,35 @@ class JobService:
             cursor=snapshot["cursor"],
             oldest_cursor=snapshot["oldest_cursor"],
             sessions=[StudioLocalSession()],
+        )
+
+    def read_plan_attempts(
+        self, *, project: str, store: Path, requests: Collection[RequestId]
+    ) -> PlanJobAttempts:
+        """Read Train attempt facts at the settled store locator from one Host snapshot."""
+        snapshot = self.host.jobs_snapshot(project=project, start_host=False)
+        wanted = frozenset(requests)
+        manifest_root = str(store)
+        attempts: dict[RequestId, list[PlanJobAttempt]] = {}
+        for job in snapshot["jobs"]:
+            request_id = job["request"]
+            if request_id not in wanted or job["data"].get("manifest_root") != manifest_root:
+                continue
+            succeeded = job["state"] == "succeeded"
+            receipt = _verified_training_receipt(job, store) if succeeded else None
+            progress = _job_progress(job)
+            status, reason = _job_status(
+                job, progress=progress, receipt_intact=not succeeded or receipt is not None
+            )
+            attempts.setdefault(request_id, []).append(
+                PlanJobAttempt(
+                    job["id"], status, (job.get("phase") or {}).get("phase"),
+                    progress, reason, receipt,
+                )
+            )
+        return PlanJobAttempts(
+            snapshot["cursor"],
+            MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
         )
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:
@@ -502,6 +564,67 @@ def _seen_key(job_id: str) -> str:
     return f"activity/seen/{job_id}"
 
 
+def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
+    """Authenticate the successful manifest named by this exact Host attempt."""
+    try:
+        receipt = JobReceipt.model_validate((job.get("outcome") or {}).get("receipt"))
+        job_id = job["id"]
+        if receipt.manifest_id != training_run_manifest_id(job_id):
+            return None
+        path = canonical_manifest_path("TrainingRunManifest", receipt.manifest_id, root=store)
+        directories = open_directory_chain(
+            path.parent, create=False, error_factory=ValueError, context="training receipt"
+        )
+        try:
+            descriptor, _ = open_existing_file(
+                path.name, dir_fd=directories[-1][1],
+                rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+                error_factory=ValueError, context="training receipt",
+            )
+            with os.fdopen(descriptor, "rb") as stream:
+                raw = stream.read()
+            recheck_directory_chain(directories, error_factory=ValueError, context="training receipt")
+        finally:
+            close_directory_chain(directories)
+        if sha256(raw).hexdigest() != receipt.manifest_sha256 or not raw.lstrip().startswith(b"{"):
+            return None
+        manifest = load_manifest_bytes(raw)
+        if (
+            isinstance(manifest, TrainingRunManifest)
+            and (manifest.id, manifest.job_id, manifest.status)
+            == (receipt.manifest_id, job_id, "completed")
+        ):
+            return receipt
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _job_progress(job: dict[str, Any]) -> JobProgress | None:
+    progress = job.get("progress")
+    return (
+        JobProgress(
+            completed_updates=progress["completed_updates"], total_updates=progress["total_updates"]
+        )
+        if progress is not None else None
+    )
+
+
+def _job_status(
+    job: dict[str, Any], *, progress: JobProgress | None, receipt_intact: bool
+) -> tuple[JobStatus, str | None]:
+    state = job["state"]
+    outcome = job.get("outcome") or {}
+    reason = (outcome.get("error") or {}).get("message")
+    if state == "succeeded" and not receipt_intact:
+        return JobStatus.CORRUPT, "The training receipt is missing or has changed."
+    if state == "assigned" or (state == "running" and not (progress and progress.completed_updates)):
+        return JobStatus.STARTING, reason
+    if state == "queued":
+        return JobStatus.QUEUED, "Waiting for a training slot."
+    return JobStatus(state), reason
+
+
 def _project_activity(
     job: dict[str, Any],
     *,
@@ -512,18 +635,8 @@ def _project_activity(
     state = job["state"]
     phase = (job.get("phase") or {}).get("phase")
     outcome = job.get("outcome")
-    progress = job.get("progress")
-    completed = progress["completed_updates"] if progress is not None else 0
-    reason = (outcome.get("error") or {}).get("message") if outcome is not None else None
-    if state == "succeeded" and not receipt_intact:
-        status = JobStatus.CORRUPT
-        reason = "The training receipt is missing or has changed."
-    elif state == "assigned" or (state == "running" and not completed):
-        status = JobStatus.STARTING
-    else:
-        status = JobStatus(state)
-    if state == "queued":
-        reason = "Waiting for a training slot."
+    progress = _job_progress(job)
+    status, reason = _job_status(job, progress=progress, receipt_intact=receipt_intact)
     resumable = _can_resume(job)
     if state == "stopping":
         actions = ["force"]
@@ -543,9 +656,7 @@ def _project_activity(
         allowed_actions=actions,
         seen=seen,
         earlier_definition=earlier_definition,
-        progress=JobProgress(completed_updates=completed, total_updates=progress["total_updates"])
-        if progress is not None
-        else None,
+        progress=progress,
         outcome=JobOutcome.model_validate(
             {key: value for key, value in outcome.items() if key in JobOutcome.model_fields}
         )

@@ -80,12 +80,15 @@ class HostClient:
                         ) from error
                     time.sleep(0.02)
 
-    def _call(self, op: str, *, timeout: float = 5, **request: Json) -> Json:
+    def _call(
+        self, op: str, *, timeout: float = 5, start_host: bool = True, **request: Json
+    ) -> Json:
         message = encode({"version": VERSION, "op": op, **request})
         if len(message) > MAX_RPC_BYTES:
             raise HostError("message_too_large", "Host message exceeds size limit.")
         try:
-            with self._connect_or_start(timeout) as sock:
+            connect = self._connect_or_start if start_host else self._connect
+            with connect(timeout) as sock:
                 sock.sendall(message)
                 reply = receive(sock, MAX_RPC_BYTES)
         except (OSError, EOFError) as error:
@@ -139,11 +142,13 @@ class HostClient:
         job_id: str | None = None,
         job_ids: Sequence[str] = (),
         include_launch: bool = False,
+        start_host: bool = True,
     ) -> JobsSnapshot:
         return cast(
             JobsSnapshot,
             self._call(
                 "jobs_snapshot",
+                start_host=start_host,
                 project=project,
                 request=request,
                 job_id=job_id,
