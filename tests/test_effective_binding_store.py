@@ -8,18 +8,17 @@ from pathlib import Path
 import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
-from feedbax.contracts.effective_success import decode_success_index
+from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import InputMember, LastMember, NamedMember, ProductRef
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.reachability import measure_store
-from scripts.proofs.effective_binding_store import (
-    INDEX_REF,
+from feedbax.persistence.effective_success import (
     PublicationConflict,
     SuccessView,
     store_request,
 )
+from feedbax.persistence.reachability import measure_store
 from scripts.proofs.effective_binding_witness import document_product, prepare, summarize
 
 

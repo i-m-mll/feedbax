@@ -1,21 +1,20 @@
 """Resolve exact typed Store roots to the objects they require."""
 
-from feedbax.contracts.artifact_custody import ContentObjectRef, ContentRetentionTarget
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import (
     BoundMember,
     Success,
     SuccessIndex,
     read_committed_success,
+    read_effective_request,
     read_success_object,
-    read_success_request,
     select_success_product,
-    success_blob_ref,
 )
-from feedbax.contracts.request_identity import DecodedRequest, effective_binding_id
+from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.content_retention import _target_objects
+from feedbax.persistence.receipt_content import success_content_objects, tree_objects
 
 
 class ReceiptClosure:
@@ -46,10 +45,7 @@ class ReceiptClosure:
 
     def _request_at(self, ref: ContentObjectRef, receipt: Success) -> DecodedRequest:
         if ref.sha256 not in self._requests:
-            decoded = read_success_request(receipt.request, self.store.get_object)
-            if effective_binding_id(decoded, receipt.inputs) != receipt.effective:
-                raise ValueError("Receipt effective identity differs from its recorded bindings")
-            self._requests[ref.sha256] = decoded
+            self._requests[ref.sha256] = read_effective_request(receipt, self.store.get_object)
         return self._requests[ref.sha256]
 
     def walk(self, closure: StoreClosureRef) -> tuple[ContentObjectRef, ...]:
@@ -67,8 +63,7 @@ class ReceiptClosure:
             elif isinstance(root, ContentObjectRef):
                 add(root)
             else:
-                target = ContentRetentionTarget(ref_kind="tree", tree=root)
-                for ref in _target_objects(self.store, target):
+                for ref in tree_objects(self.store, root):
                     add(ref)
 
         while pending:
@@ -97,7 +92,8 @@ class ReceiptClosure:
             for ref in (root.receipt, receipt.request.object, *receipt.request.documents):
                 add(ref)
             for product in products:
-                add(success_blob_ref(product.content))
+                for ref in success_content_objects(self.store, product):
+                    add(ref)
 
             for role, members in decoded.inputs.items():
                 for member, bound in zip(members, receipt.inputs[role], strict=True):
@@ -112,7 +108,8 @@ class ReceiptClosure:
                             )
                     elif selection is not None or bound.descriptor is not None:
                         raise ValueError(f"Unexpected producer evidence for {role}.{bound.key}")
-                    if closure.include_ancestry:
-                        add(success_blob_ref(bound.content))
+                    elif closure.include_ancestry:
+                        for ref in success_content_objects(self.store, reference):
+                            add(ref)
 
         return tuple(objects[digest] for digest in sorted(objects))

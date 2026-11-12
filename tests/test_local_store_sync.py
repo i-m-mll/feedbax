@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
-from feedbax.contracts.effective_success import INDEX_REF, success_blob_ref
+from feedbax.contracts.effective_success import INDEX_REF, success_content_ref
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import (
     InputMember,
@@ -19,9 +19,9 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.reachability import measure_store
 from feedbax.persistence.store_sync import sync_store
-from scripts.proofs.effective_binding_store import SuccessView, store_request
 from scripts.proofs.effective_binding_witness import document_product
 
 
@@ -88,7 +88,7 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     )
     root = ReceiptRoot(receipt=result.ref, product=product)
     selected = StoreClosureRef(roots=(root,))
-    report_ref = success_blob_ref(report.content)
+    report_ref = success_content_ref(report.content)
     selected_refs = (result.ref, consumer.object, *consumer.documents, report_ref)
     try:
         initial = sync_store(source, destination, selected, destination_ref="packets/selected")
@@ -124,8 +124,8 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
         original.ref,
         producer.object,
         *producer.documents,
-        success_blob_ref(kept.content),
-        success_blob_ref(last.content),
+        success_content_ref(kept.content),
+        success_content_ref(last.content),
     )
     closure_refs = selected_refs + ancestor_refs
     retry = sync_store(source, destination, ancestry, destination_ref="packets/ancestry")
@@ -134,7 +134,7 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
         assert destination.get_object(ref) == source.get_object(ref)
         src, dst = source.object_path(ref).stat(), destination.object_path(ref).stat()
         assert src.st_ino != dst.st_ino and src.st_nlink == dst.st_nlink == 1
-    for ref in (latest.ref, success_blob_ref(sibling.content)):
+    for ref in (latest.ref, success_content_ref(sibling.content)):
         with pytest.raises(FileNotFoundError):
             destination.verify_object(ref)
 
@@ -157,7 +157,7 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     assert destination.read_ref("packets/corrupt") is None
     report_path.write_bytes(report_bytes)
 
-    sibling_ref = success_blob_ref(sibling.content)
+    sibling_ref = success_content_ref(sibling.content)
     source.object_path(sibling_ref).write_bytes(b"x" * sibling_ref.size_bytes)
     whole_receipt = StoreClosureRef(roots=(ReceiptRoot(receipt=result.ref),))
     with pytest.raises(ArtifactBlobIntegrityError):
@@ -174,7 +174,7 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
 
     slot = ProductRef(request_id=producer.id, role="products", select=SlotMember(slot="model"))
     unsupported = StoreClosureRef(roots=(ReceiptRoot(receipt=original.ref, product=slot),))
-    with pytest.raises(ValueError, match="Product selector has no supported member"):
+    with pytest.raises(ValueError, match="Unsupported product selector 'slot'"):
         sync_store(source, destination, unsupported, destination_ref="packets/unsupported")
     assert destination.read_ref("packets/unsupported") is None
 

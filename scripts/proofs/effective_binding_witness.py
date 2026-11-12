@@ -9,6 +9,7 @@ from pathlib import Path
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.effective_success import Product, RequestObject
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import (
     ContentRef,
@@ -19,10 +20,8 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from scripts.proofs.effective_binding_store import (
-    Product,
+from feedbax.persistence.effective_success import (
     PublishedSuccess,
-    RequestObject,
     SuccessView,
     store_request,
 )

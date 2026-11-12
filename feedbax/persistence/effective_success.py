@@ -1,4 +1,4 @@
-"""Bounded successful-result publication over the real immutable project Store."""
+"""Bind inputs and publish typed successful results in the immutable Store."""
 
 from __future__ import annotations
 
@@ -8,10 +8,9 @@ from datetime import UTC, datetime
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.effective_success import (
-    INDEX_REF as INDEX_REF,
+    INDEX_REF,
     Bindings,
     BoundMember,
-    Product as Product,
     Products,
     RequestObject,
     Selection,
@@ -19,9 +18,9 @@ from feedbax.contracts.effective_success import (
     SuccessIndex,
     decode_success_index,
     read_committed_success,
+    read_effective_request,
     read_success_request,
     select_success_product,
-    success_blob_ref,
 )
 from feedbax.contracts.request_identity import (
     DecodedRequest,
@@ -36,6 +35,7 @@ from feedbax.contracts.request_refs import (
     RequestId,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.receipt_content import verify_success_content
 
 
 class PublicationConflict(ValueError):
@@ -70,23 +70,20 @@ class SuccessView:
     def _decode(self, request: RequestObject) -> DecodedRequest:
         return read_success_request(request, self.store.get_object)
 
-    def _verify_content(self, content: ContentRef) -> None:
-        self.store.verify_object(success_blob_ref(content))
-
     def _receipt(self, ref: ContentObjectRef) -> Success:
         return read_committed_success(self._index, ref, self.store.get_object)
 
     def _resolve(self, member: InputMember, origin: ContentObjectRef | None) -> BoundMember:
         reference = member.reference
         if isinstance(reference, ContentRef):
-            self._verify_content(reference)
+            verify_success_content(self.store, reference)
             return BoundMember(key=member.key, content=reference)
         if origin is None:
             raise ValueError(f"Producer success is unavailable for {member.key!r}")
         producer = self._receipt(origin)
-        self._decode(producer.request)
+        read_effective_request(producer, self.store.get_object)
         product = select_success_product(reference, producer)
-        self._verify_content(product.content)
+        verify_success_content(self.store, product)
         return BoundMember(
             key=member.key,
             content=product.content,
@@ -112,9 +109,7 @@ class SuccessView:
 
     def read_success(self, ref: ContentObjectRef) -> PublishedSuccess:
         receipt = self._receipt(ref)
-        decoded = self._decode(receipt.request)
-        if effective_binding_id(decoded, receipt.inputs) != receipt.effective:
-            raise ValueError("Receipt effective identity differs from its recorded bindings")
+        decoded = read_effective_request(receipt, self.store.get_object)
         for role, members in decoded.inputs.items():
             for member, bound in zip(members, receipt.inputs[role], strict=True):
                 origin = bound.selection.receipt if bound.selection else None
@@ -122,7 +117,7 @@ class SuccessView:
                     raise ValueError(f"Receipt input provenance differs for {role}.{member.key}")
         for products in receipt.products.values():
             for product in products:
-                self._verify_content(product.content)
+                verify_success_content(self.store, product)
         return PublishedSuccess(ref, receipt)
 
     def authored(self, request_id: RequestId) -> PublishedSuccess | None:
@@ -147,28 +142,28 @@ class SuccessView:
     def publish(
         self, request: RequestObject, *, attempt: str, products: Products
     ) -> PublishedSuccess:
-        effective, inputs = self.bind(request)
-        previous = self._index.authored.get(request.id)
-        if attempt in self._index.attempts:
-            raise ValueError("This attempt already published a success")
-        if previous is not None and self._receipt(previous).request.id != request.id:
-            raise ValueError("Superseded receipt belongs to a different authored request")
-        receipt = Success(
-            request=request,
-            attempt=attempt,
-            effective=effective,
-            inputs=inputs,
-            products=products,
-            supersedes=previous,
-        )
-        for members in receipt.products.values():
-            for product in members:
-                self._verify_content(product.content)
-        ref = self.store.store_rooted_object(
-            canonical_json_v2_bytes(receipt.model_dump(mode="json")),
-            namespace="proof-effective-receipt",
-        )
         with self.store._exclusive_lock():
+            effective, inputs = self.bind(request)
+            previous = self._index.authored.get(request.id)
+            if attempt in self._index.attempts:
+                raise ValueError("This attempt already published a success")
+            if previous is not None and self._receipt(previous).request.id != request.id:
+                raise ValueError("Superseded receipt belongs to a different authored request")
+            receipt = Success(
+                request=request,
+                attempt=attempt,
+                effective=effective,
+                inputs=inputs,
+                products=products,
+                supersedes=previous,
+            )
+            for members in receipt.products.values():
+                for product in members:
+                    verify_success_content(self.store, product)
+            ref = self.store.store_rooted_object(
+                canonical_json_v2_bytes(receipt.model_dump(mode="json")),
+                namespace="proof-effective-receipt",
+            )
             times = dict(self._index.supersession_times)
             if previous is not None:
                 times[ref.sha256] = datetime.now(UTC)

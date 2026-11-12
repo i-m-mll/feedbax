@@ -7,9 +7,15 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
-from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.artifact_custody import (
+    CONTENT_OBJECT_REF_PREFIX,
+    CONTENT_TREE_REF_PREFIX,
+    ContentObjectRef,
+    ContentTreeRef,
+)
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.request_identity import DecodedRequest, decode_request
+from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
+from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
     ContentRef,
     EffectiveBindingId,
@@ -66,10 +72,20 @@ class Success(ReferenceValue):
     supersedes: ContentObjectRef | None
 
     @model_validator(mode="after")
-    def unique_products(self) -> Success:
+    def validate_products(self) -> Success:
         for role, members in self.products.items():
             if len({member.name for member in members}) != len(members):
                 raise ValueError(f"Repeated product member in {role!r}")
+            if role == "checkpoint" and self.request.id.startswith("train:"):
+                for member in members:
+                    if (
+                        member.name == "model"
+                        and member.content.tree
+                        and member.content.media_type != MODEL_TREE_MEDIA_TYPE
+                    ):
+                        raise ValueError(
+                            "Train checkpoint/model tree requires the semantic model media type"
+                        )
         return self
 
 
@@ -99,14 +115,18 @@ def decode_success_index(value: dict[str, JsonValue] | None) -> SuccessIndex:
     return index
 
 
-def success_blob_ref(content: ContentRef) -> ContentObjectRef:
-    if content.tree:
-        raise ValueError("The bounded Store witness accepts blob bindings")
-    return ContentObjectRef(
+def success_content_ref(content: ContentRef) -> ContentObjectRef | ContentTreeRef:
+    """Project receipt content to its exact canonical Store reference."""
+    object_ref = ContentObjectRef(
         object_id=CONTENT_OBJECT_REF_PREFIX + content.sha256,
         sha256=content.sha256,
         size_bytes=content.size,
     )
+    if content.tree:
+        return ContentTreeRef(
+            tree_id=CONTENT_TREE_REF_PREFIX + content.sha256, descriptor=object_ref
+        )
+    return object_ref
 
 
 def read_committed_success(
@@ -151,18 +171,33 @@ def read_success_request(
     return decoded
 
 
+def read_effective_request(
+    receipt: Success, read_object: Callable[[ContentObjectRef], bytes]
+) -> DecodedRequest:
+    decoded = read_success_request(receipt.request, read_object)
+    if effective_binding_id(decoded, receipt.inputs) != receipt.effective:
+        raise ValueError("Receipt effective identity differs from its recorded bindings")
+    return decoded
+
+
 def select_success_product(reference: ProductRef, receipt: Success) -> Product:
     """Resolve exactly one authored role member from this immutable producer."""
     members = receipt.products.get(reference.role)
     if receipt.request.id != reference.request_id or members is None:
         raise ValueError(f"Receipt does not supply {reference.request_id}/{reference.role}")
     match reference.select:
-        case None if len(members) == 1:
-            return members[0]
+        case None:
+            if len(members) == 1:
+                return members[0]
+            raise ValueError(f"Product role {reference.role!r} requires a member selector")
         case LastMember():
             return members[-1]
         case NamedMember(member=name):
             for product in members:
                 if product.name == name:
                     return product
-    raise ValueError(f"Product selector has no supported member for {reference.role!r}")
+            raise ValueError(f"Product role {reference.role!r} has no member {name!r}")
+        case selector:
+            raise ValueError(
+                f"Unsupported product selector {selector.kind!r} for {reference.role!r}"
+            )
