@@ -39,11 +39,8 @@ from feedbax.training.preparation import ExecutionPreparationRequest, ExecutionP
 
 
 def studio_training_key(seed: int, stream: str) -> jax.Array:
-    """Give authored seeds independent streams and retain v1 seed-zero numerics."""
-    root = jr.PRNGKey(seed)
-    if seed == 0 and stream in {"model", "update"}:
-        return root
-    return derive_key(root, "studio_training", stream)
+    """Derive an independent named stream from the authored seed."""
+    return derive_key(jr.PRNGKey(seed), "studio_training", stream)
 
 
 def executor_method_contract(*, total_batches: int):
@@ -98,16 +95,12 @@ class StudioUpdateKernel:
         rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
         evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
     ) -> None:
-        trainable, frozen = eqx.partition(compiled.graph, compiled.trainable_filter)
-        frozen_arrays, frozen_structure = eqx.partition(frozen, eqx.is_array)
-        self._frozen_arrays = jax.device_put(frozen_arrays)
-        self._frozen_structure = frozen_structure
         self._compiled = compiled
         trainable_filter = compiled.trainable_filter
-        self._filter = trainable_filter
 
-        def numerical_update(trainable, optimizer_state, key, batch_counter, frozen_arrays):
-            frozen = eqx.combine(frozen_arrays, frozen_structure)
+        @eqx.filter_jit
+        def numerical_update(model, optimizer_state, key, batch_counter):
+            trainable, frozen = eqx.partition(model, trainable_filter)
             key, step_key = jr.split(key)
 
             def loss_from_trainable(candidate):
@@ -121,40 +114,35 @@ class StudioUpdateKernel:
             graph = apply_parameter_constraints(
                 eqx.combine(eqx.apply_updates(trainable, updates), frozen)
             )
-            trainable, _ = eqx.partition(graph, trainable_filter)
             return (
-                trainable,
+                graph,
                 optimizer_state,
                 key,
                 batch_counter + 1,
                 {"train_loss": loss, "loss_terms": terms, "grad_norm": optax.global_norm(grads)},
             )
 
-        # Equinox's filtered lowering separates static graph structure from array operands.
+        self._numerical_update = numerical_update
+        self._static_model = eqx.filter(compiled.graph, eqx.is_array, inverse=True)
+        trainable = eqx.filter(compiled.graph, trainable_filter)
         compile_t0 = time.perf_counter()
-        self._update = (
-            eqx.filter_jit(numerical_update)
-            .lower(
-                trainable,
-                optimizer.init(trainable),
-                jr.PRNGKey(0),
-                jnp.array(0, dtype=jnp.int32),
-                self._frozen_arrays,
-            )
-            .compile()
-        )
+        self._update = numerical_update.lower(
+            compiled.graph,
+            optimizer.init(trainable),
+            jr.PRNGKey(0),
+            jnp.array(0, dtype=jnp.int32),
+        ).compile()
         self.compile_time_ms = (time.perf_counter() - compile_t0) * 1000.0
 
     def __call__(self, slots: Mapping[str, Any]) -> Mapping[str, Any]:
-        trainable, _ = eqx.partition(slots["model"], self._filter)
-        trainable, optimizer_state, key, count, metrics = self._update(
-            trainable,
-            slots["optimizer"],
-            slots["prng"],
-            slots["batch_counter"],
-            self._frozen_arrays,
-        )
-        graph = eqx.combine(trainable, self._frozen_arrays, self._frozen_structure)
+        model = slots["model"]
+        operands = model, slots["optimizer"], slots["prng"], slots["batch_counter"]
+        static_model = eqx.filter(model, eqx.is_array, inverse=True)
+        # The restored model can carry non-array leaves that Equinox specializes on.
+        if not eqx.tree_equal(static_model, self._static_model):
+            self._update = self._numerical_update.lower(*operands).compile()
+            self._static_model = static_model
+        graph, optimizer_state, key, count, metrics = self._update(*operands)
         return {
             "model": graph,
             "optimizer": optimizer_state,
@@ -265,6 +253,7 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
         spec, payload = request.run_spec, request.method_payload
         if not isinstance(payload, StudioGraphMethodPayload):
             raise ValueError("Studio graph preparation requires its resolved method payload")
+        payload.require_supported_launch(resume=request.resume)
         if spec.graph.inline is None or spec.task_binding_spec is None or spec.objective.loss is None:
             raise ValueError("Studio graph training requires an inline graph, typed task bindings and a loss")
         continuation = spec.checkpoint_progress.continuation

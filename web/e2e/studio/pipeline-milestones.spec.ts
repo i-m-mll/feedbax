@@ -14,10 +14,9 @@ function responseFor(page: Page, path: string) {
   );
 }
 
-function lossMarks(page: Page) {
+function lossPlot(page: Page) {
   return page.getByRole('region', { name: 'Run Inspector' })
-    .getByRole('img', { name: 'Loss' })
-    .locator('polyline, circle');
+    .getByRole('img', { name: 'Loss' });
 }
 
 test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity',
@@ -41,7 +40,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     const activityRun = activity.getByRole('list', { name: 'Runs' }).getByRole('listitem').first();
     await activityButton.click();
     await activityRun.getByRole('button').first().click();
-    await expect(lossMarks(page).first()).toBeVisible({ timeout: 12_000 });
+    await expect(lossPlot(page).locator('polyline').first()).toBeVisible({ timeout: 12_000 });
 
     await activityButton.click();
     const stopping = responseFor(page, '/api/jobs/stop');
@@ -78,7 +77,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     expect(replay.ok(), await replay.text()).toBe(true);
     const history = await replay.json() as StudioJobEventHistory;
     expect(history.events.some((event) => event.job_id === stoppedJobId && event.kind === 'progress')).toBe(true);
-    await expect(lossMarks(page).first()).toBeVisible({ timeout: 10_000 });
+    await expect(lossPlot(page).locator('line title').first()).toHaveText(/samples/, { timeout: 10_000 });
     await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
   },
 );
@@ -109,9 +108,33 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   await expect(runs.getByText('Not run', { exact: true })).toBeVisible();
   const response = await request.get(`/api/jobs?project=${project.id}`);
   expect(response.ok()).toBe(true);
-  const { jobs } = await response.json() as StudioJobSnapshot;
+  const { jobs, cursor } = await response.json() as StudioJobSnapshot;
   expect(jobs).toHaveLength(1);
   expect(jobs[0]).toMatchObject({ run_key: submission.items[0].run_key, label: 'Learning rate=0.0005' });
+  await runs.getByRole('button', { name: 'Learning rate=0.0005', exact: true }).click();
+  await expect(lossPlot(page).locator('line title').first()).toHaveText(/samples/);
+  const historyResponse = await request.get('/api/events/history', {
+    params: { project: project.id, through: cursor },
+  });
+  expect(historyResponse.ok(), await historyResponse.text()).toBe(true);
+  const { events } = await historyResponse.json() as StudioJobEventHistory;
+  const intervals = events
+    .filter((event) => event.kind === 'progress' && event.job_id === jobs[0].job_id)
+    .flatMap((event) => event.data.metric_interval ? [event.data.metric_interval] : []) as Array<{
+      start_exclusive: number;
+      end_inclusive: number;
+      metrics: { train_loss: { count: number; mean: number; min: number; max: number; last: number } };
+    }>;
+  let end = 0;
+  for (const interval of intervals) {
+    const loss = interval.metrics.train_loss;
+    expect(interval.start_exclusive).toBe(end);
+    expect(loss.count).toBe(interval.end_inclusive - end);
+    expect(loss.mean).toBeGreaterThanOrEqual(loss.min);
+    expect(loss.mean).toBeLessThanOrEqual(loss.max);
+    end = interval.end_inclusive;
+  }
+  expect(end).toBe(30);
 });
 
 test('reopens a project folder and evaluates two conditions on the training result', async ({ page }) => {

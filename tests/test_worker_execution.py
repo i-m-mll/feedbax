@@ -403,13 +403,16 @@ def _studio_worker_run_spec() -> TrainingRunSpec:
         STUDIO_GRAPH_METHOD,
         STUDIO_GRAPH_METHOD_PAYLOAD_ID,
         STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+        STUDIO_INDEPENDENT_KEY_SCHEDULE,
         StudioGraphMethodPayload,
     )
     from feedbax.contracts.worker import derive_consistency_predicate
     from feedbax.training.studio_executor import studio_graph_method_contract
 
     legacy = _training_spec()
-    payload = StudioGraphMethodPayload(optimizer=legacy["optimizer"], target_total=2)
+    payload = StudioGraphMethodPayload(
+        optimizer=legacy["optimizer"], target_total=2, key_schedule=STUDIO_INDEPENDENT_KEY_SCHEDULE
+    )
     contract = studio_graph_method_contract(payload)
     return TrainingRunSpec(
         graph={"inline": _linear_graph_spec()},

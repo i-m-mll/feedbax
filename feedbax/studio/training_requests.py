@@ -17,6 +17,7 @@ from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     STUDIO_GRAPH_METHOD_PAYLOAD_ID,
     STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
+    STUDIO_INDEPENDENT_KEY_SCHEDULE,
     StudioGraphMethodPayload,
 )
 from feedbax.contracts.training import (
@@ -242,6 +243,7 @@ def _lower_scenario(
     payload_fields: dict[str, Any] = {
         "optimizer": optimizer,
         "target_total": training_spec.n_batches,
+        "key_schedule": STUDIO_INDEPENDENT_KEY_SCHEDULE,
     }
     if "seed" in training:
         payload_fields["seed"] = training["seed"]

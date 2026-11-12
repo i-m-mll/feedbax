@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 import os
@@ -26,6 +26,50 @@ class _Result:
     outcome: Literal["succeeded", "stopped", "failed"]
     receipt: Mapping[str, str] | None = None
     error: Mapping[str, str] | None = None
+
+
+@dataclass
+class _MetricReduction:
+    count: int
+    mean: float
+    min: float
+    max: float
+    last: float
+
+    def add(self, value: float) -> None:
+        self.count += 1
+        self.mean += (value - self.mean) / self.count
+        self.min = min(self.min, value)
+        self.max = max(self.max, value)
+        self.last = value
+
+
+_MetricReductions = dict[str, "_MetricReduction | _MetricReductions"]
+
+
+def _accumulate_metrics(reductions: _MetricReductions, metrics: Mapping[str, Any]) -> None:
+    for name, value in metrics.items():
+        if isinstance(value, Mapping):
+            nested = reductions.setdefault(name, {})
+            if not isinstance(nested, dict):
+                raise ValueError(f"Studio metric {name!r} changed structure")
+            _accumulate_metrics(nested, value)
+        elif type(value) in (int, float):
+            reduction = reductions.get(name)
+            if reduction is None:
+                reductions[name] = _MetricReduction(1, value, value, value, value)
+            elif isinstance(reduction, _MetricReduction):
+                reduction.add(value)
+            else:
+                raise ValueError(f"Studio metric {name!r} changed structure")
+
+
+def _serialize_reductions(reductions: _MetricReductions) -> dict[str, Any]:
+    return {
+        name: asdict(reduction) if isinstance(reduction, _MetricReduction)
+        else _serialize_reductions(reduction)
+        for name, reduction in reductions.items()
+    }
 
 
 class _Events:
@@ -151,6 +195,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     launch = StudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
     if launch.spec.method_ref != STUDIO_GRAPH_METHOD:
         raise ValueError("Studio training jobs require the registered Studio graph method")
+    method = StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
+    method.require_supported_launch(resume=launch.resume is not None)
     if not launch.manifest_root.is_absolute():
         raise ValueError("manifest_root must be absolute")
     manifest_root = launch.manifest_root.resolve()
@@ -212,24 +258,24 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         if not isinstance(kernel, StudioUpdateKernel):
             raise ValueError("Studio graph training requires the registered numerical update")
         spec = launch.spec
-        method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
         target = method.target_total
         snapshot_interval = spec.training_config.snapshot_interval
         if snapshot_interval <= 0:
             raise ValueError("snapshot_interval must be positive")
         observation_key = studio_training_key(method.seed, "observation")
         last_progress = float("-inf")
-        pending: tuple[ProgressCoordinate, float] | None = None
+        interval_start = events.completed_updates
+        reductions: _MetricReductions = {}
+        pending: tuple[dict[str, Any], float] | None = None
         last_frame = -1
         latest_model: Any = None
         stop_requested = False
 
         def publish_progress() -> None:
-            nonlocal pending, last_progress
+            nonlocal pending, interval_start, last_progress
             if pending is None:
                 return
-            coordinate, observed_at = pending
-            _, metrics = normalize_serialized_metrics(coordinate, coordinate.metrics, {})
+            metrics, observed_at = pending
             events.append(
                 "progress",
                 {
@@ -237,9 +283,16 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                     "total_updates": target,
                     "elapsed_seconds": observed_at,
                     "metrics": metrics,
+                    "metric_interval": {
+                        "start_exclusive": interval_start,
+                        "end_inclusive": events.completed_updates,
+                        "metrics": _serialize_reductions(reductions),
+                    },
                 },
             )
             pending = None
+            interval_start = events.completed_updates
+            reductions.clear()
             last_progress = observed_at
 
         def publish_frame() -> None:
@@ -278,7 +331,9 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             events.completed_updates = completed
             latest_model = slots["model"]
             now = events.elapsed()
-            pending = coordinate, now
+            _, metrics = normalize_serialized_metrics(coordinate, coordinate.metrics, {})
+            _accumulate_metrics(reductions, metrics)
+            pending = metrics, now
             if now - last_progress >= 0.4:
                 publish_progress()
             if completed % snapshot_interval == 0:

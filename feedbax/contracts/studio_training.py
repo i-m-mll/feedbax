@@ -34,6 +34,7 @@ STUDIO_TRAINING_COMPILER_VERSION = "feedbax.studio.worker.v1"
 STUDIO_GRAPH_METHOD = MethodRefSpec(package="feedbax", name="studio_graph", version="v1")
 STUDIO_GRAPH_METHOD_PAYLOAD_ID = "feedbax.spec.training_method.studio_graph"
 STUDIO_GRAPH_METHOD_PAYLOAD_VERSION = f"{STUDIO_GRAPH_METHOD_PAYLOAD_ID}.v1"
+STUDIO_INDEPENDENT_KEY_SCHEDULE = "independent_v1"
 
 
 class StudioGraphMethodPayload(StrictModel):
@@ -42,6 +43,15 @@ class StudioGraphMethodPayload(StrictModel):
     optimizer: OptimizerSpec
     target_total: int = Field(gt=0)
     seed: int = Field(default=0, ge=0, lt=2**32, strict=True)
+    key_schedule: Literal["independent_v1"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    def require_supported_launch(self, *, resume: bool) -> None:
+        # A resume takes its model and carried update key from checkpoint custody.
+        # An unstarted legacy seed-zero request would silently change numerics.
+        if not resume and self.key_schedule is None and self.seed == 0:
+            raise ValueError("Create a new Studio request to start training with seed 0")
 
     @field_validator("optimizer")
     @classmethod
