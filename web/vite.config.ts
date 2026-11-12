@@ -88,7 +88,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             // Project state, job snapshots, and event streams must reach the live service.
-            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs|jobs|submissions|events|sessions|provider\/health)(?:[/?].*)?$/i,
+            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs|projects|jobs|submissions|events|sessions|provider\/health)(?:[/?].*)?$/i,
             handler: 'NetworkOnly',
           },
           {

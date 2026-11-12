@@ -17,6 +17,13 @@ type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "evaluate", "analyze", "report"]
 
 
+def json_pointer_parts(pointer: str | None) -> tuple[str, ...]:
+    """Decode an already validated JSON Pointer."""
+    if not pointer:
+        return ()
+    return tuple(token.replace("~1", "/").replace("~0", "~") for token in pointer[1:].split("/"))
+
+
 class Document(StrictModel):
     schema_id: NonemptyText = Field(alias="schema")
     payload: JsonValue

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 from pathlib import Path
 import uuid
 
 
-def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600, replace: bool = True) -> None:
+def write_bytes_atomic(
+    path: Path,
+    data: bytes,
+    *,
+    mode: int = 0o600,
+    replace: bool = True,
+    before_publish: Callable[[], None] | None = None,
+) -> None:
     """Publish a document after flushing its unique same-directory staging file.
 
     ``mode`` is filtered by the process umask, just as for ordinary file creation;
@@ -18,6 +26,7 @@ def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600, replace: b
     Success confirms file and directory sync, including every namespace ancestor.
     Unsupported directory sync raises rather than claiming durability. Errors
     after replacement can leave new bytes visible without confirmed durability.
+    A caller may check a precondition after staging and immediately before publication.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -32,6 +41,8 @@ def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600, replace: b
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if before_publish is not None:
+            before_publish()
         if replace:
             os.replace(staging, path)
         else:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from time import monotonic
 from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -24,11 +25,14 @@ from feedbax.contracts.jobs import (
     StudioRunPreview,
     StudioRunPreviewRequest,
 )
+from feedbax.contracts.project_inputs import ProjectName
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
+from feedbax.web.api.projects import ProjectRevisionWatch
 
 
 router = APIRouter(prefix="/api", tags=["jobs"])
+_FOLDER_OBSERVATION_INTERVAL = 0.5
 
 
 def _jobs(request: Request) -> JobService:
@@ -146,9 +150,12 @@ async def job_events(
     project: Annotated[list[str] | None, Query()] = None,
     last_event_id: Annotated[int | None, Header(ge=0)] = None,
     machine: bool = False,
+    folder: Annotated[list[ProjectName] | None, Query()] = None,
 ) -> StreamingResponse:
     service = _jobs(request)
     projects = tuple(dict.fromkeys(project or ()))
+    folders = tuple(dict.fromkeys(folder or ()))
+    watch = ProjectRevisionWatch(request.app.state.project_folders, folders) if folders else None
     start = last_event_id if last_event_id is not None else after
     try:
         boundary, initial_page = await run_in_threadpool(
@@ -166,6 +173,7 @@ async def job_events(
         page = initial_page
         cursor = start
         replay_complete = False
+        next_observation = monotonic()
         while True:
             if cursor < page.oldest_cursor or cursor > head:
                 reset = StudioEventReset(oldest_cursor=page.oldest_cursor, cursor=head)
@@ -182,12 +190,20 @@ async def job_events(
                 yield _watermark_event("replay_complete", boundary)
             if not page.events:
                 yield _watermark_event("heartbeat", cursor)
+            if watch is not None and replay_complete and monotonic() >= next_observation:
+                revisions = await run_in_threadpool(watch.changed)
+                next_observation = monotonic() + _FOLDER_OBSERVATION_INTERVAL
+                for revision in revisions:
+                    yield f"event: project_revision\ndata: {revision.model_dump_json()}\n\n"
+            wait = 5
+            if watch is not None and replay_complete:
+                wait = max(0, next_observation - monotonic())
             try:
                 head, page = await run_in_threadpool(
                     service.events,
                     after=cursor,
                     projects=projects,
-                    wait=5,
+                    wait=wait,
                     machine=machine,
                 )
             except HostError:

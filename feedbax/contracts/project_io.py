@@ -9,7 +9,8 @@ from typing import Literal
 
 from pydantic import Field, ValidationError
 
-from feedbax.contracts.base import StrictModel
+from feedbax.contracts.base import StrictModel, sha256_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project import Document, Payload, Project, Step
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
@@ -41,6 +42,7 @@ class TextProject:
     project: Project
     configuration: ProjectConfiguration
     root: Path
+    revision: str
 
     @property
     def store_path(self) -> Path:
@@ -62,14 +64,6 @@ def _parse[Model: StrictModel](model: type[Model], data: bytes, source: str | Pa
         raise ProjectReadError(source, str(error)) from error
 
 
-def _read[Model: StrictModel](model: type[Model], path: Path) -> Model:
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise ProjectReadError(path, str(error)) from error
-    return _parse(model, data, path)
-
-
 def _files(directory: Path) -> list[Path]:
     try:
         return sorted(path for path in directory.iterdir() if path.suffix == ".json")
@@ -79,11 +73,29 @@ def _files(directory: Path) -> list[Path]:
         raise ProjectReadError(directory, str(error)) from error
 
 
+def text_project_paths(root: Path) -> tuple[Path, ...]:
+    """Enumerate the paths owned by the text project codec."""
+    return (
+        root / PROJECT_DECLARATION_FILENAME,
+        *(path for family in ("documents", "steps", "variants") for path in _files(root / family)),
+    )
+
+
 def load_text_project(root: Path | str) -> TextProject:
     """Read the declared project, with one named document, step or variant per file."""
     root = Path(root).resolve()
-    path = root / PROJECT_DECLARATION_FILENAME
-    manifest = _read(TextProjectManifest, path)
+    path, *named_paths = text_project_paths(root)
+    digests: dict[str, str] = {}
+
+    def read[Model: StrictModel](model: type[Model], file: Path) -> Model:
+        try:
+            data = file.read_bytes()
+        except OSError as error:
+            raise ProjectReadError(file, str(error)) from error
+        digests[file.relative_to(root).as_posix()] = sha256_bytes(data)
+        return _parse(model, data, file)
+
+    manifest = read(TextProjectManifest, path)
     variants = manifest.variants
     if len(set(variants)) != len(variants):
         raise ProjectReadError(path, "variant names must be unique")
@@ -91,7 +103,7 @@ def load_text_project(root: Path | str) -> TextProject:
         raise ProjectReadError(path, "variant files require a project sweep")
     if manifest.sweep is not None and manifest.sweep.rows:
         raise ProjectReadError(path, "variant rows belong in variants/*.json")
-    found_variants = {file.stem for file in _files(root / "variants")}
+    found_variants = {file.stem for file in named_paths if file.parent.name == "variants"}
     if found_variants != set(variants):
         missing = sorted(set(variants) - found_variants)
         undeclared = sorted(found_variants - set(variants))
@@ -100,13 +112,13 @@ def load_text_project(root: Path | str) -> TextProject:
         )
     try:
         project = Project(
-            documents={file.stem: _read(Document, file) for file in _files(root / "documents")},
-            steps={file.stem: _read(Step, file) for file in _files(root / "steps")},
+            documents={file.stem: read(Document, file) for file in named_paths if file.parent.name == "documents"},
+            steps={file.stem: read(Step, file) for file in named_paths if file.parent.name == "steps"},
             sweep=(
                 manifest.sweep.model_copy(
                     update={
                         "rows": {
-                            name: _read(Row, root / "variants" / f"{name}.json")
+                            name: read(Row, root / "variants" / f"{name}.json")
                             for name in variants
                         }
                     }
@@ -120,7 +132,10 @@ def load_text_project(root: Path | str) -> TextProject:
     configuration = ProjectConfiguration(
         project=manifest.project, store=manifest.store, settings=manifest.settings
     )
-    return TextProject(project, configuration, root)
+    revision = sha256_bytes(canonical_json_v2_bytes([
+        "feedbax.project-folder.v1", [[name, digest] for name, digest in sorted(digests.items())],
+    ]))
+    return TextProject(project, configuration, root, revision)
 
 
 def parse_studio_project(data: bytes, *, source: str = "Studio project") -> StudioProjectFile:
@@ -148,6 +163,11 @@ def _encode(model: StrictModel, *, exclude: set[str] | None = None) -> bytes:
 def dump_studio_project(project_file: StudioProjectFile) -> bytes:
     """Serialize the semantic model beside its presentation."""
     return _encode(project_file)
+
+
+def project_semantic_root(project: Project) -> str:
+    """Hash authored Project content with its ordered sweep maps intact."""
+    return sha256_bytes(_encode(project))
 
 
 def dump_text_project(project: Project, configuration: ProjectConfiguration) -> dict[str, bytes]:
