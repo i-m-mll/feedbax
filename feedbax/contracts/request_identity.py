@@ -19,6 +19,8 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.request_refs import (
     ContentRef,
+    EffectiveBindingId,
+    EffectiveInputs,
     InputMember,
     RequestId,
     RequestInputs,
@@ -35,6 +37,7 @@ from feedbax.contracts.request_specs import (
 
 _IDENTITY = "feedbax.identity.request.v1"
 _STORAGE_SCHEMA = "feedbax.request.v1"
+_EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v1"
 _INPUTS = TypeAdapter(RequestInputs)
 
 
@@ -309,3 +312,37 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
     if encoded.data != data:
         raise ValueError("Stored request object is not minimal or did not round-trip")
     return DecodedRequest(kind=kind, spec=spec, inputs=inputs, id=encoded.id)
+
+
+def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> EffectiveBindingId:
+    """Project verified bindings to a separately scoped successful-result lookup key."""
+    if inputs.keys() != request.inputs.keys():
+        raise ValueError("Effective inputs must cover the authored input roles")
+    for role, members in inputs.items():
+        authored = request.inputs[role]
+        if tuple(member.key for member in members) != tuple(member.key for member in authored):
+            raise ValueError(f"Effective inputs must preserve authored member order for {role!r}")
+        for bound, source in zip(members, authored, strict=True):
+            if isinstance(source.reference, ContentRef) and source.reference != bound.content:
+                raise ValueError(f"Effective input differs from frozen content for {role}.{bound.key}")
+    encoded = encode_request(request.spec, request.inputs)
+    if encoded.id != request.id:
+        raise ValueError("Effective binding requires an authenticated authored request")
+    normalized = json.loads(encoded.data)
+    preimage = {
+        "identity": _EFFECTIVE_IDENTITY,
+        "kind": normalized["kind"],
+        "spec": normalized["spec"],
+        "inputs": {
+            role: [
+                {
+                    "key": member.key,
+                    "content": member.content.model_dump(mode="json"),
+                    "descriptor": member.descriptor,
+                }
+                for member in members
+            ]
+            for role, members in inputs.items()
+        },
+    }
+    return f"effective:{sha256_bytes(canonical_json_v2_bytes(preimage))}"
