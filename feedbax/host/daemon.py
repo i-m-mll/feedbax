@@ -583,6 +583,8 @@ class Host:
                 return {"version": VERSION, "pid": os.getpid()}
             case "events":
                 return await self._events(**message)
+            case "jobs_snapshot":
+                return self.store.jobs_snapshot(**message)
             case "admit_with_completion":
                 result = self.store.admit(**message, allow_completion=True)
                 self.wake.set()
@@ -599,7 +601,6 @@ class Host:
                 | "admit"
                 | "stop"
                 | "mark_satisfied"
-                | "jobs_snapshot"
                 | "record_get"
                 | "record_get_many"
                 | "record_put"

@@ -133,7 +133,113 @@ class PlanJobAttempts:
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
 
 
-class JobService:
+def evaluation_candidate_configured() -> bool:
+    """Read the application switch shared by Studio and the text CLI."""
+    return os.environ.get("FEEDBAX_STUDIO_EVALUATION_CANDIDATE") == "1"
+
+
+class PlanJobReader:
+    """Read the existing Host snapshot and authenticate its saved result evidence."""
+
+    def __init__(self, host: HostClient, *, enable_evaluation_candidate: bool = False) -> None:
+        self.host = host
+        self._enable_evaluation_candidate = enable_evaluation_candidate
+
+    def evaluation_parameters(
+        self, plan: ProjectPlan, run: PlannedRun,
+    ) -> tuple[RolloutParameters, ProductRef]:
+        """Resolve the saved request capability shared by Plan and admission."""
+        from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
+
+        if not self._enable_evaluation_candidate:
+            raise CannotRun("/evaluation_type", "Evaluate activation is held.")
+        if run.requires:
+            raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
+        _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
+        return params, checkpoint
+
+    def read_plan_attempts(
+        self, *, project: str, store: Path, requests: Collection[RequestId]
+    ) -> PlanJobAttempts:
+        """Read saved Plan attempt facts at the settled store locator from one Host snapshot."""
+        manifest_root = str(store)
+        key = plan_ref_key(project, manifest_root)
+        include_producers = self._enable_evaluation_candidate and any(
+            request.startswith("evaluate:") for request in requests
+        )
+        snapshot = self.host.jobs_snapshot(
+            project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
+        )
+        plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
+        wanted = set(requests)
+        if plan_ref is not None:
+            for row in plan_ref["rows"].values():
+                wanted.add(row["request_id"])
+                wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
+        attempts: dict[RequestId, list[PlanJobAttempt]] = {}
+        by_id = {
+            job["id"]: job for job in snapshot["jobs"]
+            if job["data"].get("manifest_root") == manifest_root
+        }
+        producers = Counter(
+            job["request"] for job in by_id.values()
+            if include_producers and job["request"].startswith("train:")
+            and _is_checkpoint_producer(job, manifest_root)
+        )
+        catalogs = {
+            job["request"]: tuple(job["launch"]["payload"].get("checkpoint_catalog", ()))
+            for job in by_id.values()
+            if producers[job["request"]] == 1 and _is_checkpoint_producer(job, manifest_root)
+        }
+        for job in by_id.values():
+            request_id = job["request"]
+            if request_id not in wanted:
+                continue
+            evaluate = request_id.startswith("evaluate:")
+            if evaluate and not self._enable_evaluation_candidate:
+                continue
+            succeeded = job["state"] == "succeeded"
+            size = None
+            if evaluate:
+                result = _verified_evaluation_result(job, store) if succeeded else None
+                receipt, size = result if result is not None else (None, None)
+            else:
+                receipt = _verified_training_receipt(job, store) if succeeded else None
+            completion = (job.get("outcome") or {}).get("completion") or {}
+            binding_sha256 = (
+                completion.get("binding_sha256")
+                if receipt is not None
+                and completion.get("request_id") == request_id
+                and completion.get("project_id") == project
+                and completion.get("producer_job_id") == job["id"]
+                and completion.get("manifest_root") == manifest_root
+                and completion.get("receipt") == receipt.model_dump(mode="json")
+                else None
+            )
+            progress = _job_progress(job)
+            status, reason = _job_status(
+                job, progress=progress, receipt_intact=not succeeded or receipt is not None
+            )
+            attempts.setdefault(request_id, []).append(
+                PlanJobAttempt(
+                    job["id"], status, (job.get("phase") or {}).get("phase"),
+                    progress, reason, receipt, binding_sha256,
+                    continues=job["continues"],
+                    checkpoint_source=_train_checkpoint_source(job, by_id),
+                    output_size_bytes=size,
+                    checkpoint_sources=_finite_checkpoint_sources(job) if evaluate and receipt is not None else (),
+                )
+            )
+        return PlanJobAttempts(
+            snapshot["cursor"],
+            MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
+            plan_ref,
+            frozenset(catalogs),
+            MappingProxyType(catalogs),
+        )
+
+
+class JobService(PlanJobReader):
     """Bind authored requests to immutable worker launches over the durable host."""
 
     def __init__(
@@ -144,10 +250,9 @@ class JobService:
         bootstrap_modules: tuple[str, ...] = (),
         enable_evaluation_candidate: bool = False,
     ) -> None:
-        self.host = host
+        super().__init__(host, enable_evaluation_candidate=enable_evaluation_candidate)
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
-        self._enable_evaluation_candidate = enable_evaluation_candidate
         self.manifest_root = default_manifest_root().resolve()
         self._training_worker = Launch(
             argv=(sys.executable,),
@@ -474,19 +579,6 @@ class JobService:
         ]
         return anchors[0] if len(anchors) == 1 else None
 
-    def evaluation_parameters(
-        self, plan: ProjectPlan, run: PlannedRun,
-    ) -> tuple[RolloutParameters, ProductRef]:
-        """Resolve the saved request capability shared by Plan and admission."""
-        from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
-
-        if not self._enable_evaluation_candidate:
-            raise CannotRun("/evaluation_type", "Evaluate activation is held.")
-        if run.requires:
-            raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
-        _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
-        return params, checkpoint
-
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
         store: ImmutableArtifactBlobProvider, checkpoint: ProductRef,
@@ -652,86 +744,6 @@ class JobService:
             cursor=snapshot["cursor"],
             oldest_cursor=snapshot["oldest_cursor"],
             sessions=[StudioLocalSession()],
-        )
-
-    def read_plan_attempts(
-        self, *, project: str, store: Path, requests: Collection[RequestId]
-    ) -> PlanJobAttempts:
-        """Read saved Plan attempt facts at the settled store locator from one Host snapshot."""
-        manifest_root = str(store)
-        key = plan_ref_key(project, manifest_root)
-        include_producers = self._enable_evaluation_candidate and any(
-            request.startswith("evaluate:") for request in requests
-        )
-        snapshot = self.host.jobs_snapshot(
-            project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
-        )
-        plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
-        wanted = set(requests)
-        if plan_ref is not None:
-            for row in plan_ref["rows"].values():
-                wanted.add(row["request_id"])
-                wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
-        attempts: dict[RequestId, list[PlanJobAttempt]] = {}
-        by_id = {
-            job["id"]: job for job in snapshot["jobs"]
-            if job["data"].get("manifest_root") == manifest_root
-        }
-        producers = Counter(
-            job["request"] for job in by_id.values()
-            if include_producers and job["request"].startswith("train:")
-            and _is_checkpoint_producer(job, manifest_root)
-        )
-        catalogs = {
-            job["request"]: tuple(job["launch"]["payload"].get("checkpoint_catalog", ()))
-            for job in by_id.values()
-            if producers[job["request"]] == 1 and _is_checkpoint_producer(job, manifest_root)
-        }
-        for job in by_id.values():
-            request_id = job["request"]
-            if request_id not in wanted:
-                continue
-            evaluate = request_id.startswith("evaluate:")
-            if evaluate and not self._enable_evaluation_candidate:
-                continue
-            succeeded = job["state"] == "succeeded"
-            size = None
-            if evaluate:
-                result = _verified_evaluation_result(job, store) if succeeded else None
-                receipt, size = result if result is not None else (None, None)
-            else:
-                receipt = _verified_training_receipt(job, store) if succeeded else None
-            completion = (job.get("outcome") or {}).get("completion") or {}
-            binding_sha256 = (
-                completion.get("binding_sha256")
-                if receipt is not None
-                and completion.get("request_id") == request_id
-                and completion.get("project_id") == project
-                and completion.get("producer_job_id") == job["id"]
-                and completion.get("manifest_root") == manifest_root
-                and completion.get("receipt") == receipt.model_dump(mode="json")
-                else None
-            )
-            progress = _job_progress(job)
-            status, reason = _job_status(
-                job, progress=progress, receipt_intact=not succeeded or receipt is not None
-            )
-            attempts.setdefault(request_id, []).append(
-                PlanJobAttempt(
-                    job["id"], status, (job.get("phase") or {}).get("phase"),
-                    progress, reason, receipt, binding_sha256,
-                    continues=job["continues"],
-                    checkpoint_source=_train_checkpoint_source(job, by_id),
-                    output_size_bytes=size,
-                    checkpoint_sources=_finite_checkpoint_sources(job) if evaluate and receipt is not None else (),
-                )
-            )
-        return PlanJobAttempts(
-            snapshot["cursor"],
-            MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
-            plan_ref,
-            frozenset(catalogs),
-            MappingProxyType(catalogs),
         )
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:

@@ -28,14 +28,21 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project_inputs import InputBinding, StepReference
 from feedbax.contracts.request_refs import BatchSetMember
-from feedbax.contracts.project_plan import PlannedRun, RunKey
+from feedbax.contracts.project_plan import ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
 from feedbax.job_completion import training_binding_path
 from feedbax.jobs import (
-    EVALUATION_SUBJECT_REQUIRED, JobConflict, JobNotFound, JobService, PlanJobAttempt, PlanJobAttempts,
+    EVALUATION_SUBJECT_REQUIRED,
+    JobConflict,
+    JobNotFound,
+    JobService,
+    PlanJobAttempt,
+    PlanJobAttempts,
+    PlanJobReader,
     saved_train_status,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -54,6 +61,14 @@ class TrainRowHistory:
 
 
 @dataclass(frozen=True)
+class PlanStatusRow:
+    key: RunKey | ElementKey
+    label: str
+    status: JobStatus
+    reason: str | None
+
+
+@dataclass(frozen=True)
 class ProjectPlanRead:
     settled: SettledProjectPlan
     jobs: PlanJobAttempts
@@ -61,6 +76,40 @@ class ProjectPlanRead:
     history: Mapping[RunKey, TrainRowHistory]
     evaluations: Mapping[RunKey, StudioSavedEvaluationRow]
     evaluation_problems: tuple[StudioProjectWindowMapProblem, ...]
+
+    def status_rows(self) -> Iterator[PlanStatusRow]:
+        """Project saved attempt states and the compiler's refused rows and elements."""
+        plan = self.settled.plan
+        problems: dict[RunKey, list[ProjectDiagnostic]] = defaultdict(list)
+        for problem in plan.diagnostics:
+            if problem.variant is not None and problem.step is not None and problem.row is not None:
+                problems[RunKey(problem.variant, problem.step, problem.row)].append(problem)
+
+        for row in plan.rows:
+            label = row.label or row.key.row
+            observed = self.history.get(row.key) or self.evaluations.get(row.key)
+            if observed is not None:
+                yield PlanStatusRow(row.key, label, observed.status, observed.reason)
+                continue
+
+            row_problems = []
+            element_problems: dict[str, list[ProjectDiagnostic]] = defaultdict(list)
+            for problem in problems[row.key]:
+                if problem.element is None:
+                    row_problems.append(problem)
+                else:
+                    element_problems[problem.element].append(problem)
+            if isinstance(row, PlannedAnalyzeRun):
+                if not row.elements and not row_problems:
+                    row_problems = problems[row.key]
+                yield _planned_status(row.key, label, row_problems)
+                for name in dict.fromkeys((*row.elements, *element_problems)):
+                    yield _planned_status(ElementKey(row.key, name), label, element_problems[name])
+            elif isinstance(row, PlannedRun):
+                yield _planned_status(row.key, label, row_problems)
+            else:
+                reason = _problem_reasons(row_problems) or "No request could be planned."
+                yield PlanStatusRow(row.key, label, JobStatus.CANNOT_RUN, reason)
 
     def window_map(self) -> StudioProjectWindowMap:
         """Project authored steps and compiler facts from the acknowledged Plan."""
@@ -157,6 +206,17 @@ def _step_references(
                 yield f"{role}.{key}", reference
 
 
+def _problem_reasons(problems: Iterable[ProjectDiagnostic]) -> str | None:
+    return " | ".join(f"{problem.path}: {problem.detail}" for problem in problems) or None
+
+
+def _planned_status(
+    key: RunKey | ElementKey, label: str, problems: list[ProjectDiagnostic],
+) -> PlanStatusRow:
+    status = JobStatus.CANNOT_RUN if problems else JobStatus.NOT_RUN
+    return PlanStatusRow(key, label, status, _problem_reasons(problems))
+
+
 class ProjectPlanService:
     def __init__(self, folders: ProjectFolderService, jobs: JobService) -> None:
         self.folders = folders
@@ -167,70 +227,7 @@ class ProjectPlanService:
     ) -> ProjectPlanRead:
         """Read one saved revision and its request-scoped attempt evidence."""
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
-        requests = {run.request_id for run in settled.plan.runs if run.kind in {"train", "evaluate"}}
-        jobs = self.jobs.read_plan_attempts(
-            project=settled.project_id, store=settled.store_path, requests=requests
-        )
-        evaluations = {}
-        evaluation_problems = []
-        for run in settled.plan.runs:
-            if run.kind == "evaluate":
-                row, problem = self._evaluation_row(settled, run, jobs)
-                evaluations[run.key] = row
-                if problem is not None:
-                    evaluation_problems.append(problem)
-        return ProjectPlanRead(
-            settled,
-            jobs,
-            MappingProxyType({
-                run.key: attempts
-                for run in settled.plan.runs
-                if (attempts := jobs.by_request.get(run.request_id)) is not None
-            }),
-            _train_history(settled, jobs),
-            MappingProxyType(evaluations),
-            tuple(evaluation_problems),
-        )
-
-    def _evaluation_row(
-        self, settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts,
-    ) -> tuple[StudioSavedEvaluationRow, StudioProjectWindowMapProblem | None]:
-        key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
-        trials = []
-        problem = None
-        try:
-            params, subject = self.jobs.evaluation_parameters(settled.plan, run)
-            trials = list(params.trials)
-            if subject.request_id not in jobs.checkpoint_producers:
-                raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
-            if isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
-                jobs.checkpoint_catalogs.get(subject.request_id, ())
-            ):
-                raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
-        except CannotRun as error:
-            problem = StudioProjectWindowMapProblem(
-                code="cannot_run", path=error.path, detail=str(error),
-                variant=key.variant, step=key.step, row=key.row, document=None,
-            )
-        attempts = jobs.by_request.get(run.request_id, ())
-        latest = attempts[-1] if attempts else None
-        result = None
-        if (
-            latest is not None and latest.successful_receipt is not None
-            and (latest.checkpoint_source is not None or latest.checkpoint_sources)
-            and latest.output_size_bytes is not None
-        ):
-            result = StudioSavedEvaluationResult(
-                job_id=latest.job_id, receipt=latest.successful_receipt,
-                checkpoint_source=latest.checkpoint_source, size_bytes=latest.output_size_bytes,
-                checkpoint_sources=list(latest.checkpoint_sources) or None,
-            )
-        return StudioSavedEvaluationRow(
-            key=key, request_id=run.request_id,
-            status=latest.status if latest else JobStatus.CANNOT_RUN if problem else JobStatus.NOT_RUN,
-            reason=problem.detail if problem else latest.reason if latest else None,
-            can_run=problem is None, trials=trials, result=result,
-        ), problem
+        return read_settled_project_plan(settled, self.jobs)
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,
@@ -257,6 +254,75 @@ class ProjectPlanService:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
             raise JobConflict("The retained data for the selected Evaluate trial could not be read and authenticated.") from error
+
+
+def read_settled_project_plan(settled: SettledProjectPlan, reader: PlanJobReader) -> ProjectPlanRead:
+    """Join one saved Plan to the verified Host evidence used by Studio."""
+    requests = {run.request_id for run in settled.plan.runs if run.kind in {"train", "evaluate"}}
+    jobs = reader.read_plan_attempts(
+        project=settled.project_id, store=settled.store_path, requests=requests
+    )
+    evaluations = {}
+    evaluation_problems = []
+    for run in settled.plan.runs:
+        if run.kind == "evaluate":
+            row, problem = _evaluation_row(settled, run, jobs, reader)
+            evaluations[run.key] = row
+            if problem is not None:
+                evaluation_problems.append(problem)
+    return ProjectPlanRead(
+        settled,
+        jobs,
+        MappingProxyType({
+            run.key: attempts
+            for run in settled.plan.runs
+            if (attempts := jobs.by_request.get(run.request_id)) is not None
+        }),
+        _train_history(settled, jobs),
+        MappingProxyType(evaluations),
+        tuple(evaluation_problems),
+    )
+
+
+def _evaluation_row(
+    settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts, reader: PlanJobReader,
+) -> tuple[StudioSavedEvaluationRow, StudioProjectWindowMapProblem | None]:
+    key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
+    trials = []
+    problem = None
+    try:
+        params, subject = reader.evaluation_parameters(settled.plan, run)
+        trials = list(params.trials)
+        if subject.request_id not in jobs.checkpoint_producers:
+            raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
+        if isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
+            jobs.checkpoint_catalogs.get(subject.request_id, ())
+        ):
+            raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
+    except CannotRun as error:
+        problem = StudioProjectWindowMapProblem(
+            code="cannot_run", path=error.path, detail=str(error),
+            variant=key.variant, step=key.step, row=key.row, document=None,
+        )
+    attempts = jobs.by_request.get(run.request_id, ())
+    latest = attempts[-1] if attempts else None
+    result = None
+    if (
+        latest is not None and latest.successful_receipt is not None
+        and (latest.checkpoint_source is not None or latest.checkpoint_sources)
+        and latest.output_size_bytes is not None
+    ):
+        result = StudioSavedEvaluationResult(
+            job_id=latest.job_id, receipt=latest.successful_receipt,
+            checkpoint_source=latest.checkpoint_source, size_bytes=latest.output_size_bytes,
+            checkpoint_sources=list(latest.checkpoint_sources) or None,
+        )
+    return StudioSavedEvaluationRow(
+        key=key, request_id=run.request_id,
+        status=latest.status if latest else JobStatus.CANNOT_RUN if problem else JobStatus.NOT_RUN,
+        reason=problem.detail if problem else latest.reason if latest else None,
+        can_run=problem is None, trials=trials, result=result,
+    ), problem
 
 
 def _train_history(

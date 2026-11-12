@@ -95,6 +95,13 @@ class SettledProjectPlan:
     store_path: Path
     plan: ProjectPlan
 
+    @classmethod
+    def from_text(cls, project_id: str, text: TextProject, plan: ProjectPlan) -> SettledProjectPlan:
+        return cls(
+            project_id, text.revision, project_semantic_root(text.project),
+            text.configuration, text.store_path, plan,
+        )
+
 
 def _regular(path: Path) -> os.stat_result:
     info = path.lstat()
@@ -293,12 +300,8 @@ class ProjectFolderService:
     def _compile(
         self, project_id: str, text: TextProject, source_runs: Iterable[RunKey] = ()
     ) -> SettledProjectPlan:
-        return SettledProjectPlan(
-            project_id,
-            text.revision,
-            project_semantic_root(text.project),
-            text.configuration,
-            text.store_path,
+        return SettledProjectPlan.from_text(
+            project_id, text,
             compile_project(
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id)
             ),

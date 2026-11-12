@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from feedbax.host import HostClient
-from feedbax.jobs import JobService
+from feedbax.jobs import JobService, evaluation_candidate_configured
 from feedbax.plugins.composition import compose_application
 
 from feedbax.web.api import (
@@ -150,4 +149,4 @@ def create_app(
     return app
 
 
-app = create_app(enable_evaluation_candidate=os.environ.get("FEEDBAX_STUDIO_EVALUATION_CANDIDATE") == "1")
+app = create_app(enable_evaluation_candidate=evaluation_candidate_configured())

@@ -1,0 +1,212 @@
+"""Read the same saved receipt evidence through Studio and the text CLI."""
+
+from hashlib import sha256
+import json
+
+from feedbax.cli import main
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.jobs import JobStatus
+from feedbax.contracts.manifest import TrainingRunManifest, training_run_manifest_id, write_manifest
+from feedbax.contracts.project_io import read_text_project_snapshot
+from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.host import HostClient
+from feedbax.host.plan_history import advance_plan, plan_ref_key, plan_run_key
+from feedbax.job_completion import training_binding_path
+from feedbax.jobs import JobService
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, bind_canonical_train
+from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
+from tests.test_text_project_plan_cli import _edit, _files, _write_walkthrough
+
+
+def _status_table(output):
+    header, *rows = output.splitlines()
+    assert header.split("\t") == ["ADDRESS", "ROW", "STATE", "REASON"]
+    result = {}
+    for line in rows:
+        address, label, state, reason = line.split("\t", 3)
+        result[address] = (label, state, reason)
+    return result
+
+
+def _retain_train(root, project, registries):
+    job_id = "saved-attempt"
+    plan = compile_project(project)
+    (train,) = (run for run in plan.runs if run.kind == "train")
+    store = ImmutableArtifactBlobProvider(root / "results")
+    spec, binding = bind_canonical_train(
+        train.request_id,
+        plan.requests[train.request_id],
+        plan.documents,
+        registries.training_programs,
+        store,
+    )
+    bound = (
+        BoundStudioTrainingJobInput(
+            spec=spec,
+            project_id=root.name,
+            request_id=train.request_id,
+            manifest_root=store.root,
+            canonical_request=binding,
+        )
+        .model_dump_json()
+        .encode()
+    )
+    binding_path = training_binding_path(store.root, job_id)
+    binding_path.parent.mkdir(parents=True)
+    binding_path.write_bytes(bound)
+    manifest_id = training_run_manifest_id(job_id)
+    manifest = write_manifest(
+        TrainingRunManifest(id=manifest_id, job_id=job_id, status="completed"),
+        root=store.root,
+        index=False,
+    )
+    receipt = {
+        "manifest_id": manifest_id,
+        "manifest_sha256": sha256(manifest.read_bytes()).hexdigest(),
+    }
+    root_name = str(store.root)
+    plan_key = plan_ref_key(root.name, root_name)
+    request_map = {plan_run_key("default", "train", "default"): train.request_id}
+    ref = store.store_object(canonical_json_v2_bytes({"requests": request_map}))
+    snapshot = {
+        "cursor": 9,
+        "oldest_cursor": 0,
+        "jobs": [
+            {
+                "id": job_id,
+                "project": root.name,
+                "request": train.request_id,
+                "state": "succeeded",
+                "data": {"manifest_root": root_name},
+                "edges": [],
+                "continues": None,
+                "outcome": {
+                    "receipt": receipt,
+                    "completion": {
+                        "project_id": root.name,
+                        "manifest_root": root_name,
+                        "producer_job_id": job_id,
+                        "request_id": train.request_id,
+                        "binding_sha256": sha256(bound).hexdigest(),
+                        "receipt": receipt,
+                    },
+                },
+            }
+        ],
+        "records": {plan_key: advance_plan(ref.model_dump(mode="json"), request_map, None, {})},
+    }
+    return snapshot, plan_key, manifest
+
+
+def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monkeypatch, capsys):
+    root = (tmp_path / "saved").resolve()
+    project, _ = _write_walkthrough(root)
+    registries = new_application_registry_bundle()
+    snapshot, plan_key, manifest = _retain_train(root, project, registries)
+    receipt = manifest.read_bytes()
+    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
+
+    def snapshot_rpc(self, *, project, start_host, record_keys, include_launch):
+        assert (project, start_host, record_keys, include_launch) == (
+            root.name,
+            False,
+            (plan_key,),
+            False,
+        )
+        return snapshot
+
+    monkeypatch.setattr(HostClient, "jobs_snapshot", snapshot_rpc)
+    monkeypatch.chdir(root / "steps")
+    service = ProjectPlanService(
+        ProjectFolderService(root.parent), JobService(HostClient(), registries)
+    )
+    key = RunKey("default", "train", "default")
+
+    def compare(state):
+        before = _files(root)
+        assert main(["status", "--variant", "default"]) == 0
+        table = _status_table(capsys.readouterr().out)
+        assert _files(root) == before
+        assert not (tmp_path / "host").exists()
+        saved = read_text_project_snapshot(root)
+        studio = service.read(root.name, revision=saved.revision)
+        history = studio.history[key]
+        assert history.status is state
+        assert table["default/train/default"] == ("default", state.value, history.reason or "")
+        assert table["default/baseline/default"][1:] == (
+            studio.evaluations[RunKey("default", "baseline", "default")].status.value,
+            "Evaluate activation is held.",
+        )
+        assert table["default/analyze/default/profile"][1] == JobStatus.NOT_RUN.value
+        assert table["default/report/default"][1] == JobStatus.NOT_RUN.value
+        return history
+
+    assert compare(JobStatus.SUCCEEDED).result is not None
+    manifest.write_bytes(receipt + b" ")
+    assert compare(JobStatus.CORRUPT).result is None
+    manifest.write_bytes(receipt)
+
+    attempts = snapshot["jobs"]
+    attempts.append(
+        attempts[0]
+        | {
+            "id": "failed-attempt",
+            "state": "failed",
+            "outcome": {"error": {"message": "Training stopped at the loss guard."}},
+        }
+    )
+    assert compare(JobStatus.FAILED).reason == "Training stopped at the loss guard."
+    attempts.pop()
+
+    step_path = root / "steps/train.json"
+    step = json.loads(step_path.read_bytes())
+    method = step["base"]["inline"]["method_payload"]["payload"]
+    method["seed"] = method.get("seed", 0) + 1
+    step_path.write_text(json.dumps(step), encoding="utf-8")
+    stale = compare(JobStatus.STALE)
+    assert stale.change.path == "payload.method_payload.payload.seed"
+    assert stale.previous is not None
+
+
+def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "saved"
+    _, files = _write_walkthrough(root)
+    _edit(
+        root,
+        files,
+        "velocity-analysis",
+        lambda document: document["operations"].update(
+            unused=document["operations"]["align"] | {"operation": "feedbax.unknown"},
+        ),
+    )
+    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
+    monkeypatch.setattr(
+        HostClient,
+        "jobs_snapshot",
+        lambda *args, **kwargs: {"jobs": [], "cursor": 0},
+    )
+    assert main(["status", str(root)]) == 2
+    output = capsys.readouterr()
+    table = _status_table(output.out)
+    assert table["default/analyze/default/profile"][1] == "not_run"
+    _, state, reason = table["default/analyze/default/unused"]
+    assert state == "cannot_run" and "payload.operations.unused.operation" in reason
+    assert table["default/report/default"][1] == "not_run"
+    assert "steps/analyze.json" in output.err
+    assert _files(root) == files
+
+
+def test_status_does_not_start_a_missing_host(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "saved"
+    _, files = _write_walkthrough(root)
+    host_root = tmp_path / "host"
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host_root))
+    assert main(["status", str(root)]) == 2
+    output = capsys.readouterr()
+    assert "saved result history is unavailable" in output.err and not output.out
+    assert not host_root.exists()
+    assert _files(root) == files
