@@ -23,14 +23,30 @@ from feedbax.contracts.project import (
     StepKind,
 )
 from feedbax.contracts.project_inputs import InputBinding
+from feedbax.contracts.project_sources import (
+    SourceList,
+    SourceObject,
+    ValueSource,
+    first_source,
+    patch_source,
+    pointer,
+    source_at,
+    source_leaves,
+    source_shape,
+)
 from feedbax.contracts.project_sweep import (
     ExpandedRow,
-    PatchValue,
+    ListedAxis,
+    RangeAxis,
+    SampledAxis,
     Sweep,
+    SweepExpansionError,
     SweepInheritanceError,
+    authored_row,
     inherit_sweep,
     merge_named,
     sweep_patches,
+    sweep_value_identity_bytes,
 )
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.strict_json import strict_json_loads
@@ -64,6 +80,7 @@ class ProjectDiagnostic:
     layer: str | None = None
     document: str | None = None
     row: str | None = None
+    variant: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +90,7 @@ class ResolvedStep:
     payload: Payload
     sweep: Sweep | None
     inputs: dict[str, InputBinding]
+    sources: dict[str, ValueSource] | None = None
 
 
 @dataclass(frozen=True)
@@ -150,9 +168,10 @@ def _pack(value: Any, path: str, step: str | None) -> Any:
 
 
 class _Documents:
-    def __init__(self, project: Project, step: str | None = None):
+    def __init__(self, project: Project, step: str | None = None, variant_sources: Any = None):
         self.project = project
         self.step = step
+        self.variant_sources = variant_sources
 
     def select(self, reference: DocumentReference, path: str) -> Any:
         document = self.project.documents.get(reference.document)
@@ -193,13 +212,48 @@ class _Documents:
             )
         return _pack(self.select(reference, path), path, self.step), (*active, key)
 
-    def base(self, reference: DocumentReference) -> Any:
+    def base(self, reference: DocumentReference) -> tuple[Any, DocumentReference]:
         """Follow root aliases before patching; nested references remain atomic."""
         value: Any = reference
         active: tuple[tuple[str, str], ...] = ()
         while isinstance(value, DocumentReference):
+            reference = value
             value, active = self._follow(value, "base", active)
-        return value
+        return value, reference
+
+    def source(self, reference: DocumentReference, value: Any) -> Any:
+        parts = _json_pointer(reference.pointer)
+        return source_shape(
+            value,
+            ValueSource("document", reference.document, pointer(parts)),
+            source_at(self.variant_sources, ("documents", reference.document, "payload", *parts)),
+        )
+
+    def inline_sources(
+        self, value: Any, shape: Any, path: str, active: tuple[tuple[str, str], ...] = ()
+    ) -> Any:
+        if isinstance(value, DocumentReference):
+            selected, active = self._follow(value, path, active)
+            return self.inline_sources(selected, self.source(value, selected), path, active)
+        if isinstance(value, dict):
+            return SourceObject(
+                first_source(shape) if not isinstance(shape, SourceObject) else shape.source,
+                {
+                    key: self.inline_sources(
+                        item, source_at(shape, (key,)), f"{path}.{key}", active
+                    )
+                    for key, item in value.items()
+                },
+            )
+        if isinstance(value, list):
+            return SourceList(
+                first_source(shape) if not isinstance(shape, SourceList) else shape.source,
+                (
+                    self.inline_sources(item, source_at(shape, (str(i),)), f"{path}.{i}", active)
+                    for i, item in enumerate(value)
+                ),
+            )
+        return shape
 
     def inline(
         self,
@@ -224,12 +278,35 @@ class _StepState:
     inputs: dict[str, InputBinding] = field(default_factory=dict)
     requires: tuple[str, ...] = ()
     written: set[str] = field(default_factory=set)
+    origins: Any = None
 
 
 class _Resolver:
-    def __init__(self, project: Project, readers: BaseReaders):
+    def __init__(
+        self,
+        project: Project,
+        readers: BaseReaders,
+        track_sources: bool = False,
+        variant_sources: Any = None,
+    ):
         self.project = project
         self.readers = readers
+        self.track_sources = track_sources
+        self.variant_sources = variant_sources
+
+    def base_origins(
+        self, name: str, base: InlineBase | RunBase | ExternalBase, payload: Any
+    ) -> Any:
+        if isinstance(base, RunBase):
+            return source_shape(payload, ValueSource("upstream", base.run))
+        if isinstance(base, ExternalBase):
+            return source_shape(payload, ValueSource("document", base.path, base.pointer or ""))
+        path = ("steps", name, "base", "inline")
+        return source_shape(
+            payload,
+            ValueSource("step", name, pointer(path[2:]), step=name),
+            source_at(self.variant_sources, path),
+        )
 
     def state(self, name: str, active: tuple[str, ...] = ()) -> _StepState:
         if name in active:
@@ -250,7 +327,13 @@ class _Resolver:
             if base.row is not None:
                 parent = self.select_row(name, base, parent)
         else:
-            payload = self.read_base(name, base)
+            if isinstance(base, DocumentReference):
+                documents = _Documents(self.project, name, self.variant_sources)
+                payload, reference = documents.base(base)
+                origins = documents.source(reference, payload) if self.track_sources else None
+            else:
+                payload = self.read_base(name, base)
+                origins = self.base_origins(name, base, payload) if self.track_sources else None
             if not isinstance(payload, dict):
                 raise _Problem(
                     ResolutionCode.INVALID_PAYLOAD,
@@ -261,11 +344,13 @@ class _Resolver:
             parent = _StepState(
                 payload
                 if isinstance(base, (DocumentReference, RunBase))
-                else _pack(payload, "payload", name)
+                else _pack(payload, "payload", name),
+                origins=origins,
             )
         payload = parent.payload
         written = parent.written
-        for layer in step.deltas:
+        origins = parent.origins
+        for i, layer in enumerate(step.deltas):
             if not isinstance(payload, dict):
                 raise _Problem(
                     ResolutionCode.INVALID_DELTA,
@@ -302,8 +387,16 @@ class _Resolver:
                     step=name,
                     layer=layer.layer_id,
                 ) from error
+            if origins is not None:
+                for j, patch in enumerate(patches):
+                    path = ("deltas", str(i), "patches", str(j), "value")
+                    source = ValueSource("step", name, pointer(path), step=name)
+                    override = source_at(self.variant_sources, ("steps", name, *path))
+                    patch_source(origins, patch, source_shape(patch.value, source, override))
         try:
-            sweep = inherit_sweep(parent.sweep, step.sweep)
+            sweep = inherit_sweep(
+                parent.sweep, step.sweep, author=name if self.track_sources else None
+            )
         except SweepInheritanceError as error:
             raise _Problem(
                 ResolutionCode.INVALID_SWEEP, f"sweep.rows.{error.row}.from", str(error), step=name
@@ -314,15 +407,12 @@ class _Resolver:
             merge_named(parent.inputs, step.inputs),
             tuple(dict.fromkeys((*parent.requires, *step.requires))),
             written,
+            origins,
         )
 
-    def read_base(
-        self, step: str, base: InlineBase | DocumentReference | RunBase | ExternalBase
-    ) -> JsonValue:
+    def read_base(self, step: str, base: InlineBase | RunBase | ExternalBase) -> JsonValue:
         if isinstance(base, InlineBase):
             return base.inline
-        if isinstance(base, DocumentReference):
-            return _Documents(self.project, step).base(base)
         if isinstance(base, RunBase):
             try:
                 payload = self.readers.run(base.run) if self.readers.run is not None else None
@@ -364,9 +454,16 @@ class _Resolver:
 
     def select_row(self, child: str, base: StepBase, parent: _StepState) -> _StepState:
         assert base.row is not None
-        row = parent.sweep.rows.get(base.row) if parent.sweep is not None else None
-        if row is not None:
-            state = self.apply_row(base.step, parent, base.row, row.patches)
+        if parent.sweep is not None and parent.sweep.rows.get(base.row) is not None:
+            try:
+                row = authored_row(parent.sweep, base.row)
+            except SweepExpansionError as error:
+                raise _Problem(
+                    ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=base.step
+                ) from error
+            if row is None:
+                raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
+            state = self.apply_row(base.step, parent, row)
         elif self.readers.row is not None:
             parent_step = self.finish(base.step, parent, check_requires=False)
             try:
@@ -385,31 +482,88 @@ class _Resolver:
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
         selected = self.finish(base.step, state)
-        return _StepState(selected.payload, inputs=selected.inputs)
+        documents = _Documents(self.project, base.step, self.variant_sources)
+        origins = (
+            documents.inline_sources(state.payload, state.origins, "payload")
+            if state.origins is not None
+            else source_shape(
+                selected.payload, ValueSource("upstream", base.step, step=base.step, row=base.row)
+            )
+            if self.track_sources
+            else None
+        )
+        return _StepState(selected.payload, inputs=selected.inputs, origins=origins)
+
+    def row_source(self, author: str, row: ExpandedRow, path: str) -> tuple[ValueSource, Any]:
+        kind, *ids = row.patch_origins[path]
+        match kind:
+            case "sweep_value":
+                axis, value = ids
+                sweep = self.project.steps[author].sweep
+                authored_axis = sweep.axes[axis] if sweep is not None else None
+                axis_path = ("sweep", "axes", axis)
+                match authored_axis:
+                    case ListedAxis(values=values):
+                        identity = sweep_value_identity_bytes(row.coordinates[axis].value)
+                        index = next(
+                            i
+                            for i, item in enumerate(values)
+                            if sweep_value_identity_bytes(item) == identity
+                        )
+                        target = (*axis_path, "values", str(index))
+                    case SampledAxis():
+                        target = (*axis_path, "draws", value)
+                    case RangeAxis():
+                        target = (*axis_path, "range")
+                    case _:
+                        target = (*axis_path, "values", value, "patches", path, "value")
+                source = ValueSource(
+                    "sweep_value", value, pointer(target), step=author, axis=axis, value=value
+                )
+                if isinstance(authored_axis, (ListedAxis, RangeAxis, SampledAxis)):
+                    target_override = source_at(self.variant_sources, ("steps", author, *target))
+                    path_override = source_at(
+                        self.variant_sources, ("steps", author, *axis_path, "path")
+                    )
+                    return source, first_source(target_override) or path_override
+            case "exception":
+                (exception,) = ids
+                target = ("sweep", "exceptions", exception, "patches", path, "value")
+                source = ValueSource("exception", exception, pointer(target), step=author)
+            case _:
+                (row_id,) = ids
+                target = ("sweep", "rows", row_id, "patches", path, "value")
+                source = ValueSource("step", author, pointer(target), step=author)
+        return source, source_at(self.variant_sources, ("steps", author, *target))
 
     def apply_row(
         self,
         name: str,
         state: _StepState,
-        row: str,
-        patches: Mapping[str, PatchValue | None],
+        row: ExpandedRow,
     ) -> _StepState:
         payload = deepcopy(state.payload)
-        for patch in sweep_patches(patches):
+        origins = deepcopy(state.origins)
+        for patch in sweep_patches(row.patches):
             try:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
                 apply_override_patch_in_place(payload, patch)
+                if origins is not None:
+                    author = row.patch_authors.get(patch.path, name)
+                    source, override = self.row_source(author, row, patch.path)
+                    patch_source(origins, patch, source_shape(patch.value, source, override))
             except ValueError as error:
                 raise _Problem(
-                    ResolutionCode.INVALID_SWEEP, patch.path, str(error), step=name, layer=row
+                    ResolutionCode.INVALID_SWEEP, patch.path, str(error), step=name, layer=row.id
                 ) from error
-        return _StepState(payload, inputs=state.inputs, requires=state.requires)
+        return _StepState(payload, inputs=state.inputs, requires=state.requires, origins=origins)
 
     def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
-        payload = _Documents(self.project, name).inline(state.payload, "payload")
+        documents = _Documents(self.project, name, self.variant_sources)
+        payload = documents.inline(state.payload, "payload")
         if not isinstance(payload, dict):
             raise _Problem(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -436,6 +590,13 @@ class _Resolver:
             payload,
             deepcopy(state.sweep),
             deepcopy(state.inputs),
+            (
+                dict(
+                    source_leaves(documents.inline_sources(state.payload, state.origins, "payload"))
+                )
+                if state.origins is not None
+                else None
+            ),
         )
 
 
@@ -459,11 +620,15 @@ class StepTemplate:
     def requires(self) -> tuple[str, ...]:
         return self._state.requires
 
-    def resolve(self, row: ExpandedRow | None = None) -> ResolvedStep | ProjectDiagnostic:
+    def resolve(
+        self, row: ExpandedRow | None = None, *, include_sources: bool = False
+    ) -> ResolvedStep | ProjectDiagnostic:
         try:
             state = self._state
+            if not include_sources and state.origins is not None:
+                state = replace(state, origins=None)
             if row is not None:
-                state = self._resolver.apply_row(self.name, state, row.id, row.patches)
+                state = self._resolver.apply_row(self.name, state, row)
             return self._resolver.finish(self.name, state)
         except _Problem as error:
             if row is not None:
@@ -472,10 +637,15 @@ class StepTemplate:
 
 
 def compose_step(
-    project: Project, step: str, *, readers: BaseReaders = BaseReaders()
+    project: Project,
+    step: str,
+    *,
+    readers: BaseReaders = BaseReaders(),
+    track_sources: bool = False,
+    variant_sources: Any = None,
 ) -> StepTemplate | ProjectDiagnostic:
     """Compose inherited layers and prepare a step for sweep expansion."""
-    resolver = _Resolver(project, readers)
+    resolver = _Resolver(project, readers, track_sources, variant_sources)
     try:
         return StepTemplate(resolver, step, resolver.state(step))
     except _Problem as error:
