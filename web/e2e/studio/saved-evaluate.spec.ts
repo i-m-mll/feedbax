@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedEvaluationRow, StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
-import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { captureStudioWindow, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -105,6 +105,7 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
     step: 'baseline', code: 'cannot_run', path: enabled ? '/inputs/subject' : '/evaluation_type',
   }));
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'New Step baseline', exact: true })).toHaveCount(0);
   if (!enabled) {
     await expect(plans(page).getByText('Can\'t run', { exact: true })).toBeVisible();
     const refused = await request.post(path, { data: { revision, run_keys: [initial.key], token: 'held' } });
@@ -187,15 +188,25 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await expect(clock).toHaveCount(1);
   await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveValue(trialId);
-  const coordinates = () => cursors.evaluateAll((points) =>
-    points.map((point) => [point.getAttribute('cx'), point.getAttribute('cy')]));
-  const atEnd = await coordinates();
-  expect(atEnd[0]).toEqual(atEnd[1]);
+  // Each slot projects the same trial into its own fitted viewport.
+  const frame = (end: boolean) => cursors.evaluateAll((points, end) => points.map((point) => {
+    const cursor = point as SVGCircleElement;
+    const svg = cursor.ownerSVGElement!;
+    const trail = cursor.parentElement!.querySelector('polyline')!.points;
+    const sample = trail.getItem(end ? trail.numberOfItems - 1 : 0);
+    return {
+      fitsSlot: Math.abs(svg.viewBox.baseVal.width - svg.clientWidth) <= 1 &&
+        Math.abs(svg.viewBox.baseVal.height - svg.clientHeight) <= 1,
+      atSample: Math.abs(cursor.cx.baseVal.value - sample.x) < 0.01 &&
+        Math.abs(cursor.cy.baseVal.value - sample.y) < 0.01,
+    };
+  }), end);
+  const fitted = Array.from({ length: 2 }, () => ({ fitsSlot: true, atSample: true }));
+  await expect.poll(() => frame(true)).toEqual(fitted);
+  await captureStudioWindow(page, info, 'saved-evaluate-replay');
   await clock.getByRole('slider').press('Home');
   await expect(clock.getByRole('slider')).toHaveValue('0');
-  const atReset = await coordinates();
-  expect(atReset[0]).toEqual(atReset[1]);
-  expect(atReset[0]).not.toEqual(atEnd[0]);
+  await expect.poll(() => frame(false)).toEqual(fitted);
   await tab(page, 'Runs').click();
   await expect(clock).toBeVisible();
   await info.attach('saved-evaluation-lineage', {

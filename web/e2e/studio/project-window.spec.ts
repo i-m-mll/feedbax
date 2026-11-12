@@ -95,6 +95,35 @@ test('the managed window shares selection and restores the folded slot without e
   expect(reopened.presentation_revision).toBe(snapshot.presentation_revision);
 });
 
+test('keyboard reaches the last Runs column in a narrow split', async ({ page, request }, info) => {
+  const files = (await fixture('files')).slice(0, 3);
+  files[2].step.sweep = { axes: { seed: { values: {
+    a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 7 } } },
+    b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 9 } } },
+  } } } };
+  const { snapshot } = await seedManagedProject(request, files);
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await page.setViewportSize({ width: 620, height: 860 });
+  await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
+  const table = page.getByRole('table', { name: 'Runs', exact: true });
+  const scroll = table.locator('..');
+  const progress = table.getByRole('columnheader', { name: 'Progress', exact: true });
+  await expect.poll(() => scroll.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(0);
+  await expect(progress).not.toBeInViewport();
+  const row = table.getByRole('button', { name: /FirstReplicate/ });
+  await row.focus();
+  await row.press('ArrowRight');
+  await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+  for (let keypress = 0; keypress < 8; keypress++) await row.press('ArrowRight');
+  await expect(progress).toBeInViewport({ ratio: 0.95 });
+  await expect(row).toBeFocused();
+  await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
+  await captureStudioWindow(page, info, 'narrow-runs-overflow');
+});
+
 test('mounted Scene owns its drawer and inspector and Problems matches the saved Plan', async ({ page, request }, info) => {
   const home = String(info.config.metadata.home);
   const id = 'project-window-scene';

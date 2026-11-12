@@ -104,6 +104,22 @@ export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut | undef
     event.altKey === Boolean(shortcut.alt) && event.shiftKey === Boolean(shortcut.shift);
 }
 
+export function studioCommandContext(target: EventTarget | null, paletteOpen: boolean) {
+  const element = target instanceof Element ? target : null;
+  return {
+    paletteOpen,
+    dialog: !!element?.closest('[role="dialog"]'),
+    editable: !!element?.closest('input, textarea, select, [contenteditable="true"]'),
+    activity: !!element?.closest('[data-studio-activity-panel]'),
+  };
+}
+
+export function commandInContext(command: StudioCommand, context: ReturnType<typeof studioCommandContext>) {
+  if (context.dialog && !(context.paletteOpen && command.id === 'commandPalette')) return false;
+  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run')) return false;
+  return !(context.activity && command.selectionScoped);
+}
+
 const jobAction = { stop: 'checkpoint', forceStop: 'force', resume: 'resume' } as const;
 
 export function jobAllowsCommand(job: { allowed_actions: readonly string[] }, command: keyof typeof jobAction) {
