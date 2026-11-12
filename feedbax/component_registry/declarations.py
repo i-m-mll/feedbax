@@ -96,7 +96,8 @@ class ComponentParamValidation:
         return self.value is not None
 
 
-def _param_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, ...]:
+def parameter_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, ...]:
+    """Project authored model fields into the shared authoring controls."""
     schemas: list[ParamSchema] = []
     for name, model_field in model.model_fields.items():
         extra = (model_field.json_schema_extra or {}).get("feedbax", {})
@@ -160,7 +161,7 @@ class ComponentParamContract:
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
-        return _param_schema_from_model(self.model)
+        return parameter_schema_from_model(self.model)
 
     @property
     def default_params(self) -> dict[str, Any]:

@@ -143,7 +143,7 @@ def get_forward_lateral_vel(
 
 def project_onto_direction(
     var: Float[Array, "*batch conditions time xy=2"],
-    direction_vec: Float[Array, "conditions xy=2"],
+    direction_vec: Float[Array, "*batch conditions xy=2"],
 ):
     """Projects components of arbitrary variables into components parallel and orthogonal to a given direction.
 
@@ -158,7 +158,7 @@ def project_onto_direction(
     direction_vec_norm = direction_vec / jnp.linalg.norm(direction_vec, axis=-1, keepdims=True)
 
     # Broadcast line_vec_norm to match velocity's shape
-    direction_vec_norm = direction_vec_norm[:, None]  # Shape: (conditions, 1, xy)
+    direction_vec_norm = direction_vec_norm[..., None, :]
 
     # Calculate forward component (dot product)
     parallel = jnp.sum(var * direction_vec_norm, axis=-1)
