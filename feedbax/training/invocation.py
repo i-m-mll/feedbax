@@ -25,6 +25,7 @@ from feedbax.training.worker_validation import resolve_execution_mapping
 from feedbax.web.model_assets import model_artifact_provider
 
 if TYPE_CHECKING:
+    from feedbax.contracts.artifact_custody import ArtifactBlobProvider
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 
@@ -35,6 +36,7 @@ def prepare_training_invocation(
     run_id: str | None,
     resume: bool,
     initial_slots: Mapping[str, Any] | None = None,
+    model_assets: ArtifactBlobProvider | None = None,
     phase: Callable[[Literal["building", "compiling"]], None] | None = None,
 ) -> ExecutionPreparationResult | MaterializedExecutionPreparation | None:
     resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
@@ -91,7 +93,7 @@ def prepare_training_invocation(
             if studio_method and isinstance(payload, StudioGraphMethodPayload)
             else None
         ),
-        artifact_provider=(
+        artifact_provider=model_assets or (
             model_artifact_provider(GraphSpec.model_validate(graph_document.graph))
             if studio_method
             else None

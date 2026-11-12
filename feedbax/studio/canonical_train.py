@@ -69,11 +69,12 @@ def _decode_train(
         checkpoint = reference
     policy = decoded.spec.method_payload.payload.get("checkpoint_initialization")
     if checkpoint is None and policy is not None:
-        raise ValueError("/inputs/checkpoint: initialize_from requires a predecessor checkpoint")
-    if checkpoint is not None and policy != "initialize_from":
+        raise ValueError("/inputs/checkpoint: initialization requires a predecessor checkpoint")
+    if checkpoint is not None and policy != "initialize_from" and (
+        not isinstance(policy, dict) or policy.get("mode") != "continue_from"
+    ):
         raise ValueError(
-            "/method_payload/payload/checkpoint_initialization: declare initialize_from "
-            "to carry the model and initialize fresh optimizer, RNG and counters"
+            "/method_payload/payload/checkpoint_initialization: declare initialize_from or an explicit continue_from policy"
         )
     return decoded.spec, checkpoint
 
@@ -106,13 +107,16 @@ def lower_canonical_train(
     method = StudioGraphMethodPayload.model_validate(payload.payload)
     method.require_supported_launch(resume=False)
     config = request.training_config
-    if config.n_batches != method.target_total:
+    continuation = method.continuation.progress if method.continuation is not None else None
+    batches = continuation.additional_batches if continuation is not None else method.target_total
+    if config.n_batches != batches:
         raise ValueError("/training_config/n_batches: does not match the method target")
     if config.n_reach_steps <= 0 or config.n_reach_steps != infer_task_n_steps(request.task):
         raise ValueError("/training_config/n_reach_steps: does not match the authored task horizon")
     if config.batch_size <= 0 or config.snapshot_interval <= 0:
         raise ValueError("/training_config: batch size and snapshot interval must be positive")
-    rate = method.optimizer.params.get("learning_rate")
+    schedule = method.optimizer.lr_schedule
+    rate = schedule.learning_rate_0 if schedule is not None else method.optimizer.params.get("learning_rate")
     if type(rate) not in (float, int) or not isfinite(rate) or config.learning_rate != rate:
         raise ValueError("/training_config/learning_rate: does not match the finite method rate")
     if isinstance(execution, TrainingProgramRegistry):
@@ -134,6 +138,7 @@ def lower_canonical_train(
         checkpoint_progress={
             "checkpoint_interval": config.snapshot_interval,
             "progress_interval": 1,
+            **({"continuation": continuation} if continuation is not None else {}),
         },
     )
 

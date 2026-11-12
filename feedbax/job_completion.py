@@ -24,7 +24,9 @@ from feedbax.studio.canonical_train import (
 )
 from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
+    CheckpointReadScope,
     authenticate_checkpoint_custody_ref,
+    checkpoint_slot_files,
     validate_checkpoint_run_contract,
 )
 
@@ -57,6 +59,7 @@ def verify_training_completion(
     binding_sha256: str,
     receipt: dict,
     checkpoint: PublishedTrainingCheckpoint | None,
+    scope: CheckpointReadScope = "full",
 ) -> dict:
     """Authenticate the producer's bound terminal pair without reading a latest pointer."""
     root = launch.manifest_root
@@ -97,9 +100,14 @@ def verify_training_completion(
         if launch.checkpoint_input is not None and launch.resume is None:
             provenance = manifest.provenance.metadata if manifest.provenance is not None else {}
             initialization = provenance.get("checkpoint_initialization")
-            if not isinstance(initialization, dict) or initialization.get("mode") != "initialize_from":
+            mode = "continue_from" if method.continuation is not None else "initialize_from"
+            if not isinstance(initialization, dict) or initialization.get("mode") != mode:
                 raise CompletionFileError("Completion lacks its Train initialization provenance.")
-            source = ParentRef.model_validate(initialization["source"])
+            source_ref = (
+                initialization.get("transformation", {}).get("producer_source")
+                if method.continuation is not None else initialization.get("source")
+            )
+            source = ParentRef.model_validate(source_ref)
             expected = launch.checkpoint_input.checkpoint.pointer
             if (
                 source.id != expected.transaction_id
@@ -131,7 +139,9 @@ def verify_training_completion(
             raise CompletionFileError(
                 "Receipt, published pointer and authored completion disagree."
             )
-        custody = authenticate_checkpoint_custody_ref(terminal, allowed_root=expected_root)
+        custody = authenticate_checkpoint_custody_ref(
+            terminal, allowed_root=expected_root, scope=scope,
+        )
         transaction = custody.manifest
         if (
             transaction.run_id != pointer.run_id
@@ -156,8 +166,9 @@ def verify_training_completion(
             ]
         files.extend(_file(root, path, ref.sha256, ref.size_bytes) for path, ref in request_files)
         files.extend(
-            _file(root, transaction_path.parent / slot.relative_path, slot.sha256, slot.size_bytes)
+            _file(root, path, digest, size)
             for slot in transaction.slots
+            for path, (digest, size) in checkpoint_slot_files(transaction_path.parent, slot).items()
         )
         return {
             "producer_job_id": producer_job_id,
@@ -175,7 +186,9 @@ def verify_training_completion(
         raise CompletionFileError(str(error)) from error
 
 
-def verify_bound_training_completion(completion: dict) -> None:
+def verify_bound_training_completion(
+    completion: dict, *, scope: CheckpointReadScope = "full",
+) -> None:
     """Recheck a pinned producer binding immediately before a consumer uses it."""
     try:
         root = Path(completion["manifest_root"])
@@ -190,6 +203,7 @@ def verify_bound_training_completion(completion: dict) -> None:
             binding_sha256=binding_sha256,
             receipt=completion["receipt"],
             checkpoint=checkpoint,
+            scope=scope,
         )
         if actual != completion:
             raise CompletionFileError("Rechecked completion differs from its pinned binding.")

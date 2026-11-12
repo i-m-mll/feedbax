@@ -1,25 +1,32 @@
 """The saved Plan admits an exact Train request to the real local daemon and worker."""
 
 import json
+from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.random as jr
 import numpy as np
 import pytest
 
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import TrainingRequestSpec
 from feedbax.contracts.studio_project import StudioProjectCreateFile, StudioProjectPatch
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.training import OptimizerSpec, TrainingRunSpec
 from feedbax.host import Job, Launch
 from feedbax.host.completion import CompletionFileError
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobConflict, JobService
+from feedbax.orchestration.schedule_eval import (
+    LEARNING_RATE_SCHEDULE_ID,
+    learning_rate_from_build_optimizer,
+)
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import (
@@ -28,10 +35,14 @@ from feedbax.studio.canonical_train import (
 )
 from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.training.checkpoint_custody import (
+    CheckpointCustodyError,
+    bind_published_checkpoint_content,
+    materialize_checkpoint_content,
     require_checkpoint_semantic_state_equal,
     resolve_checkpoint_custody_ref,
 )
 from feedbax.training.invocation import prepare_training_invocation
+from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
@@ -375,7 +386,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     preparation = prepare_training_invocation(
         native, registries, run_id="carried-model-control", resume=False,
     )
-    _, parent_slots = _checkpoint(succeeded["outcome"])
+    parent_checkpoint, parent_slots = _checkpoint(succeeded["outcome"])
 
     def readout(model):
         return model.nodes["readout"].layer.weight
@@ -454,17 +465,233 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
         return row and row["edges"][0]["binding"]
 
     assert wait_until(pinned) == child_running["edges"][0]["binding"]
-    pointer = producer["checkpoint"]["pointer"]
-    checkpoint_manifest = (
-        Path(producer["checkpoint"]["checkpoint_root"]) / pointer["manifest_relative_path"]
+    pointer = CheckpointLatestPointer.model_validate(producer["checkpoint"]["pointer"])
+    root = Path(producer["checkpoint"]["checkpoint_root"])
+    transaction = (root / pointer.manifest_relative_path).parent
+    unneeded = {
+        slot.slot: transaction / slot.relative_path
+        for slot in parent_checkpoint.manifest.slots if slot.slot != "model"
+    }
+    assert set(unneeded) == {"optimizer", "prng", "batch_counter"}
+    assert all(
+        slot.media_type == STANDARD_TRAIN_STATE_MEDIA_TYPE
+        for slot in parent_checkpoint.manifest.slots if slot.slot in unneeded
     )
-    moved = checkpoint_manifest.with_suffix(".held")
-    checkpoint_manifest.rename(moved)
+    held = {original: original.with_suffix(".held") for original in unneeded.values()}
+    for original, moved in held.items():
+        original.rename(moved)
     try:
+        verify_bound_training_completion(producer, scope="model_only")
+        with pytest.raises(CompletionFileError):
+            verify_bound_training_completion(producer)
+        content = ImmutableArtifactBlobProvider(reviewed.store_path)
+        _, projection = bind_published_checkpoint_content(
+            root, pointer, content, scope="model_only",
+        )
+        assert projection.root_kind == "checkpoint-model-custody"
+        tree_paths = {file.relative_path for file in content.get_tree(projection.tree).files}
+        assert pointer.manifest_relative_path in tree_paths
+        assert any("/semantic-model/" in path for path in tree_paths)
+        assert all(original.relative_to(root).as_posix() not in tree_paths for original in held)
+        with materialize_checkpoint_content(
+            projection, content, owner="successor-control", scope="model_only",
+        ) as staged:
+            assert (staged / pointer.manifest_relative_path).is_file()
+            assert all(not (staged / original.relative_to(root)).exists() for original in held)
+        with pytest.raises(CheckpointCustodyError, match="full custody"):
+            with materialize_checkpoint_content(projection, content, owner="resume-control"):
+                pytest.fail("Full Resume received a model-only projection")
         release.touch()
         blocked = wait_until(lambda: job_row(host, tampered_item.job_id, "blocked"))
         assert blocked["outcome"]["error"]["code"] == "dependency_corrupt"
         assert blocked["delivery"] == 0
     finally:
-        moved.rename(checkpoint_manifest)
+        for original, moved in held.items():
+            moved.rename(original)
     assert jobs.admit_plan(folders, reviewed, run_keys=(child,), token="tamper") == tampered
+
+
+@pytest.mark.parametrize("optimizer_policy", ["preserve", "reset"])
+def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, optimizer_policy):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    registries = new_application_registry_bundle()
+    jobs = JobService(host, registries)
+    folders = ProjectFolderService(tmp_path / "projects")
+    snapshot = folders.new().snapshot
+    boundary, additional = 4, 16
+    rate = 0.001
+    _, source_payload = _train_payload(registries, batches=boundary)
+    source_payload["graph"]["nodes"]["readout"]["params"]["trainable"] = False
+    source_method = source_payload["method_payload"]["payload"]
+    del source_method["optimizer"]["params"]["learning_rate"]
+    source_method["optimizer"]["lr_schedule"] = {
+        "kind": "constant", "origin": {"kind": "run_start"}, "learning_rate_0": rate,
+    }
+    snapshot = _saved_step(
+        folders, snapshot, "prefix", {"kind": "train", "base": {"inline": source_payload}},
+    )
+    child_payload = deepcopy(source_payload)
+    child_method = child_payload["method_payload"]["payload"]
+    child_method["target_total"] = boundary + additional
+    progress = {"source_completed_batches": boundary, "additional_batches": additional}
+    policy = {
+        "mode": "continue_from", "progress": progress, "optimizer": optimizer_policy,
+        "schedule": "continue", "rng": "carry", "cursor": "carry",
+    }
+    preserve = optimizer_policy == "preserve"
+    if preserve:
+        policy["schedule"] = "restart"
+        child_method["optimizer"]["lr_schedule"] = {
+            "kind": "delayed_cosine", "origin": {"kind": "segment_start"},
+            "learning_rate_0": rate, "total_steps": additional, "cosine_annealing_alpha": 0.2,
+        }
+        window = {}
+        for i, name in enumerate(("boundary", "first_update", "second_update")):
+            window[name] = learning_rate_from_build_optimizer(
+                OptimizerSpec.model_validate(child_method["optimizer"]),
+                sample_step=boundary + i, schedule_origin_step=boundary,
+                current_step=boundary, optimizer_count_at_current_step=boundary,
+            )
+        progress["schedule_discontinuity_exemptions"] = [{
+            "schedule_id": LEARNING_RATE_SCHEDULE_ID, "boundary_batch": boundary,
+            "expected_source_state": dict.fromkeys(window, window["boundary"]),
+            "expected_target_state": window, "intended_first_update_behavior": "decrease",
+            "reason": "Restart a segment-local cosine at the selected checkpoint.",
+        }]
+    else:
+        child_payload["graph"]["nodes"]["readout"]["params"]["trainable"] = True
+        child_payload["graph"]["nodes"]["cell"]["params"]["trainable"] = False
+        child_method["optimizer"]["type"] = "adamw"
+        child_method["seed"] = 19
+        policy["rng"] = "reset"
+    child_method["checkpoint_initialization"] = policy
+    child_payload["training_config"].update(n_batches=additional, batch_size=3, snapshot_interval=8)
+    snapshot = _saved_step(folders, snapshot, "child", {
+        "kind": "train", "base": {"inline": child_payload},
+        "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
+    })
+    invalid_payload = deepcopy(child_payload)
+    invalid_payload["method_payload"]["payload"]["optimizer"]["type"] = "sgd" if preserve else "adam"
+    if not preserve:
+        invalid_payload["method_payload"]["payload"]["checkpoint_initialization"]["optimizer"] = "preserve"
+    snapshot = _saved_step(folders, snapshot, "incompatible", {
+        "kind": "train", "base": {"inline": invalid_payload},
+        "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
+    })
+    prefix, child, incompatible = (
+        RunKey("default", name, "default") for name in ("prefix", "child", "incompatible")
+    )
+    reviewed = folders.read_plan(snapshot.project_id, revision=snapshot.revision)
+    assert not reviewed.plan.diagnostics, reviewed.plan.diagnostics
+
+    def await_state(job_id, state):
+        def read():
+            row = job_row(host, job_id)
+            if row and row["state"] in {state, "succeeded", "stopped", "failed", "blocked"}:
+                return row
+            return None
+
+        row = wait_until(read, timeout=18)
+        assert row["state"] == state, row.get("outcome")
+        return row
+
+    host.policy(compute=1)
+    submitted = jobs.admit_plan(folders, reviewed, run_keys=(prefix, child), token="stateful")
+    prefix_id, child_id = (item.job_id for item in submitted.items)
+    source_done = await_state(prefix_id, "succeeded")
+    producer = source_done["outcome"]["completion"]
+    source_custody, source_slots = _checkpoint(source_done["outcome"])
+    verify_bound_training_completion(producer)
+    running = await_state(child_id, "running")
+    assert running["edges"][0]["binding"]["completion"] == producer
+    jobs.stop([child_id], "checkpoint")
+    stopped = await_state(child_id, "stopped")["outcome"]
+    stopped_custody, stopped_slots = _checkpoint(stopped)
+    updates = stopped["checkpoint"]["completed_updates"]
+    assert boundary < updates < boundary + additional
+    assert stopped_custody.manifest.segment_lineage.start_batch == boundary
+    assert stopped_custody.manifest.completed_coordinate.schedule_origin_step == (
+        boundary if preserve else 0
+    )
+    assert int(stopped_slots["batch_counter"]) == updates
+
+    (launched,) = host.jobs(job_id=child_id, include_launch=True)
+    spec = BoundStudioTrainingJobInput.model_validate(launched["launch"]["payload"]).spec
+    prepared = prepare_training_invocation(spec, registries, run_id="stateful-control", resume=False)
+    expected = dict(prepared.initial_slots)
+    if preserve:
+        expected.update(source_slots)
+    else:
+        def parameters(graph):
+            return graph.nodes["cell"].cell, graph.nodes["readout"].layer
+        expected["model"] = eqx.tree_at(parameters, expected["model"], parameters(source_slots["model"]))
+        expected["batch_counter"] = source_slots["batch_counter"]
+    kernel = prepared.kernel_context["studio_graph_update"]
+    for _ in range(boundary, updates):
+        expected = kernel.reported_update(expected)
+    for slot in ("model", "optimizer", "prng", "batch_counter"):
+        for actual, wanted in zip(jax.tree.leaves(stopped_slots[slot]), jax.tree.leaves(expected[slot]), strict=True):
+            np.testing.assert_array_equal(actual, wanted)
+    count = int(stopped_slots["optimizer"][-1].count)
+    assert count == (updates if preserve else updates - boundary)
+    if preserve:
+        position = updates - boundary - 1
+        expected_rate = rate * (0.2 + 0.8 * (1 + np.cos(np.pi * position / additional)) / 2)
+        np.testing.assert_allclose(stopped_slots["optimizer"][-1].hyperparams["learning_rate"], expected_rate)
+    else:
+        for actual, wanted in zip(
+            jax.tree.leaves(stopped_slots["model"].nodes["cell"]),
+            jax.tree.leaves(source_slots["model"].nodes["cell"]), strict=True,
+        ):
+            np.testing.assert_array_equal(actual, wanted)
+        assert not np.array_equal(
+            stopped_slots["model"].nodes["readout"].layer.weight,
+            source_slots["model"].nodes["readout"].layer.weight,
+        )
+
+    manifest = load_manifest(canonical_manifest_path(
+        "TrainingRunManifest", stopped["receipt"]["manifest_id"], root=reviewed.store_path,
+    ))
+    initialization = manifest.provenance.metadata["checkpoint_initialization"]
+    transform = initialization["transformation"]
+    assert initialization["mode"] == "continue_from"
+    assert transform["producer_source"]["id"] == source_custody.manifest.transaction_id
+    assert (
+        transform["producer_source"]["metadata"]["manifest_sha256"]
+        == producer["checkpoint"]["pointer"]["manifest_sha256"]
+    )
+    assert transform["producer_content_binding"]["root_kind"] == "checkpoint-custody"
+    bootstrap = resolve_checkpoint_custody_ref(
+        ParentRef.model_validate(initialization["source"]).model_copy(update={
+            "uri": f"transactions/{transform['fork_transaction_id']}/manifest.json",
+        }),
+        allowed_root=Path(stopped["checkpoint"]["checkpoint_root"]),
+    )
+    assert bootstrap.manifest.completed_training_batches == boundary
+    assert bootstrap.manifest.metadata["optimizer_step"] == (boundary if preserve else 0)
+    assert int(bootstrap.slots["optimizer"][-1].count) == (boundary if preserve else 0)
+    assert (transform["optimizer_policy"], transform["rng_policy"], transform["cursor_policy"]) == (
+        optimizer_policy, policy["rng"], "carry",
+    )
+    assert {item["slot"] for item in transform["accounting"] if item["disposition"] == "deliberately_reset"} == (
+        set() if preserve else {"optimizer", "prng"}
+    )
+
+    restart(host)
+    resumed = jobs.resume(child_id, token="resume-stateful")
+    resumed_done = await_state(resumed.job_id, "succeeded")["outcome"]
+    verify_bound_training_completion(resumed_done["completion"])
+    resumed_custody, _ = _checkpoint(resumed_done)
+    assert resumed_custody.manifest.parent_lineage[0].transaction_id == stopped_custody.manifest.transaction_id
+
+    (control,) = jobs.admit_plan(folders, reviewed, run_keys=(child,), token="control").items
+    control_done = await_state(control.job_id, "succeeded")["outcome"]
+    verify_bound_training_completion(control_done["completion"])
+    control_custody, _ = _checkpoint(control_done)
+    for slot in ("model", "optimizer", "prng", "batch_counter"):
+        require_checkpoint_semantic_state_equal(control_custody.manifest, resumed_custody.manifest, slot)
+
+    (bad,) = jobs.admit_plan(folders, reviewed, run_keys=(incompatible,), token="incompatible").items
+    refusal = await_state(bad.job_id, "failed")["outcome"]
+    assert "/slots/optimizer" in json.dumps(refusal)
+    assert not refusal.get("checkpoint")

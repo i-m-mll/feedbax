@@ -165,6 +165,8 @@ from feedbax.training.manifest_preflight import (
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.model_checkpoint import SemanticModelWriter
+from feedbax.training.standard_train_checkpoint import TrainStateCodec
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
@@ -514,6 +516,8 @@ class StreamingCheckpointStore:
         run_event_emitter: RunEventEmitter | None = None,
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
+        semantic_model: SemanticModelWriter | None = None,
+        train_state_codec: TrainStateCodec = "legacy",
         resume_checkpoint: PhaseCheckpoint | None = None,
         checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
     ) -> None:
@@ -531,6 +535,8 @@ class StreamingCheckpointStore:
         self.run_event_emitter = run_event_emitter
         self.checkpoint_initialization = dict(checkpoint_initialization or {})
         self.content_provider = content_provider
+        self.semantic_model = semantic_model
+        self.train_state_codec = train_state_codec
         self._checkpoint_published = checkpoint_published
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -632,6 +638,8 @@ class StreamingCheckpointStore:
             history_availability={"progress": True},
             metadata=checkpoint_metadata,
             content_provider=self.content_provider,
+            semantic_model=self.semantic_model,
+            train_state_codec=self.train_state_codec,
         )
         self._writes.append(write)
         if self._checkpoint_published is not None:
@@ -699,6 +707,8 @@ def execute_training_run_spec(
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
     checkpoint_fork_target_id: str | None = None,
     checkpoint_content_provider: ArtifactBlobProvider | None = None,
+    semantic_model: SemanticModelWriter | None = None,
+    train_state_codec: TrainStateCodec = "legacy",
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
     loss_service: LossService | None = None,
@@ -1039,12 +1049,16 @@ def execute_training_run_spec(
     if initialization_authorities:
         assert checkpoint_content_provider is not None
         assert checkpoint_source_content_binding is not None
+        initialization = checkpoint_initialization_plan or checkpoint_initialization_request
         with materialize_checkpoint_content(
             checkpoint_source_content_binding,
             checkpoint_content_provider,
             owner=f"training-executor:{resolved_run_id}",
+            scope=(
+                "model_only" if initialization is not None and initialization.mode == "initialize_from"
+                else "full"
+            ),
         ) as canonical_source_root:
-            initialization = checkpoint_initialization_plan or checkpoint_initialization_request
             if initialization is not None:
                 resolved_initialization = _resolve_checkpoint_initialization(
                     initialization,
@@ -1081,6 +1095,7 @@ def execute_training_run_spec(
                     run_spec=run_spec,
                     phase_program=program,
                     content_provider=checkpoint_content_provider,
+                    source_content_binding=checkpoint_source_content_binding,
                 )
         slots.update(resolved_initialization.slots)
 
@@ -1201,6 +1216,8 @@ def execute_training_run_spec(
             else None
         ),
         content_provider=checkpoint_content_provider,
+        semantic_model=semantic_model,
+        train_state_codec=train_state_codec,
         resume_checkpoint=loaded_resume_checkpoint,
         checkpoint_published=checkpoint_published,
     )
@@ -2543,7 +2560,8 @@ def _resolve_checkpoint_initialization(
     assert expected_profile is not None
     expected_manifest_sha256, expected_manifest_size = expected_profile
 
-    authenticated = authenticate_published_checkpoint_custody(source_root)
+    scope = "model_only" if request.mode == "initialize_from" else "full"
+    authenticated = authenticate_published_checkpoint_custody(source_root, scope=scope)
     if authenticated.manifest.transaction_id != request.source.id:
         raise TrainingRunExecutorError(
             "checkpoint initialization source root resolves a different transaction: "
@@ -2575,6 +2593,7 @@ def _resolve_checkpoint_initialization(
     resolved = resolve_checkpoint_custody_ref(
         authenticated.parent_ref,
         allowed_root=source_root,
+        slot_names=authenticated.slot_names,
     )
     if request.mode == "continue_from":
         continuation = run_spec.checkpoint_progress.continuation
@@ -2695,6 +2714,7 @@ def _resolve_checkpoint_fork_initialization(
     run_spec: TrainingRunSpec,
     phase_program: Any,
     content_provider: ArtifactBlobProvider,
+    source_content_binding: ContentBinding,
 ) -> _ResolvedCheckpointInitialization:
     """Execute one explicit graph-changing fork and prepare its continuation."""
     if len(plan.targets) != 1 or plan.targets[0].target_id != target_id:
@@ -2760,6 +2780,7 @@ def _resolve_checkpoint_fork_initialization(
             source_structure=source_structure,
             target_structure=target_structure,
             target_values=bound_target_slots,
+            rebuild_model=target_id in bindings.semantic_model_writers,
         )
     except CheckpointTransformRefused as exc:
         raise TrainingRunExecutorError(str(exc)) from exc
@@ -2817,6 +2838,7 @@ def _resolve_checkpoint_fork_initialization(
             sha256_bytes(manifest_bytes), len(manifest_bytes)
         ),
     )
+    producer_source = authenticated_source.parent_ref.model_copy(update={"uri": None})
     return _ResolvedCheckpointInitialization(
         mode="continue_from",
         source=source,
@@ -2835,6 +2857,10 @@ def _resolve_checkpoint_fork_initialization(
             "accounting": list(transformed.accounting_records()),
             "optimizer_policy": transformed.optimizer_policy,
             "learning_rate_schedule_policy": transformed.learning_rate_schedule_policy,
+            "producer_source": producer_source.model_dump(mode="json"),
+            "producer_content_binding": source_content_binding.model_dump(mode="json"),
+            "rng_policy": parameters.get("rng_policy", "carry"),
+            "cursor_policy": "carry",
             "fork_transaction_id": forked.manifest.transaction_id,
             "content_binding": forked.content_binding.model_dump(mode="json"),
             "content_root": forked.content_root.model_dump(mode="json"),

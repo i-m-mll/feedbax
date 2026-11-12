@@ -65,6 +65,24 @@ CheckpointInitializationMode = Literal["initialize_from", "continue_from"]
 INITIALIZE_FROM_SOURCE_ROLES: frozenset[str] = frozenset({"model"})
 
 
+def checkpoint_leaf_path(path: Any) -> str:
+    """Project a runtime leaf path to the existing checkpoint ABI coordinate."""
+    parts: list[str] = []
+    for key in path:
+        name = getattr(key, "name", None)
+        index = getattr(key, "idx", None)
+        mapping_key = getattr(key, "key", None)
+        if name is not None:
+            parts.append(str(name))
+        elif index is not None:
+            parts.append(str(index))
+        elif mapping_key is not None:
+            parts.append(str(mapping_key))
+        else:
+            parts.append(str(key))
+    return "/" + "/".join(parts)
+
+
 class CheckpointInitializationErrorCode(StrEnum):
     """Stable refusal vocabulary for checkpoint initialize/continue lowering."""
 

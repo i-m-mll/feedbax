@@ -178,6 +178,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax._atomic import write_bytes_atomic
     from feedbax.contracts.base import ParentRef, sha256_file
     from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
+    from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.manifest import (
         TrainingRunManifest,
         canonical_manifest_path,
@@ -210,12 +211,20 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.training.checkpoint_custody import (
         CheckpointCustodyError,
         bind_published_checkpoint_content,
+        open_published_model_slot,
     )
     from feedbax.training.executor import execute_training_run_spec
     from feedbax.training.invocation import prepare_training_invocation
     from feedbax.training.manifest_preflight import build_training_run_manifest_spec_payloads
+    from feedbax.training.model_checkpoint import (
+        ModelCheckpointError,
+        SemanticModelWriter,
+        effective_model_graph,
+    )
     from feedbax.training.preparation import ExecutionPreparationResult
+    from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
     from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
+    from feedbax.web.model_assets import model_artifact_provider
 
     events.current_phase = "binding"
     launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
@@ -245,9 +254,11 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         ):
             raise CompletionFileError("Host completion bindings changed after assignment.")
         dependencies = strict_json_loads(raw_dependencies)["bindings"]
-    for dependency in dependencies:
-        verify_bound_training_completion(dependency["completion"])
     checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
+    stateful = method.continuation
+    source_scope = "model_only" if checkpoint_ref is not None and stateful is None else "full"
+    for dependency in dependencies:
+        verify_bound_training_completion(dependency["completion"], scope=source_scope)
     if checkpoint_ref is not None:
         if len(dependencies) != 1:
             raise CompletionFileError("Train requires one bound predecessor checkpoint.")
@@ -280,6 +291,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             raise ValueError("resume inputs differ from the original attempt's binding")
         events.completed_updates = resume.completed_updates
 
+    start_boundary = stateful.progress.source_completed_batches if stateful and resume is None else 0
+
     events.current_phase = "binding"
     write_bytes_atomic(binding_path, launch.model_dump_json(exclude_none=True).encode(), replace=False)
     binding_sha256 = sha256_file(binding_path)
@@ -307,6 +320,16 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         return {"manifest_id": manifest_id, "manifest_sha256": sha256(raw).hexdigest()}
 
     try:
+        graph = GraphSpec.model_validate(launch.spec.graph.inline)
+        if resume is not None:
+            events.current_phase = "restoring"
+        source_model = (
+            open_published_model_slot(resume.checkpoint_root, resume.pointer)
+            if resume is not None else None
+        )
+        model_assets = (
+            source_model.provider if source_model is not None else model_artifact_provider(graph)
+        )
         events.phase("building")
         registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
         preparation = prepare_training_invocation(
@@ -314,10 +337,16 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             registries,
             run_id=job_id,
             resume=resume is not None,
+            model_assets=model_assets,
             phase=lambda phase: events.phase(phase) if phase != events.current_phase else None,
         )
         if not isinstance(preparation, ExecutionPreparationResult):
             raise ValueError("Studio graph training requires scalar execution preparation")
+        if source_model is not None and source_model.graph != effective_model_graph(
+            graph, preparation.initial_slots["model"],
+        ):
+            events.current_phase = "restoring"
+            raise ModelCheckpointError("/graph", "Exact Resume graph differs from the bound model graph")
         kernel = preparation.kernel_context["studio_graph_update"]
         if not isinstance(kernel, StudioUpdateKernel):
             raise ValueError("Studio graph training requires the registered numerical update")
@@ -328,7 +357,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             raise ValueError("snapshot_interval must be positive")
         observation_key = studio_training_key(method.seed, "observation")
         last_progress = float("-inf")
-        interval_start = events.completed_updates
+        interval_start = start_boundary or events.completed_updates
         reductions: _MetricReductions = {}
         pending: tuple[dict[str, Any], float] | None = None
         last_frame = -1
@@ -374,8 +403,9 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                 last_frame = completed
 
         def on_start(completed: int) -> None:
-            if completed != events.completed_updates:
+            if completed != (start_boundary or events.completed_updates):
                 raise ValueError("restored state disagrees with the bound checkpoint coordinate")
+            events.completed_updates = completed
             events.checkpoint = resume
             events.phase("running")
             events.append(
@@ -426,7 +456,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         def stop_before_update() -> bool:
             nonlocal stop_requested
             stop_requested = stop_requested or stop_file.exists()
-            return stop_requested and events.completed_updates > 0
+            return stop_requested and events.completed_updates > start_boundary
 
         def finalize() -> None:
             events.phase("finalizing")
@@ -434,7 +464,10 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             publish_frame()
 
         initialization = None
+        fork_plan = None
+        fork_bindings = None
         source_content = None
+        semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
         provider = None
         source_root = resume.checkpoint_root if resume is not None else None
         if resume is not None or launch.checkpoint_input is not None:
@@ -444,9 +477,25 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             source_root = checkpoint.checkpoint_root
             provider = ImmutableArtifactBlobProvider(manifest_root)
             source, source_content = bind_published_checkpoint_content(
-                source_root, checkpoint.pointer, provider,
+                source_root, checkpoint.pointer, provider, scope=source_scope,
             )
-            initialization = CheckpointInitializationRequest(mode="initialize_from", source=source)
+            if stateful is None:
+                initialization = CheckpointInitializationRequest(mode="initialize_from", source=source)
+            else:
+                if semantic_model is None:
+                    raise ModelCheckpointError("/graph", "Stateful Train requires a typed model")
+                fork_plan, fork_bindings = plan_studio_checkpoint_fork(
+                    source_root=source_root,
+                    pointer=checkpoint.pointer,
+                    source=source,
+                    target_root=checkpoint_root,
+                    job_id=job_id,
+                    spec=spec,
+                    method=method,
+                    preparation=preparation,
+                    registry=registries.training_programs,
+                    writer=semantic_model,
+                )
         result = execute_training_run_spec(
             spec,
             run_id=job_id,
@@ -456,8 +505,13 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             checkpoint_source_root=source_root,
             checkpoint_source_pointer=resume.pointer if resume is not None else None,
             checkpoint_initialization_request=initialization,
+            checkpoint_fork_plan=fork_plan,
+            checkpoint_fork_plan_bindings=fork_bindings,
+            checkpoint_fork_target_id="successor" if fork_plan is not None else None,
             checkpoint_content_provider=provider,
             checkpoint_source_content_binding=source_content,
+            semantic_model=semantic_model,
+            train_state_codec="standard_train" if semantic_model is not None else "legacy",
             resume=resume is not None,
             registry=registries.training_programs,
             stop_before_update=stop_before_update,

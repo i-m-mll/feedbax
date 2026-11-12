@@ -52,6 +52,7 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_sha256,
 )
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.checkpoint_initialization import checkpoint_leaf_path
 from feedbax.contracts.manifest import (
     load_manifest,
 )
@@ -820,7 +821,7 @@ def _legacy_leaf_content_digests(value: object) -> list:
             data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
         digests.append(
             custody_module.SlotLeafContentDigest(
-                path=custody_module._key_path_to_text(path),
+                path=checkpoint_leaf_path(path),
                 sha256=custody_module.sha256_bytes(data),
                 size_bytes=len(data),
             )
