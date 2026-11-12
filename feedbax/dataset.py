@@ -156,16 +156,7 @@ class Dataset:
     ) -> Dataset:
         """Bind authenticated tensor headers and defer reads to the supplied loader."""
         descriptor = DatasetDescriptor.model_validate(descriptor.model_dump(mode="python"))
-        expected = descriptor.tensor_names
-        if tensor_shapes.keys() != expected:
-            missing = sorted(expected - tensor_shapes.keys())
-            extra = sorted(tensor_shapes.keys() - expected)
-            raise ValueError(f"dataset tensor names differ from descriptor: {missing=}, {extra=}")
-        for name, shape in tensor_shapes.items():
-            if tuple(shape) != descriptor.shape(name):
-                raise ValueError(
-                    f"tensor {name!r} has shape {tuple(shape)}, expected {descriptor.shape(name)}"
-                )
+        descriptor.validate_tensor_shapes(tensor_shapes)
         return cls(descriptor, load_tensor)
 
     @property
