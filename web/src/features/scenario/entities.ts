@@ -341,7 +341,7 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSu
       selector: {
         namespace: wire.temporality === 'recurrent' ? 'recurrent_carry' : 'graph_edge',
         compact: edgeSelector,
-        target_id: edgeId,
+        target_id: wire.id ?? edgeId,
         path: null,
         role: 'observed',
         metadata: {

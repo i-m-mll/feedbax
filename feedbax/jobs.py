@@ -77,6 +77,7 @@ from feedbax.studio.training_requests import (
 )
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
     from feedbax.web.services.project_folder import ProjectFolderService, SettledProjectPlan
 
@@ -141,9 +142,13 @@ def evaluation_candidate_configured() -> bool:
 class PlanJobReader:
     """Read the existing Host snapshot and authenticate its saved result evidence."""
 
-    def __init__(self, host: HostClient, *, enable_evaluation_candidate: bool = False) -> None:
+    def __init__(
+        self, host: HostClient, *, enable_evaluation_candidate: bool = False,
+        components: ComponentRegistry | None = None,
+    ) -> None:
         self.host = host
         self._enable_evaluation_candidate = enable_evaluation_candidate
+        self._evaluation_components = components
 
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
@@ -156,6 +161,36 @@ class PlanJobReader:
         if run.requires:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
+        if (source := plan.requests.get(checkpoint.request_id)) is not None:
+            from feedbax.component_registry import ComponentRegistry
+            from feedbax.contracts.request_specs import TrainingRequestSpec
+            from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
+            from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
+
+            spec = decode_request(source, plan.documents.__getitem__).spec
+            if not isinstance(spec, TrainingRequestSpec):
+                raise CannotRun("/inputs/subject", "requires an authored Train request")
+            validate_evaluation_source(spec.graph)
+            if params.variation:
+                variant = resolve_evaluation_variant(spec.graph, spec.task, params.variation)
+                if variant.graph != spec.graph:
+                    if self._evaluation_components is None:
+                        self._evaluation_components = ComponentRegistry()
+                    components = self._evaluation_components
+                    binding = spec.task_binding_spec
+                    issues = validate_graph_connection_schema(
+                        variant.graph, "/graph", binding, component_registry=components,
+                    )
+                    if binding is not None:
+                        issues.extend(validate_task_binding_schema(
+                            binding, variant.graph, "/task_binding_spec", component_registry=components,
+                        ))
+                    if issue := next((issue for issue in issues if issue.severity == "error"), None):
+                        location = (issue.location or {}).get("path", "/graph")
+                        raise CannotRun(
+                            variant.edit_location(location) or "/inputs/subject" + location,
+                            issue.message,
+                        )
         return params, checkpoint
 
     def read_plan_attempts(
@@ -250,7 +285,10 @@ class JobService(PlanJobReader):
         bootstrap_modules: tuple[str, ...] = (),
         enable_evaluation_candidate: bool = False,
     ) -> None:
-        super().__init__(host, enable_evaluation_candidate=enable_evaluation_candidate)
+        super().__init__(
+            host, enable_evaluation_candidate=enable_evaluation_candidate,
+            components=registries.components,
+        )
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
         self.manifest_root = default_manifest_root().resolve()

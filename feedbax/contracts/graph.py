@@ -134,6 +134,18 @@ class ParameterConstraintSpec(BaseModel):
     value: ParamValue = 0.0
 
 
+WIRE_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
+
+
+def derived_wire_id(wire_id: str | None, node: str, segment: str) -> str | None:
+    """Name a generated segment of an explicitly addressed authored wire."""
+    if wire_id is None:
+        return None
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+
+    return "wire-" + hashlib.sha256(canonical_json_v2_bytes([wire_id, node, segment])).hexdigest()
+
+
 class WireSpec(BaseModel):
     """Specification for a wire connecting two ports.
 
@@ -144,7 +156,7 @@ class WireSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$", exclude_if=lambda value: value is None)
+    id: str | None = Field(default=None, pattern=WIRE_ID_PATTERN, exclude_if=lambda value: value is None)
     source_node: str
     source_port: str
     target_node: str

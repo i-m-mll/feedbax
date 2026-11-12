@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
-from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.training import TaskSpec
 from feedbax.runtime.model_values import MODEL_OWNERS
@@ -22,6 +21,45 @@ class EvaluationVariant:
     graph: GraphSpec
     task: TaskSpec
     source_overrides: dict[str, float]
+    edit_origins: dict[tuple[str, ...], str] = field(compare=False)
+
+    def edit_location(self, model_path: str) -> str | None:
+        """Trace a resolved graph diagnostic back to the contributing edit."""
+        tokens = tuple(
+            token.replace("~1", "/").replace("~0", "~") for token in model_path.split("/")[1:]
+        )
+        return _edit_location(tokens, tuple(wire.authored_id() for wire in self.graph.wires), self.edit_origins)
+
+
+def _edit_location(
+    tokens: tuple[str, ...], wire_ids: tuple[str, ...], origins: dict[tuple[str, ...], str],
+) -> str | None:
+    if len(tokens) < 3:
+        return None
+    if tokens[:2] == ("graph", "wires") and tokens[2].isdigit():
+        index = int(tokens[2])
+        if index < len(wire_ids):
+            tokens = ("graph", "wires", wire_ids[index], *tokens[3:])
+    matches = {
+        origin for target, origin in origins.items()
+        if target[:len(tokens)] == tokens or tokens[:len(target)] == target
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def validate_evaluation_source(graph: GraphSpec) -> None:
+    if graph.subgraphs:
+        raise CannotRun("/inputs/subject/graph/subgraphs", "nested state owners are unavailable")
+    for name, node in graph.nodes.items():
+        declaration = MODEL_OWNERS.get(node.type)
+        if (
+            declaration is None or not declaration.checkpointable or declaration.states is None
+            or node.revision not in {None, declaration.revision}
+        ):
+            raise CannotRun(
+                pointer(("inputs", "subject", "graph", "nodes", name)),
+                f"owner {node.type!r} has no declared raw-state layout for this revision",
+            )
 
 
 def _finite_float32(value: object) -> bool:
@@ -69,7 +107,7 @@ def _qualify_task(source: TaskSpec, task: TaskSpec, path: str) -> None:
 
 
 def resolve_evaluation_variant(
-    graph: GraphSpec, task: TaskSpec, patches: Sequence[OverridePatch],
+    graph: GraphSpec, task: TaskSpec, patches: VariationEdits,
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     payload = {"graph": graph.model_dump(mode="json"), "task": task.model_dump(mode="json")}
@@ -79,8 +117,8 @@ def resolve_evaluation_variant(
     payload["graph"]["wires"] = wires
     overrides: dict[str, float] = {}
     task_path: str | None = None
-    for index, patch in enumerate(patches):
-        path = f"/params/variation/{index}"
+    edit_origins = {}
+    for path, patch in authored_variation(patches):
         parts = patch.path.split(".")
         try:
             match parts, patch.op:
@@ -124,15 +162,23 @@ def resolve_evaluation_variant(
                 case _:
                     raise ValueError("patch is outside the qualified task and graph variation profile")
             apply_override_patch_in_place(payload, patch)
+            edit_origins[tuple(parts)] = path
         except (ValueError, KeyError, OverflowError) as error:
             raise CannotRun(path, str(error)) from error
 
     try:
         payload["graph"]["wires"] = list(wires.values())
-        variant, replacement = GraphSpec.model_validate(payload["graph"]), TaskSpec.model_validate(payload["task"])
+        variant = GraphSpec.model_validate(payload["graph"])
     except ValidationError as error:
         first = error.errors()[0]
-        raise CannotRun("/params/variation" + pointer(tuple(map(str, first["loc"]))), first["msg"]) from error
+        tokens = ("graph", *map(str, first["loc"]))
+        location = _edit_location(tokens, tuple(wires), edit_origins) or "/inputs/subject" + pointer(tokens)
+        raise CannotRun(location, first["msg"]) from error
+    try:
+        replacement = TaskSpec.model_validate(payload["task"])
+    except ValidationError as error:
+        first = error.errors()[0]
+        raise CannotRun(task_path or "/inputs/subject/task", first["msg"]) from error
     if task_path is not None:
         _qualify_task(task, replacement, task_path)
-    return EvaluationVariant(variant, replacement, overrides)
+    return EvaluationVariant(variant, replacement, overrides, edit_origins)

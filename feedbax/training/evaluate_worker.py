@@ -83,6 +83,7 @@ def _rollouts(
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.rollout import authored_variation
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.contracts.training import TrainingSpec
     from feedbax.dataset import Dataset, Variable
@@ -90,7 +91,7 @@ def _rollouts(
     from feedbax.runtime._graph_key_schedule import derive_key
     from feedbax.runtime.model_values import MODEL_OWNERS
     from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
-    from feedbax.training.evaluation_variant import resolve_evaluation_variant
+    from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
     from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
     from feedbax.training.checkpoint_custody import open_published_model_slot
     from feedbax.training.studio_executor import studio_training_key
@@ -112,18 +113,7 @@ def _rollouts(
     if spec.objective.loss is None:
         raise CannotRun("/inputs/subject/objective", "requires a shared loss term plan")
     authored_graph = GraphSpec.model_validate(spec.graph.inline)
-    if authored_graph.subgraphs:
-        raise CannotRun("/inputs/subject/graph/subgraphs", "nested state owners are unavailable")
-    for name, node in authored_graph.nodes.items():
-        declaration = MODEL_OWNERS.get(node.type)
-        if (
-            declaration is None or not declaration.checkpointable or declaration.states is None
-            or node.revision not in {None, declaration.revision}
-        ):
-            raise CannotRun(
-                json_pointer(("inputs", "subject", "graph", "nodes", name)),
-                "owner revision has no declared raw-state layout",
-            )
+    validate_evaluation_source(authored_graph)
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
@@ -168,7 +158,7 @@ def _rollouts(
             )
         except GraphCompilationError as error:
             path = error.record.diagnostics[0].source_anchor.authored_path
-            raise CannotRun("/params/variation" + path, str(error)) from error
+            raise CannotRun(variant.edit_location(path) or "/params/variation" + path, str(error)) from error
     target = None
     if executable is not source_executable or variant.source_overrides:
         target = ModelRestoreTarget(executable.resolved.graph, executable.graph, variant.source_overrides)
@@ -206,7 +196,7 @@ def _rollouts(
     except WorkerCompilationError as error:
         location = error.diagnostics[0].location if error.diagnostics else None
         path = location.get("path", "") if location else ""
-        raise CannotRun("/params/variation" + path, str(error)) from error
+        raise CannotRun(variant.edit_location(path) or "/params/variation" + path, str(error)) from error
     graph = compiled.graph
     position = state_key(owner, "effector/position")
     velocity = state_key(owner, "effector/velocity")
@@ -264,7 +254,9 @@ def _rollouts(
                 canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
             ).hexdigest(),
         })
-        if variant.task != spec.task or any(patch.path.startswith("graph.") for patch in params.variation):
+        if variant.task != spec.task or any(
+            patch.path.startswith("graph.") for _, patch in authored_variation(params.variation)
+        ):
             attrs.update({
                 "effective_graph_sha256": canonical_sha256({
                     "resolved_graph": executable.resolved.resolved_sha256,

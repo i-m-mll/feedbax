@@ -212,6 +212,7 @@ class Wire(Module):
     target_port: str
     temporality: str = field(default="instant", static=True)
     recurrent_initializer: Optional[dict] = field(default=None, static=True)
+    id: str | None = field(default=None, static=True)
 
     def __repr__(self) -> str:
         arrow = "-[recurrent]->" if self.temporality == "recurrent" else "->"
@@ -1714,6 +1715,9 @@ class Graph(GraphNode):
         if old_wire is None:
             raise ValueError(f"No wire {source_node}.{source_port} -> {target_node}.{target_port}")
 
+        from feedbax.contracts.graph import derived_wire_id
+
+        recurrent = old_wire.temporality == "recurrent"
         # The new component receives the value previously delivered to the target,
         # including any recurrent delay and reset value on that connection.
         incoming = Wire(
@@ -1723,8 +1727,12 @@ class Graph(GraphNode):
             input_port,
             old_wire.temporality,
             old_wire.recurrent_initializer,
+            id=old_wire.id if recurrent else derived_wire_id(old_wire.id, node_name, "incoming"),
         )
-        outgoing = Wire(node_name, output_port, target_node, target_port)
+        outgoing = Wire(
+            node_name, output_port, target_node, target_port,
+            id=derived_wire_id(old_wire.id, node_name, "outgoing") if recurrent else old_wire.id,
+        )
         wires = tuple(wire for wire in self.wires if wire is not old_wire)
         return self.add_node(node_name, component)._with_wires((*wires, incoming, outgoing))
 

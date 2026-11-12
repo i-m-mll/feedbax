@@ -251,6 +251,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
         nodes=nodes,
         wires=[
             WireSpec(
+                id=wire.id,
                 source_node=wire.source_node,
                 source_port=wire.source_port,
                 target_node=wire.target_node,
@@ -488,6 +489,7 @@ def _instantiate_graph(
             wire.target_port,
             wire.temporality,
             wire.recurrent_initializer,
+            id=wire.id,
         )
         for wire in spec.wires
     )

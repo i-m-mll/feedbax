@@ -239,11 +239,11 @@ function tapNodeId(tapId: string) {
   return `tap:${tapId}`;
 }
 
-function createTapId() {
+function createGraphEntityId(prefix: string) {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID();
   }
-  return `tap-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 }
 
 function buildEdgeStates(
@@ -408,6 +408,7 @@ function sameGraphEdgeData(
     previous.strength === next.strength &&
     previous.schema_status === next.schema_status &&
     previous.schema_message === next.schema_message &&
+    previous.authoredWireId === next.authoredWireId &&
     previous.temporality === next.temporality &&
     previous.recurrent_initializer === next.recurrent_initializer
   );
@@ -1421,6 +1422,7 @@ function importTemplateGraphIntoGraph(
 
   const importedWires = imported.wires.map((wire) => ({
     ...wire,
+    id: createGraphEntityId('wire'),
     source_node: nodeMap[wire.source_node] ?? wire.source_node,
     target_node: nodeMap[wire.target_node] ?? wire.target_node,
   }));
@@ -2866,6 +2868,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
             && selectedNodeSet.has(wire.target_node))
           .map((wire) => ({
             ...cloneGraphSpec(wire),
+            id: createGraphEntityId('wire'),
             source_node: nodeMap[wire.source_node],
             target_node: nodeMap[wire.target_node],
           }));
@@ -3536,6 +3539,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
           style: edgeStyle,
           points: [],
         },
+        authoredWireId: createGraphEntityId('wire'),
         temporality,
         recurrent_initializer,
       },
@@ -4023,7 +4027,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       if (!edge.source || !edge.target) return state;
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const taps = [...(state.graph.taps ?? [])];
-      const id = createTapId();
+      const id = createGraphEntityId('tap');
       taps.push({
         id,
         type,
@@ -4070,7 +4074,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       if (!state.graph.nodes[afterNode]) return state;
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const taps = [...(state.graph.taps ?? [])];
-      const id = createTapId();
+      const id = createGraphEntityId('tap');
       const targetNode = state.graph.wires.find(
         (wire) => wire.source_node === afterNode && state.graph.nodes[wire.target_node]
       )?.target_node;

@@ -82,7 +82,9 @@ class ModelAdditions:
                 wire = WireSpec.model_validate(edit.value)
                 shared_wire = WireSpec.model_validate(entries[edit.path])
                 overlaps = _wire_address(wire) == _wire_address(shared_wire)
-                if overlaps and wire != shared_wire:
+                if overlaps and wire.model_copy(update={"id": wire.authored_id()}) != (
+                    shared_wire.model_copy(update={"id": shared_wire.authored_id()})
+                ):
                     raise ProjectFolderInvalid(
                         f"{step} has a different wire declaration for {wire.target_node}.{wire.target_port}."
                     )

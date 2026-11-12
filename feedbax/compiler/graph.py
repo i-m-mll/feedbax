@@ -362,6 +362,7 @@ def _source_map(
     authored_wires = [
         wire.model_dump(mode="json", exclude_none=True) for wire in authored_graph.wires
     ]
+    wire_indices = {wire.id: index for index, wire in enumerate(authored_graph.wires) if wire.id}
 
     def entry(resolved_path: str, authored_path: str, *, generated: bool) -> GraphSourceMapEntry:
         return GraphSourceMapEntry(
@@ -386,9 +387,9 @@ def _source_map(
         )
     for index, wire in enumerate(graph.wires):
         wire_payload = wire.model_dump(mode="json", exclude_none=True)
-        authored_index = (
-            authored_wires.index(wire_payload) if wire_payload in authored_wires else None
-        )
+        authored_index = wire_indices.get(wire.id) if wire.id else None
+        if authored_index is None and wire_payload in authored_wires:
+            authored_index = authored_wires.index(wire_payload)
         authored_path = (
             f"/graph/wires/{authored_index}"
             if authored_index is not None
