@@ -17,6 +17,13 @@ from feedbax.contracts.artifact_custody import (
     ContentRetentionTarget,
     ContentTreeRef,
 )
+from feedbax.contracts.effective_success import (
+    INDEX_REF,
+    Success,
+    decode_success_index,
+    read_committed_success,
+    success_blob_ref,
+)
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
@@ -88,6 +95,103 @@ def object_target(ref: ContentObjectRef) -> ContentRetentionTarget:
     return ContentRetentionTarget(ref_kind="object", object=ref)
 
 
+def _success_roots(
+    store: ImmutableArtifactBlobProvider,
+    value: dict,
+    gaps: list[str],
+) -> Iterator[RootObservation]:
+    index = decode_success_index(value)
+    receipts: dict[str, tuple[ContentObjectRef, Success]] = {}
+    for attempt, ref in index.attempts.items():
+        try:
+            receipt = read_committed_success(index, ref, store.get_object)
+            if receipt.attempt != attempt:
+                raise ContentRetentionError("receipt differs from the indexed attempt")
+            receipts[ref.sha256] = ref, receipt
+        except (ValueError, OSError) as error:
+            gaps.append(f"successful attempt {attempt}: {error}")
+
+    def receipt_at(ref: ContentObjectRef) -> Success:
+        found = receipts.get(ref.sha256)
+        if found is None or found[0] != ref:
+            raise ContentRetentionError(f"committed receipt is unavailable: {ref.sha256}")
+        return found[1]
+
+    def targets(ref: ContentObjectRef) -> tuple[ContentRetentionTarget, ...]:
+        objects: dict[str, ContentObjectRef] = {}
+        visited: set[str] = set()
+        pending = [ref]
+        while pending:
+            receipt_ref = pending.pop()
+            receipt = receipt_at(receipt_ref)
+            if receipt_ref.sha256 in visited:
+                continue
+            visited.add(receipt_ref.sha256)
+            members = tuple(member for group in receipt.inputs.values() for member in group)
+            contents = (
+                *(member.content for member in members),
+                *(product.content for group in receipt.products.values() for product in group),
+            )
+            for item in (
+                receipt_ref,
+                receipt.request.object,
+                *receipt.request.documents,
+                *(success_blob_ref(content) for content in contents),
+            ):
+                if objects.setdefault(item.sha256, item) != item:
+                    raise ContentRetentionError(f"conflicting object evidence: {item.sha256}")
+            pending.extend(member.selection.receipt for member in members if member.selection)
+        return tuple(object_target(item) for item in objects.values())
+
+    current: dict[str, ContentObjectRef] = {}
+    for key, ref in index.authored.items():
+        try:
+            if receipt_at(ref).request.id != key:
+                raise ContentRetentionError("authored ref points to a different request")
+            current[ref.sha256] = ref
+        except ContentRetentionError as error:
+            gaps.append(f"successful authored ref {key}: {error}")
+    for key, ref in index.effective.items():
+        try:
+            if receipt_at(ref).effective != key:
+                raise ContentRetentionError("effective ref points to different bindings")
+            current[ref.sha256] = ref
+        except ContentRetentionError as error:
+            gaps.append(f"successful effective ref {key}: {error}")
+    for ref in current.values():
+        try:
+            yield RootObservation(f"success:{receipt_at(ref).attempt}", targets(ref))
+        except ValueError as error:
+            gaps.append(f"success {ref.sha256}: {error}")
+
+    predecessors: set[str] = set()
+    for ref, successor in receipts.values():
+        previous = successor.supersedes
+        when = index.supersession_times.get(ref.sha256)
+        if previous is None:
+            if when is not None:
+                gaps.append(f"success {successor.attempt}: timestamp has no predecessor")
+            continue
+        try:
+            predecessor = receipt_at(previous)
+            if predecessor.request.id != successor.request.id or previous == ref:
+                raise ContentRetentionError("supersession differs from the authored request")
+            if previous.sha256 in predecessors:
+                raise ContentRetentionError("predecessor has more than one successor")
+            predecessors.add(previous.sha256)
+            if when is None:
+                gaps.append(
+                    f"success {successor.attempt}: authoritative supersession time unavailable"
+                )
+            yield RootObservation(
+                f"superseded-success:{predecessor.attempt}",
+                targets(previous),
+                when,
+            )
+        except ValueError as error:
+            gaps.append(f"success {successor.attempt}: {error}")
+
+
 def _files(directory: Path) -> Iterator[Path]:
     try:
         mode = directory.lstat().st_mode
@@ -114,6 +218,9 @@ def _store_refs(
             if path != store._ref_path(name) or (record := _read_store_document(path)) is None:
                 raise ContentRetentionError("ref changed while being read")
             value = record[1]
+            if name == INDEX_REF:
+                yield from _success_roots(store, value, gaps)
+                continue
             match value.get("schema_id"):
                 case identity if identity == CONTENT_OBJECT_REF_SCHEMA_ID:
                     target = object_target(ContentObjectRef.model_validate(value))

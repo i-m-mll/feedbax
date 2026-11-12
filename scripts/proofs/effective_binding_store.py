@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal
-
-from pydantic import Field, JsonValue, model_validator
+from datetime import UTC, datetime
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.effective_success import (
+    INDEX_REF as INDEX_REF,
+    Bindings,
+    BoundMember,
+    Product,
+    Products,
+    RequestObject,
+    Selection,
+    Success,
+    SuccessIndex,
+    decode_success_index,
+    read_committed_success,
+    success_blob_ref,
+)
 from feedbax.contracts.request_identity import (
     DecodedRequest,
     EncodedRequest,
@@ -18,71 +30,13 @@ from feedbax.contracts.request_identity import (
 from feedbax.contracts.request_refs import (
     ContentRef,
     EffectiveBindingId,
-    EffectiveInputMember,
     InputMember,
     LastMember,
-    Name,
     NamedMember,
     ProductRef,
-    ReferenceValue,
     RequestId,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-
-INDEX_REF = "proof/effective-successes-v1"
-
-
-class RequestObject(ReferenceValue):
-    id: RequestId
-    object: ContentObjectRef
-    documents: tuple[ContentObjectRef, ...]
-
-
-class Product(ReferenceValue):
-    name: Name
-    content: ContentRef
-    descriptor: JsonValue = None
-
-
-type Products = dict[Name, Annotated[tuple[Product, ...], Field(min_length=1)]]
-
-
-class Selection(ReferenceValue):
-    receipt: ContentObjectRef
-    member: Name
-
-
-class BoundMember(EffectiveInputMember):
-    selection: Selection | None = None
-
-
-type Bindings = dict[Name, tuple[BoundMember, ...]]
-
-
-class Success(ReferenceValue):
-    schema_version: Literal["feedbax.proof.effective-success.v1"] = (
-        "feedbax.proof.effective-success.v1"
-    )
-    request: RequestObject
-    attempt: Name
-    effective: EffectiveBindingId
-    inputs: Bindings
-    products: Products = Field(min_length=1)
-    supersedes: ContentObjectRef | None
-
-    @model_validator(mode="after")
-    def unique_products(self) -> Success:
-        for role, members in self.products.items():
-            if len({member.name for member in members}) != len(members):
-                raise ValueError(f"Repeated product member in {role!r}")
-        return self
-
-
-class SuccessIndex(ReferenceValue):
-    schema_version: Literal["feedbax.proof.success-index.v1"] = "feedbax.proof.success-index.v1"
-    authored: dict[RequestId, ContentObjectRef] = Field(default_factory=dict)
-    effective: dict[EffectiveBindingId, ContentObjectRef] = Field(default_factory=dict)
-    attempts: dict[Name, ContentObjectRef] = Field(default_factory=dict)
 
 
 class PublicationConflict(ValueError):
@@ -112,13 +66,7 @@ class SuccessView:
     def __init__(self, store: ImmutableArtifactBlobProvider):
         self.store = store
         self._expected = store.read_ref(INDEX_REF)
-        self._index = (
-            SuccessIndex.model_validate(self._expected)
-            if self._expected is not None
-            else SuccessIndex()
-        )
-        if self._expected is not None and self._index.model_dump(mode="json") != self._expected:
-            raise ValueError("Successful-result index has an incomplete schema")
+        self._index = decode_success_index(self._expected)
 
     def _decode(self, request: RequestObject) -> DecodedRequest:
         documents = {ref.sha256: ref for ref in request.documents}
@@ -140,23 +88,10 @@ class SuccessView:
         return decoded
 
     def _verify_content(self, content: ContentRef) -> None:
-        if content.tree:
-            raise ValueError("The bounded Store witness accepts blob bindings")
-        ref = ContentObjectRef(
-            object_id=f"content-object://sha256/{content.sha256}",
-            sha256=content.sha256,
-            size_bytes=content.size,
-        )
-        self.store.verify_object(ref)
+        self.store.verify_object(success_blob_ref(content))
 
     def _receipt(self, ref: ContentObjectRef) -> Success:
-        raw = self.store.get_object(ref)
-        receipt = Success.model_validate_json(raw)
-        if raw != canonical_json_v2_bytes(receipt.model_dump(mode="json")):
-            raise ValueError("Successful receipt bytes are not canonical")
-        if self._index.attempts.get(receipt.attempt) != ref:
-            raise ValueError("Receipt has no attempt in this committed Store generation")
-        return receipt
+        return read_committed_success(self._index, ref, self.store.get_object)
 
     def _resolve(self, member: InputMember, origin: ContentObjectRef | None) -> BoundMember:
         reference = member.reference
@@ -235,6 +170,8 @@ class SuccessView:
         previous = self._index.authored.get(request.id)
         if attempt in self._index.attempts:
             raise ValueError("This attempt already published a success")
+        if previous is not None and self._receipt(previous).request.id != request.id:
+            raise ValueError("Superseded receipt belongs to a different authored request")
         receipt = Success(
             request=request,
             attempt=attempt,
@@ -250,17 +187,22 @@ class SuccessView:
             canonical_json_v2_bytes(receipt.model_dump(mode="json")),
             namespace="proof-effective-receipt",
         )
-        updated = SuccessIndex(
-            authored={**self._index.authored, request.id: ref},
-            effective={**self._index.effective, effective: ref},
-            attempts={**self._index.attempts, attempt: ref},
-        )
-        if not self.store.compare_and_swap_ref(
-            INDEX_REF,
-            expected=self._expected,
-            replacement=updated.model_dump(mode="json"),
-        ):
-            raise PublicationConflict("Successful-result index moved during publication")
+        with self.store._exclusive_lock():
+            times = dict(self._index.supersession_times)
+            if previous is not None:
+                times[ref.sha256] = datetime.now(UTC)
+            updated = SuccessIndex(
+                authored={**self._index.authored, request.id: ref},
+                effective={**self._index.effective, effective: ref},
+                attempts={**self._index.attempts, attempt: ref},
+                supersession_times=times,
+            )
+            if not self.store.compare_and_swap_ref(
+                INDEX_REF,
+                expected=self._expected,
+                replacement=updated.model_dump(mode="json"),
+            ):
+                raise PublicationConflict("Successful-result index moved during publication")
         return PublishedSuccess(ref, receipt)
 
 

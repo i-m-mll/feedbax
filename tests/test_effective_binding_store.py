@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 import json
 from multiprocessing import get_context
 import os
@@ -7,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
+from feedbax.contracts.effective_success import decode_success_index
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import InputMember, LastMember, NamedMember, ProductRef
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.reachability import measure_store
 from scripts.proofs.effective_binding_store import (
     INDEX_REF,
     PublicationConflict,
@@ -127,6 +130,10 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
     root = tmp_path / "store"
     store = ImmutableArtifactBlobProvider(root)
     case = prepare(store, SUPPLIER, ANALYSIS)
+    original_bytes = store.get_object(case.original.ref)
+    original_request = store.get_object(case.original.receipt.request.object)
+    before = store.read_ref(INDEX_REF)
+    assert before is not None and "supersession_times" not in before
     marker = tmp_path / "interrupted-receipt.json"
     products = case.original.receipt.products
     process = get_context("spawn").Process(
@@ -144,6 +151,7 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
     staged = ContentObjectRef.model_validate_json(marker.read_bytes())
     reopened = SuccessView(ImmutableArtifactBlobProvider(root))
     assert reopened.store.get_object(staged)
+    assert reopened.store.read_ref(INDEX_REF) == before
     assert reopened.authored(case.rule.id) == reopened.lookup(case.frozen) == case.original
     with pytest.raises(ValueError, match="committed Store generation"):
         reopened.read_success(staged)
@@ -155,6 +163,7 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
             return None
 
     other = SuccessView(ImmutableArtifactBlobProvider(root))
+    race_started = datetime.now(UTC)
     with ThreadPoolExecutor(max_workers=2) as workers:
         first = workers.submit(publish, reopened, "candidate-01")
         second = workers.submit(publish, other, "candidate-02")
@@ -172,6 +181,38 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
     record_property("prior_receipt", case.original.ref.sha256)
     record_property("winning_receipt", winner.ref.sha256)
     record_property("winning_attempt", winner.receipt.attempt)
+
+    value = latest.store.read_ref(INDEX_REF)
+    index = decode_success_index(value)
+    assert set(index.supersession_times) == {winner.ref.sha256}
+    when = index.supersession_times[winner.ref.sha256]
+    assert race_started <= when <= datetime.now(UTC)
+    assert store.get_object(case.original.ref) == original_bytes
+    assert store.get_object(case.original.receipt.request.object) == original_request
+    assert "supersession_times" not in json.loads(store.get_object(winner.ref))
+
+    cutoff = when + timedelta(days=14)
+    before_cutoff = measure_store(
+        store,
+        now=cutoff - timedelta(microseconds=1),
+        keep_superseded_days=14,
+    )
+    after_cutoff = measure_store(store, now=cutoff, keep_superseded_days=14)
+    assert not before_cutoff.gaps and not after_cutoff.gaps
+    history = f"superseded-success:{case.original.receipt.attempt}"
+    assert history in {root.name for root in before_cutoff.roots}
+    assert history not in {root.name for root in after_cutoff.roots}
+    assert f"success:{winner.receipt.attempt}" in {root.name for root in after_cutoff.roots}
+    assert case.original.ref.sha256 not in (after_cutoff.eligible_digests or ())
+
+    assert value is not None
+    legacy = {name: item for name, item in value.items() if name != "supersession_times"}
+    assert store.compare_and_swap_ref(INDEX_REF, expected=value, replacement=legacy)
+    assert SuccessView(store).read_success(case.original.ref) == case.original
+    undated = measure_store(store, now=cutoff, keep_superseded_days=14)
+    assert history in {root.name for root in undated.roots}
+    assert undated.eligible is None
+    assert any("authoritative supersession time unavailable" in gap for gap in undated.gaps)
 
 
 def test_corrupt_receipt_bytes_never_admit_an_index_hit(tmp_path):
