@@ -141,7 +141,7 @@ def compile_training_run(
     )
     if not _has_executable_loss_leaf(training_model.loss):
         raise _missing_loss_terms_error()
-    if training_model.batch_size != 1:
+    if training_model.batch_size <= 0:
         raise GraphCompilationError(
             "Unsupported training batch size",
             [
@@ -149,7 +149,7 @@ def compile_training_run(
                     severity="error",
                     code="worker.unsupported_batch_size",
                     message=(
-                        "Generic graph worker currently supports batch_size=1; "
+                        "Graph worker batch size must be positive; "
                         f"got batch_size={training_model.batch_size}"
                     ),
                     location={"path": "/training_spec/batch_size"},

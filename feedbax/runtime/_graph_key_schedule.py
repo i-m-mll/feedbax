@@ -5,6 +5,7 @@ from functools import lru_cache
 from hashlib import sha256
 from numbers import Integral
 from struct import unpack
+from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +13,7 @@ import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
 KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.scoped_occurrence.v4"
+SampleT = TypeVar("SampleT")
 
 
 @lru_cache(maxsize=4096)
@@ -83,15 +85,30 @@ def step_keys(key: PRNGKeyArray, n_steps: int) -> PRNGKeyArray:
     return _derive_many(step_key, key, jnp.arange(n_steps, dtype=jnp.uint32))
 
 
+def _map_samples(sample: Callable[[PRNGKeyArray], SampleT], keys: PRNGKeyArray) -> SampleT:
+    # Both RBG samplers use the first key of a vmapped batch for all draws.
+    if jr.key_impl(keys) in ("rbg", "unsafe_rbg"):
+        return jax.lax.map(sample, keys)
+    return jax.vmap(sample)(keys)
+
+
 def sample_steps(
     sample: Callable[[PRNGKeyArray], jax.Array], key: PRNGKeyArray, n_steps: int
 ) -> jax.Array:
     """Draw one sample per timestep from its independent key."""
-    keys = step_keys(key, n_steps)
-    # Both RBG samplers use the first key of a vmapped batch for all draws.
-    if jr.key_impl(key) in ("rbg", "unsafe_rbg"):
-        return jax.lax.map(sample, keys)
-    return jax.vmap(sample)(keys)
+    return _map_samples(sample, step_keys(key, n_steps))
+
+
+def sample_training_trials(
+    sample: Callable[[PRNGKeyArray], SampleT], update_key: PRNGKeyArray, count: int
+) -> SampleT:
+    """Map a scalar trial over stable keys, retaining the original trial-zero stream."""
+    additional = _derive_many(
+        lambda key, index: derive_key(key, "studio_training", "trial", index=index),
+        update_key,
+        jnp.arange(1, count, dtype=jnp.uint32),
+    )
+    return _map_samples(sample, jnp.concatenate((update_key[None], additional)))
 
 
 def keyed_nodes(

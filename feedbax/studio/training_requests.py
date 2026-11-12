@@ -213,10 +213,6 @@ def _lower_scenario(
             (error.location or {}).get("path", "/task_binding_spec"), error.message
         )
 
-    if training_spec.batch_size != 1:
-        raise StudioTrainingLoweringError(
-            "/training_spec/batch_size", "Studio graph training requires batch size 1"
-        )
     n_steps = infer_task_n_steps(task_spec)
     if n_steps is None:
         raise StudioTrainingLoweringError(

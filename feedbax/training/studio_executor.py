@@ -33,7 +33,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
-from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime._graph_key_schedule import derive_key, sample_training_trials
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.training.preparation import ExecutionPreparationRequest, ExecutionPreparationResult
 
@@ -97,6 +97,7 @@ class StudioUpdateKernel:
     ) -> None:
         self._compiled = compiled
         trainable_filter = compiled.trainable_filter
+        batch_size = compiled.training_spec.batch_size
 
         @eqx.filter_jit
         def numerical_update(model, optimizer_state, key, batch_counter):
@@ -105,7 +106,14 @@ class StudioUpdateKernel:
 
             def loss_from_trainable(candidate):
                 graph = eqx.combine(candidate, frozen)
-                return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, step_key))
+
+                def loss_on_trial(trial_key):
+                    return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, trial_key))
+
+                if batch_size == 1:
+                    return loss_on_trial(step_key)
+                trial_losses = sample_training_trials(loss_on_trial, step_key, batch_size)
+                return jax.tree.map(lambda values: jnp.mean(values, axis=0), trial_losses)
 
             (loss, terms), grads = eqx.filter_value_and_grad(loss_from_trainable, has_aux=True)(
                 trainable

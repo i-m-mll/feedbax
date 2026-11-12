@@ -258,19 +258,24 @@ def test_lower_studio_training_runs_preserves_identity_and_selection(tmp_path, r
                 "id": "batch_size",
                 "label": "Batch size",
                 "path": "training_spec.batch_size",
-                "values": [1, 2],
+                "values": [1, 2, 0],
             }
         ],
         "mode": "cross",
     }
     first_key = json.dumps([stage.id, "row-0000"], separators=(",", ":"))
     second_key = json.dumps([stage.id, "row-0001"], separators=(",", ":"))
+    invalid_key = json.dumps([stage.id, "row-0002"], separators=(",", ":"))
     (selected,) = lower(first_key)
     assert selected.run_key == first_key
     assert selected.coordinates == {"batch_size": 1}
     assert selected.request_id == ordinary.request_id
+    (batched,) = lower(second_key)
+    assert batched.coordinates == {"batch_size": 2}
+    assert batched.spec.training_config.batch_size == 2
+    assert batched.request_id != ordinary.request_id
     with pytest.raises(StudioTrainingLoweringError) as refusal:
-        lower(second_key)
+        lower(invalid_key)
     assert refusal.value.path == "/training_spec/batch_size"
     assert not list(tmp_path.iterdir())
 
