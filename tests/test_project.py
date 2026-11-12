@@ -24,6 +24,7 @@ from feedbax.contracts.project_resolution import (
     resolve_step,
     validate_project_documents,
 )
+from feedbax.contracts.project_sweep import expand_sweep
 
 
 def _write(root: Path, files: dict[str, bytes]) -> None:
@@ -452,3 +453,36 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
     assert result.sources["/values/1"].path == "/values/0"
     assert result.sources["/values/2"].path == "/values/1"
     assert (result.sources["/limit"].kind, result.sources["/limit"].name) == ("exception", "raise")
+
+
+def test_selected_sibling_rows_keep_original_sources_after_list_writes():
+    project = Project.model_validate({
+        "documents": {"shared": {"schema": "data", "payload": {"a/b": {"~key": 5}}}},
+        "steps": {"fit": {
+            "kind": "train",
+            "base": {"inline": {"items": [
+                {"document": "shared", "pointer": "/a~1b"}, {"native": []},
+            ]}},
+            "sweep": {"rows": {
+                "inserted": {"patches": {"items.0": {"op": "add", "value": 7}}},
+                "removed": {"patches": {"items.0": {"op": "remove"}}},
+                "original": {},
+            }},
+        }},
+    })
+    template = compose_step(project, "fit", track_sources=True)
+    assert not isinstance(template, ProjectDiagnostic)
+    inserted, removed, original = (
+        template.resolve(row, include_sources=True) for row in expand_sweep(template.sweep)
+    )
+    assert isinstance(inserted, ResolvedStep) and inserted.sources is not None
+    assert isinstance(removed, ResolvedStep) and removed.sources is not None
+    assert isinstance(original, ResolvedStep) and original.sources is not None
+    assert inserted.payload["items"] == [7, {"~key": 5}, {"native": []}]
+    assert removed.payload["items"] == [{"native": []}]
+    assert original.payload["items"] == [{"~key": 5}, {"native": []}]
+    assert inserted.sources["/items/0"].path == "/sweep/rows/inserted/patches/items.0/value"
+    assert inserted.sources["/items/1/~0key"] == original.sources["/items/0/~0key"]
+    assert original.sources["/items/0/~0key"].path == "/a~1b/~0key"
+    assert removed.sources["/items/0/native"] == inserted.sources["/items/2/native"]
+    assert removed.sources["/items/0/native"].path == "/base/inline/items/1/native"

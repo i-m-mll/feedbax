@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -48,7 +49,7 @@ from feedbax.contracts.project_sweep import (
     sweep_patches,
 )
 from feedbax.contracts.project_sources import ValueSource, patch_source, pointer, source_shape
-from feedbax.contracts.request_identity import EncodedRequest
+from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
     BatchMember,
@@ -247,11 +248,14 @@ def _encode_row(
     role: _Role,
     chosen: PlannedInput | None,
     encoding_stamp: tuple[StepKind, str, bytes] | None,
+    document_memo: RequestDocumentMemo | None,
 ) -> _LoweredRow:
     try:
         spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         encoded = request_identity.encode_request(
-            spec, {role.name: (chosen.member,)} if chosen is not None else {}
+            spec,
+            {role.name: (chosen.member,)} if chosen is not None else {},
+            document_memo=document_memo,
         )
     except ValidationError as error:
         problems = tuple(
@@ -289,6 +293,8 @@ class _PlanWork:
     ] = field(default_factory=dict)
     rows: dict[RunKey, _WorkEntry[_LoweredRow]] = field(default_factory=dict)
     definitions: dict[RunKey, _WorkEntry[SelectedRunDefinition | None]] = field(default_factory=dict)
+    inline_origins: OrderedDict[ValueSource, tuple[str, Any]] = field(default_factory=OrderedDict)
+    request_documents: RequestDocumentMemo = field(default_factory=RequestDocumentMemo)
 
 
 class ProjectPlanMemo:
@@ -316,7 +322,7 @@ class ProjectPlanMemo:
 
 def _compiler_authority() -> tuple[object, ...]:
     return (
-        compose_step, StepTemplate.resolve, expand_sweep, tuple(_ROLES.items()),
+        compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(),
     )
 
@@ -333,6 +339,9 @@ class _Compiler:
         self.readers = readers
         self.previous = previous
         self.work = _PlanWork()
+        if previous is not None:
+            self.work.inline_origins.update(previous.inline_origins)
+            self.work.request_documents = previous.request_documents.fork()
         self.wanted_sources: dict[tuple[str, str], set[str]] = {}
         for key in source_runs:
             self.wanted_sources.setdefault((key.variant, key.step), set()).add(key.row)
@@ -382,7 +391,7 @@ class _Compiler:
                     apply_override_patch_in_place(data, patch)
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
-                        patch_source(origins, patch, source_shape(patch.value, source))
+                        origins = patch_source(origins, patch, source_shape(patch.value, source))
                 self.variants[row.id] = Project.model_validate(data)
                 self.variant_sources[row.id] = origins
             except ValueError as error:
@@ -419,6 +428,20 @@ class _Compiler:
             self.runs[key] = self.compile_step(variant, name, (*active, key))
         return self.runs[key]
 
+    def inline_origin(self, payload: Payload, source: ValueSource) -> Any:
+        if self.previous is None:
+            return source_shape(payload, source)
+        cache = self.work.inline_origins
+        stamp = sha256_bytes(to_json(payload))
+        entry = cache.get(source)
+        if entry is None or entry[0] != stamp:
+            entry = stamp, source_shape(payload, source)
+            cache[source] = entry
+        cache.move_to_end(source)
+        if len(cache) > 16:
+            cache.popitem(last=False)
+        return entry[1]
+
     def compose(self, variant: str, name: str, track: bool) -> StepComposition | ProjectDiagnostic:
         project = self.variants[variant]
 
@@ -430,6 +453,7 @@ class _Compiler:
                 track_sources=track,
                 variant_sources=self.variant_sources.get(variant),
                 read_document=read_document,
+                inline_origin=self.inline_origin,
             )
             return template if isinstance(template, ProjectDiagnostic) else template.composition
 
@@ -579,7 +603,10 @@ class _Compiler:
             )
             if previous is not None and previous.encoding_stamp == encoding_stamp:
                 return previous
-            return _encode_row(key, kind, payload, role, chosen, encoding_stamp)
+            return _encode_row(
+                key, kind, payload, role, chosen, encoding_stamp,
+                self.work.request_documents if self.previous is not None else None,
+            )
 
         if self.previous is None:
             return lower()

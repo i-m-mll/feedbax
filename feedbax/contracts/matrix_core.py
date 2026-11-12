@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from copy import deepcopy
+from copy import copy, deepcopy
 import json
 import math
 from pathlib import Path
@@ -687,6 +687,17 @@ def apply_override_patch_in_place(
     )
 
 
+def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
+    """Apply a patch to new containers along its path, sharing untouched subtrees."""
+    parts = patch.path.split(".")
+    result = copy(root)
+    parent = _resolve_patch_parent(
+        result, parts, path=patch.path, error_context="override", copy_path=True
+    )
+    _apply_patch_target(parent, parts[-1], patch.op, patch.value, patch.path, "override")
+    return result
+
+
 def apply_value_patch_in_place(
     root: dict[str, Any],
     parts: Sequence[str],
@@ -698,7 +709,17 @@ def apply_value_patch_in_place(
 ) -> None:
     """Apply the common patch semantics to an already decoded path."""
     parent = _resolve_patch_parent(root, parts, path=path, error_context=error_context)
-    leaf = parts[-1]
+    _apply_patch_target(parent, parts[-1], op, value, path, error_context)
+
+
+def _apply_patch_target(
+    parent: Any,
+    leaf: str,
+    op: Literal["add", "replace", "remove"],
+    value: Any,
+    path: str,
+    error_context: Literal["override", "delta"],
+) -> None:
     if op == "add" and isinstance(parent, list) and _is_list_append(parent, leaf):
         parent.append(deepcopy(value))
         return
@@ -737,21 +758,24 @@ def _resolve_patch_parent(
     *,
     path: str,
     error_context: Literal["override", "delta"],
+    copy_path: bool = False,
 ) -> Any:
     if not parts:
         raise ValueError(f"patch path must be non-empty: {path!r}")
     current = root
     for part in parts[:-1]:
         if isinstance(current, dict) and part in current:
-            current = current[part]
-            continue
-        if isinstance(current, list) and part.isdigit():
-            index = int(part)
-            if 0 <= index < len(current):
-                current = current[index]
-                continue
-        prefix = "delta path" if error_context == "delta" else "patch path"
-        raise ValueError(f"{prefix} cannot traverse missing segment {part!r}: {path!r}")
+            key = part
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            key = int(part)
+        else:
+            prefix = "delta path" if error_context == "delta" else "patch path"
+            raise ValueError(f"{prefix} cannot traverse missing segment {part!r}: {path!r}")
+        child = current[key]
+        if copy_path and isinstance(child, (dict, list)):
+            child = copy(child)
+            current[key] = child
+        current = child
     return current
 
 

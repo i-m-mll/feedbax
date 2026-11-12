@@ -6,11 +6,12 @@ import json
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import Enum
 from functools import cache
 from importlib.resources import files
 from typing import Any
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 from pydantic_core import to_json
 
 from feedbax.contracts._request_codec import decode, describe_models, encode
@@ -67,6 +68,66 @@ class DecodedRequest:
     spec: RequestSpec
     inputs: RequestInputs
     id: RequestId
+
+
+def _same_document_value(left: Any, right: Any) -> bool:
+    """Compare typed values before projection can erase distinctions such as bool/int."""
+    if type(left) is not type(right):
+        return False
+    if left is None:
+        return True
+    if type(left) in (bool, int, float, str):
+        return left == right
+    if isinstance(left, Enum):
+        return left is right
+    if isinstance(left, BaseModel):
+        return all(
+            _same_document_value(getattr(left, name), getattr(right, name))
+            for name in type(left).model_fields
+        )
+    if type(left) is dict:
+        return left.keys() == right.keys() and all(
+            type(key) is str and _same_document_value(value, right[key])
+            for key, value in left.items()
+        )
+    if type(left) in (list, tuple):
+        return len(left) == len(right) and all(
+            _same_document_value(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return False
+
+
+@dataclass(frozen=True)
+class _FactoredDocument:
+    value: Any
+    projection: Any
+    digest: str
+    data: bytes
+
+
+class RequestDocumentMemo:
+    """Retain the last verified document per field within one caller-verified codec authority."""
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[type[RequestSpec], str], _FactoredDocument] = {}
+
+    def fork(self) -> RequestDocumentMemo:
+        work = RequestDocumentMemo()
+        work._entries.update(self._entries)
+        return work
+
+    def lookup(self, spec: RequestSpec, name: str) -> _FactoredDocument | None:
+        entry = self._entries.get((type(spec), name))
+        if entry is not None and _same_document_value(getattr(spec, name), entry.value):
+            return entry
+        return None
+
+    def remember(
+        self, spec: RequestSpec, name: str, projection: Any, digest: str, data: bytes
+    ) -> None:
+        self._entries[type(spec), name] = _FactoredDocument(
+            deepcopy(getattr(spec, name)), projection, digest, data
+        )
 
 
 @cache
@@ -142,7 +203,9 @@ def request_id(kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs) -
     return kind + ":" + sha256_bytes(canonical_json_v2_bytes(preimage))
 
 
-def encode_request(spec: RequestSpec, inputs: RequestInputs) -> EncodedRequest:
+def encode_request(
+    spec: RequestSpec, inputs: RequestInputs, *, document_memo: RequestDocumentMemo | None = None
+) -> EncodedRequest:
     """Encode a typed, validated author request and compute its identity."""
     kind = next(
         (kind for kind, descriptor in REQUEST_KINDS.items() if descriptor.spec_type is type(spec)),
@@ -153,11 +216,26 @@ def encode_request(spec: RequestSpec, inputs: RequestInputs) -> EncodedRequest:
     descriptor = REQUEST_KINDS[kind]
     inputs = _validated_inputs(inputs)
     fields = _identity_contract()["fields"]
-    projection = encode(spec, descriptor.spec_type, fields)
+    reused = {}
+    if document_memo is not None:
+        reused = {
+            name: entry
+            for name in descriptor.documents
+            if (entry := document_memo.lookup(spec, name)) is not None
+        }
+    projection = encode(
+        spec, descriptor.spec_type, fields,
+        projected_fields={name: entry.projection for name, entry in reused.items()},
+    )
     documents = {}
     for name in descriptor.documents:
-        data = canonical_json_v2_bytes(projection[name])
-        digest = sha256_bytes(data)
+        if name in reused:
+            digest, data = reused[name].digest, reused[name].data
+        else:
+            data = canonical_json_v2_bytes(projection[name])
+            digest = sha256_bytes(data)
+            if document_memo is not None:
+                document_memo.remember(spec, name, projection[name], digest, data)
         projection[name] = digest
         documents[digest] = data
 
