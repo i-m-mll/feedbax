@@ -1,0 +1,17 @@
+{
+  "schema_version": "feedbax.report_document.v1",
+  "title": "Reaching velocity",
+  "completeness": "complete",
+  "blocks": [
+    {
+      "markdown": "## Velocity by condition\n\nThe curves show *reach-aligned velocity* over physical time."
+    },
+    {
+      "figure": "velocity_summary",
+      "caption": "Mean velocity and trial bounds by condition."
+    },
+    {
+      "markdown": "The band gives the lower and upper bounds from the saved trial summary."
+    }
+  ]
+}
