@@ -13,7 +13,7 @@ interface FieldValue {
   readonly id: string;
   readonly value: JsonPrimitive;
   readonly label?: string;
-  readonly source: string;
+  readonly source?: string;
   readonly changedFrom?: { readonly label: string };
   readonly selected?: boolean;
   readonly reason?: string;
@@ -106,7 +106,7 @@ function ValueSource({ value }: { value: FieldValue }) {
   return (
     <>
       {value.changedFrom && <span className="text-slate-600"><s>{value.changedFrom.label}</s> →</span>}
-      <span className="rounded bg-slate-100 px-1.5 text-xs text-slate-700">{value.source}</span>
+      {value.source && <span className="rounded bg-slate-100 px-1.5 text-xs text-slate-700">{value.source}</span>}
       {value.reason && <span className="text-xs text-red-700">{value.reason}</span>}
     </>
   );

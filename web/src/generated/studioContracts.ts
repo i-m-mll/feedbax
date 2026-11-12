@@ -2509,6 +2509,59 @@ export type StudioAuthoredFileRevision = {
   "revision": Sha256;
 };
 
+export type StudioAuthoringChange = {
+  "field": string;
+  "value": string | number;
+};
+
+export type StudioAuthoringChoice = {
+  "kind": "choice";
+  "options": Array<StudioAuthoringOption>;
+};
+
+export type StudioAuthoringField = {
+  "id": string;
+  "label": string;
+  "value": string | number | null;
+  "source": StudioAuthoringSource | null;
+  "control": StudioAuthoringChoice | StudioAuthoringNumber | null;
+};
+
+export type StudioAuthoringMethod = {
+  "key": string;
+  "schema_id": string;
+  "schema_version": string;
+  "owner": string;
+  "package": string | null;
+  "plugin": string | null;
+  "payload_schema": Record<string, JsonValue>;
+};
+
+export type StudioAuthoringNumber = {
+  "kind": "number";
+  "min"?: number | null;
+  "max"?: number | null;
+  "step"?: number | null;
+};
+
+export type StudioAuthoringOption = {
+  "value": string;
+  "label": string;
+};
+
+export type StudioAuthoringSource = {
+  "kind": "document" | "step";
+  "name": string;
+  "path": string;
+};
+
+export type StudioAuthoringSurface = {
+  "project_grammar": Record<string, JsonValue>;
+  "step_payloads": Record<string, Record<string, JsonValue>>;
+  "document_schemas": Record<string, Record<string, JsonValue>>;
+  "training_methods": Array<StudioAuthoringMethod>;
+};
+
 export type StudioPresentationWrite = {
   "revision": Sha256;
   "presentation": PresentationDocument;
@@ -2550,6 +2603,20 @@ export type StudioProjectSnapshot = {
   "presentation": PresentationDocument | null;
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
+};
+
+export type StudioTrainAuthoring = {
+  "project_id": string;
+  "step_id": string;
+  "revision": Sha256;
+  "fields": Array<StudioAuthoringField>;
+  "patches": Array<SetProjectValue>;
+  "documents": Array<string>;
+};
+
+export type StudioTrainAuthoringRequest = {
+  "revision": Sha256;
+  "change"?: StudioAuthoringChange | null;
 };
 
 export type StudioTrainStep = {
@@ -6880,6 +6947,75 @@ export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevis
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoredFileRevision>;
 
+export const StudioAuthoringChangeSchema: z.ZodType<StudioAuthoringChange> = z.lazy(() =>
+  z.object({
+    "field": z.string(),
+    "value": z.union([z.string(), z.number().int().safe(), z.number().finite()]),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringChange>;
+
+export const StudioAuthoringChoiceSchema: z.ZodType<StudioAuthoringChoice> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("choice"),
+    "options": z.array(StudioAuthoringOptionSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringChoice>;
+
+export const StudioAuthoringFieldSchema: z.ZodType<StudioAuthoringField> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "label": z.string(),
+    "value": z.union([z.string(), z.number().int().safe(), z.number().finite(), z.null()]),
+    "source": z.union([StudioAuthoringSourceSchema, z.null()]),
+    "control": z.union([z.union([StudioAuthoringChoiceSchema, StudioAuthoringNumberSchema]), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringField>;
+
+export const StudioAuthoringMethodSchema: z.ZodType<StudioAuthoringMethod> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "schema_id": z.string(),
+    "schema_version": z.string(),
+    "owner": z.string(),
+    "package": z.union([z.string(), z.null()]),
+    "plugin": z.union([z.string(), z.null()]),
+    "payload_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringMethod>;
+
+export const StudioAuthoringNumberSchema: z.ZodType<StudioAuthoringNumber> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("number"),
+    "min": z.union([z.number().finite(), z.null()]).optional(),
+    "max": z.union([z.number().finite(), z.null()]).optional(),
+    "step": z.union([z.number().int().safe(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringNumber>;
+
+export const StudioAuthoringOptionSchema: z.ZodType<StudioAuthoringOption> = z.lazy(() =>
+  z.object({
+    "value": z.string(),
+    "label": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringOption>;
+
+export const StudioAuthoringSourceSchema: z.ZodType<StudioAuthoringSource> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step")]),
+    "name": z.string(),
+    "path": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringSource>;
+
+export const StudioAuthoringSurfaceSchema: z.ZodType<StudioAuthoringSurface> = z.lazy(() =>
+  z.object({
+    "project_grammar": z.record(z.string(), jsonValueSchema),
+    "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
+    "document_schemas": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
+    "training_methods": z.array(StudioAuthoringMethodSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringSurface>;
+
 export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -6936,6 +7072,24 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
+
+export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "step_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "revision": Sha256Schema,
+    "fields": z.array(StudioAuthoringFieldSchema),
+    "patches": z.array(SetProjectValueSchema),
+    "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainAuthoring>;
+
+export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 
 export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
   z.object({
@@ -7012,6 +7166,9 @@ export const contractSchemas = {
   StudioRunPreviewRequest: StudioRunPreviewRequestSchema,
   StudioRunSelection: StudioRunSelectionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
+  StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
+  StudioTrainAuthoring: StudioTrainAuthoringSchema,
+  StudioTrainAuthoringRequest: StudioTrainAuthoringRequestSchema,
   AuthoredFileAddress: AuthoredFileAddressSchema,
   RemoveProjectValue: RemoveProjectValueSchema,
   SetProjectValue: SetProjectValueSchema,
@@ -7102,6 +7259,9 @@ export interface ContractTypeMap {
   StudioRunPreviewRequest: StudioRunPreviewRequest;
   StudioRunSelection: StudioRunSelection;
   StudioSubmissionItem: StudioSubmissionItem;
+  StudioAuthoringSurface: StudioAuthoringSurface;
+  StudioTrainAuthoring: StudioTrainAuthoring;
+  StudioTrainAuthoringRequest: StudioTrainAuthoringRequest;
   AuthoredFileAddress: AuthoredFileAddress;
   RemoveProjectValue: RemoveProjectValue;
   SetProjectValue: SetProjectValue;

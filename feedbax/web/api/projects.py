@@ -7,6 +7,11 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_authoring import (
+    StudioAuthoringSurface,
+    StudioTrainAuthoring,
+    StudioTrainAuthoringRequest,
+)
 from feedbax.contracts.studio_project import (
     StudioPresentationWrite,
     StudioProjectCreateFile,
@@ -60,6 +65,38 @@ def _project_response[Result](response: Response, operation: Callable[[], Result
         ) from exc
     response.headers.update(_NO_STORE)
     return snapshot
+
+
+@router.get("/authoring/schema")
+def read_authoring_surface(request: Request, response: Response) -> StudioAuthoringSurface:
+    from feedbax.studio.authoring import authoring_surface
+
+    return _project_response(response, lambda: authoring_surface(request.app.state.bootstrap_state))
+
+
+@router.post("/{project_id}/authoring/train/{step_id}")
+def read_train_authoring(
+    project_id: ProjectName,
+    step_id: ProjectName,
+    body: StudioTrainAuthoringRequest,
+    request: Request,
+    response: Response,
+) -> StudioTrainAuthoring:
+    from feedbax.studio.authoring import project_train_fields
+
+    def project_fields() -> StudioTrainAuthoring:
+        snapshot = request.app.state.project_folders.read(project_id, revision=body.revision)
+        registry = request.app.state.bootstrap_state.bundle.training_programs
+        try:
+            fields, patches, documents = project_train_fields(snapshot.project, step_id, registry, body.change)
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        return StudioTrainAuthoring(
+            project_id=project_id, step_id=step_id, revision=snapshot.revision,
+            fields=fields, patches=patches, documents=documents,
+        )
+
+    return _project_response(response, project_fields)
 
 
 @router.post("/{project_id}/scene/planar")

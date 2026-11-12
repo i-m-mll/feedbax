@@ -314,6 +314,11 @@ from feedbax.web.models.trajectory import (
     TrajectoryData,
     TrajectoryMetadata,
 )
+from feedbax.contracts.studio_authoring import (
+    StudioAuthoringSurface,
+    StudioTrainAuthoring,
+    StudioTrainAuthoringRequest,
+)
 from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
     RemoveProjectValue,
@@ -360,6 +365,9 @@ JOB_MODELS = (
 )
 
 AUTHORED_CONTRACT_MODELS = (
+    StudioAuthoringSurface,
+    StudioTrainAuthoring,
+    StudioTrainAuthoringRequest,
     AuthoredFileAddress,
     RemoveProjectValue,
     SetProjectValue,

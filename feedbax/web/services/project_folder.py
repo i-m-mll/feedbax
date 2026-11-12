@@ -236,8 +236,11 @@ class ProjectFolderService:
     def open(self, project_id: str) -> StudioProjectDocument:
         return self._document(project_id, self._load(self._folder(project_id)))
 
-    def read(self, project_id: str) -> StudioProjectSnapshot:
-        return self.open(project_id).snapshot
+    def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:
+        text = self._load(self._folder(project_id))
+        if revision is not None:
+            _check_revision("project", revision, text.revision)
+        return self._snapshot(project_id, text)
 
     def read_plan(
         self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = ()
