@@ -20,6 +20,7 @@ from feedbax._secure_fs import (
     open_existing_file,
     recheck_directory_chain,
 )
+from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import default_manifest_root
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.intent_diff import first_request_change
@@ -46,6 +47,7 @@ from feedbax.contracts.jobs import (
     StudioTrainCheckpointSource,
 )
 from feedbax.contracts.manifest import (
+    OverridePatch,
     TrainingRunManifest,
     canonical_manifest_path,
     load_manifest_bytes,
@@ -57,6 +59,7 @@ from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
+from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, finite_coordinates
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -239,6 +242,7 @@ class JobService:
         *,
         run_keys: Sequence[RunKey],
         token: str,
+        checkpoint_catalog: tuple[int, ...] = (),
     ) -> StudioJobSubmission:
         """Admit selected Train rows from a server-issued saved Plan."""
         selected = {
@@ -259,6 +263,9 @@ class JobService:
                 for name, key in selected.items()
             },
         }
+        if checkpoint_catalog:
+            checkpoint_catalog = finite_coordinates(checkpoint_catalog)
+            command["checkpoint_catalog"] = list(checkpoint_catalog)
         if previous := self._retry(token, project=project, continues=None, command=command):
             return previous
 
@@ -311,7 +318,8 @@ class JobService:
                 }
                 runs[name] = data | {"request_id": run.request_id}
                 items[name] = self._training_item(
-                    project, run.request_id, spec, data, current.store_path, canonical_request=binding
+                    project, run.request_id, spec, data, current.store_path,
+                    canonical_request=binding, checkpoint_catalog=checkpoint_catalog,
                 )
             order = list(selected)
             if checkpoints:
@@ -362,6 +370,40 @@ class JobService:
             admitted, project=project, continues=None, command=command
         )
 
+    def admit_private_checkpoint_evaluation(
+        self, producer: str, coordinates: tuple[int, ...], *, evaluate_update: int,
+        variation: OverridePatch, token: str,
+    ) -> str:
+        """Admit the private CPU qualification over one explicit Train lineage."""
+        from feedbax.training.private_evaluation import PrivateEvaluationRequest
+
+        rows = self.host.jobs(job_id=producer, include_launch=True)
+        if not rows or not _is_studio_job(rows[0]):
+            raise JobNotFound(producer)
+        source = rows[0]
+        root = source["launch"]["payload"]["manifest_root"]
+        request = PrivateEvaluationRequest(
+            manifest_root=Path(root), producer=producer, producer_request=source["request"],
+            coordinates=finite_coordinates(coordinates), evaluate_update=evaluate_update,
+            variation=variation,
+        )
+        payload = request.model_dump(mode="json")
+        request_id = "private-checkpoint-evaluation:" + canonical_sha256(payload)
+        record = {"kind": "private_checkpoint_evaluation", "request": request_id}
+        item = AdmissionItem(
+            run_key=request_id,
+            job=Job(
+                id=uuid4().hex, project=source["project"], request=request_id,
+                launch=replace(self._training_worker, warm_entrypoint=EVALUATION_ENTRYPOINT, payload=payload),
+                data={"private_evaluation_root": root},
+                edges=(Edge(producer, authenticated_completion=True),),
+            ),
+        )
+        admitted = self._admit(token, [item], record)
+        if admitted["record"] != record:
+            raise JobConflict("This submission token belongs to another action.")
+        return admitted["items"][0]["job_id"]
+
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         anchors = [
             row["id"]
@@ -381,6 +423,7 @@ class JobService:
         root: Path,
         *,
         canonical_request: CanonicalTrainRequestBinding | None = None,
+        checkpoint_catalog: tuple[int, ...] = (),
     ) -> AdmissionItem:
         payload = BoundStudioTrainingJobInput(
             spec=spec,
@@ -389,6 +432,7 @@ class JobService:
             manifest_root=root,
             bootstrap_modules=self.bootstrap_modules,
             canonical_request=canonical_request,
+            checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
         return AdmissionItem(
             run_key=data["run_key"],
@@ -810,6 +854,11 @@ def _project_event(
         data = {
             key: value for key, value in data.items()
             if key not in {"completion", "completion_error"}
+        }
+    if kind == "publication":
+        data = {
+            key: value for key, value in data.items()
+            if key not in {"checkpoint_product", "checkpoint_product_error"}
         }
     return StudioJobEvent(
         cursor=event["cursor"],

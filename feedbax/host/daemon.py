@@ -16,7 +16,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from feedbax.host.completion import CompletionFileError, verify_completion_files
+from feedbax.host.checkpoint_selection import verify_dependency_files
+from feedbax.host.completion import CompletionFileError
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
@@ -195,7 +196,7 @@ class Host:
         bindings = self.store.completion_bindings(row["id"])
         try:
             for binding in bindings:
-                verify_completion_files(binding["completion"])
+                verify_dependency_files(binding)
         except CompletionFileError as error:
             with self.store.db:
                 self.store.finished(
