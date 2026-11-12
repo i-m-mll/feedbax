@@ -18,7 +18,7 @@ class IndexSelection(StrictModel):
     index: Annotated[StrictInt, Field(ge=0)]
 
 
-type Selection = StrictStr | StrictInt | StrictFloat | StrictBool | None | IndexSelection
+Selection = StrictStr | StrictInt | StrictFloat | StrictBool | None | IndexSelection
 
 
 class VariableBinding(StrictModel):
@@ -26,7 +26,7 @@ class VariableBinding(StrictModel):
     select: dict[Name, Selection] = Field(default_factory=dict)
 
 
-type Encoding = Name | VariableBinding
+Encoding = Name | VariableBinding
 
 
 class LineEncodings(StrictModel):
@@ -71,7 +71,7 @@ class BandLayer(_Layer):
     style: BandStyle = Field(default_factory=BandStyle)
 
 
-type FigureLayer = Annotated[LineLayer | BandLayer, Field(discriminator="mark")]
+FigureLayer = Annotated[LineLayer | BandLayer, Field(discriminator="mark")]
 
 
 class FigurePanel(StrictModel):
@@ -128,6 +128,12 @@ def layer_encodings(layer: FigureLayer) -> tuple[tuple[str, Encoding], ...]:
     return tuple((name, getattr(layer.encode, name)) for name in type(layer.encode).model_fields)
 
 
+class FigureBindingError(ValueError):
+    def __init__(self, path: str, detail: str):
+        super().__init__(detail)
+        self.path = path
+
+
 def validate_figure_bindings(
     figure: FigureDocument,
     schemas: Mapping[str, DatasetDescriptor | DatasetPort],
@@ -135,30 +141,40 @@ def validate_figure_bindings(
     """Check the declared fields without opening any numerical tensors."""
     missing = set(figure.data) - schemas.keys()
     if missing:
-        raise ValueError(f"Missing figure data roles: {sorted(missing)}")
-    for layer in figure.layers:
+        raise FigureBindingError("data", f"Missing figure data roles: {sorted(missing)}")
+    for index, layer in enumerate(figure.layers):
+        path = f"layers.{index}"
         schema = schemas[layer.role]
         coords = schema.coords if isinstance(schema, DatasetDescriptor) else schema.coordinates
         fields = schema.variables | coords
         for channel, encoding in layer_encodings(layer):
             variable = encoding if isinstance(encoding, str) else encoding.variable
             if variable not in fields:
-                raise ValueError(
-                    f"Layer {layer.name!r} channel {channel!r} names unknown field {variable!r}."
+                raise FigureBindingError(
+                    f"{path}.encode.{channel}",
+                    f"Layer {layer.name!r} channel {channel!r} names unknown field {variable!r}.",
                 )
             if isinstance(encoding, VariableBinding):
                 _validate_coordinates(
-                    encoding.select, coords, f"channel {channel!r} of {layer.name!r}"
+                    encoding.select,
+                    coords,
+                    f"{path}.encode.{channel}.select",
+                    f"channel {channel!r} of {layer.name!r}",
                 )
-        _validate_coordinates(layer.select, coords, f"selection of {layer.name!r}")
-        _validate_coordinates(layer.group, coords, f"group of {layer.name!r}")
+        _validate_coordinates(
+            layer.select, coords, path + ".select", f"selection of {layer.name!r}"
+        )
+        _validate_coordinates(layer.group, coords, path + ".group", f"group of {layer.name!r}")
 
 
 def _validate_coordinates(
     names: Mapping[str, Selection] | tuple[str, ...],
     coords: Mapping[str, FieldDescriptor],
+    path: str,
     context: str,
 ) -> None:
     for name in names:
         if name not in coords or len(coords[name].dims) != 1:
-            raise ValueError(f"Figure {context} requires a one-dimensional coordinate {name!r}.")
+            raise FigureBindingError(
+                path, f"Figure {context} requires a one-dimensional coordinate {name!r}."
+            )

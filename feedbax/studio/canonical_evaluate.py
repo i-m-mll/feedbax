@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import ValidationError
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
@@ -17,13 +16,18 @@ from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
-    OverridePatch,
     load_manifest_bytes,
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import EvaluationRequestSpec
+from feedbax.contracts.rollout import (
+    RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
+    ROLLOUT_TYPE as ROLLOUT_TYPE,
+    STATES_SCHEMA as STATES_SCHEMA,
+    RolloutParameters as RolloutParameters,
+)
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.workspace_replay import (
     WorkspaceReplayManifestRefs,
@@ -36,9 +40,6 @@ from feedbax.dataset import Dataset
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset
 
-ROLLOUT_TYPE = "feedbax.rollout"
-STATES_SCHEMA = "feedbax.candidate.evaluate.states.v1"
-RAW_STATES_SCHEMA = "feedbax.candidate.evaluate.raw_states.v1"
 STATES_MEDIA_TYPE = "application/vnd.safetensors"
 
 
@@ -48,21 +49,6 @@ class CannotRun(ValueError):
     def __init__(self, path: str, message: str):
         self.path = path
         super().__init__(f"{path}: {message}")
-
-
-class RolloutParameters(StrictModel):
-    seed: int = Field(strict=True, ge=0, lt=2**32)
-    trials: tuple[str, ...] = Field(min_length=1)
-    trial_policy: Literal["paired"]
-    retention: Literal["raw_states", "observations"] = "raw_states"
-    variation: tuple[OverridePatch, ...]
-
-    @field_validator("trials")
-    @classmethod
-    def _stable_trial_ids(cls, values):
-        if any(not value.strip() for value in values) or len(set(values)) != len(values):
-            raise ValueError("expected distinct nonempty authored trial IDs")
-        return values
 
 
 class EvaluationRequestBinding(StrictModel):
@@ -237,8 +223,7 @@ class EvaluationResult:
             store.open_owned_object(ref.object_ref) as path,
             open_dataset(path, expected_descriptor_sha256=ref.descriptor_sha256) as dataset,
         ):
-            expected_schema = RAW_STATES_SCHEMA if params.retention == "raw_states" else STATES_SCHEMA
-            if dataset.descriptor.schema_id != expected_schema:
+            if dataset.descriptor.schema_id != params.states_schema:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset
 

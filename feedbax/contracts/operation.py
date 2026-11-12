@@ -1,5 +1,7 @@
 """Portable discovery of pure operations and their labelled dataset ports."""
 
+from collections.abc import Mapping
+
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
@@ -28,3 +30,21 @@ class OperationDefinition(StrictModel):
     static_parameters: tuple[str, ...]
     inputs: dict[str, DatasetPort]
     outputs: dict[str, DatasetPort]
+
+
+def require_dataset_fields(
+    actual: Mapping[str, FieldDescriptor],
+    expected: Mapping[str, FieldDescriptor],
+) -> None:
+    """Require declared fields with their dimensions and scientific metadata."""
+    for name, required in expected.items():
+        field = actual.get(name)
+        if (
+            field is None
+            or field.dims != required.dims
+            or (required.units is not None and field.units != required.units)
+            or (required.frame is not None and field.frame != required.frame)
+        ):
+            raise ValueError(
+                f"Dataset field {name!r} requires {required.dims} with the declared units and frame."
+            )

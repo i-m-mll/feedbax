@@ -26,10 +26,8 @@ from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.studio.canonical_evaluate import (
-    RAW_STATES_SCHEMA,
     ROLLOUT_TYPE,
     STATES_MEDIA_TYPE,
-    STATES_SCHEMA,
     BoundEvaluationJobInput,
     CannotRun,
     RolloutParameters,
@@ -295,7 +293,7 @@ def _rollouts(
             "transition_end": Variable(time[1:], ("transition",), units="s"),
         },
         attrs=attrs,
-        schema_id=RAW_STATES_SCHEMA if raw else STATES_SCHEMA,
+        schema_id=params.states_schema,
     ), {"objective/total": float(np.mean(totals))}
 
 

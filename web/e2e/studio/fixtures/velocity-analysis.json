@@ -1,0 +1,25 @@
+{
+  "schema_version": "feedbax.analysis_document.v1",
+  "operations": {
+    "align": {
+      "operation": "feedbax.aligned_velocity",
+      "params": {
+        "position": "/v1/model/state/plant/effector~1position",
+        "velocity": "/v1/model/state/plant/effector~1velocity",
+        "target": "/v1/task/output/reach_target"
+      },
+      "inputs": {"states": {"input": "states"}}
+    },
+    "summarize": {
+      "operation": "feedbax.summarize_velocity",
+      "params": {"ddof": 1, "bounds_scale": 1.0},
+      "inputs": {"velocity": {"element": "align", "product": "velocity"}}
+    }
+  },
+  "views": {
+    "profile": {
+      "figure": {"document": "velocity-figure"},
+      "inputs": {"summary": {"element": "summarize", "product": "summary"}}
+    }
+  }
+}

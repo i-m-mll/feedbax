@@ -13,9 +13,9 @@ from feedbax.analysis.aligned import project_onto_direction
 from feedbax.analysis.operations import DatasetOutput, OperationRegistry
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.operation import DatasetPort
+from feedbax.contracts.operation import DatasetPort, require_dataset_fields
 from feedbax.dataset import Dataset, Variable
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, STATES_SCHEMA
+from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
 
 
 _MEMBER_AXES = ("checkpoint", "condition", "trial")
@@ -103,23 +103,14 @@ class VelocitySummaryParameters(StrictModel):
     )
 
 
-def _check_fields(actual, expected) -> None:
-    for name, required in expected.items():
-        field = actual.get(name)
-        if field is None or field.dims != required.dims or (
-            required.units is not None and field.units != required.units
-        ) or (required.frame is not None and field.frame != required.frame):
-            raise ValueError(f"Dataset field {name!r} requires {required.dims} with the declared units and frame.")
-
-
 def _require_dataset(dataset: Dataset, port: DatasetPort, params: StrictModel) -> None:
     descriptor = dataset.descriptor
     if descriptor.schema_id not in port.schema_ids:
         raise ValueError(f"Dataset schema {descriptor.schema_id!r} is not one of {port.schema_ids}.")
-    _check_fields(descriptor.variables, port.variables)
+    require_dataset_fields(descriptor.variables, port.variables)
     for parameter, field in port.selected_variables.items():
-        _check_fields(descriptor.variables, {getattr(params, parameter): field})
-    _check_fields(descriptor.coords, port.coordinates)
+        require_dataset_fields(descriptor.variables, {getattr(params, parameter): field})
+    require_dataset_fields(descriptor.coords, port.coordinates)
 
 
 def _product(port: DatasetPort, source: Dataset, arrays) -> Dataset:
