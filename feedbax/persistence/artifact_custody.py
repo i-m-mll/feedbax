@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Literal
+from typing import TYPE_CHECKING, Any, Iterator, Literal
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -62,6 +62,9 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.strict_json import strict_json_loads
+
+if TYPE_CHECKING:
+    from feedbax.contracts.project_io import TextProject
 
 
 _ARTIFACT_ID_PREFIX = "artifact://sha256/"
@@ -347,6 +350,8 @@ def _stage_blob(
     destination: Path,
     expected_identity: tuple[str, int],
     write_payload: Callable[[int], None],
+    *,
+    validate: Callable[[Path], None] | None = None,
 ) -> os.stat_result:
     records = _open_directory_chain(destination.parent, create=True)
     parent_descriptor = records[-1][1]
@@ -365,6 +370,9 @@ def _stage_blob(
             dir_fd=staging_descriptor,
         )
         write_payload(temporary_descriptor)
+        if validate is not None:
+            os.lseek(temporary_descriptor, 0, os.SEEK_SET)
+            validate(_descriptor_path(temporary_descriptor))
         os.fsync(temporary_descriptor)
         if _stream_file_descriptor(temporary_descriptor) != expected_identity:
             raise ArtifactBlobIntegrityError(f"staged blob failed verification: {destination}")
@@ -424,10 +432,20 @@ def _stage_blob(
         _close_directory_chain(records)
 
 
-def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
-    identity = hashlib.sha256(data).hexdigest(), len(data)
+def _stage_blob_bytes(
+    data: bytes,
+    destination: Path,
+    *,
+    identity: tuple[str, int] | None = None,
+    validate: Callable[[Path], None] | None = None,
+) -> os.stat_result:
+    if identity is None:
+        identity = hashlib.sha256(data).hexdigest(), len(data)
     return _stage_blob(
-        destination, identity, lambda descriptor: _write_file_descriptor(descriptor, data)
+        destination,
+        identity,
+        lambda descriptor: _write_file_descriptor(descriptor, data),
+        validate=validate,
     )
 
 
@@ -581,6 +599,10 @@ def _read_content_object(path: Path, digest: str, expected_size: int) -> bytes:
     if hashlib.sha256(data).hexdigest() != digest:
         raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
     return data
+
+
+def _descriptor_path(descriptor: int) -> Path:
+    return Path("/dev/fd") / str(descriptor)
 
 
 def verify_content_file(path: Path, object_ref: ContentObjectRef) -> None:
@@ -758,26 +780,30 @@ class ImmutableArtifactBlobProvider:
 
         return recover_garbage_collection(self)
 
-    def store_object(self, data: bytes) -> ContentObjectRef:
-        """Store one role-free exact byte object in the canonical CAS."""
+    def store_object(
+        self,
+        data: bytes,
+        *,
+        expected: ContentObjectRef | None = None,
+        validate: Callable[[Path], None] | None = None,
+    ) -> ContentObjectRef:
+        """Check the supplied identity and staged contents before publication."""
         if not isinstance(data, bytes):
             raise TypeError("content object data must be bytes")
-        digest = hashlib.sha256(data).hexdigest()
+        identity = hashlib.sha256(data).hexdigest(), len(data)
+        if expected is not None and identity != _object_identity(expected):
+            raise ArtifactBlobIntegrityError(f"content bytes do not match {expected.object_id}")
+        digest, _ = identity
         destination = self._canonical_path(digest)
         self._validate_store_target(destination)
         with self._exclusive_lock():
             self._validate_store_target(destination)
-            written = _stage_blob_bytes(data, destination)
-            ref = ContentObjectRef(
+            written = _stage_blob_bytes(data, destination, identity=identity, validate=validate)
+            return ContentObjectRef(
                 object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}",
                 sha256=digest,
                 size_bytes=written.st_size,
             )
-            if self.get_object(ref) != data:
-                raise ArtifactBlobIntegrityError(
-                    f"pre-existing content object differs from stored payload: {ref.object_id}"
-                )
-            return ref
 
     def store_rooted_object(self, data: bytes, *, namespace: str) -> ContentObjectRef:
         """Store an imported object and retain its exact identity in one transaction."""
@@ -880,6 +906,17 @@ class ImmutableArtifactBlobProvider:
         """Derive the canonical path for a pinned object without reading it."""
         digest, _ = _object_identity(object_ref)
         return self._canonical_path(digest)
+
+    @contextmanager
+    def open_owned_object(self, object_ref: ContentObjectRef) -> Iterator[Path]:
+        """Borrow a verified store object's pinned file for a selective reader.
+
+        Ingress establishes the byte identity. The borrow checks containment,
+        size and stability without hashing payloads.
+        """
+        digest, size_bytes = _object_identity(object_ref)
+        with _open_blob_for_read(self._canonical_path(digest), size_bytes) as descriptor:
+            yield _descriptor_path(descriptor)
 
     def verify_object(self, object_ref: ContentObjectRef) -> None:
         """Verify one pinned object in bounded chunks."""
@@ -1542,6 +1579,11 @@ class ImmutableArtifactBlobProvider:
         raise ArtifactBlobContainmentError(
             f"materialization destination must be outside custody CAS: {destination}"
         )
+
+
+def open_project_store(project: TextProject) -> ImmutableArtifactBlobProvider:
+    """Bind the existing object owner to the store declared by a text project."""
+    return ImmutableArtifactBlobProvider(root=project.store_path)
 
 
 def open_immutable_artifact_blob_provider(

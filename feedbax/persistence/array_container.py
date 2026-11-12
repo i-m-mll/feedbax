@@ -273,6 +273,15 @@ class ArrayContainerReader:
             raise ArrayContainerError(f"cannot read tensor {name!r}: {exc}") from exc
         return _authenticate_tensor(name, array, record)
 
+    def verify_tensors(self) -> None:
+        """Authenticate each tensor in turn without retaining the decoded arrays."""
+        try:
+            self._open_payload()
+        except SafetensorError as exc:
+            raise ArrayContainerError(f"cannot open safetensors payload: {exc}") from exc
+        for name in self.descriptor.tensors:
+            self.read_tensor(name)
+
     def read_unverified_slice(
         self, name: str, selection: int | slice | tuple[int | slice, ...]
     ) -> np.ndarray:
