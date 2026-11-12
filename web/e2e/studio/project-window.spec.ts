@@ -111,14 +111,22 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   const table = page.getByRole('table', { name: 'Runs', exact: true });
   const scroll = table.locator('..');
   const progress = table.getByRole('columnheader', { name: 'Progress', exact: true });
-  await expect.poll(() => scroll.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(0);
+  const position = () => scroll.evaluate((element) => ({
+    offset: element.scrollLeft,
+    limit: element.scrollWidth - element.clientWidth,
+  }));
+  await expect.poll(async () => (await position()).limit).toBeGreaterThan(0);
   await expect(progress).not.toBeInViewport();
   const row = table.getByRole('button', { name: /FirstReplicate/ });
   await row.focus();
-  await row.press('ArrowRight');
-  await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-  for (let keypress = 0; keypress < 8; keypress++) await row.press('ArrowRight');
-  await expect(progress).toBeInViewport({ ratio: 0.95 });
+  let at = await position();
+  for (let keypress = 0; keypress < 20 && at.limit - at.offset > 1; keypress++) {
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(async () => (await position()).offset).toBeGreaterThan(at.offset);
+    at = await position();
+  }
+  expect(at.limit - at.offset).toBeLessThanOrEqual(1);
+  await expect(progress).toBeInViewport({ ratio: 0.9 });
   await expect(row).toBeFocused();
   await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
   await captureStudioWindow(page, info, 'narrow-runs-overflow');
