@@ -157,7 +157,12 @@ def _encode_field(
 
 
 def encode(
-    value: Any, annotation: Any, pins: Mapping | None = None, *, explicit: bool = False
+    value: Any,
+    annotation: Any,
+    pins: Mapping | None = None,
+    *,
+    explicit: bool = False,
+    projected_fields: Mapping[str, Any] | None = None,
 ) -> Any:
     """Project a typed value into JSON. With pins, omit equal absent values."""
     annotation = _annotation(annotation)
@@ -176,7 +181,11 @@ def encode(
             if _omitted(model, name) or (explicit and name not in value.model_fields_set):
                 continue
             row = rows.get(name, {})
-            projected = _encode_field(model, name, item, pins, explicit=explicit)
+            projected = (
+                projected_fields[name]
+                if projected_fields is not None and name in projected_fields
+                else _encode_field(model, name, item, pins, explicit=explicit)
+            )
             if "absent" in row and canonical_json_v2_bytes(projected) == canonical_json_v2_bytes(
                 _project_absent(model, name, row["absent"], pins)
             ):

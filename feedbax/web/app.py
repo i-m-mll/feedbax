@@ -36,6 +36,7 @@ from feedbax.web.orchestration.controller import StudioController
 from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.desktop_jobs import NativeTrainingJobs, StudioJobLifecycle
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.services.training_service import _orchestration_parent_root, training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
@@ -58,6 +59,7 @@ def create_app(
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
         )
+        app.state.project_plan = ProjectPlanService(app.state.project_folders, app.state.job_service)
         if desktop_job_root is None:
             try:
                 training_service.rebuild_cache_from_state_docs()

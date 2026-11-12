@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.matrix_core import apply_override_patch_in_place
+from feedbax.contracts.matrix_core import apply_override_patch_copy
 
 type SourceKind = Literal["document", "step", "sweep_value", "exception", "variant", "upstream"]
 type Path = tuple[str, ...]
@@ -27,6 +27,9 @@ class ValueSource:
     value: str | None = None
     variant: str | None = None
     row: str | None = None
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> ValueSource:
+        return self
 
     def child(self, part: str) -> ValueSource:
         return replace(self, path=self.path + pointer((part,)))
@@ -93,18 +96,9 @@ def first_source(shape: Any) -> ValueSource | None:
     return None
 
 
-def patch_source(shape: dict[str, Any], patch: OverridePatch, source: Any = None) -> None:
+def patch_source(
+    shape: dict[str, Any], patch: OverridePatch, source: Any = None
+) -> dict[str, Any]:
     if patch.op != "remove":
         patch = patch.model_copy(update={"value": source})
-    apply_override_patch_in_place(shape, patch)
-
-
-def source_leaves(shape: Any, path: Path = ()) -> Iterator[tuple[str, ValueSource]]:
-    if isinstance(shape, dict) and shape:
-        for key, value in shape.items():
-            yield from source_leaves(value, (*path, key))
-    elif isinstance(shape, list) and shape:
-        for i, value in enumerate(shape):
-            yield from source_leaves(value, (*path, str(i)))
-    elif (source := first_source(shape)) is not None:
-        yield pointer(path), source
+    return apply_override_patch_copy(shape, patch)
