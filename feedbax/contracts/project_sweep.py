@@ -349,6 +349,15 @@ class ExpandedRow:
     input_keys: Mapping[str, str]
     patch_origins: Mapping[str, PatchOrigin] = field(default_factory=dict)
     patch_authors: Mapping[str, str] = field(default_factory=dict)
+    axis_value_ids: Mapping[str, str] = field(default_factory=dict)
+
+    def inherited_id(self, axes: tuple[str, ...]) -> str | None:
+        """Project generated choices onto the inherited axes, or keep an authored row ID."""
+        if not self.axis_value_ids:
+            return self.id
+        if not axes or any(name not in self.axis_value_ids for name in axes):
+            return None
+        return _generated_row_id({name: self.axis_value_ids[name] for name in axes})
 
 
 DEFAULT_SWEEP_ROW = "default"
@@ -688,8 +697,13 @@ def _row_key(key: str) -> str:
     return "=" + sha256_bytes(canonical_json_v2_bytes(key))
 
 
+def _generated_row_id(values: Mapping[str, str]) -> str:
+    return "--".join(f"{name}={_row_key(values[name])}" for name in sorted(values))
+
+
 def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) -> ExpandedRow:
-    row_id = "--".join(f"{name}={_row_key(selection[name].key)}" for name in sorted(axes))
+    axis_value_ids = {name: choice.key for name, choice in selection.items()}
+    row_id = _generated_row_id(axis_value_ids)
     coordinates: dict[str, SweepCoordinate] = {}
     patches: dict[str, PatchValue] = {}
     origins: dict[str, PatchOrigin] = {}
@@ -732,7 +746,9 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
             origins[path] = ("sweep_value", name, choice.key)
             patches[path] = patch
         authors.update(choice.patch_authors)
-    return ExpandedRow(row_id, ", ".join(labels), coordinates, patches, bindings, origins, authors)
+    return ExpandedRow(
+        row_id, ", ".join(labels), coordinates, patches, bindings, origins, authors, axis_value_ids
+    )
 
 
 def _select_exception_rows(

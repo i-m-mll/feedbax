@@ -16,7 +16,7 @@ from pydantic_core import to_json
 from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
-from feedbax.contracts.project import Document, Payload, Project, StepBase, StepKind
+from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -40,6 +40,7 @@ from feedbax.contracts.project_resolution import (
     compose_step,
 )
 from feedbax.contracts.project_sweep import (
+    DEFAULT_SWEEP_ROW,
     ExpandedRow,
     InputAxis,
     SweepCoordinate,
@@ -164,6 +165,20 @@ def _checkpoint(rule: CheckpointRule | None) -> ProductSelector | None:
             return BatchMember(batch=batch)
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
+
+
+def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str | None:
+    if (
+        step.kind == "train"
+        and isinstance(step.base, StepBase)
+        and step.base.row is None
+        and isinstance(reference, StepReference)
+        and reference.step == step.base.step
+        and reference.row is None
+        and reference.variants is None
+    ):
+        return reference.step
+    return None
 
 
 type _DocumentStamp = tuple[str, str | None]
@@ -353,6 +368,7 @@ class _Compiler:
         self.steps: dict[tuple[str, str], PlannedStep] = {}
         self.rows: dict[RunKey, PlannedRow] = {}
         self.runs: dict[tuple[str, str], tuple[PlannedRun, ...]] = {}
+        self.swept_step_axes: dict[tuple[str, str], tuple[str, ...]] = {}
         self.requests: dict[RequestId, bytes] = {}
         self.documents: dict[str, bytes] = {}
         self.diagnostics: list[ProjectDiagnostic] = []
@@ -647,6 +663,11 @@ class _Compiler:
         self.steps[variant, name] = replace(
             step, inputs=MappingProxyType(deepcopy(dict(template.inputs)))
         )
+        sweep = template.sweep
+        if sweep is not None:
+            axes = tuple(axis for axis, value in sweep.axes.items() if value is not None)
+            if axes or any(row is not None for row in sweep.rows.values()):
+                self.swept_step_axes[variant, name] = axes
         extra_roles = sorted(template.inputs.keys() - {role.name})
         if extra_roles:
             self.diagnostics.extend(
@@ -668,6 +689,7 @@ class _Compiler:
         if subset is not None:
             self.subsets[variant, name, role.name] = subset
         by_key = {item.member.key: item for item, _ in members}
+        paired_step = _paired_checkpoint_step(authored, template.inputs.get(role.name))
         rows = self.expand_rows(variant, name, template, role, members)
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
@@ -681,12 +703,26 @@ class _Compiler:
             self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
             key = row.input_keys.get(role.name)
             chosen = by_key[key] if key is not None else None
-            if chosen is None and len(members) > 1:
+            if chosen is None and paired_step is not None:
+                parent_axes = self.swept_step_axes.get((variant, paired_step))
+                inherited_id = (
+                    DEFAULT_SWEEP_ROW if parent_axes is None else row.inherited_id(parent_axes)
+                )
+                if inherited_id is not None:
+                    chosen = by_key.get(inherited_id)
+            if chosen is None and (paired_step is not None or len(members) > 1):
+                candidates = ", ".join(by_key) or "none"
+                detail = f"role requires one row; candidates are {candidates}"
+                if paired_step is not None:
+                    detail = (
+                        f"no inherited row in {paired_step!r} matches {row.id!r}. "
+                        f"Candidates: {candidates}. Select one row or use a {role.name} input axis."
+                    )
                 self.diagnostics.append(
                     ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE,
                         f"inputs.{role.name}",
-                        f"role requires one row; candidates are {', '.join(by_key)}",
+                        detail,
                         name,
                         row=row.id,
                         variant=variant,

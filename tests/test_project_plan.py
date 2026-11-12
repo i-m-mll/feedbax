@@ -11,7 +11,7 @@ from feedbax.contracts.project_io import (
     load_text_project,
     parse_studio_project,
 )
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.project_sweep import (
     SweepInputMember,
@@ -128,6 +128,179 @@ def test_fanout_selects_rows_and_requires_a_valid_static_subject():
             request_id=producer.request_id, role="checkpoint", select=LastMember()
         )
     assert {run.requires for run in producers.values()} == {("seed",)}
+
+
+def _chained_train_data():
+    data, _ = _project_data()
+    steps = data["steps"]
+    del steps["evaluate"]
+    steps["fit"]["sweep"] = {
+        "axes": {
+            "seed": {
+                "values": {
+                    "a": {"label": "Replicate", "patches": {"seed": {"value": 1}}},
+                    "b": {"label": "Replicate", "patches": {"seed": {"value": 2}}},
+                }
+            }
+        },
+        "rows": {"manual": {"patches": {"seed": {"value": 99}}}},
+    }
+    for name in ("flat", "rewarm"):
+        steps[name] = {
+            "kind": "train",
+            "base": {"step": "fit"},
+            "inputs": {"checkpoint": {"step": "fit", "checkpoint": "last"}},
+        }
+    steps["flat"]["sweep"] = {
+        "axes": {
+            "rate": {
+                "values": {
+                    "fast": {"patches": {"training_config.learning_rate": {"value": 0.001}}},
+                    "slow": {"patches": {"training_config.learning_rate": {"value": 0.0001}}},
+                }
+            }
+        }
+    }
+    steps["rewarm"]["deltas"] = [
+        {"layer_id": "rewarm", "patches": [{"path": "training_config.n_batches", "value": 50}]}
+    ]
+    return data
+
+
+def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_edit():
+    data = _chained_train_data()
+    data["sweep"] = {
+        "rows": {
+            "baseline": {},
+            "alternate": {
+                "patches": {
+                    "steps.fit.base.inline.training_config.n_batches": {"value": 40}
+                }
+            },
+        }
+    }
+    memo = ProjectPlanMemo()
+    selected = RunKey("alternate", "flat", "rate=fast--seed=b")
+    before = compile_project(Project.model_validate(data), memo=memo, source_runs=[selected])
+    assert not before.diagnostics
+    runs = {run.key: run for run in before.runs}
+    assert len(runs) == 2 * (3 + 5 + 3)
+    for run in runs.values():
+        if run.key.step == "fit":
+            assert not run.inputs
+            continue
+        parent_row = f"seed={run.coordinates['seed'].value_id}" if run.coordinates else "manual"
+        parent = runs[RunKey(run.key.variant, "fit", parent_row)]
+        checkpoint = run.inputs["checkpoint"]
+        assert checkpoint.producer == parent.key
+        request = decode_request(before.requests[run.request_id], before.documents.__getitem__)
+        assert request.inputs == {
+            "checkpoint": (
+                InputMember(
+                    key=parent_row,
+                    reference=ProductRef(
+                        request_id=parent.request_id, role="checkpoint", select=LastMember()
+                    ),
+                ),
+            )
+        }
+    source = before.sources[selected]["/inputs/checkpoint"]
+    assert (source.step, source.variant, source.row) == ("fit", "alternate", "seed=b")
+
+    data["steps"]["flat"]["sweep"]["exceptions"] = {
+        "extend": {
+            "where": {"axes": {"seed": ["b"], "rate": ["fast"]}},
+            "patches": {"training_config.n_batches": {"value": 80}},
+        }
+    }
+    edited = Project.model_validate(data)
+    after = compile_project(edited, memo=memo, source_runs=[selected])
+    assert after == compile_project(edited, source_runs=[selected])
+    assert not after.diagnostics
+    assert {run.key for run in after.runs} == set(runs)
+    assert {
+        run.key for run in after.runs if run.request_id != runs[run.key].request_id
+    } == {RunKey(variant, "flat", selected.row) for variant in before.variants}
+
+
+def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
+    data = _chained_train_data()
+    flat = data["steps"]["flat"]
+    flat["sweep"]["axes"]["seed"] = None
+    flat["sweep"]["inherit_rows"] = False
+    plan = compile_project(Project.model_validate(data))
+    assert {
+        (problem.step, problem.variant, problem.row, problem.path) for problem in plan.diagnostics
+    } == {
+        ("flat", "default", f"rate={rate}", "inputs.checkpoint") for rate in ("fast", "slow")
+    }
+    assert all(problem.code == ResolutionCode.BAD_REFERENCE for problem in plan.diagnostics)
+    assert all("manual, seed=a, seed=b" in problem.detail for problem in plan.diagnostics)
+    assert all(run.key.step != "flat" for run in plan.runs)
+
+    flat["inputs"]["checkpoint"]["where"] = {"rows": ["seed=b", "manual"]}
+    flat["sweep"]["axes"]["parent"] = {"input": "checkpoint"}
+    mapped = compile_project(Project.model_validate(data))
+    assert not mapped.diagnostics
+    parents = [
+        run.inputs["checkpoint"].producer.row for run in mapped.runs if run.key.step == "flat"
+    ]
+    assert sorted(parents) == ["manual", "manual", "seed=b", "seed=b"]
+
+
+def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
+    data = _chained_train_data()
+    checkpoint = data["steps"]["flat"]["inputs"]["checkpoint"]
+    checkpoint["where"] = {"axes": {"seed": ["b"]}}
+    plan = compile_project(Project.model_validate(data))
+    assert {problem.row for problem in plan.diagnostics} == {
+        "manual",
+        "rate=fast--seed=a",
+        "rate=slow--seed=a",
+    }
+    assert all(
+        problem.step == "flat" and problem.path == "inputs.checkpoint"
+        and "Candidates: seed=b." in problem.detail
+        for problem in plan.diagnostics
+    )
+    flat = [run for run in plan.runs if run.key.step == "flat"]
+    assert {run.key.row for run in flat} == {"rate=fast--seed=b", "rate=slow--seed=b"}
+    assert all(run.inputs["checkpoint"].producer.row == "seed=b" for run in flat)
+
+    del checkpoint["where"]
+    checkpoint["row"] = "seed=b"
+    explicit = compile_project(Project.model_validate(data))
+    assert not explicit.diagnostics
+    flat = [run for run in explicit.runs if run.key.step == "flat"]
+    assert len(flat) == 5
+    assert all(run.inputs["checkpoint"].producer.row == "seed=b" for run in flat)
+
+
+def test_only_an_unswept_checkpoint_defaults_across_suffix_local_axes():
+    data = _chained_train_data()
+    prefix = data["steps"]["fit"]
+    del prefix["sweep"]["rows"]
+    del prefix["sweep"]["axes"]["seed"]["values"]["b"]
+    data["steps"]["flat"]["sweep"]["axes"]["seed"] = {
+        "values": {"a": None, "new": {"patches": {"seed": {"value": 2}}}}
+    }
+    plan = compile_project(Project.model_validate(data))
+    assert {problem.row for problem in plan.diagnostics} == {
+        "rate=fast--seed=new", "rate=slow--seed=new"
+    }
+    assert all(
+        problem.step == "flat" and "Candidates: seed=a." in problem.detail
+        for problem in plan.diagnostics
+    )
+    assert all(run.key.step != "flat" for run in plan.runs)
+
+    del prefix["sweep"]
+    del data["steps"]["flat"]["sweep"]["axes"]["seed"]
+    default = compile_project(Project.model_validate(data))
+    assert not default.diagnostics
+    flat = [run for run in default.runs if run.key.step == "flat"]
+    assert {run.key.row for run in flat} == {"rate=fast", "rate=slow"}
+    assert all(run.inputs["checkpoint"].producer == RunKey("default", "fit", "default") for run in flat)
 
 
 def test_invalid_row_is_diagnosed_without_rebinding_the_consumer():
