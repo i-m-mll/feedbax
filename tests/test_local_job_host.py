@@ -582,9 +582,7 @@ def test_authenticated_completion_resolves_exact_resume_branches(
     later_source = (
         first.id if first_result == "stopped" and success_source == original.id else original.id
     )
-    later_checkpoint = (
-        first_row["checkpoint"] if later_source == first.id else original_checkpoint
-    )
+    later_checkpoint = first_row["checkpoint"] if later_source == first.id else original_checkpoint
     later = completion_worker("later", continues=later_source, resume=later_checkpoint)
     admit(host, "later-resume", later)
     (tmp_path / "release-later").touch()
@@ -776,7 +774,28 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
         edges=(Edge(producer, authenticated_completion=True), Edge("gate")),
         slot="light",
     )
-    internal = admit(host, "real-completion", consumer, _completion_gate(tmp_path, project=project))
+    # Give this probe Studio job metadata so its events reach the public
+    # projection. The withheld publication keeps it out of worker delivery.
+    visible_consumer = replace(
+        run_job(
+            "visible-consumer",
+            "raise AssertionError('Withheld publication must prevent delivery')",
+            project=project,
+            edges=(
+                Edge(producer, authenticated_completion=True),
+                Edge("gate", "withheld"),
+            ),
+            slot="light",
+        ),
+        data=job_row(host, producer)["data"],
+    )
+    internal = admit(
+        host,
+        "real-completion",
+        consumer,
+        visible_consumer,
+        _completion_gate(tmp_path, project=project),
+    )
     listed = client.get("/api/submissions", params={"project": project})
     assert listed.status_code == 200, listed.text
     assert listed.json() == [submitted.json()]
@@ -805,6 +824,15 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     cursor = host.jobs_snapshot()["cursor"]
     restart(host)
     assert job_row(host, consumer.id)["state"] == "queued"
+
+    mismatched = replace(
+        run_job("mismatched-resume", "pass", project=project, request=stopped["request"]),
+        continues=producer,
+    )
+    admit(host, "mismatched-continuation", mismatched)
+    wait_until(lambda: job_row(host, mismatched.id, "succeeded"))
+    assert job_row(host, consumer.id)["state"] == "queued"
+    assert _bound_edge(host) is None
 
     resumed = client.post(f"/api/jobs/{producer}/resume", json={"token": "ordinary-m1-resumed"})
     assert resumed.status_code == 202, resumed.text
@@ -835,21 +863,41 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert job_row(host, consumer.id)["delivery"] == 1
     assert json.loads((tmp_path / "verified.json").read_text()) == pinned
     raw = host.events(after=cursor, projects=(project,))
-    assert [event["data"] for event in raw["events"] if event["kind"] == "dependency_bound"] == [
-        pinned
+    assert [
+        event["data"]
+        for event in raw["events"]
+        if event["job_id"] == consumer.id and event["kind"] == "dependency_bound"
+    ] == [pinned]
+    (refusal,) = [
+        event
+        for event in raw["events"]
+        if event["job_id"] == visible_consumer.id and event["kind"] == "dependency_rejected"
     ]
+    assert refusal["data"]["candidate_job_id"] == mismatched.id
+    assert refusal["data"]["stage"] == "continuation"
+    hidden_history = client.get(
+        "/api/events/history",
+        params={"project": project, "after": refusal["cursor"] - 1, "through": refusal["cursor"]},
+    )
+    assert hidden_history.status_code == 200, hidden_history.text
+    assert hidden_history.json() == {"cursor": refusal["cursor"], "oldest_cursor": 0, "events": []}
     history = client.get(
         "/api/events/history", params={"project": project, "after": cursor, "through": raw["head"]}
     )
     assert history.status_code == 200, history.text
     assert history.json()["cursor"] == raw["head"]
     public = history.json()["events"]
-    assert {event["job_id"] for event in public} == {continued}
-    (published,) = [event["data"] for event in public if event["kind"] == "terminal"]
+    assert any(event["job_id"] == visible_consumer.id for event in public)
+    assert {event["job_id"] for event in public} == {continued, visible_consumer.id}
+    (published,) = [
+        event["data"]
+        for event in public
+        if event["job_id"] == continued and event["kind"] == "terminal"
+    ]
     assert published["receipt"] == completion["receipt"]
     assert published["checkpoint"] == completion["checkpoint"]
     assert not any(
-        event["kind"] == "dependency_bound"
+        event["kind"] in {"dependency_bound", "dependency_rejected"}
         or {"completion", "completion_error"} & event["data"].keys()
         for event in public
     ), "Detailed history exposed host-only completion evidence."
@@ -917,6 +965,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert any(f"id: {raw['head']}\nevent: replay_complete\n" in frame for frame in replay)
     assert not any(
         '"kind":"dependency_bound"' in frame
+        or '"kind":"dependency_rejected"' in frame
         or '"completion":' in frame
         or '"completion_error":' in frame
         for frame in replay

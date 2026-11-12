@@ -45,6 +45,7 @@ from feedbax.studio.training_requests import (
 
 
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
+_HOST_ONLY_EVENTS = frozenset({"dependency_bound", "dependency_rejected"})
 _ACTIVITY_EVENTS = frozenset(
     {
         "queued",
@@ -392,7 +393,7 @@ class JobService:
     def _visible_events(
         self, events: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        visible = [event for event in events if event["kind"] != "dependency_bound"]
+        visible = [event for event in events if event["kind"] not in _HOST_ONLY_EVENTS]
         if not visible:
             return [], {}
         ids = tuple(dict.fromkeys(event["job_id"] for event in visible))
