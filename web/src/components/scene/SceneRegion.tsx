@@ -251,7 +251,15 @@ function isDrawerAnchor(scene: ResolvedScene, anchor: ResolvedScene['anchors'][n
   return isJoint(anchor) || scene.entities.some((entity) => entity.id === anchor.entity_id && entity.kind === 'task_object');
 }
 
-export function SceneDrawer({ scene, selectedId, onSelect, palette }: SceneSelection & { scene: ResolvedScene; palette?: ReactNode }) {
+export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: SceneSelection & {
+  scene: ResolvedScene;
+  palette?: ReactNode;
+  trials?: {
+    choices: readonly { id: string; label: string }[];
+    selectedId: string | null;
+    onSelect: (id: string) => void;
+  };
+}) {
   const muscleIds = new Set(scene.elements.filter((element) => element.archetype === 'muscle_path').map((element) => element.entity_id));
   const groups = new Map<DrawerGroup, { id: string; label: string }[]>();
   function add(group: DrawerGroup, item: { id: string; label: string }) {
@@ -270,6 +278,15 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette }: SceneSelec
   }
   return (
     <div className="space-y-3">
+      {trials && trials.choices.length > 0 && (
+        <label className="grid gap-1 px-2 text-sm">
+          {studioName('trials')}
+          <select value={trials.selectedId ?? ''} onChange={(event) => trials.onSelect(event.currentTarget.value)}>
+            {trials.selectedId === null && <option value="" disabled>{studioName('choose')}</option>}
+            {trials.choices.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </label>
+      )}
       {drawerGroups.map((group) => {
         const items = groups.get(group);
         if (!items) return null;

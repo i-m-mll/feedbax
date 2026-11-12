@@ -37,6 +37,20 @@ const scene: ResolvedScene = {
 const noOverlaysHidden = new Set<SceneOverlay>();
 
 describe('Scene regions', () => {
+  it('selects a supplied trial independently of the entity selection', () => {
+    const chooseTrial = vi.fn();
+    const chooseEntity = vi.fn();
+    render(<SceneDrawer scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
+      choices: [{ id: 'trial-a', label: 'Straight reach' }, { id: 'trial-b', label: 'Curl reach' }],
+      selectedId: 'trial-a',
+      onSelect: chooseTrial,
+    }} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Trials' }), { target: { value: 'trial-b' } });
+    expect(chooseTrial).toHaveBeenCalledWith('trial-b');
+    expect(chooseEntity).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Arm' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('shares entity selection between separately mounted canvas, drawer and inspector', () => {
     function View() {
       const [selectedId, onSelect] = useState<string | null>(null);

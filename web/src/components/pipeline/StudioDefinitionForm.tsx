@@ -133,7 +133,7 @@ function RuleField({ sweep, canList, onEdit }: { sweep: Exclude<FieldSweep, { ki
   );
 }
 
-function DefinitionField({ field, selection, onEdit, onChooseSweepValue }: Omit<FormProps, "fields"> & { field: StudioDefinitionField }) {
+export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChooseSweepValue }: Omit<FormProps, "fields"> & { field: StudioDefinitionField }) {
   const labelId = useId();
   const can = (kind: FieldEdit["kind"]) => field.actions.includes(kind);
   const edit = (command: FieldEdit) => onEdit({ fieldId: field.id, selection, edit: command });
@@ -200,7 +200,7 @@ export function StudioDefinitionForm({ fields, ...props }: FormProps) {
   return (
     <section aria-label={studioName("definition")} className="space-y-2">
       <h2 className="font-semibold">{studioName("definition")}</h2>
-      {fields.map((field) => <DefinitionField key={field.id} field={field} {...props} />)}
+      {fields.map((field) => <StudioDefinitionFieldEditor key={field.id} field={field} {...props} />)}
     </section>
   );
 }
