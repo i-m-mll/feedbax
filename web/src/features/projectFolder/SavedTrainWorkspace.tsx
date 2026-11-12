@@ -12,7 +12,7 @@ import { StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource 
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import { emptyPipelineSelection, selectRun, selectStep, selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
+import { selectRun, selectStep, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import {
   projectWindowSlotView, projectWindowViews, showProjectWindowView, useProjectWindowState, type ProjectWindowView,
@@ -22,15 +22,23 @@ import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { useManagedProjectDetails } from './managedProjectDetails';
 import { openProjectEditor } from './openProjectEditor';
+import type { ProjectEditController } from './projectEditController';
 import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { useProjectWindowSelection } from './projectWindowSelection';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
 type MapProblem = NonNullable<StudioSavedTrainRuns['window_map']>['problems'][number];
-type ProjectWindowCommands = {
-  onNewStep?: (source?: PipelineMapStepSource) => void;
-  onNewSweep?: (stepId: string) => void;
+export interface ProjectWindowCommandScope {
+  readonly editor: ProjectEditController;
+  readonly selection: PipelineSelectionState;
+  readonly variantId: string | null;
+  onSelectionChange(selection: PipelineSelectionState): void;
+}
+
+export type ProjectWindowCommands = {
+  onNewStep?: (source: PipelineMapStepSource | undefined, scope: ProjectWindowCommandScope) => void;
+  onNewSweep?: (stepId: string, scope: ProjectWindowCommandScope) => void;
 };
 
 const viewsByKind = {
@@ -252,7 +260,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const mapProps = { plan, state, onSelectionChange: selection.select, onNewStep, onNewSweep, onProblems: openProblems };
+  const commandScope: ProjectWindowCommandScope = {
+    editor, selection: state, variantId: variant, onSelectionChange: selection.select,
+  };
+  const mapProps = {
+    plan, state, onSelectionChange: selection.select, onProblems: openProblems,
+    onNewStep: onNewStep && ((source?: PipelineMapStepSource) => onNewStep(source, commandScope)),
+    onNewSweep: onNewSweep && ((stepId: string) => onNewSweep(stepId, commandScope)),
+  };
   const focusView = windowState.focusedSlot === 'secondary' ? secondaryView : primaryView;
   const focusDetails = windowState.focusedSlot === 'secondary' ? secondary : primary;
 
