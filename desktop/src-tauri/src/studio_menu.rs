@@ -52,17 +52,13 @@ struct Item {
 
 struct StudioWindow {
     origin: String,
-    project_id: Option<String>,
+    project_id: String,
     snapshot: Option<Snapshot>,
 }
 
 impl StudioWindow {
     fn permits(&self, url: &Url) -> bool {
-        url.origin().ascii_serialization() == self.origin
-            && self
-                .project_id
-                .as_ref()
-                .is_none_or(|project| is_project_route(url, project))
+        url.origin().ascii_serialization() == self.origin && is_project_route(url, &self.project_id)
     }
 }
 
@@ -220,7 +216,7 @@ pub fn attach(
     app: &AppHandle,
     label: &str,
     url: &Url,
-    project_id: Option<&str>,
+    project_id: &str,
 ) -> tauri::Result<String> {
     let origin = url.origin().ascii_serialization();
     app.add_capability(capability(label, &origin))?;
@@ -233,7 +229,7 @@ pub fn attach(
             label.to_string(),
             StudioWindow {
                 origin: origin.clone(),
-                project_id: project_id.map(str::to_owned),
+                project_id: project_id.to_owned(),
                 snapshot: None,
             },
         );
@@ -362,7 +358,7 @@ pub fn dispatch(app: &AppHandle, menu_id: &str) -> tauri::Result<()> {
         let origin = serde_json::json!(origin);
         let command = serde_json::json!(command);
         let project = serde_json::json!(target.project_id);
-        format!("if (location.origin === {origin} && ({project} === null || (location.pathname === '/' && new URLSearchParams(location.search).get('project') === {project}))) dispatchEvent(new CustomEvent('studio-native-command', {{detail: {command}}}));")
+        format!("if (location.origin === {origin} && location.pathname === '/' && new URLSearchParams(location.search).get('project') === {project}) dispatchEvent(new CustomEvent('studio-native-command', {{detail: {command}}}));")
     };
     window.eval(script)
 }
@@ -419,7 +415,7 @@ mod tests {
     fn managed_window_publishes_commands_only_at_its_own_project_route() {
         let window = StudioWindow {
             origin: "http://127.0.0.1:41000".into(),
-            project_id: Some("one".into()),
+            project_id: "one".into(),
             snapshot: None,
         };
         assert!(window.permits(&"http://127.0.0.1:41000/?project=one".parse().unwrap()));
@@ -444,7 +440,7 @@ mod tests {
                 label.into(),
                 StudioWindow {
                     origin: "http://127.0.0.1:41000".into(),
-                    project_id: Some(scope.into()),
+                    project_id: scope.into(),
                     snapshot: Some(snapshot(scope)),
                 },
             );

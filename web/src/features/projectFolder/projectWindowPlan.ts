@@ -23,16 +23,8 @@ function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMa
 export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null): PlanView {
   const map = saved?.window_map;
   const scope = variant ?? planVariants(saved)[0] ?? null;
-  const byRun = new Map<string, PlanRunView['values']>();
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
-  const trainIds = new Set(saved?.rows.map(({ key }) => savedRunId(key)));
-  const rejected = new Map<string, string>();
-  for (const problem of map?.problems ?? []) {
-    const { variant, step, row, detail } = problem;
-    if (!variant || !step || !row) continue;
-    const id = savedRunId({ variant, step, row });
-    if (!rejected.has(id)) rejected.set(id, detail);
-  }
+  const train = new Map(saved?.rows.map((row) => [savedRunId(row.key), row]));
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
   const runsByStep = new Map<string, PlanRunView[]>();
   function addRun(step: string, run: PlanRunView) {
@@ -55,25 +47,16 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       values[sweep] = coordinate.value_id;
     }
     const id = savedRunId(row.key);
-    byRun.set(id, values);
-    const evaluation = evaluations.get(id);
-    if (evaluation) addRun(row.key.step, {
-      id, values, label: row.label, status: evaluation.status, reason: evaluation.reason ?? undefined,
-      sizeBytes: evaluation.result?.size_bytes, variant: row.key.variant,
-    });
-    else if (!trainIds.has(id) && row.status) addRun(row.key.step, {
-      id, values, label: row.label, status: row.status, reason: rejected.get(id), variant: row.key.variant,
-    });
-  }
-  for (const row of saved?.rows ?? []) {
-    if (row.key.variant !== scope) continue;
-    const id = savedRunId(row.key);
-    const change = row.change;
+    const training = train.get(id);
+    const change = training?.change;
     const reason = change && row.status === 'stale'
       ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
       : row.reason ?? undefined;
-    addRun(row.key.step, { id, label: row.label, values: byRun.get(id) ?? {}, status: row.status, reason,
-      progress: row.attempts.at(-1)?.progress ?? undefined, variant: row.key.variant });
+    addRun(row.key.step, {
+      id, values, label: row.label, status: row.status, reason, variant: row.key.variant,
+      progress: training?.attempts.at(-1)?.progress ?? undefined,
+      sizeBytes: evaluations.get(id)?.result?.size_bytes,
+    });
   }
   const source = map
     ? map.steps.filter((step) => step.variant === scope).map((step) => ({

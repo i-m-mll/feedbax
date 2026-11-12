@@ -12,7 +12,6 @@ import {
 import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
-import { currentDraftSpecHashesForScenario } from '@/utils/pipelineCollections';
 import { StudioTaskBindingSpecSchema } from '@/generated/studioContracts';
 
 const graphWithNetworkInput: GraphSpec = {
@@ -89,10 +88,7 @@ describe('task data bindings', () => {
       ...normalized,
       schema_version: 'feedbax.studio.task_bindings.v2',
     }).success).toBe(false);
-    const hash = (task_binding_spec: StudioTaskBindingSpec) =>
-      currentDraftSpecHashesForScenario({ task_binding_spec }, graphWithNetworkInput);
-
-    expect(hash(normalized)).toEqual(hash(spec));
+    expect(normalized.bindings).toEqual(spec.bindings);
 
     const unsupported = {
       ...spec,

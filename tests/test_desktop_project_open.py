@@ -11,7 +11,7 @@ from feedbax.desktop.control import Endpoint
 from feedbax.web.app import create_app
 
 
-def test_native_open_binds_the_validated_folder_and_preserves_legacy_entry(tmp_path, monkeypatch):
+def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     app = create_app(projects_dir=projects)
     folders = app.state.project_folders
@@ -63,11 +63,16 @@ def test_native_open_binds_the_validated_folder_and_preserves_legacy_entry(tmp_p
         "project_folder": str(projects / first.project_id),
     }).status_code == 422
 
-    token = control.post(ticket_url, json={}).json()["ticket"]
-    legacy = exchange(token)
-    assert legacy.status_code == 204
-    assert "x-feedbax-project" not in legacy.headers
-    assert "HttpOnly" in legacy.headers["set-cookie"]
+    default_ticket = control.post(ticket_url, json={}).json()
+    created_id = default_ticket["project"]["id"]
+    assert created_id not in (first.project_id, second.project_id)
+    default = exchange(default_ticket["ticket"])
+    assert default.status_code == 204
+    assert default.headers["x-feedbax-project"] == created_id
+    assert "HttpOnly" in default.headers["set-cookie"]
+    created = browser.get(f"/api/projects/{created_id}/open")
+    assert created.status_code == 200
+    assert created.json()["snapshot"]["project_id"] == created_id
     assert browser.post(ticket_url, json={}, headers={"Origin": endpoint.origin}).status_code == 403
     browser.cookies.clear()
 

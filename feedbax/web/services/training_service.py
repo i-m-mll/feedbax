@@ -695,9 +695,6 @@ class TrainingService:
                 bundle.run_set_id,
                 [row.row_id for row in bundle.rows],
             )
-            if bundle.staged_training is not None:
-                # These rows are addressed through their staged receipt in the runs API.
-                continue
             for row in bundle.rows:
                 if row.execution.payload.schema_id != STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID:
                     continue
@@ -785,30 +782,18 @@ class TrainingService:
         )
         return request, context, registry
 
-    def dispatch_staged_training(self, engine: StageEngine) -> None:
-        """Start the local staged attempt and supervise its collection in the background."""
-        self._launch_training(engine, engine.run_set_id, staged=True)
-
-    def _launch_training(
-        self, engine: StageEngine, run_set_id: str, *, staged: bool = False
-    ) -> None:
+    def _launch_training(self, engine: StageEngine, run_set_id: str) -> None:
         engine.run(stop_after_stage=STAGE_LAUNCH)
         threading.Thread(
             target=self._run_stage_engine,
             args=(engine,),
-            kwargs={"staged": staged},
             name=f"feedbax-training-stage-engine-{run_set_id}",
             daemon=True,
         ).start()
 
-    def _run_stage_engine(
-        self,
-        engine: StageEngine,
-        *,
-        staged: bool = False,
-    ) -> None:
+    def _run_stage_engine(self, engine: StageEngine) -> None:
         try:
-            engine.run(break_stale_lock=not staged, certify_and_register=not staged)
+            engine.run(break_stale_lock=True)
         except Exception:
             logger.exception("Studio attempt %s failed in StageEngine", engine.run_set_id)
 

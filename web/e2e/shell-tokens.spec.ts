@@ -8,17 +8,26 @@ test.use({
 
 test('uses the pinned shell surfaces and keeps Studio’s accent and native inset', async ({ page }) => {
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 503 }));
+  const revision = 'a'.repeat(64);
+  await page.route('**/api/projects/shell/open', (route) => route.fulfill({ json: {
+    configuration: { project: 'Shell', store: 'results' },
+    snapshot: {
+      project_id: 'shell', revision, presentation_revision: revision, semantic_root: revision,
+      project: {}, presentation: {}, file_revisions: [],
+    },
+  }}));
   await page.route(/^https:\/\/fonts\./, (route) => route.abort());
-  await page.goto('/');
+  await page.goto('/?project=shell');
 
-  const header = page.locator('header').filter({ has: page.getByAltText('feedbax studio logo') });
-  const status = page.locator('footer');
+  const header = page.locator('[data-studio-focus-region="top"]');
+  const controls = header.locator('.studio-window-bar__controls');
+  const status = page.locator('[data-studio-focus-region="bottom"]');
   const accent = () => header.evaluate((element) =>
     getComputedStyle(element).getPropertyValue('--studio-shell-accent').trim());
   await expect(header).toHaveCSS('background-color', 'rgb(242, 242, 242)');
   await expect(status).toHaveCSS('background-color', 'rgb(242, 242, 242)');
   await expect(header).toHaveCSS('height', '48px');
-  await expect(header).toHaveCSS('padding-left', '12px');
+  await expect(controls).toHaveCSS('padding-left', '8px');
   expect(await accent()).toBe('#5d4b87');
 
   await page.evaluate(() => {
@@ -27,6 +36,6 @@ test('uses the pinned shell surfaces and keeps Studio’s accent and native inse
   });
   await expect(header).toHaveCSS('background-color', 'rgb(34, 34, 34)');
   await expect(status).toHaveCSS('background-color', 'rgb(34, 34, 34)');
-  await expect(header).toHaveCSS('padding-left', '92px');
+  await expect(controls).toHaveCSS('padding-left', '88px');
   expect(await accent()).toBe('#c1aedf');
 });

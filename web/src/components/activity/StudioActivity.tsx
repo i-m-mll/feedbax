@@ -215,7 +215,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose }: StudioActivityPan
           <ActivityRun
             key={job.job_id}
             job={job}
-            project={projectNames.get(job.project_id)}
+            project={projectNames.get(job.project_id) ?? job.project_id}
             selected={job === selected}
             onClose={onClose}
             onOpen={async () => {

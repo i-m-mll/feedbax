@@ -27,7 +27,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
-from feedbax.studio.training_requests import lower_studio_training_runs
+from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     load_checkpoint_custody_documents,
@@ -41,7 +41,7 @@ from feedbax.training.optimizers import build_optimizer
 from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
 from feedbax.web.worker import execution
-from web.e2e.studio.fixtures.reaching_project import reaching_project
+from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
 _STATE = ("model", "optimizer", "prng", "batch_counter")
@@ -243,7 +243,7 @@ def _observe_worker(
         return training_host_worker.main([])
 
 
-def _authored_run(*, batches=8, batch_size=1, sampled_hold=False):
+def _authored_spec(*, batches=8, batch_size=1, sampled_hold=False):
     project = reaching_project(batches=batches)
     project.graph.nodes["readout"].params["trainable"] = False
     scenario = project.workspace.scenarios["scenario:train"]
@@ -279,11 +279,8 @@ def _authored_run(*, batches=8, batch_size=1, sampled_hold=False):
                 },
             ],
         }
-    row, = lower_studio_training_runs(
-        project.workspace, project.graph, stage_id="stage:train",
-        registry_bundle=new_application_registry_bundle(),
-    )
-    return row
+    registries = new_application_registry_bundle()
+    return lower_canonical_train(reaching_train_request(project), registries.training_programs)
 
 
 def _launch(
@@ -382,26 +379,26 @@ def _require_progress(events, rows, start):
 def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path):
     from feedbax.contracts.studio_training import STUDIO_INDEPENDENT_KEY_SCHEDULE
 
-    row = _authored_run()
-    assert row.spec.method_payload.payload["key_schedule"] == STUDIO_INDEPENDENT_KEY_SCHEDULE
-    legacy = row.spec.model_copy(deep=True)
+    row = _authored_spec()
+    assert row.method_payload.payload["key_schedule"] == STUDIO_INDEPENDENT_KEY_SCHEDULE
+    legacy = row.model_copy(deep=True)
     del legacy.method_payload.payload["key_schedule"]
-    assert canonical_training_run_spec_sha256(legacy) != row.request_id
+    assert canonical_training_run_spec_sha256(legacy) != canonical_training_run_spec_sha256(row)
     assert len({
         np.asarray(studio_training_key(0, stream)).tobytes()
         for stream in ("model", "update", "observation")
     } | {np.asarray(jr.PRNGKey(0)).tobytes()}) == 4
 
-    _, reference, whole, whole_events, _ = _launch(tmp_path, "whole", row.spec)
+    _, reference, whole, whole_events, _ = _launch(tmp_path, "whole", row)
     first, first_manifest, prefix, prefix_events, first_receipt = _launch(
-        tmp_path, "first", row.spec, stop_after=3,
+        tmp_path, "first", row, stop_after=3,
     )
     first_bytes = first_receipt.read_bytes()
     second, second_manifest, middle, middle_events, second_receipt = _launch(
-        tmp_path, "second", row.spec, resume=first, stop_after=6,
+        tmp_path, "second", row, resume=first, stop_after=6,
     )
     second_bytes = second_receipt.read_bytes()
-    _, last_manifest, suffix, suffix_events, _ = _launch(tmp_path, "last", row.spec, resume=second)
+    _, last_manifest, suffix, suffix_events, _ = _launch(tmp_path, "last", row, resume=second)
 
     assert [entry["update"] for entry in whole] == list(range(1, 9))
     assert whole[0]["before"]["prng"] == _array_digests(studio_training_key(0, "update"))
@@ -489,14 +486,14 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
         ("hybrid", {"optimizer", "prng", "batch_counter"}), ("legacy", set(_STATE)),
     ):
         old, old_manifest, _, _, _ = _launch(
-            tmp_path, f"{profile}-writer", row.spec, stop_after=6, checkpoint_profile=profile,
+            tmp_path, f"{profile}-writer", row, stop_after=6, checkpoint_profile=profile,
         )
         assert {
             slot.slot for slot in old_manifest.slots
             if slot.media_type == "application/x-python-pickle"
         } == legacy_slots
         _, migrated, after_legacy, _, _ = _launch(
-            tmp_path, f"{profile}-reader", row.spec, resume=old,
+            tmp_path, f"{profile}-reader", row, resume=old,
         )
         assert {
             name for name, media in after_legacy[0]["slot_reads"].items()
@@ -513,14 +510,14 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
 
 
 def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes(tmp_path):
-    row = _authored_run(batches=4, batch_size=3, sampled_hold=True)
-    assert row.spec.training_config.batch_size == 3
-    _, uninterrupted, whole, _, _ = _launch(tmp_path, "batch-whole", row.spec)
+    row = _authored_spec(batches=4, batch_size=3, sampled_hold=True)
+    assert row.training_config.batch_size == 3
+    _, uninterrupted, whole, _, _ = _launch(tmp_path, "batch-whole", row)
     stopped, paused, prefix, _, receipt = _launch(
-        tmp_path, "batch-paused", row.spec, stop_after=2,
+        tmp_path, "batch-paused", row, stop_after=2,
     )
     original_receipt = receipt.read_bytes()
-    _, restarted, suffix, _, _ = _launch(tmp_path, "batch-resumed", row.spec, resume=stopped)
+    _, restarted, suffix, _, _ = _launch(tmp_path, "batch-resumed", row, resume=stopped)
 
     assert [entry["update"] for entry in prefix] == [1, 2]
     assert [entry["update"] for entry in suffix] == [3, 4]
@@ -545,9 +542,9 @@ def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes
         require_checkpoint_semantic_state_equal(uninterrupted, restarted, name)
     assert receipt.read_bytes() == original_receipt
 
-    scalar = _authored_run(batches=4, sampled_hold=True)
-    assert scalar.request_id != row.request_id
-    rejected = _launch(tmp_path, "different-batch-size", scalar.spec, resume=stopped, fail=True)
+    scalar = _authored_spec(batches=4, sampled_hold=True)
+    assert canonical_training_run_spec_sha256(scalar) != canonical_training_run_spec_sha256(row)
+    rejected = _launch(tmp_path, "different-batch-size", scalar, resume=stopped, fail=True)
     assert rejected["error"]["code"] == "incompatible_checkpoint"
 
 

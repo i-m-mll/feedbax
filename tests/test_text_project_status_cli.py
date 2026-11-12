@@ -169,7 +169,9 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
             "outcome": {"error": {"message": "Training stopped at the loss guard."}},
         }
     )
-    assert compare(JobStatus.FAILED).reason == "Training stopped at the loss guard."
+    after_failure = compare(JobStatus.SUCCEEDED)
+    assert after_failure.result is not None
+    assert after_failure.reason == "Training stopped at the loss guard."
     attempts.pop()
 
     step_path = root / "steps/train.json"

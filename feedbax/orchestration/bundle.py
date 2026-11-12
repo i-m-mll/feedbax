@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import secrets
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
@@ -111,6 +112,13 @@ def orchestration_run_set_dir(root: Path | str, run_set_id: str) -> Path:
     declared_root = Path(root).expanduser()
     canonical_root = canonical_orchestration_root(root)
     return canonical_root if declared_root.name == run_set_id else canonical_root / run_set_id
+
+
+def omit_retired_studio_binding(value: Any) -> Any:
+    """Read ordinary envelopes whose former optional Studio slot was serialized as null."""
+    if isinstance(value, Mapping) and "staged_training" in value and value["staged_training"] is None:
+        return {key: item for key, item in value.items() if key != "staged_training"}
+    return value
 
 
 def canonical_run_bundle_sha256(bundle: "RunBundle") -> str:
@@ -476,21 +484,6 @@ class ResolvedAssemblyInput(StrictModel):
         return self
 
 
-class StagedTrainingBinding(StrictModel):
-    """One exact staged generation selected for a native local run set."""
-
-    manifest_root: str
-    manifest_id: str = Field(min_length=1)
-    generation: str = Field(min_length=1)
-
-    @field_validator("manifest_root")
-    @classmethod
-    def _require_absolute_root(cls, value: str) -> str:
-        if not Path(value).is_absolute():
-            raise ValueError("staged training manifest_root must be absolute")
-        return value
-
-
 class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set.
 
@@ -514,7 +507,6 @@ class RunBundle(StrictModel):
     budget: BudgetPolicy = Field(default_factory=BudgetPolicy)
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
-    staged_training: StagedTrainingBinding | None = None
     evaluation_output_preflight: EvaluationOutputPreflightEvidence | None = None
     orchestration_root: str | None = None
     keep_alive: bool = False
@@ -533,7 +525,7 @@ class RunBundle(StrictModel):
                 "RunBundle v14 does not admit staged_roots; run "
                 "python -m feedbax migrate-content-store --run-bundle-v12 ..."
             )
-        return value
+        return omit_retired_studio_binding(value)
 
     @field_validator("smoke_update_budget", mode="before")
     @classmethod

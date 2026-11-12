@@ -9,8 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { StudioJobSnapshot, StudioJobSubmission } from '../../src/generated/studioContracts';
-import { reachingDocument, saveFixture } from './reachingProject';
-import { openOverlay, openSavedProject } from './projectControls';
+import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
@@ -107,9 +106,10 @@ const test = base.extend<{ studio: RecoveryStudio }>({
         return false;
       }
     };
-    start('--port', String(webPort), '--remove-test-home');
+    const preview = process.env.FEEDBAX_STUDIO_E2E_PREVIEW === '1' ? ['--preview'] : [];
+    start('--port', String(webPort), '--remove-test-home', ...preview);
     try {
-      await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
+      await expect.poll(healthy, { timeout: 35_000 }).toBe(true);
       await use({
         origin,
         home,
@@ -133,52 +133,45 @@ const test = base.extend<{ studio: RecoveryStudio }>({
   },
 });
 
-test('reports that the backend stopped and recovers in the same window', async ({ page, studio }) => {
-  await page.goto(studio.origin);
-  const connection = page.getByRole('status', { name: 'Studio connection' });
-  await expect(connection).toHaveText(/^connected$/i);
+test('reports that the backend stopped and recovers in the same window', async ({ page, studio, request }) => {
+  test.setTimeout(50_000);
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
+  await page.goto(studio.origin + '/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
   await studio.stopBackend();
-  await expect(connection).toHaveText(/service unreachable/i);
-
-  await page.getByRole('button', { name: 'Open project', exact: true }).click();
-  const projects = openOverlay(page);
-  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
-  const projectFailure = projects.getByRole('alert').filter({ hasText: /service unreachable/i });
-  const runFailure = runs.getByRole('alert').filter({ hasText: /service unreachable/i });
-  await expect(projectFailure).toBeVisible();
-  await expect(runFailure).toBeVisible();
-  const retry = projects.getByRole('button', { name: 'Retry', exact: true });
+  const footer = page.locator('[data-studio-focus-region="bottom"]');
+  const failure = footer.getByRole('alert');
+  await expect(failure).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+  const retry = failure.getByRole('button', { name: 'Retry', exact: true });
   await expect(retry).toBeEnabled();
-
   await studio.startBackend();
-  await retry.click();
-  await expect(projectFailure).toHaveCount(0);
-  await expect(runFailure).toHaveCount(0);
-  await expect(connection).toHaveText(/^connected$/i);
+  if (await retry.isVisible()) await retry.click();
+  await expect(failure).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
 });
 
 test('reopens the same live run and restores loss after backend and host restart', async ({
   browser, page, request, studio,
 }) => {
   test.setTimeout(50_000);
-  const name = 'Reaching across restart';
   const batches = 2400;
-  const document = await reachingDocument(batches, name);
-  const project = await saveFixture(request, document, `${studio.origin}/api/graphs`);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', String(batches)), studio.origin);
+  const mounted = '/?project=' + snapshot.project_id;
   const snapshots = new URL('/api/jobs', studio.origin);
-  snapshots.searchParams.set('project', project.id);
+  snapshots.searchParams.set('project', snapshot.project_id);
   const jobs = async () => {
     const response = await request.get(snapshots.href);
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json() as StudioJobSnapshot).jobs;
   };
 
-  await page.goto(studio.origin);
-  await openSavedProject(page, name);
-  await page.getByRole('button', { name: 'Train', exact: true }).click();
+  await page.goto(studio.origin + mounted);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   const submission = page.waitForResponse((response) =>
-    new URL(response.url()).pathname === '/api/submissions' && response.request().method() === 'POST');
-  await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
+    new URL(response.url()).pathname === projectPath + '/train-runs' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
   const admission = await submission;
   expect(admission.status()).toBe(202);
   const { items } = await admission.json() as StudioJobSubmission;
@@ -187,6 +180,8 @@ test('reopens the same live run and restores loss after backend and host restart
   if (!jobId) throw new Error('Studio did not admit the reaching run');
   const job = async () => (await jobs()).find((row) => row.job_id === jobId);
 
+  await page.getByRole('table', { name: 'Runs', exact: true }).getByRole('button').first().click();
+  await openResultsSlot(page);
   const liveLoss = lossCurve(page);
   await expect(liveLoss).toHaveAttribute('points', /\S+ \S+/);
   const retainedPoints = (await liveLoss.getAttribute('points'))!.split(' ').length;
@@ -207,10 +202,12 @@ test('reopens the same live run and restores loss after backend and host restart
   await page.close();
   const reopened = await browser.newPage({ baseURL: studio.origin, serviceWorkers: 'block' });
   try {
-    await reopened.goto('/');
-    await openSavedProject(reopened, name);
+    await reopened.goto(mounted);
+    await mapStep(reopened, 'train').click();
+    await reopened.getByRole('tab', { name: 'Runs', exact: true }).click();
     const row = reopened.getByRole('table', { name: 'Runs', exact: true });
     await row.getByRole('button', { name: live.label, exact: true }).click();
+    await openResultsSlot(reopened);
     const restored = lossCurve(reopened);
     await expect(restored).toBeVisible();
     await expect.poll(async () =>

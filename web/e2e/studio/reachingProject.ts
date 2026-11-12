@@ -1,8 +1,7 @@
-import { expect, type APIRequestContext } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import type { GraphCreateResponse, StudioPersistenceDocument } from '../../src/generated/studioContracts';
+import type { StudioPersistenceDocument } from '../../src/generated/studioContracts';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
@@ -13,15 +12,4 @@ export async function reachingDocument(batches?: number, name?: string): Promise
   if (name !== undefined) args.push('--name', name);
   const { stdout } = await run('uv', args, { cwd: repo, timeout: 10_000 });
   return JSON.parse(stdout);
-}
-
-export async function saveFixture(
-  request: APIRequestContext,
-  document: StudioPersistenceDocument,
-  endpoint = '/api/graphs',
-) {
-  const response = await request.post(endpoint, { data: document });
-  expect(response.ok(), await response.text()).toBe(true);
-  const { data } = await response.json() as GraphCreateResponse;
-  return data;
 }

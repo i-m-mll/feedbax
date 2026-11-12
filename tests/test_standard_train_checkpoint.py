@@ -16,7 +16,7 @@ from feedbax.training.standard_train_checkpoint import (
     StandardTrainStateError,
     decode_standard_train_slot,
 )
-from tests.test_studio_training_host_worker import _authored_run
+from tests.test_studio_training_host_worker import _authored_spec
 
 
 @pytest.mark.parametrize(("optimizer_type", "params"), [
@@ -27,7 +27,7 @@ from tests.test_studio_training_host_worker import _authored_run
     ("rmsprop", {"centered": True, "momentum": 0.9}),
 ])
 def test_typed_standard_optimizer_state_reproduces_the_next_update(tmp_path, optimizer_type, params):
-    spec = _authored_run(batches=2).spec.model_copy(deep=True)
+    spec = _authored_spec(batches=2).model_copy(deep=True)
     spec.method_payload.payload["optimizer"] = OptimizerSpec(
         type=optimizer_type, params={"learning_rate": spec.training_config.learning_rate, **params},
     ).model_dump(mode="json", exclude_none=True)

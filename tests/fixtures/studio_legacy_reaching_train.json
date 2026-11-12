@@ -1,0 +1,127 @@
+{
+  "training_config": {
+    "n_batches": 2,
+    "batch_size": 1,
+    "learning_rate": 0.001,
+    "grad_clip": 1.0,
+    "hidden_dim": 128,
+    "network_type": "gru",
+    "n_reach_steps": 100,
+    "effort_weight": 2.5,
+    "snapshot_interval": 100
+  },
+  "task_binding_spec": {
+    "schema_version": "feedbax.spec.studio.task_bindings.v3",
+    "exposed_data": [
+      {
+        "id": "reach_target",
+        "label": "Reach target",
+        "kind": "signal",
+        "role": "model_input",
+        "path": "inputs.effector_target.pos",
+        "bindable": true,
+        "expected_shape": [
+          "time",
+          2
+        ],
+        "dtype": null,
+        "units": null,
+        "frame": null,
+        "value_spec": {
+          "schema_version": "feedbax.spec.studio.value.v2",
+          "value_form": "literal",
+          "variation": {
+            "scope": "fixed",
+            "enumerable": null,
+            "stochastic_policy": null,
+            "metadata": {
+              "migrated_from_sampling_scope": null
+            }
+          },
+          "mode": "constant",
+          "value": [
+            0.1,
+            -0.05
+          ],
+          "reference": null,
+          "expression": null,
+          "function_id": null,
+          "parameters": null,
+          "distribution": null,
+          "schedule": null,
+          "sampling_scope": null,
+          "dtype": "float32",
+          "shape": null,
+          "units": null,
+          "frame": null,
+          "metadata": {}
+        },
+        "metadata": {}
+      }
+    ],
+    "bindings": [
+      {
+        "id": "task:reach_target->cell:input",
+        "source_data_id": "reach_target",
+        "target_node_id": "cell",
+        "target_port": "input",
+        "role": "model_input",
+        "metadata": {}
+      }
+    ],
+    "metadata": {}
+  },
+  "method_payload": {
+    "schema_id": "feedbax.spec.training_method.studio_graph",
+    "schema_version": "feedbax.spec.training_method.studio_graph.v1",
+    "payload": {
+      "optimizer": {
+        "type": "adam",
+        "params": {
+          "learning_rate": 0.001
+        }
+      },
+      "target_total": 2,
+      "key_schedule": "independent_v1"
+    },
+    "metadata": {}
+  },
+  "objective": {
+    "kind": "loss_term",
+    "loss": {
+      "schema_id": "feedbax.spec.training.loss_term",
+      "schema_version": "feedbax.spec.training.loss_term.v2",
+      "type": "TargetStateLoss",
+      "label": "Endpoint position",
+      "weight": 1.0,
+      "selector": "path:plant.effector.pos",
+      "target_selector": "task_data:reach_target",
+      "target_value": null,
+      "retention": null,
+      "norm": "squared_l2",
+      "matrix": null,
+      "matrix_kind": null,
+      "time_agg": {
+        "mode": "final",
+        "start": null,
+        "end": null,
+        "segment_name": null,
+        "time_idxs": null,
+        "discount": null,
+        "discount_exp": null
+      },
+      "children": null
+    },
+    "payload": null,
+    "schema_id": null,
+    "schema_version": null,
+    "metadata": {}
+  },
+  "task": {
+    "type": "SimpleReaches",
+    "params": {
+      "n_steps": 100
+    },
+    "timeline": null
+  }
+}

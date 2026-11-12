@@ -19,13 +19,13 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project, authored_evaluation_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
 from tests.test_private_checkpoint_evaluation import install_finite_gate
-from tests.test_studio_training_host_worker import _authored_run
+from tests.test_studio_training_host_worker import _authored_spec
 
 host = host_fixture
 
 
 def _train(batches):
-    spec = _authored_run(batches=batches, sampled_hold=True).spec
+    spec = _authored_spec(batches=batches, sampled_hold=True)
     request = TrainingRequestSpec(
         graph=spec.graph.inline, task=spec.task, task_binding_spec=spec.task_binding_spec,
         objective=spec.objective, method_ref=spec.method_ref, method_payload=spec.method_payload,

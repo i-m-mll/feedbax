@@ -11,28 +11,6 @@ const modules = fileNames.filter((path) =>
   path.startsWith(src) && !path.startsWith(src + 'test/') && !/\.test\.[jt]sx?$|\.d\.ts$/.test(path),
 );
 
-const entries = [
-  'main.tsx',
-  'features/projectFolder/openProjectEditor.ts', // ed09a0a project-window mount
-  // Reserved for gallery and statistics/replay surfaces.
-  'components/panels/FigureGalleryPanel.tsx', // a5da2ff
-  'components/panels/StatisticsPanel.tsx', // b2db05b
-  'components/panels/TrajectoryViewer.tsx', // b2db05b
-  // M2 view entry points. Mount when the project window and plan reader land.
-  'components/scene/SceneRegion.tsx', // 1479f9c
-  'components/scene/SceneClockControls.tsx', // 1479f9c
-  'components/scene/useProjectPlanarScene.ts', // 78e8bea
-  'components/scene/ScenePlanarFields.tsx', // 6a1fe16
-  'components/pipeline/StudioPipelineMap.tsx', // 3e0ceba
-  'components/pipeline/StudioRuns.tsx', // 339d687
-  'components/pipeline/StudioRunInputs.tsx', // 339d687
-  'components/pipeline/StudioDefinitionForm.tsx', // 339d687
-  'components/pipeline/StudioSweepOverview.tsx', // 3a7b0c4
-  // Owned by the legacy worker and controller removal issues.
-  'hooks/useOrchestration.ts', // 2d1ed17
-  'hooks/useTraining.ts', // 216f817
-  'hooks/useWorkerConfig.ts', // 216f817
-];
 const program = ts.createProgram(fileNames, options);
 const checker = program.getTypeChecker();
 const resolutionCache = ts.createModuleResolutionCache(web, (path) => path, options);
@@ -52,7 +30,7 @@ function visitModule(path: string) {
   }
 }
 
-for (const entry of entries) visitModule(resolve(src, entry));
+visitModule(resolve(src, 'main.tsx'));
 const unreachable = modules.filter((path) => {
   const source = program.getSourceFile(path);
   return !source || !seen.has(source);

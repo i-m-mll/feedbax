@@ -73,7 +73,6 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
             "feedbax.integrations.provider",
             "feedbax.objectives.service",
             "feedbax.compiler.serialization",
-            "feedbax.studio.execution",
             "feedbax.studio.protocol",
             "feedbax.studio.schema",
         ]:

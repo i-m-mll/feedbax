@@ -767,17 +767,15 @@ class TestFactoryRegistry:
     @pytest.mark.skipif(
         not (PENZAI_AVAILABLE and TREESCOPE_AVAILABLE), reason="penzai and treescope required"
     )
-    @pytest.mark.parametrize("saved", [False, True], ids=["unsaved", "saved"])
     def test_inspector_renders_the_model_described_by_its_report(
-        self, saved, tmp_path, monkeypatch
+        self
     ):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from penzai import pz
 
         import feedbax.components.penzai as pc
-        from feedbax.web.api import graphs as graphs_api, penzai as penzai_api
-        from feedbax.web.services.graph_service import GraphService
+        from feedbax.web.api import penzai as penzai_api
 
         @pz.pytree_dataclass
         class InspectionProjection(pz.nn.Layer):
@@ -791,36 +789,14 @@ class TestFactoryRegistry:
         register_penzai_builder(builder_name, lambda params: next(models))
         app = FastAPI()
         app.include_router(penzai_api.router)
-        if saved:
-            service = GraphService(tmp_path)
-            monkeypatch.setattr(graphs_api, "service", service)
-            record = service.create_graph(
-                GraphSpec(
-                    nodes={
-                        "projection": ComponentSpec(
-                            type="feedbax.PenzaiAdapter",
-                            params={"builder_name": builder_name},
-                            input_ports=["input"],
-                            output_ports=["output"],
-                        )
-                    }
-                )
-            )
-            app.include_router(graphs_api.router, prefix="/graphs")
-            path = f"/graphs/{record.graph_id}/nodes/penzai/inspect"
-        else:
-            path = "/inspect"
         try:
             response = TestClient(app).post(
-                path, json={"builder_name": builder_name, "node_path": ["projection"]}
+                "/inspect", json={"builder_name": builder_name, "node_path": ["projection"]}
             )
             assert response.status_code == 200
             inspection = response.json()["data"]
             assert inspection["report"]["summary"]["parameter_count"] == 2
             assert inspection["html"]
-            if saved:
-                reports = service.get_graph(record.graph_id).project.compile_reports
-                assert reports["projection"].model_dump(mode="json") == inspection["report"]
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)
 

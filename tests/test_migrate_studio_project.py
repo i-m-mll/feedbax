@@ -1,80 +1,51 @@
 """Migrate actual saved Studio files without opening a Host or the old Store."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from feedbax.cli import main
-from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE
 from feedbax.contracts.graph import (
     ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
     ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
     AnalysisCanvasLayoutDocument,
     AnalysisPageSpec,
-    CanvasViewportSpec,
+    GraphProject,
 )
-from feedbax.contracts.migrations import admit_studio_persistence_document
 from feedbax.contracts.project_inputs import RunReference
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.training import TaskSpec
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.training_requests import lower_studio_training_runs
-from feedbax.web.services import graph_service
 from feedbax.web.services.project_folder import ProjectFolderService
-from web.e2e.studio.fixtures.reaching_project import reaching_project
+
+
+_FIXTURES = Path(__file__).with_name("fixtures")
 
 
 @pytest.fixture
-def studio_writer(tmp_path, monkeypatch):
+def saved_workspace(tmp_path, monkeypatch):
     root = tmp_path / "saved"
     root.mkdir()
-    monkeypatch.setattr(graph_service, "ensure_dirs", lambda: None)
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
-    return graph_service.GraphService(storage_dir=root), ComponentRegistry(), root
+    return root
 
 
-def _save(studio_writer, change=None):
-    writer, registry, root = studio_writer
-    draft = reaching_project(batches=2)
-    draft.workspace_document.graph_ui_state.viewport = CanvasViewportSpec(x=41, y=-18, zoom=0.8)
-    scenario = draft.workspace.scenarios["scenario:train"]
-    # Wire shape emitted by objectiveSpecFromLossSpec for the reaching fixture.
-    scenario.objective_spec = {
-        "schema_version": "feedbax.spec.studio.objective.v1",
-        "legacy_loss_spec": scenario.training_spec["loss"],
-        "metadata": {"lowered_from": "training_spec.loss"},
-        "terms": [{
-            "id": "objective:root",
-            "type_id": "TargetStateLoss",
-            "label": "Endpoint position",
-            "role": "loss",
-            "source_selector": {
-                "namespace": "state_path", "compact": "path:plant.effector.pos",
-                "target_id": None, "path": "plant.effector.pos",
-                "metadata": {"source": "legacy_loss_selector"},
-            },
-            "target_selector": None,
-            "operator": "minimize",
-            "penalty": "squared_l2",
-            "temporal_selector": {"mode": "final"},
-            "weight": 1.0,
-            "metadata": {"legacy_loss_path": [], "legacy_loss_type": "TargetStateLoss"},
-        }],
-    }
+def _save(root, change=None):
+    raw = (_FIXTURES / "studio_legacy_reaching_project.json").read_bytes()
+    project = GraphProject.model_validate_json(raw)
     if change is not None:
-        change(draft)
-    admitted = admit_studio_persistence_document(draft.model_dump(mode="json", exclude_none=True))
-    record = writer.create_graph(
-        admitted.graph, workspace=admitted.workspace, workspace_document=admitted.workspace_document,
-        component_registry=registry,
-    )
-    return root / f"{record.graph_id}.json", record.project
+        change(project)
+        raw = project.model_dump_json(exclude_none=True).encode()
+    source = root / "legacy.json"
+    source.write_bytes(raw)
+    return source, project
 
 
-def test_migrate_saved_workspace_opens_and_plans_the_same_train(tmp_path, studio_writer, capsys):
-    source, saved = _save(studio_writer)
+def test_migrate_saved_workspace_opens_and_plans_the_same_train(tmp_path, saved_workspace, capsys):
+    source, saved = _save(saved_workspace)
     before = source.read_bytes()
     assert main(["migrate-project", str(source)]) == 0
     result = capsys.readouterr()
@@ -111,14 +82,9 @@ def test_migrate_saved_workspace_opens_and_plans_the_same_train(tmp_path, studio
     (planned,) = settled.plan.runs
     assert planned.key == RunKey("default", "train", "default")
     request = decode_request(settled.plan.requests[planned.request_id], settled.plan.documents.__getitem__)
-    (legacy,) = lower_studio_training_runs(
-        saved.workspace, saved.graph, stage_id="stage:train", registry_bundle=registries,
-    )
-    assert request.spec.training_config == legacy.spec.training_config
-    assert request.spec.task_binding_spec == legacy.spec.task_binding_spec
-    assert request.spec.method_payload == legacy.spec.method_payload
-    assert request.spec.objective == legacy.spec.objective
-    assert request.spec.task == legacy.spec.task
+    expected = json.loads((_FIXTURES / "studio_legacy_reaching_train.json").read_bytes())
+    actual = request.spec.model_dump(mode="json")
+    assert {field: actual[field] for field in expected} == expected
     assert planned.admission_problem is None
     assert {problem.step for problem in settled.plan.diagnostics} == {"eval", "analysis", "report"}
 
@@ -134,7 +100,7 @@ def test_migrate_saved_workspace_opens_and_plans_the_same_train(tmp_path, studio
     assert {path.relative_to(destination): path.read_bytes() for path in destination.rglob("*") if path.is_file()} == before_files
 
 
-def test_migrate_keeps_historical_subject_and_reports_its_source_path(tmp_path, studio_writer, capsys):
+def test_migrate_keeps_historical_subject_and_reports_its_source_path(tmp_path, saved_workspace, capsys):
     def change(draft):
         stage = draft.workspace.stages[1]
         stage.selection_spec = {
@@ -142,7 +108,7 @@ def test_migrate_keeps_historical_subject_and_reports_its_source_path(tmp_path, 
             "eval_params": {"perturbation_type": "curl_field"},
         }
 
-    source, _ = _save(studio_writer, change)
+    source, _ = _save(saved_workspace, change)
     destination = tmp_path / "converted"
     assert main(["migrate-project", str(source), "--out", str(destination)]) == 0
     assert "/workspace/stages/1/selection_spec/training_run_ids/0" in capsys.readouterr().err
@@ -178,8 +144,8 @@ def _analysis_layout(draft, *, blank=False, eval_run_id=None):
 
 
 @pytest.mark.parametrize("blank", [False, True])
-def test_migrate_maps_analysis_canvas_to_one_document(tmp_path, studio_writer, blank):
-    source, _ = _save(studio_writer, lambda draft: _analysis_layout(draft, blank=blank))
+def test_migrate_maps_analysis_canvas_to_one_document(tmp_path, saved_workspace, blank):
+    source, _ = _save(saved_workspace, lambda draft: _analysis_layout(draft, blank=blank))
     destination = tmp_path / "converted"
     assert main(["migrate-project", str(source), "--out", str(destination)]) == 0
     snapshot = ProjectFolderService(tmp_path).open("converted").snapshot
@@ -201,7 +167,7 @@ def test_migrate_maps_analysis_canvas_to_one_document(tmp_path, studio_writer, b
         "legacy-report", "early-stopping", "authored-objective",
     ],
 )
-def test_migrate_refuses_unrepresentable_authoring_at_its_saved_path(tmp_path, studio_writer, capsys, unsupported):
+def test_migrate_refuses_unrepresentable_authoring_at_its_saved_path(tmp_path, saved_workspace, capsys, unsupported):
     def change(draft):
         workspace = draft.workspace
         if unsupported == "stage":
@@ -235,7 +201,7 @@ def test_migrate_refuses_unrepresentable_authoring_at_its_saved_path(tmp_path, s
     def configure(draft):
         expected.append(change(draft))
 
-    source, _ = _save(studio_writer, configure)
+    source, _ = _save(saved_workspace, configure)
     destination = tmp_path / "converted"
     before = source.read_bytes()
     assert main(["migrate-project", str(source), "--out", str(destination)]) == 2

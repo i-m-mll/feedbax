@@ -23,7 +23,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_train_admission import _saved_step
 from tests.test_local_job_host import host as host_fixture
 from tests.test_local_job_host import job_row, restart, wait_until
-from tests.test_studio_training_host_worker import _authored_run
+from tests.test_studio_training_host_worker import _authored_spec
 
 host = host_fixture
 
@@ -107,7 +107,7 @@ def test_saved_train_finite_selection_and_private_evaluation(host, tmp_path, mon
     jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
     snapshot = folders.new().snapshot
-    spec = _authored_run(batches=12, sampled_hold=True).spec
+    spec = _authored_spec(batches=12, sampled_hold=True)
     payload = TrainingRequestSpec(
         graph=spec.graph.inline,
         task=spec.task,

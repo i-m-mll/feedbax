@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 
-from feedbax.contracts.project import Step
+from feedbax.contracts.project import Project, Step
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
@@ -36,6 +36,34 @@ def seed(home: str, project_id: str):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     return project_id
+
+
+def walkthrough_files():
+    project, _ = authored_evaluation_project()
+    train = project.steps["train"].model_dump(mode="json", exclude_unset=True)
+    baseline = project.steps["baseline"].model_dump(mode="json", exclude_unset=True)
+    heavy = project.steps["baseline"].model_dump(mode="json", exclude_unset=True)
+    heavy["base"]["inline"]["params"]["variation"] = [
+        {"path": "nodes.plant.params.mass", "op": "replace", "value": 2},
+    ]
+    return {
+        "train": [{"kind": "step", "id": "train", "step": train}],
+        "conditions": [{"kind": "step", "id": name, "step": step}
+                       for name, step in (("baseline", baseline), ("heavy", heavy))],
+    }
+
+
+def save_walkthrough_conditions(home: str, project_id: str):
+    folders = ProjectFolderService(AppPaths.resolve(instance_root=Path(home)).web / "projects")
+    current = folders.open(project_id)
+    authored = walkthrough_files()["conditions"]
+    steps = {entry["id"]: entry["step"] for entry in authored}
+    files = dump_text_project(Project.model_validate({"steps": steps}), current.configuration)
+    for name, data in files.items():
+        if name.startswith("steps/"):
+            with (folders.root / project_id / name).open("xb") as stream:
+                stream.write(data)
+    return folders.open(project_id).snapshot.revision
 
 
 def observe(home: str, project: str, revision: str, trial: str):
@@ -105,4 +133,7 @@ def observe(home: str, project: str, revision: str, trial: str):
 
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed, "observe": observe}[action](*args)))
+    print(json.dumps({
+        "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
+        "save-walkthrough-conditions": save_walkthrough_conditions,
+    }[action](*args)))

@@ -684,7 +684,7 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.training_host_worker import main as training_worker
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
-    from web.e2e.studio.fixtures.reaching_project import reaching_project
+    from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
     # Pause only the original attempt at its first committed update so the
     # actual host can deliver the checkpoint stop before the next update.
@@ -727,7 +727,6 @@ def main(args):
 """)
 
     service = JobService(host, new_application_registry_bundle())
-    service.manifest_root = tmp_path / "runs"
     monkeypatch.setattr(
         service,
         "_training_worker",
@@ -747,15 +746,22 @@ def main(args):
     assert created.status_code == 201, created.text
     snapshot = created.json()["snapshot"]
     project = snapshot["project_id"]
-    document = reaching_project(batches=2)
+    request = reaching_train_request(reaching_project(batches=2))
+    added = client.post(f"/api/projects/{project}/files", json={
+        "revision": snapshot["revision"],
+        "file": {"kind": "step", "id": "train", "step": {
+            "kind": "train", "base": {"inline": request.model_dump(mode="json", exclude_none=True)},
+        }},
+    })
+    assert added.status_code == 201, added.text
+    snapshot = added.json()["snapshot"]
     submission = {
         "token": "ordinary-m1",
-        "project_id": project,
-        "workspace": document.workspace.model_dump(mode="json", exclude_none=True),
-        "graph": document.graph.model_dump(mode="json", exclude_none=True),
-        "selections": [{"stage_id": "stage:train"}],
+        "revision": snapshot["revision"],
+        "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
     }
-    submitted = client.post("/api/submissions", json=submission)
+    run_path = f"/api/projects/{project}/train-runs"
+    submitted = client.post(run_path, json=submission)
     assert submitted.status_code == 202, submitted.text
     producer = submitted.json()["items"][0]["job_id"]
     consumer = run_job(
@@ -800,7 +806,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert listed.status_code == 200, listed.text
     assert listed.json() == [submitted.json()]
     assert client.get(f"/api/submissions/{internal['id']}").status_code == 404
-    collision = client.post("/api/submissions", json=submission | {"token": "real-completion"})
+    collision = client.post(run_path, json=submission | {"token": "real-completion"})
     assert collision.status_code == 409, collision.text
     hidden_stop = client.post("/api/jobs/stop", json={"job_ids": [consumer.id], "mode": "force"})
     assert hidden_stop.status_code == 202, hidden_stop.text
@@ -932,7 +938,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                                 "revision": snapshot["revision"],
                                 "file": {
                                     "kind": "step",
-                                    "id": "train",
+                                    "id": "observe",
                                     "step": {"kind": "train", "base": {"inline": {}}},
                                 },
                             },

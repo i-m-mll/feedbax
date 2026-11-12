@@ -31,7 +31,8 @@ fetch("/_desktop/exchange", { method: "POST", headers: {"X-Feedbax-Ticket": tick
   .then(response => {
     if (!response.ok) throw Error();
     const project = response.headers.get("X-Feedbax-Project");
-    location.replace(project ? "/?project=" + encodeURIComponent(project) : "/");
+    if (!project) throw Error();
+    location.replace("/?project=" + encodeURIComponent(project));
   })
   .catch(() => {
     document.querySelector("#status").textContent =
@@ -55,7 +56,7 @@ class _TicketRequest(StrictModel):
 @dataclass(frozen=True)
 class _Ticket:
     expires: float
-    project_id: str | None
+    project_id: str
 
 
 class DesktopTransport:
@@ -66,7 +67,7 @@ class DesktopTransport:
         self.session = secrets.token_urlsafe(32)
         self.tickets: dict[str, _Ticket] = {}
 
-    def issue_ticket(self, project_id: str | None = None) -> str:
+    def issue_ticket(self, project_id: str) -> str:
         now = time.monotonic()
         self.tickets = {token: ticket for token, ticket in self.tickets.items() if ticket.expires > now}
         if len(self.tickets) >= 32:
@@ -89,7 +90,7 @@ class DesktopTransport:
                 elif request.project_id is not None:
                     document = await run_in_threadpool(folders.open, request.project_id)
                 else:
-                    return {"ticket": self.issue_ticket()}
+                    document = await run_in_threadpool(folders.new)
             except ProjectFolderNotFound as error:
                 raise HTTPException(404, "The selected Studio project folder is missing.") from error
             except (OSError, ValueError) as error:
@@ -144,8 +145,7 @@ class DesktopTransport:
                 await self._deny(scope, receive, send)
                 return
             response = Response(status_code=204, headers=_BROWSER_HEADERS)
-            if ticket.project_id is not None:
-                response.headers["x-feedbax-project"] = ticket.project_id
+            response.headers["x-feedbax-project"] = ticket.project_id
             response.set_cookie(_COOKIE, self.session, httponly=True, samesite="strict")
         elif (
             path.startswith(f"{CONTROL_ROUTE}/")

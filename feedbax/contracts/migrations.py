@@ -3136,8 +3136,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     manifest_emitters = ("feedbax.contracts.manifest", "feedbax.integrations.provider")
     studio_schema_emitters = ("feedbax.studio.schema", "feedbax.integrations.provider")
-    studio_execution_emitters = ("feedbax.studio.execution", "feedbax.integrations.provider")
-    studio_execution_version = "feedbax.spec.studio.execution.v1"
     objective_emitters = ("feedbax.objective_spec", "feedbax.integrations.provider")
     invocation_emitters = ("feedbax.execution.records", "feedbax.integrations.provider")
     realization_emitters = (
@@ -6159,112 +6157,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
-    for kind, schema_id, description in (
-        (
-            "StudioTrainingExecutionRequest",
-            "feedbax.spec.studio.training_execution_request",
-            "Request to bind a Studio train stage to an invocation and backend plan.",
-        ),
-        (
-            "StudioTrainingExecutionPreparation",
-            "feedbax.spec.studio.training_execution_preparation",
-            "Prepared Studio invocation and inert backend plan.",
-        ),
-        (
-            "StudioPipelineMaterializationRequest",
-            "feedbax.spec.studio.pipeline_materialization_request",
-            "Request to materialize eval/analysis/report Studio stages.",
-        ),
-        (
-            "StudioPipelineMaterializationResult",
-            "feedbax.manifest.studio.pipeline_materialization_result",
-            "Result from Studio pipeline materialization.",
-        ),
-        (
+    families.append(
+        _family(
             "WorkspaceReplayProduct",
             WORKSPACE_REPLAY_SCHEMA_ID,
-            "Manifest-linked replay product for authored Studio workspace geometry.",
-        ),
-    ):
-        families.append(
-            _family(
-                kind,
-                schema_id,
-                (
-                    WORKSPACE_REPLAY_SCHEMA_VERSION
-                    if kind == "WorkspaceReplayProduct"
-                    else "feedbax.manifest.studio.execution.v1"
-                    if kind.endswith("Result")
-                    else studio_execution_version
-                ),
-                owner_module=(
-                    "feedbax.contracts.workspace_replay"
-                    if kind == "WorkspaceReplayProduct"
-                    else "feedbax.studio.execution"
-                ),
-                emitted_by=(
-                    ("eval/validation replay materialization", "provider_manifest.schemas")
-                    if kind == "WorkspaceReplayProduct"
-                    else studio_execution_emitters
-                ),
-                consumed_by=(
-                    (
-                        "Studio workspace playback",
-                        "Mandible provider integration",
-                        "analysis materialization",
-                    )
-                    if kind == "WorkspaceReplayProduct"
-                    else ("provider HTTP API", "Studio backend")
-                ),
-                description=description,
-                rejected_old_versions=(
-                    (WORKSPACE_REPLAY_SCHEMA_VERSION_V0,)
-                    if kind == "WorkspaceReplayProduct"
-                    else None
-                ),
-                required_tests=(
-                    (
-                        "tests/test_workspace_replay_contract.py",
-                        "tests/test_structured_spec_migrations.py",
-                    )
-                    if kind == "WorkspaceReplayProduct"
-                    else ("tests/test_structured_spec_migrations.py",)
-                ),
-            )
+            WORKSPACE_REPLAY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.workspace_replay",
+            emitted_by=("eval/validation replay materialization", "provider_manifest.schemas"),
+            consumed_by=("Studio project playback", "Mandible provider integration", "analysis materialization"),
+            description="Manifest-linked replay product for authored Studio geometry.",
+            rejected_old_versions=(WORKSPACE_REPLAY_SCHEMA_VERSION_V0,),
+            required_tests=("tests/test_workspace_replay_contract.py", "tests/test_structured_spec_migrations.py"),
         )
-
-    for kind, schema_id, description in (
-        (
-            "StudioNativeTrainingDispatchRequest",
-            "feedbax.spec.studio.native_training_dispatch_request",
-            "Request to dispatch one staged native training row by receipt generation.",
-        ),
-        (
-            "StudioNativeTrainingDispatchAccepted",
-            "feedbax.spec.studio.native_training_dispatch_accepted",
-            "Identity of the admitted native training attempt.",
-        ),
-    ):
-        families.append(
-            _family(
-                kind,
-                schema_id,
-                studio_execution_version,
-                owner_module="feedbax.studio.execution",
-                emitted_by=studio_execution_emitters,
-                consumed_by=("provider HTTP API", "Studio frontend"),
-                durable=False,
-                description=description,
-                required_tests=(
-                    "tests/test_structured_spec_migrations.py",
-                    "tests/test_training_native_row_handoff.py",
-                ),
-                notes=(
-                    "The HTTP payload carries no schema version and has no prior wire format. "
-                    "The v0 entry is a rejection sentinel."
-                ),
-            )
-        )
+    )
 
     for kind, schema_id, description in (
         ("ValueSchema", "feedbax.spec.studio.schema.value", "Provider-owned value schema record."),

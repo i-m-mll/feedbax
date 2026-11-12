@@ -8,8 +8,7 @@ import type {
   StudioJobSubmission,
 } from '../../src/generated/studioContracts';
 import { observeJobStreams } from './observeJobStreams';
-import { openSavedProject } from './projectControls';
-import { reachingDocument, saveFixture } from './reachingProject';
+import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
@@ -30,8 +29,8 @@ ${command}
 }
 
 function row(page: Page, label: string) {
-  return page.getByRole('table', { name: 'Runs', exact: true }).getByRole('row').filter({
-    has: page.getByRole('rowheader', { name: label, exact: true }),
+  return page.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true }).getByRole('row').filter({
+    has: page.getByRole('button', { name: label, exact: true }),
   });
 }
 
@@ -47,36 +46,28 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
   test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
   test.setTimeout(50_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
-  const project = await saveFixture(request, await reachingDocument(6_000, 'Six reaching runs'));
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
+  const projectId = snapshot.project_id;
   const observer = await observeJobStreams(baseURL);
   const jobs = async () => {
-    const response = await request.get(`/api/jobs?project=${project.id}`);
+    const response = await request.get(`/api/jobs?project=${projectId}`);
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json() as StudioJobSnapshot).jobs;
   };
   const second = await context.newPage();
   try {
     const open = async (window: Page) => {
-      await window.goto(observer.origin);
-      await openSavedProject(window, project.metadata.name);
-      await window.getByTitle('train: Train', { exact: true }).click();
+      await window.goto(observer.origin + '/?project=' + projectId);
+      await mapStep(window, 'train').click();
+      await window.getByRole('tab', { name: 'Runs', exact: true }).click();
     };
     await open(page);
     const home = testInfo.config.metadata.home as string;
     const slots = Number(await hostCommand(home, 'print(host.policy()["compute"])'));
     expect(slots).toBe(4);
 
-    const axis = page.getByRole('form', { name: 'Axis' });
-    await axis.getByLabel('Name', { exact: true }).fill('Learning rate');
-    await axis.getByLabel('Path', { exact: true }).fill('training_spec.optimizer.params.learning_rate');
-    await axis.getByLabel('Values', { exact: true }).fill(rates.join(', '));
-    await axis.getByRole('button', { name: 'Add', exact: true }).click();
-    for (const rate of rates) {
-      await row(page, `Learning rate=${rate}`).getByRole('checkbox').check();
-    }
-    const submitted = post(page, '/api/submissions');
-    await page.getByRole('tabpanel', { name: 'Runs', exact: true })
-      .getByRole('button', { name: 'Run', exact: true }).click();
+    const submitted = post(page, projectPath + '/train-runs');
+    await page.getByRole('button', { name: 'Run', exact: true }).click();
     const admission = await submitted;
     expect(admission.status(), await admission.text()).toBe(202);
     const { items } = await admission.json() as StudioJobSubmission;
@@ -96,19 +87,19 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
       timeout: 15_000,
     });
 
-    await expect.poll(() => observer.subscriptions().map((stream) => stream.projects)).toEqual([[project.id]]);
+    await expect.poll(() => observer.subscriptions().map((stream) => stream.projects)).toEqual([[projectId]]);
     const established = observer.subscriptions();
     await open(second);
     await expect.poll(observer.subscriptions).toEqual(established);
     for (const job of queued) {
       expect(job.reason).toBeTruthy();
       for (const window of [page, second]) {
-        await expect(row(window, job.label).getByText(job.reason!, { exact: true })).toBeVisible();
+        await expect(row(window, job.label).getByText('Queued', { exact: true })).toBeVisible();
       }
     }
-    const inspector = second.getByRole('region', { name: 'Run Inspector' });
     await row(second, first.label).getByRole('button', { name: first.label, exact: true }).click();
-    await expect(inspector.getByRole('img', { name: 'Loss' }).locator('polyline')).toBeVisible();
+    await openResultsSlot(second);
+    await expect(second.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first()).toBeAttached();
 
     await page.reload();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
@@ -118,7 +109,10 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
     await selected.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).ok()).toBe(true);
 
-    const resume = row(second, first.label).getByRole('button', { name: /^Resume\b/ });
+    const secondActivity = second.getByRole('region', { name: 'Activity', exact: true });
+    await second.getByRole('button', { name: 'Activity', exact: true }).click();
+    const secondAttempt = (label: string) => secondActivity.getByRole('listitem').filter({ hasText: label }).first();
+    const resume = secondAttempt(first.label).getByRole('button', { name: 'Resume', exact: true });
     await expect(resume).toBeEnabled({ timeout: 10_000 });
     const stopped = (await jobs()).find((job) => job.job_id === first.job_id);
     expect(stopped).toMatchObject({ status: 'stopped', can_resume: true });
@@ -141,7 +135,7 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
     const sibling = (await jobs()).find((job) => job.status === 'running' && job.run_key !== first.run_key);
     if (!sibling) throw new Error('Expected another running row to force-stop');
     const forced = post(second, '/api/jobs/stop');
-    await row(second, sibling.label).getByRole('button', { name: /^Force Stop\b/ }).click();
+    await secondAttempt(sibling.label).getByRole('button', { name: 'Force Stop', exact: true }).click();
     expect((await forced).ok()).toBe(true);
     await expect.poll(async () =>
       (await jobs()).find((job) => job.job_id === sibling.job_id)?.outcome?.outcome,
@@ -166,14 +160,17 @@ while time.monotonic() < deadline:
         sys.exit(0)
     time.sleep(0.05)
 raise TimeoutError("No isolated sibling published a checkpoint")
-`, project.id, first.job_id, sibling.job_id, attempt.job_id);
+`, projectId, first.job_id, sibling.job_id, attempt.job_id);
     const interrupted = (await jobs()).find((job) => job.job_id === interruptedId);
     if (!interrupted) throw new Error('The interrupted sibling disappeared from Jobs');
-    await expect(row(second, interrupted.label).getByRole('button', { name: /^Resume\b/ })).toBeEnabled();
+    await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
     await second.reload();
+    await mapStep(second, 'train').click();
+    await second.getByRole('tab', { name: 'Runs', exact: true }).click();
     await expect(row(second, sibling.label).getByText('Stopped', { exact: true })).toBeVisible();
     await expect(row(second, interrupted.label).getByText('Interrupted', { exact: true })).toBeVisible();
-    await expect(row(second, interrupted.label).getByRole('button', { name: /^Resume\b/ })).toBeEnabled();
+    await second.getByRole('button', { name: 'Activity', exact: true }).click();
+    await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
     await expect.poll(async () => {
       const current = await jobs();
       return current.find((job) => job.job_id === attempt.job_id)?.progress?.completed_updates ?? 0;
@@ -194,16 +191,17 @@ test('opens a ninth project window while one stream serves active projects', asy
   test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
   test.setTimeout(45_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
-  const projects = await Promise.all(['A', 'B', 'C', 'D'].map(async (label) =>
-    saveFixture(request, await reachingDocument(12_000, `Shared reach ${label}`)),
+  const files = await fixture('ordinary-files', '12000');
+  const projects = await Promise.all(Array.from({ length: 4 }, async () =>
+    (await seedManagedProject(request, files)).snapshot.project_id,
   ));
   const runningProjects = projects.slice(0, 3);
   const observer = await observeJobStreams(baseURL);
   const windows: Page[] = [page];
-  const open = async (window: Page, name: string) => {
-    await window.goto(observer.origin);
-    await openSavedProject(window, name);
-    await window.getByTitle('train: Train', { exact: true }).click();
+  const open = async (window: Page, projectId: string) => {
+    await window.goto(observer.origin + '/?project=' + projectId);
+    await mapStep(window, 'train').click();
+    await window.getByRole('tab', { name: 'Runs', exact: true }).click();
   };
   const openWindow = async (name: string) => {
     const window = await context.newPage();
@@ -214,34 +212,33 @@ test('opens a ninth project window while one stream serves active projects', asy
   const subscriptions = () => observer.subscriptions().map((stream) => [...stream.projects].sort());
   try {
     const owners = await Promise.all(runningProjects.map((project, index) =>
-      index === 0 ? open(page, project.metadata.name).then(() => page) : openWindow(project.metadata.name),
+      index === 0 ? open(page, project).then(() => page) : openWindow(project),
     ));
-    await Promise.all(owners.map(async (window) => {
-      const submitted = post(window, '/api/submissions');
-      await window.getByRole('tabpanel', { name: 'Runs', exact: true })
-        .getByRole('button', { name: 'Run', exact: true }).click();
+    await Promise.all(owners.map(async (window, index) => {
+      const submitted = post(window, '/api/projects/' + runningProjects[index] + '/train-runs');
+      await window.getByRole('button', { name: 'Run', exact: true }).click();
       const response = await submitted;
       expect(response.status(), await response.text()).toBe(202);
       const { items } = await response.json() as StudioJobSubmission;
       expect(items.map((item) => item.disposition)).toEqual(['admitted']);
     }));
     await Promise.all(Array.from({ length: 5 }, (_, index) =>
-      openWindow(runningProjects[index % runningProjects.length].metadata.name),
+      openWindow(runningProjects[index % runningProjects.length]),
     ));
-    await expect.poll(subscriptions).toEqual([runningProjects.map((project) => project.id).sort()]);
+    await expect.poll(subscriptions).toEqual([[...runningProjects].sort()]);
     await Promise.all(windows.map((window) =>
-      expect(row(window, 'Train').getByRole('progressbar')).toHaveAttribute('value', /[1-9]/),
+      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/),
     ));
     expect(windows).toHaveLength(8);
 
     const opening = performance.now();
-    const ninth = await openWindow(projects[3].metadata.name);
+    const ninth = await openWindow(projects[3]);
     console.log(`Ninth project window opened in ${Math.round(performance.now() - opening)} ms`);
-    await expect.poll(subscriptions).toEqual([projects.map((project) => project.id).sort()]);
+    await expect.poll(subscriptions).toEqual([[...projects].sort()]);
     await ninth.getByRole('button', { name: 'Activity', exact: true }).click();
     const activity = ninth.getByRole('region', { name: 'Activity', exact: true });
     for (const project of runningProjects) {
-      const run = activity.getByRole('listitem').filter({ hasText: project.metadata.name });
+      const run = activity.getByRole('listitem').filter({ hasText: project });
       await expect(run.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
     }
   } finally {

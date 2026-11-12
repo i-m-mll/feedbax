@@ -1540,9 +1540,6 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         "TrainingCheckpointLatestPointer": "feedbax.manifest.training_checkpoint_latest_pointer",
         "TrainingRunManifest": "feedbax.manifest.training_run",
         "Attempt": ATTEMPT_SCHEMA_ID,
-        "StudioPipelineMaterializationResult": (
-            "feedbax.manifest.studio.pipeline_materialization_result"
-        ),
         "StudioSchemaRegistry": "feedbax.manifest.studio.schema_registry",
         "WorkspaceReplayProduct": WORKSPACE_REPLAY_SCHEMA_ID,
     }
@@ -1633,10 +1630,6 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.studio.schema",
             ("feedbax.studio.schema", "feedbax.integrations.provider"),
         ),
-        "StudioTrainingExecutionRequest": (
-            "feedbax.studio.execution",
-            ("feedbax.studio.execution", "feedbax.integrations.provider"),
-        ),
         "WorkspaceReplayProduct": (
             "feedbax.contracts.workspace_replay",
             ("eval/validation replay materialization", "provider_manifest.schemas"),
@@ -1705,7 +1698,6 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "StudioApiTransport",
         "StudioWorkspaceSpec",
         "StudioTaskBindingSpec",
-        "StudioPipelineMaterializationRequest",
     }
     manifest_kinds = {
         "SpecPayload",
@@ -1721,7 +1713,6 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "StagedAnalysisBundleExecution",
         "ProviderManifest",
         "RegistrySnapshot",
-        "StudioPipelineMaterializationResult",
         "WorkspaceReplayProduct",
     }
 

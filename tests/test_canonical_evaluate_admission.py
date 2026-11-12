@@ -39,13 +39,13 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.worker.execution import prototypes_from_task_bindings
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
-from tests.test_studio_training_host_worker import _authored_run
+from tests.test_studio_training_host_worker import _authored_spec
 
 host = host_fixture
 
 
 def authored_evaluation_project():
-    spec = _authored_run(batches=2, sampled_hold=True).spec
+    spec = _authored_spec(batches=2, sampled_hold=True)
     train_payload = TrainingRequestSpec(
         graph=spec.graph.inline, task=spec.task, task_binding_spec=spec.task_binding_spec,
         objective=spec.objective, method_ref=spec.method_ref, method_payload=spec.method_payload,

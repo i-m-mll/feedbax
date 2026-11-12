@@ -23,7 +23,6 @@ from feedbax._secure_fs import (
 )
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.authored_canonical import canonical_sha256
-from feedbax.contracts.base import default_manifest_root
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
@@ -39,12 +38,7 @@ from feedbax.contracts.jobs import (
     StudioJobSnapshot,
     StudioJobStopItem,
     StudioJobSubmission,
-    StudioJobSubmissionRequest,
     StudioLocalSession,
-    StudioPreviewIssue,
-    StudioPreviewRow,
-    StudioRunPreview,
-    StudioRunPreviewRequest,
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
 )
@@ -69,11 +63,6 @@ from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     CanonicalTrainRequestBinding,
     bind_canonical_train,
-)
-from feedbax.studio.training_requests import (
-    StudioTrainingLoweringError,
-    lower_studio_training_runs,
-    studio_training_run_key,
 )
 
 if TYPE_CHECKING:
@@ -253,7 +242,6 @@ class JobService(PlanJobReader):
         super().__init__(host, enable_evaluation_candidate=enable_evaluation_candidate)
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
-        self.manifest_root = default_manifest_root().resolve()
         self._training_worker = Launch(
             argv=(sys.executable,),
             env={
@@ -268,87 +256,6 @@ class JobService(PlanJobReader):
         self._launch_lock = Lock()
         self._accepting = True
         self._warmed = False
-
-    def preview(self, request: StudioRunPreviewRequest) -> StudioRunPreview:
-        rows: dict[str, StudioPreviewRow] = {}
-        issues: list[StudioPreviewIssue] = []
-        for selection in request.selections:
-            try:
-                lowered = lower_studio_training_runs(
-                    request.workspace,
-                    request.graph,
-                    stage_id=selection.stage_id,
-                    run_keys=selection.run_keys,
-                    registry_bundle=self.registries,
-                )
-            except StudioTrainingLoweringError as exc:
-                issues.append(
-                    StudioPreviewIssue(stage_id=selection.stage_id, path=exc.path, message=exc.message)
-                )
-                continue
-            for run in lowered:
-                rows[run.run_key] = StudioPreviewRow(
-                    run_key=run.run_key,
-                    request_id=run.request_id,
-                    stage_id=run.stage_id,
-                    scenario_id=run.scenario_id,
-                    label=run.label,
-                    coordinates=dict(run.coordinates),
-                )
-        return StudioRunPreview(rows=list(rows.values()), issues=issues)
-
-    def admit(self, request: StudioJobSubmissionRequest) -> StudioJobSubmission:
-        project = request.project_id
-        if previous := self._retry(request.token, project=project, continues=None):
-            return previous
-
-        items: dict[str, AdmissionItem] = {}
-        runs: dict[str, dict[str, Any]] = {}
-        for selection in request.selections:
-            keys = selection.run_keys
-            try:
-                lowered = lower_studio_training_runs(
-                    request.workspace,
-                    request.graph,
-                    stage_id=selection.stage_id,
-                    run_keys=keys,
-                    registry_bundle=self.registries,
-                )
-            except StudioTrainingLoweringError as exc:
-                for key in keys or [studio_training_run_key(selection.stage_id)]:
-                    items.setdefault(key, _rejected(key, str(exc)))
-                continue
-
-            selected = set(keys or ())
-            for run in lowered:
-                key = run.run_key
-                selected.discard(key)
-                if key in items:
-                    continue
-                data = {
-                    "run_key": key,
-                    "stage_id": run.stage_id,
-                    "scenario_id": run.scenario_id,
-                    "label": run.label,
-                    "coordinates": dict(run.coordinates),
-                }
-                runs[key] = data | {"request_id": run.request_id}
-                items[key] = self._training_item(
-                    project, run.request_id, run.spec, data, self.manifest_root
-                )
-            for key in keys or ():
-                if key in selected:
-                    items.setdefault(
-                        key, _rejected(key, "The selected run is absent from this step.")
-                    )
-
-        record = {"project": project, "continues": None, "runs": runs}
-        candidates = list(items.values())
-        if request.policy == "all":
-            admitted = self._admit(request.token, candidates, record)
-        else:
-            admitted = self._admit_with_reuse(request.token, candidates, record)
-        return self._submission_for_action(admitted, project=project, continues=None)
 
     def admit_plan(
         self,
@@ -1223,11 +1130,28 @@ def _job_status(
     return JobStatus(state), reason
 
 
-def saved_train_status(
-    attempts: Sequence[PlanJobAttempt], *, changed_path: str | None
+def saved_request_status(
+    attempts: Sequence[PlanJobAttempt],
+    *,
+    success: PlanJobAttempt | None,
+    problem: str | None = None,
+    changed_path: str | None = None,
 ) -> tuple[JobStatus, str | None]:
+    if problem is not None:
+        return JobStatus.CANNOT_RUN, problem
+    live = next((attempt for attempt in reversed(attempts) if attempt.status in {
+        JobStatus.QUEUED, JobStatus.AWAITING_AUTHORIZATION, JobStatus.STARTING,
+        JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
+    }), None)
+    if live is not None:
+        return live.status, live.reason
     if attempts:
         latest = attempts[-1]
+        if success is not None and latest.status is not JobStatus.CORRUPT:
+            notice = None
+            if latest != success:
+                notice = latest.reason or f"A later attempt was {latest.status.value.replace('_', ' ')}."
+            return JobStatus.SUCCEEDED, notice
         return latest.status, latest.reason
     if changed_path is not None:
         return JobStatus.STALE, f"Definition changed at {changed_path}."

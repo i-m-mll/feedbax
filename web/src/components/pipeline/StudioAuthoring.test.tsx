@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { StudioDefinitionForm, type StudioDefinitionField } from "./StudioDefinitionForm";
-import { StudioRunInputs, type StudioRunInputView } from "./StudioRunInputs";
 
 const field: StudioDefinitionField = {
   id: "rate-field", label: "Learning rate", control: { kind: "number", min: 0, max: 1 },
@@ -54,25 +53,4 @@ it("displays the authored range and sends a rule conversion instead of expanding
   expect(screen.queryByRole("spinbutton")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "To List" }));
   expect(edit).toHaveBeenLastCalledWith({ fieldId: "rate-field", selection, edit: { kind: "toList", sweepId: "rate" } });
-});
-
-it("edits subset terms while keeping the members and count supplied by the plan", () => {
-  const edit = vi.fn();
-  const input: StudioRunInputView = {
-    id: "subject", label: "Subject", choiceId: "train", choices: [{ id: "train", label: "Train arm", kind: "step" }],
-    subset: { terms: ["Rate 0.003"], count: 2, total: 6 }, actions: ["choose", "value", "measure"],
-    editor: {
-      sweeps: [{ id: "rate", label: "Rate", values: [{ id: "low", label: "0.001" }, { id: "high", label: "0.003" }] }],
-      rows: [], metrics: [{ id: "final-loss", label: "Final loss" }], values: [{ sweepId: "rate", valueIds: ["high"] }], rowIds: [],
-      members: [{ rank: 1 }, { rank: 2 }],
-    },
-  };
-  render(<StudioRunInputs inputs={[input]} onEdit={edit} />);
-  expect(screen.getByText("Rate 0.003 · 2 of 6")).toBeDefined();
-  const values = within(screen.getByRole("group", { name: "Rate" }));
-  fireEvent.click(values.getByRole("checkbox", { name: "0.001" }));
-  expect(edit).toHaveBeenLastCalledWith("subject", { kind: "value", sweepId: "rate", valueId: "low", included: true });
-  expect(screen.getByText("Rate 0.003 · 2 of 6")).toBeDefined();
-  fireEvent.change(screen.getByRole("combobox", { name: "Metric" }), { target: { value: "final-loss" } });
-  expect(edit).toHaveBeenLastCalledWith("subject", { kind: "measure", rule: { metricId: "final-loss", order: "min", count: 1, per: [] } });
 });

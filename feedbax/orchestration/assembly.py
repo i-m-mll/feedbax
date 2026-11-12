@@ -51,9 +51,9 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     SchemaArtifactRef,
-    StagedTrainingBinding,
     canonical_orchestration_root,
     default_orchestration_root,
+    omit_retired_studio_binding,
     orchestration_run_set_dir,
 )
 from feedbax.orchestration.revision import FeedbaxRevisionError, check_feedbax_provenance
@@ -136,7 +136,6 @@ class RunAssemblyRequest(StrictModel):
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
     training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
-    staged_training: StagedTrainingBinding | None = None
     evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     evaluation_output_preflight: EvaluationOutputPreflightPolicy | None = None
     deployment_policy: DeploymentPolicy
@@ -158,7 +157,7 @@ class RunAssemblyRequest(StrictModel):
                 "python -m feedbax migrate-content-store --staged-root-v1 ... "
                 "and author canonical content_bindings"
             )
-        return value
+        return omit_retired_studio_binding(value)
 
     @model_validator(mode="after")
     def _validate_schema(self) -> "RunAssemblyRequest":
@@ -576,7 +575,6 @@ def _persist_prepared_run_bundle(
         budget=request.budget,
         resolved_inputs=resolved_input_records,
         content_bindings=request.content_bindings,
-        staged_training=request.staged_training,
         evaluation_output_preflight=prepared.evaluation_output_preflight,
         orchestration_root=(
             str(canonical_orchestration_root(request.orchestration_root))

@@ -212,6 +212,19 @@ def _write_bundle(bundle: RunBundle, path: Path) -> Path:
     return path
 
 
+def test_envelope_reader_keeps_ordinary_serialized_null_stage_slot(tmp_path: Path) -> None:
+    request, registry = _assembly_request(tmp_path)
+    bundle = assemble_run_bundle(
+        request, run_set_id="2026-01-02-cli",
+        context=AssemblyContext(custody_root=tmp_path / "custody"), registry=registry,
+    )
+    for value in (request, bundle):
+        ordinary = json.loads(value.model_dump_json()) | {"staged_training": None}
+        assert type(value).model_validate_json(json.dumps(ordinary)) == value
+        with pytest.raises(ValueError, match="staged_training"):
+            type(value).model_validate(ordinary | {"staged_training": {"generation": "retired"}})
+
+
 def _register_orchestration_plugin_method(registry: Any) -> None:
     contract = standard_supervised_method_contract().model_copy(
         update={

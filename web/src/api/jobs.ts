@@ -1,23 +1,11 @@
-import { semanticWorkspace } from '@/api/client';
 import { asApiRequestError, requestJson } from '@/api/request';
 import {
   parseContract,
   type ContractName,
   type StudioJobEvent,
-  type StudioJobSubmissionRequest,
-  type StudioRunPreviewRequest,
   type StudioSavedEvaluationReplayRequest,
   type StudioSavedTrainRunRequest,
 } from '@/generated/studioContracts';
-import type { GraphSpec } from '@/types/graph';
-import type { StudioWorkspaceSpec } from '@/types/workspace';
-
-export type AuthoredStudioRunInput = Omit<StudioRunPreviewRequest, 'workspace' | 'graph'> & {
-  workspace: StudioWorkspaceSpec;
-  graph: GraphSpec;
-};
-type AuthoredSubmission = AuthoredStudioRunInput &
-  Pick<StudioJobSubmissionRequest, 'token' | 'policy'>;
 
 async function readContract<K extends ContractName>(
   path: string,
@@ -29,29 +17,6 @@ async function readContract<K extends ContractName>(
   } catch (error) {
     throw asApiRequestError(error, path, 'The service response did not match its contract');
   }
-}
-
-export function previewStudioRuns(input: AuthoredStudioRunInput, signal?: AbortSignal) {
-  const body = parseContract('StudioRunPreviewRequest', {
-    ...input,
-    workspace: semanticWorkspace(input.workspace),
-  });
-  return readContract('/api/submissions/preview', 'StudioRunPreview', {
-    method: 'POST',
-    body: JSON.stringify(body),
-    signal,
-  });
-}
-
-export function submitStudioJobs(input: AuthoredSubmission) {
-  const body = parseContract('StudioJobSubmissionRequest', {
-    ...input,
-    workspace: semanticWorkspace(input.workspace),
-  });
-  return readContract('/api/submissions', 'StudioJobSubmission', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
 }
 
 function savedTrainRunsPath(project: string) {

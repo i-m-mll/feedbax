@@ -23,7 +23,6 @@ import {
   type StudioJobWorkerMessage,
 } from '@/jobs/studioJobConnection';
 import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
-import { useGraphStore } from '@/stores/graphStore';
 
 const jobsKey = ['studio-jobs'] as const;
 const historyKey = (projectId: string | null) => ['studio-job-history', projectId] as const;
@@ -40,10 +39,8 @@ function useStudioJobsContext() {
   return context;
 }
 
-export function StudioJobsProvider({ children, folderProjectId }: PropsWithChildren<{ folderProjectId: string | null }>) {
+export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ projectId: string }>) {
   const cache = useQueryClient();
-  const graphId = useGraphStore((state) => state.graphId);
-  const projectId = folderProjectId || graphId;
   // The window owns replay. Closing its last inspector must not cancel it.
   useQuery<StudioJobEvent[]>({
     queryKey: historyKey(projectId),
@@ -103,17 +100,15 @@ export function StudioJobsProvider({ children, folderProjectId }: PropsWithChild
         if (current !== generation) return;
         through = snapshot.cursor;
         snapshotReady = true;
-        if (projectId) {
-          await cache.fetchQuery({
-            queryKey: history,
-            queryFn: ({ signal }) =>
-              fetchStudioJobHistory(projectId, snapshot.oldest_cursor, snapshot.cursor, signal),
-            retry: false,
-            staleTime: 0,
-          });
-          if (current !== generation) return;
-          historyReady = true;
-        }
+        await cache.fetchQuery({
+          queryKey: history,
+          queryFn: ({ signal }) =>
+            fetchStudioJobHistory(projectId, snapshot.oldest_cursor, snapshot.cursor, signal),
+          retry: false,
+          staleTime: 0,
+        });
+        if (current !== generation) return;
+        historyReady = true;
       } catch {
         // The failed query carries the error and remains available for retry.
       } finally {

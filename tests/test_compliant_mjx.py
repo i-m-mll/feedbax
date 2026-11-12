@@ -105,28 +105,25 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     from fastapi.testclient import TestClient
 
     from feedbax.contracts.artifact_custody import ContentGcRequest
-    from feedbax.contracts.graph import (
-        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-    )
     from feedbax.training.checkpoint_custody import (
         _semantic_structural_abi_sha256,
         structural_abi_fingerprint,
     )
     from feedbax.web import config
-    from feedbax.web.api import graphs
+    from feedbax.web.api import graphs, projects
     from feedbax.web.model_assets import model_artifact_provider
-    from feedbax.web.services.graph_service import GraphService
+    from feedbax.web.services.project_folder import ProjectFolderService
 
     pytest.importorskip("mujoco.mjx")
     fixture = ImmutableArtifactBlobProvider(tmp_path / "fixture")
     graph = _document(fixture, 0.001).graph
     asset = graph.subgraphs["physics"].mujoco_asset.asset
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
-    monkeypatch.setattr(graphs, "service", GraphService(tmp_path))
     app = FastAPI()
     app.state.bootstrap_state = SimpleNamespace(bundle=SimpleNamespace(components=ComponentRegistry()))
     app.include_router(graphs.router, prefix="/api/graphs")
+    app.include_router(projects.router)
+    app.state.project_folders = ProjectFolderService(tmp_path / "projects")
 
     with TestClient(app) as client:
         external = client.post("/api/graphs/assets/mujoco", content=b'<mujoco><include file="other.xml"/></mujoco>')
@@ -134,12 +131,16 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         imported = client.post("/api/graphs/assets/mujoco", content=fixture.get_object(asset))
         assert imported.status_code == 200
         assert imported.json() == asset.model_dump(mode="json")
-        saved = client.post("/api/graphs", json={
-            "schema_id": STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-            "schema_version": STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-            "graph": graph.model_dump(mode="json", exclude_none=True),
+        created = client.post("/api/projects").json()["snapshot"]
+        project_id = created["project_id"]
+        path = f"/api/projects/{project_id}"
+        saved = client.post(path + "/files", json={
+            "revision": created["revision"],
+            "file": {"kind": "document", "id": "model", "document": {
+                "schema": graph.schema_id, "payload": graph.model_dump(mode="json", exclude_none=True),
+            }},
         })
-        assert saved.status_code == 200, saved.text
+        assert saved.status_code == 201, saved.text
         content = model_artifact_provider(graph)
         assert content is not None
         dry_run = content.collect_garbage()
@@ -150,12 +151,13 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         content.collect_garbage(ContentGcRequest(
             destructive=True, expected_generation=dry_run.generation,
         ))
-        project = client.get(f"/api/graphs/{saved.json()['data']['id']}")
+        project = client.get(path + "/open")
         assert project.status_code == 200, project.text
-        binding = project.json()["data"]["graph"]["subgraphs"]["physics"]["mujoco_asset"]
+        payload = project.json()["snapshot"]["project"]["documents"]["model"]["payload"]
+        binding = payload["subgraphs"]["physics"]["mujoco_asset"]
         assert binding["asset"] == imported.json()
 
-    reopened = GraphSpec.model_validate(project.json()["data"]["graph"])
+    reopened = GraphSpec.model_validate(payload)
     compiled = compile_graph(
         GraphDocument(graph=reopened), app.state.bootstrap_state.bundle.components,
         artifact_provider=model_artifact_provider(reopened),

@@ -17,7 +17,6 @@ from feedbax.contracts.graph import (
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.training import TaskSpec
-from feedbax.web.services.graph_service import GraphService
 from feedbax.web.worker.execution import _materialize_task_data, _validate_epoch_value_targets
 
 
@@ -171,7 +170,6 @@ def test_timeline_semantics_change_identity_while_layout_is_excluded() -> None:
 
 
 def test_admission_failure_writes_nothing(tmp_path) -> None:
-    service = GraphService(storage_dir=tmp_path)
     bad_workspace = _workspace(_timeline()).model_dump(mode="json")
     bad_workspace["scenarios"]["scenario:train"]["task_spec"]["timeline"]["schema_version"] = (
         "feedbax.spec.studio.task_timeline.v99"
@@ -186,17 +184,6 @@ def test_admission_failure_writes_nothing(tmp_path) -> None:
             }
         )
     assert list(tmp_path.iterdir()) == []
-    assert service.list_graphs() == []
-
-
-def test_save_load_preserves_exact_epoch_values(tmp_path) -> None:
-    service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(GraphSpec(), workspace=_workspace(_timeline()))
-    loaded = service.get_graph(record.graph_id).project.workspace
-    assert loaded is not None
-    timeline = loaded.scenarios["scenario:train"].task_spec["timeline"]
-    assert timeline["epoch_value_specs"][0]["value_spec"]["value"] == 1.0
-    assert timeline["epoch_value_specs"][1]["value_spec"]["value"] == 3.0
 
 
 def test_execution_applies_distinct_values_at_exact_epoch_boundary() -> None:

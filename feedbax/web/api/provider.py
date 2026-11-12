@@ -7,7 +7,6 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from feedbax.contracts.base import default_manifest_root
 from feedbax.integrations.provider import (
     ProviderHealth,
     ProviderManifest,
@@ -23,34 +22,6 @@ from feedbax.studio.schema import (
     StudioSchemaRegistry,
     enumerate_studio_schema_registry,
 )
-from feedbax.studio.execution import (
-    StudioExecutionPreparationError,
-    StudioEvaluationLocalRunRequest,
-    StudioEvaluationLocalRunResult,
-    StudioEvaluationMatrixPreview,
-    StudioEvaluationMatrixRequest,
-    StudioEvaluationStagingResult,
-    StudioPipelineMaterializationRequest,
-    StudioPipelineMaterializationResult,
-    StudioNativeTrainingDispatchAccepted,
-    StudioNativeTrainingDispatchRequest,
-    StudioTrainingExecutionPreparation,
-    StudioTrainingExecutionRequest,
-    StudioTrainingValidationError,
-    materialize_studio_pipeline,
-    prepare_studio_training_execution,
-    preview_studio_evaluation_matrix,
-    run_studio_evaluation_local_execution,
-    stage_studio_evaluation_matrix,
-)
-from feedbax.orchestration.staged_training import (
-    StagedTrainingConflict,
-    load_staged_training_receipt,
-)
-from feedbax.orchestration.stages import PreflightFailed
-from feedbax.studio.native_training import prepare_native_training_dispatch
-from feedbax.web.services.desktop_jobs import NativeTrainingControl, TrainingJobsUnavailable
-from feedbax.web.services.training_service import training_service
 
 
 router = APIRouter()
@@ -101,134 +72,6 @@ async def validate_provider_spec(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/training/plan",
-    response_model=StudioTrainingExecutionPreparation,
-)
-async def prepare_studio_training_plan(
-    payload: StudioTrainingExecutionRequest,
-    request: Request,
-) -> StudioTrainingExecutionPreparation:
-    try:
-        return prepare_studio_training_execution(
-            payload,
-            registry_bundle=request.app.state.bootstrap_state.bundle,
-        )
-    except StudioTrainingValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": exc.summary,
-                "errors": [issue.model_dump(mode="json") for issue in exc.issues],
-            },
-        ) from exc
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/training/dispatch",
-    response_model=StudioNativeTrainingDispatchAccepted,
-    status_code=202,
-)
-def dispatch_studio_native_training(
-    payload: StudioNativeTrainingDispatchRequest,
-    request: Request,
-) -> StudioNativeTrainingDispatchAccepted:
-    root = default_manifest_root().resolve()
-    bootstrap = request.app.state.bootstrap_state
-    jobs = getattr(request.app.state, "desktop_jobs", None)
-    control = NativeTrainingControl() if jobs is not None else None
-    try:
-        manifest, _ = load_staged_training_receipt(root, payload.manifest_id)
-        engine = prepare_native_training_dispatch(
-            manifest,
-            root=root,
-            generation=payload.generation,
-            registry_bundle=bootstrap.bundle,
-            plugin_registrations=bootstrap.provenance,
-            interruption_probe=control.poll if control is not None else None,
-        )
-        if jobs is not None:
-            jobs.training.dispatch(engine, control)
-        else:
-            training_service.dispatch_staged_training(engine)
-    except TrainingJobsUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except StagedTrainingConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except (ValueError, PreflightFailed) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    assert engine.bundle is not None
-    return StudioNativeTrainingDispatchAccepted(
-        run_set_id=engine.run_set_id,
-        row_id=engine.bundle.rows[0].row_id,
-    )
-
-
-@router.post(
-    "/studio/evaluation/preview",
-    response_model=StudioEvaluationMatrixPreview,
-)
-async def preview_studio_evaluation(
-    payload: StudioEvaluationMatrixRequest,
-) -> StudioEvaluationMatrixPreview:
-    try:
-        return preview_studio_evaluation_matrix(payload)
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/evaluation/stage",
-    response_model=StudioEvaluationStagingResult,
-)
-async def stage_studio_evaluation(
-    payload: StudioEvaluationMatrixRequest,
-) -> StudioEvaluationStagingResult:
-    try:
-        return stage_studio_evaluation_matrix(payload)
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/evaluation/run-local",
-    response_model=StudioEvaluationLocalRunResult,
-)
-async def run_studio_evaluation_local(
-    payload: StudioEvaluationLocalRunRequest,
-    request: Request,
-) -> StudioEvaluationLocalRunResult:
-    try:
-        return run_studio_evaluation_local_execution(
-            payload,
-            registry_bundle=request.app.state.bootstrap_state.bundle,
-        )
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post(
-    "/studio/pipeline/materialize",
-    response_model=StudioPipelineMaterializationResult,
-)
-async def materialize_studio_pipeline_stages(
-    payload: StudioPipelineMaterializationRequest,
-    request: Request,
-) -> StudioPipelineMaterializationResult:
-    try:
-        return materialize_studio_pipeline(
-            payload,
-            registry_bundle=request.app.state.bootstrap_state.bundle,
-        )
-    except StudioExecutionPreparationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post(

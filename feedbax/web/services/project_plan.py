@@ -46,7 +46,7 @@ from feedbax.jobs import (
     PlanJobAttempt,
     PlanJobAttempts,
     PlanJobReader,
-    saved_train_status,
+    saved_request_status,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.canonical_evaluate import CannotRun
@@ -126,11 +126,11 @@ class ProjectPlanRead:
                 if shared is None
                 else {path: name for path, name in shared.items() if row.document_ids.get(path) == name}
             )
-        statuses = {row.key: row.status for row in self.status_rows()}
+        statuses = {row.key: row for row in self.status_rows()}
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
             if isinstance(key, RunKey):
-                counts[key.variant, key.step][status.value] += 1
+                counts[key.variant, key.step][status.status.value] += 1
 
         edge_keys = [
             (binding.producer, run.key) for run in plan.runs for binding in run.inputs.values()
@@ -169,10 +169,8 @@ class ProjectPlanRead:
                 StudioProjectWindowMapRow(
                     key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
                     label=row.label or row.key.row,
-                    status=(
-                        statuses[row.key] if row.key not in self.history and row.key not in self.evaluations
-                        else None
-                    ),
+                    status=statuses[row.key].status,
+                    reason=statuses[row.key].reason,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True
@@ -209,7 +207,7 @@ class ProjectPlanRead:
                         element=element.key.name, product=PLOTLY_FIGURE_ROLE,
                     ) if isinstance(element.outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                 )
-                for element in plan.elements.values() if statuses[element.key] is JobStatus.NOT_RUN
+                for element in plan.elements.values() if statuses[element.key].status is JobStatus.NOT_RUN
             ],
             analysis_figures=[
                 StudioProjectWindowMapFigure(
@@ -336,22 +334,23 @@ def _evaluation_row(
             variant=key.variant, step=key.step, row=key.row, document=None,
         )
     attempts = jobs.by_request.get(run.request_id, ())
-    latest = attempts[-1] if attempts else None
+    success = next((attempt for attempt in reversed(attempts) if (
+        attempt.successful_receipt is not None
+        and (attempt.checkpoint_source is not None or attempt.checkpoint_sources)
+        and attempt.output_size_bytes is not None
+    )), None)
     result = None
-    if (
-        latest is not None and latest.successful_receipt is not None
-        and (latest.checkpoint_source is not None or latest.checkpoint_sources)
-        and latest.output_size_bytes is not None
-    ):
+    if success is not None:
+        assert success.successful_receipt is not None and success.output_size_bytes is not None
         result = StudioSavedEvaluationResult(
-            job_id=latest.job_id, receipt=latest.successful_receipt,
-            checkpoint_source=latest.checkpoint_source, size_bytes=latest.output_size_bytes,
-            checkpoint_sources=list(latest.checkpoint_sources) or None,
+            job_id=success.job_id, receipt=success.successful_receipt,
+            checkpoint_source=success.checkpoint_source, size_bytes=success.output_size_bytes,
+            checkpoint_sources=list(success.checkpoint_sources) or None,
         )
+    status, reason = saved_request_status(attempts, success=success, problem=problem.detail if problem else None)
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
-        status=latest.status if latest else JobStatus.CANNOT_RUN if problem else JobStatus.NOT_RUN,
-        reason=problem.detail if problem else latest.reason if latest else None,
+        status=status, reason=reason,
         can_run=problem is None, trials=trials, result=result,
     ), problem
 
@@ -401,10 +400,11 @@ def _train_history(
                     settled, run, older, by_attempt[older.request_id, older.job_id]
                 )
             change = changes[key]
-        if (problem := run.admission_problem) is not None:
-            status, reason = JobStatus.CANNOT_RUN, problem.detail
-        else:
-            status, reason = saved_train_status(attempts, changed_path=change.path if change else None)
+        status, reason = saved_request_status(
+            attempts, success=results[-1] if results else None,
+            problem=run.admission_problem.detail if run.admission_problem else None,
+            changed_path=change.path if change else None,
+        )
         history[run.key] = TrainRowHistory(status, reason, _result(current, by_attempt), older, change)
     return MappingProxyType(history)
 

@@ -94,7 +94,6 @@ from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, Ru
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import publish_directory_no_replace
 from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
-from feedbax.training.interruption import CHECKPOINT_STOP_FILE_ENV
 
 
 class LocalDriverError(RuntimeError):
@@ -563,8 +562,6 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
-        if bundle.staged_training is not None:
-            env[CHECKPOINT_STOP_FILE_ENV] = str(paths["checkpoint_stop"])
         launch_token = secrets.token_hex(32)
         env[FEEDBAX_PROCESS_IDENTITY_ENV] = launch_token
         jax_cache_dir = resolve_jax_compilation_cache_dir()
@@ -695,10 +692,6 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, Any]:
         """Ask a local row to stop itself at its next durable checkpoint."""
         paths = _row_paths(bundle, row.row_id)
-        if bundle.staged_training is not None:
-            # The executor may still be importing before its SIGINT handler is ready.
-            _atomic_write_local_json(paths["checkpoint_stop"], {"action": "stop"})
-            return {"row_id": row.row_id, "status": "stop_requested"}
         process = self._processes.get(row.row_id)
         pid = process.pid if process is not None else _row_pid(paths)
         expected = state.rows.get(row.row_id)
@@ -1377,7 +1370,6 @@ def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
         "started": sentinels / f"{row_id}.started",
         "pid": sentinels / f"{row_id}.pid",
         "process_identity": sentinels / f"{row_id}.process.json",
-        "checkpoint_stop": sentinels / f"{row_id}.checkpoint-stop.json",
         "done": sentinels / f"{row_id}.done",
         "failed": sentinels / f"{row_id}.failed",
         "event_log": events / f"{row_id}.events.jsonl",

@@ -109,15 +109,6 @@ export interface StudioJobSubmission {
   items: StudioSubmissionItem[];
 }
 
-export interface StudioJobSubmissionRequest {
-  project_id: string;
-  workspace: StudioWorkspaceSpec;
-  graph: GraphSpec;
-  selections: StudioRunSelection[];
-  token: string;
-  policy?: "out_of_date" | "all";
-}
-
 export interface StudioSavedEvaluationReplayRequest {
   revision: string;
   key: StudioSavedTrainKey;
@@ -206,38 +197,6 @@ export interface StudioTrainCheckpointSource {
 export interface StudioLocalSession {
   id?: "local";
   state?: "open";
-}
-
-export interface StudioPreviewIssue {
-  stage_id: string;
-  path: string;
-  message: string;
-}
-
-export interface StudioPreviewRow {
-  run_key: string;
-  request_id: string;
-  stage_id: string;
-  scenario_id: string;
-  label: string;
-  coordinates: Record<string, JsonValue>;
-}
-
-export interface StudioRunPreview {
-  rows: StudioPreviewRow[];
-  issues: StudioPreviewIssue[];
-}
-
-export interface StudioRunPreviewRequest {
-  project_id: string;
-  workspace: StudioWorkspaceSpec;
-  graph: GraphSpec;
-  selections: StudioRunSelection[];
-}
-
-export interface StudioRunSelection {
-  stage_id: string;
-  run_keys?: string[] | null;
 }
 
 export interface StudioSubmissionItem {
@@ -2092,21 +2051,6 @@ export interface TrainingRunInfo {
   source_issue?: string | null;
   provenance_id?: string | null;
   superseded_by?: string | null;
-  staging_generation?: string | null;
-  result_manifest_id?: string | null;
-  result_manifest_uri?: string | null;
-  execution_error?: string | null;
-  teardown_pending?: boolean;
-}
-
-export interface StudioNativeTrainingDispatchRequest {
-  manifest_id: string;
-  generation: string;
-}
-
-export interface StudioNativeTrainingDispatchAccepted {
-  run_set_id: string;
-  row_id: string;
 }
 
 export interface EvalRunInfo {
@@ -3104,7 +3048,8 @@ export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
   "label": string;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
-  "status"?: "not_run" | "cannot_run" | null;
+  "status": JobStatus;
+  "reason"?: string | null;
 };
 
 export type StudioProjectWindowMapStep = {
@@ -3558,19 +3503,6 @@ export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmission>;
 
-export const StudioJobSubmissionRequestSchema: z.ZodType<StudioJobSubmissionRequest> = z.lazy(() =>
-  z
-    .object({
-      "project_id": z.string().min(1).max(128),
-      "workspace": StudioWorkspaceSpecSchema,
-      "graph": GraphSpecSchema,
-      "selections": z.array(StudioRunSelectionSchema).min(1),
-      "token": z.string().min(1).max(128),
-      "policy": z.union([z.literal("out_of_date"), z.literal("all")]).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioJobSubmissionRequest>;
-
 export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEvaluationReplayRequest> = z.lazy(() =>
   z
     .object({
@@ -3708,58 +3640,6 @@ export const StudioLocalSessionSchema: z.ZodType<StudioLocalSession> = z.lazy(()
     })
     .strict()
 ) as unknown as z.ZodType<StudioLocalSession>;
-
-export const StudioPreviewIssueSchema: z.ZodType<StudioPreviewIssue> = z.lazy(() =>
-  z
-    .object({
-      "stage_id": z.string(),
-      "path": z.string(),
-      "message": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPreviewIssue>;
-
-export const StudioPreviewRowSchema: z.ZodType<StudioPreviewRow> = z.lazy(() =>
-  z
-    .object({
-      "run_key": z.string(),
-      "request_id": z.string(),
-      "stage_id": z.string(),
-      "scenario_id": z.string(),
-      "label": z.string(),
-      "coordinates": z.record(z.string(), jsonValueSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPreviewRow>;
-
-export const StudioRunPreviewSchema: z.ZodType<StudioRunPreview> = z.lazy(() =>
-  z
-    .object({
-      "rows": z.array(StudioPreviewRowSchema),
-      "issues": z.array(StudioPreviewIssueSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioRunPreview>;
-
-export const StudioRunPreviewRequestSchema: z.ZodType<StudioRunPreviewRequest> = z.lazy(() =>
-  z
-    .object({
-      "project_id": z.string().min(1).max(128),
-      "workspace": StudioWorkspaceSpecSchema,
-      "graph": GraphSpecSchema,
-      "selections": z.array(StudioRunSelectionSchema).min(1),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioRunPreviewRequest>;
-
-export const StudioRunSelectionSchema: z.ZodType<StudioRunSelection> = z.lazy(() =>
-  z
-    .object({
-      "stage_id": z.string().min(1),
-      "run_keys": z.array(z.string()).min(1).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioRunSelection>;
 
 export const StudioSubmissionItemSchema: z.ZodType<StudioSubmissionItem> = z.lazy(() =>
   z
@@ -6935,32 +6815,9 @@ export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
       "source_issue": z.string().nullable().optional(),
       "provenance_id": z.string().nullable().optional(),
       "superseded_by": z.string().nullable().optional(),
-      "staging_generation": z.string().nullable().optional(),
-      "result_manifest_id": z.string().nullable().optional(),
-      "result_manifest_uri": z.string().nullable().optional(),
-      "execution_error": z.string().nullable().optional(),
-      "teardown_pending": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingRunInfo>;
-
-export const StudioNativeTrainingDispatchRequestSchema: z.ZodType<StudioNativeTrainingDispatchRequest> = z.lazy(() =>
-  z
-    .object({
-      "manifest_id": z.string().min(1),
-      "generation": z.string().min(1),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioNativeTrainingDispatchRequest>;
-
-export const StudioNativeTrainingDispatchAcceptedSchema: z.ZodType<StudioNativeTrainingDispatchAccepted> = z.lazy(() =>
-  z
-    .object({
-      "run_set_id": z.string(),
-      "row_id": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioNativeTrainingDispatchAccepted>;
 
 export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
   z
@@ -8338,7 +8195,8 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "key": StudioSavedTrainKeySchema,
     "label": z.string(),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
-    "status": z.union([z.union([z.literal("not_run"), z.literal("cannot_run")]), z.null()]).optional(),
+    "status": JobStatusSchema,
+    "reason": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
 
@@ -8560,7 +8418,6 @@ export const contractSchemas = {
   StudioJobStopItem: StudioJobStopItemSchema,
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
-  StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
   StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequestSchema,
   StudioSavedEvaluationResult: StudioSavedEvaluationResultSchema,
   StudioSavedEvaluationRow: StudioSavedEvaluationRowSchema,
@@ -8573,11 +8430,6 @@ export const contractSchemas = {
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
-  StudioPreviewIssue: StudioPreviewIssueSchema,
-  StudioPreviewRow: StudioPreviewRowSchema,
-  StudioRunPreview: StudioRunPreviewSchema,
-  StudioRunPreviewRequest: StudioRunPreviewRequestSchema,
-  StudioRunSelection: StudioRunSelectionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   ReportDocument: ReportDocumentSchema,
@@ -8630,8 +8482,6 @@ export const contractSchemas = {
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
   TrainingRunInfo: TrainingRunInfoSchema,
-  StudioNativeTrainingDispatchRequest: StudioNativeTrainingDispatchRequestSchema,
-  StudioNativeTrainingDispatchAccepted: StudioNativeTrainingDispatchAcceptedSchema,
   EvalRunInfo: EvalRunInfoSchema,
   CreateEvalRunRequest: CreateEvalRunRequestSchema,
   TrainingRunCompareResponse: TrainingRunCompareResponseSchema,
@@ -8674,7 +8524,6 @@ export interface ContractTypeMap {
   StudioJobStopItem: StudioJobStopItem;
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;
-  StudioJobSubmissionRequest: StudioJobSubmissionRequest;
   StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequest;
   StudioSavedEvaluationResult: StudioSavedEvaluationResult;
   StudioSavedEvaluationRow: StudioSavedEvaluationRow;
@@ -8687,11 +8536,6 @@ export interface ContractTypeMap {
   StudioSavedTrainRuns: StudioSavedTrainRuns;
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
-  StudioPreviewIssue: StudioPreviewIssue;
-  StudioPreviewRow: StudioPreviewRow;
-  StudioRunPreview: StudioRunPreview;
-  StudioRunPreviewRequest: StudioRunPreviewRequest;
-  StudioRunSelection: StudioRunSelection;
   StudioSubmissionItem: StudioSubmissionItem;
   AnalysisDocument: AnalysisDocument;
   ReportDocument: ReportDocument;
@@ -8744,8 +8588,6 @@ export interface ContractTypeMap {
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
   TrainingRunInfo: TrainingRunInfo;
-  StudioNativeTrainingDispatchRequest: StudioNativeTrainingDispatchRequest;
-  StudioNativeTrainingDispatchAccepted: StudioNativeTrainingDispatchAccepted;
   EvalRunInfo: EvalRunInfo;
   CreateEvalRunRequest: CreateEvalRunRequest;
   TrainingRunCompareResponse: TrainingRunCompareResponse;

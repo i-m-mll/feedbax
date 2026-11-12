@@ -25,6 +25,13 @@ from feedbax.contracts.graph import (
     studio_semantic_document_sha256,
 )
 
+from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
+from feedbax.contracts.training import TaskSpec, TrainingSpec
+from feedbax.studio.protocol import infer_task_n_steps
+from feedbax.studio.training_requests import studio_graph_training_settings
+
+
 NAME = "Point-mass reach"
 STEPS = 100
 BATCHES = 30
@@ -116,6 +123,22 @@ def reaching_project(*, batches: int = BATCHES, name: str = NAME) -> StudioPersi
             ),
             graph_ui_state=ui_state,
         ),
+    )
+
+
+def reaching_train_request(project: StudioPersistenceDocument) -> TrainingRequestSpec:
+    scenario = project.workspace.scenarios["scenario:train"]
+    task = TaskSpec.model_validate(scenario.task_spec)
+    training = TrainingSpec.model_validate(scenario.training_spec)
+    settings = studio_graph_training_settings(training, scenario.training_spec, infer_task_n_steps(task))
+    return TrainingRequestSpec(
+        graph=project.graph.model_copy(update={"metadata": None}),
+        task=task,
+        task_binding_spec=scenario.task_binding_spec,
+        objective=settings.objective,
+        training_config=settings.config,
+        method_ref=STUDIO_GRAPH_METHOD,
+        method_payload=settings.method_payload,
     )
 
 

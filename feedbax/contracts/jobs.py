@@ -8,7 +8,6 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.graph import GraphSpec, StudioWorkspaceSpec
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 
@@ -16,43 +15,6 @@ from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 Token = Annotated[str, Field(min_length=1, max_length=128)]
 StopMode = Literal["checkpoint", "force"]
 JobAction = Literal["checkpoint", "force", "resume"]
-
-
-class StudioRunSelection(StrictModel):
-    stage_id: str = Field(min_length=1)
-    run_keys: list[str] | None = Field(default=None, min_length=1)
-
-
-class StudioRunPreviewRequest(StrictModel):
-    project_id: str = Field(min_length=1, max_length=128)
-    workspace: StudioWorkspaceSpec
-    graph: GraphSpec
-    selections: list[StudioRunSelection] = Field(min_length=1)
-
-
-class StudioJobSubmissionRequest(StudioRunPreviewRequest):
-    token: Token
-    policy: Literal["out_of_date", "all"] = "out_of_date"
-
-
-class StudioPreviewRow(StrictModel):
-    run_key: str
-    request_id: str
-    stage_id: str
-    scenario_id: str
-    label: str
-    coordinates: dict[str, JsonValue]
-
-
-class StudioPreviewIssue(StrictModel):
-    stage_id: str
-    path: str
-    message: str
-
-
-class StudioRunPreview(StrictModel):
-    rows: list[StudioPreviewRow]
-    issues: list[StudioPreviewIssue]
 
 
 class JobStatus(StrEnum):
@@ -173,7 +135,8 @@ class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
-    status: Literal["not_run", "cannot_run"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    status: JobStatus
+    reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapSubset(StrictModel):

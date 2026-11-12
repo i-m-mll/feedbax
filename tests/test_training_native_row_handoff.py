@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import os
@@ -11,20 +10,14 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
 
 import jax.random as jr
 import pytest
-from fastapi.testclient import TestClient
 
-from feedbax import _atomic
-from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.artifact_custody import (
     ArtifactBlobIntegrityError,
@@ -33,8 +26,6 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     load_manifest,
-    spec_payload,
-    write_manifest,
 )
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.run_matrix import (
@@ -84,7 +75,6 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     SchemaArtifactRef,
-    StagedTrainingBinding,
     mint_run_set_id,
 )
 from feedbax.orchestration.conformance import (
@@ -118,8 +108,7 @@ from feedbax.orchestration.drivers.runpod import (
     runpod_row_workdir,
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
-from feedbax.orchestration import staged_training
-from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
+from feedbax.orchestration.state import RowState, RunSetState
 from feedbax.orchestration.stages import (
     OrchestrationStageError,
     StageEngine,
@@ -133,8 +122,6 @@ from feedbax.training.diagnostics import (
     TrainingDiagnostics,
 )
 from feedbax.training.executor import execute_training_run_spec
-from feedbax.training.runpod_smoke_fixture import METHOD_REF as SMOKE_METHOD_REF
-from feedbax.training.runpod_smoke_fixture import method_contract as smoke_method_contract
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins import bootstrap_application, new_registration_context
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -146,7 +133,6 @@ from tests.support.training_fixtures import (
     cli_fixture_method_contract,
     initial_training_slots as _initial_slots,
 )
-from tests.test_studio_execution import _graph, _workspace
 from feedbax.training.checkpoint_custody import (
     CheckpointReferenceResolutionError,
     authenticate_published_checkpoint_custody,
@@ -161,7 +147,6 @@ from feedbax.training.spec_storage import (
     register_training_run_matrix_compiler,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
-from feedbax.web.app import create_app
 
 
 def _lifecycle_registries() -> ApplicationRegistryBundle:
@@ -1131,440 +1116,6 @@ def test_local_shadow_runtime_binding_adds_update_budget_without_mutating_bundle
     assert captured["command"].count("--update-budget") == 1
     assert captured["command"][captured["command"].index("--update-budget") + 1] == "1"
     assert row.launch.command.count("--update-budget") == 0
-
-
-def _stage_local_training_receipt(bundle: RunBundle, manifest_root: Path) -> tuple[RunBundle, Path]:
-    row = bundle.rows[0]
-    provenance = row.execution.row_provenance
-    assert provenance is not None
-    run_id = provenance.planned_run_id
-    generation = "test-generation"
-    receipt_path = write_manifest(
-        TrainingRunManifest(
-            id=run_id,
-            status="pending",
-            training_spec=spec_payload(
-                "TrainingRunSpec",
-                json.loads(Path(row.execution.payload.uri).read_bytes()),
-            ),
-            metadata={"execution_target": "local", "staging_generation": generation},
-        ),
-        root=manifest_root,
-    )
-    bundle = bundle.model_copy(
-        update={
-            "staged_training": StagedTrainingBinding(
-                manifest_root=str(manifest_root), manifest_id=run_id, generation=generation
-            ),
-        }
-    )
-    return bundle, receipt_path
-
-
-def test_staged_training_replay_requires_receipt_durability(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "assembly", gain=2))
-    bundle, receipt_path = _stage_local_training_receipt(bundle, tmp_path / "staged")
-    row = bundle.rows[0]
-    receipt_dir = receipt_path.parent.resolve()
-    sync_allowed = False
-    receipt_dir_synced = False
-    fsync_directory = _atomic._fsync_directory
-
-    def sync_directory(path: Path) -> None:
-        nonlocal receipt_dir_synced
-        if path == receipt_dir:
-            with receipt_path.with_suffix(".lock").open("r+b") as probe:
-                with pytest.raises(BlockingIOError):
-                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if not sync_allowed:
-                raise OSError("receipt directory sync failed")
-        fsync_directory(path)
-        if path == receipt_dir:
-            receipt_dir_synced = True
-
-    monkeypatch.setattr(_atomic, "_fsync_directory", sync_directory)
-    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
-    provision_driver = driver.provision
-
-    def provision(bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        assert receipt_dir_synced
-        return provision_driver(bundle, state)
-
-    provision_call = Mock(side_effect=provision)
-    launch_call = Mock(return_value={"pid": 12345})
-    monkeypatch.setattr(driver, "provision", provision_call)
-    monkeypatch.setattr(driver, "launch_row", launch_call)
-    engine = StageEngine(bundle=bundle, driver=driver)
-
-    with pytest.raises(OSError, match="receipt directory sync failed"):
-        engine.run(stop_after_stage="LAUNCH")
-    receipt = load_manifest(receipt_path)
-    assert receipt.status == "pending"
-    assert receipt.metadata["staged_attempt"]["run_set_id"] == bundle.run_set_id
-    claimed_bytes = receipt_path.read_bytes()
-    provision_call.assert_not_called()
-    launch_call.assert_not_called()
-
-    with pytest.raises(OSError, match="receipt directory sync failed"):
-        engine.run(stop_after_stage="LAUNCH")
-    assert receipt_path.read_bytes() == claimed_bytes
-    provision_call.assert_not_called()
-    launch_call.assert_not_called()
-
-    sync_allowed = True
-    state = engine.run(stop_after_stage="LAUNCH")
-    assert receipt_path.read_bytes() == claimed_bytes
-    provision_call.assert_called_once()
-    launch_call.assert_called_once()
-    assert state.rows[row.row_id].status == "launched"
-
-
-@pytest.mark.parametrize("winner", ["withdrawal", "admission"])
-def test_staged_training_withdrawal_races_local_admission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    winner: str,
-) -> None:
-    monkeypatch.setenv(
-        "PATH",
-        os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
-    )
-    bundle = _without_resolved_inputs(
-        _assemble_lowered_bundle(
-            tmp_path / "shadow-collect",
-            gain=2,
-            progress_interval=2,
-        )
-    )
-    row = bundle.rows[0]
-
-    manifest_root = tmp_path / "staged"
-    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "studio-orchestration"))
-    bundle, receipt_path = _stage_local_training_receipt(bundle, manifest_root)
-    assert bundle.staged_training is not None
-    run_id = bundle.staged_training.manifest_id
-
-    winner_holds_lock = threading.Event()
-    loser_observed_lock = threading.Event()
-    engine_thread = threading.get_ident()
-    receipt_lock = staged_training.training_receipt_lock
-
-    @contextmanager
-    def contend_for_receipt(root: Path, manifest_id: str) -> Iterator[None]:
-        if loser_observed_lock.is_set():
-            with receipt_lock(root, manifest_id):
-                yield
-            return
-        actor = "admission" if threading.get_ident() == engine_thread else "withdrawal"
-        if actor == winner:
-            with receipt_lock(root, manifest_id):
-                winner_holds_lock.set()
-                assert loser_observed_lock.wait(timeout=10)
-                yield
-            return
-        assert winner_holds_lock.wait(timeout=10)
-        # Confirm actual contention on the receipt lock before letting the winner commit.
-        with receipt_path.with_suffix(".lock").open("a+b") as probe:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        loser_observed_lock.set()
-        with receipt_lock(root, manifest_id):
-            yield
-
-    monkeypatch.setattr(staged_training, "training_receipt_lock", contend_for_receipt)
-    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], update_budget=1)
-    provision = Mock(wraps=driver.provision)
-    launch = Mock(wraps=driver.launch_row)
-    monkeypatch.setattr(driver, "provision", provision)
-    monkeypatch.setattr(driver, "launch_row", launch)
-    engine = StageEngine(bundle=bundle, driver=driver, poll_interval_seconds=0.01)
-
-    with TestClient(create_app()) as client, ThreadPoolExecutor(max_workers=1) as threads:
-        request = threads.submit(client.post, f"/api/runs/training/{run_id}/cancel")
-        if winner == "withdrawal":
-            with pytest.raises(
-                staged_training.StagedTrainingConflict, match="no unclaimed pending"
-            ):
-                engine.run(stop_after_stage="COLLECT")
-            response = request.result(timeout=10)
-            assert response.status_code == 200
-            assert response.json()["status"] == "cancelled"
-            assert load_manifest(receipt_path).status == "cancelled"
-            withdrawn = load_manifest(receipt_path)
-            write_manifest(
-                withdrawn.model_copy(
-                    update={
-                        "status": "pending",
-                        "completed_at": None,
-                        "metadata": {**withdrawn.metadata, "staging_generation": "fresh-stage"},
-                    }
-                ),
-                root=manifest_root,
-            )
-            with pytest.raises(
-                staged_training.StagedTrainingConflict, match="different staging generation"
-            ):
-                engine.run(stop_after_stage="COLLECT")
-            provision.assert_not_called()
-            launch.assert_not_called()
-            return
-        state = engine.run(stop_after_stage="COLLECT")
-        response = request.result(timeout=10)
-        listed = client.get("/api/runs/training")
-        assert [(item["id"], item["status"]) for item in listed.json()] == [(run_id, "claimed")]
-
-    assert response.status_code == 409
-    receipt = load_manifest(receipt_path)
-    assert receipt.status == "pending"
-    assert receipt.metadata["staged_attempt"]["run_set_id"] == bundle.run_set_id
-    claimed_bytes = receipt_path.read_bytes()
-    staged_training.claim_staged_training(bundle)
-    with pytest.raises(staged_training.StagedTrainingConflict, match="no unclaimed pending"):
-        staged_training.claim_staged_training(
-            bundle.model_copy(update={"run_set_id": "different-owner"})
-        )
-    assert receipt_path.read_bytes() == claimed_bytes
-    provision.assert_called_once()
-    launch.assert_called_once()
-    assert state.stage("COLLECT").status == "completed"
-    collected = state.rows[row.row_id].collected_outputs
-    assert set(collected) == {
-        "manifest.json",
-        "training-diagnostics.json",
-        "checkpoints",
-        "manifests",
-    }
-    collected_manifest_root = Path(collected["manifests"])
-    assert collected_manifest_root.is_dir()
-    flat_manifest = Path(collected["manifest.json"])
-    manifest_id = json.loads(flat_manifest.read_text(encoding="utf-8"))["id"]
-    found, found_path = find_manifest_by_id(manifest_id, root=collected_manifest_root)
-    assert found is not None
-    assert found_path is not None
-    assert found_path.read_bytes() == flat_manifest.read_bytes()
-
-
-def _studio_native_matrix(spec: TrainingRunSpec, *row_ids: str) -> dict[str, Any]:
-    return {
-        "schema_id": "feedbax.spec.training_run_matrix",
-        "schema_version": "feedbax.spec.training_run_matrix.v6",
-        "name": "Studio native dispatch",
-        "base": {
-            "kind": "inline",
-            "inline": spec.model_dump(mode="json", exclude_none=True),
-        },
-        "rows": [{"row_id": row_id, "overrides": []} for row_id in row_ids],
-    }
-
-
-def test_studio_dispatch_rejects_ordinary_and_remote_receipts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    orchestration_root = tmp_path / "orchestration"
-    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "staged"))
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(orchestration_root))
-
-    ordinary = _workspace()
-    remote = _workspace()
-    train_stage = next(stage for stage in remote.stages if stage.kind == "train")
-    train_stage.metadata["backend_realization"] = {"execution_target": "runpod"}
-    train_stage.selection_spec["matrix"] = _studio_native_matrix(_training_spec(2), "remote")
-
-    with TestClient(create_app(bootstrap_modules=("tests.support.training_fixtures",))) as client:
-        for workspace, target, spec_kind, expected_error in (
-            (ordinary, "local", "TrainingSpec", "native TrainingRunSpec"),
-            (remote, "runpod", "TrainingRunSpec", "Only local staged training"),
-        ):
-            staged = client.post(
-                "/api/provider/studio/training/plan",
-                json={
-                    "workspace": workspace.model_dump(mode="json", exclude_none=True),
-                    "graph": _graph().model_dump(mode="json", exclude_none=True),
-                    "job_id": f"studio-unsupported-{target}",
-                },
-            )
-            assert staged.status_code == 200, staged.text
-            stage = next(s for s in staged.json()["workspace"]["stages"] if s["kind"] == "train")
-            (ref,) = [r for r in stage["manifest_refs"] if r["role"] == "training_run"]
-            path = Path(ref["uri"])
-            receipt_bytes = path.read_bytes()
-            receipt = load_manifest(path)
-            assert receipt.training_spec.kind == spec_kind
-            assert receipt.metadata["execution_target"] == target
-            assert receipt.status == "pending"
-            assert "staged_attempt" not in receipt.metadata
-
-            rejected = client.post(
-                "/api/provider/studio/training/dispatch",
-                json={
-                    "manifest_id": ref["id"],
-                    "generation": ref["metadata"]["staging_generation"],
-                },
-            )
-            assert rejected.status_code == 422, rejected.text
-            assert expected_error in rejected.json()["detail"]
-            assert path.read_bytes() == receipt_bytes
-            assert list(orchestration_root.glob("*/state.json")) == []
-
-
-@pytest.mark.parametrize("terminal_status", ["completed", "stopped"])
-def test_studio_dispatch_executes_only_the_selected_staged_native_row(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    terminal_status: str,
-) -> None:
-    manifest_root = tmp_path / "staged"
-    orchestration_root = tmp_path / "orchestration"
-    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(orchestration_root))
-    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    monkeypatch.setenv(
-        "PATH", os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")])
-    )
-
-    workspace = _workspace()
-    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    spec = _training_spec(2, progress_interval=1)
-    plugin_module = "tests.support.training_fixtures"
-    if terminal_status == "stopped":
-        plugin_module = "feedbax.training.runpod_smoke_fixture"
-        spec = _training_spec(2, completed_batches=100, progress_interval=1)
-        package, name, version = SMOKE_METHOD_REF.split("/")
-        spec.method_ref = MethodRefSpec(package=package, name=name, version=version)
-        method_payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
-        method_payload.metadata["total_batches"] = 100
-        spec.method_payload.payload = method_payload.model_dump(mode="json")
-        contract = smoke_method_contract(method_payload)
-        spec.worker_execution = WorkerExecutionSpec(
-            method_contract=contract,
-            effective_phase=standard_supervised_effective_phase_spec().model_copy(
-                update={
-                    "method_ref": SMOKE_METHOD_REF,
-                    "phase_program": contract.phase_program,
-                    "consistency_predicate": derive_consistency_predicate(contract.phase_program),
-                }
-            ),
-        )
-    train_stage.selection_spec["matrix"] = _studio_native_matrix(spec, "selected", "sibling")
-    plan_request = {
-        "workspace": workspace.model_dump(mode="json", exclude_none=True),
-        "graph": _graph().model_dump(mode="json", exclude_none=True),
-        "job_id": "studio-native-dispatch",
-    }
-    dispatch_path = "/api/provider/studio/training/dispatch"
-    with TestClient(create_app(bootstrap_modules=(plugin_module,))) as client:
-
-        def stage_native_rows() -> dict[str, dict[str, Any]]:
-            response = client.post("/api/provider/studio/training/plan", json=plan_request)
-            assert response.status_code == 200, response.text
-            stage = next(s for s in response.json()["workspace"]["stages"] if s["kind"] == "train")
-            return {
-                ref["metadata"]["label"]: ref
-                for ref in stage["manifest_refs"]
-                if ref["role"] == "training_run"
-            }
-
-        staged = stage_native_rows()
-        selected, sibling = staged["selected"], staged["sibling"]
-        selected_id = selected["id"]
-        run_path = f"/api/runs/training/{selected_id}"
-        stale_generation = selected["metadata"]["staging_generation"]
-        sibling_path = Path(sibling["uri"])
-        sibling_bytes = sibling_path.read_bytes()
-        assert client.post(f"{run_path}/cancel").status_code == 200
-        restaged = stage_native_rows()["selected"]
-        assert restaged["id"] == selected_id
-        generation = restaged["metadata"]["staging_generation"]
-        assert generation != stale_generation
-
-        stale = client.post(
-            dispatch_path, json={"manifest_id": selected_id, "generation": stale_generation}
-        )
-        assert stale.status_code == 409, stale.text
-        assert load_manifest(selected["uri"]).status == "pending"
-        assert list(orchestration_root.glob("*/state.json")) == []
-
-        dispatch_request = {"manifest_id": selected_id, "generation": generation}
-        accepted = client.post(dispatch_path, json=dispatch_request)
-        assert accepted.status_code == 202, accepted.text
-        attempt = accepted.json()
-        assert attempt["row_id"] == "selected"
-        run_set_dir = orchestration_root / attempt["run_set_id"]
-        bundle = RunBundle.model_validate_json((run_set_dir / "bundle.json").read_bytes())
-        assert bundle.budget.max_wall_clock_seconds is None
-        duplicate = client.post(dispatch_path, json=dispatch_request)
-        assert duplicate.status_code == 409, duplicate.text
-        assert list(orchestration_root.glob("*/state.json")) == [run_set_dir / "state.json"]
-
-        deadline = time.monotonic() + 30
-        if terminal_status == "stopped":
-            latest = run_set_dir / "rows" / attempt["row_id"] / "checkpoints" / "latest.json"
-            while not latest.is_file():
-                assert time.monotonic() < deadline, client.get(run_path).json()
-                time.sleep(0.01)
-            state = RunSetStateStore(run_set_dir / "state.json").load()
-            driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
-            driver.request_stop_at_checkpoint(bundle, bundle.row(attempt["row_id"]), state)
-
-        while True:
-            response = client.get(run_path)
-            assert response.status_code == 200, response.text
-            summary = response.json()
-            if summary["status"] not in {"pending", "claimed", "running"}:
-                break
-            assert time.monotonic() < deadline, summary
-            time.sleep(0.05)
-        assert summary["id"] == selected_id
-        assert summary["status"] == terminal_status, summary
-        completed_batches = summary["metrics"]["completed_batches"]
-        if terminal_status == "completed":
-            assert completed_batches == 1
-        else:
-            assert 1 <= completed_batches < spec.training_config.n_batches
-        assert summary["checkpoint_available"] is True
-
-        receipt_path = Path(selected["uri"])
-        receipt_bytes = receipt_path.read_bytes()
-        raw_response = client.get(f"{run_path}/manifest")
-        assert raw_response.status_code == 200, raw_response.text
-        receipt = raw_response.json()
-        assert receipt["id"] == selected_id
-        assert receipt["status"] == "pending"
-        assert receipt["metadata"]["staging_generation"] == generation
-        assert receipt["metadata"]["staged_attempt"]["run_set_id"] == attempt["run_set_id"]
-        sibling_summary = client.get(f"/api/runs/training/{sibling['id']}").json()
-        assert sibling_summary["status"] == "pending"
-        assert sibling_path.read_bytes() == sibling_bytes
-
-        collected = run_set_dir / "collected" / attempt["row_id"]
-        checkpoint = authenticate_published_checkpoint_custody(collected / "checkpoints")
-        assert checkpoint.manifest.completed_training_batches == completed_batches
-        result_path = collected / "manifest.json"
-        result = load_manifest(result_path)
-        assert Path(summary["result_manifest_uri"]) == result_path
-        assert summary["result_manifest_id"] == result.id
-        assert Path(summary["uri"]) == receipt_path
-        assert result.checkpoint_custody[-1] == checkpoint.parent_ref
-
-        state_store = RunSetStateStore(run_set_dir / "state.json")
-        while (teardown := state_store.load().stage("TEARDOWN")).status != "completed":
-            assert teardown.status != "failed", teardown
-            assert time.monotonic() < deadline, teardown
-            time.sleep(0.05)
-
-        if terminal_status == "completed":
-            result_path.write_bytes(result_path.read_bytes() + b"\n")
-            tampered = client.get(run_path)
-            assert tampered.status_code == 200, tampered.text
-            assert tampered.json()["status"] == "failed"
-            assert tampered.json()["checkpoint_available"] is False
-            assert tampered.json()["result_manifest_id"] is None
-            assert receipt_path.read_bytes() == receipt_bytes
 
 
 def test_one_update_native_row_uses_physical_shared_orchestration_root(
@@ -2553,7 +2104,6 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
             }
         )
         bundle = bundle.model_copy(update={"rows": [row]})
-    bundle, _ = _stage_local_training_receipt(bundle, manifest_root)
     assert row.execution.row_provenance is not None
     run_id = row.execution.row_provenance.planned_run_id
     assert run_id != source.manifest.run_id
@@ -2650,23 +2200,17 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
             ),
         }[mode]
         with pytest.raises(error_type, match=message):
-            engine.run(certify_and_register=False)
+            engine.run()
         assert engine.store.load().stage("COLLECT").status == "failed"
         assert (
             _checkpoint_snapshot(source_root)
             == _checkpoint_snapshot(staged_checkpoint_root)
             == source_bytes
         )
-        with TestClient(create_app()) as client:
-            response = client.get(f"/api/runs/training/{run_id}")
-        assert response.status_code == 200, response.text
-        assert response.json()["status"] == "failed"
-        assert response.json()["checkpoint_available"] is False
-        assert response.json()["result_manifest_id"] is None
         return
 
     if mode == "inherited":
-        collected_state = engine.run(certify_and_register=False)
+        collected_state = engine.run(stop_after_stage="COLLECT")
         _assert_certify_rejects_tampered_inherited_collection(engine, bundle, row, collected_state)
 
     state = engine.run()
@@ -2711,15 +2255,7 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
         == _checkpoint_snapshot(staged_checkpoint_root)
         == source_bytes
     )
-    with TestClient(create_app()) as client:
-        response = client.get(f"/api/runs/training/{run_id}")
-    assert response.status_code == 200, response.text
-    summary = response.json()
-    assert summary["status"] == "completed", summary
-    assert summary["result_manifest_id"] == run_id
-    assert summary["checkpoint_available"] is True
-    assert summary["result_manifest_uri"] == outputs["manifest.json"]
-    result = load_manifest(summary["result_manifest_uri"])
+    result = load_manifest(Path(outputs["manifest.json"]))
     assert isinstance(result, TrainingRunManifest)
     assert result.completed_batches == diagnostics.completed_batches
     assert result.terminal_certification is not None

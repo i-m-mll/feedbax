@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { fetchComponents } from '@/api/client';
+import { fetchComponents } from '@/api/components';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import { fetchDocumentAuthoring } from '@/api/projectFolders';
 import { apiErrorMessage } from '@/api/request';

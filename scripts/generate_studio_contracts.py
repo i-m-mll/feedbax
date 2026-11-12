@@ -231,12 +231,7 @@ from feedbax.contracts.jobs import (
     StudioJobStopItem,
     StudioJobStopRequest,
     StudioJobSubmission,
-    StudioJobSubmissionRequest,
     StudioLocalSession,
-    StudioPreviewIssue,
-    StudioPreviewRow,
-    StudioRunPreview,
-    StudioRunPreviewRequest,
     StudioProjectWindowMap,
     StudioSavedEvaluationReplayRequest,
     StudioSavedEvaluationResult,
@@ -249,7 +244,6 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
     StudioTrainCheckpointSource,
-    StudioRunSelection,
     StudioSubmissionItem,
 )
 from feedbax.contracts.selection import (
@@ -287,10 +281,6 @@ from feedbax.web.api.execution import (
     TaskTimelineCue,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
-)
-from feedbax.studio.execution import (
-    StudioNativeTrainingDispatchAccepted,
-    StudioNativeTrainingDispatchRequest,
 )
 from feedbax.web.api.runs import (
     CreateEvalRunRequest,
@@ -373,7 +363,6 @@ JOB_MODELS = (
     StudioJobStopItem,
     StudioJobStopRequest,
     StudioJobSubmission,
-    StudioJobSubmissionRequest,
     StudioSavedEvaluationReplayRequest,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
@@ -386,11 +375,6 @@ JOB_MODELS = (
     StudioSavedTrainRuns,
     StudioTrainCheckpointSource,
     StudioLocalSession,
-    StudioPreviewIssue,
-    StudioPreviewRow,
-    StudioRunPreview,
-    StudioRunPreviewRequest,
-    StudioRunSelection,
     StudioSubmissionItem,
 )
 
@@ -625,8 +609,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ValidationErrorResponse,
     ValidateLossResponse,
     TrainingRunInfo,
-    StudioNativeTrainingDispatchRequest,
-    StudioNativeTrainingDispatchAccepted,
     EvalRunInfo,
     CreateEvalRunRequest,
     TrainingRunCompareRequest,
@@ -764,8 +746,6 @@ CONTRACT_MODEL_NAMES = [
     "GenerateAnalysisResponse",
     "AnalysisJobStatusResponse",
     "TrainingRunInfo",
-    "StudioNativeTrainingDispatchRequest",
-    "StudioNativeTrainingDispatchAccepted",
     "EvalRunInfo",
     "CreateEvalRunRequest",
     "TrainingRunCompareResponse",

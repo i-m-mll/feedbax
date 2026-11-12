@@ -109,18 +109,6 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
     async def jobs():
         return app.state.desktop_jobs.snapshot()
 
-    @app.post("/api/desktop/jobs/{job_id}/resume")
-    async def resume_training(job_id: str):
-        from feedbax.web.services.desktop_jobs import TrainingJobsUnavailable
-
-        try:
-            successor = await asyncio.to_thread(app.state.desktop_jobs.training.resume, job_id)
-        except KeyError as exc:
-            raise HTTPException(404, "Unknown training job") from exc
-        except (ValueError, TrainingJobsUnavailable) as exc:
-            raise HTTPException(409, str(exc)) from exc
-        return {"job_id": successor}
-
     @app.get("/api/desktop/preferences")
     async def get_preferences():
         from feedbax.desktop.control import _read_private_json

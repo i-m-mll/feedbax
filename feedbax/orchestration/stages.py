@@ -119,11 +119,6 @@ from feedbax.orchestration.revision import (
     resolve_science_repo_import_revisions,
 )
 from feedbax.orchestration import schedule_eval
-from feedbax.orchestration.staged_training import (
-    StagedTrainingConflict,
-    claim_staged_training,
-    require_staged_training_owner,
-)
 from feedbax.orchestration.state import (
     AcquisitionIntent,
     AcquisitionPreparation,
@@ -522,7 +517,6 @@ class StageEngine:
         break_stale_lock: bool = False,
         stop_after_stage: str | None = None,
         retry_failed_certification: bool = False,
-        certify_and_register: bool = True,
     ) -> RunSetState:
         """Run or resume the bundle through all stages.
 
@@ -534,16 +528,7 @@ class StageEngine:
         pod's SSH endpoint becomes available; a later local process or operator
         must reconcile it.
 
-        A bound local Studio attempt can collect and tear down without issuing
-        a run-set conformance certificate or registration.
         """
-        if not certify_and_register and (
-            self.bundle is None
-            or self.bundle.staged_training is None
-            or self.bundle.deployment_policy.driver != "local"
-            or self.bundle.execution_family != "native-training"
-        ):
-            raise ValueError("Collection without certification requires a bound staged bundle")
         if self.request is not None:
             # The stale-install gate. ASSEMBLE runs it too, but running it here
             # means a request whose revision authority the imported package
@@ -581,8 +566,6 @@ class StageEngine:
                     state = retry_state
                 try:
                     for stage_id in STAGE_ORDER:
-                        if not certify_and_register and stage_id in (STAGE_CERTIFY, STAGE_REGISTER):
-                            continue
                         if state.stage(stage_id).status == "completed":
                             continue
                         if stage_id == STAGE_TEARDOWN:
@@ -1024,7 +1007,7 @@ class StageEngine:
                     self.driver.realized_capabilities.facts.retry is RetrySemantics.DRIVER_GOVERNED
                 )
                 if (
-                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded, StagedTrainingConflict))
+                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
                     or governed_provision
                     or attempts >= limit
                 ):
@@ -1802,7 +1785,6 @@ class StageEngine:
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
         self._assert_provisioning_open(state)
-        claim_staged_training(self.bundle)
         if self.driver.realized_capabilities.facts.retry is not RetrySemantics.DRIVER_GOVERNED:
             outputs = dict(self.driver.provision(self.bundle, state))
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
@@ -3413,7 +3395,6 @@ class StageEngine:
             assert_feedbax_revision_exact(self.bundle.feedbax_revision)
         except FeedbaxRevisionError as exc:
             raise OrchestrationStageError(str(exc)) from exc
-        require_staged_training_owner(self.bundle, row)
         row_state = state.rows[row.row_id].model_copy(
             update={"started_at": state.rows[row.row_id].started_at or utc_now()}
         )
@@ -3738,7 +3719,6 @@ def _require_inherited_resume_source(
     manifest: TrainingRunManifest,
     transaction_root_sha256: object,
 ) -> None:
-    require_staged_training_owner(bundle, row)
     provenance = row.execution.row_provenance
     assert provenance is not None
     identity = execution_identity_projection(row.execution)

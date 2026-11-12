@@ -1,0 +1,658 @@
+{
+  "schema_id": "feedbax.spec.studio.graph_project",
+  "schema_version": "feedbax.spec.studio.graph_project.v1",
+  "metadata": {
+    "name": "Point-mass reach",
+    "description": null,
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "updated_at": "2026-01-01T00:00:00+00:00",
+    "version": "1.0.0",
+    "save_revision": 0,
+    "author": null,
+    "tags": null
+  },
+  "graph": {
+    "schema_id": "feedbax.spec.graph",
+    "schema_version": "feedbax.spec.graph.v6",
+    "nodes": {
+      "cell": {
+        "type": "feedbax.GRU",
+        "params": {
+          "input_size": 2,
+          "hidden_size": 100,
+          "dtype": "float32"
+        },
+        "revision": 1,
+        "input_ports": [
+          "input",
+          "hidden"
+        ],
+        "output_ports": [
+          "output",
+          "hidden"
+        ]
+      },
+      "readout": {
+        "type": "feedbax.Linear",
+        "params": {
+          "input_size": 100,
+          "output_size": 2,
+          "use_bias": true,
+          "activation": "identity",
+          "initialization": "random",
+          "dtype": "float32"
+        },
+        "revision": 2,
+        "input_ports": [
+          "input"
+        ],
+        "output_ports": [
+          "output"
+        ]
+      },
+      "plant": {
+        "type": "feedbax.PointMass",
+        "params": {
+          "mass": 1.0,
+          "dt": 0.01
+        },
+        "revision": 1,
+        "input_ports": [
+          "force"
+        ],
+        "output_ports": [
+          "effector",
+          "state"
+        ]
+      }
+    },
+    "wires": [
+      {
+        "source_node": "cell",
+        "source_port": "hidden",
+        "target_node": "readout",
+        "target_port": "input",
+        "temporality": "instant",
+        "recurrent_initializer": null
+      },
+      {
+        "source_node": "cell",
+        "source_port": "hidden",
+        "target_node": "cell",
+        "target_port": "hidden",
+        "temporality": "recurrent",
+        "recurrent_initializer": {
+          "kind": "zeros",
+          "scope": "trial",
+          "source": "state_initializer",
+          "state_slot": "hidden",
+          "shape": [
+            100
+          ],
+          "dtype": "float32"
+        }
+      },
+      {
+        "source_node": "readout",
+        "source_port": "output",
+        "target_node": "plant",
+        "target_port": "force",
+        "temporality": "instant",
+        "recurrent_initializer": null
+      }
+    ],
+    "additive_channel_adapters": [],
+    "input_ports": [],
+    "output_ports": [
+      "effector"
+    ],
+    "input_bindings": {},
+    "output_bindings": {
+      "effector": [
+        "plant",
+        "effector"
+      ]
+    },
+    "subgraphs": null,
+    "derived_dimensions": [],
+    "barnacles": null,
+    "user_ports": null,
+    "taps": null,
+    "retained_observables": null,
+    "parameter_constraints": [],
+    "metadata": {
+      "name": "Point-mass reach",
+      "description": null,
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "updated_at": "2026-01-01T00:00:00+00:00",
+      "version": "1.0.0",
+      "save_revision": 0,
+      "author": null,
+      "tags": null
+    }
+  },
+  "workspace_document": {
+    "schema_id": "feedbax.workspace_document",
+    "schema_version": "1",
+    "semantic_root": {
+      "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+      "authored_path": "/graph"
+    },
+    "graph_ui_state": {
+      "viewport": {
+        "x": 41.0,
+        "y": -18.0,
+        "zoom": 0.8
+      },
+      "node_states": {
+        "cell": {
+          "position": {
+            "x": 70.0,
+            "y": 100.0
+          },
+          "label": null,
+          "collapsed": false,
+          "selected": false,
+          "reversed": false,
+          "size": null
+        },
+        "readout": {
+          "position": {
+            "x": 250.0,
+            "y": 100.0
+          },
+          "label": null,
+          "collapsed": false,
+          "selected": false,
+          "reversed": false,
+          "size": null
+        },
+        "plant": {
+          "position": {
+            "x": 430.0,
+            "y": 100.0
+          },
+          "label": null,
+          "collapsed": false,
+          "selected": false,
+          "reversed": false,
+          "size": null
+        }
+      },
+      "edge_states": null,
+      "subgraph_states": null,
+      "tap_states": null,
+      "assembly_view": null
+    },
+    "workspace_ui_state": {},
+    "stage_ui_state": {},
+    "scenario_ui_state": {},
+    "analysis_pages": [],
+    "active_analysis_page_id": null,
+    "analysis_canvas_layout": {
+      "schema_id": "feedbax.spec.studio.analysis_canvas_layout",
+      "schema_version": "feedbax.spec.studio.analysis_canvas_layout.v1",
+      "stages": {}
+    },
+    "semantic_anchors": {
+      "/graph": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph"
+      },
+      "/graph/nodes/cell": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph/nodes/cell"
+      },
+      "/graph/nodes/plant": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph/nodes/plant"
+      },
+      "/graph/nodes/readout": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph/nodes/readout"
+      },
+      "/graph/wires/0": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph/wires/0"
+      },
+      "/graph/wires/1": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph/wires/1"
+      },
+      "/graph/wires/2": {
+        "semantic_document_sha256": "8c7e60743f964b54c5445d0d674bb3811fe5714533268c3cb9e4c352f976c611",
+        "authored_path": "/graph/wires/2"
+      }
+    }
+  },
+  "demo_training_data": null,
+  "workspace": {
+    "id": "studio-workspace:45c06615963b433c8bf6a4006760c911",
+    "schema_id": "feedbax.spec.studio.workspace",
+    "schema_version": "feedbax.spec.studio.workspace.v2",
+    "label": "Point-mass reach",
+    "active_stage_id": "stage:train",
+    "stages": [
+      {
+        "id": "stage:train",
+        "schema_id": "feedbax.spec.studio.stage",
+        "schema_version": "feedbax.spec.studio.stage.v2",
+        "kind": "train",
+        "label": "Train",
+        "status": "draft",
+        "scenario_id": "scenario:train",
+        "input_collections": [],
+        "output_collections": [
+          {
+            "id": "collection:training-runs",
+            "kind": "training_runs",
+            "label": "Training runs",
+            "source_stage_id": "stage:train",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "manifest_refs": [],
+        "artifact_refs": [],
+        "execution_spec": null,
+        "selection_spec": {},
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {}
+      },
+      {
+        "id": "stage:eval",
+        "schema_id": "feedbax.spec.studio.stage",
+        "schema_version": "feedbax.spec.studio.stage.v2",
+        "kind": "eval",
+        "label": "Evaluate",
+        "status": "draft",
+        "scenario_id": "scenario:eval",
+        "input_collections": [
+          {
+            "id": "collection:training-runs",
+            "kind": "training_runs",
+            "label": "Training runs",
+            "source_stage_id": "stage:train",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "output_collections": [
+          {
+            "id": "collection:evaluation-runs",
+            "kind": "evaluation_runs",
+            "label": "Evaluation runs",
+            "source_stage_id": "stage:eval",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "manifest_refs": [],
+        "artifact_refs": [],
+        "execution_spec": null,
+        "selection_spec": {},
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {}
+      },
+      {
+        "id": "stage:analysis",
+        "schema_id": "feedbax.spec.studio.stage",
+        "schema_version": "feedbax.spec.studio.stage.v2",
+        "kind": "analysis",
+        "label": "Analyze",
+        "status": "draft",
+        "scenario_id": "scenario:analysis",
+        "input_collections": [
+          {
+            "id": "collection:evaluation-runs",
+            "kind": "evaluation_runs",
+            "label": "Evaluation runs",
+            "source_stage_id": "stage:eval",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "output_collections": [
+          {
+            "id": "collection:analysis-products",
+            "kind": "analysis_products",
+            "label": "Analysis products",
+            "source_stage_id": "stage:analysis",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "manifest_refs": [],
+        "artifact_refs": [],
+        "execution_spec": null,
+        "selection_spec": {},
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {}
+      },
+      {
+        "id": "stage:report",
+        "schema_id": "feedbax.spec.studio.stage",
+        "schema_version": "feedbax.spec.studio.stage.v2",
+        "kind": "report",
+        "label": "Report",
+        "status": "draft",
+        "scenario_id": "scenario:report",
+        "input_collections": [
+          {
+            "id": "collection:analysis-products",
+            "kind": "analysis_products",
+            "label": "Analysis products",
+            "source_stage_id": "stage:analysis",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "output_collections": [
+          {
+            "id": "collection:reports",
+            "kind": "reports",
+            "label": "Reports",
+            "source_stage_id": "stage:report",
+            "item_refs": [],
+            "filters": {},
+            "facets": {},
+            "metadata": {}
+          }
+        ],
+        "manifest_refs": [],
+        "artifact_refs": [],
+        "execution_spec": null,
+        "selection_spec": {},
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {}
+      }
+    ],
+    "scenarios": {
+      "scenario:analysis": {
+        "id": "scenario:analysis",
+        "schema_version": "feedbax.spec.studio.scenario.v3",
+        "label": "Analysis scenario",
+        "stage_id": "stage:analysis",
+        "parent_scenario_id": null,
+        "training_spec": null,
+        "task_spec": null,
+        "task_binding_spec": null,
+        "objective_spec": null,
+        "probe_specs": [],
+        "temporal_spec": null,
+        "biomechanics_spec": null,
+        "analysis_spec": null,
+        "report_spec": null,
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {
+          "source": "graph_project_migration"
+        }
+      },
+      "scenario:eval": {
+        "id": "scenario:eval",
+        "schema_version": "feedbax.spec.studio.scenario.v3",
+        "label": "Evaluation scenario",
+        "stage_id": "stage:eval",
+        "parent_scenario_id": "scenario:train",
+        "training_spec": null,
+        "task_spec": null,
+        "task_binding_spec": null,
+        "objective_spec": null,
+        "probe_specs": [],
+        "temporal_spec": null,
+        "biomechanics_spec": null,
+        "analysis_spec": null,
+        "report_spec": null,
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {
+          "source": "graph_project_migration",
+          "inheritance": "training_default"
+        }
+      },
+      "scenario:report": {
+        "id": "scenario:report",
+        "schema_version": "feedbax.spec.studio.scenario.v3",
+        "label": "Report scenario",
+        "stage_id": "stage:report",
+        "parent_scenario_id": null,
+        "training_spec": null,
+        "task_spec": null,
+        "task_binding_spec": null,
+        "objective_spec": null,
+        "probe_specs": [],
+        "temporal_spec": null,
+        "biomechanics_spec": null,
+        "analysis_spec": null,
+        "report_spec": null,
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {
+          "source": "graph_project_migration"
+        }
+      },
+      "scenario:train": {
+        "id": "scenario:train",
+        "schema_version": "feedbax.spec.studio.scenario.v3",
+        "label": "Training scenario",
+        "stage_id": "stage:train",
+        "parent_scenario_id": null,
+        "training_spec": {
+          "optimizer": {
+            "type": "adam",
+            "params": {
+              "learning_rate": 0.001
+            }
+          },
+          "loss": {
+            "type": "TargetStateLoss",
+            "label": "Endpoint position",
+            "selector": "path:plant.effector.pos",
+            "target_selector": "task_data:reach_target",
+            "weight": 1.0,
+            "norm": "squared_l2",
+            "time_agg": {
+              "mode": "final"
+            }
+          },
+          "n_batches": 2,
+          "batch_size": 1,
+          "schema_version": "feedbax.spec.training.v1"
+        },
+        "task_spec": {
+          "type": "SimpleReaches",
+          "params": {
+            "n_steps": 100
+          }
+        },
+        "task_binding_spec": {
+          "schema_version": "feedbax.spec.studio.task_bindings.v3",
+          "exposed_data": [
+            {
+              "id": "reach_target",
+              "label": "Reach target",
+              "kind": "signal",
+              "role": "model_input",
+              "path": "inputs.effector_target.pos",
+              "bindable": true,
+              "expected_shape": [
+                "time",
+                2
+              ],
+              "dtype": null,
+              "units": null,
+              "frame": null,
+              "value_spec": {
+                "schema_version": "feedbax.spec.studio.value.v2",
+                "value_form": "literal",
+                "variation": {
+                  "scope": "fixed",
+                  "enumerable": null,
+                  "stochastic_policy": null,
+                  "metadata": {
+                    "migrated_from_sampling_scope": null
+                  }
+                },
+                "mode": "constant",
+                "value": [
+                  0.1,
+                  -0.05
+                ],
+                "reference": null,
+                "expression": null,
+                "function_id": null,
+                "parameters": null,
+                "distribution": null,
+                "schedule": null,
+                "sampling_scope": null,
+                "dtype": "float32",
+                "shape": null,
+                "units": null,
+                "frame": null,
+                "metadata": {}
+              },
+              "metadata": {}
+            }
+          ],
+          "bindings": [
+            {
+              "id": "task:reach_target->cell:input",
+              "source_data_id": "reach_target",
+              "target_node_id": "cell",
+              "target_port": "input",
+              "role": "model_input",
+              "metadata": {}
+            }
+          ],
+          "metadata": {}
+        },
+        "objective_spec": {
+          "schema_version": "feedbax.spec.studio.objective.v1",
+          "legacy_loss_spec": {
+            "type": "TargetStateLoss",
+            "label": "Endpoint position",
+            "selector": "path:plant.effector.pos",
+            "target_selector": "task_data:reach_target",
+            "weight": 1.0,
+            "norm": "squared_l2",
+            "time_agg": {
+              "mode": "final"
+            }
+          },
+          "metadata": {
+            "lowered_from": "training_spec.loss"
+          },
+          "terms": [
+            {
+              "id": "objective:root",
+              "type_id": "TargetStateLoss",
+              "label": "Endpoint position",
+              "role": "loss",
+              "source_selector": {
+                "namespace": "state_path",
+                "compact": "path:plant.effector.pos",
+                "target_id": null,
+                "path": "plant.effector.pos",
+                "metadata": {
+                  "source": "legacy_loss_selector"
+                }
+              },
+              "target_selector": null,
+              "operator": "minimize",
+              "penalty": "squared_l2",
+              "temporal_selector": {
+                "mode": "final"
+              },
+              "weight": 1.0,
+              "metadata": {
+                "legacy_loss_path": [],
+                "legacy_loss_type": "TargetStateLoss"
+              }
+            }
+          ]
+        },
+        "probe_specs": [],
+        "temporal_spec": null,
+        "biomechanics_spec": null,
+        "analysis_spec": null,
+        "report_spec": null,
+        "validation": {
+          "valid": null,
+          "checked_at": null,
+          "errors": [],
+          "warnings": [],
+          "metadata": {}
+        },
+        "metadata": {
+          "source": "graph_project_migration"
+        }
+      }
+    },
+    "collections": [],
+    "manifest_refs": [],
+    "artifact_refs": [],
+    "validation": {
+      "valid": null,
+      "checked_at": null,
+      "errors": [],
+      "warnings": [],
+      "metadata": {}
+    },
+    "metadata": {
+      "source": "graph_project_migration"
+    }
+  },
+  "compile_reports": null
+}

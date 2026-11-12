@@ -1,7 +1,7 @@
-setup: uv sync --locked --dev --all-extras && cd web && bun install --frozen-lockfile
+setup: git submodule update --init -- vendor/window-shell && uv sync --locked --dev --all-extras && cd web && bun install --frozen-lockfile
 
 post-merge:
-  - paths: [".bun-version", "web/package.json", "web/bun.lock"]
-    run: cd web && bun install --frozen-lockfile
+  - paths: [".gitmodules", "vendor/window-shell", ".bun-version", "web/package.json", "web/bun.lock"]
+    run: git submodule sync -- vendor/window-shell && git submodule update --init -- vendor/window-shell && cd web && bun install --frozen-lockfile
   - paths: ["pyproject.toml", "uv.lock"]
     run: uv sync --locked --dev --all-extras

@@ -34,10 +34,10 @@ from feedbax.web.api import (
 from feedbax.web.config import BASE_DIR
 from feedbax.web.orchestration.controller import StudioController
 from feedbax.web.services.analysis_service import AnalysisJobService
-from feedbax.web.services.desktop_jobs import NativeTrainingJobs, StudioJobLifecycle
+from feedbax.web.services.desktop_jobs import StudioJobLifecycle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
-from feedbax.web.services.training_service import _orchestration_parent_root, training_service
+from feedbax.web.services.training_service import training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
 
@@ -79,12 +79,10 @@ def create_app(
         desktop_jobs = None
         if desktop_job_root is not None:
             await asyncio.to_thread(training_service.reconcile_desktop_worker, desktop_job_root)
-            native_jobs = NativeTrainingJobs(app.state.bootstrap_state, _orchestration_parent_root())
             desktop_jobs = StudioJobLifecycle(
-                analysis_jobs, native_jobs, training_service, desktop_job_root, app.state.job_service,
+                analysis_jobs, training_service, desktop_job_root, app.state.job_service,
             )
             app.state.desktop_jobs = desktop_jobs
-            native_jobs.recover()
         controller = studio_controller or StudioController(training_service=training_service)
         app.state.studio_controller = controller
         try:

@@ -41,22 +41,19 @@ struct OpenedProject {
 struct StudioTicket {
     url: Url,
     generation: String,
-    project: Option<OpenedProject>,
+    project: OpenedProject,
 }
 
 impl StudioTicket {
     fn label(&self) -> String {
-        self.project.as_ref().map_or_else(
-            || "studio".into(),
-            |project| format!("{PROJECT_PREFIX}{}", project.id),
-        )
+        format!("{PROJECT_PREFIX}{}", self.project.id)
     }
 }
 
 #[derive(Default)]
 enum Entry {
     #[default]
-    Legacy,
+    NewProject,
     Folder(PathBuf),
     Reconnect(String),
 }
@@ -174,32 +171,20 @@ fn show_studio(
 ) -> tauri::Result<()> {
     let label = ticket.label();
     let windows = app.state::<Mutex<Windows>>();
-    let title = ticket
-        .project
-        .as_ref()
-        .map_or(TITLE, |project| project.title.as_str());
+    let title = ticket.project.title.as_str();
     if let Some(window) = app.get_webview_window(&label) {
-        if let Some(project) = &ticket.project {
-            refresh_project_session(&window, &ticket, &project.id, reconnect)?;
-            window.set_title(title)?;
-        } else {
-            window.navigate(ticket.url)?;
-        }
+        refresh_project_session(&window, &ticket, &ticket.project.id, reconnect)?;
+        window.set_title(title)?;
         focus(&window)?;
     } else {
         let origin = ticket.url.origin();
         #[cfg(target_os = "macos")]
         let frame = native_frame::StudioFrame::new(&ticket.url)?;
-        let project_id = ticket.project.as_ref().map(|project| project.id.as_str());
-        let menu_script = studio_menu::attach(app, &label, &ticket.url, project_id)?;
-        let script = if project_id.is_some() {
-            let origin = json!(ticket.url.origin().ascii_serialization());
-            let generation = json!(ticket.generation);
-            format!("{menu_script}; if (location.origin === {origin}) window.__FEEDBAX_STUDIO_GENERATION__ = {generation};")
-        } else {
-            menu_script
-        };
-        let project_id = project_id.map(str::to_owned);
+        let project_id = ticket.project.id;
+        let menu_script = studio_menu::attach(app, &label, &ticket.url, &project_id)?;
+        let origin_text = json!(origin.ascii_serialization());
+        let generation = json!(ticket.generation);
+        let script = format!("{menu_script}; if (location.origin === {origin_text}) window.__FEEDBAX_STUDIO_GENERATION__ = {generation};");
         let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url))
             .title(title)
             .inner_size(1350., 910.)
@@ -209,9 +194,7 @@ fn show_studio(
             .initialization_script(script)
             .on_navigation(move |url| {
                 url.origin() == origin
-                    && project_id.as_ref().is_none_or(|id| {
-                        url.path() == CONNECT_PATH || studio_menu::is_project_route(url, id)
-                    })
+                    && (url.path() == CONNECT_PATH || studio_menu::is_project_route(url, &project_id))
             })
             .on_new_window(|_, _| NewWindowResponse::Deny);
         #[cfg(target_os = "macos")]
@@ -316,7 +299,7 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
         move || {
             let release = service::Release::load()?;
             let args: &[&str] = match &entry {
-                Entry::Legacy => &[],
+                Entry::NewProject => &[],
                 Entry::Folder(folder) => &[
                     "--project-folder",
                     folder
@@ -360,7 +343,6 @@ fn reconnect(app: &AppHandle) {
         .as_ref()
         .map(|window| window.label())
     {
-        Some("studio") => Entry::Legacy,
         Some(label) if label.starts_with(PROJECT_PREFIX) => {
             Entry::Reconnect(label[PROJECT_PREFIX.len()..].to_owned())
         }
@@ -510,7 +492,7 @@ fn setup(app: &mut App) -> tauri::Result<()> {
     )?;
     studio_menu::install(app.handle(), studio)?;
     status_window(app.handle())?;
-    connect(app.handle(), Entry::Legacy);
+    connect(app.handle(), Entry::NewProject);
     Ok(())
 }
 
@@ -586,7 +568,7 @@ fn main() {
                 if let Err(error) = status_window(app) {
                     eprintln!("{error}");
                 }
-                connect(app, Entry::Legacy);
+                reconnect(app);
             }
         }),
         Err(error) => service::fail(error),

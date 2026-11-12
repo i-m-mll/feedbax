@@ -405,13 +405,6 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
         authored = AcausalGraphSpec.model_validate(authoring.payload)
         assert authored.nodes["owner"].params == {"value": 0}
         assert authored.nodes["owner"].revision == 2
-        authored_graph = GraphSpec.model_validate({**causal, "subgraphs": {"plant": authored}})
-        service = GraphService(storage_dir=tmp_path)
-        created = service.create_graph(authored_graph, component_registry=registry)
-        reloaded = service.get_graph(created.graph_id, component_registry=registry).project.graph
-        assert reloaded.nodes["owner"].params == {"value": 0}
-        assert reloaded.nodes["owner"].revision == 2
-        assert reloaded.subgraphs["plant"].nodes["owner"].params == {"value": 0}
 
 
 def test_unknown_acausal_graph_version_rejects_through_graph_migration() -> None:

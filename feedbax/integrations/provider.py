@@ -110,14 +110,6 @@ from feedbax.orchestration.controller import (
 )
 from feedbax.orchestration.realization import Attempt, BackendPlan
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
-from feedbax.studio.execution import (
-    StudioNativeTrainingDispatchAccepted,
-    StudioNativeTrainingDispatchRequest,
-    StudioPipelineMaterializationRequest,
-    StudioPipelineMaterializationResult,
-    StudioTrainingExecutionPreparation,
-    StudioTrainingExecutionRequest,
-)
 from feedbax.studio.schema import (
     PortSchema,
     SchemaValidationIssue,
@@ -347,12 +339,6 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "ControllerProjection": ControllerProjection,
         "ProviderInventoryObservation": ProviderInventoryObservation,
         "OrphanHandlingPolicy": OrphanHandlingPolicy,
-        "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
-        "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
-        "StudioNativeTrainingDispatchRequest": StudioNativeTrainingDispatchRequest,
-        "StudioNativeTrainingDispatchAccepted": StudioNativeTrainingDispatchAccepted,
-        "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
-        "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
         "WorkspaceReplayProduct": WorkspaceReplayProduct,
         "ValueSchema": ValueSchema,
         "PortSchema": PortSchema,
@@ -818,57 +804,6 @@ def provider_manifest() -> ProviderManifest:
             artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.report"],
             custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
-        ),
-        "prepare_studio_training_execution": CapabilitySpec(
-            input_schema="StudioTrainingExecutionRequest",
-            output_schema="StudioTrainingExecutionPreparation",
-            description=(
-                "Bind a Studio train-stage scenario to a provider-neutral Invocation and "
-                "one inert BackendPlan."
-            ),
-            transports=["python", "http"],
-            action="validate",
-            compatibility_predicates=["selected Studio train stage has graph and training specs"],
-            artifact_roles=["invocation", "backend_plan"],
-            selected_node_kinds=["feedbax.studio_stage.train"],
-        ),
-        "dispatch_studio_native_training": CapabilitySpec(
-            input_schema="StudioNativeTrainingDispatchRequest",
-            output_schema="StudioNativeTrainingDispatchAccepted",
-            description="Dispatch one staged local native matrix row by receipt generation.",
-            transports=["http"],
-            action="execute",
-            compatibility_predicates=["unclaimed staged local TrainingRunSpec matrix row"],
-            mutates_state=True,
-            may_launch_compute=True,
-            artifact_roles=["staged_training_receipt", "run_set_state", "training_manifest"],
-            selected_node_kinds=["feedbax.studio_stage.train"],
-        ),
-        "materialize_studio_pipeline": CapabilitySpec(
-            input_schema="StudioPipelineMaterializationRequest",
-            output_schema="StudioPipelineMaterializationResult",
-            description=(
-                "Materialize Studio eval, analysis, and report stages from upstream "
-                "workspace collections and return updated lineage refs."
-            ),
-            transports=["python", "http"],
-            action="execute",
-            compatibility_predicates=[
-                "selected Studio stage has compatible upstream manifest collection"
-            ],
-            mutates_state=True,
-            artifact_roles=[
-                "evaluation_result",
-                "analysis_table",
-                "report",
-                "report_render",
-                "manifest",
-            ],
-            selected_node_kinds=[
-                "feedbax.studio_stage.eval",
-                "feedbax.studio_stage.analysis",
-                "feedbax.studio_stage.report",
-            ],
         ),
         "enumerate_studio_schemas": CapabilitySpec(
             input_schema="StudioSchemaEnumerationRequest",

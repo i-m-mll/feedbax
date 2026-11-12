@@ -18,13 +18,20 @@ export async function fixture(...arguments_: string[]) {
   return JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_train', ...arguments_));
 }
 
-export async function seedManagedProject(request: APIRequestContext, files: readonly unknown[]) {
-  const response = await request.post('/api/projects');
+export async function seedManagedProject(request: APIRequestContext, files: readonly unknown[], origin = '') {
+  const response = await request.post(origin + '/api/projects');
   expect(response.status()).toBe(201);
-  let { snapshot } = await response.json() as StudioProjectDocument;
+  const { snapshot } = await response.json() as StudioProjectDocument;
+  return appendManagedFiles(request, snapshot, files, origin);
+}
+
+export async function appendManagedFiles(
+  request: APIRequestContext, initial: StudioProjectDocument['snapshot'], files: readonly unknown[], origin = '',
+) {
+  let snapshot = initial;
   const projectPath = `/api/projects/${snapshot.project_id}`;
   for (const file of files) {
-    const saved = await request.post(`${projectPath}/files`, { data: { revision: snapshot.revision, file } });
+    const saved = await request.post(`${origin}${projectPath}/files`, { data: { revision: snapshot.revision, file } });
     expect(saved.status(), await saved.text()).toBe(201);
     ({ snapshot } = await saved.json() as StudioProjectDocument);
   }

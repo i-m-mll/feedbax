@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import http.client
 import json
 import math
 import os
-import pickle
-import re
 import subprocess
 import sys
 import time
@@ -17,6 +14,7 @@ from contextlib import closing, redirect_stdout
 from http.cookies import SimpleCookie
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 CASES = ("planar-rigid", "spatial-mixed")
 STEPS = 4
@@ -27,12 +25,16 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def run_path(fixture, job_id):
-    require(re.fullmatch(r"\d{4}-\d{2}-\d{2}-[a-f0-9]{8}", job_id), "invalid Studio fixture job id")
-    root = (fixture.paths.workspace / "orchestration").resolve(strict=True)
-    path = (root / job_id).resolve(strict=True)
-    require(path.parent == root and path.name == job_id, "job directory leaves the fixture")
-    return path
+def host_job(fixture, job_id, *, include_launch=False):
+    from feedbax.host import HostClient
+
+    snapshot = HostClient(fixture.paths.host).jobs_snapshot(
+        job_id=job_id, include_launch=include_launch, start_host=False,
+    )
+    (job,) = snapshot["jobs"]
+    require(job["id"] == job_id and job["data"]["runtime"] == str(fixture.release.resource("python")),
+            "job does not belong to this installed runtime")
+    return job, snapshot["cursor"]
 
 
 def author():
@@ -66,17 +68,16 @@ def author():
 
 
 def request_for(name, case, *, batches, checkpoint_interval):
-    from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec, build_default_studio_workspace
+    from feedbax.compiler.normalization import stamp_component_versions
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
+    from feedbax.contracts.request_specs import TrainingRequestSpec
     from feedbax.contracts.studio_training import (
         STUDIO_GRAPH_METHOD,
         STUDIO_GRAPH_METHOD_PAYLOAD_ID,
         STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
         StudioGraphMethodPayload,
     )
-    from feedbax.contracts.training import TrainingRunSpec
-    from feedbax.contracts.worker import derive_consistency_predicate
-    from feedbax.training.studio_executor import studio_graph_method_contract
-
     control = case["control_port"]
     graph = GraphSpec(
         nodes={
@@ -117,41 +118,21 @@ def request_for(name, case, *, batches, checkpoint_interval):
     }
     task = {"type": "SimpleReaches", "params": {"n_steps": STEPS}}
     payload = StudioGraphMethodPayload(optimizer=optimizer, target_total=batches)
-    contract = studio_graph_method_contract(payload)
-    spec = TrainingRunSpec(
-        graph={"inline": graph.model_dump(mode="json", exclude_none=True)},
+    return TrainingRequestSpec(
+        graph=stamp_component_versions(graph, ComponentRegistry()),
         task=task, task_binding_spec=binding,
-        training_config={"n_batches": batches, "batch_size": 1, "n_reach_steps": STEPS},
+        training_config={
+            "n_batches": batches, "batch_size": 1, "n_reach_steps": STEPS,
+            "learning_rate": optimizer["params"]["learning_rate"],
+            "snapshot_interval": min(batches, checkpoint_interval),
+        },
         objective={"loss": loss}, method_ref=STUDIO_GRAPH_METHOD,
         method_payload={
             "schema_id": STUDIO_GRAPH_METHOD_PAYLOAD_ID,
             "schema_version": STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
             "payload": payload.model_dump(mode="json"),
         },
-        worker_execution={
-            "method_contract": contract,
-            "effective_phase": {
-                "method_ref": contract.method_ref, "axes": contract.axes, "state_slots": contract.state_slots,
-                "phase_program": contract.phase_program,
-                "consistency_predicate": derive_consistency_predicate(contract.phase_program),
-            },
-        },
-        checkpoint_progress={
-            "checkpoint_interval": min(batches, checkpoint_interval),
-            "progress_interval": min(batches, checkpoint_interval),
-        },
     )
-    workspace = build_default_studio_workspace(label=f"Desktop MJX {name}")
-    stage = next(item for item in workspace.stages if item.kind == "train")
-    scenario = workspace.scenarios[stage.scenario_id]
-    scenario.training_spec = {"optimizer": optimizer, "loss": loss, "n_batches": batches, "batch_size": 1}
-    scenario.task_spec, scenario.task_binding_spec = task, binding
-    stage.selection_spec["matrix"] = {
-        "schema_id": "feedbax.spec.training_run_matrix", "schema_version": "feedbax.spec.training_run_matrix.v6",
-        "name": name, "base": {"kind": "inline", "inline": spec.model_dump(mode="json", exclude_none=True)},
-        "rows": [{"row_id": name, "overrides": []}],
-    }
-    return {"workspace": workspace.model_dump(mode="json", exclude_none=True), "graph": spec.graph.inline}
 
 
 class Fixture:
@@ -207,28 +188,21 @@ class Studio(Fixture):
             return json.loads(raw)
 
 def prepare(request, name, case, batches, checkpoint_interval):
-    from feedbax.contracts.graph import (
-        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-        StudioPersistenceDocument,
-    )
-
     if "mjcf" in case:
         asset = request("POST", "/api/graphs/assets/mujoco", case["mjcf"].encode())
         require(asset == case["interior"]["mujoco_asset"]["asset"], "imported MJCF identity changed")
     training = request_for(name, case, batches=batches, checkpoint_interval=checkpoint_interval)
-    project = request("POST", "/api/graphs", StudioPersistenceDocument(
-        schema_id=STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-        schema_version=STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-        **training,
-    ).model_dump(mode="json", exclude_none=True))
-    project_id = project["data"]["id"]
+    snapshot = request("POST", "/api/projects")["snapshot"]
+    project_id = snapshot["project_id"]
+    path = f"/api/projects/{project_id}"
+    saved = request("POST", path + "/files", {
+        "revision": snapshot["revision"],
+        "file": {"kind": "step", "id": "train", "step": {
+            "kind": "train", "base": {"inline": training.model_dump(mode="json", exclude_none=True)},
+        }},
+    })["snapshot"]
     verify_project(request, project_id, case["interior"])
-    plan = request("POST", "/api/provider/studio/training/plan", training)
-    stage = next(s for s in plan["workspace"]["stages"] if s["kind"] == "train")
-    ref, = [ref for ref in stage["manifest_refs"] if ref["role"] == "training_run"]
-    return {"project_id": project_id, "manifest_id": ref["id"],
-            "generation": ref["metadata"]["staging_generation"]}
+    return {"project_id": project_id, "revision": saved["revision"]}
 
 
 def verify_project(request, project_id, interior):
@@ -236,8 +210,9 @@ def verify_project(request, project_id, interior):
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.acausal import AcausalGraphSpec
 
-    project = request("GET", f"/api/graphs/{project_id}")
-    actual = project["data"]["graph"]["subgraphs"]["physics"]
+    project = request("GET", f"/api/projects/{project_id}/open")
+    graph = project["snapshot"]["project"]["steps"]["train"]["base"]["inline"]["graph"]
+    actual = graph["subgraphs"]["physics"]
     expected = stamp_component_versions(AcausalGraphSpec.model_validate(interior), ComponentRegistry())
     require(AcausalGraphSpec.model_validate(actual) == expected,
             "the persisted authored mechanics changed")
@@ -270,22 +245,23 @@ function run(args) {
 
 def snapshot(studio, job_id, status, after, *, gui):
     deadline = time.monotonic() + 42
+    wanted = "succeeded" if status == "completed" else status
     while time.monotonic() < deadline:
-        records = studio.request("GET", "/api/desktop/jobs")["training"]
-        job = next((entry for entry in records if entry["job_id"] == job_id), None)
+        record, cursor = host_job(studio, job_id)
+        projected = studio.request("GET", f'/api/jobs?project={record["project"]}')
+        job = next((row for row in projected["jobs"] if row["job_id"] == job_id), None)
         if job is not None:
-            require(job["status"] not in {"failed", "interrupted", "recovery_required"}, f"training failed: {job}")
-            if job["status"] == status and job["event_sequence"] > after:
+            require(job["status"] not in {"failed", "interrupted", "corrupt"}, f"training failed: {job}")
+            if job["status"] == wanted and cursor > after:
                 break
         time.sleep(0.2)
     else:
         raise RuntimeError(f"{job_id} did not reach {status} after event {after}: {job}")
-    result = {"job": job, "service": studio.health}
+    result = {"job": job | {"event_sequence": cursor}, "service": studio.health}
     if status == "running":
-        record, = (run_path(studio, job_id) / "sentinels").glob("*.process.json")
-        worker = json.loads(record.read_bytes())
-        require(os.getpgid(worker["pid"]) == worker["process_group_id"], "training owner disappeared")
-        result["worker"] = {"pid": worker["pid"], "group": worker["process_group_id"]}
+        pid = record["worker_pid"]
+        require(type(pid) is int and pid > 1 and os.getpgid(pid) == pid, "training owner disappeared")
+        result["worker"] = {"pid": pid, "group": pid}
     if gui is not None:
         result["gui_pids"] = gui_pids(studio)
         require(bool(result["gui_pids"]) == (gui == "present"), f"expected GUI {gui}")
@@ -341,26 +317,46 @@ def inspect_model(model, case):
 
 
 def checkpoint(fixture, job_id, case, service, *, stopped=False):
-    from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody, load_checkpoint_set
+    import asyncio
 
-    run = run_path(fixture, job_id)
-    bundle = json.loads((run / "bundle.json").read_bytes())
-    require(bundle["run_set_id"] == job_id and bundle["feedbax_revision"] == fixture.release.document["source_commit"],
-            "checkpoint run does not belong to the exact release")
-    state = json.loads((run / "state.json").read_bytes())
-    row, = state["rows"]
-    expected = {"stopped"} if stopped else {"stopped", "completed"}
-    require(state["rows"][row]["status"] in expected, "job has not settled as requested")
-    custody = run / "collected" / row / "checkpoints"
-    transaction = authenticate_published_checkpoint_custody(custody)
+    from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.contracts.base import ParentRef
+    from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
+    from feedbax.plugins.composition import compose_application
+    from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+    from feedbax.training.checkpoint_custody import (
+        authenticate_checkpoint_custody_ref, load_checkpoint_set, open_published_model_slot,
+    )
+    from feedbax.training.studio_executor import studio_training_key
+    from feedbax.web.worker.execution import prototypes_from_task_bindings
+
+    job, _ = host_job(fixture, job_id, include_launch=True)
+    expected = {"stopped"} if stopped else {"stopped", "succeeded"}
+    require(job["state"] in expected, "job has not settled as requested")
+    binding = BoundStudioTrainingJobInput.model_validate(job["launch"]["payload"])
+    require(binding.canonical_request is not None, "fixture did not use saved Plan admission")
+    checkpoint = PublishedTrainingCheckpoint.model_validate(job["checkpoint"])
+    custody = checkpoint.checkpoint_root.resolve(strict=True)
+    require(custody.is_relative_to(fixture.paths.web / "projects" / job["project"] / "results"),
+            "checkpoint directory leaves the fixture project")
+    pointer = checkpoint.pointer
+    transaction = authenticate_checkpoint_custody_ref(ParentRef(
+        kind="TrainingCheckpointTransactionManifest", id=pointer.transaction_id,
+        role="training_checkpoint_custody", uri=pointer.manifest_relative_path,
+        metadata={"manifest_sha256": pointer.manifest_sha256},
+    ), allowed_root=custody)
     manifest = transaction.manifest
     checkpoint_set = load_checkpoint_set(custody, transaction.parent_ref.id)
-    slot, = [slot for slot in manifest.slots if slot.slot == "model"]
-    # Only the exact model slot of this operator-owned fixture is decoded.
-    data = (custody / "transactions" / transaction.parent_ref.id / slot.relative_path).read_bytes()
-    require(len(data) == slot.size_bytes and hashlib.sha256(data).hexdigest() == slot.sha256,
-            "model slot changed after authentication")
-    model = inspect_model(pickle.loads(data), case)
+    slot = open_published_model_slot(custody, pointer)
+    require(slot is not None, "checkpoint has no portable model slot")
+    method = StudioGraphMethodPayload.model_validate(binding.spec.method_payload.payload)
+    registry = asyncio.run(compose_application(modules=binding.bootstrap_modules)).bundle
+    executable = compile_graph(
+        GraphDocument(graph=slot.graph), registry.components,
+        input_prototypes=prototypes_from_task_bindings(binding.spec.task_binding_spec),
+        initialization_key=studio_training_key(method.seed, "model"), artifact_provider=slot.provider,
+    )
+    model = inspect_model(slot.restore(executable.graph), case)
     return {"job_id": job_id, "release": fixture.release.digest, "service": service,
             "batches": manifest.completed_training_batches, "transaction": transaction.parent_ref.id,
             "root_sha256": manifest.content_integrity_digest.transaction_root_sha256,
@@ -408,7 +404,9 @@ def source_smoke(name, case):
     import jax.numpy as jnp
 
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.training import TrainingRunSpec, TrainingSpec
+    from feedbax.contracts.training import TrainingSpec
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.studio.canonical_train import lower_canonical_train
     from feedbax.training.optimizers import build_optimizer
     from feedbax.training.studio_executor import StudioUpdateKernel
     from feedbax.web.model_assets import import_mujoco_asset
@@ -418,9 +416,10 @@ def source_smoke(name, case):
         require(import_mujoco_asset(case["mjcf"].encode()).model_dump(mode="json") == (
             case["interior"]["mujoco_asset"]["asset"]
         ), "source import changed the fixture identity")
-    plan = request_for(name, case, batches=2, checkpoint_interval=1)
-    stage = next(stage for stage in plan["workspace"]["stages"] if stage["kind"] == "train")
-    spec = TrainingRunSpec.model_validate(stage["selection_spec"]["matrix"]["base"]["inline"])
+    spec = lower_canonical_train(
+        request_for(name, case, batches=2, checkpoint_interval=1),
+        new_application_registry_bundle().training_programs,
+    )
     optimizer_spec = spec.method_payload.payload["optimizer"]
     compiled = compile_training_run(
         graph_spec=spec.graph.inline, component_registry=ComponentRegistry(),
@@ -449,8 +448,6 @@ def source_smoke(name, case):
 
 
 def source_plan(name, case):
-    from unittest.mock import patch
-
     from feedbax.desktop.release import AppPaths
     from fastapi.testclient import TestClient
 
@@ -468,16 +465,11 @@ def source_plan(name, case):
                 return response.json()
 
             plan = prepare(request, name, case, 2, 1)
-            # Exercise real native assembly without admitting a worker.
-            with patch.object(app.state.desktop_jobs.training, "dispatch") as dispatch:
-                accepted = request("POST", "/api/provider/studio/training/dispatch", {
-                    "manifest_id": plan["manifest_id"], "generation": plan["generation"],
-                })
-            dispatch.assert_called_once()
-            engine, _ = dispatch.call_args.args
-            row, = engine.bundle.rows
-            require(row.execution_family == "native-training", "fixture did not assemble a native row")
-            return {**plan, "run_set_id": accepted["run_set_id"], "execution_family": row.execution_family}
+            settled = app.state.project_folders.read_plan(plan["project_id"], revision=plan["revision"])
+            require(not settled.plan.diagnostics, f"fixture Plan did not compile: {settled.plan.diagnostics}")
+            (run,) = settled.plan.runs
+            require(run.kind == "train" and run.admission_problem is None, "fixture did not compile a runnable Train")
+            return {**plan, "request_id": run.request_id}
 
 
 def evaluate(args):
@@ -502,16 +494,19 @@ def evaluate(args):
     studio = Studio(args.contents, args.fixture_root)
     if args.action == "start":
         plan = prepare(studio.request, args.case, case, args.batches, args.checkpoint_interval)
-        job = studio.request("POST", "/api/provider/studio/training/dispatch", {
-            "manifest_id": plan["manifest_id"], "generation": plan["generation"],
+        job = studio.request("POST", f'/api/projects/{plan["project_id"]}/train-runs', {
+            "revision": plan["revision"], "token": uuid4().hex,
+            "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
         })
-        return {**plan, "job_id": job["run_set_id"], "case": args.case, "release": studio.release.digest}
+        (item,) = job["items"]
+        require(item["disposition"] == "admitted", f"fixture did not admit: {item}")
+        return {**plan, "job_id": item["job_id"], "case": args.case, "release": studio.release.digest}
     if args.action == "snapshot":
         return snapshot(studio, args.job, args.status, args.after_sequence, gui=args.gui)
     if args.action == "checkpoint":
         return checkpoint(studio, args.job, case, studio.health)
     verify_project(studio.request, args.project, case["interior"])
-    return studio.request("POST", f"/api/desktop/jobs/{args.job}/resume")
+    return studio.request("POST", f"/api/jobs/{args.job}/resume", {"token": uuid4().hex})
 
 
 def main():

@@ -38,11 +38,11 @@ from feedbax.training.model_checkpoint import (
     SemanticModelWriter,
     effective_model_graph,
 )
-from tests.test_studio_training_host_worker import _authored_run
+from tests.test_studio_training_host_worker import _authored_spec
 
 
 def _publish(root, graph, model, assets=None):
-    spec = _authored_run(batches=2).spec.model_copy(update={
+    spec = _authored_spec(batches=2).model_copy(update={
         "graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json")),
     })
     phase = spec.worker_execution.effective_phase.phase_program

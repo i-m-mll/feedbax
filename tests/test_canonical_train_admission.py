@@ -18,7 +18,7 @@ from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import EncodedRequest, decode_request
 from feedbax.contracts.request_refs import NamedMember, ProductRef
-from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.contracts.studio_project import StudioProjectCreateFile, StudioProjectPatch
 from feedbax.contracts.training import OptimizerSpec, TrainingRunSpec
@@ -37,9 +37,9 @@ from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
+    lower_canonical_train,
     verify_training_request_binding,
 )
-from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
     bind_published_checkpoint_content,
@@ -53,27 +53,17 @@ from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
 from tests.test_local_job_host import host as host_fixture
-from web.e2e.studio.fixtures.reaching_project import reaching_project
+from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
 host = host_fixture
 
 
 def _train_payload(registries, *, batches):
-    reaching = reaching_project(batches=batches)
-    (legacy,) = lower_studio_training_runs(
-        reaching.workspace, reaching.graph, stage_id="stage:train", registry_bundle=registries
+    request = reaching_train_request(reaching_project(batches=batches))
+    return lower_canonical_train(request, registries.training_programs), request.model_dump(
+        mode="json", exclude_none=True,
     )
-    payload = TrainingRequestSpec(
-        graph=legacy.spec.graph.inline,
-        task=legacy.spec.task,
-        task_binding_spec=legacy.spec.task_binding_spec,
-        objective=legacy.spec.objective,
-        method_ref=legacy.spec.method_ref,
-        method_payload=legacy.spec.method_payload,
-        training_config=legacy.spec.training_config,
-    ).model_dump(mode="json", exclude_none=True)
-    return legacy, payload
 
 
 def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
@@ -108,7 +98,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     ids = {row.key: row.request_id for row in reviewed.plan.runs}
     request_id = ids[train]
     assert request_id == ids[stable] and request_id.startswith("train:")
-    assert request_id != legacy.request_id
+    assert request_id != canonical_training_run_spec_sha256(legacy)
     assert not reviewed.store_path.exists()
 
     host.policy(compute=1)

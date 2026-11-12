@@ -23,7 +23,6 @@ from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.array_values import (
     ConstantArrayValueSpec,
     SparseCooArrayValueSpec,
@@ -476,51 +475,6 @@ def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() 
         )
 
     assert issubclass(TrainingProgressEvent, StudioApiModel)
-
-
-def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
-    client = TestClient(create_app())
-    graph = GraphSpec(
-        nodes={
-            "network": ComponentSpec(
-                type="Network",
-                input_ports=["input"],
-                output_ports=[],
-            )
-        }
-    )
-
-    response = client.post(
-        "/api/graphs/graph-1/validate",
-        json=graph.model_dump(mode="json", exclude_none=True),
-    )
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert isinstance(data, list)
-    assert data[0]["severity"] == "error"
-    assert data[0]["code"] == "graph.missing_input"
-    assert data[0]["node_ids"] == ["network"]
-    assert "valid" not in data[0]
-
-
-def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
-    client = TestClient(create_app())
-    graph = GraphSpec(
-        nodes={"gain": ComponentSpec(type="feedbax.Gain", input_ports=["input"])},
-        input_ports=["command", "override"],
-        input_bindings={"command": ("gain", "input"), "override": ("gain", "input")},
-    )
-
-    response = client.post("/api/graphs/graph-1/validate", json=graph.model_dump(mode="json"))
-
-    assert response.status_code == 200
-    (conflict,) = response.json()["data"]
-    assert conflict["severity"] == "error"
-    assert conflict["code"] == "graph.input_occupied"
-    assert conflict["ports"] == [["gain", "input"]]
-    assert "external input 'command'" in conflict["message"]
-    assert "external input 'override'" in conflict["message"]
 
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:

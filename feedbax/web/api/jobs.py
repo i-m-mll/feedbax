@@ -20,10 +20,7 @@ from feedbax.contracts.jobs import (
     StudioJobStopItem,
     StudioJobStopRequest,
     StudioJobSubmission,
-    StudioJobSubmissionRequest,
     StudioLocalSession,
-    StudioRunPreview,
-    StudioRunPreviewRequest,
     StudioSavedEvaluationReplayRequest,
     StudioSavedTrainAttempt,
     StudioSavedTrainKey,
@@ -51,21 +48,6 @@ def _jobs(request: Request) -> JobService:
 def _host_error(exc: HostError) -> HTTPException:
     status = 503 if exc.code in {"unavailable", "disconnected", "protocol_version"} else 409
     return HTTPException(status, detail={"code": exc.code, "message": str(exc)})
-
-
-@router.post("/submissions", status_code=202)
-def admit_submission(body: StudioJobSubmissionRequest, request: Request) -> StudioJobSubmission:
-    try:
-        return _jobs(request).admit(body)
-    except JobConflict as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
-    except HostError as exc:
-        raise _host_error(exc) from exc
-
-
-@router.post("/submissions/preview")
-def preview_submission(body: StudioRunPreviewRequest, request: Request) -> StudioRunPreview:
-    return _jobs(request).preview(body)
 
 
 @router.get("/projects/{project_id}/train-runs", response_model_exclude_unset=True)
