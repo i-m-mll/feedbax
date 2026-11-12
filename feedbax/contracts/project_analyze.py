@@ -17,7 +17,12 @@ from feedbax.contracts.analysis_document import (
     OperationElement,
     StepDataset,
 )
-from feedbax.contracts.figure_document import FigureBindingError, validate_figure_bindings
+from feedbax.contracts.figure_document import (
+    PLOTLY_FIGURE_ROLE,
+    FigureBindingError,
+    PlotlyFigurePort,
+    validate_figure_bindings,
+)
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
 from feedbax.contracts.project import Payload
 from feedbax.contracts.project_plan import ElementKey, PlannedElement, PlannedInput, RunKey
@@ -147,7 +152,7 @@ class _Lowerer:
         name: str,
         spec: AnalysisRequestSpec | RenderRequestSpec,
         inputs: Mapping[str, PlannedInput],
-        outputs: Mapping[str, DatasetPort],
+        outputs: Mapping[str, DatasetPort | PlotlyFigurePort],
     ) -> None:
         encoded = encode_request(
             spec, {role: (binding.member,) for role, binding in inputs.items()}
@@ -225,7 +230,12 @@ class _Lowerer:
             return
         try:
             validate_figure_bindings(element.figure, schemas)
-            self._record(name, RenderRequestSpec(figure=None, document=element.figure), inputs, {})
+            self._record(
+                name,
+                RenderRequestSpec(figure=None, document=element.figure),
+                inputs,
+                {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
+            )
         except FigureBindingError as error:
             self.problem(f"{path}.figure.{error.path}", str(error), name)
         except ValueError as error:

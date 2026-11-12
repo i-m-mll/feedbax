@@ -125,6 +125,16 @@ class FigureDocument(StrictModel):
         return self
 
 
+PLOTLY_FIGURE_ROLE = "figure"
+PLOTLY_MEDIA_TYPE = "application/json"
+
+
+class PlotlyFigurePort(StrictModel):
+    """Plan declaration for an eventual saved Plotly figure product."""
+
+    kind: Literal["plotly_figure"] = "plotly_figure"
+
+
 class FigureLayerOmission(StrictModel):
     layer: Name
     reason: NonemptyText
@@ -141,7 +151,7 @@ class PlotlyFigureProduct(StrictModel):
         if (
             self.content.tree
             or self.content.size == 0
-            or self.content.media_type != "application/json"
+            or self.content.media_type != PLOTLY_MEDIA_TYPE
         ):
             raise ValueError("A Plotly figure requires a nonempty JSON content object.")
         if len({item.layer for item in self.omitted_layers}) != len(self.omitted_layers):

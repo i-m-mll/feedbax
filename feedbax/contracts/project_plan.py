@@ -15,8 +15,10 @@ from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
+from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -53,6 +55,7 @@ from feedbax.contracts.project_sweep import (
     sweep_patches,
 )
 from feedbax.contracts.project_sources import ValueSource, patch_source, pointer, source_shape
+from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -65,11 +68,10 @@ from feedbax.contracts.request_refs import (
     ProductSelector,
     RequestId,
 )
-from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSpec
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
-    from feedbax.contracts.operation import DatasetPort
 
 
 @dataclass(frozen=True)
@@ -137,7 +139,13 @@ class PlannedElement:
     kind: Literal["analyze", "render"]
     request_id: RequestId
     inputs: Mapping[str, PlannedInput]
-    datasets: Mapping[str, DatasetPort]
+    outputs: Mapping[str, DatasetPort | PlotlyFigurePort]
+
+    @property
+    def datasets(self) -> Mapping[str, DatasetPort]:
+        return MappingProxyType({
+            role: port for role, port in self.outputs.items() if isinstance(port, DatasetPort)
+        })
 
     @property
     def path(self) -> str:
@@ -153,6 +161,8 @@ class PlannedAnalyzeRun(PlannedRow):
 
 @dataclass(frozen=True)
 class ElementChange:
+    """An authored change to a singleton run or element request."""
+
     state: Literal["unchanged", "changed", "added", "removed"]
     path: str | None = None
     upstream: ElementKey | None = None
@@ -223,6 +233,9 @@ _ROLES = {
     "evaluate": _Role("subject", True, "train", "checkpoint"),
     "analyze": _Role("states", True, "evaluate", "states"),
 }
+
+type _CompiledRun = PlannedRun | PlannedAnalyzeRun
+type _Members = tuple[tuple[PlannedInput, _CompiledRun], ...]
 
 
 def _checkpoint(rule: CheckpointRule | None) -> ProductSelector | None:
@@ -339,16 +352,34 @@ def _encode_row(
     key: RunKey,
     kind: StepKind,
     payload: Payload,
-    role: _Role,
-    chosen: PlannedInput | None,
+    inputs: Mapping[str, PlannedInput],
     encoding_stamp: tuple[StepKind, str, bytes] | None,
     document_memo: RequestDocumentMemo | None,
 ) -> _LoweredRow:
     try:
-        spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
+        if kind == "report":
+            document = ReportDocument.model_validate(payload)
+            expected = set(document.figure_roles)
+            invalid = [
+                (role, "required figure input is missing") for role in sorted(expected - inputs.keys())
+            ] + [
+                (role, "unknown Report figure role") for role in sorted(inputs.keys() - expected)
+            ]
+            if invalid:
+                return _LoweredRow(
+                    None,
+                    tuple(ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE, f"inputs.{role}", detail, key.step,
+                        row=key.row, variant=key.variant,
+                    ) for role, detail in invalid),
+                    encoding_stamp,
+                )
+            spec = ReportRequestSpec(report_type=None, document=document)
+        else:
+            spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         encoded = request_identity.encode_request(
             spec,
-            {role.name: (chosen.member,)} if chosen is not None else {},
+            {role: (binding.member,) for role, binding in inputs.items()},
             document_memo=document_memo,
         )
     except ValidationError as error:
@@ -454,7 +485,7 @@ class _Compiler:
         self.steps: dict[tuple[str, str], PlannedStep] = {}
         self.rows: dict[RunKey, PlannedRow] = {}
         self.excluded_checkpoint_rows: set[RunKey] = set()
-        self.runs: dict[tuple[str, str], tuple[PlannedRun, ...]] = {}
+        self.runs: dict[tuple[str, str], tuple[_CompiledRun, ...]] = {}
         self.swept_step_axes: dict[tuple[str, str], tuple[str, ...]] = {}
         self.requests: dict[RequestId, bytes] = {}
         self.documents: dict[str, bytes] = {}
@@ -515,7 +546,7 @@ class _Compiler:
             self.variant_order,
             MappingProxyType(self.steps),
             tuple(self.rows.values()),
-            tuple(run for runs in self.runs.values() for run in runs),
+            tuple(run for runs in self.runs.values() for run in runs if isinstance(run, PlannedRun)),
             MappingProxyType(self.requests),
             MappingProxyType(self.documents),
             tuple(self.diagnostics),
@@ -525,7 +556,7 @@ class _Compiler:
 
     def step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
-    ) -> tuple[PlannedRun, ...]:
+    ) -> tuple[_CompiledRun, ...]:
         key = variant, name
         if key not in self.runs:
             self.runs[key] = self.compile_step(variant, name, (*active, key))
@@ -580,14 +611,14 @@ class _Compiler:
         variant: str,
         name: str,
         composition: StepComposition,
-        role: _Role,
-        members: tuple[tuple[PlannedInput, PlannedRun], ...],
+        members: Mapping[str, _Members],
     ) -> tuple[ExpandedRow, ...] | ProjectDiagnostic:
         fanout = {
-            role.name: tuple(
+            role: tuple(
                 SweepInputMember(item.member.key, producer.coordinates, producer.label)
-                for item, producer in members
+                for item, producer in bindings
             )
+            for role, bindings in members.items()
         }
 
         def expand(_read_document=None, _previous=None):
@@ -607,8 +638,11 @@ class _Compiler:
             (
                 composition,
                 to_json(tuple(
-                    (member.key, tuple(member.coordinates.items()), member.label)
-                    for member in fanout[role.name]
+                    (role, tuple(
+                        (member.key, tuple(member.coordinates.items()), member.label)
+                        for member in bindings
+                    ))
+                    for role, bindings in sorted(fanout.items())
                 )),
             ),
             self.authored_inputs[variant],
@@ -636,20 +670,22 @@ class _Compiler:
         composition: StepComposition,
         key: RunKey,
         row: ExpandedRow,
-        role: _Role,
-        chosen: PlannedInput | None,
+        inputs: Mapping[str, PlannedInput],
     ) -> SelectedRunDefinition | None:
-        producer = chosen.producer if chosen is not None else None
-
         def project(reader=None, _previous=None):
             resolved = self.resolve_row(composition, key, row, reader, sources=True)
             if isinstance(resolved, ProjectDiagnostic) or resolved.sources is None:
                 return None
             sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
-            if producer is not None:
-                sources[f"/inputs/{role.name}"] = ValueSource(
+            for role, binding in inputs.items():
+                producer = binding.producer
+                path = ""
+                if binding.producer_element is not None and isinstance(binding.member.reference, ProductRef):
+                    path = pointer(("elements", binding.producer_element, "products", binding.member.reference.role))
+                sources[f"/inputs/{role}"] = ValueSource(
                     "upstream",
                     producer.step,
+                    path=path,
                     step=producer.step,
                     variant=producer.variant,
                     row=producer.row,
@@ -672,7 +708,7 @@ class _Compiler:
                     tuple(row.patch_authors.items()),
                     tuple(row.coordinates.items()),
                 )),
-                producer,
+                tuple(sorted(inputs.items())),
             ),
             self.authored_inputs[key.variant],
             project,
@@ -684,12 +720,13 @@ class _Compiler:
         key: RunKey,
         row: ExpandedRow,
         kind: StepKind,
-        role: _Role,
-        chosen: PlannedInput | None,
+        inputs: Mapping[str, PlannedInput],
         basis: str | None,
         definition: SelectedRunDefinition | None,
     ) -> _LoweredRow:
-        member = chosen.member.model_dump_json().encode() if chosen is not None else b""
+        member = to_json(tuple(
+            (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
+        ))
 
         def lower(reader=None, previous=None):
             if definition is None:
@@ -714,7 +751,7 @@ class _Compiler:
                 return replace(previous, document_ids=document_ids, document_uses=document_uses)
             return replace(
                 _encode_row(
-                    key, kind, payload, role, chosen, encoding_stamp,
+                    key, kind, payload, inputs, encoding_stamp,
                     self.work.request_documents if self.previous is not None else None,
                 ),
                 document_ids=document_ids,
@@ -727,14 +764,14 @@ class _Compiler:
             self.previous.rows,
             self.work.rows,
             key,
-            (kind, basis, to_json(tuple(row.patches.items())), member),
+            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items()))),
             self.authored_inputs[key.variant],
             lower,
         )
 
     def compile_step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
-    ) -> tuple[PlannedRun, ...]:
+    ) -> tuple[_CompiledRun, ...]:
         project = self.variants[variant]
         authored = project.steps[name]
         kind = authored.kind
@@ -742,7 +779,7 @@ class _Compiler:
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
-        if role is None or (kind == "analyze" and self.operations is None):
+        if (role is None and kind != "report") or (kind == "analyze" and self.operations is None):
             self.diagnostics.append(
                 ProjectDiagnostic(
                     ResolutionCode.UNSUPPORTED_PLAN,
@@ -765,6 +802,9 @@ class _Compiler:
             axes = tuple(axis for axis, value in sweep.axes.items() if value is not None)
             if axes or any(row is not None for row in sweep.rows.values()):
                 self.swept_step_axes[variant, name] = axes
+        if kind == "report":
+            return self.compile_report_step(variant, name, template, active)
+        assert role is not None
         extra_roles = sorted(template.inputs.keys() - {role.name})
         if extra_roles:
             self.diagnostics.extend(
@@ -787,7 +827,7 @@ class _Compiler:
             self.subsets[variant, name, role.name] = subset
         by_key = {item.member.key: item for item, _ in members}
         paired_step = _paired_checkpoint_step(authored, template.inputs.get(role.name))
-        rows = self.expand_rows(variant, name, template, role, members)
+        rows = self.expand_rows(variant, name, template, {role.name: members})
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
             return ()
@@ -836,44 +876,107 @@ class _Compiler:
                 continue
             if chosen is None and members:
                 chosen = members[0][0]
-            definition = (
-                self.project_definition(template, run_key, row, role, chosen)
-                if row.id in wanted else None
-            )
-            if definition is not None:
-                self.selected_definitions[run_key] = (
-                    replace(definition, payload=deepcopy(definition.payload))
-                    if self.previous is not None else definition
-                )
+            inputs = {role.name: chosen} if chosen is not None else {}
+            definition = self.select_definition(template, run_key, row, inputs)
             if kind == "analyze":
                 assert chosen is not None
-                self.lower_analyze_row(template, run_key, row, chosen, definition)
+                analyze = self.lower_analyze_row(template, run_key, row, chosen, definition)
+                if analyze is not None:
+                    result.append(analyze)
                 continue
-            lowered = self.lower_row(template, run_key, row, kind, role, chosen, basis, definition)
-            self.diagnostics.extend(lowered.diagnostics)
-            if (encoded := lowered.request) is None:
-                self.rows[run_key] = replace(
-                    self.rows[run_key], document_ids=lowered.document_ids, document_uses=lowered.document_uses,
-                )
-                continue
-            self.requests[encoded.id] = encoded.data
-            self.documents.update(encoded.documents)
-            run = PlannedRun(
-                run_key,
-                kind,
-                row.label,
-                coordinates,
-                encoded.id,
-                MappingProxyType({role.name: chosen} if chosen else {}),
-                MappingProxyType(omissions),
-                template.requires,
-                admission_problem=lowered.admission_problem,
-                document_ids=lowered.document_ids,
-                document_uses=lowered.document_uses,
-            )
-            self.rows[run_key] = run
-            result.append(run)
+            lowered = self.lower_row(template, run_key, row, kind, inputs, basis, definition)
+            if (run := self.record_run(run_key, lowered, inputs, omissions, template.requires)) is not None:
+                result.append(run)
         return tuple(result)
+
+    def select_definition(
+        self, template: StepComposition, key: RunKey, row: ExpandedRow,
+        inputs: Mapping[str, PlannedInput],
+    ) -> SelectedRunDefinition | None:
+        if key.row not in self.wanted_sources.get((key.variant, key.step), ()):
+            return None
+        definition = self.project_definition(template, key, row, inputs)
+        if definition is not None:
+            self.selected_definitions[key] = (
+                replace(definition, payload=deepcopy(definition.payload))
+                if self.previous is not None else definition
+            )
+        return definition
+
+    def record_run(
+        self, key: RunKey, lowered: _LoweredRow, inputs: Mapping[str, PlannedInput],
+        omissions: Mapping[str, str], requires: tuple[str, ...],
+    ) -> PlannedRun | None:
+        row = self.rows[key]
+        self.diagnostics.extend(
+            replace(problem, document=lowered.document_ids.get("payload"))
+            if row.kind == "report" and problem.document is None else problem
+            for problem in lowered.diagnostics
+        )
+        if (encoded := lowered.request) is None:
+            self.rows[key] = replace(
+                row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
+            )
+            return None
+        self.requests[encoded.id] = encoded.data
+        self.documents.update(encoded.documents)
+        run = PlannedRun(
+            key, row.kind, row.label, row.coordinates, encoded.id,
+            MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
+            admission_problem=lowered.admission_problem,
+            document_ids=lowered.document_ids,
+            document_uses=lowered.document_uses,
+        )
+        self.rows[key] = run
+        return run
+
+    def compile_report_step(
+        self, variant: str, name: str, template: StepComposition, active: tuple[tuple[str, str], ...],
+    ) -> tuple[PlannedRun, ...]:
+        selected = {}
+        for name_of_role in sorted(template.inputs):
+            role = _Role(name_of_role, True, "analyze", PLOTLY_FIGURE_ROLE)
+            result = self.select_input(variant, name, template, role, active)
+            if isinstance(result, ProjectDiagnostic):
+                self.diagnostics.append(replace(result, variant=variant))
+                return ()
+            members, _, subset = result
+            selected[role.name] = members
+            if subset is not None:
+                self.subsets[variant, name, role.name] = subset
+        rows = self.expand_rows(variant, name, template, selected)
+        if isinstance(rows, ProjectDiagnostic):
+            self.diagnostics.append(rows)
+            return ()
+        by_role = {
+            role: {binding.member.key: binding for binding, _ in members}
+            for role, members in selected.items()
+        }
+        basis = template.row_basis if self.previous is not None else None
+        runs = []
+        for row in rows:
+            key = RunKey(variant, name, row.id)
+            coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
+            self.rows[key] = PlannedRow(key, "report", row.label, coordinates)
+            inputs = {}
+            for role, candidates in by_role.items():
+                if (member := row.input_keys.get(role)) is not None:
+                    inputs[role] = candidates[member]
+                elif len(candidates) == 1:
+                    inputs[role] = next(iter(candidates.values()))
+                else:
+                    self.diagnostics.append(ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE, f"inputs.{role}",
+                        f"figure role requires one row; candidates are {', '.join(candidates) or 'none'}",
+                        name, row=row.id, variant=variant,
+                    ))
+                    break
+            else:
+                definition = self.select_definition(template, key, row, inputs)
+                lowered = self.lower_row(template, key, row, "report", inputs, basis, definition)
+                if (run := self.record_run(key, lowered, inputs, {}, template.requires)) is not None:
+                    runs.append(run)
+        return tuple(runs)
 
     def lower_analyze_row(
         self,
@@ -882,14 +985,14 @@ class _Compiler:
         row: ExpandedRow,
         source: PlannedInput,
         definition: SelectedRunDefinition | None,
-    ) -> None:
+    ) -> PlannedAnalyzeRun | None:
         from feedbax.contracts.project_analyze import lower_analyze
 
         assert self.operations is not None
         resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
         if isinstance(resolved, ProjectDiagnostic):
             self.diagnostics.append(replace(resolved, variant=key.variant))
-            return
+            return None
         producer = source.member.reference
         assert isinstance(producer, ProductRef)
         evaluation = request_identity.decode_request(
@@ -908,12 +1011,14 @@ class _Compiler:
             self.requests[request.id] = request.data
             self.documents.update(request.documents)
         original = self.rows[key]
-        self.rows[key] = PlannedAnalyzeRun(
+        run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
             MappingProxyType(elements), template.requires,
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
+        self.rows[key] = run
+        return run
 
     def select_input(
         self,
@@ -923,7 +1028,7 @@ class _Compiler:
         role: _Role,
         active: tuple[tuple[str, str], ...],
     ) -> (
-        tuple[tuple[tuple[PlannedInput, PlannedRun], ...], dict[str, str], PlannedSubset | None]
+        tuple[_Members, dict[str, str], PlannedSubset | None]
         | ProjectDiagnostic
     ):
         reference = template.inputs.get(role.name)
@@ -941,6 +1046,23 @@ class _Compiler:
                 "a same-project step or row reference is required",
                 name,
             )
+        element_input = role.producer_kind == "analyze"
+        if element_input:
+            if reference.element is None or reference.product != role.product_role:
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, path,
+                    f"declare a render element and its {role.product_role!r} product", name,
+                )
+        elif reference.element is not None or reference.product is not None:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path,
+                "this input selects a step row without an element or product", name,
+            )
+        if reference.checkpoint is not None and role.product_role != "checkpoint":
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
+                "this product does not take a Train checkpoint selector", name,
+            )
         variants = (
             (variant,)
             if reference.variants is None
@@ -955,7 +1077,7 @@ class _Compiler:
                 "variants must name a nonempty set of distinct variants",
                 name,
             )
-        runs: tuple[PlannedRun, ...] = ()
+        runs: tuple[_CompiledRun, ...] = ()
         failures: list[ProjectDiagnostic] = []
         for source_variant in variants:
             target = source_variant, reference.step
@@ -974,6 +1096,7 @@ class _Compiler:
             runs += self.step(*target, active)
             failures.extend(
                 problem for problem in self.diagnostics if (problem.variant, problem.step) == target
+                and (not element_input or problem.element is None)
             )
         terms = reference.where
         subset_document = None
@@ -1036,19 +1159,27 @@ class _Compiler:
                 f"no plannable rows for {reference.step!r}",
                 name,
             )
-        if reference.checkpoint is not None and role.product_role != "checkpoint":
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
-                "a dataset input does not take a Train checkpoint selector", name,
-            )
         selector = _checkpoint(reference.checkpoint)
         if isinstance(selector, BatchSetMember) and role.name != "subject":
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
                 "finite checkpoint sets require an Evaluate subject", name,
             )
-        members = tuple(
-            (
+        members = []
+        for run in runs:
+            if isinstance(run, PlannedAnalyzeRun):
+                assert reference.element is not None
+                element = run.elements.get(reference.element)
+                if element is None or not isinstance(element.outputs.get(role.product_role), PlotlyFigurePort):
+                    address = f"{run.key.variant}/{run.key.step}/{run.key.row}/{reference.element}"
+                    return ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE, f"{path}.element",
+                        f"{address} has no planned {role.product_role!r} product", name,
+                    )
+                request = element.request_id
+            else:
+                request = run.request_id
+            members.append((
                 PlannedInput(
                     run.key,
                     InputMember(
@@ -1056,16 +1187,15 @@ class _Compiler:
                         if reference.variants is None
                         else f"{run.key.variant}/{run.key.row}",
                         reference=ProductRef(
-                            request_id=run.request_id,
+                            request_id=request,
                             role=role.product_role,
                             select=selector,
                         ),
                     ),
+                    producer_element=reference.element,
                 ),
                 run,
-            )
-            for run in runs
-        )
+            ))
         subset = (
             PlannedSubset(
                 deepcopy(terms), candidate_count, tuple(run.key for run in runs), subset_document
@@ -1073,7 +1203,7 @@ class _Compiler:
             if terms is not None
             else None
         )
-        return members, {}, subset
+        return tuple(members), {}, subset
 
 
 def compile_project(
@@ -1098,7 +1228,23 @@ def compile_project(
 
 def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[ElementKey, ElementChange]:
     """Compare element requests and locate the authored edit or changed input."""
-    old, new = before.elements, after.elements
+    return _diff_requests(before, after, before.elements, after.elements)
+
+
+def diff_plan_requests(
+    before: ProjectPlan, after: ProjectPlan,
+) -> Mapping[RunKey | ElementKey, ElementChange]:
+    """Compare all authored request addresses in two plans."""
+    def addresses(plan: ProjectPlan) -> dict[RunKey | ElementKey, PlannedRun | PlannedElement]:
+        return {run.key: run for run in plan.runs} | dict(plan.elements)
+
+    return _diff_requests(before, after, addresses(before), addresses(after))
+
+
+def _diff_requests[K: RunKey | ElementKey](
+    before: ProjectPlan, after: ProjectPlan,
+    old: Mapping[K, PlannedRun | PlannedElement], new: Mapping[K, PlannedRun | PlannedElement],
+) -> Mapping[K, ElementChange]:
     changes = {}
     for key in dict.fromkeys((*old, *new)):
         left, right = old.get(key), new.get(key)
@@ -1109,18 +1255,21 @@ def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[El
         elif left.request_id == right.request_id:
             changes[key] = ElementChange("unchanged")
         elif left.kind != right.kind:
-            changes[key] = ElementChange("changed", right.path)
+            path = right.path if isinstance(right, PlannedElement) else "payload"
+            changes[key] = ElementChange("changed", path)
         else:
-            changes[key] = _element_change(before, after, left, right)
+            changes[key] = _request_change(before, after, left, right)
     return MappingProxyType(changes)
 
 
-def _element_change(
-    before: ProjectPlan, after: ProjectPlan, left: PlannedElement, right: PlannedElement,
+def _request_change(
+    before: ProjectPlan, after: ProjectPlan,
+    left: PlannedRun | PlannedElement, right: PlannedRun | PlannedElement,
 ) -> ElementChange:
     old = request_identity.decode_request(before.requests[left.request_id], before.documents.__getitem__)
     new = request_identity.decode_request(after.requests[right.request_id], after.documents.__getitem__)
     change = first_request_change(old, new)
+    path = right.path if isinstance(right, PlannedElement) else "payload"
     if change.path == "inputs":
         role = next(
             role for role in sorted(old.inputs.keys() | new.inputs.keys())
@@ -1132,10 +1281,13 @@ def _element_change(
             if later is not None and earlier is not None and later.element == earlier.element
             else None
         )
-        return ElementChange("changed", f"{right.path}.inputs.{role}", cause)
+        input_path = f"{path}.inputs.{role}" if isinstance(right, PlannedElement) else f"inputs.{role}"
+        return ElementChange("changed", input_path, cause)
     relative = change.path.removeprefix("payload.")
     if relative == "analysis_type":
         relative = "operation"
     elif right.kind == "render" and relative.startswith("document."):
         relative = "figure." + relative.removeprefix("document.")
-    return ElementChange("changed", f"{right.path}.{relative}")
+    elif right.kind == "report":
+        relative = relative.removeprefix("document.")
+    return ElementChange("changed", f"{path}.{relative}")

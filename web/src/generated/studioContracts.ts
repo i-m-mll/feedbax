@@ -2593,6 +2593,8 @@ export type StepReference = {
   "row"?: string | null;
   "variants"?: "all" | Array<string> | null;
   "checkpoint"?: CheckpointRule | null;
+  "element"?: string | null;
+  "product"?: string | null;
 };
 
 export type StoreSubset = {
@@ -7332,6 +7334,8 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
     "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepReference>;
 
