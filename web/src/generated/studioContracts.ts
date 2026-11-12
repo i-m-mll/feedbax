@@ -118,6 +118,27 @@ export interface StudioJobSubmissionRequest {
   policy?: "out_of_date" | "all";
 }
 
+export interface StudioSavedTrainAttempt {
+  job_id: string;
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  reason: string | null;
+  progress: JobProgress | null;
+  successful_receipt: JobReceipt | null;
+}
+
+export interface StudioSavedTrainKey {
+  variant: string;
+  step: string;
+  row: string;
+}
+
+export interface StudioSavedTrainRow {
+  key: StudioSavedTrainKey;
+  label: string;
+  request_id: string;
+  attempts: StudioSavedTrainAttempt[];
+}
+
 export interface StudioSavedTrainRunRequest {
   revision: string;
   run_keys: StudioSavedTrainKey[];
@@ -2976,6 +2997,39 @@ export const StudioJobSubmissionRequestSchema: z.ZodType<StudioJobSubmissionRequ
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmissionRequest>;
+
+export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "reason": z.string().nullable(),
+      "progress": JobProgressSchema.nullable(),
+      "successful_receipt": JobReceiptSchema.nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainAttempt>;
+
+export const StudioSavedTrainKeySchema: z.ZodType<StudioSavedTrainKey> = z.lazy(() =>
+  z
+    .object({
+      "variant": z.string(),
+      "step": z.string(),
+      "row": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainKey>;
+
+export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "label": z.string(),
+      "request_id": z.string(),
+      "attempts": z.array(StudioSavedTrainAttemptSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainRow>;
 
 export const StudioSavedTrainRunRequestSchema: z.ZodType<StudioSavedTrainRunRequest> = z.lazy(() =>
   z
@@ -7189,6 +7243,9 @@ export const contractSchemas = {
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
   StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
+  StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
+  StudioSavedTrainKey: StudioSavedTrainKeySchema,
+  StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
   StudioLocalSession: StudioLocalSessionSchema,
@@ -7284,6 +7341,9 @@ export interface ContractTypeMap {
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;
   StudioJobSubmissionRequest: StudioJobSubmissionRequest;
+  StudioSavedTrainAttempt: StudioSavedTrainAttempt;
+  StudioSavedTrainKey: StudioSavedTrainKey;
+  StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedTrainRuns: StudioSavedTrainRuns;
   StudioLocalSession: StudioLocalSession;

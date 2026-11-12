@@ -80,6 +80,7 @@ test('Mounted saved Train runs the selected canonical row through Jobs', async (
     run_key: '["default","successor","default"]', disposition: 'rejected', job_id: null,
     reason: '/inputs: canonical Studio Train admission requires independent requests',
   })]);
+  await expect(page.getByText(rejected.items[0].reason!, { exact: true })).toBeVisible();
   const evidence = await fixture('observe', String(info.config.metadata.home), id, snapshot.revision, job);
   expect(evidence).toMatchObject({
     request: original.request_id, attempt: job, delivery: 1,
@@ -103,6 +104,7 @@ test('Mounted saved Train runs the selected canonical row through Jobs', async (
   const conflict = await stale;
   expect(conflict.status()).toBe(409);
   expect(await conflict.json()).toMatchObject({ detail: { resource: 'project', current: edited!.revision } });
+  await expect(page.getByText('Project changed before this edit.', { exact: true }).first()).toBeVisible();
   const jobs = await (await request.get(`/api/jobs?project=${id}`)).json() as StudioJobSnapshot;
   expect(jobs.jobs.map(({ job_id }) => job_id)).toEqual([job]);
   console.info('Mounted canonical Train', JSON.stringify({ ...evidence, refused_revision: edited!.revision }));
