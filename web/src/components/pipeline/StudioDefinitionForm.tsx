@@ -2,7 +2,7 @@ import { useId } from "react";
 import { Circle, CircleDot, Plus } from "lucide-react";
 import { studioAccessibleName, studioName } from "@/components/activity/studioVocabulary";
 import type { JsonPrimitive } from "@/generated/studioContracts";
-import type { PipelineSelection } from "@/features/pipeline/selection";
+import { extendsSelection, type PipelineSelection } from "@/features/pipeline/selection";
 
 export type StudioFieldControl =
   | { readonly kind: "number"; readonly min?: number; readonly max?: number; readonly step?: number }
@@ -38,6 +38,7 @@ export type FieldEdit =
   | { readonly kind: "set"; readonly value: JsonPrimitive }
   | { readonly kind: "toSweep"; readonly value: JsonPrimitive }
   | { readonly kind: "setSweepValue"; readonly sweepId: string; readonly valueId: string; readonly value: JsonPrimitive }
+  | { readonly kind: "nameSweepValue"; readonly sweepId: string; readonly valueId: string; readonly label: string | null }
   | { readonly kind: "addValue"; readonly sweepId: string }
   | { readonly kind: "toField"; readonly sweepId: string; readonly keepValueId: string }
   | { readonly kind: "toList"; readonly sweepId: string };
@@ -52,7 +53,7 @@ interface FormProps {
   fields: readonly StudioDefinitionField[];
   selection: PipelineSelection;
   onEdit: (command: StudioFieldCommand) => void;
-  onChooseSweepValue?: (sweepId: string, valueId: string) => void;
+  onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
 }
 
 const controlClass = "min-w-0 rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-60";
@@ -168,12 +169,23 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
             return (
               <li key={value.id} data-selected={value.selected || undefined} className="flex flex-wrap items-center gap-1 rounded p-1 data-[selected=true]:bg-violet-100">
                 {onChooseSweepValue && (
-                  <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)} onClick={() => onChooseSweepValue(sweep.id, value.id)} className="rounded p-0.5">
+                  <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)} onClick={(event) => onChooseSweepValue(sweep.id, value.id, extendsSelection(event))} className="rounded p-0.5">
                     <CircleDot aria-hidden="true" size={15} />
                   </button>
                 )}
                 <ValueSource value={value} />
-                <ScalarEditor name={name} value={value} control={field.control} onChange={can("setSweepValue") ? (next) => edit({ kind: "setSweepValue", sweepId: sweep.id, valueId: value.id, value: next }) : undefined} />
+                {can("nameSweepValue") ? (
+                  <input key={value.label ?? ""} type="text" className={`${controlClass} w-28`}
+                    aria-label={studioAccessibleName("name", name)} placeholder={scalarText(value.value)}
+                    defaultValue={value.label ?? ""}
+                    onBlur={({ currentTarget }) => {
+                      const next = currentTarget.value.trim() || null;
+                      if (next !== (value.label ?? null)) edit({ kind: "nameSweepValue", sweepId: sweep.id, valueId: value.id, label: next });
+                    }}
+                    onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+                  />
+                ) : value.label && <span>{value.label}</span>}
+                <ScalarEditor name={name} value={{ ...value, label: undefined }} control={field.control} onChange={can("setSweepValue") ? (next) => edit({ kind: "setSweepValue", sweepId: sweep.id, valueId: value.id, value: next }) : undefined} />
                 {can("toField") && (
                   <button type="button" className={controlClass} aria-label={studioAccessibleName("toField", name)} onClick={() => edit({ kind: "toField", sweepId: sweep.id, keepValueId: value.id })}>
                     {studioName("toField")}

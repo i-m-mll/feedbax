@@ -59,6 +59,7 @@ export interface StudioPipelineMapProps {
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   onNewStep?: (source?: PipelineMapStepSource) => void;
   onNewSweep?: (stepId: string) => void;
+  canNewSweep?: (stepId: string) => boolean;
   onProblems?: (stepId: string) => void;
 }
 
@@ -518,6 +519,7 @@ export function StudioPipelineMap({
   onPresentationChange,
   onNewStep,
   onNewSweep,
+  canNewSweep,
   onProblems,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
@@ -580,7 +582,7 @@ export function StudioPipelineMap({
                     applySelection={applySelection}
                     onPresentationChange={onPresentationChange}
                     onNewStep={onNewStep}
-                    onNewSweep={onNewSweep}
+                    onNewSweep={!canNewSweep || canNewSweep(step.id) ? onNewSweep : undefined}
                     onProblems={onProblems}
                   />
                 ))}

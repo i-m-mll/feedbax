@@ -12,7 +12,7 @@ import { StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource 
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import { selectRun, selectStep, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
+import { selectRun, selectStep, selectSweepGroup, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import {
   projectWindowSlotView, projectWindowViews, showProjectWindowView, useProjectWindowState, type ProjectWindowView,
@@ -20,6 +20,7 @@ import {
 import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
+import { directTrainStep } from './authoredEdits';
 import { useManagedProjectDetails } from './managedProjectDetails';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
@@ -121,6 +122,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState<'activity' | 'problems' | 'commands' | null>(null);
   const [problemStep, setProblemStep] = useState<string>();
+  const [sweepStep, setSweepStep] = useState<string>();
   const submission = useRef<{ intent: string; token: string }>();
   const projection = useQuery({
     queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor],
@@ -135,10 +137,28 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const plan = useMemo(() => projectWindowPlan(saved.project, data, variant), [saved.project, data, variant]);
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = selection.pipeline;
+  const latestState = useRef(state);
+  latestState.current = state;
+  const canAuthor = (id: string) => selection.variantId === null && directTrainStep(saved.project, id) !== null;
+  const authoring = step && canAuthor(step.id) && state.selection ? {
+    editor, stepId: step.id, step, selection: state.selection,
+    onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
+      selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
+    },
+    onRemoveSweep: (sweepId: string) => {
+      const current = latestState.current;
+      const target = current.selection;
+      if (!target || target.kind === 'steps' || target.stepId !== step.id) return;
+      const terms = target.kind === 'values' ? target.terms.filter((term) => term.sweepId !== sweepId) : [];
+      if (target.kind === 'values' && terms.length === target.terms.length) return;
+      selection.select(terms.length ? selectSweepGroup(step.id, terms) : selectStep(current, step.id));
+    },
+  } : null;
   const availableViews = step ? viewsByKind[step.kind] : emptyViews;
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
-  const detailInputs = { editor, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, variantId: selection.variantId };
+  const detailInputs = { editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, variantId: selection.variantId,
+    onChooseSweepValue: authoring?.onChooseSweepValue, onRemoveSweep: authoring?.onRemoveSweep };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });
   const selected = step ? selectedRuns(step, state.selection) : [];
@@ -266,7 +286,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const mapProps = {
     plan, state, onSelectionChange: selection.select, onProblems: openProblems,
     onNewStep: onNewStep && ((source?: PipelineMapStepSource) => onNewStep(source, commandScope)),
-    onNewSweep: onNewSweep && ((stepId: string) => onNewSweep(stepId, commandScope)),
+    canNewSweep: (stepId: string) => !!onNewSweep || (ready && canAuthor(stepId)),
+    onNewSweep: (stepId: string) => {
+      if (onNewSweep) onNewSweep(stepId, commandScope);
+      else setSweepStep(stepId);
+    },
   };
   const focusView = windowState.focusedSlot === 'secondary' ? secondaryView : primaryView;
   const focusDetails = windowState.focusedSlot === 'secondary' ? secondary : primary;
@@ -286,6 +310,17 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>}
       commandPalette={<>
+        {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)}
+          panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
+          <button type="button" className={`${control} justify-self-end`} autoFocus onClick={() => setSweepStep(undefined)}>{studioName('close')}</button>
+          <StudioTrainAuthoringForm editor={editor} stepId={sweepStep} picker={() => {
+            const current = latestState.current;
+            if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
+              selection.select(selectStep(current, sweepStep));
+            }
+            setSweepStep(undefined);
+          }} />
+        </Dialog>}
         <button className={control} type="button" aria-label={studioName('commandPalette')} {...appTip(`${studioName('commandPalette')} · ⌘K`)}
           onClick={() => setPanel('commands')}><Command aria-hidden="true" size={18} /></button>
         {panel === 'commands' && <Dialog ariaLabel={studioName('commandPalette')} onClose={() => setPanel(null)}
@@ -315,8 +350,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
         if (view === 'model' || view === 'task' || view === 'scene') {
-          const header = view !== 'scene' && step?.kind === 'train' && wholeStep
-            ? <StudioTrainAuthoringForm editor={editor} stepId={step.id} view={view} />
+          const header = view !== 'scene' && authoring && wholeStep
+            ? <StudioTrainAuthoringForm {...authoring} view={view} />
             : details[view].header;
           return { ...details[view], header, body: <StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary> };
         }
@@ -324,11 +359,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         if (view === 'runs') return { body: <StudioErrorBoundary region={studioName('runs')}>
           <StudioRuns plan={plan} step={step} state={state} onSelectionChange={selection.select}
             region={step.kind === 'train' ? { kind: 'result', missing: [] } : { kind: 'empty' }}
-            definition={step.kind === 'train' && wholeStep && <StudioTrainAuthoringForm editor={editor} stepId={step.id} />}
+            definition={authoring && <StudioTrainAuthoringForm {...authoring} />}
             commands={step.kind === 'train' ? [{ name: 'run', enabled: ready && !busy, perform: run }] : undefined} />
         </StudioErrorBoundary> };
-        if ((view === 'training' || view === 'objective') && step.kind === 'train' && wholeStep) {
-          return { body: <StudioTrainAuthoringForm editor={editor} stepId={step.id} view={view} /> };
+        if ((view === 'training' || view === 'objective') && authoring) {
+          return { body: <StudioTrainAuthoringForm {...authoring} view={view} /> };
         }
         if (view === 'results' && row && ready) return { body: <div className="p-3">
           {attempt && <StudioTrainResults project={saved.project_id} rows={data!.rows} row={row} attempt={attempt} />}

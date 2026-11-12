@@ -11,13 +11,14 @@ import type { PlanarScenePose } from '@/components/scene/planarModel';
 import { fittedCamera, type SceneCamera, type SceneOverlay } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
-import type { RunAddress } from '@/features/pipeline/planView';
+import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
 import {
   DocumentReferenceSchema, GraphSpecSchema, TaskSpecSchema,
   type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type TaskSpec, type WireSpec,
 } from '@/generated/studioContracts';
-import { authoredPointer, type AuthoredProject } from './authoredEdits';
+import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
+import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
 type DetailName = 'model' | 'task' | 'scene';
@@ -45,13 +46,9 @@ interface DetailInputs {
   readonly variantId: string | null;
   readonly focus: RunAddress | null;
   readonly activeView?: string;
-}
-
-function directStep(project: AuthoredProject, stepId: string) {
-  const step = project.steps?.[stepId];
-  if (step?.kind !== 'train' || !('inline' in step.base) || project.sweep || step.sweep ||
-      step.deltas?.length || Object.keys(step.inputs ?? {}).length) return null;
-  return step.base.inline;
+  readonly step?: PlanStepView;
+  readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
+  readonly onRemoveSweep?: (sweepId: string) => void;
 }
 
 function mentionsDocument(value: unknown, id: string): boolean {
@@ -62,7 +59,7 @@ function mentionsDocument(value: unknown, id: string): boolean {
 }
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
-  const inline = directStep(project, stepId);
+  const inline = directTrainStep(project, stepId);
   if (!inline) return null;
   const raw = inline[field];
   if (raw == null) return null;
@@ -299,7 +296,8 @@ function useSceneDetail({ editor, activeView, focus }: DetailInputs, definition:
 export function useManagedProjectDetails(input: DetailInputs): Record<DetailName, ManagedProjectDetail> {
   const { editor, stepId, selection, variantId, focus, activeView } = input;
   const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
-  const scope = JSON.stringify([saved.project_id, stepId, variantId, selection, focus]);
+  const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
+  const scope = JSON.stringify([subjectScope, selection, focus]);
   const definitions = useMemo(() => {
     const train = stepId && variantId === null;
     return {
@@ -316,14 +314,14 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     return result.success ? result.data : null;
   }, [definitions.task]);
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
-  const modelSelection = useElementSelection(JSON.stringify([scope, definitions.model?.id]));
-  const taskSelection = useElementSelection(JSON.stringify([scope, definitions.task?.id]));
+  const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]));
+  const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]));
   const change = useDefinitionEdit(editor, scope, stepId, selection);
   const components = Object.entries(graph?.nodes ?? {});
   const component = components.find(([id]) => modelSelection.selectedId === `component:${id}`);
   const wire = graph?.wires?.find((_, index) => modelSelection.selectedId === `wire:${index}`);
   const registry = useQuery({ queryKey: ['components'], queryFn: fetchComponents, staleTime: 5 * 60 * 1000,
-    enabled: canEdit && !!component && !definitions.model?.shared && activeView === 'model' });
+    enabled: !!component && !definitions.model?.shared && activeView === 'model' });
   const model = definitions.model;
   const positions = model?.id ? saved.presentation?.documents?.[model.id]?.positions : undefined;
   const scene = useSceneDetail(input, model, graph, JSON.stringify([scope, model?.id]), saved.project_id, saved.revision);
@@ -333,12 +331,18 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       (component.revision == null || item.revision === component.revision));
     const schemas = metadata?.param_schema ?? [];
     const issue = change.issue('graph');
+    const inline = stepId && !definition.id && !definition.shared;
+    const raw = component.params ?? {};
+    const params = inline ? Object.fromEntries(Object.entries(raw).filter(([name, value]) =>
+      !(typeof value === 'number' && schemas.some((item) => item.name === name && (item.type === 'int' || item.type === 'float'))))) : raw;
     return <section key={id} aria-label={studioName('details')} className="space-y-2 p-2">
       <h3 className="font-medium">{id}</h3>
       <p className="text-sm">{component.type}</p>
       {definition.shared && <DetailReason reason="definitionReadOnly" name="model" />}
       {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
-      <ParameterDetails params={component.params ?? {}} definition={definition} selection={selected} schemas={schemas}
+      {inline && <StudioTrainAuthoringForm editor={editor} stepId={stepId} component={id}
+        step={input.step} selection={selected} onChooseSweepValue={input.onChooseSweepValue} onRemoveSweep={input.onRemoveSweep} />}
+      <ParameterDetails params={params} definition={definition} selection={selected} schemas={schemas}
         onEdit={canEdit && !definition.shared ? (field, value) => change.edit('graph', definition, field, ['nodes', id, 'params', field], value) : undefined} />
       {issue && <p role="alert">{issue}</p>}
     </section>;

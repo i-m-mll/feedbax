@@ -3,16 +3,26 @@ import { apiErrorMessage } from '@/api/request';
 import { readStudioTrainAuthoring } from '@/api/studioAuthoring';
 import {
   StudioDefinitionForm,
+  type FieldEdit,
   type StudioDefinitionField,
   type StudioFieldCommand,
 } from '@/components/pipeline/StudioDefinitionForm';
-import type { AuthoredFileAddress, StudioTrainAuthoring } from '@/generated/studioContracts';
-import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
+import { StudioSweepPicker } from '@/components/pipeline/StudioSweepOverview';
+import type { PlanStepView } from '@/features/pipeline/planView';
+import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
+import type { AuthoredFileAddress, StudioTrainAuthoring, StudioTrainAuthoringRequest } from '@/generated/studioContracts';
+import { authoredPointer, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 
 interface Props {
   readonly editor: ProjectEditController;
   readonly stepId: string;
+  readonly selection?: PipelineSelection;
+  readonly step?: PlanStepView;
+  readonly component?: string;
+  readonly picker?: () => void;
+  readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
+  readonly onRemoveSweep?: (sweepId: string) => void;
   readonly view?: 'model' | 'task' | 'objective' | 'training';
 }
 
@@ -23,18 +33,60 @@ const viewPrefixes = {
   training: ['/training_config', '/method_ref', '/method_payload'],
 } as const;
 
-function formFields(projection: StudioTrainAuthoring, view: Props['view']): StudioDefinitionField[] {
-  return projection.fields.filter(({ id }) => !view || viewPrefixes[view].some(
-    (path) => id === path || id.startsWith(`${path}/`),
-  )).map(({ id, label, value, source, control }) => ({
-    id,
-    label,
-    control: control?.kind === 'number'
-      ? { kind: 'number', min: control.min ?? undefined, max: control.max ?? undefined, step: control.step ?? undefined }
-      : control ?? undefined,
-    resolved: [{ id, value, source: source?.name }],
-    actions: control ? ['set'] : [],
-  }));
+function formFields(projection: StudioTrainAuthoring, { view, component, step, selection, picker }: Props): StudioDefinitionField[] {
+  const componentPrefix = component ? authoredPointer(['graph', 'nodes', component, 'params']) : '/graph/nodes';
+  const selected = step && selection?.kind !== 'steps' ? selectedRuns(step, selection ?? null) : [];
+  return projection.fields.filter(({ id, sweep }) => {
+    if (component) return id.startsWith(`${componentPrefix}/`);
+    if (id.startsWith(`${componentPrefix}/`)) return Boolean(picker || (!view && sweep));
+    return !view || viewPrefixes[view].some((path) => id === path || id.startsWith(`${path}/`));
+  }).map(({ id, label, value, source, control, sweep, can_sweep }) => {
+    const node = !component && id.startsWith(`${componentPrefix}/`) ? id.split('/')[3].replace(/~1/g, '/').replace(/~0/g, '~') : null;
+    const actions: FieldEdit['kind'][] = control && !sweep && (!selection || selection.kind === 'steps') ? ['set'] : [];
+    if (can_sweep && (!selection || selection.kind === 'steps')) actions.push('toSweep');
+    let projected: StudioDefinitionField['sweep'];
+    if (sweep?.kind === 'list') {
+      if (sweep.editable) actions.push('setSweepValue', 'nameSweepValue', 'addValue', 'toField');
+      projected = { kind: 'list', id: sweep.id, label, values: sweep.values.map((item) => ({
+        id: item.id, label: item.label ?? undefined, value: item.value,
+        source: sweep.id, selected: selected.some((run) => run.values[sweep.id] === item.id),
+      })) };
+    } else if (sweep?.kind === 'range') {
+      if (sweep.can_list) actions.push('toList');
+      projected = { kind: 'range', id: sweep.id, label, first: sweep.rule.start, last: sweep.rule.stop,
+        count: sweep.rule.count, scale: sweep.rule.scale === 'log' ? 'logarithmic' : 'linear' };
+    } else if (sweep?.kind === 'sampler') {
+      if (sweep.can_list) actions.push('toList');
+      projected = { kind: 'sampler', id: sweep.id, label, ...sweep.rule };
+    }
+    return {
+      id, label: node ? `${node} · ${label}` : label, actions, sweep: projected,
+      control: control?.kind === 'number'
+        ? { kind: 'number', min: control.min ?? undefined, max: control.max ?? undefined, step: control.step ?? undefined }
+        : control ?? undefined,
+      resolved: [{ id, value, source: source?.name }],
+    };
+  });
+}
+
+function changeRequest(field: string, edit: FieldEdit): StudioTrainAuthoringRequest['change'] {
+  switch (edit.kind) {
+    case 'set':
+      return typeof edit.value === 'number' || typeof edit.value === 'string' ? { field, value: edit.value } : undefined;
+    case 'toSweep':
+      return { field, edit: { kind: edit.kind } };
+    case 'addValue':
+    case 'toList':
+      return { field, edit: { kind: edit.kind, sweep_id: edit.sweepId } };
+    case 'toField':
+      return { field, edit: { kind: edit.kind, sweep_id: edit.sweepId, value_id: edit.keepValueId } };
+    case 'nameSweepValue':
+      return { field, edit: { kind: edit.kind, sweep_id: edit.sweepId, value_id: edit.valueId, label: edit.label } };
+    case 'setSweepValue':
+      return typeof edit.value === 'number'
+        ? { field, edit: { kind: edit.kind, sweep_id: edit.sweepId, value_id: edit.valueId, value: edit.value } }
+        : undefined;
+  }
 }
 
 function validateRecipe(
@@ -57,7 +109,9 @@ function validateRecipe(
   };
 }
 
-export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
+export function StudioTrainAuthoringForm(props: Props) {
+  const { editor, stepId, picker, onChooseSweepValue, onRemoveSweep } = props;
+  const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
   const [projection, setProjection] = useState<StudioTrainAuthoring | null>(null);
@@ -66,8 +120,8 @@ export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
   const [editing, setEditing] = useState(false);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
-  const current = projection?.project_id === projectId && projection.step_id === stepId &&
-    projection.revision === revision ? projection : null;
+  const shown = projection?.project_id === projectId && projection.step_id === stepId ? projection : null;
+  const current = shown?.revision === revision ? shown : null;
 
   useEffect(() => {
     const lifetime = new AbortController();
@@ -90,15 +144,15 @@ export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
 
   async function apply({ fieldId, edit }: StudioFieldCommand) {
     const lifetime = active.current;
+    const change = changeRequest(fieldId, edit);
     if (!current || !lifetime || lifetime.signal.aborted || pending || outside ||
-        command.current === lifetime || edit.kind !== 'set' ||
-        (typeof edit.value !== 'number' && typeof edit.value !== 'string')) return;
+        command.current === lifetime || !change) return;
     command.current = lifetime;
     setEditing(true);
     setEditError(null);
     try {
       const recipe = await readStudioTrainAuthoring(
-        projectId, stepId, { revision, change: { field: fieldId, value: edit.value } }, lifetime.signal,
+        projectId, stepId, { revision, change }, lifetime.signal,
       );
       lifetime.signal.throwIfAborted();
       const latest = editor.getSnapshot();
@@ -107,9 +161,12 @@ export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
       }
       const field = recipe.fields.find(({ id }) => id === fieldId);
       if (!field) throw new Error('The Train edit has no matching field.');
+      if (!recipe.patches.length) return;
       const address = { kind: 'step', id: stepId } as const;
       editor.edit(address, field.label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
       await editor.flush();
+      if (edit.kind === 'toField') onRemoveSweep?.(edit.sweepId);
+      picker?.();
     } catch (error) {
       if (!lifetime.signal.aborted) setEditError(apiErrorMessage(error));
     } finally {
@@ -119,16 +176,18 @@ export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
   }
 
   const error = editError ?? loadError ?? (editorError ? apiErrorMessage(editorError) : null);
+  const fields = shown ? formFields(shown, picker ? { ...props, component: undefined, selection: undefined } : props) : [];
   return (
     <>
       {error && <p role="alert">{error}</p>}
-      {current
+      {shown
         ? (
-          <fieldset disabled={editing || pending > 0 || outside !== null}>
-            <StudioDefinitionForm
-              fields={formFields(current, view)} selection={{ kind: 'steps', stepIds: [stepId] }}
-              onEdit={(change) => { void apply(change); }}
-            />
+          <fieldset disabled={!current || editing || pending > 0 || outside !== null}>
+            {picker ? <StudioSweepPicker fields={fields} onChoose={(fieldId) => {
+              const value = fields.find(({ id }) => id === fieldId)?.resolved[0]?.value;
+              if (value !== undefined) void apply({ fieldId, selection, edit: { kind: 'toSweep', value } });
+            }} /> : <StudioDefinitionForm fields={fields} selection={selection} onChooseSweepValue={onChooseSweepValue}
+              onEdit={(change) => { void apply(change); }} />}
           </fieldset>
         )
         : !error && <p role="status">Loading Train definition</p>}
