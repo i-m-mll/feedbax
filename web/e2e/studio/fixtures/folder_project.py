@@ -26,13 +26,40 @@ def seed(root: Path) -> None:
         path.write_bytes(data)
 
 
+def inspect_authored_train(root: Path) -> dict:
+    from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.project_plan import compile_project
+    from feedbax.contracts.project_resolution import ProjectDiagnostic, resolve_step, validate_project_documents
+    from feedbax.contracts.training import TaskSpec
+
+    text = load_text_project(root)
+    project = text.project
+    assert not validate_project_documents(project, {
+        "feedbax.spec.graph": GraphSpec.model_validate,
+        "feedbax.spec.task": TaskSpec.model_validate,
+    })
+    step = resolve_step(project, "train")
+    assert not isinstance(step, ProjectDiagnostic), step
+    assert step.payload == {field: project.documents[name].payload for field, name in (
+        ("graph", "model"), ("task", "task"),
+    )}
+    plan = compile_project(project)
+    return {
+        "revision": text.revision,
+        "runs": len(plan.runs),
+        "diagnostics": sorted([problem.code, problem.path] for problem in plan.diagnostics),
+    }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["seed", "read"])
+    parser.add_argument("action", choices=["seed", "read", "inspect-authoring"])
     parser.add_argument("root", type=Path)
     args = parser.parse_args()
     if args.action == "seed":
         seed(args.root)
+    elif args.action == "inspect-authoring":
+        print(json.dumps(inspect_authored_train(args.root)))
     else:
         reopened = load_text_project(args.root)
         model = reopened.project.documents["model"].payload

@@ -3,6 +3,7 @@ import {
   parseContract,
   type ContractTypeMap,
   type StudioPresentationWrite,
+  type StudioProjectCreateFile,
   type StudioProjectPatch,
   type StudioProjectRename,
 } from '@/generated/studioContracts';
@@ -29,7 +30,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioPresentationWrite' | 'StudioProjectRename'>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectCreateFile'>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -52,6 +53,13 @@ export function renameProjectFolder(id: string, body: StudioProjectRename, signa
   const path = `${projectPath(id)}/rename`;
   return readFolder('StudioProjectDocument', id, path, {
     method: 'POST', body: mutationBody('StudioProjectRename', body, path), signal,
+  });
+}
+
+export function createProjectFile(id: string, body: StudioProjectCreateFile, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/files`;
+  return readFolder('StudioProjectDocument', id, path, {
+    method: 'POST', body: mutationBody('StudioProjectCreateFile', body, path), signal,
   });
 }
 

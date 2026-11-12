@@ -210,6 +210,39 @@ def test_open_uses_managed_folder_ids_and_refuses_directory_symlinks(tmp_path):
     assert client.get("/api/projects/external.json/open").status_code == 422
 
 
+def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path):
+    projects = tmp_path / "projects"
+    client = TestClient(create_app(projects_dir=projects))
+    created = client.post("/api/projects").json()["snapshot"]
+    project_id = created["project_id"]
+    url = f"/api/projects/{project_id}/files"
+    train = {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}}
+    response = client.post(url, json={"revision": created["revision"], "file": train})
+    assert response.status_code == 201, response.text
+    step_revision = response.json()["snapshot"]
+    root = projects / project_id
+    step_file = root / "steps/train.json"
+    assert json.loads(step_file.read_bytes()) == train["step"]
+
+    task = {"kind": "document", "id": "task", "document": {
+        "schema": "feedbax.spec.task", "payload": {"type": "SimpleReaches", "params": {"n_steps": 100}},
+    }}
+    rejected = client.post(url, json={"revision": created["revision"], "file": task})
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["current"] == step_revision["revision"]
+    assert not (root / "documents/task.json").exists()
+
+    response = client.post(url, json={"revision": step_revision["revision"], "file": task})
+    assert response.status_code == 201, response.text
+    document = response.json()
+    assert document["snapshot"]["presentation_revision"] == created["presentation_revision"]
+    duplicate = client.post(url, json={"revision": document["snapshot"]["revision"], "file": train})
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "authored_file_exists"
+    assert json.loads(step_file.read_bytes()) == train["step"]
+    assert TestClient(create_app(projects_dir=projects)).get(f"/api/projects/{project_id}/open").json() == document
+
+
 def test_rename_and_patch_from_one_revision_have_one_winner(study):
     root, client = study
     original = _read(client)

@@ -2,6 +2,7 @@ import { ApiRequestError, isHttpConflict } from '@/api/request';
 import type {
   AuthoredFileAddress,
   ProjectValueEdit,
+  StudioProjectCreateFile,
   StudioProjectDocument,
   StudioProjectPatch,
   StudioProjectRename,
@@ -14,7 +15,10 @@ export interface ProjectEditTransport {
   read: (id: string, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   write: (id: string, body: StudioProjectPatch, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
+  create: (id: string, body: StudioProjectCreateFile, signal?: AbortSignal) => Promise<StudioProjectDocument>;
 }
+
+type NamedFileCreation = StudioProjectCreateFile['file'];
 
 interface Gesture {
   readonly address: AuthoredFileAddress;
@@ -83,6 +87,29 @@ function versionsMatch(a: StudioProjectRevision, b: StudioProjectRevision) {
 
 function canRetryOnReconnect(error: unknown) {
   return error instanceof ApiRequestError && (error.kind === 'network' || (error.status ?? 0) >= 500);
+}
+
+function containsCreatedFile(project: AuthoredProject, file: NamedFileCreation) {
+  const collection = file.kind === 'document' ? project.documents : project.steps;
+  if (!collection || !Object.prototype.hasOwnProperty.call(collection, file.id)) return false;
+  const actual = new Map(Object.entries(collection[file.id]));
+  const intended = Object.entries(file.kind === 'document' ? file.document : file.step);
+  return actual.size === intended.length && intended.every(([key, value]) =>
+    actual.has(key) && JSON.stringify(actual.get(key)) === JSON.stringify(value),
+  );
+}
+
+function isAcknowledgedAddition(
+  before: StudioProjectSnapshot, after: StudioProjectSnapshot,
+  unchanged: ReadonlySet<string>, file: NamedFileCreation,
+) {
+  const key = addressKey(file);
+  return unchanged.size === before.file_revisions.length &&
+    after.file_revisions.length === unchanged.size + 1 &&
+    !unchanged.has(key) &&
+    after.file_revisions.some(({ address }) => addressKey(address) === key) &&
+    JSON.stringify(before.project.sweep) === JSON.stringify(after.project.sweep) &&
+    containsCreatedFile(after.project, file);
 }
 
 export class ProjectEditController {
@@ -157,27 +184,52 @@ export class ProjectEditController {
   }
 
   rename(name: StudioProjectRename['name']): Promise<StudioProjectDocument> {
+    return this.authoredCommand(
+      () => this.transport.rename(this.saved.project_id, {
+        revision: this.saved.revision, name,
+      }, this.abort.signal),
+      (document) => document.configuration.project === name,
+    );
+  }
+
+  createFile(file: NamedFileCreation): Promise<StudioProjectDocument> {
+    const intended = structuredClone(file);
+    return this.authoredCommand(
+      () => this.transport.create(this.saved.project_id, {
+        revision: this.saved.revision, file: intended,
+      }, this.abort.signal),
+      (document, before) => !before.file_revisions.some(({ address }) =>
+        addressKey(address) === addressKey(intended)) &&
+        containsCreatedFile(document.snapshot.project, intended),
+      intended,
+    );
+  }
+
+  private authoredCommand(
+    write: () => Promise<StudioProjectDocument>,
+    achieved: (document: StudioProjectDocument, before: StudioProjectSnapshot) => boolean,
+    created?: NamedFileCreation,
+  ): Promise<StudioProjectDocument> {
     this.cancelSettle();
     return this.sequence(async () => {
       await this.refresh();
       await this.drain();
-      let renamed: StudioProjectDocument;
+      const before = this.saved;
+      let result: StudioProjectDocument;
       try {
-        renamed = await this.transport.rename(this.saved.project_id, {
-          revision: this.saved.revision, name,
-        }, this.abort.signal);
+        result = await write();
       } catch (error) {
         this.abort.signal.throwIfAborted();
         const ambiguous = canRetryOnReconnect(error);
         if (ambiguous || isHttpConflict(error)) {
-          const latest = await this.refresh().catch(() => undefined);
-          if (ambiguous && latest?.configuration.project === name) return latest;
+          const latest = await this.refresh(ambiguous ? created : undefined).catch(() => undefined);
+          if (ambiguous && latest && achieved(latest, before)) return latest;
         }
         throw error;
       }
       this.abort.signal.throwIfAborted();
-      this.receive(renamed);
-      return renamed;
+      this.receive(result, created);
+      return result;
     });
   }
 
@@ -340,9 +392,24 @@ export class ProjectEditController {
     this.publish();
   }
 
-  private receive(document: StudioProjectDocument) {
+  private receive(document: StudioProjectDocument, created?: NamedFileCreation) {
     const { snapshot: latest } = document;
     const unchanged = unchangedFiles(this.saved, latest);
+    if (created && this.queued.length && isAcknowledgedAddition(this.saved, latest, unchanged, created)) {
+      let draft = latest.project;
+      const rebased = this.queued.map((pending) => {
+        const base = draft;
+        draft = applyAuthoredEdits(base, pending.gesture.address, pending.edits).project;
+        return { ...pending, base };
+      });
+      this.queued.splice(0, this.queued.length, ...rebased);
+      this.document = document;
+      this.draft = draft;
+      this.outside = null;
+      this.error = null;
+      this.publish();
+      return;
+    }
     const sameAuthoredFiles = latest.semantic_root === this.saved.semantic_root &&
       unchanged.size === latest.file_revisions.length &&
       unchanged.size === this.saved.file_revisions.length;
@@ -368,10 +435,10 @@ export class ProjectEditController {
     }
   }
 
-  private async refresh() {
+  private async refresh(created?: NamedFileCreation) {
     try {
       const latest = await this.read();
-      this.receive(latest);
+      this.receive(latest, created);
       return latest;
     } catch (error) {
       this.error = error;

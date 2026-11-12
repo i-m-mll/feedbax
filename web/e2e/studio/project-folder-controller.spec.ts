@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { openProjectEditor } from '../../src/features/projectFolder/openProjectEditor';
+import { reachingDocument } from './reachingProject';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
@@ -12,9 +13,10 @@ const gainPath = '/payload/nodes/gain/params/gain';
 type Probe = {
   folderEditor: Awaited<ReturnType<typeof openProjectEditor>>;
   renameCommand?: ReturnType<Probe['folderEditor']['editor']['rename']>;
+  createCommand?: ReturnType<Probe['folderEditor']['editor']['createFile']>;
 };
 
-async function folderFixture(action: 'seed' | 'read', root: string) {
+async function folderFixture(action: 'seed' | 'read' | 'inspect-authoring', root: string) {
   return run('uv', ['run', '--no-sync', 'python', '-B', 'web/e2e/studio/fixtures/folder_project.py', action, root],
     { cwd: repo, timeout: 10_000 });
 }
@@ -242,4 +244,109 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
   await open(page, projectId);
   expect(await state(page)).toMatchObject({ id: projectId, name: 'outside-name', saved: 4, revision });
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
+});
+
+test('M2 managed New authors a Train with named reaching model and task', async ({ page, request }, info) => {
+  const fixture = await reachingDocument(8);
+  const model = { kind: 'document' as const, id: 'model', document: {
+    schema: fixture.graph.schema_id, payload: fixture.graph,
+  } };
+  const task = { kind: 'document' as const, id: 'task', document: {
+    schema: 'feedbax.spec.task', payload: fixture.workspace!.scenarios['scenario:train'].task_spec!,
+  } };
+  const train = { kind: 'step' as const, id: 'train', step: {
+    kind: 'train' as const, base: { inline: {} },
+  } };
+  await page.goto('/');
+  const id = await page.evaluate(async (file) => {
+    const entry = '/src/features/projectFolder/openProjectEditor.ts';
+    const folder = await import(entry) as typeof import('../../src/features/projectFolder/openProjectEditor');
+    const session = await folder.newProjectEditor();
+    (window as unknown as Probe).folderEditor = session;
+    const result = await session.editor.createFile(file);
+    return result.snapshot.project_id;
+  }, train);
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', id);
+  expect(JSON.parse(await readFile(join(root, 'steps', 'train.json'), 'utf8'))).toEqual(train.step);
+  const path = `/api/projects/${id}/files`;
+  const routePath = `**${path}`;
+  await page.route(routePath, async (route) => {
+    const { revision } = route.request().postDataJSON() as { revision: string };
+    const competing = await request.post(path, { data: { revision, file: task } });
+    expect(competing.status()).toBe(201);
+    await route.continue();
+  });
+  const refusal = await page.evaluate(async (file) => {
+    try { await (window as unknown as Probe).folderEditor.editor.createFile(file); }
+    catch (error) { return (error as { status?: number }).status; }
+    return null;
+  }, model);
+  expect(refusal).toBe(409);
+  expect(JSON.parse(await readFile(join(root, 'documents', 'task.json'), 'utf8'))).toEqual(task.document);
+  await expect(readFile(join(root, 'documents', 'model.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  await page.unroute(routePath);
+
+  let committed!: () => void;
+  const savedOnServer = new Promise<void>((resolve) => { committed = resolve; });
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let requests = 0;
+  await page.route(routePath, async (route) => {
+    requests++;
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    committed();
+    await hold;
+    await route.abort('failed');
+  });
+  try {
+    await page.evaluate((file) => {
+      const probe = window as unknown as Probe;
+      probe.createCommand = probe.folderEditor.editor.createFile(file);
+    }, model);
+    await savedOnServer;
+    await page.evaluate(() => {
+      (window as unknown as Probe).folderEditor.editor.edit({ kind: 'step', id: 'train' }, 'Bind Task', [
+        { op: 'add', path: '/base/inline/task', value: { document: 'task' } },
+      ]);
+    });
+  } finally {
+    release();
+  }
+  const saved = await page.evaluate(async () => {
+    const probe = window as unknown as Probe;
+    await probe.createCommand;
+    const { editor } = probe.folderEditor;
+    await editor.flush();
+    editor.edit({ kind: 'step', id: 'train' }, 'Bind Model', [
+      { op: 'add', path: '/base/inline/graph', value: { document: 'model' } },
+    ]);
+    await editor.flush();
+    const result = editor.getSnapshot();
+    probe.folderEditor.close();
+    return result;
+  });
+  expect(requests).toBe(1);
+  await page.unroute(routePath);
+  expect(saved).toMatchObject({ outside: null, pending: 0, undoName: 'Bind Model' });
+  expect(saved.saved.project.documents).toEqual({ model: model.document, task: task.document });
+  expect(saved.saved.project.steps).toEqual({ train: { kind: 'train', base: {
+    inline: { task: { document: 'task' }, graph: { document: 'model' } },
+  } } });
+  const { stdout } = await folderFixture('inspect-authoring', root);
+  expect(JSON.parse(stdout)).toEqual({
+    revision: saved.saved.revision, runs: 0,
+    diagnostics: ['method_payload', 'method_ref', 'objective', 'training_config'].map(
+      (field) => ['invalid_payload', `payload.${field}`],
+    ),
+  });
+  await page.reload();
+  await open(page, id);
+  const reopened = await page.evaluate(() => {
+    const { editor, close } = (window as unknown as Probe).folderEditor;
+    const snapshot = editor.getSnapshot().saved;
+    close();
+    return snapshot;
+  });
+  expect(reopened).toEqual(saved.saved);
 });

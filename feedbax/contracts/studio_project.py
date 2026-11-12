@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, FiniteFloat, JsonValue
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.project import Pointer, Project, Sha256
+from feedbax.contracts.project import Document, Pointer, Project, Sha256, Step
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import ProjectConfiguration
 
@@ -97,3 +97,29 @@ class StudioProjectDocument(StrictModel):
 class StudioProjectRename(StrictModel):
     revision: Sha256
     name: ProjectName
+
+
+class StudioTrainStep(Step):
+    kind: Literal["train"]
+
+
+class CreateNamedDocument(StrictModel):
+    kind: Literal["document"]
+    id: ProjectName
+    document: Document
+
+
+class CreateNamedTrain(StrictModel):
+    kind: Literal["step"]
+    id: ProjectName
+    step: StudioTrainStep
+
+
+type NamedFileCreation = Annotated[
+    CreateNamedDocument | CreateNamedTrain, Field(discriminator="kind")
+]
+
+
+class StudioProjectCreateFile(StrictModel):
+    revision: Sha256
+    file: NamedFileCreation

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_project import (
     StudioPresentationWrite,
+    StudioProjectCreateFile,
     StudioProjectDocument,
     StudioProjectPatch,
     StudioProjectRename,
@@ -16,6 +17,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.web.services.project_folder import (
+    ProjectFileExists,
     ProjectFolderInvalid,
     ProjectFolderNotFound,
     ProjectFolderService,
@@ -40,6 +42,12 @@ def _project_response[Result: StudioProjectDocument | StudioProjectSnapshot](
         raise HTTPException(
             409,
             detail={"message": str(exc), "current": exc.current, "resource": exc.resource},
+            headers=_NO_STORE,
+        ) from exc
+    except ProjectFileExists as exc:
+        raise HTTPException(
+            409,
+            detail={"code": "authored_file_exists", "message": f"An authored file already exists at {exc}."},
             headers=_NO_STORE,
         ) from exc
     except OSError as exc:
@@ -106,6 +114,15 @@ def rename_project(
 ) -> StudioProjectDocument:
     return _project_response(
         response, lambda: request.app.state.project_folders.rename(project_id, body)
+    )
+
+
+@router.post("/{project_id}/files", status_code=201, response_model_exclude_unset=True)
+def create_project_file(
+    project_id: ProjectName, body: StudioProjectCreateFile, request: Request, response: Response
+) -> StudioProjectDocument:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.create_file(project_id, body)
     )
 
 

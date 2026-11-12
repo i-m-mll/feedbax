@@ -51,11 +51,23 @@ function fixture(settleMs = 400) {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach/rename', 'Changed', { status: 409 });
     return externalRename(body.name);
   });
-  const editor = new ProjectEditController(document(), { read, write, rename }, settleMs);
-  return { editor, write, read, rename, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
+  const create = vi.fn<ProjectEditTransport['create']>();
+  const editor = new ProjectEditController(document(), { read, write, rename, create }, settleMs);
+  return { editor, write, read, rename, create, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
 }
 
 afterEach(() => vi.useRealTimers());
+
+it('does not attribute a preexisting identical file to a failed create', async () => {
+  const { editor, create } = fixture();
+  create.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach/files', 'Offline'));
+  await expect(editor.createFile({
+    kind: 'document', id: 'model', document: { schema: 'graph', payload: { value: 1 } },
+  })).rejects.toMatchObject({ kind: 'network' });
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(editor.getSnapshot().saved.revision).toBe(initial.revision);
+  editor.dispose();
+});
 
 it('advances a delayed metadata observation without discarding an edit typed during Open', async () => {
   const { editor, read, write, externalRename } = fixture();

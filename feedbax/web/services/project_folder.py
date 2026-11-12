@@ -34,11 +34,13 @@ from feedbax.contracts.project_io import (
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
+    CreateNamedDocument,
     PresentationDocument,
     SetProjectValue,
     StudioAuthoredFileRevision,
     StudioPresentationWrite,
     StudioProjectDocument,
+    StudioProjectCreateFile,
     StudioProjectPatch,
     StudioProjectRename,
     StudioProjectRevision,
@@ -60,6 +62,10 @@ class ProjectFolderNotFound(FileNotFoundError):
 
 class ProjectFolderInvalid(ValueError):
     """The folder or the requested edit is invalid."""
+
+
+class ProjectFileExists(FileExistsError):
+    """The requested authored name already has a file in its family."""
 
 
 class ProjectRevisionConflict(RuntimeError):
@@ -267,6 +273,36 @@ class ProjectFolderService:
                 )
                 text = self._load(root)
             return self._document(project_id, text)
+
+    def create_file(self, project_id: str, body: StudioProjectCreateFile) -> StudioProjectDocument:
+        root = self._folder(project_id)
+        file = body.file
+        family = _FAMILIES[file.kind]
+        relative = f"{family}/{file.id}.json"
+        with _writer_lock(root):
+            text = self._load(root)
+            _check_revision("project", body.revision, text.revision)
+            entries = text.project.documents if isinstance(file, CreateNamedDocument) else text.project.steps
+            if file.id in entries:
+                raise ProjectFileExists(relative)
+            entry = file.document if isinstance(file, CreateNamedDocument) else file.step
+            project = Project.model_validate({
+                **text.project.model_dump(mode="json", by_alias=True, exclude_unset=True),
+                family: {**entries, file.id: entry},
+            })
+            data = dump_text_project(project, text.configuration)[relative]
+            try:
+                write_bytes_atomic(
+                    root / relative,
+                    data,
+                    replace=False,
+                    before_publish=lambda: _check_revision(
+                        "project", text.revision, self._load(root).revision
+                    ),
+                )
+            except FileExistsError as error:
+                raise ProjectFileExists(relative) from error
+            return self._document(project_id, self._load(root))
 
     def revision(self, project_id: str) -> StudioProjectRevision:
         root = self._folder(project_id)

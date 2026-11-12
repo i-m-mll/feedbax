@@ -2231,6 +2231,18 @@ export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | Barrier
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
 
+export type CreateNamedDocument = {
+  "kind": "document";
+  "id": string;
+  "document": Document;
+};
+
+export type CreateNamedTrain = {
+  "kind": "step";
+  "id": string;
+  "step": StudioTrainStep;
+};
+
 export type Document = {
   "schema": string;
   "payload": JsonValue;
@@ -2288,6 +2300,8 @@ export type MatrixCompositionDelta = {
 export type NamedAxis = {
   "values": Record<string, AxisValue | null>;
 };
+
+export type NamedFileCreation = CreateNamedDocument | CreateNamedTrain;
 
 export type NamedSubset = {
   "subset": string;
@@ -2460,6 +2474,11 @@ export type StudioPresentationWrite = {
   "presentation": PresentationDocument;
 };
 
+export type StudioProjectCreateFile = {
+  "revision": Sha256;
+  "file": NamedFileCreation;
+};
+
 export type StudioProjectDocument = {
   "configuration": ProjectConfiguration;
   "snapshot": StudioProjectSnapshot;
@@ -2491,6 +2510,17 @@ export type StudioProjectSnapshot = {
   "presentation": PresentationDocument | null;
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
+};
+
+export type StudioTrainStep = {
+  "kind": "train";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
 };
 
 export type SubsetTerms = {
@@ -6412,6 +6442,22 @@ export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
 ) as unknown as z.ZodType<Combination>;
 
+export const CreateNamedDocumentSchema: z.ZodType<CreateNamedDocument> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("document"),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": DocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<CreateNamedDocument>;
+
+export const CreateNamedTrainSchema: z.ZodType<CreateNamedTrain> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("step"),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "step": StudioTrainStepSchema,
+  }).strict()
+) as unknown as z.ZodType<CreateNamedTrain>;
+
 export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
@@ -6495,6 +6541,10 @@ export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
   }).strict()
 ) as unknown as z.ZodType<NamedAxis>;
+
+export const NamedFileCreationSchema: z.ZodType<NamedFileCreation> = z.lazy(() =>
+  z.union([CreateNamedDocumentSchema, CreateNamedTrainSchema])
+) as unknown as z.ZodType<NamedFileCreation>;
 
 export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
   z.object({
@@ -6737,6 +6787,13 @@ export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> =
   }).strict()
 ) as unknown as z.ZodType<StudioPresentationWrite>;
 
+export const StudioProjectCreateFileSchema: z.ZodType<StudioProjectCreateFile> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "file": NamedFileCreationSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectCreateFile>;
+
 export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.lazy(() =>
   z.object({
     "configuration": ProjectConfigurationSchema,
@@ -6779,6 +6836,19 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
+
+export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("train"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainStep>;
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
@@ -6847,6 +6917,7 @@ export const contractSchemas = {
   SetProjectValue: SetProjectValueSchema,
   StudioAuthoredFileRevision: StudioAuthoredFileRevisionSchema,
   StudioPresentationWrite: StudioPresentationWriteSchema,
+  StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectRename: StudioProjectRenameSchema,
@@ -6934,6 +7005,7 @@ export interface ContractTypeMap {
   SetProjectValue: SetProjectValue;
   StudioAuthoredFileRevision: StudioAuthoredFileRevision;
   StudioPresentationWrite: StudioPresentationWrite;
+  StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectDocument: StudioProjectDocument;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectRename: StudioProjectRename;
