@@ -139,7 +139,8 @@ export function ProjectWindow({
   const { panel, width, height } = usePanelSize();
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteScope, setPaletteScope] = useState<'project' | 'activity' | null>(null);
+  const [railFocus, setRailFocus] = useState<ProjectWindowView | null>(null);
   const handledFocusRequest = useRef(focusRequest);
   const moveFocus = (region: WindowRegion) => setRequestedFocus({ region });
   useLayoutEffect(() => installTooltips(), []);
@@ -248,28 +249,32 @@ export function ProjectWindow({
     { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
   const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
   const tabCommands = availableViews.map((view) => bindStudioCommand(view, () => activateView(view)));
-  const tabView = shownViews[focusedSlot] ?? availableViews[0];
+  const tabView = railFocus && availableViews.includes(railFocus) ? railFocus : shownViews[focusedSlot] ?? availableViews[0];
   const tabId = (view: ProjectWindowView) => `${id}-tab-${view}`;
-  const palette = bindStudioCommand('commandPalette', () => setPaletteOpen((open) => !open));
+  const palette = bindStudioCommand('commandPalette', () => {
+    const scope = document.activeElement?.closest('[data-studio-activity-panel]') ? 'activity' : 'project';
+    setPaletteScope((open) => open ? null : scope);
+  });
   const paletteCommands = [
     ...commands, ...layoutModes.map(({ command }) => command), steps, drawer, inspector, splitCommand, switchCommand,
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
   ];
-  const shortcutCommands = useRef({ palette, paletteCommands, paletteOpen });
-  shortcutCommands.current = { palette, paletteCommands, paletteOpen };
+  const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
+  shortcutCommands.current = { palette, paletteCommands, paletteScope };
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing || event.repeat) return;
-      const { palette, paletteCommands, paletteOpen } = shortcutCommands.current;
+      const { palette, paletteCommands, paletteScope } = shortcutCommands.current;
       const dialog = event.target instanceof Element && event.target.closest('[role="dialog"]');
-      const command = matchesShortcut(event, palette.shortcut) && (!dialog || paletteOpen) ? palette
+      const command = matchesShortcut(event, palette.shortcut) && (!dialog || paletteScope) ? palette
         : !dialog ? paletteCommands.find((item) => matchesShortcut(event, item.shortcut)) : undefined;
       if (!command) return;
       const editable = event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]');
       if (editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run')) return;
       event.preventDefault();
+      if (command.selectionScoped && event.target instanceof Element && event.target.closest('[data-studio-activity-panel]')) return;
       command.invoke();
     }
     window.addEventListener('keydown', handleKey);
@@ -308,7 +313,9 @@ export function ProjectWindow({
         </div>
         <div className="studio-window-bar__commands">
           <WindowButton command={palette} icon={Command} />
-          {paletteOpen && <StudioCommandPalette commands={paletteCommands} close={() => setPaletteOpen(false)} />}
+          {paletteScope && <StudioCommandPalette
+            commands={paletteScope === 'activity' ? paletteCommands.filter((command) => !command.selectionScoped) : paletteCommands}
+            close={() => setPaletteScope(null)} />}
           {overlay}
         </div>
       </header>
@@ -336,6 +343,14 @@ export function ProjectWindow({
         <nav className="shell-scroll-rail studio-window-rail" data-axis="y" aria-label={studioName('details')}
           data-studio-focus-region="rail" tabIndex={-1}>
           <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical" className="studio-window-tabs"
+            onFocusCapture={(event) => {
+              const id = event.target.dataset.commandId;
+              const view = availableViews.find((item) => item === id);
+              if (view) setRailFocus(view);
+            }}
+            onBlurCapture={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setRailFocus(null);
+            }}
             onKeyDown={(event) => {
               const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
               const index = tabs.findIndex((tab) => tab === event.target);

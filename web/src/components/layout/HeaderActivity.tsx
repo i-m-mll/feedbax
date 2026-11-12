@@ -54,6 +54,7 @@ export function HeaderActivity({
       {open && (
         <section
           id={panelId}
+          data-studio-activity-panel={managed ? '' : undefined}
           aria-label={studioName('activity')}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {

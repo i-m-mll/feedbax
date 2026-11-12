@@ -139,7 +139,7 @@ function ActivityCommand({
   pending: boolean;
   onClick: () => void;
 }) {
-  const command = bindStudioCommand(name, onClick, { enabled: !pending });
+  const command = bindStudioCommand(name, onClick, { enabled: !pending, keyboard: false });
   return (
     <button
       type="button"

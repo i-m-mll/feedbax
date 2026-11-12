@@ -39,11 +39,16 @@ export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
   'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'fold' | 'unfold' | 'dismiss';
 
+const selectionCommands = new Set<StudioCommandId>([
+  'run', 'stop', 'forceStop', 'resume', 'openRun', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
+]);
+
 export interface StudioCommand {
   readonly id: StudioCommandId;
   readonly name: StudioNameId;
   readonly label: string;
   readonly enabled: boolean;
+  readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
   invoke(): void;
 }
@@ -51,13 +56,15 @@ export interface StudioCommand {
 export function bindStudioCommand(
   id: StudioCommandId,
   perform: () => void,
-  { enabled = true, name = id, subject }: { enabled?: boolean; name?: StudioNameId; subject?: string } = {},
+  { enabled = true, name = id, subject, keyboard = true }:
+    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean } = {},
 ): StudioCommand {
   const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
   const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
     (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
   return {
-    id, name, enabled, shortcut, label: studioAccessibleName(name, subject),
+    id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
+    label: studioAccessibleName(name, subject),
     invoke: () => { if (enabled) perform(); },
   };
 }

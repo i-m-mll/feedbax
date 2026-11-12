@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { TriangleAlert } from 'lucide-react';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
@@ -140,6 +140,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [focusRequest, requestSlotFocus] = useState(0);
   const [pivotSlots, setPivotSlots] = useState<Partial<Record<ProjectWindowSlot, string>>>({});
   const [problemStep, setProblemStep] = useState<string>();
+  const problemCountId = useId();
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
   const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
@@ -367,7 +368,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     ...runCommands,
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
-    focusView === 'runs' && pivotCommand(focusSlot),
+    windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
     bindStudioCommand('undo', () => moveHistory('undo'), { enabled: !!snapshot.undoName && !busy }),
     bindStudioCommand('redo', () => moveHistory('redo'), { enabled: !!snapshot.redoName && !busy }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
@@ -407,8 +408,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         <button type="button" className={control} {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</button>
       </div>}
       problems={<>
-        <button type="button" className={control} aria-expanded={panel === 'problems'} {...commandAttributes(problemCommand)} onClick={problemCommand.invoke}>
-          <TriangleAlert aria-hidden="true" size={14} className="mr-1 inline" />{studioName('problems')} {problems.length}
+        <button type="button" className={control} aria-expanded={panel === 'problems'} aria-describedby={problemCountId} {...commandAttributes(problemCommand)} onClick={problemCommand.invoke}>
+          <TriangleAlert aria-hidden="true" size={14} className="mr-1 inline" />{studioName('problems')} <span id={problemCountId}>{problems.length}</span>
         </button>
         {panel === 'problems' && <Dialog ariaLabel={studioName('problems')} onClose={() => setPanel(null)} manageFocus
           panelClassName="grid max-h-[75dvh] w-[min(34rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">

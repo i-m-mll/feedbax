@@ -102,6 +102,8 @@ test('the window commands, tab rail and selection history work without a pointer
   await page.keyboard.press('ArrowDown');
   const modelTab = tabs.getByRole('tab', { name: 'Model', exact: true });
   await expect(modelTab).toBeFocused();
+  await expect(modelTab).toHaveAttribute('tabindex', '0');
+  await expect(tabs.getByRole('tab', { name: 'Runs', exact: true })).toHaveAttribute('tabindex', '-1');
   await expect(page.getByRole('tooltip')).toHaveText('Model · ⌘2');
   await expect(modelTab).not.toHaveAttribute('title', /.+/);
   await page.keyboard.press('Enter');
@@ -143,6 +145,18 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(region(page, 'primary')).toBeFocused();
+
+  await palette(page, 'activity', 'Activity');
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const closeActivity = activity.getByRole('button', { name: 'Close', exact: true });
+  await expect(closeActivity).toBeFocused();
+  await page.keyboard.press('Meta+K');
+  await expect(dialog.getByRole('combobox')).toBeFocused();
+  await expect(dialog.locator('[data-command-id="run"], [data-command-id="stop"]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(closeActivity).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(activity).toBeHidden();
 });
 
 test('the keyboard authors, runs and stops a strict checkpoint continuation and follows Results', async ({ page, request }) => {

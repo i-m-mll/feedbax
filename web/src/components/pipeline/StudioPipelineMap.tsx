@@ -72,9 +72,9 @@ function stepSelection(selection: PipelineSelection | null, stepId: string) {
   return selection.stepId === stepId ? selection : null;
 }
 
-function StatusCounts({ counts, onProblems }: { counts: PlanStepView['statusCounts']; onProblems?: () => void }) {
+function StatusCounts({ id, counts, onProblems }: { id?: string; counts: PlanStepView['statusCounts']; onProblems?: () => void }) {
   return (
-    <span className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-slate-700">
+    <span id={id} className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-slate-700">
       {(Object.entries(counts) as [StudioRunStatusId, number][]).map(([status, count]) => {
         if (count <= 0) return null;
         const mark = <><span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${studioRunMarkClass(status)}`} />{count} {studioRunStatus(status)}</>;
@@ -265,8 +265,7 @@ const StepCard = memo(function StepCard({
       style={{ borderColor: tint }}
     >
       <span id={`map-step-${step.id}-summary`} className="sr-only">
-        {[kind, ...sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`),
-          ...Object.entries(step.statusCounts).map(([status, count]) => `${count} ${studioRunStatus(status as StudioRunStatusId)}`)].join(' · ')}
+        {[kind, ...sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`)].join(' · ')}
       </span>
       <header className="relative">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-3 top-1/2" />
@@ -275,7 +274,7 @@ const StepCard = memo(function StepCard({
           type="button"
           className="w-full rounded px-1 py-1 text-left text-slate-900 hover:bg-slate-100 aria-pressed:bg-slate-200"
           aria-label={studioAccessibleName('select', step.label)}
-          aria-describedby={`map-step-${step.id}-summary`}
+          aria-describedby={`map-step-${step.id}-summary map-step-${step.id}-status`}
           aria-pressed={selection?.kind === 'steps'}
           {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
         >
@@ -292,7 +291,7 @@ const StepCard = memo(function StepCard({
         onPresentationChange={onPresentationChange}
         newSweep={newSweep}
       />
-      <StatusCounts counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} />
+      <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} />
       {selection && (
         <p className="truncate rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
           {[...terms, studioCountOf(selected.size, step.runs.length)].join(' · ')}

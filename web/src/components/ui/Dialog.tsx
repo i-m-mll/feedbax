@@ -34,10 +34,17 @@ export function Dialog({
     const container = panel.current;
     if (!manageFocus || !container) return;
     const previous = document.activeElement;
+    const returnTargets: HTMLElement[] = [];
+    for (let candidate = previous; candidate; candidate = candidate.parentElement) {
+      if (candidate instanceof HTMLElement && (candidate === previous || candidate.hasAttribute('tabindex'))) {
+        returnTargets.push(candidate);
+      }
+    }
     (container.querySelector<HTMLElement>('[data-dialog-autofocus]') ?? tabbable(container)[0] ?? container).focus();
     return () => {
-      if (previous instanceof HTMLElement && previous.isConnected &&
-          (container.contains(document.activeElement) || document.activeElement === document.body)) previous.focus();
+      if (!container.contains(document.activeElement) && document.activeElement !== document.body) return;
+      returnTargets.find((target) => target.isConnected && target.getClientRects().length > 0 &&
+        !target.matches(':disabled') && !target.closest('[hidden], [inert]'))?.focus();
     };
   }, [manageFocus]);
 

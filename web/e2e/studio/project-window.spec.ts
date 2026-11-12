@@ -114,7 +114,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await page.goto(`/?project=${id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
-  const scene = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Scene', exact: true }).first();
+  const scene = page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Scene', exact: true });
   const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
   await expect(upper).toBeVisible();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
@@ -141,7 +141,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const { window_map } = await read.json() as StudioSavedTrainRuns;
   const problems = window_map!.problems.filter(({ variant }) => variant === null || variant === 'default');
   expect(problems.some(({ step }) => step === 'broken')).toBe(true);
-  await page.getByRole('button', { name: `Problems ${problems.length}`, exact: true }).click();
+  const problemButton = page.getByRole('button', { name: 'Problems', exact: true });
+  await expect(problemButton).toHaveText(`Problems ${problems.length}`);
+  await expect(problemButton).toHaveAccessibleDescription(String(problems.length));
+  await problemButton.click();
   const list = page.getByRole('dialog', { name: 'Problems' });
   await expect(list.getByRole('listitem')).toHaveCount(problems.length);
   const problem = problems.find(({ step }) => step === 'broken')!;
