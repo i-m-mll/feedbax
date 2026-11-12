@@ -66,7 +66,7 @@ def authored_evaluation_project():
     }
     sweep = {"axes": {"mass": {"values": {
         name: {"value": mass, "patches": {"params.variation": {"value": [
-            {"path": "nodes.plant.params.mass", "op": "replace", "value": mass},
+            {"path": "graph.nodes.plant.params.mass", "op": "replace", "value": mass},
         ]}}}
         for name, mass in (("nominal", 1), ("heavy", 2))
     }}}}

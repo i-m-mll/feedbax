@@ -9,6 +9,7 @@ import numpy as np
 
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.project import Project
+from feedbax.contracts.graph import GraphSpec, WireSpec
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
@@ -17,7 +18,9 @@ from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA
+from feedbax.contracts.rollout import RolloutParameters
 from feedbax.training.checkpoint_custody import open_published_model_slot
+from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.worker.execution import prototypes_from_task_bindings
@@ -47,20 +50,23 @@ def _saved_variants():
     different_horizon["params"]["n_steps"] = 80
     wires = deepcopy(graph["wires"])
     force = next(wire for wire in wires if wire["target_node"] == "plant")
-    force.update(target_node="force_scale", target_port="input")
-    wires.append({
+    force_id = WireSpec.model_validate(force).authored_id()
+    scale_output = {
         "source_node": "force_scale", "source_port": "output",
         "target_node": "plant", "target_port": "force",
-    })
+    }
     scale = [
         _patch("graph.nodes.force_scale", {
             "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
             "input_ports": ["input"], "output_ports": ["output"],
         }, op="add"),
-        _patch("graph.wires", wires),
+        _patch(f"graph.wires.{force_id}.target_node", "force_scale"),
+        _patch(f"graph.wires.{force_id}.target_port", "input"),
+        _patch("graph.wires.scale-output", scale_output, op="add"),
     ]
     wider = deepcopy(graph["wires"])
     recurrent = next(wire for wire in wider if wire["temporality"] == "recurrent")
+    recurrent_id = WireSpec.model_validate(recurrent).authored_id()
     recurrent["recurrent_initializer"]["shape"] = [101]
 
     def step(variation):
@@ -82,10 +88,58 @@ def _saved_variants():
             "incompatible": step([
                 _patch("graph.nodes.cell.params.hidden_size", 101),
                 _patch("graph.nodes.readout.params.input_size", 101),
-                _patch("graph.wires", wider),
+                _patch(f"graph.wires.{recurrent_id}", recurrent),
             ]),
         },
     }), source
+
+
+def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
+    authored, source = authored_evaluation_project()
+    definition = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    graph = GraphSpec.model_validate(source.graph.inline)
+    first = next(wire for wire in graph.wires if wire.target_node == "plant")
+    second = next(wire for wire in graph.wires if wire.target_node == "readout")
+    baseline = deepcopy(definition["steps"]["baseline"])
+    baseline["base"]["inline"]["params"]["variation"] = {}
+    axes, ordered = {}, []
+    for name, wire in (("first", first), ("second", second)):
+        wire_id = wire.authored_id()
+        node = f"scale_{name}"
+        edits = [
+            _patch(f"graph.nodes.{node}", {
+                "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
+                "input_ports": ["input"], "output_ports": ["output"],
+            }, op="add"),
+            _patch(f"graph.wires.{wire_id}.target_node", node),
+            _patch(f"graph.wires.{wire_id}.target_port", "input"),
+            _patch(f"graph.wires.{name}-out", {
+                "source_node": node, "source_port": "output",
+                "target_node": wire.target_node, "target_port": wire.target_port,
+            }, op="add"),
+        ]
+        ordered.extend(edits)
+        axes[name] = {"values": {"inserted": {"patches": {
+            f"params.variation.{name}-{index}": {"op": "add", "value": edit}
+            for index, edit in enumerate(edits)
+        }}}}
+    baseline["sweep"] = {"axes": axes}
+    project = Project.model_validate({"steps": {
+        "train": definition["steps"]["train"], "crossed": baseline,
+    }})
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "crossed", project)
+    plan = folders.read_plan("crossed", revision=None).plan
+    assert not plan.diagnostics
+    (run,) = (run for run in plan.runs if run.key.step == "crossed")
+    request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+    named = RolloutParameters.model_validate(request.spec.params).variation
+    listed = RolloutParameters.model_validate(request.spec.params | {"variation": ordered}).variation
+    variant = resolve_evaluation_variant(graph, source.task, named)
+    assert variant == resolve_evaluation_variant(graph, source.task, listed)
+    unchanged = [wire for wire in graph.wires if wire not in (first, second)]
+    assert all(wire in variant.graph.wires for wire in unchanged)
+    assert len(named) == 8 and all(edit.path != "graph.wires" for edit in named)
 
 
 def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host, tmp_path, monkeypatch):

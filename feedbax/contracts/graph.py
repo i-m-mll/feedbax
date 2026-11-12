@@ -144,12 +144,22 @@ class WireSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$", exclude_if=lambda value: value is None)
     source_node: str
     source_port: str
     target_node: str
     target_port: str
     temporality: Literal["instant", "recurrent"] = "instant"
     recurrent_initializer: Optional[Dict[str, Any]] = None
+
+    def authored_id(self) -> str:
+        """Address an older wire without changing its stored model identity."""
+        if self.id is not None:
+            return self.id
+        from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+
+        endpoints = [self.source_node, self.source_port, self.target_node, self.target_port]
+        return "wire-" + hashlib.sha256(canonical_json_v2_bytes(endpoints)).hexdigest()
 
 
 class AdditiveGraphChannelTargetSpec(BaseModel):
@@ -434,6 +444,11 @@ class GraphSpec(BaseModel):
     retained_observables: Optional[List[RetainedObservableSpec]] = None
     parameter_constraints: List[ParameterConstraintSpec] = Field(default_factory=list)
     metadata: Optional[GraphMetadata] = None
+
+    @model_validator(mode="after")
+    def _unique_wire_ids(self) -> "GraphSpec":
+        validate_cross_field_refinements("GraphSpec", self)
+        return self
 
     @field_validator("subgraphs", mode="before")
     @classmethod

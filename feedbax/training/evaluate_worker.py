@@ -86,7 +86,6 @@ def _rollouts(
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.contracts.training import TrainingSpec
     from feedbax.dataset import Dataset, Variable
-    from feedbax.mechanics.direct_force_components import PointMass
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
     from feedbax.runtime.model_values import MODEL_OWNERS
@@ -130,18 +129,18 @@ def _rollouts(
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
     variant = resolve_evaluation_variant(slot.graph, spec.task, params.variation)
     outputs = variant.graph.output_bindings
-    point_mass = [
-        (name, node)
-        for name, (node, port) in outputs.items()
-        if port == "effector" and node in variant.graph.nodes
-        and variant.graph.nodes[node].type == "feedbax.PointMass"
+    effector_owners = [
+        node for node, port in outputs.values()
+        if node in variant.graph.nodes
+        and (declaration := MODEL_OWNERS.get(variant.graph.nodes[node].type)) is not None
+        and declaration.scene_effector_port == port
     ]
-    if len(point_mass) != 1 or variant.graph.subgraphs:
+    if len(effector_owners) != 1 or variant.graph.subgraphs:
         raise CannotRun(
             "/inputs/subject/graph/output_bindings",
-            "requires one declared root PointMass effector output and a single-clock graph",
+            "requires one declared root effector output and a single-clock graph",
         )
-    _, owner = point_mass[0]
+    [owner] = effector_owners
     target_spec = next(
         (item for item in spec.task_binding_spec.exposed_data if item.id == "reach_target"), None,
     )
@@ -178,15 +177,16 @@ def _rollouts(
     except ModelCheckpointError as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
 
-    plant = graph.nodes[owner]
-    if not isinstance(plant, PointMass):
-        raise CannotRun(f"/inputs/subject/graph/nodes/{owner}", "requires the PointMass owner")
+    root_clock = MODEL_OWNERS[executable.resolved.graph.nodes[owner].type].clock
+    if root_clock is None:
+        raise CannotRun("/inputs/subject/graph/output_bindings", "effector owner lacks a declared clock")
+    period = getattr(graph.nodes[owner], root_clock)
     for name, component in graph.nodes.items():
         clock = MODEL_OWNERS[executable.resolved.graph.nodes[name].type].clock
-        if clock is not None and getattr(component, clock) != plant.dt:
+        if clock is not None and getattr(component, clock) != period:
             raise CannotRun(
                 json_pointer(("inputs", "subject", "graph", "nodes", name, "params", clock)),
-                "declared owner clock differs from the PointMass control period",
+                "declared owner clock differs from the root control period",
             )
     try:
         compiled = compile_training_run(
@@ -239,7 +239,7 @@ def _rollouts(
         raise FloatingPointError("Evaluation produced a nonfinite observation or objective.")
 
     axes = ("checkpoint", "condition", "trial")
-    time = np.arange(compiled.n_steps + 1, dtype=np.float64) * float(plant.dt)
+    time = np.arange(compiled.n_steps + 1, dtype=np.float64) * float(period)
 
     def field(values, *dims, units=None, frame=None):
         return Variable(np.asarray(values)[None, None], (*axes, *dims), units=units, frame=frame)

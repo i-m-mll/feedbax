@@ -389,6 +389,7 @@ export interface ParameterConstraintSpec {
 }
 
 export interface WireSpec {
+  id?: string | null;
   source_node: string;
   source_port: string;
   target_node: string;
@@ -4054,6 +4055,7 @@ export const ParameterConstraintSpecSchema: z.ZodType<ParameterConstraintSpec> =
 export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
   z
     .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "source_node": z.string(),
       "source_port": z.string(),
       "target_node": z.string(),
@@ -4350,6 +4352,12 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
     })
     .strict()
     .superRefine((value, ctx) => {
+      if (hasDuplicate((value.wires ?? []).flatMap((wire) => wire.id == null ? [] : [wire.id]))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Wire IDs must be unique within a graph",
+        });
+      }
       if (value.subgraphs != null && Object.values(value.subgraphs).some((subgraph) => subgraph.schema_id !== 'feedbax.spec.graph' && subgraph.schema_id !== 'feedbax.spec.acausal_graph')) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

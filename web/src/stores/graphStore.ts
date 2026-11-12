@@ -1137,6 +1137,7 @@ function buildEdges(
           routing: edgeStates[id]?.routing ?? { style: defaultStyle, points: [] },
           temporality: wire.temporality ?? 'instant',
           recurrent_initializer: wire.recurrent_initializer ?? null,
+          authoredWireId: wire.id ?? undefined,
         },
       };
     });
@@ -1154,6 +1155,7 @@ function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
         edge.targetHandle
     )
     .map((edge) => ({
+      ...(edge.data?.authoredWireId ? { id: edge.data.authoredWireId } : {}),
       source_node: edge.source,
       source_port: edge.sourceHandle as string,
       target_node: edge.target,

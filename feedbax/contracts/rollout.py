@@ -1,5 +1,6 @@
 """Authored rollout parameters and saved Evaluate dataset schema identities."""
 
+import re
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -19,6 +20,24 @@ class RolloutParameters(StrictModel):
     trial_policy: Literal["paired"]
     retention: Literal["raw_states", "observations"] = "raw_states"
     variation: tuple[OverridePatch, ...]
+
+    @field_validator("variation", mode="before")
+    @classmethod
+    def _ordered_variation(cls, value):
+        if not isinstance(value, dict):
+            return value
+        if any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in value):
+            raise ValueError("expected path-safe variation edit IDs")
+        edits = tuple(OverridePatch.model_validate(value[name]) for name in sorted(value))
+        paths = {edit.path for edit in edits}
+        if len(paths) != len(edits):
+            raise ValueError("named edits have duplicate targets")
+        for path in paths:
+            while "." in path:
+                path = path.rpartition(".")[0]
+                if path in paths:
+                    raise ValueError(f"named edits overlap at {path!r}")
+        return edits
 
     @field_validator("trials")
     @classmethod

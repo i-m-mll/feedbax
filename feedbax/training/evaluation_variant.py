@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import isfinite
 
 from pydantic import ValidationError
 
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.training import TaskSpec
+from feedbax.runtime.model_values import MODEL_OWNERS
 from feedbax.studio.canonical_evaluate import CannotRun
 
 
@@ -73,52 +73,62 @@ def resolve_evaluation_variant(
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     payload = {"graph": graph.model_dump(mode="json"), "task": task.model_dump(mode="json")}
+    wires = {wire.authored_id(): wire.model_dump(mode="json") for wire in graph.wires}
+    if len(wires) != len(graph.wires):
+        raise CannotRun("/inputs/subject/graph/wires", "wire addresses are ambiguous")
+    payload["graph"]["wires"] = wires
     overrides: dict[str, float] = {}
     task_path: str | None = None
     for index, patch in enumerate(patches):
         path = f"/params/variation/{index}"
         parts = patch.path.split(".")
-        if len(parts) == 4 and parts[0] == "nodes" and parts[2:] == ["params", "mass"]:
-            # The signed observations and raw-state candidates authored mass relative to the graph.
-            parts.insert(0, "graph")
         try:
             match parts, patch.op:
                 case ["task"], "replace":
                     task_path = f"{path}/value"
-                case ["graph", "wires"], "replace":
+                case ["graph", "wires", wire_id], ("add" | "replace"):
+                    wire = WireSpec.model_validate(patch.value)
+                    if wire.id not in (None, wire_id):
+                        raise ValueError("wire ID differs from the edited address")
+                    wire = WireSpec.model_validate(wire.model_dump(mode="json") | {"id": wire_id})
+                    patch = patch.model_copy(update={"value": wire.model_dump(mode="json")})
+                case ["graph", "wires", _], "remove":
                     pass
+                case ["graph", "wires", wire_id, field], "replace" if field != "id":
+                    if field not in WireSpec.model_fields:
+                        raise ValueError("unknown wire field")
+                    wires[wire_id]["id"] = wire_id
                 case ["graph", "nodes", name], "add":
                     if name in payload["graph"]["nodes"]:
                         raise ValueError("cannot replace a retained owner with an addition")
                     component = ComponentSpec.model_validate(patch.value)
-                    scale = component.params.get("scale")
-                    if (
-                        component.type != "feedbax.Scale" or component.params.get("fixed") is not True
-                        or not _finite_float32(scale)
-                    ):
-                        raise ValueError("addition requires a registered fixed finite scalar Scale")
-                case ["graph", "nodes", name, "params", parameter], "replace":
-                    owner = graph.nodes.get(name)
-                    if owner is None:
-                        raise ValueError("parameter patch must name a retained owner")
-                    if owner.type == "feedbax.PointMass" and parameter == "mass":
-                        value = patch.value
-                        if type(value) not in (int, float) or not isfinite(value) or value <= 0:
-                            raise ValueError("requires a positive finite PointMass mass")
-                        overrides[semantic_key("model", "value", (name,), "mass")] = float(value)
-                    elif (owner.type, parameter) not in {
-                        ("feedbax.GRU", "hidden_size"), ("feedbax.GRU", "dtype"),
-                        ("feedbax.Linear", "input_size"), ("feedbax.Linear", "dtype"),
+                    owner = MODEL_OWNERS.get(component.type)
+                    if owner is None or owner.states is None or component.revision not in {
+                        None, owner.revision,
                     }:
-                        raise ValueError("parameter has no qualified Evaluate override")
+                        raise ValueError(f"added owner {component.type!r} has no qualified declaration")
+                case ["graph", "nodes", name, "params", parameter], ("replace" | "add"):
+                    node = graph.nodes.get(name)
+                    if node is None:
+                        raise ValueError("parameter patch must name a retained owner")
+                    owner = MODEL_OWNERS.get(node.type)
+                    if owner is None or owner.states is None or not owner.checkpointable:
+                        raise ValueError(f"retained owner {node.type!r} has no qualified declaration")
+                    declared = next((value for value in owner.values if value.symbol == parameter), None)
+                    if declared is not None:
+                        if declared.kind == "learned":
+                            raise ValueError("M2 Evaluate preserves retained learned values")
+                        if not _finite_float32(patch.value):
+                            raise ValueError("expected a finite scalar for a declared source value")
+                        overrides[semantic_key("model", "value", (name,), parameter)] = float(patch.value)
                 case _:
                     raise ValueError("patch is outside the qualified task and graph variation profile")
-            effective_patch = patch.model_copy(update={"path": ".".join(parts)})
-            apply_override_patch_in_place(payload, effective_patch)
+            apply_override_patch_in_place(payload, patch)
         except (ValueError, KeyError, OverflowError) as error:
             raise CannotRun(path, str(error)) from error
 
     try:
+        payload["graph"]["wires"] = list(wires.values())
         variant, replacement = GraphSpec.model_validate(payload["graph"]), TaskSpec.model_validate(payload["task"])
     except ValidationError as error:
         first = error.errors()[0]

@@ -1,6 +1,7 @@
 """Portable direct-force mechanics owners."""
 
 from __future__ import annotations
+from dataclasses import replace
 from typing import Annotated, Any
 from functools import partial
 from pydantic import Field
@@ -47,7 +48,7 @@ class PointMass(Mechanics, Component):
     def __init__(
         self,
         dt: Annotated[float, Field(ge=0.001)] = 0.01,
-        mass: Annotated[float, Field(ge=0)] = 1.0,
+        mass: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0,
         damping: Annotated[float, Field(ge=0)] = 0.0,
     ):
         super().__init__(
@@ -73,8 +74,6 @@ def _point_mass_template():
 
     return point_mass_template_graph(configuration_model(PointMass)().model_dump())
 
-
-from dataclasses import replace
 
 PointMass.component_options = replace(
     PointMass.component_options,

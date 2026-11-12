@@ -134,6 +134,7 @@ export interface TapNodeData extends Record<string, unknown> {
 }
 
 export interface GraphEdgeData extends Record<string, unknown> {
+  authoredWireId?: string;
   routing?: EdgeRouting;
   primary?: boolean;
   strength?: number;

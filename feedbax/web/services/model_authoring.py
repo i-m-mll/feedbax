@@ -177,10 +177,12 @@ def prepare_model_edit(
             if type(width) is not int or width <= 0 or not isinstance(dtype, str):
                 raise ProjectFolderInvalid("Set the GRU hidden size and dtype before connecting its carry.")
             wire = WireSpec(
+                id=wire.id,
                 source_node=wire.source_node, source_port="hidden",
                 target_node=wire.target_node, target_port="hidden", temporality="recurrent",
                 recurrent_initializer=recurrent_zero_initializer(width, state_slot="hidden", dtype=dtype),
             )
+        wire = wire.model_copy(update={"id": wire.authored_id()})
         return ModelAdditions((_add("wires", "-", wire.model_dump(mode="json", exclude_none=True)),))
 
     name = operation.source_port
