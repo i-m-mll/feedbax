@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
@@ -21,6 +22,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.studio.training_requests import lower_studio_training_runs
+from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from web.e2e.studio.fixtures.reaching_project import reaching_project
@@ -238,11 +240,27 @@ def observe_swept(home: Path, project: str, successors: list[str]):
         producer_source = transform["producer_source"]
         assert producer_source["id"] == pointer["transaction_id"]
         assert producer_source["metadata"]["manifest_sha256"] == pointer["manifest_sha256"]
+        checkpoint = completion["checkpoint"]
+        terminal = checkpoint["pointer"]
+        custody = authenticate_checkpoint_custody_ref(
+            ParentRef(
+                kind="TrainingCheckpointTransactionManifest", id=terminal["transaction_id"],
+                role="training_checkpoint_custody", uri=terminal["manifest_relative_path"],
+                metadata={"manifest_sha256": terminal["manifest_sha256"]},
+            ),
+            allowed_root=checkpoint["checkpoint_root"],
+        )
         interval = last_train_interval(events, attempt)
         result[attempt] = {
             "producer": producer,
             "receipt": completion["receipt"],
-            "completed_updates": completion["checkpoint"]["completed_updates"],
+            "completed_updates": checkpoint["completed_updates"],
+            "source_checkpoint": {
+                "completed_updates": source["checkpoint"]["completed_updates"],
+                "transaction_id": pointer["transaction_id"],
+                "manifest_sha256": pointer["manifest_sha256"],
+            },
+            "schedule_origin_step": custody.manifest.completed_coordinate.schedule_origin_step,
             "initialization": {"mode": initialization["mode"], **transform},
             "last_loss": interval["metrics"]["train_loss"]["last"],
         }

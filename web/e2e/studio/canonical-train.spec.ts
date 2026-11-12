@@ -342,23 +342,33 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(child).toContainText('2 of 3');
   await expect(runs.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
 
-  // Exercise the authored typed policy through the saved project API. New Step defaults to model initialization.
+  const carryover = runs.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
+  const carryoverPath = 'method_payload.payload.checkpoint_initialization';
   const methodTarget = 'method_payload.payload.target_total';
-  const changed = await request.patch(projectPath, { data: {
-    revision: snapshot.revision, address: { kind: 'step', id: childId },
-    patches: [
-      { op: 'replace', path: '/deltas/0/patches/0/value', value: {
-        mode: 'continue_from', progress: { source_completed_batches: 2, additional_batches: 2 },
-        optimizer: 'preserve', schedule: 'continue', rng: 'carry', cursor: 'carry',
-      } },
-      { op: 'add', path: '/deltas/0/patches/-', value: { op: 'replace', path: methodTarget, value: 4 } },
-      { op: 'add', path: '/deltas/0/acknowledges_ancestor_paths', value: [methodTarget] },
-    ],
-  } });
-  expect(changed.ok(), await changed.text()).toBe(true);
-  snapshot = await changed.json() as StudioProjectSnapshot;
-  await page.reload();
-  await mapStep(page, childId).click();
+  const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
+  const beforeCarry = await plan();
+  await expect(carryover.locator('option:checked')).toHaveText('Initialize model only');
+  const carryEdit = page.waitForResponse((response) =>
+    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+  await carryover.selectOption({ label: 'Carry training state' });
+  const carried = await carryEdit;
+  expect(carried.ok(), await carried.text()).toBe(true);
+  expect(carried.request().postDataJSON()).toMatchObject({ address: { kind: 'step', id: childId } });
+  snapshot = await carried.json() as StudioProjectSnapshot;
+  expect(snapshot.project.steps?.[childId]?.inputs?.checkpoint).toEqual(checkpointInput);
+  expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
+    { op: 'replace', path: carryoverPath, value: {
+      mode: 'continue_from', progress: { source_completed_batches: 2, additional_batches: 2 },
+      optimizer: 'preserve', schedule: 'continue', rng: 'carry', cursor: 'carry',
+    } },
+    { op: 'replace', path: methodTarget, value: 4 },
+  ]);
+  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  const afterCarry = await plan();
+  expect(afterCarry.rows.filter(({ key }) => key.step === 'train'))
+    .toEqual(beforeCarry.rows.filter(({ key }) => key.step === 'train'));
+  expect(afterCarry.window_map?.edges).toEqual(beforeCarry.window_map?.edges);
+  expect(afterCarry.window_map?.problems).toEqual([]);
 
   const edit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
@@ -366,10 +376,10 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const acknowledged = await edit;
   expect(acknowledged.ok(), await acknowledged.text()).toBe(true);
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
-  expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
+  expect(snapshot.project.steps?.[childId]?.deltas?.[2]?.patches).toEqual([
     expect.objectContaining({ path: 'training_config.n_batches', value: 4 }),
     expect.objectContaining({ path: methodTarget, value: 6 }),
-    expect.objectContaining({ path: 'method_payload.payload.checkpoint_initialization.progress.additional_batches', value: 4 }),
+    expect.objectContaining({ path: `${carryoverPath}.progress.additional_batches`, value: 4 }),
   ]);
   const successors = await run(childId);
   const compiled = await plan();
@@ -431,7 +441,14 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     const producer = attempt.checkpoint_source!;
     expect(evidence[attempt.job_id]).toMatchObject({
       producer: producer.job_id, receipt: attempt.successful_receipt, completed_updates: 6,
-      initialization: { mode: 'continue_from', optimizer_policy: 'preserve', rng_policy: 'carry', cursor_policy: 'carry' },
+      source_checkpoint: {
+        completed_updates: 2, transaction_id: expect.any(String), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      schedule_origin_step: 0,
+      initialization: {
+        mode: 'continue_from', optimizer_policy: 'preserve', rng_policy: 'carry', cursor_policy: 'carry',
+        learning_rate_schedule_policy: 'continue', producer_content_binding: { root_kind: 'checkpoint-custody' },
+      },
     });
     await table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button').click();
     if (index === 0) await openResultsSlot(page);

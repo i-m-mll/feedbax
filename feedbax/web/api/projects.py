@@ -99,11 +99,13 @@ def read_train_authoring(
     from feedbax.studio.authoring import project_train_fields
 
     def project_fields() -> StudioTrainAuthoring:
-        snapshot = request.app.state.project_folders.read(project_id, revision=body.revision)
+        folders = request.app.state.project_folders
+        snapshot = folders.read(project_id, revision=body.revision)
         bundle = request.app.state.bootstrap_state.bundle
         try:
             fields, patches, documents, reach_target = project_train_fields(
                 snapshot.project, step_id, bundle.training_programs, body.change, components=bundle.components,
+                read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error

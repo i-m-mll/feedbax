@@ -33,6 +33,7 @@ from feedbax.studio.authoring import authoring_surface, project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from feedbax.web.services import project_folder
+from web.e2e.studio.fixtures.canonical_train import authored_files
 from web.e2e.studio.fixtures.reaching_project import reaching_project
 
 
@@ -375,6 +376,87 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     seed, = patches
     assert seed.path == "/base/inline/method_payload/payload/seed"
     assert type(seed.value) is int and seed.value == 7
+
+
+def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
+    model, task, train, successor = authored_files()
+    carry_path = "method_payload.payload.checkpoint_initialization"
+    total_path = "method_payload.payload.target_total"
+    train["step"]["sweep"] = {"axes": {"rate": {"values": {
+        "slow": {"patches": {"training_config.learning_rate": {"value": 0.001},
+                            "method_payload.payload.optimizer.params.learning_rate": {"value": 0.001}}},
+        "fast": {"patches": {"training_config.learning_rate": {"value": 0.003},
+                            "method_payload.payload.optimizer.params.learning_rate": {"value": 0.003}}},
+        "long": {"patches": {"training_config.n_batches": {"value": 3}, total_path: {"value": 3}}},
+    }}}}
+    child = successor["step"]
+    child["deltas"][0]["patches"] = child["deltas"][0]["patches"][:1]
+    child["inputs"]["checkpoint"]["where"] = {"axes": {"rate": ["slow", "fast"]}}
+    project = Project.model_validate({
+        "documents": {"model": model["document"], "task": task["document"]},
+        "steps": {"train": train["step"], "successor": child},
+    })
+    root = tmp_path / "reach"
+    for relative, data in dump_text_project(
+        project, ProjectConfiguration(project="reach", store="results"),
+    ).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    address = {"kind": "step", "id": "successor"}
+    field_id = "/" + carry_path.replace(".", "/")
+    url = f"{_URL}/authoring/train/successor"
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        before = _read(client)
+        initial = _read_plan(client, root, before)
+        change = {"field": field_id, "value": "continue_from"}
+        response = client.post(url, json={"revision": before["revision"], "change": change})
+        assert response.status_code == 200, response.text
+        reviewed = response.json()
+        control = next(item for item in reviewed["fields"] if item["id"] == field_id)
+        assert control["value"] == "initialize_from"
+        [layer] = reviewed["patches"]
+        assert layer["path"] == "/deltas/1"
+        policy, total = layer["value"]["patches"]
+        assert policy["path"] == carry_path
+        assert policy["value"]["progress"] == {"source_completed_batches": 2, "additional_batches": 2}
+        assert (total["path"], total["value"]) == (total_path, 4)
+        saved = client.patch(_URL, json={
+            "revision": before["revision"], "address": address, "patches": reviewed["patches"],
+        })
+        assert saved.status_code == 200, saved.text
+        after = saved.json()
+        assert after["project"]["steps"]["train"] == before["project"]["steps"]["train"]
+        stale = client.post(url, json={"revision": before["revision"], "change": change})
+        assert stale.status_code == 409, stale.text
+        final = _read_plan(client, root, after)
+        assert not final.diagnostics
+        prefix = {run.key: run.request_id for run in initial.runs if run.key.step == "train"}
+        assert {run.key: run.request_id for run in final.runs if run.key.step == "train"} == prefix
+        successors = {run.key: run.inputs["checkpoint"].producer for run in final.runs if run.key.step == "successor"}
+        assert successors == {
+            RunKey("default", "successor", f"rate={rate}"): RunKey("default", "train", f"rate={rate}")
+            for rate in ("slow", "fast")
+        }
+        restored = client.post(url, json={
+            "revision": after["revision"], "change": {**change, "value": "initialize_from"},
+        })
+        assert restored.status_code == 200, restored.text
+        assert [patch["value"] for patch in restored.json()["patches"][0]["value"]["patches"]] == [
+            "initialize_from", 2,
+        ]
+
+        widened = client.patch(_URL, json={
+            "revision": after["revision"], "address": address,
+            "patches": [{"op": "remove", "path": "/inputs/checkpoint/where"}],
+        })
+        assert widened.status_code == 200, widened.text
+        refused = client.post(url, json={
+            "revision": widened.json()["revision"], "change": {**change, "value": "initialize_from"},
+        })
+        assert refused.status_code == 422, refused.text
+        assert "has no supported edit" in refused.text
 
 
 def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):

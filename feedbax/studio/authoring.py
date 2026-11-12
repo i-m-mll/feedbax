@@ -13,6 +13,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 from feedbax.component_registry.registry import ComponentRegistry
 from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
@@ -22,10 +23,12 @@ from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
+from feedbax.contracts.project_plan import ProjectPlan, RunKey
 from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS
+from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import (
     StudioAuthoredDocumentFamily,
@@ -49,6 +52,7 @@ from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     STUDIO_INDEPENDENT_KEY_SCHEDULE,
     StudioGraphMethodPayload,
+    StudioTrainContinuation,
 )
 from feedbax.contracts.training import (
     LossTermSpec,
@@ -80,6 +84,11 @@ _GRAPH_BATCH_SIZE = 1
 _DEFAULT_OPTIMIZER = "adam"
 type _Path = tuple[str, ...]
 type _Scalar = str | int | float
+type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
+_METHOD_PAYLOAD = ("method_payload", "payload")
+_CHECKPOINT_POLICY = (*_METHOD_PAYLOAD, "checkpoint_initialization")
+_METHOD_TOTAL = (*_METHOD_PAYLOAD, "target_total")
+_CHECKPOINT_CHOICES = {"initialize_from": "Initialize model only", "continue_from": "Carry training state"}
 
 
 def _document_schema(model: type[BaseModel]) -> str:
@@ -267,6 +276,7 @@ class _TrainFields:
         if project.sweep is not None or not (direct or linked):
             raise ValueError("These Train controls require an independent Train or a direct checkpoint continuation")
         self.project = project
+        self.step_id = step_id
         self.step = step
         self.linked = linked
         self.direct_unswept = direct and step.sweep is None and not step.document_overrides
@@ -457,7 +467,122 @@ class _TrainFields:
             documents=(*self.named_documents("graph"), *self.named_documents("task")),
         )
 
-    def training(self, task: TaskSpec | None) -> None:
+    def studio_method(self, payload: dict[str, JsonValue]) -> StudioGraphMethodPayload | None:
+        method_ref = _read(MethodRefSpec, payload.get("method_ref"))
+        envelope = _read(MethodPayloadEnvelope, payload.get("method_payload"))
+        if method_ref != STUDIO_GRAPH_METHOD or envelope is None:
+            return None
+        try:
+            method = self.registry.validate_payload(method_ref, envelope, path="/method_payload")
+        except ValueError:
+            return None
+        return method if isinstance(method, StudioGraphMethodPayload) else None
+
+    def checkpoint_boundary(
+        self, read_plan: _ReadPlan, method: StudioGraphMethodPayload, batches: int,
+    ) -> tuple[int, tuple[str, ...]] | None:
+        checkpoint = self.step.inputs["checkpoint"]
+        assert isinstance(checkpoint, StepReference)
+        plan = read_plan(())
+        runs = {run.key: run for run in plan.runs}
+        pairs = {}
+        for row in plan.rows:
+            if row.key.step != self.step_id:
+                continue
+            run = runs.get(row.key)
+            if run is None or run.admission_problem is not None or run.inputs.keys() != {"checkpoint"}:
+                return None
+            binding = run.inputs["checkpoint"]
+            source = runs.get(binding.producer)
+            reference = binding.member.reference
+            if (
+                source is None or source.kind != "train" or source.admission_problem is not None
+                or (source.key.variant, source.key.step) != (run.key.variant, checkpoint.step)
+                or not isinstance(reference, ProductRef) or not isinstance(reference.select, LastMember)
+                or reference.role != "checkpoint" or reference.request_id != source.request_id
+            ):
+                return None
+            pairs[run.key] = source.key
+        if not pairs:
+            return None
+
+        definitions = read_plan(tuple(dict.fromkeys((*pairs, *pairs.values())))).selected_definitions
+        counts: set[int] = set()
+        documents: set[str] = set()
+        editable_paths = tuple("/payload" + pointer(path) for path in (
+            _CHECKPOINT_POLICY, _METHOD_TOTAL, ("training_config", "n_batches"),
+        ))
+        for key, source_key in pairs.items():
+            target = definitions.get(key)
+            source = definitions.get(source_key)
+            if target is None or source is None:
+                return None
+            current = self.studio_method(target.payload)
+            predecessor = self.studio_method(source.payload)
+            target_config = _read(TrainingConfig, target.payload.get("training_config"))
+            source_config = _read(TrainingConfig, source.payload.get("training_config"))
+            if (
+                current is None or predecessor is None or target_config is None or source_config is None
+                or current.checkpoint_initialization != method.checkpoint_initialization
+                or current.target_total != method.target_total or target_config.n_batches != batches
+                or current.optimizer != predecessor.optimizer
+                or target_config.grad_clip != source_config.grad_clip
+                or (current.optimizer.lr_schedule is not None and current.optimizer.lr_schedule.kind != "constant")
+                or any(
+                    (origin.kind != "step" or origin.path.startswith("/sweep/")) and any(
+                        path == field or path.startswith(field + "/") for field in editable_paths
+                    ) for path, origin in target.sources.items()
+                )
+            ):
+                return None
+            counts.add(predecessor.target_total)
+            documents.update(target.document_uses | source.document_uses)
+            subset = plan.subsets.get((key.variant, key.step, "checkpoint"))
+            if subset is not None and subset.document is not None:
+                documents.add(subset.document)
+        return (counts.pop(), tuple(sorted(documents))) if len(counts) == 1 else None
+
+    def checkpoint_carry(self, method: StudioGraphMethodPayload, read_plan: _ReadPlan | None) -> None:
+        policy = method.checkpoint_initialization
+        stateful = isinstance(policy, StudioTrainContinuation)
+        value = policy.mode if stateful else policy
+        batches = policy.progress.additional_batches if stateful else method.target_total
+        preset = policy == "initialize_from" or (
+            stateful
+            and (policy.optimizer, policy.schedule, policy.rng, policy.cursor) == (
+                "preserve", "continue", "carry", "carry",
+            )
+            and not policy.progress.self_contained and not policy.progress.schedule_discontinuity_exemptions
+        )
+        scope = self.checkpoint_boundary(read_plan, method, batches) if preset and read_plan and batches else None
+        if not preset:
+            value = "Authored policy" if value is not None else None
+        elif scope is None and value is not None:
+            value = _CHECKPOINT_CHOICES[value]
+        elif stateful and scope is not None and policy.progress.source_completed_batches != scope[0]:
+            value = None
+
+        def change(selected: _Scalar) -> list[SetProjectValue]:
+            assert scope is not None and batches is not None
+            if selected == "initialize_from":
+                return [self.set(_CHECKPOINT_POLICY, "initialize_from"), self.set(_METHOD_TOTAL, batches)]
+            continuation = StudioTrainContinuation(
+                mode="continue_from", optimizer="preserve", schedule="continue", rng="carry", cursor="carry",
+                progress=CheckpointContinuationRequest(source_completed_batches=scope[0], additional_batches=batches),
+            )
+            return [
+                self.set(_CHECKPOINT_POLICY, continuation.model_dump(mode="json", exclude_unset=True)),
+                self.set(_METHOD_TOTAL, continuation.progress.target_total),
+            ]
+
+        self.field(
+            _CHECKPOINT_POLICY, "Checkpoint carryover", value,
+            _options(_CHECKPOINT_CHOICES) if scope is not None else None, change,
+            source=self.sources.get(pointer((*_CHECKPOINT_POLICY, "mode"))),
+            documents=scope[1] if scope is not None else (),
+        )
+
+    def training(self, task: TaskSpec | None, read_plan: _ReadPlan | None) -> None:
         raw_config = self.payload.get("training_config")
         config = None if _read(DocumentReference, raw_config) else _read(TrainingConfig, raw_config)
         n_steps = infer_task_n_steps(task)
@@ -465,18 +590,8 @@ class _TrainFields:
         if n_steps is not None:
             defaults.n_reach_steps = n_steps
         method_ref = _read(MethodRefSpec, self.payload.get("method_ref"))
-        envelope = _read(MethodPayloadEnvelope, self.payload.get("method_payload"))
         registration = self.registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
-        method = None
-        if method_ref == STUDIO_GRAPH_METHOD and envelope is not None:
-            try:
-                method = self.registry.validate_payload(
-                    method_ref, envelope, path="/method_payload"
-                )
-            except ValueError:
-                pass
-        if not isinstance(method, StudioGraphMethodPayload):
-            method = None
+        method = self.studio_method(self.payload)
 
         def method_change(_value: _Scalar) -> list[SetProjectValue]:
             settings = config or defaults
@@ -512,6 +627,8 @@ class _TrainFields:
         )
 
         if method is not None:
+            if self.linked:
+                self.checkpoint_carry(method, read_plan)
             optimizer_path = ("method_payload", "payload", "optimizer", "type")
             choices = {name: name for name in optimizer_types()}
             self.field(
@@ -574,10 +691,9 @@ class _TrainFields:
                     patches.append(self.set(rate_path, {"learning_rate": value}))
                 elif name == "n_batches" and method.continuation is not None:
                     assert type(value) is int
-                    method_path = ("method_payload", "payload")
                     patches.extend((
-                        self.set((*method_path, *mirror), method.continuation.progress.source_completed_batches + value),
-                        self.set((*method_path, "checkpoint_initialization", "progress", "additional_batches"), value),
+                        self.set(_METHOD_TOTAL, method.continuation.progress.source_completed_batches + value),
+                        self.set((*_CHECKPOINT_POLICY, "progress", "additional_batches"), value),
                     ))
                 else:
                     patches.append(self.set(("method_payload", "payload", *mirror), value))
@@ -614,6 +730,7 @@ def project_train_fields(
     change: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | None,
     *,
     components: ComponentRegistry | None = None,
+    read_plan: _ReadPlan | None = None,
 ) -> tuple[
     list[StudioAuthoringField], list[SetProjectValue], list[str], StudioReachTargetAuthoring | None,
 ]:
@@ -636,7 +753,7 @@ def project_train_fields(
         and graph is not None and components is not None else None
     )
     definition.objective(graph, binding, endpoint)
-    definition.training(task)
+    definition.training(task, read_plan)
     if graph is not None and components is not None and not definition.named_documents("graph"):
         definition.inline_component_fields(graph, components)
 
