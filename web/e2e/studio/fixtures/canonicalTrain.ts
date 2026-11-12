@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { expect, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -33,6 +33,12 @@ export async function seedManagedProject(request: APIRequestContext, files: read
 
 export function mapStep(page: Page, stepId: string) {
   return page.locator('[data-map-card]').getByRole('button', { name: `Select ${stepId}`, exact: true });
+}
+
+export async function captureStudioWindow(page: Page, info: TestInfo, name: string) {
+  const path = info.outputPath(`${name}.png`);
+  await page.screenshot({ path, animations: 'disabled' });
+  await info.attach(name, { path, contentType: 'image/png' });
 }
 
 export async function openResultsSlot(page: Page) {

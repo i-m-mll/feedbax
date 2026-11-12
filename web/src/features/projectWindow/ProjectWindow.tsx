@@ -10,6 +10,7 @@ import {
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { useElementSize } from '@/hooks/useElementSize';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
@@ -101,26 +102,6 @@ function focusRegion(root: HTMLElement | null, region: WindowRegion) {
   return !!target;
 }
 
-function usePanelSize() {
-  const panel = useRef<HTMLElement | null>(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  useLayoutEffect(() => {
-    const element = panel.current;
-    if (!element) return;
-    function measure(width: number, height: number) {
-      const next = { width: Math.round(width), height: Math.round(height) };
-      setSize((previous) => next.width === previous.width && next.height === previous.height ? previous : next);
-    }
-    measure(element.clientWidth, element.clientHeight);
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) measure(entry.contentRect.width, entry.contentRect.height);
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  return { panel, ...size };
-}
-
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
   onBack, onForward, commands, focusRequest, variant, overlay, clock, failure, problems, activity,
@@ -136,7 +117,7 @@ export function ProjectWindow({
     secondary: `${id}-secondary`,
   };
   const root = useRef<HTMLDivElement>(null);
-  const { panel, width, height } = usePanelSize();
+  const { ref: panel, width, height } = useElementSize<HTMLElement>();
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
   const [paletteScope, setPaletteScope] = useState<'project' | 'activity' | null>(null);
@@ -154,7 +135,9 @@ export function ProjectWindow({
     secondary: secondaryView ? renderView(secondaryView, 'secondary') : null,
   };
   const focusedRegion = regions[focusedSlot];
-  const fit = fitProjectWindow(width, height, secondaryView ? state : { ...state, secondaryView: null }, preview);
+  const fit = fitProjectWindow(width, height, secondaryView ? state : { ...state, secondaryView: null }, preview, {
+    drawer: Boolean(focusedRegion?.drawer), inspector: Boolean(focusedRegion?.inspector),
+  });
   const detailsVisible = state.mode !== 'map';
   const fullMapVisible = state.mode === 'map' || (state.mode === 'both' && fit.mapHeight.open);
   const mapDrawerVisible = fullMapVisible && fit.mapDrawer.open;
@@ -306,7 +289,7 @@ export function ProjectWindow({
           <WindowButton command={forward} icon={ArrowRight} />
           <WindowButton command={steps} icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} />
         </div>
-        <div className="shell-frame__cell studio-window-bar__project" data-separated={mapDrawerVisible ? '' : undefined} data-tauri-drag-region>
+        <div className="shell-frame__cell studio-window-bar__project" data-separated="" data-tauri-drag-region>
           <h1 className="min-w-0 truncate text-sm font-semibold" data-tauri-drag-region>{projectName}</h1>
           {saveStatus}
           {variant}
@@ -373,7 +356,7 @@ export function ProjectWindow({
         <section id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
-            <div className="studio-window-side__contents">{focusedRegion?.drawer}</div>
+            <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>{focusedRegion?.drawer}</div>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
                 layout={fit.detailsDrawer} className="studio-window-resize studio-window-resize--right" {...resizeProps('detailsDrawerWidth')} />
@@ -398,7 +381,7 @@ export function ProjectWindow({
                   data-focused={focusedSlot === slot ? '' : undefined} hidden={isFolded}
                   onFocusCapture={() => focusSlot(slot)} onPointerDownCapture={() => focusSlot(slot)}>
                   <header className="studio-window-slot__header">
-                    <h2 className="min-w-0 truncate text-xs font-semibold">{studioName(view)}</h2>
+                    <h2 className="studio-window-slot__name">{studioName(view)}</h2>
                     <div className="studio-window-slot__controls">{region.header}</div>
                     {slot === 'primary' && !split && (
                       <WindowButton command={splitCommand} icon={Columns2} />
@@ -418,7 +401,7 @@ export function ProjectWindow({
           })}
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
-            <div className="studio-window-side__contents">{focusedRegion?.inspector}</div>
+            <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>{focusedRegion?.inspector}</div>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}
                 layout={fit.inspector} className="studio-window-resize studio-window-resize--left" {...resizeProps('inspectorWidth')} />

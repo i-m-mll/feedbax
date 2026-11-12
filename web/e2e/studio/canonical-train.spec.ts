@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import { authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, enter, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
   StudioJobSnapshot,
@@ -122,7 +123,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   );
   const { last } = evidence.successor.terminal_loss.metrics.train_loss;
   await expect(results.getByTitle('Last loss at update 1202')).toHaveText(
-    new Intl.NumberFormat(undefined, { maximumSignificantDigits: 5 }).format(last),
+    formatTrainingLoss(last),
   );
   await page.locator('summary').filter({ hasText: /^Current result$/ }).click();
   const successorResult = page.getByRole('region', { name: 'Current result' });
@@ -316,6 +317,13 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(valueButton('Medium · 0.002')).toHaveAttribute('aria-pressed', 'false');
   await expect(source).toContainText('2 of 3');
   await sweep.click();
+  await page.keyboard.press('Tab');
+  const mark = source.locator('.studio-map-run-mark').first();
+  await mark.focus();
+  await expect(mark).not.toHaveCSS('box-shadow', 'none');
+  const firstRow = table.locator('tbody tr[data-index]').first();
+  await firstRow.getByRole('button').focus();
+  await expect(firstRow).toHaveCSS('outline-style', 'solid');
   const prefix = await run('train');
 
   const create = submitted(page, filesPath);
@@ -385,6 +393,16 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   expect(unselected.attempts).toEqual([]);
 
   await source.getByRole('button', { name: 'Select train', exact: true }).click();
+  await sweep.click();
+  await valueButton('Slow · 0.001').click();
+  await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
+  await sweep.click();
+  await page.keyboard.press('Tab');
+  await firstRow.getByRole('button').focus();
+  await expect(firstRow).toHaveCSS('outline-style', 'solid');
+  await captureStudioWindow(page, info, '01-map-runs');
+
+  await source.getByRole('button', { name: 'Select train', exact: true }).click();
   await table.getByRole('row').filter({ hasText: selected[0].label }).getByRole('button').click();
   const explicit = submitted(page, filesPath);
   await runs.getByRole('button', { name: 'New Step', exact: true }).click();
@@ -424,9 +442,35 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     await expect(loss.locator('line title').filter({ hasText: producer.job_id }).last()).toHaveText(/Updates \d+–2 .*Local updates \d+–2/);
     await expect(loss.locator('line title').filter({ hasText: attempt.job_id }).last()).toHaveText(/Updates \d+–6 .*Local updates \d+–4/);
     await expect(results.getByTitle('Last loss at update 6')).toHaveText(
-      new Intl.NumberFormat(undefined, { maximumSignificantDigits: 5 }).format(evidence[attempt.job_id].last_loss),
+      formatTrainingLoss(evidence[attempt.job_id].last_loss),
     );
   }
+  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
+  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await rail.getByRole('tab', { name: 'Results', exact: true }).click();
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  const desktopLoss = page.locator('[data-slot="primary"]').getByRole('img', { name: 'Loss', exact: true });
+  await expect(desktopLoss.locator('text').filter({ hasText: /^6$/ })).toBeVisible();
+  const desktopWidth = await desktopLoss.evaluate((svg: SVGSVGElement) => svg.viewBox.baseVal.width);
+  expect(desktopWidth).toBeGreaterThan(700);
+  await captureStudioWindow(page, info, '03-results');
+  await rail.getByRole('tab', { name: 'Runs', exact: true }).click();
+  await openResultsSlot(page);
+  const chartWidth = () => loss.evaluate((svg: SVGSVGElement) => svg.viewBox.baseVal.width);
+  await page.setViewportSize({ width: 620, height: 860 });
+  await expect(page.getByRole('complementary', { name: 'Details Drawer' })).toBeHidden();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toBeHidden();
+  await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
+  await expect.poll(chartWidth).toBeLessThan(desktopWidth);
+  await expect(loss.locator('polyline')).toHaveCount(1);
+  const bottom = page.locator('.studio-window-bottom');
+  await expect.poll(() => bottom.evaluate(({ clientHeight }) => clientHeight)).toBeLessThanOrEqual(40);
+  await captureStudioWindow(page, info, '04-narrow-results');
+  const splitWidth = await chartWidth();
+  await page.setViewportSize({ width: 520, height: 860 });
+  await expect(page.locator('.studio-window-slot__strip')).toBeVisible();
+  await expect.poll(chartWidth).toBeGreaterThan(splitWidth);
+  await captureStudioWindow(page, info, '05-folded-results');
   console.info('Mounted stateful Train pairing', JSON.stringify({
     project: id, revision: snapshot.revision, selection: selected, rows: successorRows, evidence,
     excluded: unselected.key, explicit: snapshot.project.steps?.[rowChild]?.inputs,

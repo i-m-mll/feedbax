@@ -86,7 +86,7 @@ function MarkButton({
       type="button"
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
-      className={`relative h-3 w-3 shrink-0 rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 ${ring || ''}`}
+      className={`studio-map-run-mark relative h-3 w-3 shrink-0 rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 ${ring || ''}`}
       {...selectionButton((extend) => {
         if (mark.kind === 'group') applySelection(() => selectSweepGroup(stepId, mark.terms));
         else applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));

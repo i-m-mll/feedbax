@@ -3,6 +3,7 @@ import { apiErrorMessage } from '@/api/request';
 import { readStudioTrainAuthoring } from '@/api/studioAuthoring';
 import {
   StudioDefinitionForm,
+  StudioDocumentPicker,
   type FieldEdit,
   type StudioDefinitionField,
   type StudioFieldCommand,
@@ -24,6 +25,7 @@ interface Props {
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly renderAdditionalFields?: (projected: ReadonlySet<string>) => ReactNode;
   readonly view?: 'model' | 'task' | 'objective' | 'training';
+  readonly documentPicker?: boolean;
   readonly focusFirstField?: boolean;
   readonly onFirstFieldFocused?: () => void;
 }
@@ -119,7 +121,7 @@ function validateRecipe(
 }
 
 export function StudioTrainAuthoringForm(props: Props) {
-  const { editor, stepId, picker, onChooseSweepValue, renderAdditionalFields, focusFirstField, onFirstFieldFocused } = props;
+  const { editor, stepId, picker, documentPicker, onChooseSweepValue, renderAdditionalFields, focusFirstField, onFirstFieldFocused } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
@@ -196,6 +198,14 @@ export function StudioTrainAuthoringForm(props: Props) {
 
   const error = editError ?? loadError ?? (editorError ? apiErrorMessage(editorError) : null);
   const fields = shown ? formFields(shown, picker ? { ...props, component: undefined, selection: undefined } : props) : [];
+  const onEdit = (change: StudioFieldCommand) => { void apply(change); };
+  if (documentPicker) return <>
+    {fields[0] && <fieldset ref={fieldSet} disabled={disabled} className="studio-window-slot__document">
+      <StudioDocumentPicker field={fields[0]} selection={selection} onEdit={onEdit} />
+    </fieldset>}
+    {error && <p className="min-w-0 truncate text-xs" role="alert">{error}</p>}
+    {!shown && !error && <p className="sr-only" role="status">Loading Train definition</p>}
+  </>;
   return (
     <>
       {error && <p role="alert">{error}</p>}
@@ -206,7 +216,7 @@ export function StudioTrainAuthoringForm(props: Props) {
               const value = fields.find(({ id }) => id === fieldId)?.resolved[0]?.value;
               if (value !== undefined) void apply({ fieldId, selection, edit: { kind: 'toSweep', value } });
             }} /> : <StudioDefinitionForm fields={fields} selection={selection} onChooseSweepValue={onChooseSweepValue}
-              onEdit={(change) => { void apply(change); }} />}
+              onEdit={onEdit} />}
           </fieldset>
         )
         : !error && <p role="status">Loading Train definition</p>}

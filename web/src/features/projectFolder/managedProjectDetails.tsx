@@ -1,7 +1,7 @@
 import dagre from '@dagrejs/dagre';
-import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react';
+import { ReactFlow, ReactFlowProvider, getNodesBounds, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchComponents } from '@/api/client';
 import { apiErrorMessage } from '@/api/request';
 import { studioAccessibleName, studioName, studioReason, type StudioNameId, type StudioReasonId } from '@/components/activity/studioVocabulary';
@@ -77,7 +77,7 @@ function authoredDefinition(project: AuthoredProject, stepId: string, field: Def
 }
 
 function detailHeader(definition: Definition | null) {
-  return definition ? <span>{definition.label}</span> : null;
+  return definition ? <span className="studio-window-slot__document">{definition.label}</span> : null;
 }
 
 function DetailReason({ reason, name }: { reason: StudioReasonId; name: StudioNameId }) {
@@ -118,6 +118,17 @@ function ModelCanvas({ graph, positions, selectedId, onSelect }: ReturnType<type
   graph: GraphSpec;
   positions?: Record<string, { x: number; y: number }>;
 }) {
+  const { fitBounds, viewportInitialized } = useReactFlow();
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  // The graph owns authored nodes. React Flow owns their rendered dimensions.
+  const bounds = useStore(({ nodeLookup }) => {
+    const rendered = [...nodeLookup.values()];
+    return rendered.length > 0 && rendered.every((node) => !!node.measured.width && !!node.measured.height)
+      ? getNodesBounds(rendered) : null;
+  }, (first, second) => first?.x === second?.x && first?.y === second?.y &&
+    first?.width === second?.width && first?.height === second?.height);
+  const navigated = useRef(false);
   const { nodes, edges } = useMemo(() => {
     const entries = Object.entries(graph.nodes ?? {});
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
@@ -136,23 +147,30 @@ function ModelCanvas({ graph, positions, selectedId, onSelect }: ReturnType<type
     });
     return { nodes, edges };
   }, [graph, positions]);
+  const shownNodes = useMemo(() => nodes.map((node) => ({ ...node, selected: selectedId === `component:${node.id}` })), [nodes, selectedId]);
+  const shownEdges = useMemo(() => edges.map((edge) => ({ ...edge, selected: selectedId === edge.id })), [edges, selectedId]);
+  useEffect(() => {
+    if (!bounds || !viewportInitialized || !width || !height) return;
+    const frame = requestAnimationFrame(() => {
+      if (!navigated.current) void fitBounds(bounds, { padding: 0.14 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [fitBounds, bounds, viewportInitialized, width, height]);
   return (
-    <ReactFlowProvider>
-      <div className="h-full min-h-52">
-        <ReactFlow nodes={nodes.map((node) => ({ ...node, selected: selectedId === `component:${node.id}` }))}
-          edges={edges.map((edge) => ({ ...edge, selected: selectedId === edge.id }))}
-          fitView nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null} proOptions={{ hideAttribution: true }}
-          onNodesChange={(changes) => {
-            const change = changes.find((item) => item.type === 'select' && item.selected);
-            if (change?.type === 'select') onSelect(`component:${change.id}`);
-          }}
-          onEdgesChange={(changes) => {
-            const change = changes.find((item) => item.type === 'select' && item.selected);
-            if (change?.type === 'select') onSelect(change.id);
-          }}
-          onPaneClick={() => onSelect(null)} />
-      </div>
-    </ReactFlowProvider>
+    <div className="h-full min-h-0">
+      <ReactFlow nodes={shownNodes} edges={shownEdges}
+        nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null} proOptions={{ hideAttribution: true }}
+        onMove={(event) => { if (event) navigated.current = true; }}
+        onNodesChange={(changes) => {
+          const change = changes.find((item) => item.type === 'select' && item.selected);
+          if (change?.type === 'select') onSelect(`component:${change.id}`);
+        }}
+        onEdgesChange={(changes) => {
+          const change = changes.find((item) => item.type === 'select' && item.selected);
+          if (change?.type === 'select') onSelect(change.id);
+        }}
+        onPaneClick={() => onSelect(null)} />
+    </div>
   );
 }
 
@@ -283,12 +301,14 @@ function useSceneDetail({ editor, activeView, focus }: DetailInputs, definition:
           setOverlays({ scope: sceneScope, value: next });
         }} />
     </>,
-    body: source ? <>
-      <SceneCanvas view={view} time={0} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} {...selection} />
+    body: source ? <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
+        <SceneCanvas view={view} time={0} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} fitToSlot {...selection} />
+      </div>
       {focus && scene && <DetailReason reason="scenePlaybackUnavailable" name="playback" />}
-    </> : omission,
+    </div> : omission,
     drawer: scene ? <SceneDrawer scene={scene} {...selection} /> : null,
-    inspector: scene ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
+    inspector: scene && selection.selectedId ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
   };
 }
 
@@ -336,7 +356,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       params={Object.fromEntries(Object.entries(raw).filter(([name]) => !projected.has(authoredPointer(['graph', 'nodes', id, 'params', name]))))}
       definition={definition} selection={selected} schemas={schemas}
       onEdit={canEdit && !definition.shared ? (field, value) => change.edit('graph', definition, field, ['nodes', id, 'params', field], value) : undefined} />;
-    return <section key={id} aria-label={studioName('details')} className="space-y-2 p-2">
+    return <section key={id} aria-label={studioName('details')} className="space-y-2">
       <h3 className="font-medium">{id}</h3>
       <p className="text-sm">{component.type}</p>
       {definition.shared && <DetailReason reason="definitionReadOnly" name="model" />}
@@ -354,14 +374,15 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     model: {
       documentId: model?.id,
       header: detailHeader(model),
-      body: graph && components.length ? <ModelCanvas key={JSON.stringify([saved.project_id, model?.id ?? stepId])} graph={graph}
-        positions={positions} {...modelSelection} /> : <DetailReason reason={graph ? 'unavailable' : 'definitionUnavailable'} name={graph ? 'components' : 'model'} />,
-      drawer: graph && <>
+      body: graph && components.length ? <ReactFlowProvider key={JSON.stringify([saved.project_id, model?.id ?? stepId])}>
+        <ModelCanvas graph={graph} positions={positions} {...modelSelection} />
+      </ReactFlowProvider> : <DetailReason reason={graph ? 'unavailable' : 'definitionUnavailable'} name={graph ? 'components' : 'model'} />,
+      drawer: graph && (components.length > 0 || (graph.wires?.length ?? 0) > 0) ? <>
         <DetailList name="components" items={components.map(([id]) => ({ id: `component:${id}`, label: id }))} {...modelSelection} />
         <DetailList name="wires" items={(graph.wires ?? []).map((item, index) => ({
           id: `wire:${index}`, label: `${endpoint(item.source_node, item.source_port)} → ${endpoint(item.target_node, item.target_port)}`,
         }))} {...modelSelection} />
-      </>,
+      </> : null,
       inspector: model && component && selection ? componentParameters(model, component, selection) : wire ? <WireDetails wire={wire} /> : null,
     },
     task: {
@@ -372,8 +393,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
           issue={change.issue('task')} onEdit={canEdit && !taskDocument.shared
             ? (field, value) => change.edit('task', taskDocument, field, ['params', field], value) : undefined} />
         : <DetailReason reason="definitionUnavailable" name="task" />,
-      drawer: task && <DetailList name="parameters" items={Object.keys(task.params ?? {}).map((name) => ({ id: name, label: humanizeLabel(name) }))} {...taskSelection} />,
-      inspector: taskParam ? <dl className="space-y-1 p-2 text-sm">
+      drawer: task && Object.keys(task.params ?? {}).length > 0
+        ? <DetailList name="parameters" items={Object.keys(task.params ?? {}).map((name) => ({ id: name, label: humanizeLabel(name) }))} {...taskSelection} />
+        : null,
+      inspector: taskParam ? <dl className="space-y-1 text-sm">
         <dt className="font-medium">{humanizeLabel(taskParam[0])}</dt><dd><StructuredValue value={taskParam[1]} /></dd>
       </dl> : null,
     },

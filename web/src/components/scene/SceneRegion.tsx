@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
 import { LocateFixed, ZoomIn, ZoomOut } from 'lucide-react';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { liveTrainingEffectorTrack, liveTrainingTargetTrack } from '@/features/scenario/liveTraining';
 import type { ResolvedScene, ResolvedSceneElement } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplayPolyline, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
+import { useElementSize } from '@/hooks/useElementSize';
 import { PlanarSceneElement } from './PlanarSceneElement';
 import { WORKSPACE_SVG_HEIGHT, WORKSPACE_SVG_WIDTH, fitScale, includePoint, niceScaleLength, sceneBounds, type ScenePoint } from './planarProjection';
 import { fittedCamera, sceneEntityOverlay, sceneGeometry, zoomScene, type SceneCamera, type SceneDrawing, type SceneOverlay, type SceneView } from './sceneView';
@@ -50,15 +51,18 @@ type SceneDrawingProps = SceneSelection & {
   camera: SceneCamera;
   onCameraChange: (camera: SceneCamera) => void;
   hiddenOverlays: ReadonlySet<SceneOverlay>;
+  fitToSlot?: boolean;
   problemEntityIds?: ReadonlySet<string>;
   beginAttachment?: (anchor: ResolvedScene['anchors'][number]) => SceneAttachmentDrag | null;
 };
 
 function SceneDrawingCanvas({
-  view, time, camera, onCameraChange, hiddenOverlays, problemEntityIds, selectedId, onSelect, beginAttachment,
+  view, time, camera, onCameraChange, hiddenOverlays, problemEntityIds, selectedId, onSelect, beginAttachment, fitToSlot = false,
 }: SceneDrawingProps & { view: SceneDrawing }) {
   const gridId = useId();
-  const canvas = useRef<SVGSVGElement>(null);
+  const { ref: canvas, width, height } = useElementSize<SVGSVGElement>(fitToSlot);
+  const viewportWidth = fitToSlot && width > 0 ? width : WORKSPACE_SVG_WIDTH;
+  const viewportHeight = fitToSlot && height > 0 ? height : WORKSPACE_SVG_HEIGHT;
   const pan = useRef<{ start: ScenePoint; camera: SceneCamera; ratio: number; moved: boolean } | null>(null);
   const attachment = useRef<{
     pointer: number; edit: SceneAttachmentDrag; origin: DOMPoint; inverse: DOMMatrix;
@@ -80,12 +84,19 @@ function SceneDrawingCanvas({
     workspaceReplayPolyline(goalTrack).forEach((point) => includePoint(bounds, point));
     return bounds;
   }, [view.scene, path, goalTrack]);
-  const scale = attachment.current?.scale ?? fitScale(bounds) * camera.zoom;
+  const fit = fitScale(bounds, viewportWidth, viewportHeight);
+  const autoFit = !fitToSlot || camera === fittedCamera;
+  const navigatedFit = useRef<number>();
+  useLayoutEffect(() => {
+    if (autoFit) navigatedFit.current = undefined;
+    else navigatedFit.current ??= fit;
+  }, [autoFit, fit]);
+  const scale = attachment.current?.scale ?? (autoFit ? fit : navigatedFit.current ?? fit) * camera.zoom;
   const center: ScenePoint = attachment.current?.center ?? [(bounds.min[0] + bounds.max[0]) / 2, (bounds.min[1] + bounds.max[1]) / 2];
   const panOffset = attachment.current?.camera.pan ?? camera.pan;
   const project = ([x, y]: ScenePoint): ScenePoint => [
-    WORKSPACE_SVG_WIDTH / 2 + (x - center[0]) * scale + panOffset.x,
-    WORKSPACE_SVG_HEIGHT / 2 - (y - center[1]) * scale + panOffset.y,
+    viewportWidth / 2 + (x - center[0]) * scale + panOffset.x,
+    viewportHeight / 2 - (y - center[1]) * scale + panOffset.y,
   ];
   const meters = niceScaleLength(90 / Math.max(scale, 1));
   const entities = new Map(scene.entities.map((entity) => [entity.id, entity]));
@@ -103,7 +114,7 @@ function SceneDrawingCanvas({
   const beginPan = (event: PointerEvent<SVGSVGElement>) => {
     if (event.button !== 0 || attachment.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = Math.min(rect.width / WORKSPACE_SVG_WIDTH, rect.height / WORKSPACE_SVG_HEIGHT);
+    const ratio = Math.min(rect.width / viewportWidth, rect.height / viewportHeight);
     if (!(ratio > 0)) return;
     pan.current = { start: [event.clientX, event.clientY], camera, ratio, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -162,7 +173,7 @@ function SceneDrawingCanvas({
   return (
     <svg
       ref={canvas}
-      viewBox={`0 0 ${WORKSPACE_SVG_WIDTH} ${WORKSPACE_SVG_HEIGHT}`}
+      viewBox={`0 0 ${viewportWidth} ${viewportHeight}`}
       className="h-full min-h-0 w-full touch-none bg-white"
       role="group"
       aria-label={studioName('scene')}
@@ -196,7 +207,7 @@ function SceneDrawingCanvas({
           <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#eef2f7" strokeWidth="1" />
         </pattern>
       </defs>
-      <rect width={WORKSPACE_SVG_WIDTH} height={WORKSPACE_SVG_HEIGHT} fill={`url(#${gridId})`} />
+      <rect width={viewportWidth} height={viewportHeight} fill={`url(#${gridId})`} />
       <g opacity={view.kind === 'replay' ? 0.6 : 1}>
         {visibleElements.map((element) => {
           const entity = entities.get(element.entity_id);
@@ -252,7 +263,7 @@ function SceneDrawingCanvas({
           />
         );
       })}
-      <g transform={`translate(28 ${WORKSPACE_SVG_HEIGHT - 32})`} pointerEvents="none" aria-hidden="true">
+      <g transform={`translate(28 ${viewportHeight - 32})`} pointerEvents="none" aria-hidden="true">
         <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="#334155" strokeWidth={2} />
         <text y={-9} className="fill-slate-600 text-[11px] font-medium">
           {meters >= 1 ? `${meters} ${studioUnit('meter')}` : `${Math.round(meters * 100)} ${studioUnit('centimeter')}`}
@@ -313,7 +324,7 @@ export function SceneHeaderControls({
   const control = (id: StudioNameId, button: ReactNode) => renderControl ? renderControl(id, button) : button;
   const buttonClass = 'rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 aria-pressed:bg-violet-100';
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="studio-scene-controls flex flex-wrap items-center gap-1">
       {control('zoomIn', <button type="button" aria-label={studioName('zoomIn')} className={buttonClass} onClick={() => onCameraChange(zoomScene(camera, 1.2))}><ZoomIn className="size-4" aria-hidden="true" /></button>)}
       {control('zoomOut', <button type="button" aria-label={studioName('zoomOut')} className={buttonClass} onClick={() => onCameraChange(zoomScene(camera, 1 / 1.2))}><ZoomOut className="size-4" aria-hidden="true" /></button>)}
       {control('fitView', <button type="button" aria-label={studioName('fitView')} className={buttonClass} onClick={() => onCameraChange(fittedCamera)}><LocateFixed className="size-4" aria-hidden="true" /></button>)}

@@ -293,8 +293,9 @@ const StepCard = memo(function StepCard({
       />
       <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} />
       {selection && (
-        <p className="truncate rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
-          {[...terms, studioCountOf(selected.size, step.runs.length)].join(' · ')}
+        <p className="flex items-baseline gap-x-1 rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
+          {terms.length > 0 && <span className="min-w-0 truncate">{terms.join(' · ')}</span>}
+          <span className="shrink-0 whitespace-nowrap tabular-nums">{studioCountOf(selected.size, step.runs.length)}</span>
         </p>
       )}
       <PipelineRunMarks
@@ -311,7 +312,10 @@ const StepCard = memo(function StepCard({
             <li key={id} className="relative px-3 py-1 text-xs text-slate-700">
               <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in', id)} className="pointer-events-none absolute left-0 top-1/2" />
               <strong className="block font-medium">{label}</strong>
-              {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-1">
+                {subset.terms.length > 0 && <span className="min-w-0 break-words">{subset.terms.join(' · ')}</span>}
+                <span className="shrink-0 whitespace-nowrap tabular-nums">{studioCountOf(subset.count, subset.total)}</span>
+              </div>
             </li>
           ))}
         </ul>

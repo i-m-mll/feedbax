@@ -4,6 +4,14 @@ export const plotWidth = 240;
 export const plotHeight = 126;
 const plotInset = 8;
 
+const conciseLoss = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 4 });
+const scientificLoss = new Intl.NumberFormat(undefined, { notation: 'scientific', maximumSignificantDigits: 4 });
+
+export function formatTrainingLoss(value: number) {
+  const magnitude = Math.abs(value);
+  return (magnitude > 0 && (magnitude < 0.001 || magnitude >= 10_000) ? scientificLoss : conciseLoss).format(value);
+}
+
 export function projectSeries(series: readonly Point[][], preserveAspect = false) {
   let minX = Infinity;
   let maxX = -Infinity;

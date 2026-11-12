@@ -25,6 +25,7 @@ export function fitProjectWindow(
   height: number,
   state: ProjectWindowState,
   preview: ProjectWindowSizePreview = {},
+  sideContent = { drawer: true, inspector: true },
 ) {
   const size = (key: PreferredWindowSize) => preview[key] ?? state[key];
   const map = fitPanes(width, minSlotWidth, [{
@@ -40,12 +41,18 @@ export function fitProjectWindow(
   }]).panes[0]!;
 
   const detailsDrawerWidth = size('detailsDrawerWidth');
+  const inspectorWidth = size('inspectorWidth');
+  const sideWidth = (state.detailsDrawerOpen ? Math.max(minDetailsDrawerWidth, detailsDrawerWidth) : 0)
+    + (state.inspectorOpen ? Math.max(minInspectorWidth, inspectorWidth) : 0);
+  const compact = width < (state.secondaryView === null ? minSlotWidth : 2 * minSlotWidth) + sideWidth;
+  const drawerOpen = state.detailsDrawerOpen && (!compact || sideContent.drawer);
+  const inspectorOpen = state.inspectorOpen && (!compact || sideContent.inspector);
   const splitMinimum = 2 * minSlotWidth
-    + (state.detailsDrawerOpen ? Math.max(minDetailsDrawerWidth, detailsDrawerWidth) : 0)
-    + (state.inspectorOpen ? minInspectorWidth : 0);
+    + (drawerOpen ? Math.max(minDetailsDrawerWidth, detailsDrawerWidth) : 0)
+    + (inspectorOpen ? minInspectorWidth : 0);
   const details = fitPanes(width, minSlotWidth, [
-    { open: state.detailsDrawerOpen, preferredSize: detailsDrawerWidth, minSize: minDetailsDrawerWidth },
-    { open: state.inspectorOpen, preferredSize: size('inspectorWidth'), minSize: minInspectorWidth },
+    { open: drawerOpen, preferredSize: detailsDrawerWidth, minSize: minDetailsDrawerWidth },
+    { open: inspectorOpen, preferredSize: inspectorWidth, minSize: minInspectorWidth },
     { open: state.secondaryView !== null && width >= splitMinimum,
       preferredSize: size('secondaryWidth'), minSize: minSlotWidth,
       collapsedSize: state.secondaryView === null ? 0 : foldWidth },
