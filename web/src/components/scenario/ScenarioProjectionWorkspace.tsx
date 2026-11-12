@@ -26,6 +26,11 @@ import type { SampledTaskTrial } from '@/api/client';
 import { sampleTaskTrials } from '@/api/client';
 import { Canvas } from '@/components/canvas/Canvas';
 import { PlaybackControls } from '@/components/viewer/PlaybackControls';
+import { PlanarSceneElement } from '@/components/scene/PlanarSceneElement';
+import {
+  WORKSPACE_SVG_WIDTH, WORKSPACE_SVG_HEIGHT, fitScale, includePoint, niceScaleLength, sceneBounds,
+  type SceneBounds, type ScenePoint,
+} from '@/components/scene/planarProjection';
 import {
   DataTable,
   DataTableCell,
@@ -183,53 +188,6 @@ const PROJECTIONS: Array<{
   { id: 'objectives', label: 'Objectives', icon: ListChecks },
 ];
 
-const WORKSPACE_SVG_WIDTH = 860;
-const WORKSPACE_SVG_HEIGHT = 520;
-const WORKSPACE_PADDING = 56;
-
-type ScenePoint = [number, number];
-
-interface SceneBounds {
-  min: ScenePoint;
-  max: ScenePoint;
-}
-
-function includePoint(bounds: SceneBounds, point: ScenePoint) {
-  bounds.min = [Math.min(bounds.min[0], point[0]), Math.min(bounds.min[1], point[1])];
-  bounds.max = [Math.max(bounds.max[0], point[0]), Math.max(bounds.max[1], point[1])];
-}
-
-function sceneBounds(scene: ResolvedScene): SceneBounds {
-  const bounds: SceneBounds = {
-    min: [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
-    max: [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
-  };
-
-  for (const anchor of scene.anchors) {
-    if (anchor.position) includePoint(bounds, anchor.position);
-  }
-  for (const element of scene.elements) {
-    if (element.geometry.kind === 'polyline' || element.geometry.kind === 'points' || element.geometry.kind === 'link') {
-      for (const point of element.geometry.points) includePoint(bounds, point);
-    } else if (element.geometry.kind === 'bounds') {
-      includePoint(bounds, element.geometry.min);
-      includePoint(bounds, element.geometry.max);
-    }
-  }
-
-  if (!Number.isFinite(bounds.min[0]) || !Number.isFinite(bounds.min[1])) {
-    return { min: [-1, -1], max: [1, 1] };
-  }
-
-  const width = Math.max(bounds.max[0] - bounds.min[0], 0.25);
-  const height = Math.max(bounds.max[1] - bounds.min[1], 0.25);
-  const pad = Math.max(width, height) * 0.12;
-  return {
-    min: [bounds.min[0] - pad, bounds.min[1] - pad],
-    max: [bounds.max[0] + pad, bounds.max[1] + pad],
-  };
-}
-
 function includeSampledTrials(bounds: SceneBounds, trials: SampledTaskTrial[]) {
   for (const trial of trials) {
     includePoint(bounds, trial.start);
@@ -245,24 +203,6 @@ function includeReplayTrials(
     const track = primaryWorkspaceReplayTrack(trial);
     for (const point of workspaceReplayPolyline(track)) includePoint(bounds, point);
   }
-}
-
-function fitScale(bounds: SceneBounds): number {
-  const width = Math.max(bounds.max[0] - bounds.min[0], 0.1);
-  const height = Math.max(bounds.max[1] - bounds.min[1], 0.1);
-  return Math.min(
-    (WORKSPACE_SVG_WIDTH - WORKSPACE_PADDING * 2) / width,
-    (WORKSPACE_SVG_HEIGHT - WORKSPACE_PADDING * 2) / height
-  );
-}
-
-function niceScaleLength(targetMeters: number): number {
-  if (!Number.isFinite(targetMeters) || targetMeters <= 0) return 0.1;
-  const exponent = Math.floor(Math.log10(targetMeters));
-  const base = 10 ** exponent;
-  const normalized = targetMeters / base;
-  const step = normalized >= 5 ? 5 : normalized >= 2 ? 2 : 1;
-  return step * base;
 }
 
 export function ScenarioProjectionToolbar({ availableHeight }: { availableHeight: number }) {
@@ -709,11 +649,7 @@ function WorkspaceProjection({
   };
 
   const renderElement = (element: ResolvedSceneElement) => {
-    const active = elementActive(element);
-    const stroke = active ? '#0f766e' : '#64748b';
-    const fill = active ? '#ccfbf1' : '#f8fafc';
-    const markerRadius = element.scale_invariant ? 7 : Math.max(4, Math.min(18, scale * 0.02));
-    const commonProps = {
+    const interaction = {
       onMouseEnter: () => setHoveredEntityId(element.entity_id),
       onMouseLeave: () => setHoveredEntityId(null),
       onClick: (event: MouseEvent) => {
@@ -731,124 +667,7 @@ function WorkspaceProjection({
       },
     };
 
-    if (element.geometry.kind === 'bounds') {
-      const [x0, y0] = project(element.geometry.min);
-      const [x1, y1] = project(element.geometry.max);
-      return (
-        <g key={element.id} {...commonProps}>
-          <rect
-            x={Math.min(x0, x1)}
-            y={Math.min(y0, y1)}
-            width={Math.abs(x1 - x0)}
-            height={Math.abs(y1 - y0)}
-            fill={active ? '#dcfce7' : '#f0fdf4'}
-            stroke={active ? '#16a34a' : '#86efac'}
-            strokeWidth={1.5}
-            vectorEffect="non-scaling-stroke"
-          />
-        </g>
-      );
-    }
-
-    if (element.geometry.kind === 'polyline') {
-      const geometry = element.geometry;
-      const points = geometry.points.map(project).map((point) => point.join(',')).join(' ');
-      return (
-        <g key={element.id} {...commonProps}>
-          <polyline
-            points={points}
-            fill="none"
-            stroke={active ? '#b45309' : stroke}
-            strokeWidth={active ? 8 : 6}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-          {geometry.points.map((point, index) => {
-            const [x, y] = project(point);
-            return (
-              <circle
-                key={`${element.id}:joint:${index}`}
-                cx={x}
-                cy={y}
-                r={index === geometry.points.length - 1 ? markerRadius : 4.5}
-                fill={index === geometry.points.length - 1 ? '#475569' : '#ffffff'}
-                stroke={active ? '#92400e' : '#64748b'}
-                strokeWidth={1.5}
-                vectorEffect="non-scaling-stroke"
-              />
-            );
-          })}
-        </g>
-      );
-    }
-
-    if (element.geometry.kind === 'points') {
-      const glyph = String(element.style.glyph ?? element.metadata.glyph ?? '');
-      return (
-        <g key={element.id} {...commonProps}>
-          {element.geometry.points.map((point, index) => {
-            const [x, y] = project(point);
-            const target = glyph === 'target' || element.metadata.canonical_goal === true;
-            return (
-              <g key={`${element.id}:point:${index}`}>
-                {target ? (
-                  <>
-                    <circle
-                      cx={x}
-                      cy={y}
-                      r={markerRadius + 3}
-                      fill="none"
-                      stroke={active ? '#059669' : '#34d399'}
-                      strokeWidth={1.5}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    <circle
-                      cx={x}
-                      cy={y}
-                      r={markerRadius * 0.45}
-                      fill={active ? '#059669' : '#a7f3d0'}
-                    />
-                  </>
-                ) : (
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={markerRadius}
-                    fill={fill}
-                    stroke={stroke}
-                    strokeWidth={1.5}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-              </g>
-            );
-          })}
-        </g>
-      );
-    }
-
-    if (element.geometry.kind === 'link') {
-      const points = element.geometry.points.map(project);
-      if (points.length < 2) return null;
-      return (
-        <g key={element.id} {...commonProps}>
-          <line
-            x1={points[0][0]}
-            y1={points[0][1]}
-            x2={points[1][0]}
-            y2={points[1][1]}
-            stroke={active ? semanticTokens.objective.strongStroke : semanticTokens.objective.stroke}
-            strokeWidth={active ? 3 : 2.25}
-            strokeDasharray="6 5"
-            opacity={active ? 0.95 : 0.72}
-            vectorEffect="non-scaling-stroke"
-          />
-        </g>
-      );
-    }
-
-    return null;
+    return <PlanarSceneElement key={element.id} element={element} active={elementActive(element)} project={project} scale={scale} interaction={interaction} />;
   };
 
   const renderObjectiveAnchor = (anchor: ResolvedSceneAnchor) => {

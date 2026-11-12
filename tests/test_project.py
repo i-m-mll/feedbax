@@ -20,6 +20,7 @@ from feedbax.contracts.project_resolution import (
     ResolvedStep,
     ResolutionCode,
     SelectedRow,
+    compose_step,
     resolve_step,
     validate_project_documents,
 )
@@ -406,3 +407,48 @@ def test_document_base_follows_root_alias_before_deltas():
     assert isinstance(resolved, ResolvedStep)
     assert resolved.payload == {"gain": 6}
     assert project.documents["condition"].payload == {"gain": 3}
+
+
+def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_paths():
+    project = Project.model_validate(
+        {
+            "documents": {
+                "settings": {"schema": "settings", "payload": {"values": [2, 4], "limit": 10}},
+            },
+            "steps": {
+                "fit": {
+                    "kind": "train",
+                    "base": {"document": "settings"},
+                    "deltas": [
+                        {
+                            "layer_id": "insert",
+                            "patches": [{"path": "values.0", "op": "add", "value": 1}],
+                        },
+                    ],
+                    "sweep": {
+                        "rows": {
+                            "first": {"patches": {"limit": {"value": 11}}},
+                            "derived": {"from": "first"},
+                        },
+                        "exceptions": {
+                            "raise": {
+                                "where": {"rows": ["derived"]},
+                                "patches": {"limit": {"value": 12}},
+                            },
+                        },
+                    },
+                },
+                "child": {"kind": "train", "base": {"step": "fit", "row": "derived"}},
+            },
+        }
+    )
+    template = compose_step(project, "child", track_sources=True)
+    assert not isinstance(template, ProjectDiagnostic)
+    result = template.resolve(include_sources=True)
+    assert isinstance(result, ResolvedStep)
+    assert result.payload == {"values": [1, 2, 4], "limit": 12}
+    assert result.sources is not None
+    assert result.sources["/values/0"].path == "/deltas/0/patches/0/value"
+    assert result.sources["/values/1"].path == "/values/0"
+    assert result.sources["/values/2"].path == "/values/1"
+    assert (result.sources["/limit"].kind, result.sources["/limit"].name) == ("exception", "raise")

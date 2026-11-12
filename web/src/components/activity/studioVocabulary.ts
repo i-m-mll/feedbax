@@ -26,6 +26,14 @@ export function studioUnit(id: keyof typeof vocabulary.unit) {
   return vocabulary.unit[id];
 }
 
+const countFormat = new Intl.NumberFormat();
+
+export function studioCountOf(count: number, total: number) {
+  return vocabulary.format.ofCount
+    .replace('{count}', countFormat.format(count))
+    .replace('{total}', countFormat.format(total));
+}
+
 export function studioRunStatus(status: StudioRunStatusId) {
   return runStatus[status];
 }

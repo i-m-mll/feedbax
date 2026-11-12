@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import product
 import math
 import re
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, PrivateAttr, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project_inputs import ProjectName, RowKey
+from feedbax.contracts.project_inputs import (
+    NonemptyText,
+    ProjectName,
+    SubsetSelectionError,
+    SubsetTerms,
+    select_static_rows,
+)
 from feedbax.contracts.run_matrix import _paths_overlap
 
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
@@ -44,13 +50,24 @@ def sweep_patches(patches: Mapping[str, PatchValue | None]) -> list[OverridePatc
     ]
 
 
-class AxisValue(StrictModel):
-    label: str | None = None
+class PatchSet(StrictModel):
     patches: dict[PatchPath, PatchValue | None] = Field(default_factory=dict)
+    _patch_authors: dict[str, str] = PrivateAttr(default_factory=dict)
+
+
+class AxisValue(PatchSet):
+    label: str | None = None
+    value: JsonValue = None
 
 
 class Row(AxisValue):
     source: ProjectName | None = Field(default=None, alias="from")
+    _patch_sources: dict[str, str] = PrivateAttr(default_factory=dict)
+
+
+class SweepException(PatchSet):
+    where: SubsetTerms | None = None
+    exclude: bool = False
 
 
 class NamedAxis(StrictModel):
@@ -61,8 +78,12 @@ class InputAxis(StrictModel):
     input: ProjectName
 
 
-class ListedAxis(StrictModel):
+class GeneratedAxis(StrictModel):
     path: PatchPath
+    _author: str | None = PrivateAttr(default=None)
+
+
+class ListedAxis(GeneratedAxis):
     values: list[JsonValue] = Field(min_length=1)
 
 
@@ -79,8 +100,7 @@ class RangeValues(StrictModel):
         return self
 
 
-class RangeAxis(StrictModel):
-    path: PatchPath
+class RangeAxis(GeneratedAxis):
     range: RangeValues
 
 
@@ -90,16 +110,16 @@ class SampleValues(StrictModel):
     seed: int
 
 
-class SampledAxis(StrictModel):
-    path: PatchPath
+class SampledAxis(GeneratedAxis):
     sampler: SampleValues
+    draws: dict[ProjectName, JsonValue] | None = None
 
 
 type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis
 
 
 class ManualCombination(StrictModel):
-    manual: list[dict[ProjectName, RowKey]]
+    manual: list[dict[ProjectName, NonemptyText]]
 
 
 class AxisGroup(StrictModel):
@@ -117,6 +137,7 @@ type Combination = Literal["cross", "zip"] | ManualCombination | GroupCombinatio
 class Sweep(StrictModel):
     axes: dict[ProjectName, Axis | None] = Field(default_factory=dict)
     rows: dict[ProjectName, Row | None] = Field(default_factory=dict)
+    exceptions: dict[ProjectName, SweepException | None] = Field(default_factory=dict)
     combination: Combination | None = None
     inherit_rows: bool = True
 
@@ -135,32 +156,46 @@ def merge_named(parent: Mapping[str, _T], child: Mapping[str, _T | None]) -> dic
     return merged
 
 
-def _merge_value(parent: AxisValue | None, child: AxisValue) -> AxisValue:
-    if parent is None:
-        return child.model_copy(update={"patches": merge_named({}, child.patches)})
-    return child.model_copy(
-        update={
-            "label": child.label if "label" in child.model_fields_set else parent.label,
-            "patches": merge_named(
-                {path: patch for path, patch in parent.patches.items() if patch is not None},
-                child.patches,
-            ),
-        }
-    )
+def _merge_patchset[T: PatchSet](parent: PatchSet | None, child: T, author: str | None) -> T:
+    patches = merge_named(_patches(parent) if parent is not None else {}, child.patches)
+    authors = dict(parent._patch_authors) if parent is not None else {}
+    for path, patch in child.patches.items():
+        writer = author if author is not None else child._patch_authors.get(path)
+        if patch is not None and writer is not None:
+            authors[path] = writer
+        else:
+            authors.pop(path, None)
+    result = child.model_copy(update={"patches": patches})
+    result._patch_authors = authors
+    return result
 
 
-def _derive_row(parent: Row, child: Row) -> AxisValue:
-    """Compose a source row's writes with a derived row's writes at the same path."""
-    combined = _merge_value(parent, child)
-    for path, write in child.patches.items():
-        previous = parent.patches.get(path)
+def _merge_value[T: AxisValue](parent: AxisValue | None, child: T, author: str | None) -> T:
+    merged = _merge_patchset(parent, child, author)
+    if parent is not None:
+        for name in ("label", "value"):
+            if name not in child.model_fields_set:
+                setattr(merged, name, getattr(parent, name))
+    return merged
+
+
+def _compose_writes(
+    parent: Mapping[str, PatchValue], child: Mapping[str, PatchValue]
+) -> dict[str, PatchValue]:
+    """Represent two ordered write sets as one patch per path."""
+    combined = dict(parent)
+    for path, write in child.items():
+        previous = combined.pop(path, None)
+        for descendant in tuple(combined):
+            if descendant.startswith(f"{path}."):
+                del combined[descendant]
         if isinstance(previous, SetValue) and previous.op == "add":
-            if isinstance(write, SetValue):
-                combined.patches[path] = write.model_copy(update={"op": "add"})
-            elif isinstance(write, RemoveValue):
-                combined.patches.pop(path, None)
+            if isinstance(write, RemoveValue):
+                continue
+            write = write.model_copy(update={"op": "add"})
         elif isinstance(previous, RemoveValue) and isinstance(write, SetValue):
-            combined.patches[path] = write.model_copy(update={"op": "replace"})
+            write = write.model_copy(update={"op": "replace"})
+        combined[path] = write
     return combined
 
 
@@ -171,7 +206,9 @@ class SweepInheritanceError(ValueError):
         super().__init__(f"row {row!r} derives from missing or later row {source!r}")
 
 
-def inherit_sweep(parent: Sweep | None, child: Sweep | None) -> Sweep | None:
+def inherit_sweep(
+    parent: Sweep | None, child: Sweep | None, *, author: str | None = None
+) -> Sweep | None:
     """Resolve by-id refinements and earlier row sources without expanding axes."""
     if child is None:
         return parent
@@ -191,8 +228,12 @@ def inherit_sweep(parent: Sweep | None, child: Sweep | None) -> Sweep | None:
                 if value is None:
                     values.pop(key, None)
                 else:
-                    values[key] = _merge_value(values.get(key), value)
+                    values[key] = _merge_value(values.get(key), value, author)
             axes[name] = NamedAxis(values=values)
+        elif isinstance(axis, GeneratedAxis) and author is not None:
+            generated = axis.model_copy()
+            generated._author = author
+            axes[name] = generated
 
     prior_rows = {name: row for name, row in previous.rows.items() if row is not None}
     rows = dict(prior_rows) if child.inherit_rows else {}
@@ -205,17 +246,47 @@ def inherit_sweep(parent: Sweep | None, child: Sweep | None) -> Sweep | None:
         source = row.source
         if source is not None and source not in sources:
             raise SweepInheritanceError(name, source)
-        combined = (
-            _derive_row(sources[source], row)
-            if source is not None
-            else _merge_value(rows.get(name), row)
+        prior = sources[source] if source is not None else rows.get(name)
+        combined = _merge_value(prior, row, author)
+        if source is not None and prior is not None:
+            inherited = _patches(prior)
+            for path, patch in row.patches.items():
+                if patch is None:
+                    inherited.pop(path, None)
+            combined.patches = _compose_writes(inherited, _patches(row))
+        resolved = combined.model_copy(update={"source": None})
+        origins = (
+            {path: prior._patch_sources.get(path, source or name) for path in prior.patches}
+            if prior is not None
+            else {}
         )
-        resolved = Row(label=combined.label, patches=combined.patches)
+        for path in row.patches:
+            origins[path] = row._patch_sources.get(path, name)
+        resolved._patch_sources = {path: origins.get(path, name) for path in resolved.patches}
+        resolved._patch_authors = {
+            path: writer
+            for path, writer in resolved._patch_authors.items()
+            if path in resolved.patches
+        }
         rows[name] = sources[name] = resolved
+
+    exceptions = {name: item for name, item in previous.exceptions.items() if item is not None}
+    for name, item in child.exceptions.items():
+        if item is None:
+            exceptions.pop(name, None)
+            continue
+        prior = exceptions.get(name)
+        merged = _merge_patchset(prior, item, author)
+        if prior is not None:
+            for field_name in ("where", "exclude"):
+                if field_name not in item.model_fields_set:
+                    setattr(merged, field_name, getattr(prior, field_name))
+        exceptions[name] = merged
 
     return Sweep(
         axes=axes,
         rows=rows,
+        exceptions=exceptions,
         combination=(
             child.combination if "combination" in child.model_fields_set else previous.combination
         ),
@@ -228,12 +299,13 @@ class SweepExpansionCode(StrEnum):
     EMPTY_AXIS = "empty_axis"
     UNKNOWN_CARDINALITY = "unknown_cardinality"
     INPUT_CONFLICT = "input_conflict"
-    UNRESOLVED_SAMPLER = "unresolved_sampler"
+    MISSING_DRAWS = "missing_draws"
     INVALID_GENERATION = "invalid_generation"
     PATCH_CONFLICT = "patch_conflict"
     COORDINATE_CONFLICT = "coordinate_conflict"
     DUPLICATE_ROW = "duplicate_row"
     INVALID_ROW_SOURCE = "invalid_row_source"
+    INVALID_EXCEPTION = "invalid_exception"
     ROW_BUDGET = "row_budget"
     AXIS_BUDGET = "axis_budget"
 
@@ -265,7 +337,7 @@ class SweepInputMember:
 
 
 type SweepInputs = Mapping[str, Sequence[SweepInputMember] | None]
-type SamplerResolver = Callable[[str, int, int], Sequence[JsonValue] | None]
+type PatchOrigin = tuple[Literal["sweep_value"], str, str] | tuple[Literal["exception", "row"], str]
 
 
 @dataclass(frozen=True)
@@ -275,6 +347,8 @@ class ExpandedRow:
     coordinates: Mapping[str, SweepCoordinate]
     patches: Mapping[str, PatchValue]
     input_keys: Mapping[str, str]
+    patch_origins: Mapping[str, PatchOrigin] = field(default_factory=dict)
+    patch_authors: Mapping[str, str] = field(default_factory=dict)
 
 
 DEFAULT_SWEEP_ROW = "default"
@@ -287,6 +361,7 @@ class _AxisChoice:
     coordinate: SweepCoordinate
     patches: Mapping[str, PatchValue] = field(default_factory=dict)
     member: SweepInputMember | None = None
+    patch_authors: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -294,6 +369,7 @@ class _SweepPlan:
     axes: Mapping[str, Axis]
     rows: Mapping[str, Row]
     sizes: Mapping[str, int]
+    exceptions: Mapping[str, SweepException]
     dimensions: tuple[tuple[tuple[str, ...], int], ...] = ()
     manual: tuple[Mapping[str, str], ...] | None = None
 
@@ -334,7 +410,7 @@ class _SweepPlan:
             }
 
 
-def _patches(value: AxisValue) -> dict[str, PatchValue]:
+def _patches(value: PatchSet) -> dict[str, PatchValue]:
     return {path: patch for path, patch in value.patches.items() if patch is not None}
 
 
@@ -360,8 +436,8 @@ def _axis_size(name: str, axis: Axis, inputs: SweepInputs) -> int:
             return len(values)
         case RangeAxis(range=range_values):
             return range_values.count
-        case SampledAxis(sampler=sampler):
-            return sampler.count
+        case SampledAxis():
+            return len(_recorded_draws(name, axis))
 
 
 def _zip_dimension(
@@ -420,16 +496,26 @@ def _dimensions(
     return tuple(dimensions)
 
 
-def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
+def _resolved_sweep(sweep: Sweep | None) -> Sweep:
     try:
-        resolved = inherit_sweep(None, sweep) or Sweep()
+        return inherit_sweep(None, sweep) or Sweep()
     except SweepInheritanceError as error:
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_ROW_SOURCE, f"sweep.rows.{error.row}.from", str(error)
         ) from error
+
+
+def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
+    resolved = _resolved_sweep(sweep)
     axes = {name: axis for name, axis in resolved.axes.items() if axis is not None}
     rows = {name: row for name, row in resolved.rows.items() if row is not None}
-    sizes = {name: _axis_size(name, axis, inputs) for name, axis in axes.items()}
+    combination = resolved.combination or "cross"
+    empty_manual = isinstance(combination, ManualCombination) and not combination.manual
+    sizes = {
+        name: 0 if empty_manual and isinstance(axis, InputAxis) else _axis_size(name, axis, inputs)
+        for name, axis in axes.items()
+    }
+    exceptions = {name: item for name, item in resolved.exceptions.items() if item is not None}
     bound: set[str] = set()
     for name, axis in axes.items():
         if isinstance(axis, InputAxis):
@@ -441,14 +527,13 @@ def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
                 )
             bound.add(axis.input)
 
-    combination = resolved.combination or "cross"
     if not isinstance(combination, ManualCombination):
-        return _SweepPlan(axes, rows, sizes, dimensions=_dimensions(sizes, combination))
-    if not sizes or not combination.manual:
+        return _SweepPlan(axes, rows, sizes, exceptions, dimensions=_dimensions(sizes, combination))
+    if not sizes:
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_COMBINATION,
             "sweep.combination.manual",
-            "manual combination requires axes and at least one coordinate",
+            "manual combination requires at least one axis",
         )
     for index, coordinate in enumerate(combination.manual):
         if coordinate.keys() != sizes.keys():
@@ -457,12 +542,39 @@ def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
                 f"sweep.combination.manual.{index}",
                 f"expected axes {list(sizes)}, got {list(coordinate)}",
             )
-    return _SweepPlan(axes, rows, sizes, manual=tuple(combination.manual))
+    return _SweepPlan(axes, rows, sizes, exceptions, manual=tuple(combination.manual))
 
 
-def count_sweep(sweep: Sweep | None, *, inputs: SweepInputs | None = None) -> int:
-    """Count planned rows from declarations, without sampling or visiting rows."""
-    return _plan(sweep, inputs or {}).row_count
+def count_sweep(
+    sweep: Sweep | None,
+    *,
+    inputs: SweepInputs | None = None,
+    max_rows: int = DEFAULT_SWEEP_LIMIT,
+    max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+) -> int:
+    """Count final rows, using bounded expansion when exceptions select rows."""
+    known_inputs = inputs or {}
+    plan = _plan(sweep, known_inputs)
+    if plan.exceptions:
+        return len(_expand_plan(plan, known_inputs, max_rows, max_axis_values))
+    return plan.row_count
+
+
+def _recorded_draws(name: str, axis: SampledAxis) -> Mapping[str, JsonValue]:
+    path = f"sweep.axes.{name}.draws"
+    if axis.draws is None:
+        raise SweepExpansionError(
+            SweepExpansionCode.MISSING_DRAWS,
+            path,
+            f"sampler {axis.sampler.distribution!r} has no recorded draws",
+        )
+    if len(axis.draws) != axis.sampler.count:
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_GENERATION,
+            path,
+            f"expected {axis.sampler.count} recorded draws, got {len(axis.draws)}",
+        )
+    return axis.draws
 
 
 def _range_values(spec: RangeValues) -> Iterator[float]:
@@ -499,24 +611,32 @@ def sweep_value_identity_bytes(value: JsonValue) -> bytes:
 
 
 def _generated_choices(
-    path: str, values: Sequence[JsonValue] | Iterator[JsonValue]
+    axis: GeneratedAxis, values: Iterator[tuple[str | None, JsonValue]]
 ) -> Iterator[_AxisChoice]:
-    for value in values:
-        key = "value-" + sha256_bytes(sweep_value_identity_bytes(value))
+    authors = {axis.path: axis._author} if axis._author is not None else {}
+    for key, value in values:
+        if key is None:
+            key = "value-" + sha256_bytes(sweep_value_identity_bytes(value))
         yield _AxisChoice(
-            key, SweepCoordinate(key, str(value), value), {path: SetValue(value=value)}
+            key,
+            SweepCoordinate(key, str(value), value),
+            {axis.path: SetValue(value=value)},
+            patch_authors=authors,
         )
 
 
-def _choices(
-    name: str, axis: Axis, inputs: SweepInputs, sampler: SamplerResolver | None
-) -> tuple[_AxisChoice, ...]:
+def _choices(name: str, axis: Axis, inputs: SweepInputs) -> tuple[_AxisChoice, ...]:
     path = f"sweep.axes.{name}"
     try:
         match axis:
             case NamedAxis(values=values):
                 choices = tuple(
-                    _AxisChoice(key, SweepCoordinate(key, value.label), _patches(value))
+                    _AxisChoice(
+                        key,
+                        SweepCoordinate(key, value.label, value.value),
+                        _patches(value),
+                        patch_authors=value._patch_authors,
+                    )
                     for key, value in values.items()
                     if value is not None
                 )
@@ -535,27 +655,17 @@ def _choices(
                         path,
                         f"input {role!r} has an empty member key",
                     )
-            case ListedAxis(path=target, values=listed):
-                choices = tuple(_generated_choices(target, listed))
-            case RangeAxis(path=target, range=range_values):
-                choices = tuple(_generated_choices(target, _range_values(range_values)))
-            case SampledAxis(path=target, sampler=sample):
-                values = (
-                    None
-                    if sampler is None
-                    else sampler(sample.distribution, sample.count, sample.seed)
+            case ListedAxis(values=listed):
+                choices = tuple(_generated_choices(axis, ((None, value) for value in listed)))
+            case RangeAxis(range=range_values):
+                choices = tuple(
+                    _generated_choices(
+                        axis, ((None, value) for value in _range_values(range_values))
+                    )
                 )
-                if values is None:
-                    raise SweepExpansionError(
-                        SweepExpansionCode.UNRESOLVED_SAMPLER,
-                        f"{path}.sampler.distribution",
-                        f"no deterministic resolver for {sample.distribution!r}",
-                    )
-                if len(values) != sample.count:
-                    raise ValueError(
-                        f"sampler returned {len(values)} values, expected {sample.count}"
-                    )
-                choices = tuple(_generated_choices(target, values))
+            case SampledAxis():
+                draws = _recorded_draws(name, axis)
+                choices = tuple(_generated_choices(axis, iter(draws.items())))
     except SweepExpansionError:
         raise
     except (ValueError, OverflowError, TypeError) as error:
@@ -582,7 +692,8 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
     row_id = "--".join(f"{name}={_row_key(selection[name].key)}" for name in sorted(axes))
     coordinates: dict[str, SweepCoordinate] = {}
     patches: dict[str, PatchValue] = {}
-    owners: dict[str, str] = {}
+    origins: dict[str, PatchOrigin] = {}
+    authors: dict[str, str] = {}
     bindings: dict[str, str] = {}
     labels = []
     for name, axis in axes.items():
@@ -610,55 +721,133 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
             coordinates.setdefault(axis_id, coordinate)
 
         for path, patch in choice.patches.items():
-            for prior_path, prior_axis in owners.items():
+            for prior_path, origin in origins.items():
+                prior_axis = origin[1]
                 if prior_axis != name and _paths_overlap(path, prior_path):
                     raise SweepExpansionError(
                         SweepExpansionCode.PATCH_CONFLICT,
                         f"sweep.axes.{name}",
                         f"row {row_id!r} patches {path!r}, overlapping {prior_path!r} from axis {prior_axis!r}",
                     )
-            owners[path] = name
+            origins[path] = ("sweep_value", name, choice.key)
             patches[path] = patch
-    return ExpandedRow(row_id, ", ".join(labels), coordinates, patches, bindings)
+        authors.update(choice.patch_authors)
+    return ExpandedRow(row_id, ", ".join(labels), coordinates, patches, bindings, origins, authors)
 
 
-def expand_sweep(
-    sweep: Sweep | None,
-    *,
-    inputs: SweepInputs | None = None,
-    sampler: SamplerResolver | None = None,
-    max_rows: int = DEFAULT_SWEEP_LIMIT,
-    max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+def _select_exception_rows(
+    name: str, exception: SweepException, rows: tuple[ExpandedRow, ...]
 ) -> tuple[ExpandedRow, ...]:
-    """Expand explicit rows and axis combinations without compiling payloads.
+    path = f"sweep.exceptions.{name}"
+    if exception.where is None:
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_EXCEPTION, f"{path}.where", "exception needs a selector"
+        )
+    if exception.exclude and exception.patches:
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_EXCEPTION, path, "exclusion cannot also patch a row"
+        )
+    try:
+        return select_static_rows(
+            exception.where,
+            rows,
+            key=lambda row: row.id,
+            coordinates=lambda row: {
+                axis: value.value_id for axis, value in row.coordinates.items()
+            },
+        )
+    except SubsetSelectionError as error:
+        term = f".{error.path}" if error.path else ""
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_EXCEPTION, f"{path}.where{term}", error.detail
+        ) from error
 
-    Pass a resolved step's sweep, or a project's standalone sweep. An input of
-    None has an unknown count, while an empty member sequence has a known count
-    of zero. The sampler resolver returns deterministic, ordered JSON values.
-    """
-    known_inputs = inputs or {}
-    plan = _plan(sweep, known_inputs)
+
+def _apply_exceptions(
+    rows: tuple[ExpandedRow, ...], exceptions: Mapping[str, SweepException]
+) -> tuple[ExpandedRow, ...]:
+    if not exceptions:
+        return rows
+    kept = {row.id: row for row in rows}
+    for name, exception in exceptions.items():
+        path = f"sweep.exceptions.{name}"
+        selected = _select_exception_rows(name, exception, rows)
+        writes = _patches(exception)
+        for original in selected:
+            row = kept.get(original.id)
+            if row is None:
+                continue
+            if exception.exclude:
+                del kept[row.id]
+                continue
+            origins = dict(row.patch_origins)
+            authors = dict(row.patch_authors)
+            for target in writes:
+                for prior, origin in row.patch_origins.items():
+                    if origin[0] == "sweep_value" and _paths_overlap(prior, target):
+                        raise SweepExpansionError(
+                            SweepExpansionCode.PATCH_CONFLICT,
+                            f"{path}.patches.{target}",
+                            f"row {row.id!r} already writes {prior!r} from sweep value {origin[1]}={origin[2]}",
+                        )
+                origins[target] = ("exception", name)
+                if target in exception._patch_authors:
+                    authors[target] = exception._patch_authors[target]
+                else:
+                    authors.pop(target, None)
+            patches = _compose_writes(row.patches, writes)
+            kept[row.id] = replace(
+                row,
+                patches=patches,
+                patch_origins={target: origins[target] for target in patches},
+                patch_authors={
+                    target: writer for target, writer in authors.items() if target in patches
+                },
+            )
+    return tuple(kept.values())
+
+
+def _check_row_budget(plan: _SweepPlan, max_rows: int) -> None:
     if plan.row_count > max_rows:
         raise SweepExpansionError(
             SweepExpansionCode.ROW_BUDGET,
             "sweep",
             f"{plan.row_count} rows exceeds the limit of {max_rows}",
         )
-    if not plan.axes and not plan.rows:
-        return (ExpandedRow(DEFAULT_SWEEP_ROW, None, {}, {}, {}),)
-    rows = [ExpandedRow(name, row.label, {}, _patches(row), {}) for name, row in plan.rows.items()]
-    if not plan.generated_count:
-        return tuple(rows)
+
+
+def _check_axis_budget(name: str, size: int, limit: int) -> None:
+    if size > limit:
+        raise SweepExpansionError(
+            SweepExpansionCode.AXIS_BUDGET,
+            f"sweep.axes.{name}",
+            f"{size} values exceeds the axis limit of {limit}",
+        )
+
+
+def _planned_choices(
+    plan: _SweepPlan, inputs: SweepInputs, max_axis_values: int
+) -> dict[str, tuple[_AxisChoice, ...]]:
     for name, size in plan.sizes.items():
-        if size > max_axis_values:
-            raise SweepExpansionError(
-                SweepExpansionCode.AXIS_BUDGET,
-                f"sweep.axes.{name}",
-                f"{size} values exceeds the axis limit of {max_axis_values}",
-            )
-    choices = {
-        name: _choices(name, axis, known_inputs, sampler) for name, axis in plan.axes.items()
-    }
+        _check_axis_budget(name, size, max_axis_values)
+    return {name: _choices(name, axis, inputs) for name, axis in plan.axes.items()}
+
+
+def _explicit_rows(rows: Mapping[str, Row]) -> Iterator[ExpandedRow]:
+    for name, row in rows.items():
+        patches = _patches(row)
+        origins: dict[str, PatchOrigin] = {
+            path: ("row", row._patch_sources[path]) for path in patches
+        }
+        yield ExpandedRow(name, row.label, {}, patches, {}, origins, row._patch_authors)
+
+
+def _generated_rows(
+    plan: _SweepPlan, inputs: SweepInputs, max_axis_values: int
+) -> Iterator[tuple[dict[str, _AxisChoice], ExpandedRow]]:
+    if not plan.generated_count:
+        return
+    choices = _planned_choices(plan, inputs, max_axis_values)
     ids = set(plan.rows)
     for selection in plan.selections(choices):
         row = _expanded(plan.axes, selection)
@@ -667,5 +856,112 @@ def expand_sweep(
                 SweepExpansionCode.DUPLICATE_ROW, "sweep", f"duplicate row id {row.id!r}"
             )
         ids.add(row.id)
-        rows.append(row)
-    return tuple(rows)
+        yield selection, row
+
+
+def _expand_plan(
+    plan: _SweepPlan, inputs: SweepInputs, max_rows: int, max_axis_values: int
+) -> tuple[ExpandedRow, ...]:
+    _check_row_budget(plan, max_rows)
+    rows = list(_explicit_rows(plan.rows))
+    if not plan.axes and not plan.rows:
+        rows.append(ExpandedRow(DEFAULT_SWEEP_ROW, None, {}, {}, {}))
+    rows.extend(row for _, row in _generated_rows(plan, inputs, max_axis_values))
+    return _apply_exceptions(tuple(rows), plan.exceptions)
+
+
+def expand_sweep(
+    sweep: Sweep | None,
+    *,
+    inputs: SweepInputs | None = None,
+    max_rows: int = DEFAULT_SWEEP_LIMIT,
+    max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+) -> tuple[ExpandedRow, ...]:
+    """Expand the declared sweep using recorded draws and known input members.
+
+    None has an unknown input member count. An empty sequence is a known count
+    of zero. Expansion never draws new samples or mutates an authored rule.
+    """
+    known_inputs = inputs or {}
+    return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values)
+
+
+def authored_row(sweep: Sweep | None, row_id: str) -> ExpandedRow | None:
+    """Select one explicitly authored row, applying the enclosing sweep's exceptions."""
+    resolved = _resolved_sweep(sweep)
+    rows = {name: row for name, row in resolved.rows.items() if row is not None}
+    if row_id not in rows:
+        return None
+    exceptions = {name: item for name, item in resolved.exceptions.items() if item is not None}
+    needs_generated = any(
+        where.axes or any(name not in rows for name in where.rows or ())
+        for item in exceptions.values()
+        if (where := item.where) is not None
+    )
+    expanded = (
+        expand_sweep(resolved)
+        if needs_generated
+        else _apply_exceptions(tuple(_explicit_rows(rows)), exceptions)
+    )
+    return next((row for row in expanded if row.id == row_id), None)
+
+
+def axis_to_list(
+    axis: ListedAxis | RangeAxis | SampledAxis, *, max_axis_values: int = DEFAULT_SWEEP_LIMIT
+) -> NamedAxis:
+    """Materialize an authored rule as an editable, identity-preserving value map."""
+    _check_axis_budget("values", _axis_size("values", axis, {}), max_axis_values)
+    values = {}
+    for choice in _choices("values", axis, {}):
+        value = AxisValue(
+            label=choice.coordinate.label,
+            value=choice.coordinate.value,
+            patches=dict(choice.patches),
+        )
+        value._patch_authors = dict(choice.patch_authors)
+        values[choice.key] = value
+    return NamedAxis(values=values)
+
+
+def sweep_to_rows(
+    sweep: Sweep,
+    *,
+    inputs: SweepInputs | None = None,
+    max_rows: int = DEFAULT_SWEEP_LIMIT,
+    max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+) -> Sweep:
+    """Pin surviving combinations by axis value ID, preserving named patch exceptions."""
+    known_inputs = inputs or {}
+    plan = _plan(sweep, known_inputs)
+    _check_row_budget(plan, max_rows)
+    if not plan.axes:
+        return sweep
+    explicit = tuple(_explicit_rows(plan.rows))
+    generated = tuple(_generated_rows(plan, known_inputs, max_axis_values))
+    candidates = explicit + tuple(row for _, row in generated)
+    survivors = {row.id for row in _apply_exceptions(candidates, plan.exceptions)}
+    retained = [(selection, row) for selection, row in generated if row.id in survivors]
+    retained_candidates = explicit + tuple(row for _, row in retained)
+    retained_ids = {row.id for row in retained_candidates}
+
+    exceptions = dict(sweep.exceptions)
+    for name, exception in plan.exceptions.items():
+        try:
+            _select_exception_rows(name, exception, retained_candidates)
+        except SweepExpansionError:
+            members = _select_exception_rows(name, exception, candidates)
+            exceptions[name] = exception.model_copy(
+                update={
+                    "where": SubsetTerms(
+                        rows=[row.id for row in members if row.id in retained_ids]
+                    ),
+                }
+            )
+
+    manual = [{name: selection[name].key for name in plan.axes} for selection, _ in retained]
+    return sweep.model_copy(
+        update={
+            "combination": ManualCombination(manual=manual),
+            "exceptions": exceptions,
+        }
+    )

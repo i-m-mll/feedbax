@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_inputs import SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -12,6 +13,12 @@ from feedbax.contracts.project_io import (
 )
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
+from feedbax.contracts.project_sweep import (
+    SweepInputMember,
+    axis_to_list,
+    expand_sweep,
+    sweep_to_rows,
+)
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BestMember, InputMember, LastMember, ProductRef
 
@@ -61,9 +68,9 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
     assert plan == compile_project(studio.project)
     assert not plan.diagnostics
     train, evaluation = plan.runs
-    assert train.key == RunKey("fit", "default")
+    assert train.key == RunKey("default", "fit", "default")
     assert train.request_id == expected_train
-    assert evaluation.key == RunKey("evaluate", "default")
+    assert evaluation.key == RunKey("default", "evaluate", "default")
     assert evaluation.inputs["subject"].producer == train.key
 
     train_request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__)
@@ -132,7 +139,7 @@ def test_invalid_row_is_diagnosed_without_rebinding_the_consumer():
         }
     }
     plan = compile_project(Project.model_validate(data))
-    assert [run.key for run in plan.runs] == [RunKey("fit", "good")]
+    assert [run.key for run in plan.runs] == [RunKey("default", "fit", "good")]
     invalid, dependent = plan.diagnostics
     assert (invalid.code, invalid.step, invalid.row, invalid.path) == (
         ResolutionCode.INVALID_PAYLOAD,
@@ -154,3 +161,233 @@ def test_duplicate_specs_share_one_request_without_losing_run_keys():
     assert [run.label for run in plan.runs] == ["Again", "First"]
     assert {run.key.row for run in plan.runs} == {"repeat", "original"}
     assert set(plan.requests) == {expected_train}
+
+
+def test_variants_keep_run_keys_separate_and_deduplicate_unchanged_requests():
+    data, expected_train = _project_data()
+    data["sweep"] = {
+        "rows": {
+            "base": {},
+            "copy": {},
+            "seed8": {"patches": {"steps.fit.base.inline.seed": {"value": 8}}},
+        }
+    }
+    data["steps"]["evaluate"]["inputs"]["subject"]["checkpoint"] = "last"
+    project = Project.model_validate(data)
+    requested = RunKey("seed8", "fit", "default")
+    plan = compile_project(project, source_runs=[requested])
+    assert not plan.diagnostics
+    runs = {run.key: run for run in plan.runs}
+    assert len(runs) == 6
+    assert len(plan.requests) == 4
+    assert runs[RunKey("base", "fit", "default")].request_id == expected_train
+    assert runs[RunKey("copy", "fit", "default")].request_id == expected_train
+    for variant in ("base", "copy", "seed8"):
+        evaluation = runs[RunKey(variant, "evaluate", "default")]
+        assert evaluation.inputs["subject"].producer == RunKey(variant, "fit", "default")
+    assert set(plan.sources) == {requested}
+    seed = plan.sources[requested]["/payload/seed"]
+    assert (seed.kind, seed.variant, seed.path) == (
+        "variant",
+        "seed8",
+        "/steps/fit/base/inline/seed",
+    )
+    assert compile_project(project).sources == {}
+
+    data["steps"]["evaluate"]["inputs"]["subject"]["variants"] = ["base", "seed8"]
+    data["steps"]["evaluate"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    cross = compile_project(Project.model_validate(data))
+    assert not cross.diagnostics
+    for variant in ("base", "copy", "seed8"):
+        readers = [
+            run for run in cross.runs if (run.key.variant, run.kind) == (variant, "evaluate")
+        ]
+        assert [reader.inputs["subject"].member.key for reader in readers] == [
+            "base/default",
+            "seed8/default",
+        ]
+    project = Project.model_validate(data)
+    evaluation = project.steps["evaluate"]
+    evaluation.sweep = sweep_to_rows(
+        evaluation.sweep,
+        inputs={"subject": [SweepInputMember("base/default"), SweepInputMember("seed8/default")]},
+    )
+    reopened = parse_studio_project(
+        dump_studio_project(StudioProjectFile(project=project, presentation={}))
+    )
+    assert compile_project(reopened.project) == cross
+
+
+def test_generated_variant_ids_can_be_named_in_references():
+    data, _ = _project_data()
+    data["sweep"] = {"axes": {"seed": {"path": "steps.fit.base.inline.seed", "values": [1, 2]}}}
+    project = Project.model_validate(data)
+    first, second = expand_sweep(project.sweep)
+    data["steps"]["evaluate"]["inputs"]["subject"]["variants"] = [first.id]
+    plan = compile_project(Project.model_validate(data))
+    assert not plan.diagnostics
+    [reader] = [run for run in plan.runs if run.key == RunKey(second.id, "evaluate", "default")]
+    assert reader.inputs["subject"].producer.variant == first.id
+
+
+def test_selection_by_axis_or_exact_rows_binds_statically_in_upstream_order():
+    data, _ = _project_data()
+    data["steps"]["fit"]["sweep"] = {
+        "axes": {
+            "seed": {
+                "values": {
+                    name: {"patches": {"seed": {"value": value}}}
+                    for name, value in (("a", 1), ("b", 2), ("c", 3))
+                }
+            }
+        }
+    }
+    evaluation = data["steps"]["evaluate"]
+    evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    reference = evaluation["inputs"]["subject"]
+    reference["where"] = {"axes": {"seed": ["a", "c"]}, "rows": ["seed=c", "seed=a"]}
+    plan = compile_project(Project.model_validate(data))
+    assert not plan.diagnostics
+    evaluation_runs = [run for run in plan.runs if run.kind == "evaluate"]
+    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["a", "c"]
+    subset = plan.subsets["default", "evaluate", "subject"]
+    assert subset.candidates == 3
+    assert tuple(key.row for key in subset.members) == ("seed=a", "seed=c")
+
+    data["documents"]["selected"] = {"schema": "subset", "payload": reference["where"]}
+    reference["where"] = {"subset": "selected"}
+    named = compile_project(Project.model_validate(data))
+    assert named.runs == plan.runs and named.requests == plan.requests
+    assert named.subsets["default", "evaluate", "subject"].document == "selected"
+
+    measured = SubsetTerms.model_validate({"best": {"by": "loss", "k": 1}})
+    reference["where"] = measured.model_dump(exclude_unset=True)
+    [problem] = compile_project(Project.model_validate(data)).diagnostics
+    assert problem.path == "inputs.subject.where.best"
+    reference["where"] = subset_to_rows(measured, ["seed=c"]).model_dump(exclude_unset=True)
+    frozen = compile_project(Project.model_validate(data))
+    assert not frozen.diagnostics
+    [reader] = [run for run in frozen.runs if run.kind == "evaluate"]
+    assert reader.inputs["subject"].producer.row == "seed=c"
+    assert reader.request_id == evaluation_runs[1].request_id
+    reference["where"] = {"rows": []}
+    empty = compile_project(Project.model_validate(data))
+    assert not empty.diagnostics and all(run.kind == "train" for run in empty.runs)
+    assert empty.subsets["default", "evaluate", "subject"].members == ()
+    reference["where"] = {"axes": {"seed": ["typo"]}}
+    [problem] = compile_project(Project.model_validate(data)).diagnostics
+    assert problem.path == "inputs.subject.where.axes.seed"
+    assert "typo" in problem.detail
+
+
+def test_sweep_conversions_preserve_requests_and_editing_keeps_run_identity():
+    data, _ = _project_data()
+    data["steps"]["fit"]["sweep"] = {
+        "axes": {
+            "seed": {
+                "path": "seed",
+                "sampler": {"distribution": "test", "seed": 5, "count": 2},
+                "draws": {"first": 3, "second": 4},
+            },
+        }
+    }
+    data["steps"]["evaluate"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    project = Project.model_validate(data)
+    before = compile_project(project)
+    assert not before.diagnostics
+    sweep = project.steps["fit"].sweep
+    listed = axis_to_list(sweep.axes["seed"])
+    project.steps["fit"].sweep = sweep_to_rows(sweep.model_copy(update={"axes": {"seed": listed}}))
+    converted = compile_project(project)
+    assert converted == before
+    listed.values["second"].patches["seed"].value = 9
+    listed.values["second"].value = 9
+    edited = compile_project(project)
+    assert not edited.diagnostics
+    assert {run.key for run in edited.runs} == {run.key for run in before.runs}
+    changed = {
+        run.key
+        for run, previous in zip(edited.runs, before.runs, strict=True)
+        if run.request_id != previous.request_id
+    }
+    assert changed == {
+        run.key for run in edited.runs if run.coordinates["seed"].value_id == "second"
+    }
+
+
+def test_exception_changes_only_selected_run_requests_and_exclusion_removes_run_key():
+    data, _ = _project_data()
+    del data["steps"]["evaluate"]
+    fit = data["steps"]["fit"]
+    fit["sweep"] = {"axes": {"seed": {"path": "seed", "values": [1, 2, 3]}}}
+    base = compile_project(Project.model_validate(data))
+    assert not base.diagnostics
+    first, changed, excluded = base.runs
+    fit["sweep"]["exceptions"] = {
+        "replace_policy": {
+            "where": {"rows": [changed.key.row]},
+            "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+        },
+        "omit": {"where": {"rows": [excluded.key.row]}, "exclude": True},
+    }
+    amended = compile_project(Project.model_validate(data))
+    assert not amended.diagnostics
+    assert len(amended.runs) == 2
+    assert amended.runs[0] == first
+    assert amended.runs[1].key == changed.key
+    assert amended.runs[1].coordinates == changed.coordinates
+    assert amended.runs[1].request_id != changed.request_id
+
+
+def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
+    data, _ = _project_data()
+    fit = data["steps"]["fit"]
+    fit["deltas"] = [
+        {
+            "layer_id": "settings",
+            "patches": [{"path": "on_nan", "value": "halt_restore_checkpoint"}],
+        }
+    ]
+    fit["sweep"] = {
+        "axes": {
+            "seed": {
+                "values": {
+                    "a": {"patches": {"seed": {"value": 1}}},
+                    "b": {"patches": {"seed": {"value": 2}}},
+                }
+            }
+        },
+        "exceptions": {
+            "retry": {
+                "where": {"rows": ["seed=a"]},
+                "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+            }
+        },
+    }
+    data["steps"]["child"] = {"kind": "train", "base": {"step": "fit"}}
+    data["steps"]["evaluate"]["inputs"]["subject"].update({"step": "child", "row": "seed=a"})
+    requested = RunKey("default", "child", "seed=a")
+    consumer = RunKey("default", "evaluate", "default")
+    project = Project.model_validate(data)
+    plan = compile_project(project, source_runs=[requested, consumer])
+    assert not plan.diagnostics
+    assert set(plan.sources) == {requested, consumer}
+    sources = plan.sources[requested]
+    assert (
+        sources["/payload/graph/schema_id"].kind,
+        sources["/payload/graph/schema_id"].name,
+        sources["/payload/graph/schema_id"].path,
+    ) == ("document", "model", "/schema_id")
+    seed = sources["/payload/seed"]
+    assert (seed.kind, seed.step, seed.axis, seed.value) == ("sweep_value", "fit", "seed", "a")
+    policy = sources["/payload/on_nan"]
+    assert (policy.kind, policy.step, policy.name) == ("exception", "fit", "retry")
+    bound = plan.sources[consumer]["/inputs/subject"]
+    assert (bound.kind, bound.variant, bound.step, bound.row) == (
+        "upstream",
+        "default",
+        "child",
+        "seed=a",
+    )
+    without_sources = compile_project(project)
+    assert plan.runs == without_sources.runs and plan.requests == without_sources.requests

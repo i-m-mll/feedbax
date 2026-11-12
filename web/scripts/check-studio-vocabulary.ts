@@ -7,9 +7,10 @@ const web = resolve(import.meta.dir, '..');
 const src = resolve(web, 'src');
 const sources = [
   ...new Bun.Glob('components/activity/*.tsx').scanSync({ cwd: src, absolute: true }),
+  ...new Bun.Glob('components/{pipeline,scene}/*.tsx').scanSync({ cwd: src, absolute: true }),
   resolve(src, 'components/layout/HeaderActivity.tsx'),
   resolve(src, 'components/panels/StudioTrainPanel.tsx'),
-];
+].filter((path) => !path.endsWith('.test.tsx'));
 const errors: string[] = [];
 const retired = new RegExp(`\\b(?:${vocabulary.retired.join('|')})\\b`, 'i');
 
@@ -29,6 +30,7 @@ for (const [id, value] of Object.entries(vocabulary.reason)) {
 for (const group of Object.values(vocabulary.status)) {
   for (const [id, value] of Object.entries(group)) verifyEntry(id, value);
 }
+for (const [id, value] of Object.entries(vocabulary.format)) verifyEntry(id, value);
 
 const controlledAttributes = new Set(['title', 'placeholder', 'aria-label']);
 const labelFunctions = new Set(['studioName', 'studioAccessibleName']);
