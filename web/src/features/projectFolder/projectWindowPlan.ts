@@ -8,10 +8,7 @@ export function savedRunId({ variant, step, row }: SavedTrainRow['key']) {
 }
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
-  return [...new Set([
-    ...(saved?.window_map?.variants ?? []),
-    ...(saved?.rows.map(({ key }) => key.variant) ?? []),
-  ])];
+  return saved?.window_map?.variants ?? [...new Set(saved?.rows.map(({ key }) => key.variant))];
 }
 
 function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {

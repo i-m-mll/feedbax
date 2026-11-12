@@ -172,15 +172,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     retry: false,
   });
   const data = projection.data?.revision === saved.revision ? projection.data : undefined;
-  const variants = useMemo(() => planVariants(data), [data]);
-  const variant = selection.variantId && variants.includes(selection.variantId) ? selection.variantId : variants[0] ?? null;
-  const plan = useMemo(() => projectWindowPlan(saved.project, data, variant), [saved.project, data, variant]);
+  const variants = useMemo(() => planVariants(projection.data), [projection.data]);
+  const variant = selection.variantId ?? variants[0] ?? null;
+  const missingVariant = selection.variantId !== null && !variants.includes(selection.variantId);
+  const primaryVariant = variant === (variants[0] ?? null);
+  const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant),
+    [saved.project, projection.data, variant]);
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
   latestState.current = state;
-  const wholeStep = state.selection?.kind === 'steps' && state.selection.stepIds.length === 1 && selection.variantId === null;
-  const canAuthorSweep = (id: string) => selection.variantId === null && directTrainStep(saved.project, id) !== null;
+  const singleStep = state.selection?.kind === 'steps' && state.selection.stepIds.length === 1 && state.selection.stepIds[0] === step?.id;
+  const wholeStep = singleStep && primaryVariant;
+  const canAuthorSweep = (id: string) => primaryVariant && directTrainStep(saved.project, id) !== null;
   const authored = step && saved.project.steps[step.id];
   const checkpoint = authored && authored.inputs?.checkpoint;
   const linked = wholeStep && !saved.project.sweep && authored?.kind === 'train' &&
@@ -202,10 +206,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     ? problemReveal.reveal : undefined;
   function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
     const document = step?.documentIds?.[`payload.${field}`];
-    if (!document || !step || !wholeStep || saved.project.sweep || step.kind !== 'train') return undefined;
+    if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
+    const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
+    if (!localVariant && (!wholeStep || saved.project.sweep)) return undefined;
     const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.includes(document)).map(({ id }) => id));
     if (!users.has(step.id)) return undefined;
     const key = JSON.stringify([step.id, document, variant]);
+    if (localVariant) return { document, key, users, lit: users, localVariant };
     const excluded = excludedUsers[key] ?? [];
     return { document, key, users, lit: new Set([...users].filter((id) => id === step.id || !excluded.includes(id))) };
   }
@@ -214,7 +221,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     : focusView === 'model' ? documentScopes.graph : focusView === 'task' ? documentScopes.task : undefined;
   function chooseMapStep(id: string, extend: boolean) {
     if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
-      if (id === step?.id || !activeDocumentScope.users.has(id)) return;
+      if (activeDocumentScope.localVariant || id === step?.id || !activeDocumentScope.users.has(id)) return;
       const { key } = activeDocumentScope;
       setExcludedUsers((current) => {
         const ids = current[key] ?? [];
@@ -262,7 +269,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
-    variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
+    variantId: variant, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
     namedRun, documentScopes,
   };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
@@ -356,7 +363,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     const runId = row ? savedRunId(row.key) : null;
     selection.select(runId
       ? selectRun(state, { stepId, runId })
-      : selectStep(state, stepId), scope === variants[0] ? null : scope);
+      : selectStep(state, stepId), scope);
     setExcludedUsers({});
     setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { problem, target: { ...target, view } } });
     setWindowState((current) => showProjectWindowView(current, view, focusSlot));
@@ -365,7 +372,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   }
   function showRun(match: SavedRow) {
     const target = { stepId: match.key.step, runId: savedRunId(match.key) };
-    selection.select(selectRun(state, target), match.key.variant === variants[0] ? null : match.key.variant);
+    selection.select(selectRun(state, target), match.key.variant);
     setWindowState((current) => showProjectWindowView(current, 'results'));
     requestSlotFocus((count) => count + 1);
   }
@@ -558,7 +565,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         presentation={presentation} onPresentationChange={changePresentation} /></StudioErrorBoundary>}
       mapDrawer={<StudioPipelineMapDrawer {...mapProps} />}
       compactMap={<StudioPipelineMap {...mapProps} mode="line" />}
-      variant={variants.length > 1 && <select aria-label={studioName('variant')} value={variant ?? ''} onChange={(event) => selection.setVariant(event.target.value === variants[0] ? null : event.target.value)}>
+      variant={(variants.length > 1 || missingVariant) && <select aria-label={studioName('variant')}
+        value={variant ?? ''} disabled={!data}
+        onChange={(event) => selection.setVariant(event.target.value)}>
+        {missingVariant && variant && <option value={variant} disabled>{variant}</option>}
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>}
       overlay={<>

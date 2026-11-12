@@ -7,6 +7,8 @@ import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import TrainingRequestSpec
@@ -70,6 +72,27 @@ def authored_files():
         }},
     ])
     return files
+
+
+def seed_variants(home: str, project_id: str):
+    model, task, train, _ = authored_files()
+    project = Project.model_validate({
+        "documents": {"model": model["document"], "task": task["document"]},
+        "steps": {"train": train["step"]},
+        "sweep": {"rows": {
+            "base": {"label": "Baseline"},
+            "compare": {"from": "base", "label": "Comparison", "value": "comparison"},
+            "control": {"from": "base", "label": "Control"},
+        }},
+    })
+    root = AppPaths.resolve(instance_root=Path(home)).web / "projects" / project_id
+    for name, data in dump_text_project(
+        project, ProjectConfiguration(project=project_id, store="results"),
+    ).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return project_id
 
 
 def last_train_interval(events, attempt: str):
@@ -255,6 +278,8 @@ if __name__ == "__main__":
     action, *arguments = sys.argv[1:]
     if action == "files" and not arguments:
         print(json.dumps(authored_files()))
+    elif action == "seed-variants":
+        print(json.dumps(seed_variants(*arguments)))
     elif action == "history-files" and not arguments:
         print(json.dumps(history_files()))
     elif action == "observe":

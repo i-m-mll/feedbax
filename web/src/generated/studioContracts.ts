@@ -2915,7 +2915,7 @@ export type StudioAuthoringRegistry = {
 };
 
 export type StudioAuthoringSource = {
-  "kind": "document" | "step";
+  "kind": "document" | "step" | "variant";
   "name": string;
   "path": string;
 };
@@ -2937,12 +2937,15 @@ export type StudioDocumentAuthoring = {
   "document": string;
   "payload": JsonValue;
   "sources": Record<string, StudioAuthoringSource>;
+  "variant_model_paths"?: Array<DocumentOverridePath> | null;
+  "variant_model_reason"?: string | null;
   "files": Array<StudioProjectFilePatch>;
   "created_component"?: string | null;
   "presentation_revision"?: Sha256 | null;
 };
 
 export type StudioDocumentAuthoringChange = {
+  "scope"?: "variant" | null;
   "lit_steps": Array<string>;
   "path": DocumentOverridePath;
   "value": string | number | boolean;
@@ -8092,7 +8095,7 @@ export const StudioAuthoringRegistrySchema: z.ZodType<StudioAuthoringRegistry> =
 
 export const StudioAuthoringSourceSchema: z.ZodType<StudioAuthoringSource> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("document"), z.literal("step")]),
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
     "name": z.string(),
     "path": z.string(),
   }).strict()
@@ -8120,6 +8123,8 @@ export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> =
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "payload": jsonValueSchema,
     "sources": z.record(z.string(), StudioAuthoringSourceSchema),
+    "variant_model_paths": z.union([z.array(DocumentOverridePathSchema), z.null()]).optional(),
+    "variant_model_reason": z.union([z.string().min(1), z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema),
     "created_component": z.union([z.string(), z.null()]).optional(),
     "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
@@ -8128,6 +8133,7 @@ export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> =
 
 export const StudioDocumentAuthoringChangeSchema: z.ZodType<StudioDocumentAuthoringChange> = z.lazy(() =>
   z.object({
+    "scope": z.union([z.literal("variant"), z.null()]).optional(),
     "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
     "path": DocumentOverridePathSchema,
     "value": z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean()]),

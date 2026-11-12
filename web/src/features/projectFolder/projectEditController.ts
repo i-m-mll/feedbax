@@ -576,7 +576,7 @@ export class ProjectEditController {
             const key = addressKey(address);
             return unchanged.has(key) || changed.has(key);
           }) ||
-          JSON.stringify(before.project.sweep) !== JSON.stringify(latest.project.sweep) ||
+          JSON.stringify(intended.sweep) !== JSON.stringify(latest.project.sweep) ||
           !files.every(({ address }) => sameAuthoredFile(intended, editContent(latest), address))) throw error;
       return latest;
     }

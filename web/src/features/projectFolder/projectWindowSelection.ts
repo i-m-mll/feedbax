@@ -19,9 +19,14 @@ function subject(pipeline: PipelineSelectionState, current: string | null) {
 
 export function settledWindowSelection(plan: PlanView, state: PipelineSelectionState): PipelineSelectionState {
   const selection = state.selection;
-  if (!selection || selection.kind === 'steps') return state;
+  if (!selection) return state;
+  if (selection.kind === 'steps') {
+    const stepIds = selection.stepIds.filter((id) => plan.steps.some((step) => step.id === id));
+    if (stepIds.length === selection.stepIds.length) return state;
+    return stepIds.length ? { selection: { ...selection, stepIds }, focus: null } : emptyPipelineSelection;
+  }
   const step = plan.steps.find(({ id }) => id === selection.stepId);
-  if (!step) return state;
+  if (!step) return emptyPipelineSelection;
   if (selection.kind === 'rows') {
     const available = new Set(step.runs.map(({ id }) => id));
     const runIds = selection.runIds.filter((id) => available.has(id));
@@ -66,7 +71,7 @@ export function useProjectWindowSelection(initialStepId: string | null) {
       variantId: variantId === undefined ? entry.variantId : variantId,
       pipeline, stepId: subject(pipeline, entry.stepId),
     })),
-    setVariant: (variantId: string | null) => change((entry) => ({
+    setVariant: (variantId: string) => change((entry) => ({
       ...entry,
       variantId,
       pipeline: entry.stepId ? selectStep(emptyPipelineSelection, entry.stepId) : emptyPipelineSelection,

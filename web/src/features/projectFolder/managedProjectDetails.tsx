@@ -46,6 +46,7 @@ type Definition = {
 export interface NamedDocumentScope extends MapDocumentScope {
   readonly key: string;
   readonly document: string;
+  readonly localVariant?: boolean;
 }
 
 export interface ManagedProjectDetail {
@@ -161,8 +162,11 @@ function ParameterDetails({ params, definition, selection, schemas, path, onEdit
   for (const [name, value] of Object.entries(params)) {
     if (!scalar(value)) { structured.push([name, value]); continue; }
     const schema = schemas?.find((candidate) => candidate.name === name);
-    const source = definition.authored?.sources[authoredPointer([...path, name])];
-    const control = onEdit && (!schemas || schema) && (!definition.authored || source)
+    const pointer = authoredPointer([...path, name]);
+    const source = definition.authored?.sources[pointer];
+    const variantPaths = definition.authored?.variant_model_paths;
+    const control = onEdit && (!schemas || schema) && (!definition.authored || source) &&
+        (!variantPaths || variantPaths.includes(pointer))
       ? fieldControl(value, schema) : undefined;
     fields.push({ id: name, label: humanizeLabel(name), control, resolved: [{ id: name, value, source: source?.name ?? definition.label }],
       actions: control ? ['set'] : [] });
@@ -178,7 +182,15 @@ function ParameterDetails({ params, definition, selection, schemas, path, onEdit
 }
 
 function useDefinitionEdit(input: DetailInputs, scope: string) {
-  const { editor, stepId, selection, namedRun, documentScopes } = input;
+  const { editor, stepId, selection, namedRun, documentScopes, activeView } = input;
+  const reviewScope = JSON.stringify([scope, activeView, namedRun, ...Object.values(documentScopes).map((target) =>
+    target && [target.key, [...target.lit], target.localVariant])]);
+  const currentReview = useRef(reviewScope);
+  currentReview.current = reviewScope;
+  useEffect(() => {
+    currentReview.current = reviewScope;
+    return () => { currentReview.current = ''; };
+  }, [reviewScope]);
   const [issue, setIssue] = useState<{ scope: string; field: DefinitionField; message: string }>();
   return {
     issue: (field: DefinitionField) => issue?.scope === scope && issue.field === field ? issue.message : null,
@@ -187,16 +199,22 @@ function useDefinitionEdit(input: DetailInputs, scope: string) {
       const id = definition.id;
       try {
         if (id) {
-          const { saved, pending } = editor.getSnapshot();
+          const { saved, outside, pending } = editor.getSnapshot();
           const target = documentScopes[field];
-          if (pending || !target || target.document !== id || !namedRun || value === null ||
+          if (outside || pending || !target || target.document !== id || !namedRun || value === null ||
               definition.authored?.revision !== saved.revision) throw new ProjectEditConflictError();
           const reviewed = await fetchDocumentAuthoring(saved.project_id, {
             revision: saved.revision, run: namedRun, field,
-            change: { lit_steps: [...target.lit], path: authoredPointer(path), value },
+            change: { lit_steps: [...target.lit], path: authoredPointer(path), value,
+              ...(target.localVariant ? { scope: 'variant' } : {}) },
           });
-          if (reviewed.document !== id) throw new ProjectEditConflictError();
-          editor.editFiles(label, reviewed.files, { reviewedRevision: reviewed.revision });
+          if (currentReview.current !== reviewScope || editor.getSnapshot().outside ||
+              reviewed.document !== id || reviewed.revision !== saved.revision) throw new ProjectEditConflictError();
+          const dependencies = target.localVariant ? saved.file_revisions.map(({ address }) => address).filter((address) =>
+            (address.kind === 'document' && address.id === id) ||
+            (address.kind === 'step' && target.users.has(address.id)) ||
+            (address.kind === 'variant' && address.id !== namedRun.variant)) : [];
+          editor.editFiles(label, reviewed.files, { reviewedRevision: reviewed.revision, dependencies });
         } else {
           const check = (project: AuthoredProject) => {
             const latest = authoredDefinition(project, stepId, field);
@@ -368,14 +386,14 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     queryFn: ({ signal }) => fetchDocumentAuthoring(saved.project_id, reviewed!, signal),
   });
   const definitions = useMemo(() => {
-    const train = stepId && variantId === null;
+    const train = stepId && !draft.sweep;
     const authored = named.data?.document === namedDocument ? named.data : undefined;
     const namedDefinition = authored && { id: authored.document, label: authored.document, payload: authored.payload, shared: true, authored };
     return {
       model: namedField === 'graph' && namedDefinition ? namedDefinition : train ? authoredDefinition(draft, stepId, 'graph') : null,
       task: namedField === 'task' && namedDefinition ? namedDefinition : train ? authoredDefinition(draft, stepId, 'task') : null,
     };
-  }, [draft, stepId, variantId, named.data, namedDocument, namedField]);
+  }, [draft, stepId, named.data, namedDocument, namedField]);
   const graph = useMemo(() => {
     const result = GraphSpecSchema.safeParse(definitions.model?.payload);
     return result.success ? result.data : null;
@@ -403,8 +421,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]), reveal, taskId);
   const change = useDefinitionEdit(input, scope);
   function editable(field: DefinitionField, definition: Definition) {
+    const target = input.documentScopes[field];
     return canEdit && (definition.id
-      ? !pending && definition.authored?.revision === saved.revision && input.documentScopes[field]?.document === definition.id
+      ? !pending && definition.authored?.revision === saved.revision && target?.document === definition.id &&
+        (!target.localVariant || Boolean(definition.authored.variant_model_paths?.length))
       : !definition.shared);
   }
   const components = Object.entries(graph?.nodes ?? {});
@@ -427,7 +447,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const graphScope = input.documentScopes.graph;
   const authorModel = useModelAuthoring({
     editor, graph, registry: registry.data, onSelect: modelSelection.onSelect,
-    review: !pending && activeView === 'model' && model?.id && graphScope && input.namedRun && editable('graph', model)
+    review: !pending && activeView === 'model' && model?.id && graphScope && !graphScope.localVariant && input.namedRun && editable('graph', model)
       ? { revision: saved.revision, presentationRevision: saved.presentation_revision,
         document: model.id, run: input.namedRun, litSteps: [...graphScope.lit] }
       : undefined,
@@ -439,6 +459,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       (component.revision == null || item.revision === component.revision));
     const schemas = metadata?.param_schema ?? [];
     const issue = change.issue('graph');
+    const readOnlyReason = definition.authored?.variant_model_reason;
     const inline = stepId && !definition.id && !definition.shared;
     const raw = component.params ?? {};
     const path = ['nodes', id, 'params'];
@@ -449,7 +470,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     return <section key={id} aria-label={studioName('details')} className="space-y-2">
       <h3 className="font-medium">{id}</h3>
       <p className="text-sm">{component.type}</p>
-      {definition.shared && !editable('graph', definition) && <DetailReason reason="definitionReadOnly" name="model" />}
+      {definition.shared && !editable('graph', definition) && (readOnlyReason
+        ? <p className="text-sm">{readOnlyReason}</p> : <DetailReason reason="definitionReadOnly" name="model" />)}
       {named.error && <p role="alert">{apiErrorMessage(named.error)}</p>}
       {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
       {inline ? <StudioTrainAuthoringForm editor={editor} stepId={stepId} component={id}

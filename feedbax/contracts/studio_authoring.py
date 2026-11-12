@@ -77,12 +77,13 @@ class StudioAuthoringNumber(StrictModel):
 
 
 class StudioAuthoringSource(StrictModel):
-    kind: Literal["document", "step"]
+    kind: Literal["document", "step", "variant"]
     name: str
     path: str
 
 
 class StudioDocumentAuthoringChange(StrictModel):
+    scope: Literal["variant"] | None = None
     lit_steps: list[ProjectName] = Field(min_length=1)
     path: DocumentOverridePath
     value: StrictStr | StrictInt | StrictFloat | StrictBool
@@ -127,6 +128,8 @@ class StudioDocumentAuthoring(StrictModel):
     document: ProjectName
     payload: JsonValue
     sources: dict[str, StudioAuthoringSource]
+    variant_model_paths: list[DocumentOverridePath] | None = None
+    variant_model_reason: NonemptyText | None = None
     files: list[StudioProjectFilePatch]
     created_component: str | None = None
     presentation_revision: Sha256 | None = None

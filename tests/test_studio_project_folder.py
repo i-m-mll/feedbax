@@ -377,6 +377,86 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     assert type(seed.value) is int and seed.value == 7
 
 
+def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
+    root, client = study
+    original = load_text_project(root)
+    authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    authored["steps"]["other"] = authored["steps"]["fit"]
+    dotted = "documents.model.payload.nodes.gain.params.gain"
+    existing = "steps.fit.base.inline.training_config.n_batches"
+    authored["sweep"] = {
+        "rows": {
+            "base": {},
+            "parent": {"from": "base"},
+            "compare": {"from": "parent", "label": "Comparison", "patches": {existing: {
+                "value": authored["steps"]["fit"]["base"]["inline"]["training_config"]["n_batches"],
+            }}},
+            "control": {"from": "base"},
+        },
+        "exceptions": {"keep": {"where": {"rows": []}}},
+    }
+    project = Project.model_validate(authored)
+    for relative, data in dump_text_project(project, original.configuration).items():
+        path = root / relative
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+
+    before = _read(client)
+    path = "/nodes/gain/params/gain"
+    key = {"variant": "compare", "step": "fit", "row": "seed=10"}
+    body = {"revision": before["revision"], "run": key, "field": "graph"}
+    change = {"scope": "variant", "path": path, "value": 3, "lit_steps": ["fit", "other"]}
+
+    def review(**updates):
+        return client.post(f"{_URL}/authoring/document", json={**body, **updates})
+
+    with client:
+        inspection = review()
+        assert inspection.status_code == 200, inspection.text
+        assert path in inspection.json()["variant_model_paths"]
+        narrowed = review(change={**change, "lit_steps": ["fit"]})
+        assert narrowed.status_code == 422, narrowed.text
+        assert "all its users" in narrowed.text
+        base = review(run={**key, "variant": "base"}, change=change)
+        assert base.status_code == 422, base.text
+        parent = review(run={**key, "variant": "parent"}, change=change)
+        assert parent.status_code == 422, parent.text
+        assert "inherited" in parent.text
+        reviewed = review(change=change)
+        assert reviewed.status_code == 200, reviewed.text
+        recipe, = reviewed.json()["files"]
+        assert recipe == {
+            "address": {"kind": "variant", "id": "compare"},
+            "patches": [{"op": "add", "path": f"/patches/{dotted}", "value": {"value": 3}}],
+        }
+        snapshot = client.patch(_URL, json={"revision": before["revision"], **recipe})
+        assert snapshot.status_code == 200, snapshot.text
+        after = snapshot.json()
+        assert after["project"]["documents"] == before["project"]["documents"]
+        assert after["project"]["steps"] == before["project"]["steps"]
+        sweep = before["project"]["sweep"]
+        sweep["rows"]["compare"]["patches"][dotted] = {"value": 3}
+        assert after["project"]["sweep"] == sweep
+        stale = review(change=change)
+        assert stale.status_code == 409, stale.text
+        again = review(revision=after["revision"], change={**change, "value": 4})
+        assert again.status_code == 200, again.text
+        assert again.json()["sources"][path]["kind"] == "variant"
+        assert again.json()["files"][0]["patches"] == [
+            {"op": "replace", "path": f"/patches/{dotted}", "value": {"value": 4}},
+        ]
+
+        old_plan = compile_project(project)
+        new_plan = _read_plan(client, root, after)
+        old_requests = {run.key: run.request_id for run in old_plan.runs}
+        new_requests = {run.key: run.request_id for run in new_plan.runs}
+        assert new_requests.keys() == old_requests.keys()
+        assert len(new_requests) == 16
+        assert {key for key in new_requests if new_requests[key] != old_requests[key]} == {
+            RunKey("compare", step, row) for step in ("fit", "other") for row in ("seed=10", "seed=2")
+        }
+
+
 def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     root, client = study
     original = load_text_project(root)

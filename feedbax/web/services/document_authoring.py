@@ -1,5 +1,6 @@
 """Prepare a revision-bound edit to a named document or its lit step users."""
 
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -11,11 +12,14 @@ from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.project import (
     DocumentOverrides, InlineBase, Project, apply_document_edits, document_edit_ops, json_pointer_parts,
 )
-from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.project_plan import ProjectPlan, RunKey, SelectedRunDefinition
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sweep import Row, SetValue, authored_row
+from feedbax.contracts.run_matrix import _paths_overlap
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringSource,
     StudioDocumentAuthoring,
+    StudioDocumentAuthoringChange,
     StudioDocumentAuthoringRequest,
     StudioModelAddComponent,
     StudioModelAuthoringChange,
@@ -232,6 +236,93 @@ def _model_files(
     return files, created, presentation_revision
 
 
+def _variant_model_path(document: str, path: str, definition: SelectedRunDefinition) -> bool:
+    if (
+        definition.document_ids.get("payload.graph") != document
+        or definition.document_pointers.get("payload.graph")
+    ):
+        return False
+    source = definition.sources.get("/payload/graph" + path)
+    return source is not None and (
+        (source.kind == "document" and source.name == document and source.path == path)
+        or (source.kind == "variant" and source.path == pointer(("documents", document, "payload")) + path)
+    )
+
+
+def _variant_model_scope(
+    folders: ProjectFolderService, project_id: str, body: StudioDocumentAuthoringRequest,
+    project: Project, plan: ProjectPlan, key: RunKey, document: str,
+    definition: SelectedRunDefinition,
+) -> tuple[Row, list[str]]:
+    sweep = project.sweep
+    step = plan.steps.get((key.variant, key.step))
+    if body.field != "graph" or step is None or step.kind != "train":
+        raise ProjectFolderInvalid("Variant value edits require a named Train Model.")
+    if sweep is None or key.variant == plan.variants[0]:
+        raise ProjectFolderInvalid("Choose an authored comparison variant to edit a Model value locally.")
+    row = sweep.rows.get(key.variant)
+    expanded = authored_row(sweep, key.variant) if row is not None else None
+    if row is None or expanded is None:
+        raise ProjectFolderInvalid("Generated variants have no authored row for local Model edits.")
+    if any(other is not None and other.source == key.variant for other in sweep.rows.values()):
+        raise ProjectFolderInvalid("This variant supplies inherited patches to another variant.")
+    keys = [
+        other.key for other in plan.rows
+        if other.key.variant == key.variant and document in other.document_uses
+    ]
+    if key not in keys:
+        raise ProjectFolderInvalid("The selected run no longer uses this Model.")
+    definitions: Mapping[RunKey, SelectedRunDefinition] = {key: definition}
+    if len(keys) > 1:
+        definitions = folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan.selected_definitions
+    model = project.documents.get(document)
+    payload = model.payload if model and model.schema_id == "feedbax.spec.graph" else None
+    nodes = payload.get("nodes") if isinstance(payload, dict) else None
+    paths = []
+    if not isinstance(nodes, dict):
+        raise ProjectFolderInvalid("Choose a named Model document.")
+    for node, item in nodes.items():
+        params = item.get("params") if isinstance(item, dict) else None
+        if not isinstance(params, dict):
+            continue
+        for param, value in params.items():
+            parts = ("nodes", node, "params", param)
+            target = ("documents", document, "payload", *parts)
+            if type(value) not in (str, int, float, bool) or any(not part or "." in part for part in target):
+                continue
+            dotted, path = ".".join(target), pointer(parts)
+            if any(
+                _paths_overlap(other, dotted) and (other != dotted or origin[0] != "row")
+                for other, origin in expanded.patch_origins.items()
+            ):
+                continue
+            local = row.patches.get(dotted)
+            if local is not None and (not isinstance(local, SetValue) or local.op != "replace"):
+                continue
+            if all(
+                other in definitions and _variant_model_path(document, path, definitions[other]) for other in keys
+            ):
+                paths.append(path)
+    return row, paths
+
+
+def _variant_model_file(
+    key: RunKey, document: str, row: Row, change: StudioDocumentAuthoringChange,
+) -> StudioProjectFilePatch:
+    dotted = ".".join(("documents", document, "payload", *json_pointer_parts(change.path)))
+    previous = row.patches.get(dotted)
+    value: dict[str, JsonValue] = {"value": change.value}
+    if isinstance(previous, SetValue) and "op" in previous.model_fields_set:
+        value["op"] = previous.op
+    if "patches" not in row.model_fields_set:
+        patch = SetProjectValue(op="add", path="/patches", value={dotted: value})
+    else:
+        patch = SetProjectValue(
+            op="replace" if dotted in row.patches else "add", path=pointer(("patches", dotted)), value=value,
+        )
+    return StudioProjectFilePatch(address=AuthoredFileAddress(kind="variant", id=key.variant), patches=[patch])
+
+
 def document_authoring(
     folders: ProjectFolderService, project_id: str, body: StudioDocumentAuthoringRequest,
     *, components: ComponentRegistry,
@@ -246,14 +337,38 @@ def document_authoring(
     sources = {
         path.removeprefix(prefix): StudioAuthoringSource(kind=origin.kind, name=origin.name, path=origin.path)
         for path, origin in definition.sources.items()
-        if path.startswith(prefix + "/") and origin.kind in ("document", "step")
+        if path.startswith(prefix + "/") and origin.kind in ("document", "step", "variant")
     }
+    snapshot = folders.read(project_id, revision=body.revision)
+    project = snapshot.project
+    change = body.change
+    if project.sweep is not None or (isinstance(change, StudioDocumentAuthoringChange) and change.scope == "variant"):
+        if change is not None and not (isinstance(change, StudioDocumentAuthoringChange) and change.scope == "variant"):
+            raise ProjectFolderInvalid("Use a variant-local Model value edit inside project variants.")
+        try:
+            row, paths = _variant_model_scope(folders, project_id, body, project, plan, key, document, definition)
+        except ProjectFolderInvalid as error:
+            if change is not None:
+                raise
+            return StudioDocumentAuthoring(
+                revision=body.revision, document=document, payload=definition.payload[body.field],
+                sources=sources, files=[], variant_model_paths=[], variant_model_reason=str(error),
+            )
+        files = []
+        if change is not None:
+            lit = set(change.lit_steps)
+            if lit != plan.document_users(key.variant, document) or len(lit) != len(change.lit_steps):
+                raise ProjectFolderInvalid("A variant Model edit must include all its users in this variant.")
+            if change.path not in paths:
+                raise ProjectFolderInvalid("This value cannot be edited across the named Model's users in this variant.")
+            files = [_variant_model_file(key, document, row, change)]
+        return StudioDocumentAuthoring(
+            revision=body.revision, document=document, payload=definition.payload[body.field],
+            sources=sources, files=files, variant_model_paths=paths,
+            variant_model_reason=None if paths else "No Model parameter can be edited across its users in this variant.",
+        )
     files = []
-    if change := body.change:
-        snapshot = folders.read(project_id, revision=body.revision)
-        project = snapshot.project
-        if project.sweep is not None:
-            raise ProjectFolderInvalid("Edit the named definition outside project variants.")
+    if change is not None:
         users = plan.document_users(key.variant, document)
         lit = set(change.lit_steps)
         if key.step not in lit or not lit <= users or len(lit) != len(change.lit_steps):
