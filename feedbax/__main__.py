@@ -373,6 +373,12 @@ def build_parser() -> argparse.ArgumentParser:
     describe_parser.add_argument(
         "--plugin", action="append", help="Load a plugin module's declarations. May be repeated.",
     )
+    studio_migration = subparsers.add_parser(
+        "migrate-project", prog="feedbax migrate-project",
+        help="Convert a saved Studio workspace into a new project folder.",
+    )
+    studio_migration.add_argument("source", type=Path, help="Saved Studio workspace JSON file.")
+    studio_migration.add_argument("--out", type=Path, help="New folder (default: beside the source).")
     migration_parser = subparsers.add_parser(
         "migrate-content-store",
         help="Offline conversion of legacy custody into canonical content references.",
@@ -746,6 +752,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return project_plan_cli.run(args)
     if args.command == "status":
         return project_plan_cli.run_status(args)
+    if args.command == "migrate-project":
+        from feedbax.bin.migrate_project import migrate_project
+
+        return migrate_project(args.source, args.out)
     if args.command == "migrate-content-store":
         if args.packet_v1:
             from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1

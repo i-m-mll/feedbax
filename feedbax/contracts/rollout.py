@@ -7,6 +7,7 @@ from pydantic import Field, field_validator
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.manifest import OverridePatch
 
+STUDIO_DEFAULT_EVALUATION_TYPE = "feedbax.studio.default_eval"
 ROLLOUT_TYPE = "feedbax.rollout"
 STATES_SCHEMA = "feedbax.candidate.evaluate.states.v1"
 RAW_STATES_SCHEMA = "feedbax.candidate.evaluate.raw_states.v1"

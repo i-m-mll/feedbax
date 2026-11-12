@@ -11,6 +11,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from feedbax.contracts.rollout import STUDIO_DEFAULT_EVALUATION_TYPE
 from feedbax.contracts.base import (
     EntrypointRef,
     ParentRef,
@@ -853,7 +854,7 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
         role="training_run",
     )
     run_spec = EvaluationRunSpec(
-        evaluation_type="feedbax.studio.default_eval",
+        evaluation_type=STUDIO_DEFAULT_EVALUATION_TYPE,
         training_run_ids=[payload.training_run_id],
         inputs=[training_ref],
         params={**payload.eval_params, "label": payload.name},
