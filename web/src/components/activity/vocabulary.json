@@ -169,7 +169,12 @@
     "changed": "{value} changed",
     "invalidPath": "{value} is invalid"
   },
-  "format": { "ofCount": "{count} of {total}" },
+  "format": {
+    "ofCount": "{count} of {total}",
+    "lastLossAtUpdate": "Last loss at update {end}",
+    "lossIntervalDescription": "Interval mean loss with minimum and maximum bars",
+    "lossInterval": "Updates {start}–{end} ({count} samples), {min}–{max}"
+  },
   "step": {
     "train": { "glyph": "flask", "tint": "#c4b5fd" },
     "evaluate": { "glyph": "play", "tint": "#f5add8" },

@@ -28,10 +28,19 @@ export function studioUnit(id: keyof typeof vocabulary.unit) {
 
 const countFormat = new Intl.NumberFormat();
 
+export function studioFormat(
+  id: keyof typeof vocabulary.format,
+  values: Readonly<Record<string, string | number>> = {},
+) {
+  return vocabulary.format[id].replace(/\{([A-Za-z]+)\}/g, (_, key: string) => {
+    const value = values[key];
+    if (value === undefined) throw new Error(`Missing Studio format value ${key} for ${id}`);
+    return String(value);
+  });
+}
+
 export function studioCountOf(count: number, total: number) {
-  return vocabulary.format.ofCount
-    .replace('{count}', countFormat.format(count))
-    .replace('{total}', countFormat.format(total));
+  return studioFormat('ofCount', { count: countFormat.format(count), total: countFormat.format(total) });
 }
 
 export function studioRunStatus(status: StudioRunStatusId) {

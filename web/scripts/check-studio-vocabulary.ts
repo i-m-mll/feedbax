@@ -33,7 +33,7 @@ for (const group of Object.values(vocabulary.status)) {
 for (const [id, value] of Object.entries(vocabulary.format)) verifyEntry(id, value);
 
 const controlledAttributes = new Set(['title', 'placeholder', 'aria-label']);
-const labelFunctions = new Set(['studioName', 'studioAccessibleName']);
+const labelFunctions = new Set(['studioName', 'studioAccessibleName', 'studioFormat']);
 const visibleText = /[\p{L}\p{N}]/u;
 
 function hasVisibleLiteral(node: ts.Expression): boolean {

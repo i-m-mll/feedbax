@@ -14,7 +14,7 @@ import { workspaceReplayPolyline } from '@/features/scenario/workspaceReplay';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
-import { studioName, studioReason } from './studioVocabulary';
+import { studioFormat, studioName, studioReason } from './studioVocabulary';
 
 type Point = [number, number];
 type LossObservation = {
@@ -169,7 +169,7 @@ function LossPlot({ points }: { points: LossObservation[] }) {
       <div className="flex justify-between gap-2 text-xs font-medium">
         <h4>{studioName('loss')}</h4>
         {latest && (
-          <span className="tabular-nums" title={`Last loss at update ${latest.end}`}>
+          <span className="tabular-nums" title={studioFormat('lastLossAtUpdate', { end: latest.end })}>
             {formatLoss.format(latest.last)}
           </span>
         )}
@@ -180,7 +180,7 @@ function LossPlot({ points }: { points: LossObservation[] }) {
         aria-label={studioName('loss')}
         className="h-28 w-full rounded border border-slate-200 bg-white"
       >
-        {ranges.length > 0 && <desc>Interval mean loss with minimum and maximum bars</desc>}
+        {ranges.length > 0 && <desc>{studioFormat('lossIntervalDescription')}</desc>}
         {ranges.map(({ end, start, count, min, max }, index) => (
           <line
             key={end}
@@ -192,7 +192,9 @@ function LossPlot({ points }: { points: LossObservation[] }) {
             stroke="currentColor"
             vectorEffect="non-scaling-stroke"
           >
-            <title>{`Updates ${start + 1}–${end} (${count} samples), ${formatLoss.format(min)}–${formatLoss.format(max)}`}</title>
+            <title>{studioFormat('lossInterval', {
+              start: start + 1, end, count, min: formatLoss.format(min), max: formatLoss.format(max),
+            })}</title>
           </line>
         ))}
         <PlotTrack points={plot} stroke="text-blue-700" />
