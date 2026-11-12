@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -10,12 +11,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
-from feedbax.contracts.project import Project, StepKind
+from feedbax.contracts.project import Payload, Project, StepKind
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
     BestCheckpoint,
     CheckpointRule,
+    InputBinding,
     NamedSubset,
     OmittedReference,
     StepReference,
@@ -74,27 +76,58 @@ class PlannedInput:
 
 
 @dataclass(frozen=True)
-class PlannedRun:
+class PlannedRow:
+    """An expanded row, including a row whose request validation fails."""
+
     key: RunKey
     kind: StepKind
-    request_id: RequestId
     label: str | None
     coordinates: Mapping[str, SweepCoordinate]
+
+
+@dataclass(frozen=True)
+class PlannedRun(PlannedRow):
+    request_id: RequestId
     inputs: Mapping[str, PlannedInput]
     omissions: Mapping[str, str]
     requires: tuple[str, ...]
 
 
 @dataclass(frozen=True)
+class PlannedStep:
+    """The local input declarations and the effective bindings when resolved."""
+
+    kind: StepKind
+    group: str | None
+    authored_inputs: Mapping[str, InputBinding | None]
+    inputs: Mapping[str, InputBinding] | None = None
+
+
+@dataclass(frozen=True)
+class SelectedRunDefinition:
+    payload: Payload
+    sources: Mapping[str, ValueSource]
+
+
+@dataclass(frozen=True)
 class ProjectPlan:
     """Named runs and deduplicated objects encoded by the shared request codec."""
 
+    variants: tuple[str, ...]
+    steps: Mapping[tuple[str, str], PlannedStep]
+    rows: tuple[PlannedRow, ...]
     runs: tuple[PlannedRun, ...]
     requests: Mapping[RequestId, bytes]
     documents: Mapping[str, bytes]
     diagnostics: tuple[ProjectDiagnostic, ...]
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
-    sources: Mapping[RunKey, Mapping[str, ValueSource]]
+    selected_definitions: Mapping[RunKey, SelectedRunDefinition]
+
+    @property
+    def sources(self) -> Mapping[RunKey, Mapping[str, ValueSource]]:
+        return MappingProxyType(
+            {key: definition.sources for key, definition in self.selected_definitions.items()}
+        )
 
 
 @dataclass(frozen=True)
@@ -135,12 +168,14 @@ class _Compiler:
         self.variants: dict[str, Project] = {}
         self.variant_order: tuple[str, ...] = ()
         self.variant_sources: dict[str, Any] = {}
+        self.steps: dict[tuple[str, str], PlannedStep] = {}
+        self.rows: dict[RunKey, PlannedRow] = {}
         self.runs: dict[tuple[str, str], tuple[PlannedRun, ...]] = {}
         self.requests: dict[RequestId, bytes] = {}
         self.documents: dict[str, bytes] = {}
         self.diagnostics: list[ProjectDiagnostic] = []
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
-        self.sources: dict[RunKey, Mapping[str, ValueSource]] = {}
+        self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
 
     def expand_variants(self) -> None:
         try:
@@ -187,12 +222,15 @@ class _Compiler:
             for name in sorted(project.steps):
                 self.step(variant, name, ())
         return ProjectPlan(
+            self.variant_order,
+            MappingProxyType(self.steps),
+            tuple(self.rows.values()),
             tuple(run for runs in self.runs.values() for run in runs),
             MappingProxyType(self.requests),
             MappingProxyType(self.documents),
             tuple(self.diagnostics),
             MappingProxyType(self.subsets),
-            MappingProxyType(self.sources),
+            MappingProxyType(self.selected_definitions),
         )
 
     def step(
@@ -207,7 +245,10 @@ class _Compiler:
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
     ) -> tuple[PlannedRun, ...]:
         project = self.variants[variant]
-        kind = project.steps[name].kind
+        authored = project.steps[name]
+        kind = authored.kind
+        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)))
+        self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
         if role is None:
@@ -231,6 +272,9 @@ class _Compiler:
         if isinstance(template, ProjectDiagnostic):
             self.diagnostics.append(replace(template, variant=variant))
             return ()
+        self.steps[variant, name] = replace(
+            step, inputs=MappingProxyType(deepcopy(dict(template.inputs)))
+        )
         extra_roles = sorted(template.inputs.keys() - {role.name})
         if extra_roles:
             self.diagnostics.extend(
@@ -276,6 +320,9 @@ class _Compiler:
 
         result = []
         for row in rows:
+            run_key = RunKey(variant, name, row.id)
+            coordinates = MappingProxyType(row.coordinates)
+            self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
             key = row.input_keys.get(role.name)
             chosen = by_key[key] if key is not None else None
             if chosen is None and len(members) > 1:
@@ -296,6 +343,20 @@ class _Compiler:
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
                 continue
+            if resolved.sources is not None:
+                sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
+                if chosen is not None:
+                    producer = chosen.producer
+                    sources[f"/inputs/{role.name}"] = ValueSource(
+                        "upstream",
+                        producer.step,
+                        step=producer.step,
+                        variant=producer.variant,
+                        row=producer.row,
+                    )
+                self.selected_definitions[run_key] = SelectedRunDefinition(
+                    resolved.payload, MappingProxyType(sources)
+                )
             try:
                 spec = REQUEST_KINDS[kind].spec_type.model_validate(resolved.payload)
                 encoded = encode_request(spec, {role.name: (chosen.member,)} if chosen else {})
@@ -327,31 +388,18 @@ class _Compiler:
                 continue
             self.requests[encoded.id] = encoded.data
             self.documents.update(encoded.documents)
-            run_key = RunKey(variant, name, row.id)
-            if resolved.sources is not None:
-                sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
-                if chosen is not None:
-                    producer = chosen.producer
-                    sources[f"/inputs/{role.name}"] = ValueSource(
-                        "upstream",
-                        producer.step,
-                        step=producer.step,
-                        variant=producer.variant,
-                        row=producer.row,
-                    )
-                self.sources[run_key] = MappingProxyType(sources)
-            result.append(
-                PlannedRun(
-                    run_key,
-                    kind,
-                    encoded.id,
-                    row.label,
-                    MappingProxyType(row.coordinates),
-                    MappingProxyType({role.name: chosen} if chosen else {}),
-                    MappingProxyType(omissions),
-                    template.requires,
-                )
+            run = PlannedRun(
+                run_key,
+                kind,
+                row.label,
+                coordinates,
+                encoded.id,
+                MappingProxyType({role.name: chosen} if chosen else {}),
+                MappingProxyType(omissions),
+                template.requires,
             )
+            self.rows[run_key] = run
+            result.append(run)
         return tuple(result)
 
     def select_input(

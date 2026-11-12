@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 import fcntl
 import os
 from pathlib import Path
@@ -31,6 +32,7 @@ from feedbax.contracts.project_io import (
     rename_text_project_declaration,
     text_project_paths,
 )
+from feedbax.contracts.project_plan import ProjectPlan, RunKey, compile_project
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
@@ -75,6 +77,17 @@ class ProjectRevisionConflict(RuntimeError):
         self.resource = resource
         self.current = current
         super().__init__(f"{resource.capitalize()} changed before this edit.")
+
+
+@dataclass(frozen=True)
+class SettledProjectPlan:
+    """The compiler portion of Plan, bound to one saved project revision."""
+
+    project_id: str
+    revision: str
+    semantic_root: str
+    configuration: ProjectConfiguration
+    plan: ProjectPlan
 
 
 def _regular(path: Path) -> os.stat_result:
@@ -225,6 +238,20 @@ class ProjectFolderService:
 
     def read(self, project_id: str) -> StudioProjectSnapshot:
         return self.open(project_id).snapshot
+
+    def read_plan(
+        self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = ()
+    ) -> SettledProjectPlan:
+        """Compile the acknowledged folder snapshot without opening the result store."""
+        text = self._load(self._folder(project_id))
+        _check_revision("project", revision, text.revision)
+        return SettledProjectPlan(
+            project_id,
+            text.revision,
+            project_semantic_root(text.project),
+            text.configuration,
+            compile_project(text.project, source_runs=source_runs),
+        )
 
     def new(self) -> StudioProjectDocument:
         project_id = f"untitled-{uuid4().hex}"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
 import pytest
@@ -15,11 +15,13 @@ from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.host import HostError
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from feedbax.web.services import project_folder
+from web.e2e.studio.fixtures.reaching_project import reaching_project
 
 
 _URL = "/api/projects/reach"
@@ -78,7 +80,7 @@ def _read(client: TestClient):
 def _patch(
     client: TestClient,
     revision: str,
-    value: int | float,
+    value: int | float | str,
     *,
     kind="document",
     name="model",
@@ -99,6 +101,252 @@ def _gain(root: Path):
         load_text_project(root)
         .project.documents["model"]
         .payload["nodes"]["gain"]["params"]["gain"]
+    )
+
+
+def _folder_state(root: Path):
+    return {
+        path.relative_to(root): (
+            path.stat().st_mtime_ns,
+            path.read_bytes() if path.is_file() else None,
+        )
+        for path in (root, *root.rglob("*"))
+    }
+
+
+def _read_plan(client, root, snapshot, *source_runs):
+    before = _folder_state(root)
+    result = client.app.state.project_folders.read_plan(
+        snapshot["project_id"], revision=snapshot["revision"], source_runs=source_runs
+    )
+    assert _folder_state(root) == before
+    assert (result.project_id, result.revision, result.semantic_root) == (
+        snapshot["project_id"],
+        snapshot["revision"],
+        snapshot["semantic_root"],
+    )
+    assert result.configuration.store == "results"
+    return result.plan
+
+
+def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path):
+    app = create_app(projects_dir=tmp_path)
+    client = TestClient(app)
+    response = client.post("/api/projects")
+    assert response.status_code == 201
+    snapshot = response.json()["snapshot"]
+    root = tmp_path / snapshot["project_id"]
+    url = f"/api/projects/{snapshot['project_id']}"
+    fixture = reaching_project()
+    model = fixture.graph.model_dump(mode="json", exclude_none=True)
+    task = fixture.workspace.model_dump(mode="json", exclude_none=True)["scenarios"][
+        "scenario:train"
+    ]["task_spec"]
+    for entry in (
+        {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
+        {
+            "kind": "document",
+            "id": "model",
+            "document": {"schema": model["schema_id"], "payload": model},
+        },
+        {
+            "kind": "document",
+            "id": "task",
+            "document": {"schema": "feedbax.spec.task", "payload": task},
+        },
+    ):
+        response = client.post(
+            f"{url}/files", json={"revision": snapshot["revision"], "file": entry}
+        )
+        assert response.status_code == 201, response.text
+        snapshot = response.json()["snapshot"]
+    response = client.patch(
+        url,
+        json={
+            "revision": snapshot["revision"],
+            "address": {"kind": "step", "id": "train"},
+            "patches": [
+                {
+                    "op": "replace",
+                    "path": "/base/inline",
+                    "value": {"graph": {"document": "model"}, "task": {"document": "task"}},
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    snapshot = response.json()
+    selected = RunKey("default", "train", "default")
+    mass = "/payload/graph/nodes/plant/params/mass"
+    before = _read_plan(client, root, snapshot, selected)
+    assert before.variants == ("default",)
+    assert [row.key for row in before.rows] == [selected]
+    assert not before.runs and not before.requests
+    assert {item.path for item in before.diagnostics} == {
+        "payload.objective",
+        "payload.method_payload",
+        "payload.method_ref",
+        "payload.training_config",
+    }
+    assert {(item.code, item.variant, item.step, item.row) for item in before.diagnostics} == {
+        (ResolutionCode.INVALID_PAYLOAD, selected.variant, selected.step, selected.row)
+    }
+    assert set(before.selected_definitions) == {selected}
+    definition = before.selected_definitions[selected]
+    assert definition.payload["graph"] == model
+    assert definition.payload["task"] == task
+    assert (
+        definition.sources[mass].kind,
+        definition.sources[mass].name,
+        definition.sources[mass].path,
+    ) == ("document", "model", "/nodes/plant/params/mass")
+    assert definition.sources["/payload/task/params/n_steps"].name == "task"
+    assert not _read_plan(client, root, snapshot).selected_definitions
+
+    response = client.patch(
+        url,
+        json={
+            "revision": snapshot["revision"],
+            "address": {"kind": "document", "id": "model"},
+            "patches": [
+                {"op": "replace", "path": "/payload/nodes/plant/params/mass", "value": 2.0}
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    current = response.json()
+    assert current["revision"] != snapshot["revision"]
+    plan = _read_plan(client, root, current, selected)
+    assert plan.rows == before.rows and plan.diagnostics == before.diagnostics
+    assert plan.sources == before.sources
+    assert (
+        plan.selected_definitions[selected].payload["graph"]["nodes"]["plant"]["params"]["mass"]
+        == 2.0
+    )
+    assert definition.payload["graph"]["nodes"]["plant"]["params"]["mass"] == 1.0
+    files = _folder_state(root)
+    with pytest.raises(project_folder.ProjectRevisionConflict) as conflict:
+        app.state.project_folders.read_plan(snapshot["project_id"], revision=snapshot["revision"])
+    assert (conflict.value.resource, conflict.value.current) == ("project", current["revision"])
+    assert _folder_state(root) == files
+    assert not (root / "results").exists()
+
+
+def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
+    root, client = study
+    original = load_text_project(root)
+    authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": ["seed=10"]}}
+    authored["steps"]["follow"] = {
+        "kind": "train",
+        "base": {"step": "fit"},
+        "sweep": {"axes": {"seed": None}},
+        "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
+    }
+    authored["sweep"] = {"rows": {"base": {}, "compare": {}}}
+    project = Project.model_validate(authored)
+    for relative, data in dump_text_project(project, original.configuration).items():
+        path = root / relative
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+
+    snapshot = _read(client)
+    selected = RunKey("compare", "follow", "default")
+    before = _read_plan(client, root, snapshot, selected)
+    assert before.variants == ("base", "compare")
+    assert len(before.runs) == len(before.rows) == 6
+    assert not before.diagnostics
+    assert len(before.requests) == 3
+    for variant in before.variants:
+        [follower] = [run for run in before.runs if run.key == RunKey(variant, "follow", "default")]
+        producer = RunKey(variant, "fit", "seed=10")
+        assert follower.inputs["checkpoint"].producer == producer
+        subset = before.subsets[variant, "follow", "checkpoint"]
+        assert (subset.document, subset.candidates, subset.members) == ("selected", 2, (producer,))
+        assert subset.terms.rows == ["seed=10"]
+        assert before.steps[variant, "follow"].inputs["checkpoint"].step == "fit"
+    assert set(before.sources) == {selected}
+    source = before.sources[selected]["/inputs/checkpoint"]
+    assert (source.kind, source.variant, source.step, source.row) == (
+        "upstream",
+        "compare",
+        "fit",
+        "seed=10",
+    )
+
+    edited = _patch(
+        client,
+        snapshot["revision"],
+        7,
+        kind="step",
+        name="fit",
+        path="/sweep/axes/seed/values/10/patches/seed/value",
+    )
+    assert edited.status_code == 200, edited.text
+    after = _read_plan(client, root, edited.json(), selected)
+    before_requests = {run.key: run.request_id for run in before.runs}
+    assert set(before_requests) == {run.key for run in after.runs}
+    assert {run.key for run in after.runs if run.request_id != before_requests[run.key]} == {
+        RunKey(variant, step, row)
+        for variant in after.variants
+        for step, row in (("fit", "seed=10"), ("follow", "default"))
+    }
+    assert after.subsets == before.subsets and after.sources == before.sources
+
+    broken = _patch(
+        client,
+        edited.json()["revision"],
+        "missing",
+        kind="step",
+        name="follow",
+        path="/inputs/checkpoint/step",
+    )
+    assert broken.status_code == 200, broken.text
+    invalid = _read_plan(client, root, broken.json(), selected)
+    assert {row.key.step for row in invalid.rows} == {"fit"}
+    assert not invalid.sources
+    assert {(item.variant, item.step, item.row, item.path) for item in invalid.diagnostics} == {
+        (variant, "follow", None, "inputs.checkpoint") for variant in after.variants
+    }
+    assert invalid.steps["compare", "follow"].authored_inputs["checkpoint"].step == "missing"
+
+
+def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
+    root, client = study
+    opened = _read(client)
+    service = client.app.state.project_folders
+    selected = RunKey("default", "fit", "seed=10")
+    entered = Event()
+    release = Event()
+
+    def pause_old_compile(project, **kwargs):
+        if project.documents["model"].payload["nodes"]["gain"]["params"]["gain"] == 1:
+            entered.set()
+            assert release.wait(5)
+        return compile_project(project, **kwargs)
+
+    monkeypatch.setattr(project_folder, "compile_project", pause_old_compile)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        previous = pool.submit(
+            service.read_plan, "reach", revision=opened["revision"], source_runs=(selected,)
+        )
+        try:
+            assert entered.wait(5)
+            changed = _patch(client, opened["revision"], 4)
+            assert changed.status_code == 200, changed.text
+            current = _read_plan(client, root, changed.json(), selected)
+        finally:
+            release.set()
+        old = previous.result(timeout=5)
+
+    assert (old.revision, old.semantic_root) == (opened["revision"], opened["semantic_root"])
+    assert (
+        old.plan.selected_definitions[selected].payload["graph"]["nodes"]["gain"]["params"]["gain"]
+        == 1
+    )
+    assert (
+        current.selected_definitions[selected].payload["graph"]["nodes"]["gain"]["params"]["gain"]
+        == 4
     )
 
 
