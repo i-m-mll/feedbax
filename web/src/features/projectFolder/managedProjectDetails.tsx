@@ -19,6 +19,7 @@ import { humanizeLabel } from '@/components/values/ValueSpecField';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
+import { graphEdgeId } from '@/features/scenario/entities';
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
@@ -70,7 +71,6 @@ interface DetailInputs {
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly namedRun?: StudioSavedTrainKey;
   readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
-  readonly saveComponentPosition: (document: string, node: string, position: PresentationPosition) => Promise<unknown>;
 }
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
@@ -148,10 +148,10 @@ function ModelCanvas({ graph, positions, selectedId, onSelect, openAt, rememberP
     const entries = Object.entries(graph.nodes ?? {});
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
     entries.forEach(([id]) => layout.setNode(id, { width: 150, height: 50 }));
-    const edges = (graph.wires ?? []).flatMap((wire, index): Edge[] => {
+    const edges = (graph.wires ?? []).flatMap((wire): Edge[] => {
       if (!layout.hasNode(wire.source_node) || !layout.hasNode(wire.target_node)) return [];
       layout.setEdge(wire.source_node, wire.target_node);
-      return [{ id: `wire:${index}`, source: wire.source_node, target: wire.target_node }];
+      return [{ id: graphEdgeId(wire), source: wire.source_node, target: wire.target_node }];
     });
     dagre.layout(layout);
     const nodes = entries.map(([id, node]): Node => {
@@ -476,17 +476,21 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   }
   const components = Object.entries(graph?.nodes ?? {});
   const component = components.find(([id]) => modelSelection.selectedId === `component:${id}`);
-  const wire = graph?.wires?.find((_, index) => modelSelection.selectedId === `wire:${index}`);
+  const wire = graph?.wires?.find((item) => modelSelection.selectedId === graphEdgeId(item));
   const registry = useQuery({ queryKey: ['components'], queryFn: fetchComponents, staleTime: 5 * 60 * 1000,
     enabled: activeView === 'model' });
   const model = definitions.model;
-  const positions = model?.id ? saved.presentation?.documents?.[model.id]?.positions : undefined;
+  const modelId = model?.id;
+  const sharedPositions = modelId ? saved.presentation?.documents?.[modelId]?.positions : undefined;
+  const localPositions = modelId && stepId ? saved.presentation?.steps?.[stepId]?.model_positions?.[modelId] : undefined;
+  const positions = useMemo(() => localPositions ? { ...sharedPositions, ...localPositions } : sharedPositions,
+    [sharedPositions, localPositions]);
   const graphScope = input.documentScopes.graph;
   const authorModel = useModelAuthoring({
-    editor, graph, registry: registry.data, documentScope: graphScope, onSelect: modelSelection.onSelect,
-    savePosition: input.saveComponentPosition,
+    editor, graph, registry: registry.data, onSelect: modelSelection.onSelect,
     review: !pending && activeView === 'model' && model?.id && graphScope && input.namedRun && editable('graph', model)
-      ? { revision: saved.revision, document: model.id, run: input.namedRun, litSteps: [...graphScope.lit] }
+      ? { revision: saved.revision, presentationRevision: saved.presentation_revision,
+        document: model.id, run: input.namedRun, litSteps: [...graphScope.lit] }
       : undefined,
   });
   const scene = useSceneDetail(input, model, graph, JSON.stringify([scope, model?.id]), saved.project_id, saved.revision);
@@ -533,8 +537,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
         {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
         {authorModel.drawer}
         <DetailList name="components" items={components.map(([id]) => ({ id: `component:${id}`, label: id }))} {...modelSelection} />
-        <DetailList name="wires" items={(graph.wires ?? []).map((item, index) => ({
-          id: `wire:${index}`, label: `${endpoint(item.source_node, item.source_port)} → ${endpoint(item.target_node, item.target_port)}`,
+        <DetailList name="wires" items={(graph.wires ?? []).map((item) => ({
+          id: graphEdgeId(item), label: `${endpoint(item.source_node, item.source_port)} → ${endpoint(item.target_node, item.target_port)}`,
         }))} {...modelSelection} />
       </> : null,
       commands: authorModel.commands,

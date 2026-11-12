@@ -12,7 +12,7 @@ from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import DocumentOverridePath, Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
-from feedbax.contracts.studio_project import ProjectValueEdit, StudioProjectFilePatch
+from feedbax.contracts.studio_project import PresentationPosition, ProjectValueEdit, StudioProjectFilePatch
 
 
 class StudioAuthoringMethod(StrictModel):
@@ -65,6 +65,7 @@ class StudioModelAddComponent(StrictModel):
     kind: Literal["addComponent"]
     component: Literal["feedbax.GRU", "feedbax.Linear", "feedbax.PointMass"]
     revision: Annotated[StrictInt, Field(gt=0)]
+    position: PresentationPosition | None = None
 
 
 class StudioModelConnectPorts(StrictModel):
@@ -90,6 +91,7 @@ class StudioDocumentAuthoringRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
     field: Literal["graph", "task"]
+    presentation_revision: Sha256 | None = None
     change: StudioDocumentAuthoringChange | StudioModelAuthoringChange | None = None
 
 
@@ -100,6 +102,7 @@ class StudioDocumentAuthoring(StrictModel):
     sources: dict[str, StudioAuthoringSource]
     files: list[StudioProjectFilePatch]
     created_component: str | None = None
+    presentation_revision: Sha256 | None = None
 
 
 class StudioSweepValue(StrictModel):

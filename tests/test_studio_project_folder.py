@@ -979,7 +979,8 @@ def test_external_change_while_staging_is_detected_before_replace(study, monkeyp
     assert not list(path.parent.glob(".*.tmp"))
 
 
-def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkeypatch):
+@pytest.mark.parametrize("placement", [False, True])
+def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkeypatch, placement):
     root, client = study
     before = _read(client)
     files = [
@@ -992,27 +993,134 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
             "patches": [{"op": "add", "path": "/note", "value": {"reason": "shared edit"}}],
         },
     ]
+    body = {"revision": before["revision"], "files": files}
+    if placement:
+        files.append({
+            "address": {"kind": "presentation", "id": "presentation"},
+            "patches": [{
+                "op": "add", "path": "/steps",
+                "value": {"fit": {"model_positions": {"model": {"gain": {"x": 1, "y": 2}}}}},
+            }],
+        })
+        before_write = _folder_state(root)
+        conflict = client.patch(_URL, json={**body, "presentation_revision": "0" * 64})
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["resource"] == "presentation"
+        assert _folder_state(root) == before_write
+        body["presentation_revision"] = before["presentation_revision"]
     fail = True
+    interrupt_at = "presentation.json" if placement else "fit.json"
 
     def interrupt(target, data, **kwargs):
         nonlocal fail
-        if target.name == "fit.json" and fail:
+        if target.name == interrupt_at and fail:
             fail = False
             raise OSError("simulated interruption after the first file")
         return write_bytes_atomic(target, data, **kwargs)
 
     monkeypatch.setattr(project_folder, "write_bytes_atomic", interrupt)
-    interrupted = client.patch(_URL, json={"revision": before["revision"], "files": files})
+    interrupted = client.patch(_URL, json=body)
     assert interrupted.status_code == 503
     assert (root / ".studio-patch.json").is_file()
     after = _read(client)
     assert after["revision"] != before["revision"]
     assert _gain(root) == 3
     assert after["project"]["steps"]["fit"]["note"]["reason"] == "shared edit"
+    if placement:
+        assert after["presentation_revision"] != before["presentation_revision"]
+        assert after["presentation"]["steps"]["fit"]["model_positions"]["model"] == {
+            "gain": {"x": 1.0, "y": 2.0},
+        }
     assert not (root / ".studio-patch.json").exists()
-    stale = client.patch(_URL, json={"revision": before["revision"], "files": files})
+    stale = client.patch(_URL, json=body)
     assert stale.status_code == 409
     assert _read(client)["revision"] == after["revision"]
+
+
+def test_model_topology_patches_resolve_only_for_lit_steps(study):
+    root, client = study
+    before = _read(client)
+    direct = client.patch(_URL, json={
+        "revision": before["revision"], "files": [
+            {
+                "address": {"kind": "step", "id": "fit"},
+                "patches": [{"op": "remove", "path": "/sweep"}],
+            }, {
+                "address": {"kind": "document", "id": "model"},
+                "patches": [
+                    {"op": "remove", "path": "/payload/output_ports"},
+                    {"op": "remove", "path": "/payload/output_bindings"},
+                ],
+            },
+        ],
+    })
+    assert direct.status_code == 200, direct.text
+    snapshot = direct.json()
+    step = snapshot["project"]["steps"]["fit"]
+    for id in ("lit", "unlit"):
+        peer = client.post(f"{_URL}/files", json={
+            "revision": snapshot["revision"], "file": {"kind": "step", "id": id, "step": step},
+        })
+        assert peer.status_code == 201, peer.text
+        snapshot = peer.json()["snapshot"]
+    base = compile_project(load_text_project(root).project)
+    shared = (root / "documents/model.json").read_bytes()
+    unlit = (root / "steps/unlit.json").read_bytes()
+    def model_edit(operation, lit):
+        with client:
+            reviewed = client.post(f"{_URL}/authoring/document", json={
+                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+                "run": {"variant": "default", "step": "fit", "row": "default"}, "field": "graph",
+                "change": {"lit_steps": lit, "operation": operation},
+            })
+        assert reviewed.status_code == 200, reviewed.text
+        recipe = reviewed.json()
+        response = client.patch(_URL, json={
+            "revision": recipe["revision"], "presentation_revision": recipe.get("presentation_revision"),
+            "files": recipe["files"],
+        })
+        assert response.status_code == 200, response.text
+        return response.json(), [file["address"]["id"] for file in recipe["files"] if file["address"]["kind"] == "step"]
+
+    for operation in (
+        {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1, "position": {"x": 8, "y": -9}},
+        {"kind": "connectPorts", "wire": {
+            "source_node": "gru", "source_port": "hidden", "target_node": "gru", "target_port": "hidden",
+        }},
+        {"kind": "exposeOutput", "source_node": "gru", "source_port": "hidden"},
+    ):
+        snapshot, changed = model_edit(operation, ["fit", "lit"])
+        assert changed == ["fit", "lit"]
+    assert (root / "documents/model.json").read_bytes() == shared
+    assert (root / "steps/unlit.json").read_bytes() == unlit
+    assert snapshot["presentation"]["steps"] == {
+        id: {"model_positions": {"model": {"gru": {"x": 8.0, "y": -9.0}}}} for id in ("fit", "lit")
+    }
+    keys = [run.key for run in base.runs]
+    scoped = compile_project(load_text_project(root).project, source_runs=keys)
+    assert not scoped.diagnostics
+    originals = {run.key: run.request_id for run in base.runs}
+    for run in scoped.runs:
+        graph = scoped.selected_definitions[run.key].payload["graph"]
+        if run.key.step == "unlit":
+            assert "gru" not in graph["nodes"]
+            assert run.request_id == originals[run.key]
+        else:
+            assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
+            assert sum(wire["source_node"] == "gru" for wire in graph["wires"]) == 1
+            assert run.request_id != originals[run.key]
+            source = scoped.sources[run.key]["/payload/graph/nodes/gru/params/hidden_size"]
+            assert (source.kind, source.name) == ("step", run.key.step)
+    _, changed = model_edit(
+        {"kind": "exposeOutput", "source_node": "gain", "source_port": "output"}, ["fit", "lit", "unlit"],
+    )
+    assert not changed
+    widened = compile_project(load_text_project(root).project, source_runs=keys)
+    assert not widened.diagnostics
+    for key in keys:
+        bindings = widened.selected_definitions[key].payload["graph"]["output_bindings"]
+        assert bindings["output"] == ["gain", "output"]
+        assert ("hidden" in bindings) == (key.step != "unlit")
 
 
 def test_unreadable_presentation_does_not_hide_the_authored_project(study):

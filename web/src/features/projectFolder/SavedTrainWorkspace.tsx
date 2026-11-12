@@ -18,7 +18,7 @@ import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioComm
 import {
   projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
-import type { PresentationDocument, PresentationPosition, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
@@ -228,20 +228,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
   const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const namedRun = definitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ?? definitionRows[0]?.key;
-  function saveComponentPosition(document: string, node: string, position: PresentationPosition) {
-    const { outside, saved } = editor.getSnapshot();
-    const current = (outside ?? saved).presentation ?? {};
-    const prior = current.documents?.[document];
-    return session.savePresentation({
-      ...current, documents: { ...current.documents, [document]: {
-        ...prior, positions: { ...prior?.positions, [node]: position },
-      } },
-    });
-  }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes, saveComponentPosition,
+    namedRun, documentScopes,
   };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });

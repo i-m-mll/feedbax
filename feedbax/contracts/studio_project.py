@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, FiniteFloat, JsonValue
+from pydantic import Field, FiniteFloat
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.project import Document, Pointer, Project, Sha256, Step
+from feedbax.contracts.project import Document, Project, Sha256, Step
+from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
+from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
+from feedbax.contracts.project import SetProjectValue as SetProjectValue
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import ProjectConfiguration
 
@@ -29,6 +32,7 @@ class DocumentPresentation(StrictModel):
 class StepPresentation(StrictModel):
     sweep_order: list[ProjectName] = Field(default_factory=list)
     folded_sweep_id: ProjectName | None = None
+    model_positions: dict[ProjectName, dict[str, PresentationPosition]] = Field(default_factory=dict)
 
 
 class PresentationDocument(StrictModel):
@@ -44,8 +48,11 @@ class StudioProjectRevision(StrictModel):
 
 
 class AuthoredFileAddress(StrictModel):
-    kind: Literal["document", "step", "variant"]
+    kind: Literal["document", "step", "variant", "presentation"]
     id: ProjectName
+
+
+PRESENTATION_ADDRESS = AuthoredFileAddress(kind="presentation", id="presentation")
 
 
 class StudioAuthoredFileRevision(StrictModel):
@@ -61,23 +68,6 @@ class StudioProjectSnapshot(StudioProjectRevision):
     file_revisions: list[StudioAuthoredFileRevision]
 
 
-type EditPath = Annotated[Pointer, Field(min_length=1)]
-
-
-class SetProjectValue(StrictModel):
-    op: Literal["add", "replace"]
-    path: EditPath
-    value: JsonValue
-
-
-class RemoveProjectValue(StrictModel):
-    op: Literal["remove"]
-    path: EditPath
-
-
-type ProjectValueEdit = Annotated[SetProjectValue | RemoveProjectValue, Field(discriminator="op")]
-
-
 class StudioProjectFilePatch(StrictModel):
     address: AuthoredFileAddress
     patches: list[ProjectValueEdit] = Field(min_length=1)
@@ -85,10 +75,12 @@ class StudioProjectFilePatch(StrictModel):
 
 class StudioProjectPatch(StudioProjectFilePatch):
     revision: Sha256
+    presentation_revision: Sha256 | None = None
 
 
 class StudioProjectPatchBatch(StrictModel):
     revision: Sha256
+    presentation_revision: Sha256 | None = None
     files: list[StudioProjectFilePatch] = Field(min_length=1)
 
 

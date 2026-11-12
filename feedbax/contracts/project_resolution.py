@@ -13,17 +13,23 @@ from pydantic import JsonValue, ValidationError
 from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.matrix_core import apply_override_patch_copy, apply_value_patch_in_place
+from feedbax.contracts.matrix_core import apply_override_patch_copy
 from feedbax.contracts.project import (
     Document,
+    DocumentOverrides,
     DocumentReference,
     ExternalBase,
     InlineBase,
     Payload,
     Project,
     RunBase,
+    SetProjectValue,
     StepBase,
     StepKind,
+    apply_document_edit,
+    apply_document_edits,
+    document_edit_ops,
+    document_edit_value,
     json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InputBinding
@@ -173,7 +179,7 @@ class _Documents:
         step: str | None = None,
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        overrides: Mapping[str, Mapping[str, JsonValue]] | None = None,
+        overrides: Mapping[str, DocumentOverrides] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
@@ -181,6 +187,7 @@ class _Documents:
         self.overrides = overrides or {}
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
+        self.edited_sources: dict[str, Any] = {}
 
     def select(self, reference: DocumentReference, path: str) -> Any:
         document = self.read_document(reference.document)
@@ -200,8 +207,7 @@ class _Documents:
                 try:
                     if not isinstance(draft, dict):
                         raise ValueError("Document differences require an object payload")
-                    for target, value in edits.items():
-                        apply_value_patch_in_place(draft, json_pointer_parts(target), "replace", value, path=target)
+                    apply_document_edits(draft, edits)
                 except ValueError as error:
                     raise _Problem(
                         ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
@@ -248,26 +254,27 @@ class _Documents:
 
     def source(self, reference: DocumentReference, value: Any) -> Any:
         parts = json_pointer_parts(reference.pointer)
-        shape = source_shape(
-            value,
-            ValueSource("document", reference.document, pointer(parts)),
-            source_at(self.variant_sources, ("documents", reference.document, "payload", *parts)),
-        )
-        for target, edited in self.overrides.get(reference.document, {}).items():
-            tokens = json_pointer_parts(target)
-            if tokens[:len(parts)] != parts:
-                continue
-            relative = tokens[len(parts):]
-            assert self.step is not None
-            source = ValueSource(
-                "step", self.step, pointer(("document_overrides", reference.document, target)), step=self.step,
+        name = reference.document
+        edits = self.overrides.get(name)
+        variant = source_at(self.variant_sources, ("documents", name, "payload"))
+        if not edits:
+            return source_shape(
+                value, ValueSource("document", name, pointer(parts)), source_at(variant, parts),
             )
-            changed = source_shape(edited, source)
-            if not relative:
-                shape = changed
-            else:
-                apply_value_patch_in_place(shape, relative, "replace", changed, path=target)
-        return shape
+        if name not in self.edited_sources:
+            document = self.read_document(name)
+            assert document is not None and self.step is not None
+            shape = source_shape(document.payload, ValueSource("document", name), variant)
+            for index, edit in enumerate(document_edit_ops(edits)):
+                location = (edit.path,) if isinstance(edits, dict) else (str(index),)
+                if not isinstance(edits, dict) and isinstance(edit, SetProjectValue):
+                    location += ("value",)
+                source = ValueSource(
+                    "step", self.step, pointer(("document_overrides", name, *location)), step=self.step,
+                )
+                apply_document_edit(shape, edit, source_shape(document_edit_value(edit), source))
+            self.edited_sources[name] = shape
+        return source_at(self.edited_sources[name], parts)
 
     def inline_sources(
         self, value: Any, shape: Any, path: str, active: tuple[tuple[str, str], ...] = ()
@@ -708,7 +715,7 @@ class StepComposition:
 
     name: str
     _state: _StepState
-    _document_overrides: Mapping[str, Mapping[str, JsonValue]]
+    _document_overrides: Mapping[str, DocumentOverrides]
 
     @cached_property
     def row_basis(self) -> str:

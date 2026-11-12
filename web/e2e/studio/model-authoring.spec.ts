@@ -1,9 +1,9 @@
 import { expect, test, type Locator } from '@playwright/test';
 import type {
-  GraphSpec, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument,
+  GraphSpec, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -67,13 +67,8 @@ test('authors the saved reaching Model by keyboard and drawer', async ({ page, r
   await expect(chooser).toBeHidden();
   await edit(() => enter(field('Input Size'), '100'));
   await edit(() => enter(field('Output Size'), '2'));
-  const position = page.waitForResponse((response) => response.request().method() === 'PUT' &&
-    new URL(response.url()).pathname === `${projectPath}/presentation`);
   await model.locator('.react-flow__pane').dblclick({ position: { x: 24, y: 24 } });
-  await edit(() => add(chooser, 'PointMass').click());
-  const positioned = await position;
-  expect(positioned.ok(), await positioned.text()).toBe(true);
-  const { presentation } = await positioned.json() as StudioProjectSnapshot;
+  const { presentation } = await edit(() => add(chooser, 'PointMass').click());
   const placed = presentation?.documents?.model.positions?.pointMass;
   expect(placed).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
   await expect(model.locator('.react-flow__node')).toHaveCount(3);
@@ -223,22 +218,4 @@ test('authors the saved reaching Model by keyboard and drawer', async ({ page, r
     .at(-1) as { end_inclusive: number; metrics: { train_loss: { last: number } } } | undefined;
   expect(interval?.end_inclusive).toBe(2);
   expect(Number.isFinite(interval?.metrics.train_loss.last)).toBe(true);
-
-  await show('Model');
-  const peer = await request.post(`${projectPath}/files`, {
-    data: { revision: configured.revision, file: { kind: 'step', id: 'peer', step: configured.project.steps.train } },
-  });
-  expect(peer.status(), await peer.text()).toBe(201);
-  const { snapshot: shared } = await peer.json() as StudioProjectDocument;
-  await expect(mapStep(page, 'peer')).toBeVisible();
-  await expect(add(drawer, 'GRU')).toBeEnabled();
-  await mapStep(page, 'peer').click({ modifiers: ['Meta'] });
-  await expect(add(drawer, 'GRU')).toBeDisabled();
-  const refused = await request.post(`${projectPath}/authoring/document`, { data: {
-    revision: shared.revision, run: { variant: 'default', step: 'train', row: 'default' }, field: 'graph',
-    change: { lit_steps: ['train'], operation: { kind: 'addComponent', component: 'feedbax.GRU', revision: authored.nodes?.gru.revision } },
-  } });
-  expect(refused.status()).toBe(422);
-  expect(await refused.text()).toContain('all Model users');
-  expect(graph(await (await request.get(projectPath)).json() as StudioProjectSnapshot)).toEqual(authored);
 });

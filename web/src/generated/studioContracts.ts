@@ -2314,7 +2314,7 @@ export interface InspectionStatusResponse {
 }
 
 export type AuthoredFileAddress = {
-  "kind": "document" | "step" | "variant";
+  "kind": "document" | "step" | "variant" | "presentation";
   "id": string;
 };
 
@@ -2382,7 +2382,11 @@ export type Document = {
   "payload": JsonValue;
 };
 
+export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
+
 export type DocumentOverridePath = string;
+
+export type DocumentOverrides = Record<string, JsonValue> | Array<DocumentEdit>;
 
 export type DocumentPresentation = {
   "positions"?: Record<string, PresentationPosition>;
@@ -2394,7 +2398,11 @@ export type DocumentReference = {
   "pointer"?: Pointer | null;
 };
 
-export type EditPath = string;
+export type EnsureDocumentCollection = {
+  "op": "ensure";
+  "path": DocumentOverridePath;
+  "collection": "object" | "array";
+};
 
 export type ExternalBase = {
   "path": string;
@@ -2510,7 +2518,7 @@ export type Reference = StepReference | RunReference | StoreSubset | NamedSubset
 
 export type RemoveProjectValue = {
   "op": "remove";
-  "path": EditPath;
+  "path": DocumentOverridePath;
 };
 
 export type RemoveValue = {
@@ -2546,7 +2554,7 @@ export type SampledAxis = {
 
 export type SetProjectValue = {
   "op": "add" | "replace";
-  "path": EditPath;
+  "path": DocumentOverridePath;
   "value": JsonValue;
 };
 
@@ -2561,7 +2569,7 @@ export type Step = {
   "kind": StepKind;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, Record<string, JsonValue>>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -2585,6 +2593,7 @@ export type StepNote = {
 export type StepPresentation = {
   "sweep_order"?: Array<string>;
   "folded_sweep_id"?: string | null;
+  "model_positions"?: Record<string, Record<string, PresentationPosition>>;
 };
 
 export type StepReference = {
@@ -2675,6 +2684,7 @@ export type StudioDocumentAuthoring = {
   "sources": Record<string, StudioAuthoringSource>;
   "files": Array<StudioProjectFilePatch>;
   "created_component"?: string | null;
+  "presentation_revision"?: Sha256 | null;
 };
 
 export type StudioDocumentAuthoringChange = {
@@ -2687,6 +2697,7 @@ export type StudioDocumentAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "field": "graph" | "task";
+  "presentation_revision"?: Sha256 | null;
   "change"?: StudioDocumentAuthoringChange | StudioModelAuthoringChange | null;
 };
 
@@ -2694,6 +2705,7 @@ export type StudioModelAddComponent = {
   "kind": "addComponent";
   "component": "feedbax.GRU" | "feedbax.Linear" | "feedbax.PointMass";
   "revision": number;
+  "position"?: PresentationPosition | null;
 };
 
 export type StudioModelAuthoringChange = {
@@ -2743,10 +2755,12 @@ export type StudioProjectPatch = {
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
   "revision": Sha256;
+  "presentation_revision"?: Sha256 | null;
 };
 
 export type StudioProjectPatchBatch = {
   "revision": Sha256;
+  "presentation_revision"?: Sha256 | null;
   "files": Array<StudioProjectFilePatch>;
 };
 
@@ -2917,7 +2931,7 @@ export type StudioTrainStep = {
   "kind": "train";
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, Record<string, JsonValue>>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -6970,7 +6984,7 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
 
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation")]),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<AuthoredFileAddress>;
@@ -7069,9 +7083,17 @@ export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Document>;
 
+export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
+) as unknown as z.ZodType<DocumentEdit>;
+
 export const DocumentOverridePathSchema: z.ZodType<DocumentOverridePath> = z.lazy(() =>
   z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
 ) as unknown as z.ZodType<DocumentOverridePath>;
+
+export const DocumentOverridesSchema: z.ZodType<DocumentOverrides> = z.lazy(() =>
+  z.union([z.record(DocumentOverridePathSchema, jsonValueSchema), z.array(DocumentEditSchema)])
+) as unknown as z.ZodType<DocumentOverrides>;
 
 export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.lazy(() =>
   z.object({
@@ -7087,9 +7109,13 @@ export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<DocumentReference>;
 
-export const EditPathSchema: z.ZodType<EditPath> = z.lazy(() =>
-  z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
-) as unknown as z.ZodType<EditPath>;
+export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
+  z.object({
+    "op": z.literal("ensure"),
+    "path": DocumentOverridePathSchema,
+    "collection": z.union([z.literal("object"), z.literal("array")]),
+  }).strict()
+) as unknown as z.ZodType<EnsureDocumentCollection>;
 
 export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
   z.object({
@@ -7260,7 +7286,7 @@ export const ReferenceSchema: z.ZodType<Reference> = z.lazy(() =>
 export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
-    "path": EditPathSchema,
+    "path": DocumentOverridePathSchema,
   }).strict()
 ) as unknown as z.ZodType<RemoveProjectValue>;
 
@@ -7310,7 +7336,7 @@ export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add"), z.literal("replace")]),
-    "path": EditPathSchema,
+    "path": DocumentOverridePathSchema,
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetProjectValue>;
@@ -7331,7 +7357,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "kind": StepKindSchema,
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(DocumentOverridePathSchema, jsonValueSchema)).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -7363,6 +7389,7 @@ export const StepPresentationSchema: z.ZodType<StepPresentation> = z.lazy(() =>
   z.object({
     "sweep_order": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "folded_sweep_id": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "model_positions": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string(), PresentationPositionSchema)).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepPresentation>;
 
@@ -7479,6 +7506,7 @@ export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> =
     "sources": z.record(z.string(), StudioAuthoringSourceSchema),
     "files": z.array(StudioProjectFilePatchSchema),
     "created_component": z.union([z.string(), z.null()]).optional(),
+    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioDocumentAuthoring>;
 
@@ -7495,6 +7523,7 @@ export const StudioDocumentAuthoringRequestSchema: z.ZodType<StudioDocumentAutho
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "field": z.union([z.literal("graph"), z.literal("task")]),
+    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
     "change": z.union([StudioDocumentAuthoringChangeSchema, StudioModelAuthoringChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioDocumentAuthoringRequest>;
@@ -7504,6 +7533,7 @@ export const StudioModelAddComponentSchema: z.ZodType<StudioModelAddComponent> =
     "kind": z.literal("addComponent"),
     "component": z.union([z.literal("feedbax.GRU"), z.literal("feedbax.Linear"), z.literal("feedbax.PointMass")]),
     "revision": z.number().int().safe().gt(0),
+    "position": z.union([PresentationPositionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioModelAddComponent>;
 
@@ -7571,12 +7601,14 @@ export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(()
     "address": AuthoredFileAddressSchema,
     "patches": z.array(ProjectValueEditSchema).min(1),
     "revision": Sha256Schema,
+    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatch>;
 
 export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
+    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatchBatch>;
@@ -7797,7 +7829,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "kind": z.literal("train"),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(DocumentOverridePathSchema, jsonValueSchema)).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
