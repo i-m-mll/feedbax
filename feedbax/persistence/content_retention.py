@@ -11,6 +11,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,11 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.persistence._store_metadata import (
+    ensure_store_directory,
+    sync_directory,
+    write_store_metadata,
+)
 
 if TYPE_CHECKING:
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -36,6 +42,10 @@ if TYPE_CHECKING:
 
 class ContentRetentionError(ValueError):
     """Retention state is invalid, ambiguous, or conflicts with an existing record."""
+
+
+_ensure_store_directory = partial(ensure_store_directory, error_factory=ContentRetentionError)
+_write_new_or_replace = partial(write_store_metadata, error_factory=ContentRetentionError)
 
 
 def _index_path(provider: ImmutableArtifactBlobProvider) -> Path:
@@ -110,66 +120,9 @@ def _read_index(provider: ImmutableArtifactBlobProvider) -> ContentRetentionInde
     return index
 
 
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _ensure_store_directory(provider: ImmutableArtifactBlobProvider, path: Path) -> None:
-    try:
-        relative = path.relative_to(provider.root)
-    except ValueError as exc:
-        raise ContentRetentionError("retention path escapes the canonical content store") from exc
-    current = provider.root
-    for part in relative.parts:
-        current = current / part
-        try:
-            current.mkdir()
-        except FileExistsError:
-            pass
-        mode = current.lstat().st_mode
-        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
-            raise ContentRetentionError(f"retention path contains an unsafe component: {current}")
-        # An earlier attempt may have created the directory but failed to sync its parent.
-        _sync_directory(current.parent)
-
-
-def _write_new_or_replace(
-    provider: ImmutableArtifactBlobProvider,
-    path: Path,
-    data: bytes,
-) -> None:
-    _ensure_store_directory(provider, path.parent)
-    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        view = memoryview(data)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise ContentRetentionError("retention record write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
 def _write_index(provider: ImmutableArtifactBlobProvider, index: ContentRetentionIndex) -> None:
     _write_new_or_replace(
-        provider,
+        provider.root,
         _index_path(provider),
         canonical_json_v1_bytes(index.model_dump(mode="json")),
     )
@@ -179,12 +132,12 @@ def _write_receipt(provider: ImmutableArtifactBlobProvider, receipt: ContentGcRe
     path = _receipt_path(provider, receipt.receipt_id, receipt.stage)
     data = canonical_json_v1_bytes(receipt.model_dump(mode="json"))
     if _entry_exists(path):
-        _ensure_store_directory(provider, path.parent)
+        _ensure_store_directory(provider.root, path.parent)
         if not _is_single_regular_file(path) or path.read_bytes() != data:
             raise ContentRetentionError("GC receipt identity drifted during recovery")
-        _sync_directory(path.parent)
+        sync_directory(path.parent)
         return
-    _write_new_or_replace(provider, path, data)
+    _write_new_or_replace(provider.root, path, data)
 
 
 def _replace_record(
@@ -1021,9 +974,9 @@ def launch_scheduled_lease_collection(
     elif job_path.exists():
         raise ContentRetentionError("automatic collection job path is unsafe")
     else:
-        _write_new_or_replace(provider, job_path, job_bytes)
+        _write_new_or_replace(provider.root, job_path, job_bytes)
     log_path = provider.root / "retention" / "automatic-collection.log"
-    _ensure_store_directory(provider, log_path.parent)
+    _ensure_store_directory(provider.root, log_path.parent)
     if log_path.exists() and not _is_single_regular_file(log_path):
         raise ContentRetentionError("automatic collection log path is unsafe")
     log_descriptor = os.open(
@@ -1084,7 +1037,7 @@ def _recover_locked(
     marked = pending.stage == "marked"
     try:
         if pending.decisions:
-            _ensure_store_directory(provider, quarantine)
+            _ensure_store_directory(provider.root, quarantine)
         if marked:
             _write_receipt(
                 provider,
@@ -1114,9 +1067,9 @@ def _recover_locked(
                     )
                     os.replace(source, destination)
             for directory in sorted(source_directories):
-                _sync_directory(directory)
+                sync_directory(directory)
             if pending.decisions:
-                _sync_directory(quarantine)
+                sync_directory(quarantine)
             _verify_quarantine(provider, pending, quarantine)
             pending = pending.model_copy(
                 update={
@@ -1151,7 +1104,7 @@ def _recover_locked(
         for path in _verify_quarantine(provider, pending, quarantine):
             path.unlink()
         if pending.decisions:
-            _sync_directory(quarantine)
+            sync_directory(quarantine)
 
         receipt = _receipt(
             receipt_id=pending.receipt_id,

@@ -6,6 +6,7 @@ import errno
 import fcntl
 import hashlib
 import os
+import re
 import stat
 import threading
 import unicodedata
@@ -18,6 +19,7 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterator, Literal
 
+from pydantic import JsonValue
 from pydantic import ValidationError as PydanticValidationError
 
 from feedbax._secure_fs import (
@@ -60,8 +62,9 @@ from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderSpec,
 )
 from feedbax.contracts.base import ArtifactRef
-from feedbax.contracts.canonical_json import canonical_json_v1_bytes
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes, canonical_json_v2_bytes
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.persistence._store_metadata import sync_directory, write_store_metadata
 
 if TYPE_CHECKING:
     from feedbax.contracts.project_io import TextProject
@@ -86,6 +89,7 @@ _RESERVED_METADATA_KEYS = frozenset(
 )
 _canonicalize_trusted_system_aliases = canonicalize_trusted_system_aliases
 _store_lock_state = threading.local()
+_REF_COMPONENT = re.compile(r"[a-z0-9_][a-z0-9_:-]*")
 
 
 def _parse_content_object_id(object_id: object) -> str:
@@ -519,7 +523,7 @@ def _verify_blob(
 
 
 @contextmanager
-def _open_blob_for_read(target: Path, expected_size: int) -> Iterator[int]:
+def _open_blob_for_read(target: Path, expected_size: int | None) -> Iterator[int]:
     try:
         records = _open_directory_chain(target.parent, create=False)
     except FileNotFoundError as exc:
@@ -553,7 +557,7 @@ def _open_blob_for_read(target: Path, expected_size: int) -> Iterator[int]:
             raise ArtifactBlobIntegrityError(
                 f"canonical artifact identity changed before read: {target}"
             )
-        if file_stat_before.st_size != expected_size:
+        if expected_size is not None and file_stat_before.st_size != expected_size:
             raise ArtifactBlobIntegrityError(
                 "artifact size mismatch: "
                 f"expected {expected_size}, found {file_stat_before.st_size}"
@@ -592,6 +596,27 @@ def _open_blob_for_read(target: Path, expected_size: int) -> Iterator[int]:
         if file_descriptor is not None:
             os.close(file_descriptor)
         _close_directory_chain(records)
+
+
+def _encode_store_document(document: dict[str, JsonValue]) -> bytes:
+    if not isinstance(document, dict):
+        raise ArtifactBlobReferenceError("store metadata must be a JSON object")
+    return canonical_json_v2_bytes(document)
+
+
+def _read_store_document(path: Path) -> tuple[bytes, dict[str, JsonValue]] | None:
+    try:
+        with _open_blob_for_read(path, None) as descriptor:
+            raw = _read_file_descriptor(descriptor)
+    except FileNotFoundError:
+        return None
+    try:
+        document = strict_json_loads(raw, ref=str(path))
+        if raw == _encode_store_document(document):
+            return raw, document
+    except ValueError as exc:
+        raise ArtifactBlobIntegrityError(f"invalid store metadata at {path}: {exc}") from exc
+    raise ArtifactBlobIntegrityError(f"store metadata is not canonical JSON: {path}")
 
 
 def _read_content_object(path: Path, digest: str, expected_size: int) -> bytes:
@@ -686,6 +711,86 @@ class ImmutableArtifactBlobProvider:
     def _exclusive_lock(self) -> AbstractContextManager[None]:
         """Return the one store lock shared by references and retention state."""
         return _exclusive_store_lock(self.root)
+
+    @property
+    def store_id(self) -> str:
+        """Return the persistent ID, initializing it on first use."""
+        with self._exclusive_lock():
+            return self._ensure_store_id_locked()
+
+    def _ensure_store_id_locked(self) -> str:
+        path = self.root / "store.json"
+        record = _read_store_document(path)
+        if record is None:
+            if os.path.lexists(self.root / "refs"):
+                raise ArtifactBlobIntegrityError(f"store identity is missing: {path}")
+            store_id = str(uuid.uuid4())
+            write_store_metadata(
+                self.root,
+                path,
+                _encode_store_document({"id": store_id}),
+                error_factory=ArtifactBlobContainmentError,
+            )
+            return store_id
+
+        _, document = record
+        store_id = document.get("id")
+        if len(document) == 1 and isinstance(store_id, str):
+            try:
+                if str(uuid.UUID(store_id, version=4)) == store_id:
+                    return store_id
+            except ValueError:
+                pass
+        raise ArtifactBlobIntegrityError(f"invalid store identity: {path}")
+
+    def _ref_path(self, name: str) -> Path:
+        parts = name.split("/")
+        if not all(_REF_COMPONENT.fullmatch(part) for part in parts):
+            raise ArtifactBlobReferenceError(f"invalid store ref name: {name!r}")
+        return self.root.joinpath("refs", *parts)
+
+    def read_ref(self, name: str) -> dict[str, JsonValue] | None:
+        """Read a complete ref or return None when absent.
+
+        A name consists of slash-separated lowercase path components. A colon
+        inside a component is allowed for request IDs.
+        """
+        path = self._ref_path(name)
+        with self._exclusive_lock():
+            record = _read_store_document(path)
+        return record[1] if record is not None else None
+
+    def compare_and_swap_ref(
+        self,
+        name: str,
+        *,
+        expected: dict[str, JsonValue] | None,
+        replacement: dict[str, JsonValue] | None,
+    ) -> bool:
+        """Atomically change a ref if its canonical value matches.
+
+        None denotes absence or deletion. False means a stale expectation.
+        Callers own the schema and object liveness of their ref values.
+        """
+        path = self._ref_path(name)
+        previous = _encode_store_document(expected) if expected is not None else None
+        new = _encode_store_document(replacement) if replacement is not None else None
+        with self._exclusive_lock():
+            record = _read_store_document(path)
+            current = record[0] if record is not None else None
+            if current != previous:
+                return False
+            if current == new:
+                return True
+            self._ensure_store_id_locked()
+            if new is None:
+                path.unlink()
+                sync_directory(path.parent)
+            else:
+                write_store_metadata(
+                    self.root, path, new, error_factory=ArtifactBlobContainmentError
+                )
+        return True
 
     def register_root(self, root: ContentRootRecord) -> ContentRootRecord:
         """Register one explicit canonical retention root."""
@@ -1583,7 +1688,10 @@ class ImmutableArtifactBlobProvider:
 
 def open_project_store(project: TextProject) -> ImmutableArtifactBlobProvider:
     """Bind the existing object owner to the store declared by a text project."""
-    return ImmutableArtifactBlobProvider(root=project.store_path)
+    store = ImmutableArtifactBlobProvider(root=project.store_path)
+    with store._exclusive_lock():
+        store._ensure_store_id_locked()
+    return store
 
 
 def open_immutable_artifact_blob_provider(
