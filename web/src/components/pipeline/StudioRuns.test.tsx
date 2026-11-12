@@ -64,7 +64,7 @@ it("preserves the sweep and row handles through the same Run command", () => {
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
   expect(perform).toHaveBeenLastCalledWith({ kind: "rows", stepId: "train", runIds: ["b", "c"] });
   expect(screen.getByText("Learning rate 0.001 → 0.003")).toBeDefined();
-  expect(within(screen.getByRole("region", { name: "Used By" })).getByRole("button", { name: "Test reach 1 of 1" })).toBeDefined();
+  expect(within(screen.getByRole("region", { name: "Used By" })).getByRole("button", { name: "Select Test reach · 1 of 1" })).toBeDefined();
 });
 
 it("virtualizes an authoritative 1,000-row result and keeps its full accessible count", () => {
@@ -75,7 +75,26 @@ it("virtualizes an authoritative 1,000-row result and keeps its full accessible 
   expect(within(table).getByRole("button", { name: "Reach 0" })).toBeDefined();
   expect(within(table).getAllByRole("row").length).toBeLessThan(50);
   expect(within(table).queryByRole("button", { name: "Reach 999" })).toBeNull();
-  fireEvent.scroll(table.parentElement!, { target: { scrollTop: 44 * 500 } });
-  expect(within(table).getByRole("button", { name: "Reach 500" })).toBeDefined();
+  const viewport = table.parentElement!;
+  Object.defineProperties(viewport, {
+    scrollHeight: { value: runs.length * 44 },
+    scrollTo: { value: ({ top }: ScrollToOptions) => fireEvent.scroll(viewport, { target: { scrollTop: top } }) },
+  });
+  fireEvent.scroll(viewport, { target: { scrollTop: 44 * 500 } });
+  const middle = within(table).getByRole("button", { name: "Reach 500" });
   expect(within(table).queryByRole("button", { name: "Reach 0" })).toBeNull();
+  middle.focus();
+  fireEvent.keyDown(middle, { key: "End" });
+  expect(document.activeElement).toBe(within(table).getByRole("button", { name: "Reach 999" }));
+});
+
+it("names pivot cells from both axes and retains explicit rows without coordinates", () => {
+  showRuns({ ...train, runs: [...train.runs, { id: "explicit", label: "Custom reach", values: {}, status: "not_run" }] });
+  fireEvent.click(screen.getByRole("button", { name: "Pivot" }));
+  const pivot = within(screen.getByRole("table", { name: "Pivot" }));
+  const run = pivot.getByRole("button", { name: "Select Rate 0.003 · Seed 1 · Done" });
+  fireEvent.click(run);
+  expect(screen.getByText("B · 1 of 4")).toBeDefined();
+  const rows = within(screen.getByRole("table", { name: "Runs" }));
+  expect(rows.getByRole("button", { name: "Custom reach" })).toBeDefined();
 });

@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioCountOf, studioName } from "@/components/activity/studioVocabulary";
+import { studioAccessibleName, studioCountOf, studioName, studioRunStatus } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanView } from "@/features/pipeline/planView";
 import {
   extendsSelection,
@@ -52,13 +52,18 @@ function StudioRunLineage({
           <ul>
             {plan.steps.map((step) => {
               const count = runs.get(step.id)?.size;
-              return count ? (
+              if (!count) return null;
+              const summary = studioCountOf(count, step.runs.length);
+              return (
                 <li key={step.id}>
-                  <button type="button" onClick={() => onChoose(step.id)} className="flex w-full justify-between gap-2 text-left hover:underline">
-                    <span>{step.label}</span><span>{studioCountOf(count, step.runs.length)}</span>
+                  <button
+                    type="button" aria-label={studioAccessibleName("select", `${step.label} · ${summary}`)}
+                    onClick={() => onChoose(step.id)} className="flex w-full justify-between gap-2 text-left hover:underline"
+                  >
+                    <span>{step.label}</span><span>{summary}</span>
                   </button>
                 </li>
-              ) : null;
+              );
             })}
           </ul>
         </section>
@@ -69,27 +74,34 @@ function StudioRunLineage({
 
 function groupPivotRows(rows: readonly PlanRunView[], rowAxis: string, columnAxis: string) {
   const groups = new Map<string, Map<string, PlanRunView[]>>();
+  const unplaced: PlanRunView[] = [];
   for (const run of rows) {
     const y = run.values[rowAxis];
     const x = run.values[columnAxis];
-    if (y === undefined || x === undefined) continue;
+    if (y === undefined || x === undefined) {
+      unplaced.push(run);
+      continue;
+    }
     let columns = groups.get(y);
     if (!columns) groups.set(y, columns = new Map());
     let cell = columns.get(x);
     if (!cell) columns.set(x, cell = []);
     cell.push(run);
   }
-  return groups;
+  return { groups, unplaced };
 }
 
-function StudioRunPivot({ step, state, onSelectionChange, rows }: RunSelectionProps & { rows: readonly PlanRunView[] }) {
+function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSelectionProps & {
+  rows: readonly PlanRunView[];
+  related: RunSetsByStep;
+}) {
   const [rowId, setRowId] = useState(step.sweeps[0]?.id);
   const [columnId, setColumnId] = useState(step.sweeps[1]?.id);
   const y = step.sweeps.find(({ id }) => id === rowId) ?? step.sweeps[0];
   const x = step.sweeps.find(({ id }) => id === columnId && id !== y?.id) ?? step.sweeps.find(({ id }) => id !== y?.id);
-  const groups = useMemo(() => y && x ? groupPivotRows(rows, y.id, x.id) : new Map(), [rows, y, x]);
+  const pivot = useMemo(() => y && x ? groupPivotRows(rows, y.id, x.id) : null, [rows, y, x]);
   const selected = new Set(selectedRuns(step, state.selection).map(({ id }) => id));
-  if (!y || !x) return null;
+  if (!y || !x || !pivot) return null;
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
@@ -117,14 +129,18 @@ function StudioRunPivot({ step, state, onSelectionChange, rows }: RunSelectionPr
               <tr key={row.id}>
                 <th scope="row" className="border-t border-slate-200 p-2">{row.label}</th>
                 {x.values.map((column) => {
-                  const cell: readonly PlanRunView[] = groups.get(row.id)?.get(column.id) ?? [];
+                  const cell: readonly PlanRunView[] = pivot.groups.get(row.id)?.get(column.id) ?? [];
                   const count = new Map<PlanRunView["status"], number>();
                   for (const run of cell) count.set(run.status, (count.get(run.status) ?? 0) + 1);
+                  const labels = [...count].map(([status, amount]) => cell.length > 1
+                    ? `${amount} ${studioRunStatus(status)}`
+                    : studioRunStatus(status));
                   return (
                     <td key={column.id} className="border-t border-slate-200 p-2 align-top">
                       {cell.length > 0 && (
                         <button
                           type="button"
+                          aria-label={studioAccessibleName("select", [`${y.label} ${row.label}`, `${x.label} ${column.label}`, ...labels].join(" · "))}
                           aria-pressed={cell.every(({ id }) => selected.has(id))}
                           className="flex flex-wrap gap-2 rounded px-1 aria-pressed:bg-violet-100"
                           onClick={(event) => onSelectionChange(cell.length === 1
@@ -147,6 +163,9 @@ function StudioRunPivot({ step, state, onSelectionChange, rows }: RunSelectionPr
           </tbody>
         </table>
       </div>
+      {pivot.unplaced.length > 0 && (
+        <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related} />
+      )}
     </div>
   );
 }
@@ -185,7 +204,7 @@ function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, 
         )}
       </div>
       {canPivot && pivot
-        ? <StudioRunPivot step={step} state={state} onSelectionChange={onSelectionChange} rows={step.runs} />
+        ? <StudioRunPivot step={step} state={state} onSelectionChange={onSelectionChange} rows={step.runs} related={related} />
         : <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={step.runs} related={related} />}
       {(upstream.size > 0 || downstream.size > 0) && (
         <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} onChoose={(id) => onSelectionChange(selectStep(state, id))} />

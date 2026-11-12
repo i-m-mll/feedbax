@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import { studioCountOf, studioName, studioReason } from "@/components/activity/studioVocabulary";
@@ -66,6 +66,8 @@ interface TableProps extends RunSelectionProps {
 
 export function StudioRunTable({ step, state, onSelectionChange, rows, related }: TableProps) {
   const scroll = useRef<HTMLDivElement>(null);
+  const rowButtons = useRef(new Map<string, HTMLButtonElement>());
+  const pendingKeyboardFocus = useRef<string | null>(null);
   const getScrollElement = useCallback(() => scroll.current, []);
   const itemKey = useCallback((index: number) => rows[index].id, [rows]);
   const virtual = useVirtualizer({
@@ -81,6 +83,27 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
   const showVariant = new Set(step.runs.map(({ variant }) => variant)).size > 1;
   const selected = new Set(selectedRuns(step, state.selection).map(({ id }) => id));
   const focus = state.focus?.stepId === step.id ? state.focus.runId : null;
+  const focusedIndex = focus === null ? -1 : rows.findIndex(({ id }) => id === focus);
+  useEffect(() => {
+    if (focusedIndex >= 0) virtual.scrollToIndex(focusedIndex);
+  }, [focusedIndex, virtual]);
+
+  function navigate(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let destination: number;
+    switch (event.key) {
+      case "ArrowUp": destination = Math.max(0, index - 1); break;
+      case "ArrowDown": destination = Math.min(rows.length - 1, index + 1); break;
+      case "Home": destination = 0; break;
+      case "End": destination = rows.length - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    const id = rows[destination].id;
+    const button = rowButtons.current.get(id);
+    pendingKeyboardFocus.current = button ? null : id;
+    virtual.scrollToIndex(destination);
+    button?.focus({ preventScroll: true });
+  }
   const relatedIds = related.get(step.id);
   const items = virtual.getVirtualItems();
   const width = sweeps.length + (showVariant ? 4 : 3);
@@ -119,10 +142,22 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
                 <th scope="row" className="border-t border-slate-200 p-2 font-medium">
                   <button
                     type="button"
+                    ref={(button) => {
+                      if (!button) {
+                        rowButtons.current.delete(run.id);
+                        return;
+                      }
+                      rowButtons.current.set(run.id, button);
+                      if (pendingKeyboardFocus.current === run.id) {
+                        pendingKeyboardFocus.current = null;
+                        button.focus({ preventScroll: true });
+                      }
+                    }}
                     aria-pressed={state.selection?.kind === "rows" && lit}
                     aria-current={focus === run.id ? true : undefined}
                     onClick={(event) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id },
                       extendsSelection(event)))}
+                    onKeyDown={(event) => navigate(event, item.index)}
                     className="rounded text-left underline-offset-2 hover:underline aria-[current=true]:underline"
                   >
                     {run.label}
@@ -152,9 +187,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
 }
 
 export function StudioSelectionSummary({ step, state }: Pick<RunSelectionProps, "step" | "state">) {
-  const selected = selectedRuns(step, state.selection);
-  if (!selected.length) return null;
-  const terms = selectionTerms(step, state.selection);
+  const { selection } = state;
+  const active = selection?.kind === "steps" ? selection.stepIds.includes(step.id) : selection?.stepId === step.id;
+  if (!active) return null;
+  const selected = selectedRuns(step, selection);
+  const terms = selectionTerms(step, selection);
   const count = studioCountOf(selected.length, step.runs.length);
   return <p aria-live="polite" className="text-sm text-slate-700">{[...terms, count].join(" · ")}</p>;
 }
