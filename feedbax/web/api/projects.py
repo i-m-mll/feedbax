@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_authoring import (
+    StudioAuthoringCatalog,
     StudioAuthoringSurface,
     StudioDocumentAuthoring,
     StudioDocumentAuthoringRequest,
@@ -76,6 +77,15 @@ def read_authoring_surface(request: Request, response: Response) -> StudioAuthor
     from feedbax.studio.authoring import authoring_surface
 
     return _project_response(response, lambda: authoring_surface(request.app.state.bootstrap_state))
+
+
+@router.get("/authoring/catalog")
+def read_authoring_catalog(request: Request, response: Response) -> StudioAuthoringCatalog:
+    from feedbax.studio.authoring import authoring_surface
+
+    return _project_response(response, lambda: authoring_surface(
+        request.app.state.bootstrap_state, catalog=True,
+    ))
 
 
 @router.post("/{project_id}/authoring/train/{step_id}")

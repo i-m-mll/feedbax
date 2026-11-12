@@ -330,6 +330,7 @@ from feedbax.web.models.trajectory import (
     TrajectoryMetadata,
 )
 from feedbax.contracts.studio_authoring import (
+    StudioAuthoringCatalog,
     StudioAuthoringSurface,
     StudioDocumentAuthoring,
     StudioDocumentAuthoringRequest,
@@ -398,6 +399,7 @@ AUTHORED_CONTRACT_MODELS = (
     ReportDocument,
     StudioAnalyzeAuthoring,
     StudioAnalyzeRequest,
+    StudioAuthoringCatalog,
     StudioAuthoringSurface,
     StudioDocumentAuthoring,
     StudioDocumentAuthoringRequest,

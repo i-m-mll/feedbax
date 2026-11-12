@@ -7,27 +7,37 @@ import math
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, get_args, overload
 
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 from feedbax.component_registry.registry import ComponentRegistry
+from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
+from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project import DocumentReference, InlineBase, Project, StepBase, json_pointer_parts
-from feedbax.contracts.project_inputs import StepReference
+from feedbax.contracts.project import (
+    DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
+)
+from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import (
+    StudioAuthoredDocumentFamily,
+    StudioAuthoringCatalog,
     StudioAuthoringChange,
     StudioAuthoringChoice,
     StudioAuthoringField,
     StudioAuthoringMethod,
     StudioAuthoringNumber,
     StudioAuthoringOption,
+    StudioAuthoringOrigin,
+    StudioAuthoringRegistry,
     StudioAuthoringSource,
     StudioAuthoringSurface,
     StudioAuthoringSweepChange,
@@ -53,7 +63,7 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import TargetStateLossSpec
-from feedbax.plugins.application import TRAINING_PROGRAMS
+from feedbax.plugins.application import COMPONENTS, OPERATIONS, TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
 from feedbax.studio.protocol import infer_task_n_steps
@@ -63,10 +73,8 @@ from feedbax.training.optimizers import optimizer_types
 
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
-_DOCUMENT_FIELDS: dict[str, tuple[type[BaseModel], str]] = {
-    "graph": (GraphSpec, "Model"),
-    "task": (TaskSpec, "Task"),
-}
+_TRAIN_DOCUMENT_MODELS = {"model": GraphSpec, "task": TaskSpec}
+_STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _TARGET_STATE = TargetStateLossSpec.model_fields["type"].default
 _GRAPH_BATCH_SIZE = 1
 _DEFAULT_OPTIMIZER = "adam"
@@ -78,14 +86,34 @@ def _document_schema(model: type[BaseModel]) -> str:
     return default_spec_registry.resolve(model.__name__).identity
 
 
-def authoring_surface(state: BootstrapState) -> StudioAuthoringSurface:
-    """Describe authored shapes and method declarations without consulting execution facets."""
-    registry = state.bundle.training_programs
-    plugins = {
-        key: origin.plugin_id
+def _origins(state: BootstrapState, family: str) -> dict[str, StudioAuthoringOrigin]:
+    return {
+        key: StudioAuthoringOrigin(plugin=origin.plugin_id, distribution=origin.distribution)
         for origin in state.provenance
-        for key in origin.registered_keys.get(TRAINING_PROGRAMS.family, ())
+        for key in origin.registered_keys.get(family, ())
     }
+
+
+def _family(
+    model: type[BaseModel], schema_id: str | None = None,
+) -> StudioAuthoredDocumentFamily:
+    return StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=model.model_json_schema())
+
+
+@overload
+def authoring_surface(state: BootstrapState, *, catalog: Literal[False] = False) -> StudioAuthoringSurface: ...
+
+
+@overload
+def authoring_surface(state: BootstrapState, *, catalog: Literal[True]) -> StudioAuthoringCatalog: ...
+
+
+def authoring_surface(
+    state: BootstrapState, *, catalog: bool = False,
+) -> StudioAuthoringSurface | StudioAuthoringCatalog:
+    """Describe authored shapes and registry declarations from one bootstrap state."""
+    registry = state.bundle.training_programs
+    method_origins = _origins(state, TRAINING_PROGRAMS.family)
     methods = [
         StudioAuthoringMethod(
             key=key,
@@ -93,20 +121,63 @@ def authoring_surface(state: BootstrapState) -> StudioAuthoringSurface:
             schema_version=method.payload_schema_version,
             owner=method.owner,
             package=method.package,
-            plugin=plugins.get(key),
+            plugin=origin.plugin if (origin := method_origins.get(key)) else None,
             payload_schema=method.payload_model.model_json_schema(),
         )
         for key in registry.available_keys()
         for method in (registry.resolve(key, path="/method_ref"),)
     ]
-    return StudioAuthoringSurface(
-        project_grammar=Project.model_json_schema(by_alias=True),
-        step_payloads={"train": _TRAIN.model_json_schema()},
-        document_schemas={
-            _document_schema(model): model.model_json_schema()
-            for model, _ in _DOCUMENT_FIELDS.values()
+    project_grammar = Project.model_json_schema(by_alias=True)
+    train_documents = {
+        name: (_document_schema(model), model.model_json_schema())
+        for name, model in _TRAIN_DOCUMENT_MODELS.items()
+    }
+    if not catalog:
+        return StudioAuthoringSurface(
+            project_grammar=project_grammar,
+            step_payloads={"train": _TRAIN.model_json_schema()},
+            document_schemas=dict(train_documents.values()),
+            training_methods=methods,
+        )
+
+    documents = {
+        name: StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=payload)
+        for name, (schema_id, payload) in train_documents.items()
+    } | {
+        "objective": _family(ObjectiveSlotSpec),
+        "training-settings": _family(TrainingConfig),
+        "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
+        "figure": StudioAuthoredDocumentFamily(
+            schema_id=FIGURE_DOCUMENT_SCHEMA,
+            payload_schema=TypeAdapter(FigureDocument | ExternalBase).json_schema(),
+        ),
+        "report": _family(ReportDocument, ReportDocument.model_fields["schema_version"].default),
+        "comparison-policy": _family(ComparisonPolicySpec, COMPARISON_POLICY_SCHEMA_ID),
+        "subset": _family(SubsetTerms, "subset"),
+    }
+    return StudioAuthoringCatalog(
+        project_grammar=project_grammar,
+        step_grammar=Step.model_json_schema(by_alias=True),
+        step_payloads={
+            kind: (
+                documents[_STEP_DOCUMENT_FAMILY[kind]].payload_schema
+                if kind in _STEP_DOCUMENT_FAMILY
+                else REQUEST_KINDS[kind].spec_type.model_json_schema()
+            )
+            for kind in get_args(StepKind.__value__)
         },
-        training_methods=methods,
+        document_families=documents,
+        registries={
+            COMPONENTS.family: StudioAuthoringRegistry(
+                entries=sorted(state.bundle.components.list_all(), key=lambda definition: definition.name),
+                origins=_origins(state, COMPONENTS.family),
+            ),
+            OPERATIONS.family: StudioAuthoringRegistry(
+                entries=list(state.bundle.operations.definitions()),
+                origins=_origins(state, OPERATIONS.family),
+            ),
+            "training_methods": StudioAuthoringRegistry(entries=methods, origins=method_origins),
+        },
     )
 
 
@@ -548,8 +619,8 @@ def project_train_fields(
 ]:
     """Project the supported fields and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
-    graph = definition.document("graph", GraphSpec, _DOCUMENT_FIELDS["graph"][1])
-    task = definition.document("task", TaskSpec, _DOCUMENT_FIELDS["task"][1])
+    graph = definition.document("graph", GraphSpec, "Model")
+    task = definition.document("task", TaskSpec, "Task")
     binding = _read(StudioTaskBindingSpec, definition.payload.get("task_binding_spec", {}))
     reach_target, edited_binding = None, None
     reach_edit = change if isinstance(change, StudioReachTargetEdit) else None

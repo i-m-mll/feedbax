@@ -7,8 +7,10 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.graph import WireSpec
 from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import DocumentOverridePath, Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
@@ -30,6 +32,31 @@ class StudioAuthoringSurface(StrictModel):
     step_payloads: dict[str, dict[str, JsonValue]]
     document_schemas: dict[str, dict[str, JsonValue]]
     training_methods: list[StudioAuthoringMethod]
+
+
+class StudioAuthoredDocumentFamily(StrictModel):
+    schema_id: str | None
+    payload_schema: dict[str, JsonValue]
+
+
+class StudioAuthoringOrigin(StrictModel):
+    plugin: str
+    distribution: str | None
+
+
+class StudioAuthoringRegistry(StrictModel):
+    entries: list[ComponentDefinition | OperationDefinition | StudioAuthoringMethod]
+    origins: dict[str, StudioAuthoringOrigin]
+
+
+class StudioAuthoringCatalog(StrictModel):
+    """Authored schemas and the registry declarations those schemas can name."""
+
+    project_grammar: dict[str, JsonValue]
+    step_grammar: dict[str, JsonValue]
+    step_payloads: dict[str, dict[str, JsonValue]]
+    document_families: dict[str, StudioAuthoredDocumentFamily]
+    registries: dict[str, StudioAuthoringRegistry]
 
 
 class StudioAuthoringOption(StrictModel):

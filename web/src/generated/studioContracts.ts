@@ -2844,9 +2844,22 @@ export type StudioAnalyzeWire = {
   "source": StepDataset | OperationDataset;
 };
 
+export type StudioAuthoredDocumentFamily = {
+  "schema_id": string | null;
+  "payload_schema": Record<string, JsonValue>;
+};
+
 export type StudioAuthoredFileRevision = {
   "address": AuthoredFileAddress;
   "revision": Sha256;
+};
+
+export type StudioAuthoringCatalog = {
+  "project_grammar": Record<string, JsonValue>;
+  "step_grammar": Record<string, JsonValue>;
+  "step_payloads": Record<string, Record<string, JsonValue>>;
+  "document_families": Record<string, StudioAuthoredDocumentFamily>;
+  "registries": Record<string, StudioAuthoringRegistry>;
 };
 
 export type StudioAuthoringChange = {
@@ -2889,6 +2902,16 @@ export type StudioAuthoringNumber = {
 export type StudioAuthoringOption = {
   "value": string;
   "label": string;
+};
+
+export type StudioAuthoringOrigin = {
+  "plugin": string;
+  "distribution": string | null;
+};
+
+export type StudioAuthoringRegistry = {
+  "entries": Array<ComponentDefinition | OperationDefinition | StudioAuthoringMethod>;
+  "origins": Record<string, StudioAuthoringOrigin>;
 };
 
 export type StudioAuthoringSource = {
@@ -7975,12 +7998,29 @@ export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeWire>;
 
+export const StudioAuthoredDocumentFamilySchema: z.ZodType<StudioAuthoredDocumentFamily> = z.lazy(() =>
+  z.object({
+    "schema_id": z.union([z.string(), z.null()]),
+    "payload_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredDocumentFamily>;
+
 export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevision> = z.lazy(() =>
   z.object({
     "address": AuthoredFileAddressSchema,
     "revision": Sha256Schema,
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoredFileRevision>;
+
+export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z.lazy(() =>
+  z.object({
+    "project_grammar": z.record(z.string(), jsonValueSchema),
+    "step_grammar": z.record(z.string(), jsonValueSchema),
+    "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
+    "document_families": z.record(z.string(), StudioAuthoredDocumentFamilySchema),
+    "registries": z.record(z.string(), StudioAuthoringRegistrySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringCatalog>;
 
 export const StudioAuthoringChangeSchema: z.ZodType<StudioAuthoringChange> = z.lazy(() =>
   z.object({
@@ -8035,6 +8075,20 @@ export const StudioAuthoringOptionSchema: z.ZodType<StudioAuthoringOption> = z.l
     "label": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringOption>;
+
+export const StudioAuthoringOriginSchema: z.ZodType<StudioAuthoringOrigin> = z.lazy(() =>
+  z.object({
+    "plugin": z.string(),
+    "distribution": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringOrigin>;
+
+export const StudioAuthoringRegistrySchema: z.ZodType<StudioAuthoringRegistry> = z.lazy(() =>
+  z.object({
+    "entries": z.array(z.union([ComponentDefinitionSchema, OperationDefinitionSchema, StudioAuthoringMethodSchema])),
+    "origins": z.record(z.string(), StudioAuthoringOriginSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringRegistry>;
 
 export const StudioAuthoringSourceSchema: z.ZodType<StudioAuthoringSource> = z.lazy(() =>
   z.object({
@@ -8523,6 +8577,7 @@ export const contractSchemas = {
   ReportDocument: ReportDocumentSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
+  StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
   StudioDocumentAuthoring: StudioDocumentAuthoringSchema,
   StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequestSchema,
@@ -8636,6 +8691,7 @@ export interface ContractTypeMap {
   ReportDocument: ReportDocument;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
+  StudioAuthoringCatalog: StudioAuthoringCatalog;
   StudioAuthoringSurface: StudioAuthoringSurface;
   StudioDocumentAuthoring: StudioDocumentAuthoring;
   StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequest;
