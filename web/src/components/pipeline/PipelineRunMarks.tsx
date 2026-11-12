@@ -9,7 +9,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import type { PlanStepView, PlanSweepView } from '@/features/pipeline/planView';
 import {
-  extendsSelection,
+  selectionButton,
   selectRun,
   selectSweepGroup,
   selectSweepValue,
@@ -42,10 +42,7 @@ export function MapSweepValue({
       className="rounded px-1 text-xs text-slate-700 hover:bg-slate-100 aria-pressed:bg-slate-200 aria-pressed:font-semibold"
       aria-label={studioAccessibleName('select', `${sweep.label} ${value.label}`)}
       aria-pressed={selected}
-      onClick={(event) => {
-        const extend = extendsSelection(event);
-        applySelection((state) => selectSweepValue(state, stepId, sweep.id, value.id, extend));
-      }}
+      {...selectionButton((extend) => applySelection((state) => selectSweepValue(state, stepId, sweep.id, value.id, extend)))}
     >
       {value.label}
     </button>
@@ -90,14 +87,10 @@ function MarkButton({
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
       className={`relative h-3 w-3 shrink-0 rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 ${ring || ''}`}
-      onClick={(event) => {
-        if (mark.kind === 'group') {
-          applySelection(() => selectSweepGroup(stepId, mark.terms));
-        } else {
-          const extend = extendsSelection(event);
-          applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
-        }
-      }}
+      {...selectionButton((extend) => {
+        if (mark.kind === 'group') applySelection(() => selectSweepGroup(stepId, mark.terms));
+        else applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
+      })}
     >
       <span aria-hidden="true" className="absolute inset-0 flex overflow-hidden rounded-[2px]">
         {statuses.map(([state, count]) => (

@@ -135,7 +135,7 @@ test('an inline component numeric field authors a step sweep from the inspector'
   const { snapshot, projectPath } = await seedManagedProject(request, [task, train]);
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
-  await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('button', { name: 'Model', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
   await page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'plant', exact: true }).click();
   const field = page.getByRole('complementary', { name: 'Inspector' }).getByRole('group', { name: 'Mass', exact: true });
   await field.getByRole('button', { name: 'To Sweep Mass', exact: true }).click();

@@ -11,6 +11,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { emptyPipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
+import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioPipelineMap, type StudioPipelineMapProps } from './StudioPipelineMap';
 import type { PipelineCardPresentation } from './pipelineMapLayout';
 
@@ -53,7 +54,7 @@ const train: PlanStepView = {
 
 function mapWithState(
   plan: PlanView,
-  props: Pick<StudioPipelineMapProps, 'mode' | 'drawerOpen' | 'onNewStep' | 'onNewSweep'> = {},
+  props: Pick<StudioPipelineMapProps, 'mode' | 'drawerOpen' | 'newStepCommand' | 'newSweepCommand'> = {},
 ) {
   const selectionChanged = vi.fn();
   const presentationChanged = vi.fn();
@@ -86,7 +87,10 @@ const mark = (coordinates: string) => select(`${coordinates} · ${studioRunStatu
 it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   const onNewStep = vi.fn();
   const onNewSweep = vi.fn();
-  const { selectionChanged } = mapWithState({ steps: [train], edges: [] }, { onNewStep, onNewSweep });
+  const { selectionChanged } = mapWithState({ steps: [train], edges: [] }, {
+    newStepCommand: (source, subject) => bindStudioCommand('newStep', () => onNewStep(source), { subject }),
+    newSweepCommand: (id, subject) => bindStudioCommand('newSweep', () => onNewSweep(id), { subject }),
+  });
   const card = within(screen.getByRole('article'));
   const header = card.getByRole('button', { name: select(train.label) });
   const first = card.getByRole('button', { name: mark('rate 0.003 · seed 1') });
@@ -250,7 +254,7 @@ it('draws the input subset and follows only linked runs into the drawer and dire
 
 it('uses one creation position on an empty map', () => {
   const onNewStep = vi.fn();
-  mapWithState({ steps: [], edges: [] }, { drawerOpen: true, onNewStep });
+  mapWithState({ steps: [], edges: [] }, { drawerOpen: true, newStepCommand: () => bindStudioCommand('newStep', onNewStep) });
   const [create] = screen.getAllByRole('button');
   expect(screen.queryByRole('navigation')).toBeNull();
   fireEvent.click(create);

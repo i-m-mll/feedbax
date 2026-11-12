@@ -1,22 +1,24 @@
 import {
-  ArrowLeft, ArrowRight, BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
+  ArrowLeft, ArrowRight, BarChart3, Columns2, Command, Crosshair, FileText, GitBranch, Image, List,
   Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import {
-  useId, useLayoutEffect, useRef, useState,
+  useEffect, useId, useLayoutEffect, useRef, useState,
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
-import { studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { studioName } from '@/components/activity/studioVocabulary';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
   projectWindowSlotView, projectWindowViews, showProjectWindowView,
-  type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
+  type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
+import { StudioCommandPalette } from './StudioCommandPalette';
+import { bindStudioCommand, commandAttributes, matchesShortcut, type StudioCommand } from './studioCommands';
 import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
@@ -38,9 +40,10 @@ export interface ProjectWindowProps {
   compactMap: ReactNode;
   onBack?: () => void;
   onForward?: () => void;
-  viewShortcuts?: Partial<Record<ProjectWindowView, string>>;
+  commands: readonly StudioCommand[];
+  focusRequest?: number;
   variant?: ReactNode;
-  commandPalette?: ReactNode;
+  overlay?: ReactNode;
   clock?: ReactNode;
   failure?: ReactNode;
   problems?: ReactNode;
@@ -61,32 +64,41 @@ const views = {
 } satisfies Record<ProjectWindowView, LucideIcon>;
 
 const modes = [
-  { mode: 'map', name: 'mapOnly', icon: PanelTop },
-  { mode: 'both', name: 'both', icon: Rows2 },
-  { mode: 'details', name: 'detailsOnly', icon: PanelBottom },
-] satisfies Array<{ mode: ProjectWindowMode; name: StudioNameId; icon: LucideIcon }>;
+  { mode: 'map', id: 'showMap', icon: PanelTop },
+  { mode: 'both', id: 'showBoth', icon: Rows2 },
+  { mode: 'details', id: 'showDetails', icon: PanelBottom },
+] as const;
 
 const slots = ['primary', 'secondary'] as const;
+const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'bottom'] as const;
+type WindowRegion = typeof regionOrder[number];
 
-function WindowButton({
-  name, icon: Icon, onClick, pressed, controls, placement = 'bottom', shortcut,
-}: {
-  name: StudioNameId;
+function WindowButton({ command, icon: Icon, pressed, controls, tab }: {
+  command: StudioCommand;
   icon: LucideIcon;
-  onClick?: () => void;
   pressed?: boolean;
   controls?: string;
-  placement?: 'bottom' | 'right';
-  shortcut?: string;
+  tab?: { id: string; tabbable: boolean };
 }) {
-  const label = studioName(name);
   return (
-    <button type="button" aria-label={studioName(name)} aria-pressed={pressed} aria-controls={controls}
-      disabled={!onClick} onClick={onClick} className="studio-window-control"
-      {...appTip(shortcut ? `${label} ${shortcut}` : label, placement)}>
+    <button type="button" {...commandAttributes(command, tab ? 'right' : 'bottom')}
+      role={tab ? 'tab' : undefined} id={tab?.id} tabIndex={tab ? (tab.tabbable ? 0 : -1) : undefined}
+      aria-selected={tab ? pressed : undefined} aria-pressed={!tab ? pressed : undefined}
+      aria-controls={controls} disabled={!command.enabled} onClick={command.invoke} className="studio-window-control">
       <Icon aria-hidden="true" className="size-4" />
     </button>
   );
+}
+
+function visibleRegion(root: HTMLElement | null, region: WindowRegion) {
+  return Array.from(root?.querySelectorAll<HTMLElement>(`[data-studio-focus-region="${region}"]`) ?? [])
+    .find((element) => !element.closest('[hidden], [inert]') && element.getClientRects().length > 0);
+}
+
+function focusRegion(root: HTMLElement | null, region: WindowRegion) {
+  const target = visibleRegion(root, region);
+  (target?.querySelector<HTMLElement>('[role="tab"][tabindex="0"]') ?? target)?.focus();
+  return !!target;
 }
 
 function usePanelSize() {
@@ -111,7 +123,7 @@ function usePanelSize() {
 
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
-  onBack, onForward, viewShortcuts, variant, commandPalette, clock, failure, problems, activity,
+  onBack, onForward, commands, focusRequest, variant, overlay, clock, failure, problems, activity,
 }: ProjectWindowProps) {
   const id = useId();
   const ids = {
@@ -123,10 +135,13 @@ export function ProjectWindow({
     primary: `${id}-primary`,
     secondary: `${id}-secondary`,
   };
+  const root = useRef<HTMLDivElement>(null);
   const { panel, width, height } = usePanelSize();
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
-  const slotElements = useRef<Record<ProjectWindowSlot, HTMLElement | null>>({ primary: null, secondary: null });
-  const pendingFocus = useRef<ProjectWindowSlot | null>(null);
+  const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const handledFocusRequest = useRef(focusRequest);
+  const moveFocus = (region: WindowRegion) => setRequestedFocus({ region });
   useLayoutEffect(() => installTooltips(), []);
 
   const primaryView = projectWindowSlotView(state, 'primary', availableViews);
@@ -151,26 +166,46 @@ export function ProjectWindow({
     : slot === 'primary' ? fit.primarySize : fit.secondary.size;
 
   useLayoutEffect(() => {
-    if (!pendingFocus.current || !detailsVisible) return;
-    const element = slotElements.current[pendingFocus.current];
-    if (!element) return;
-    pendingFocus.current = null;
-    element.focus();
-  }, [detailsVisible, focusedSlot, split]);
+    if (requestedFocus && !focusRegion(root.current, requestedFocus.region)) {
+      focusRegion(root.current, detailsVisible ? focusedSlot : 'map');
+    }
+  }, [requestedFocus]);
 
-  function focusSlot(slot: ProjectWindowSlot, moveFocus = false) {
-    if (moveFocus) pendingFocus.current = slot;
+  useLayoutEffect(() => {
+    if (focusRequest === handledFocusRequest.current) return;
+    handledFocusRequest.current = focusRequest;
+    focusRegion(root.current, focusedSlot);
+  }, [focusRequest, focusedSlot]);
+
+  function focusSlot(slot: ProjectWindowSlot) {
     onStateChange((previous) => previous.focusedSlot === slot ? previous : { ...previous, focusedSlot: slot });
   }
 
-  function showSecondary() {
-    pendingFocus.current = 'secondary';
-    onStateChange((previous) => showProjectWindowView(previous, 'scene', 'secondary'));
+  function activateView(view: ProjectWindowView) {
+    onStateChange((previous) => showProjectWindowView(previous, view, focusedSlot));
+    moveFocus(focusedSlot);
   }
 
-  function hideSecondary() {
-    pendingFocus.current = 'primary';
-    onStateChange((previous) => ({ ...previous, secondaryView: null, focusedSlot: 'primary' }));
+  function switchSlot() {
+    const other = focusedSlot === 'primary' ? 'secondary' : 'primary';
+    onStateChange((previous) => ({ ...previous, mode: previous.mode === 'map' ? 'both' : previous.mode, focusedSlot: other }));
+    moveFocus(other);
+  }
+
+  function splitDetails() {
+    onStateChange((previous) => split
+      ? { ...previous, secondaryView: null, focusedSlot: 'primary' }
+      : showProjectWindowView(previous, 'scene', 'secondary'));
+    moveFocus(split ? 'primary' : 'secondary');
+  }
+
+  function cycleRegion(direction: number) {
+    const visible = regionOrder.filter((region) => visibleRegion(root.current, region));
+    const current = (document.activeElement?.closest('[data-studio-focus-region]') as HTMLElement | null)?.dataset.studioFocusRegion;
+    const index = visible.findIndex((region) => region === current);
+    if (!visible.length) return;
+    const next = index < 0 ? (direction > 0 ? 0 : visible.length - 1) : (index + direction + visible.length) % visible.length;
+    focusRegion(root.current, visible[next]);
   }
 
   function previewSize(key: PreferredWindowSize, value: number | null) {
@@ -186,17 +221,60 @@ export function ProjectWindow({
     onStateChange((previous) => ({ ...previous, [key]: size }));
   }
 
-  function toggleMapDrawer() {
-    onStateChange((previous) => previous.mode === 'details'
-      ? { ...previous, mode: 'both', mapDrawerOpen: true }
-      : { ...previous, mapDrawerOpen: !previous.mapDrawerOpen });
-  }
-
-  function toggleDetailsSide(key: 'detailsDrawerOpen' | 'inspectorOpen') {
-    onStateChange((previous) => previous.mode === 'map'
-      ? { ...previous, mode: 'both', [key]: true }
-      : { ...previous, [key]: !previous[key] });
-  }
+  const layoutModes = modes.map(({ mode, id, icon }) => ({
+    mode, icon, command: bindStudioCommand(id, () => {
+      onStateChange((previous) => ({ ...previous, mode }));
+      moveFocus(mode === 'details' ? focusedSlot : 'map');
+    }),
+  }));
+  const back = bindStudioCommand('back', () => onBack?.(), { enabled: !!onBack });
+  const forward = bindStudioCommand('forward', () => onForward?.(), { enabled: !!onForward });
+  const steps = bindStudioCommand('showSteps', () => {
+    onStateChange((previous) => ({
+      ...previous, mode: previous.mode === 'details' ? 'both' : previous.mode, mapDrawerOpen: !mapDrawerVisible,
+    }));
+    moveFocus(mapDrawerVisible ? 'map' : 'steps');
+  }, { name: mapDrawerVisible ? 'hideSteps' : 'showSteps' });
+  const side = (id: 'showDrawer' | 'showInspector', key: 'detailsDrawerOpen' | 'inspectorOpen',
+    region: 'drawer' | 'inspector', visible: boolean) => bindStudioCommand(id, () => {
+    onStateChange((previous) => ({
+      ...previous, mode: previous.mode === 'map' ? 'both' : previous.mode, [key]: !visible,
+    }));
+    moveFocus(visible ? focusedSlot : region);
+  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id });
+  const drawer = side('showDrawer', 'detailsDrawerOpen', 'drawer', detailsDrawerVisible);
+  const inspector = side('showInspector', 'inspectorOpen', 'inspector', inspectorVisible);
+  const splitCommand = bindStudioCommand('splitDetails', splitDetails,
+    { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
+  const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
+  const tabCommands = availableViews.map((view) => bindStudioCommand(view, () => activateView(view)));
+  const tabView = shownViews[focusedSlot] ?? availableViews[0];
+  const tabId = (view: ProjectWindowView) => `${id}-tab-${view}`;
+  const palette = bindStudioCommand('commandPalette', () => setPaletteOpen((open) => !open));
+  const paletteCommands = [
+    ...commands, ...layoutModes.map(({ command }) => command), steps, drawer, inspector, splitCommand, switchCommand,
+    back, forward, ...tabCommands,
+    bindStudioCommand('nextRegion', () => cycleRegion(1)),
+    bindStudioCommand('previousRegion', () => cycleRegion(-1)),
+  ];
+  const shortcutCommands = useRef({ palette, paletteCommands, paletteOpen });
+  shortcutCommands.current = { palette, paletteCommands, paletteOpen };
+  useEffect(() => {
+    function handleKey(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      const { palette, paletteCommands, paletteOpen } = shortcutCommands.current;
+      const dialog = event.target instanceof Element && event.target.closest('[role="dialog"]');
+      const command = matchesShortcut(event, palette.shortcut) && (!dialog || paletteOpen) ? palette
+        : !dialog ? paletteCommands.find((item) => matchesShortcut(event, item.shortcut)) : undefined;
+      if (!command) return;
+      const editable = event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]');
+      if (editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run')) return;
+      event.preventDefault();
+      command.invoke();
+    }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
 
   const frameStyle = {
     '--shell-rail-width': `${projectRailWidth}px`,
@@ -213,35 +291,32 @@ export function ProjectWindow({
   });
 
   return (
-    <div className="shell-frame studio-project-window" style={frameStyle}>
-      <header className="shell-frame__bar studio-window-bar" data-tauri-drag-region>
+    <div ref={root} className="shell-frame studio-project-window" style={frameStyle}>
+      <header className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-tauri-drag-region>
         <div className="shell-frame__cell studio-window-bar__controls" data-tauri-drag-region>
-          {modes.map(({ mode, name, icon }) => (
-            <WindowButton key={mode} name={name} icon={icon} pressed={state.mode === mode}
-              onClick={() => onStateChange((previous) => ({ ...previous, mode }))} />
+          {layoutModes.map(({ mode, icon, command }) => (
+            <WindowButton key={mode} command={command} icon={icon} pressed={state.mode === mode} />
           ))}
-          <WindowButton name="back" icon={ArrowLeft} onClick={onBack} />
-          <WindowButton name="forward" icon={ArrowRight} onClick={onForward} />
-          <WindowButton name="mapDrawer" icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} onClick={toggleMapDrawer} />
+          <WindowButton command={back} icon={ArrowLeft} />
+          <WindowButton command={forward} icon={ArrowRight} />
+          <WindowButton command={steps} icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} />
         </div>
         <div className="shell-frame__cell studio-window-bar__project" data-separated={mapDrawerVisible ? '' : undefined} data-tauri-drag-region>
           <h1 className="min-w-0 truncate text-sm font-semibold" data-tauri-drag-region>{projectName}</h1>
           {saveStatus}
           {variant}
         </div>
-        <div className="studio-window-bar__commands">{commandPalette}</div>
+        <div className="studio-window-bar__commands">
+          <WindowButton command={palette} icon={Command} />
+          {paletteOpen && <StudioCommandPalette commands={paletteCommands} close={() => setPaletteOpen(false)} />}
+          {overlay}
+        </div>
       </header>
-      <nav className="shell-frame__rail shell-scroll-rail studio-window-rail" data-axis="y" aria-label={studioName('details')}>
-        {projectWindowViews.map((view) => availableViews.includes(view) ? (
-          <WindowButton key={view} name={view} icon={views[view]} placement="right" shortcut={viewShortcuts?.[view]}
-            pressed={detailsVisible && shownViews[focusedSlot] === view} controls={ids[focusedSlot]}
-            onClick={() => onStateChange((previous) => showProjectWindowView(previous, view, focusedSlot))} />
-        ) : <span key={view} className="studio-window-control" aria-hidden="true" />)}
-      </nav>
       <main ref={panel} className="shell-frame__content studio-window-panel" style={{ gridTemplateRows: panelRows }}>
         <section id={ids.map} className="studio-window-map" aria-label={studioName('pipelineMap')}>
           <div className="studio-window-map__full" hidden={!fullMapVisible}>
-            <aside id={ids.mapDrawer} aria-label={studioName('mapDrawer')} className="studio-window-side"
+            <div data-studio-focus-region="map" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-auto">{map}</div>
+            <aside id={ids.mapDrawer} data-studio-focus-region="steps" tabIndex={-1} aria-label={studioName('mapDrawer')} className="studio-window-side"
               hidden={!mapDrawerVisible} style={{ width: fit.mapDrawer.size }}>
               <div className="studio-window-side__contents">{mapDrawer}</div>
               {mapDrawerVisible && (
@@ -249,9 +324,8 @@ export function ProjectWindow({
                   layout={fit.mapDrawer} className="studio-window-resize studio-window-resize--right" {...resizeProps('mapDrawerWidth')} />
               )}
             </aside>
-            <div className="min-h-0 min-w-0 flex-1 overflow-auto">{map}</div>
           </div>
-          {!fullMapVisible && <div className="studio-window-map__compact">{compactMap}</div>}
+          {!fullMapVisible && <div className="studio-window-map__compact" data-studio-focus-region="map" tabIndex={-1}>{compactMap}</div>}
         </section>
         <div className="studio-window-panel__divider">
           {state.mode === 'both' && fit.mapHeight.open && (
@@ -259,8 +333,30 @@ export function ProjectWindow({
               layout={fit.mapHeight} className="studio-window-resize studio-window-resize--row" {...resizeProps('mapHeight')} />
           )}
         </div>
+        <nav className="shell-scroll-rail studio-window-rail" data-axis="y" aria-label={studioName('details')}
+          data-studio-focus-region="rail" tabIndex={-1}>
+          <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical" className="studio-window-tabs"
+            onKeyDown={(event) => {
+              const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
+              const index = tabs.findIndex((tab) => tab === event.target);
+              if (index < 0) return;
+              const destination = { ArrowUp: (index - 1 + tabs.length) % tabs.length,
+                ArrowDown: (index + 1) % tabs.length, Home: 0, End: tabs.length - 1 }[event.key];
+              if (destination === undefined) return;
+              event.preventDefault();
+              tabs[destination]?.focus();
+            }}>
+            {projectWindowViews.map((view) => {
+              const command = tabCommands.find(({ id }) => id === view);
+              return command ? (
+                <WindowButton key={view} command={command} icon={views[view]} controls={ids[focusedSlot]}
+                  pressed={detailsVisible && shownViews[focusedSlot] === view} tab={{ id: tabId(view), tabbable: tabView === view }} />
+              ) : <span key={view} className="studio-window-control" aria-hidden="true" />;
+            })}
+          </div>
+        </nav>
         <section id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
-          <aside id={ids.detailsDrawer} aria-label={studioName('detailsDrawer')} className="studio-window-side"
+          <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <div className="studio-window-side__contents">{focusedRegion?.drawer}</div>
             {detailsDrawerVisible && (
@@ -279,22 +375,21 @@ export function ProjectWindow({
               <div key={slot} className="studio-window-slot" data-slot={slot} style={{ width: slotWidth(slot) }}>
                 {isFolded && (
                   <button type="button" className="studio-window-slot__strip" aria-label={studioName(view)}
-                    onClick={() => focusSlot(slot, true)} {...appTip(studioName(view), 'right')}>
+                    onClick={() => { focusSlot(slot); moveFocus(slot); }} {...appTip(studioName(view), 'right')}>
                     {studioName(view)}
                   </button>
                 )}
-                <section id={ids[slot]} ref={(element) => { slotElements.current[slot] = element; }}
-                  aria-label={studioName(view)} className="studio-window-slot__view" tabIndex={0}
+                <section id={ids[slot]} role="tabpanel" aria-labelledby={tabId(view)} data-studio-focus-region={slot} className="studio-window-slot__view" tabIndex={0}
                   data-focused={focusedSlot === slot ? '' : undefined} hidden={isFolded}
                   onFocusCapture={() => focusSlot(slot)} onPointerDownCapture={() => focusSlot(slot)}>
                   <header className="studio-window-slot__header">
                     <h2 className="min-w-0 truncate text-xs font-semibold">{studioName(view)}</h2>
                     <div className="studio-window-slot__controls">{region.header}</div>
                     {slot === 'primary' && !split && (
-                      <WindowButton name="splitView" icon={Columns2} onClick={showSecondary} />
+                      <WindowButton command={splitCommand} icon={Columns2} />
                     )}
                     {slot === 'secondary' && (
-                      <WindowButton name="closeSlot" icon={X} onClick={hideSecondary} />
+                      <WindowButton command={splitCommand} icon={X} />
                     )}
                   </header>
                   <div key={view} className="studio-window-slot__body">{region.body}</div>
@@ -306,7 +401,7 @@ export function ProjectWindow({
               </div>
             );
           })}
-          <aside id={ids.inspector} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
+          <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <div className="studio-window-side__contents">{focusedRegion?.inspector}</div>
             {inspectorVisible && (
@@ -316,18 +411,16 @@ export function ProjectWindow({
           </aside>
         </section>
       </main>
-      <footer className="shell-frame__footer studio-window-bottom">
+      <footer className="shell-frame__footer studio-window-bottom" data-studio-focus-region="bottom" tabIndex={-1}>
         <div className="studio-window-bottom__left">
-          <WindowButton name="detailsDrawer" icon={PanelLeft} pressed={detailsDrawerVisible}
-            controls={ids.detailsDrawer} onClick={() => toggleDetailsSide('detailsDrawerOpen')} />
+          <WindowButton command={drawer} icon={PanelLeft} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
         </div>
         <div className="studio-window-bottom__clock">{clock}</div>
         <div className="studio-window-bottom__right">
           {failure}
           {problems}
           {activity}
-          <WindowButton name="windowInspector" icon={PanelRight} pressed={inspectorVisible}
-            controls={ids.inspector} onClick={() => toggleDetailsSide('inspectorOpen')} />
+          <WindowButton command={inspector} icon={PanelRight} pressed={inspectorVisible} controls={ids.inspector} />
         </div>
       </footer>
     </div>

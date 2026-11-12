@@ -1,7 +1,8 @@
 import { Activity, X } from 'lucide-react';
-import { useId, useRef } from 'react';
+import { useId, useLayoutEffect, useRef } from 'react';
 import { StudioActivityPane, useStudioActivityCount } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { StudioActivityJob } from '@/generated/studioContracts';
 
 export function HeaderActivity({
@@ -11,6 +12,7 @@ export function HeaderActivity({
   onOpenRun,
   projectNames,
   placement = 'below',
+  command,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -18,10 +20,16 @@ export function HeaderActivity({
   onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
   projectNames: ReadonlyMap<string, string>;
   placement?: 'above' | 'below';
+  command?: StudioCommand;
 }) {
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement | null>(null);
   const running = useStudioActivityCount();
+  const close = useRef<HTMLButtonElement>(null);
+  const managed = !!command;
+  useLayoutEffect(() => {
+    if (open && managed) close.current?.focus();
+  }, [open, managed]);
   const closePanel = () => {
     onClose();
     trigger.current?.focus();
@@ -33,6 +41,7 @@ export function HeaderActivity({
         type="button"
         ref={trigger}
         aria-label={studioName('activity')}
+        {...(command && commandAttributes(command))}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={onToggle}
@@ -58,6 +67,7 @@ export function HeaderActivity({
             <h2 className="font-semibold">{studioName('activity')}</h2>
             <button
               type="button"
+              ref={close}
               aria-label={studioName('close')}
               onClick={closePanel}
               className="rounded p-1 hover:bg-slate-100"

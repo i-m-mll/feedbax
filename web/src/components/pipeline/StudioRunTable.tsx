@@ -4,7 +4,7 @@ import { StudioRunProgress, StudioRunStatus } from "@/components/activity/Studio
 import { studioCountOf, studioName, studioReason } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
-  extendsSelection,
+  selectionButton,
   selectedRuns,
   selectRun,
   selectSweepValue,
@@ -34,9 +34,7 @@ export function StudioSweepValues({ step, state, onSelectionChange }: RunSelecti
                 key={value.id}
                 type="button"
                 aria-pressed={selected?.valueIds.includes(value.id) ?? false}
-                onClick={(event) => onSelectionChange(selectSweepValue(
-                  state, step.id, sweep.id, value.id, extendsSelection(event),
-                ))}
+                {...selectionButton((extend) => onSelectionChange(selectSweepValue(state, step.id, sweep.id, value.id, extend)))}
                 className="rounded border border-slate-300 px-2 py-0.5 tabular-nums aria-pressed:border-violet-600 aria-pressed:bg-violet-100"
               >
                 {value.label}
@@ -129,6 +127,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
           {items.map((item) => {
             const run = rows[item.index];
             const lit = selected.has(run.id);
+            const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
               <tr
                 key={run.id}
@@ -155,9 +154,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
                     }}
                     aria-pressed={state.selection?.kind === "rows" && lit}
                     aria-current={focus === run.id ? true : undefined}
-                    onClick={(event) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id },
-                      extendsSelection(event)))}
-                    onKeyDown={(event) => navigate(event, item.index)}
+                    onClick={selectRow.onClick}
+                    onKeyDown={(event) => {
+                      selectRow.onKeyDown(event);
+                      if (!event.defaultPrevented) navigate(event, item.index);
+                    }}
                     className="rounded text-left underline-offset-2 hover:underline aria-[current=true]:underline"
                   >
                     {run.label}

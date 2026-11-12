@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { Command, TriangleAlert } from 'lucide-react';
-import { appTip } from '@window-shell/browser/tooltip';
+import { TriangleAlert } from 'lucide-react';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
@@ -15,8 +14,9 @@ import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMap
 import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
-  projectWindowSlotView, projectWindowViews, showProjectWindowView, useProjectWindowState, type ProjectWindowView,
+  projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
 import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
@@ -64,7 +64,6 @@ const viewsByKind = {
   report: ['runs', 'document'],
 } as const satisfies Record<string, readonly ProjectWindowView[]>;
 const emptyViews: readonly ProjectWindowView[] = [];
-const viewShortcuts = Object.fromEntries(projectWindowViews.slice(0, 9).map((view, index) => [view, `⌘${index + 1}`]));
 const control = 'rounded px-2 py-1 hover:bg-shell-hover focus-visible:outline-2';
 const noView = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
 
@@ -137,10 +136,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const [panel, setPanel] = useState<'activity' | 'problems' | 'commands' | null>(null);
+  const [panel, setPanel] = useState<'activity' | 'problems' | null>(null);
+  const [focusRequest, requestSlotFocus] = useState(0);
+  const [pivotSlots, setPivotSlots] = useState<Partial<Record<ProjectWindowSlot, string>>>({});
   const [problemStep, setProblemStep] = useState<string>();
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
-  const creating = useRef(false);
+  const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
   const submission = useRef<{ intent: string; token: string }>();
   const projection = useQuery({
@@ -184,14 +185,38 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const canAuthorContinuation = ready && !saved.project.sweep;
   const names = useMemo(() => new Map([[saved.project_id, configuration.project]]), [saved.project_id, configuration.project]);
 
-  async function run(target: PipelineSelection) {
-    if (busy || !ready || !data) return;
-    const ids = new Set(plan.steps.flatMap((item) => selectedRuns(item, target).map(({ id }) => id)));
-    const keys = data.rows.filter(({ key }) => ids.has(savedRunId(key))).map(({ key }) => key);
-    if (!keys.length) return;
+  const runTarget: PipelineSelection = state.selection ?? { kind: 'steps', stepIds: plan.steps.map(({ id }) => id) };
+  const runIds = new Set(plan.steps.flatMap((item) => selectedRuns(item, runTarget).map(({ id }) => id)));
+  const runRows = data?.rows.filter(({ key }) => runIds.has(savedRunId(key))) ?? [];
+  const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
+  const selectedJobs = state.selection ? runRows.flatMap((item) => {
+    const latest = item.attempts.at(-1);
+    const job = latest && jobsById.get(latest.job_id);
+    return job ? [job] : [];
+  }) : [];
+  const exactRow = row ?? (runRows.length === 1 && state.selection ? runRows[0] : undefined);
+  const exactJob = exactRow?.attempts.at(-1);
+  const resumable = exactJob && jobsById.get(exactJob.job_id);
+
+  async function perform(work: () => Promise<void>) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setCommandError(undefined);
     try {
+      await work();
+    } catch (cause) {
+      setCommandError(apiErrorMessage(cause));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+
+  function run() {
+    if (!ready || !data || !runRows.length) return;
+    const keys = runRows.map(({ key }) => key);
+    void perform(async () => {
       if (await editor.flush() !== data.revision) throw new Error('The project changed before the run was submitted.');
       const project = editor.getSnapshot().saved.project_id;
       const intent = JSON.stringify([data.revision, keys]);
@@ -202,11 +227,15 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       const refusal = result.items.find(({ disposition }) => disposition === 'rejected');
       if (refusal?.reason) setCommandError(refusal.reason);
       actions.refresh();
-    } catch (cause) {
-      setCommandError(apiErrorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
+    });
+  }
+
+  function stop(jobIds: string[], mode: 'checkpoint' | 'force') {
+    void perform(async () => {
+      const result = await actions.stop(jobIds, mode);
+      const failure = result.find(({ error }) => error)?.error;
+      if (failure) setCommandError(failure.message);
+    });
   }
 
   function openProblems(stepId?: string) {
@@ -221,14 +250,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       ? selectRun(state, { stepId: target.key.step, runId: savedRunId(target.key) })
       : selectStep(state, problem.step));
     setWindowState((current) => showProjectWindowView(current, 'runs'));
+    requestSlotFocus((count) => count + 1);
     setPanel(null);
+  }
+  function showRun(match: SavedRow) {
+    const target = { stepId: match.key.step, runId: savedRunId(match.key) };
+    selection.select(selectRun(state, target), match.key.variant === variants[0] ? null : match.key.variant);
+    setWindowState((current) => showProjectWindowView(current, 'results'));
+    requestSlotFocus((count) => count + 1);
   }
   async function openActivityRun(job: StudioActivityJob) {
     const match = data?.rows.find((item) => item.attempts.some(({ job_id }) => job_id === job.job_id));
     if (!match) return false;
-    const target = { stepId: match.key.step, runId: savedRunId(match.key) };
-    selection.select(selectRun(state, target), match.key.variant === variants[0] ? null : match.key.variant);
-    setWindowState((current) => showProjectWindowView(current, 'results'));
+    showRun(match);
     return true;
   }
 
@@ -263,38 +297,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     void editor.flush().catch((error) => setCommandError(apiErrorMessage(error)));
   }
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (!event.metaKey && !event.ctrlKey) return;
-      const key = event.key.toLowerCase();
-      const editable = event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]');
-      if (key === 'k') {
-        event.preventDefault();
-        setPanel((current) => current === 'commands' ? null : 'commands');
-      } else if (!editable) {
-        const view = /^[1-9]$/.test(key) ? projectWindowViews[Number(key) - 1] : undefined;
-        if (view && availableViews.includes(view)) {
-          event.preventDefault();
-          setWindowState((current) => showProjectWindowView(current, view));
-        } else if (key === '[' && selection.back) {
-          event.preventDefault();
-          selection.back();
-        } else if (key === ']' && selection.forward) {
-          event.preventDefault();
-          selection.forward();
-        } else if (key === 'z') {
-          event.preventDefault();
-          moveHistory(event.shiftKey ? 'redo' : 'undo');
-        } else if (key === 'r' && ready) {
-          event.preventDefault();
-          void run(state.selection ?? { kind: 'steps', stepIds: plan.steps.map(({ id }) => id) });
-        }
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
-
   const commandScope: ProjectWindowCommandScope = {
     editor, selection: state, variantId: variant, onSelectionChange: selection.select,
     plan, projection: data,
@@ -305,52 +307,86 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     },
   };
 
-  async function newStep(source?: PipelineMapStepSource) {
-    if (!source || !onNewStep || !canAuthorContinuation || busy || creating.current) return;
-    creating.current = true;
-    setBusy(true);
-    setCommandError(undefined);
-    try {
-      await onNewStep(source, commandScope);
-    } catch (error) {
-      setCommandError(apiErrorMessage(error));
-    } finally {
-      creating.current = false;
-      setBusy(false);
-    }
+  function newStepCommand(source: PipelineMapStepSource | undefined, subject?: string) {
+    const sourceStep = source && plan.steps.find(({ id }) => id === source.stepId);
+    if (!onNewStep || !source || sourceStep?.kind !== 'train') return undefined;
+    const runnable = canCreateContinuation(sourceStep) &&
+      (!source.selection || selectedRuns(sourceStep, source.selection).length > 0);
+    return bindStudioCommand('newStep', () => { void perform(async () => { await onNewStep(source, commandScope); }); },
+      { enabled: canAuthorContinuation && !busy && runnable, subject });
+  }
+
+  function newSweepCommand(stepId: string, subject?: string) {
+    if (!onNewSweep && !canAuthorSweep(stepId)) return undefined;
+    return bindStudioCommand('newSweep', () => {
+      if (onNewSweep) onNewSweep(stepId, commandScope);
+      else setSweepStep(stepId);
+    }, { enabled: ready && !busy, subject });
   }
 
   const mapProps = {
     plan, state, onSelectionChange: selection.select, onProblems: openProblems,
-    onNewStep: onNewStep && canAuthorContinuation && plan.steps.some(canCreateContinuation) ? newStep : undefined,
-    canNewStepFrom: canCreateContinuation,
-    canNewSweep: (stepId: string) => !!onNewSweep || (ready && canAuthorSweep(stepId)),
-    onNewSweep: (stepId: string) => {
-      if (onNewSweep) onNewSweep(stepId, commandScope);
-      else setSweepStep(stepId);
-    },
+    newStepCommand, newSweepCommand,
   };
-  const focusView = windowState.focusedSlot === 'secondary' ? secondaryView : primaryView;
-  const focusDetails = windowState.focusedSlot === 'secondary' ? secondary : primary;
+  const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
+  const focusView = focusSlot === 'secondary' ? secondaryView : primaryView;
+  const focusDetails = focusSlot === 'secondary' ? secondary : primary;
+  const activity = bindStudioCommand('activity', () => setPanel((current) => current === 'activity' ? null : 'activity'));
+  const problemCommand = bindStudioCommand('problems', () => openProblems());
+  const retryCommand = bindStudioCommand('retry', retry);
+  const runCommand = bindStudioCommand('run', run, { enabled: ready && !busy && runRows.length > 0 });
+  const runCommands: StudioCommand[] = [runCommand];
+  if (step?.kind === 'train') {
+    for (const [id, mode] of [['stop', 'checkpoint'], ['forceStop', 'force']] as const) {
+      const eligible = selectedJobs.filter((job) => jobAllowsCommand(job, id)).map(({ job_id }) => job_id);
+      if (id === 'forceStop' && !eligible.length) continue;
+      runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
+    }
+    if (resumable && jobAllowsCommand(resumable, 'resume')) {
+      runCommands.push(bindStudioCommand('resume', () => {
+        void perform(async () => { await actions.resume(resumable.job_id); });
+      }, { enabled: !busy }));
+    }
+    runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow); }, { enabled: !!exactJob }));
+    const continuation = newStepCommand({
+      stepId: step.id, selection: state.selection?.kind === 'values' || state.selection?.kind === 'rows' ? state.selection : null,
+    });
+    if (continuation) runCommands.push(continuation);
+  }
+  function pivotCommand(slot: ProjectWindowSlot) {
+    if (!step || step.sweeps.length < 2) return undefined;
+    return bindStudioCommand('pivot', () => setPivotSlots((current) => ({
+      ...current, [slot]: current[slot] === step.id ? undefined : step.id,
+    })));
+  }
+  const commands = [
+    ...runCommands,
+    step && newSweepCommand(step.id),
+    focusView === 'runs' && pivotCommand(focusSlot),
+    bindStudioCommand('undo', () => moveHistory('undo'), { enabled: !!snapshot.undoName && !busy }),
+    bindStudioCommand('redo', () => moveHistory('redo'), { enabled: !!snapshot.redoName && !busy }),
+    bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
+    activity, problemCommand, failure && retryCommand,
+  ].filter((command): command is StudioCommand => !!command);
 
   return (
     <ProjectWindow
       state={windowState} onStateChange={setWindowState} projectName={configuration.project}
       saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
       availableViews={availableViews}
-      viewShortcuts={viewShortcuts}
+      commands={commands} focusRequest={focusRequest}
       onBack={selection.back} onForward={selection.forward}
       map={<StudioErrorBoundary region={studioName('pipelineMap')}><StudioPipelineMap {...mapProps}
         presentation={presentation} onPresentationChange={changePresentation} /></StudioErrorBoundary>}
-      mapDrawer={<StudioPipelineMapDrawer {...mapProps} onNewStep={undefined} />}
+      mapDrawer={<StudioPipelineMapDrawer {...mapProps} />}
       compactMap={<StudioPipelineMap {...mapProps} mode="line" />}
       variant={variants.length > 1 && <select aria-label={studioName('variant')} value={variant ?? ''} onChange={(event) => selection.setVariant(event.target.value === variants[0] ? null : event.target.value)}>
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>}
-      commandPalette={<>
-        {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)}
+      overlay={<>
+        {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)} manageFocus
           panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
-          <button type="button" className={`${control} justify-self-end`} autoFocus onClick={() => setSweepStep(undefined)}>{studioName('close')}</button>
+          <button type="button" className={`${control} justify-self-end`} data-dialog-autofocus onClick={() => setSweepStep(undefined)}>{studioName('close')}</button>
           <StudioTrainAuthoringForm editor={editor} stepId={sweepStep} picker={() => {
             const current = latestState.current;
             if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
@@ -359,31 +395,24 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             setSweepStep(undefined);
           }} />
         </Dialog>}
-        <button className={control} type="button" aria-label={studioName('commandPalette')} {...appTip(`${studioName('commandPalette')} · ⌘K`)}
-          onClick={() => setPanel('commands')}><Command aria-hidden="true" size={18} /></button>
-        {panel === 'commands' && <Dialog ariaLabel={studioName('commandPalette')} onClose={() => setPanel(null)}
-          panelClassName="grid w-64 gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
-          <button type="button" className={control} autoFocus disabled={!snapshot.undoName} onClick={() => { moveHistory('undo'); setPanel(null); }}>{studioName('undo')}</button>
-          <button type="button" className={control} disabled={!snapshot.redoName} onClick={() => { moveHistory('redo'); setPanel(null); }}>{studioName('redo')}</button>
-        </Dialog>}
       </>}
       clock={focusView === 'scene' ? focusDetails.scene.clock : undefined}
       failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
-        <span className="truncate" {...appTip(failure)}>{failure}</span>
-        <button type="button" className={control} onClick={retry}>{studioName('retry')}</button>
+        <span className="min-w-0 break-words">{failure}</span>
+        <button type="button" className={control} {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</button>
       </div>}
       problems={<>
-        <button type="button" className={control} aria-expanded={panel === 'problems'} onClick={() => openProblems()}>
+        <button type="button" className={control} aria-expanded={panel === 'problems'} {...commandAttributes(problemCommand)} onClick={problemCommand.invoke}>
           <TriangleAlert aria-hidden="true" size={14} className="mr-1 inline" />{studioName('problems')} {problems.length}
         </button>
-        {panel === 'problems' && <Dialog ariaLabel={studioName('problems')} onClose={() => setPanel(null)}
+        {panel === 'problems' && <Dialog ariaLabel={studioName('problems')} onClose={() => setPanel(null)} manageFocus
           panelClassName="grid max-h-[75dvh] w-[min(34rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
-          <button type="button" className={`${control} justify-self-end`} autoFocus onClick={() => setPanel(null)}>{studioName('close')}</button>
+          <button type="button" className={`${control} justify-self-end`} data-dialog-autofocus onClick={() => setPanel(null)}>{studioName('close')}</button>
           <ProblemList problems={problems.filter((problem) => !problemStep || problem.step === problemStep)} onChoose={revealProblem} />
         </Dialog>}
       </>}
-      activity={<HeaderActivity placement="above" open={panel === 'activity'}
-        onToggle={() => setPanel((current) => current === 'activity' ? null : 'activity')}
+      activity={<HeaderActivity placement="above" open={panel === 'activity'} command={activity}
+        onToggle={activity.invoke}
         onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} />}
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
@@ -400,12 +429,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             definition={authoring && <StudioTrainAuthoringForm {...authoring}
               focusFirstField={ready && focusCreatedStep === step.id && windowState.focusedSlot === slot}
               onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
-            commands={step.kind === 'train' ? [
-              { name: 'run', enabled: ready && !busy, perform: run },
-              { name: 'newStep', enabled: canAuthorContinuation && !busy && canCreateContinuation(step), perform: (target) => {
-                void newStep({ stepId: step.id, selection: target.kind === 'steps' ? null : target });
-              } },
-            ] : undefined} />
+            commands={step.kind === 'train' ? runCommands : undefined}
+            pivotCommand={pivotCommand(slot)} pivotActive={pivotSlots[slot] === step.id} />
         </StudioErrorBoundary> };
         if ((view === 'training' || view === 'objective') && authoring) {
           return { body: <StudioTrainAuthoringForm {...authoring} view={view} /> };

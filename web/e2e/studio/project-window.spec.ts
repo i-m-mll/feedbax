@@ -24,9 +24,9 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   expect((await run).status()).toBe(202);
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
 
-  await page.getByRole('button', { name: 'Split View', exact: true }).click();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
-  await rail.getByRole('button', { name: 'Model', exact: true }).click();
+  await rail.getByRole('tab', { name: 'Model', exact: true }).click();
   await page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'plant', exact: true }).click();
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('spinbutton', { name: 'Edit Mass' });
   await expect(mass).toHaveValue('1');
@@ -39,7 +39,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(card.getByText('1 Out of date')).toBeVisible();
   await expect(drawer.getByText('1 Out of date')).toBeVisible();
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('button', { name: 'Undo', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: 'Undo', exact: true }).click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
   await expect(card.getByText('1 Done')).toBeVisible();
   await expect(drawer.getByText('1 Done')).toBeVisible();
@@ -55,7 +55,7 @@ test('the managed window shares selection and restores the folded slot without e
   const primary = page.locator('[data-slot="primary"]');
   const secondary = page.locator('[data-slot="secondary"]');
   await expect(primary.getByRole('table', { name: 'Runs' })).toBeVisible();
-  await page.getByRole('button', { name: 'Split View', exact: true }).click();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
 
   await mapStep(page, 'successor').click();
@@ -76,11 +76,11 @@ test('the managed window shares selection and restores the folded slot without e
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(separator).toHaveAttribute('aria-valuenow', width!);
 
-  await page.getByRole('button', { name: 'Details Only', exact: true }).click();
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   await expect(mapStep(page, 'successor')).toBeHidden();
   await expect(page.locator('.studio-window-map__compact').getByRole('button', { name: 'Select successor' })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole('button', { name: 'Details Only', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Show Details', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
   await expect(separator).toHaveAttribute('aria-valuenow', width!);
 
@@ -113,7 +113,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   }
   await page.goto(`/?project=${id}`);
   await mapStep(page, 'train').click();
-  await page.getByRole('button', { name: 'Split View', exact: true }).click();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const scene = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Scene', exact: true }).first();
   const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
   await expect(upper).toBeVisible();

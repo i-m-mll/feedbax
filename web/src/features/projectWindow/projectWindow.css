@@ -53,7 +53,7 @@
   color: var(--text-primary);
 }
 
-.studio-window-control[aria-pressed='true'] {
+.studio-window-control:is([aria-pressed='true'], [aria-selected='true']) {
   background: var(--studio-shell-selection);
   color: var(--studio-shell-accent);
 }
@@ -69,6 +69,13 @@
 }
 
 .studio-window-rail {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 100%;
+  width: var(--shell-rail-width);
+}
+
+.studio-window-tabs {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -78,7 +85,6 @@
 
 .studio-window-panel {
   display: grid;
-  overflow: hidden;
   position: relative;
   z-index: 1;
 }
@@ -107,6 +113,15 @@
   min-width: 0;
   overflow: auto hidden;
   white-space: nowrap;
+}
+
+.studio-window-map__full > .studio-window-side {
+  order: -1;
+}
+
+.studio-project-window :where(button, input, select, summary, [data-studio-focus-region]):focus-visible {
+  outline: 2px solid var(--shell-focus-color);
+  outline-offset: -2px;
 }
 
 .studio-window-side {

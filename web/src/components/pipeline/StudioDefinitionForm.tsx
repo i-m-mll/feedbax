@@ -2,7 +2,7 @@ import { useId } from "react";
 import { Circle, CircleDot, Plus } from "lucide-react";
 import { studioAccessibleName, studioName } from "@/components/activity/studioVocabulary";
 import type { JsonPrimitive } from "@/generated/studioContracts";
-import { extendsSelection, type PipelineSelection } from "@/features/pipeline/selection";
+import { selectionButton, type PipelineSelection } from "@/features/pipeline/selection";
 
 export type StudioFieldControl =
   | { readonly kind: "number"; readonly min?: number; readonly max?: number; readonly step?: number }
@@ -169,7 +169,7 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
             return (
               <li key={value.id} data-selected={value.selected || undefined} className="flex flex-wrap items-center gap-1 rounded p-1 data-[selected=true]:bg-violet-100">
                 {onChooseSweepValue && (
-                  <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)} onClick={(event) => onChooseSweepValue(sweep.id, value.id, extendsSelection(event))} className="rounded p-0.5">
+                  <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)} {...selectionButton((extend) => onChooseSweepValue(sweep.id, value.id, extend))} className="rounded p-0.5">
                     <CircleDot aria-hidden="true" size={15} />
                   </button>
                 )}

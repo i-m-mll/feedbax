@@ -3,8 +3,9 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { PlanStepView, PlanView } from "@/features/pipeline/planView";
-import { emptyPipelineSelection, selectStep, type PipelineSelectionState } from "@/features/pipeline/selection";
-import { StudioRuns, type StudioRunCommand } from "./StudioRuns";
+import { emptyPipelineSelection, selectStep, type PipelineSelection, type PipelineSelectionState } from "@/features/pipeline/selection";
+import { bindStudioCommand } from "@/features/projectWindow/studioCommands";
+import { StudioRuns } from "./StudioRuns";
 
 const train: PlanStepView = {
   id: "train",
@@ -37,19 +38,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function showRuns(step: PlanStepView, commands: readonly StudioRunCommand[] = []) {
+function showRuns(step: PlanStepView, run?: (selection: PipelineSelection | null) => void) {
   vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(360);
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(44);
   function TestRuns() {
     const [state, setState] = useState<PipelineSelectionState>(() => selectStep(emptyPipelineSelection, step.id));
-    return <StudioRuns plan={plan} step={step} region={result} commands={commands} state={state} onSelectionChange={setState} />;
+    const [pivot, setPivot] = useState(false);
+    return <StudioRuns plan={plan} step={step} region={result}
+      commands={run ? [bindStudioCommand("run", () => run(state.selection))] : undefined}
+      pivotCommand={step.sweeps.length > 1 ? bindStudioCommand("pivot", () => setPivot(!pivot)) : undefined}
+      pivotActive={pivot} state={state} onSelectionChange={setState} />;
   }
   return render(<TestRuns />);
 }
 
 it("preserves the sweep and row handles through the same Run command", () => {
   const perform = vi.fn();
-  showRuns(train, [{ name: "run", enabled: true, perform }]);
+  showRuns(train, perform);
   const table = screen.getByRole("table", { name: "Runs" });
   const rate = within(screen.getByRole("group", { name: "Rate" })).getByRole("button", { name: "0.003" });
   fireEvent.click(rate);

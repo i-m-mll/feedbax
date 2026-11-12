@@ -1,28 +1,19 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import { studioAccessibleName, studioCountOf, studioName, studioRunStatus } from "@/components/activity/studioVocabulary";
+import { commandAttributes, type StudioCommand } from "@/features/projectWindow/studioCommands";
 import type { PlanRunView, PlanView } from "@/features/pipeline/planView";
 import {
-  extendsSelection,
+  selectionButton,
   indexPlanLineage,
   selectedRuns,
   selectRun,
   selectStep,
   selectSweepGroup,
-  type PipelineSelection,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { StudioRunTable, StudioSelectionSummary, StudioSweepValues, type RunSelectionProps } from "./StudioRunTable";
-
-const runCommandNames = ["run", "rerun", "stop", "forceStop", "resume", "accept", "newStep"] as const;
-type RunCommandName = (typeof runCommandNames)[number];
-
-export interface StudioRunCommand {
-  readonly name: RunCommandName;
-  readonly enabled: boolean;
-  readonly perform: (selection: PipelineSelection) => void;
-}
 
 interface StudioRunsProps extends RunSelectionProps {
   plan: PlanView;
@@ -30,7 +21,9 @@ interface StudioRunsProps extends RunSelectionProps {
   definition?: ReactNode;
   sweep?: ReactNode;
   inputs?: ReactNode;
-  commands?: readonly StudioRunCommand[];
+  commands?: readonly StudioCommand[];
+  pivotCommand?: StudioCommand;
+  pivotActive?: boolean;
 }
 
 function StudioRunLineage({
@@ -143,9 +136,9 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
                           aria-label={studioAccessibleName("select", [`${y.label} ${row.label}`, `${x.label} ${column.label}`, ...labels].join(" · "))}
                           aria-pressed={cell.every(({ id }) => selected.has(id))}
                           className="flex flex-wrap gap-2 rounded px-1 aria-pressed:bg-violet-100"
-                          onClick={(event) => onSelectionChange(cell.length === 1
-                            ? selectRun(state, { stepId: step.id, runId: cell[0].id }, extendsSelection(event))
-                            : selectSweepGroup(step.id, [{ sweepId: y.id, valueIds: [row.id] }, { sweepId: x.id, valueIds: [column.id] }]))}
+                          {...selectionButton((extend) => onSelectionChange(cell.length === 1
+                            ? selectRun(state, { stepId: step.id, runId: cell[0].id }, extend)
+                            : selectSweepGroup(step.id, [{ sweepId: y.id, valueIds: [row.id] }, { sweepId: x.id, valueIds: [column.id] }])))}
                         >
                           {[...count].map(([status, amount]) => (
                             <span className="flex items-center gap-1" key={status}>
@@ -170,16 +163,15 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
   );
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, inputs, commands }: StudioRunsProps) {
-  const [pivot, setPivot] = useState(false);
+function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, inputs, commands, pivotCommand, pivotActive }: StudioRunsProps) {
+  const reasonId = useId();
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
   const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
   const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
-  const canPivot = step.sweeps.length >= 2;
-  const selection = state.selection;
+  const focused = selected.find(({ id }) => id === state.focus?.runId) ?? (selected.length === 1 ? selected[0] : undefined);
   return (
     <div className="space-y-3 text-sm text-slate-900">
       {definition}
@@ -188,22 +180,25 @@ function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, 
       <StudioSweepValues step={step} state={state} onSelectionChange={onSelectionChange} />
       <StudioSelectionSummary step={step} state={state} />
       <div className="flex flex-wrap items-center gap-2">
-        {commands?.map(({ name, enabled, perform }) => (
-          <button
-            type="button" key={name} disabled={!enabled || !selection || !selected.length}
-            className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50"
-            onClick={() => { if (selection) perform(selection); }}
-          >
-            {studioName(name)}
+        {commands?.map((command) => (
+          <button type="button" key={command.id} {...commandAttributes(command)} disabled={!command.enabled}
+            aria-describedby={focused?.reason && !command.enabled ? reasonId : undefined}
+            className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50" onClick={command.invoke}>
+            {studioName(command.name)}
           </button>
         ))}
-        {canPivot && (
-          <button type="button" aria-pressed={pivot} onClick={() => setPivot(!pivot)} className="rounded border border-slate-300 px-2 py-1">
-            {studioName("pivot")}
+        {pivotCommand && (
+          <button type="button" {...commandAttributes(pivotCommand)} aria-pressed={pivotActive}
+            onClick={pivotCommand.invoke} className="rounded border border-slate-300 px-2 py-1">
+            {studioName(pivotCommand.name)}
           </button>
         )}
       </div>
-      {canPivot && pivot
+      <div aria-live="polite" className="sr-only">
+        {focused && <span>{focused.label} · {studioRunStatus(focused.status)}</span>}
+        {focused?.reason && <span id={reasonId}>{focused.reason}</span>}
+      </div>
+      {pivotCommand && pivotActive
         ? <StudioRunPivot step={step} state={state} onSelectionChange={onSelectionChange} rows={step.runs} related={related} />
         : <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={step.runs} related={related} />}
       {(upstream.size > 0 || downstream.size > 0) && (

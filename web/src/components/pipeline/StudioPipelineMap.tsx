@@ -18,9 +18,10 @@ import {
   studioStep,
   type StudioRunStatusId,
 } from '@/components/activity/studioVocabulary';
+import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
 import {
-  extendsSelection,
+  selectionButton,
   indexPlanLineage,
   selectedRuns,
   selectionTerms,
@@ -57,10 +58,8 @@ export interface StudioPipelineMapProps {
   drawerOpen?: boolean;
   presentation?: Readonly<Record<string, PipelineCardPresentation>>;
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
-  onNewStep?: (source?: PipelineMapStepSource) => void;
-  canNewStepFrom?: (step: PlanStepView) => boolean;
-  onNewSweep?: (stepId: string) => void;
-  canNewSweep?: (stepId: string) => boolean;
+  newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
+  newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
   onProblems?: (stepId: string) => void;
 }
 
@@ -99,6 +98,12 @@ function StepName({ step }: { step: PlanStepView }) {
   );
 }
 
+function FoldSweep({ command }: { command: StudioCommand }) {
+  return <button type="button" className={smallButton} {...commandAttributes(command)} onClick={command.invoke}>
+    {studioName(command.name)}
+  </button>;
+}
+
 function StepShape({
   step,
   sweeps,
@@ -107,7 +112,7 @@ function StepShape({
   presentation,
   applySelection,
   onPresentationChange,
-  onNewSweep,
+  newSweep,
 }: {
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
@@ -116,7 +121,7 @@ function StepShape({
   presentation: PipelineCardPresentation;
   applySelection: ApplyMapSelection;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
-  onNewSweep?: StudioPipelineMapProps['onNewSweep'];
+  newSweep?: StudioCommand;
 }) {
   const dragging = useRef<string | null>(null);
   const [openSweep, setOpenSweep] = useState<string | null>(null);
@@ -181,17 +186,9 @@ function StepShape({
                   </ul>
                   {onPresentationChange && (
                     <div className="mt-2 flex items-center gap-1 border-t border-slate-100 pt-1">
-                      <button
-                        type="button"
-                        className={smallButton}
-                        aria-label={studioAccessibleName(isFolded ? 'unfold' : 'fold', sweep.label)}
-                        onClick={() => onPresentationChange(step.id, {
-                          ...presentation,
-                          foldedSweepId: isFolded ? null : sweep.id,
-                        })}
-                      >
-                        {studioName(isFolded ? 'unfold' : 'fold')}
-                      </button>
+                      <FoldSweep command={bindStudioCommand(isFolded ? 'unfold' : 'fold',
+                        () => onPresentationChange(step.id, { ...presentation, foldedSweepId: isFolded ? null : sweep.id }),
+                        { subject: sweep.label })} />
                       <button
                         type="button"
                         className={smallButton}
@@ -218,13 +215,9 @@ function StepShape({
           </div>
         );
       })}
-      {onNewSweep && (
-        <button
-          type="button"
-          className={smallButton}
-          aria-label={studioAccessibleName('newSweep', step.label)}
-          onClick={() => onNewSweep(step.id)}
-        >
+      {newSweep && (
+        <button type="button" className={smallButton} {...commandAttributes(newSweep)}
+          disabled={!newSweep.enabled} onClick={newSweep.invoke}>
           <Plus aria-hidden="true" className="h-3 w-3" />
         </button>
       )}
@@ -238,8 +231,8 @@ const StepCard = memo(function StepCard({
   presentation,
   applySelection,
   onPresentationChange,
-  onNewStep,
-  onNewSweep,
+  newStep,
+  newSweep,
   onProblems,
 }: {
   step: PlanStepView;
@@ -247,8 +240,8 @@ const StepCard = memo(function StepCard({
   presentation: PipelineCardPresentation;
   applySelection: ApplyMapSelection;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
-  onNewStep?: StudioPipelineMapProps['onNewStep'];
-  onNewSweep?: StudioPipelineMapProps['onNewSweep'];
+  newStep?: StudioCommand;
+  newSweep?: StudioCommand;
   onProblems?: StudioPipelineMapProps['onProblems'];
 }) {
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
@@ -257,7 +250,7 @@ const StepCard = memo(function StepCard({
     selectedRuns(step, selection).map(({ id }) => id),
   ), [step, selection]);
   const terms = selection?.kind === 'steps' ? [] : selectionTerms(step, selection);
-  const { tint } = studioStep(step.kind);
+  const { tint, name: kind } = studioStep(step.kind);
   return (
     <article
       data-map-card
@@ -265,6 +258,10 @@ const StepCard = memo(function StepCard({
       className="relative w-64 space-y-2 rounded-lg border-2 bg-white px-3 py-2 text-sm shadow-sm focus-within:z-20"
       style={{ borderColor: tint }}
     >
+      <span id={`map-step-${step.id}-summary`} className="sr-only">
+        {[kind, ...sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`),
+          ...Object.entries(step.statusCounts).map(([status, count]) => `${count} ${studioRunStatus(status as StudioRunStatusId)}`)].join(' · ')}
+      </span>
       <header className="relative">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-3 top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-3 top-1/2" />
@@ -272,11 +269,9 @@ const StepCard = memo(function StepCard({
           type="button"
           className="w-full rounded px-1 py-1 text-left text-slate-900 hover:bg-slate-100 aria-pressed:bg-slate-200"
           aria-label={studioAccessibleName('select', step.label)}
+          aria-describedby={`map-step-${step.id}-summary`}
           aria-pressed={selection?.kind === 'steps'}
-          onClick={(event) => {
-            const extend = extendsSelection(event);
-            applySelection((state) => selectStep(state, step.id, extend));
-          }}
+          {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
         >
           <StepName step={step} />
         </button>
@@ -289,7 +284,7 @@ const StepCard = memo(function StepCard({
         presentation={presentation}
         applySelection={applySelection}
         onPresentationChange={onPresentationChange}
-        onNewSweep={onNewSweep}
+        newSweep={newSweep}
       />
       <StatusCounts counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} />
       {selection && (
@@ -316,16 +311,9 @@ const StepCard = memo(function StepCard({
           ))}
         </ul>
       )}
-      {onNewStep && (
-        <button
-          type="button"
-          className={`${smallButton} absolute -right-3 top-1/2 -translate-y-1/2`}
-          aria-label={studioAccessibleName('newStep', step.label)}
-          onClick={() => onNewStep({
-            stepId: step.id,
-            selection: selection?.kind === 'values' || selection?.kind === 'rows' ? selection : null,
-          })}
-        >
+      {newStep && (
+        <button type="button" className={`${smallButton} absolute -right-3 top-1/2 -translate-y-1/2`}
+          {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke}>
           <Plus aria-hidden="true" className="h-3 w-3" />
         </button>
       )}
@@ -397,7 +385,7 @@ function MapDrawer({
   related,
   focusedStepId,
   applySelection,
-  onNewStep,
+  newStep,
   onProblems,
   framed = false,
 }: {
@@ -406,7 +394,7 @@ function MapDrawer({
   related: RunSetsByStep | null;
   focusedStepId?: string;
   applySelection: ApplyMapSelection;
-  onNewStep?: StudioPipelineMapProps['onNewStep'];
+  newStep?: StudioCommand;
   onProblems?: StudioPipelineMapProps['onProblems'];
   framed?: boolean;
 }) {
@@ -433,10 +421,7 @@ function MapDrawer({
                 className={`w-full space-y-1 rounded p-1.5 text-left text-sm hover:bg-slate-100 aria-[current=step]:bg-slate-200 ${related && !count ? 'opacity-60' : ''}`}
                 aria-label={studioAccessibleName('select', step.label)}
                 aria-current={scope ? 'step' : undefined}
-                onClick={(event) => {
-                  const extend = extendsSelection(event);
-                  applySelection((state) => selectStep(state, step.id, extend));
-                }}
+                {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
               >
                 <StepName step={step} />
                 {related && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
@@ -445,9 +430,10 @@ function MapDrawer({
             </li>
           );
         })}</ul></li>))}
-        {onNewStep && (
+        {newStep && (
           <li>
-            <button type="button" className={`${smallButton} inline-flex items-center gap-1`} onClick={() => onNewStep()}>
+            <button type="button" className={`${smallButton} inline-flex items-center gap-1`}
+              {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke}>
               <Plus aria-hidden="true" className="h-3 w-3" />
               {studioName('newStep')}
             </button>
@@ -458,13 +444,13 @@ function MapDrawer({
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, onNewStep, onProblems }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'onNewStep' | 'onProblems'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, onProblems }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'onProblems'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} applySelection={(change) => onSelectionChange(change(state))}
-    onNewStep={onNewStep} onProblems={onProblems} framed />;
+    newStep={newStepCommand?.()} onProblems={onProblems} framed />;
 }
 
 function MapLine({
@@ -496,10 +482,7 @@ function MapLine({
               style={{ borderColor: studioStep(step.kind).tint }}
               aria-label={studioAccessibleName('select', step.label)}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
-              onClick={(event) => {
-                const extend = extendsSelection(event);
-                applySelection((state) => selectStep(state, step.id, extend));
-              }}
+              {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
             >
               <StepName step={step} />
             </button>
@@ -518,10 +501,8 @@ export function StudioPipelineMap({
   drawerOpen = false,
   presentation,
   onPresentationChange,
-  onNewStep,
-  canNewStepFrom,
-  onNewSweep,
-  canNewSweep,
+  newStepCommand,
+  newSweepCommand,
   onProblems,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
@@ -533,6 +514,7 @@ export function StudioPipelineMap({
     if (current.current.focus) onSelectionChange({ ...current.current, focus: null });
   }, [onSelectionChange]);
   const layout = useMemo(() => layoutPipelineMap(plan), [plan]);
+  const firstStep = newStepCommand?.();
   const drawDrawer = drawerOpen && mode === 'map';
   const lineage = useMemo(() => drawDrawer ? indexPlanLineage(plan.edges) : null, [drawDrawer, plan.edges]);
   const related = useMemo(
@@ -551,8 +533,9 @@ export function StudioPipelineMap({
       }}
     >
       {!plan.steps.length ? (
-        onNewStep && (
-          <button type="button" className={`${smallButton} m-4 inline-flex items-center gap-1.5`} onClick={() => onNewStep()}>
+        firstStep && (
+          <button type="button" className={`${smallButton} m-4 inline-flex items-center gap-1.5`}
+            {...commandAttributes(firstStep)} disabled={!firstStep.enabled} onClick={firstStep.invoke}>
             <Plus aria-hidden="true" className="h-4 w-4" />
             {studioName('newStep')}
           </button>
@@ -568,7 +551,7 @@ export function StudioPipelineMap({
               related={related}
               focusedStepId={state.focus?.stepId}
               applySelection={applySelection}
-              onNewStep={onNewStep}
+              newStep={firstStep}
               onProblems={onProblems}
             />
           )}
@@ -583,8 +566,10 @@ export function StudioPipelineMap({
                     presentation={presentation?.[step.id] ?? emptyPresentation}
                     applySelection={applySelection}
                     onPresentationChange={onPresentationChange}
-                    onNewStep={canNewStepFrom?.(step) === false ? undefined : onNewStep}
-                    onNewSweep={!canNewSweep || canNewSweep(step.id) ? onNewSweep : undefined}
+                    newStep={newStepCommand?.({ stepId: step.id,
+                      selection: state.selection?.kind !== 'steps' && state.selection?.stepId === step.id ? state.selection : null,
+                    }, step.label)}
+                    newSweep={newSweepCommand?.(step.id, step.label)}
                     onProblems={onProblems}
                   />
                 ))}

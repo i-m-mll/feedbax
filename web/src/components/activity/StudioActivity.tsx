@@ -1,3 +1,4 @@
+import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
 import { useState } from 'react';
 import type { StudioActivityJob } from '@/generated/studioContracts';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -112,13 +113,13 @@ function ActivityRun({
       {job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
       {failure && <p role="alert" className="text-xs text-red-700">{failure}</p>}
       <div className="flex flex-wrap gap-2">
-        {job.allowed_actions.includes('checkpoint') && (
+        {jobAllowsCommand(job, 'stop') && (
           <ActivityCommand name="stop" pending={pending} onClick={() => void stop('checkpoint')} />
         )}
-        {job.allowed_actions.includes('force') && (
+        {jobAllowsCommand(job, 'forceStop') && (
           <ActivityCommand name="forceStop" pending={pending} onClick={() => void stop('force')} />
         )}
-        {job.allowed_actions.includes('resume') && (
+        {jobAllowsCommand(job, 'resume') && (
           <ActivityCommand name="resume" pending={pending} onClick={() => void resume()} />
         )}
         {!live && !job.seen && (
@@ -138,11 +139,13 @@ function ActivityCommand({
   pending: boolean;
   onClick: () => void;
 }) {
+  const command = bindStudioCommand(name, onClick, { enabled: !pending });
   return (
     <button
       type="button"
-      disabled={pending}
-      onClick={onClick}
+      {...commandAttributes(command)}
+      disabled={!command.enabled}
+      onClick={command.invoke}
       className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-60"
     >
       {studioName(name)}

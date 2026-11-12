@@ -21,6 +21,18 @@ export function extendsSelection(event: Pick<MouseEvent, 'metaKey' | 'ctrlKey' |
   return event.metaKey || event.ctrlKey || event.shiftKey;
 }
 
+export function selectionButton(choose: (extend: boolean) => void) {
+  return {
+    onClick: (event: Pick<MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => choose(extendsSelection(event)),
+    onKeyDown: (event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'repeat' | 'preventDefault'>) => {
+      if ((event.key === 'Enter' || event.key === ' ') && extendsSelection(event)) {
+        event.preventDefault();
+        if (!event.repeat) choose(true);
+      }
+    },
+  };
+}
+
 function toggle(ids: readonly string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
 }

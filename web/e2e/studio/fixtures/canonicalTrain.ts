@@ -36,11 +36,11 @@ export function mapStep(page: Page, stepId: string) {
 }
 
 export async function openResultsSlot(page: Page) {
-  const split = page.getByRole('button', { name: 'Split View', exact: true });
+  const split = page.getByRole('button', { name: 'Split Details', exact: true });
   if (await split.isVisible()) await split.click();
   await page.locator('[data-slot="secondary"] > section').focus();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
-  await rail.getByRole('button', { name: 'Results', exact: true }).click();
+  await rail.getByRole('tab', { name: 'Results', exact: true }).click();
 }
 
 export async function enter(field: Locator, value: string) {
