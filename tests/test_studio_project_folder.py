@@ -245,6 +245,8 @@ def test_rename_and_patch_from_one_revision_have_one_winner(study):
 def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(study):
     root, client = study
     before = _read(client)
+    assert "note" not in before["project"]["steps"]["fit"]
+    file_revisions = {entry["address"]["id"]: entry["revision"] for entry in before["file_revisions"]}
     authored_file = root / "documents/model.json"
     authored_file.chmod(0o644)
     response = _patch(client, before["revision"], 3)
@@ -252,6 +254,9 @@ def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(s
     saved = response.json()
     assert saved["revision"] != before["revision"]
     assert saved["semantic_root"] != before["semantic_root"]
+    current_files = {entry["address"]["id"]: entry["revision"] for entry in saved["file_revisions"]}
+    assert current_files["fit"] == file_revisions["fit"]
+    assert current_files["model"] != file_revisions["model"]
     assert _gain(root) == 3
     assert authored_file.stat().st_mode & 0o777 == 0o644
     assert _read(TestClient(create_app(projects_dir=root.parent))) == saved

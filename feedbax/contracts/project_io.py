@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -43,6 +45,7 @@ class TextProject:
     configuration: ProjectConfiguration
     root: Path
     revision: str
+    file_revisions: Mapping[str, str]
 
     @property
     def store_path(self) -> Path:
@@ -135,7 +138,7 @@ def load_text_project(root: Path | str) -> TextProject:
     revision = sha256_bytes(canonical_json_v2_bytes([
         "feedbax.project-folder.v1", [[name, digest] for name, digest in sorted(digests.items())],
     ]))
-    return TextProject(project, configuration, root, revision)
+    return TextProject(project, configuration, root, revision, MappingProxyType(digests))
 
 
 def parse_studio_project(data: bytes, *, source: str = "Studio project") -> StudioProjectFile:

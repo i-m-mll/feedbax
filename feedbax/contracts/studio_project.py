@@ -43,16 +43,22 @@ class StudioProjectRevision(StrictModel):
     presentation_revision: Sha256
 
 
+class AuthoredFileAddress(StrictModel):
+    kind: Literal["document", "step", "variant"]
+    id: ProjectName
+
+
+class StudioAuthoredFileRevision(StrictModel):
+    address: AuthoredFileAddress
+    revision: Sha256
+
+
 class StudioProjectSnapshot(StudioProjectRevision):
     project: Project
     semantic_root: Sha256
     presentation: PresentationDocument | None
     presentation_error: Literal["unreadable_presentation"] | None = None
-
-
-class AuthoredFileAddress(StrictModel):
-    kind: Literal["document", "step", "variant"]
-    id: ProjectName
+    file_revisions: list[StudioAuthoredFileRevision]
 
 
 type EditPath = Annotated[Pointer, Field(min_length=1)]

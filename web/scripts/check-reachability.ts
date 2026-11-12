@@ -13,6 +13,7 @@ const modules = fileNames.filter((path) =>
 
 const entries = [
   'main.tsx',
+  'features/projectFolder/openProjectEditor.ts', // ed09a0a project-window mount
   // Reserved for gallery and statistics/replay surfaces.
   'components/panels/FigureGalleryPanel.tsx', // a5da2ff
   'components/panels/StatisticsPanel.tsx', // b2db05b
