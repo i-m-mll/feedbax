@@ -64,7 +64,7 @@ export function StatusBar() {
   const status = useTrainingStore((state) => state.status);
 
   return (
-    <footer className="h-6 px-4 border-t border-shell-divider bg-shell-chrome text-xs text-shell-muted flex items-center gap-4">
+    <footer className="shell-frame__footer h-6 px-4 border-t border-shell-divider bg-shell-chrome text-xs text-shell-muted flex items-center gap-4">
       <div className="flex items-center gap-1">
         <Circle className="w-2.5 h-2.5 text-mint-500" fill="currentColor" />
         Connected

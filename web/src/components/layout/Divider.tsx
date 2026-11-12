@@ -1,39 +1,25 @@
-import React from 'react';
-import { useLayoutStore, DIVIDER_HEIGHT } from '@/stores/layoutStore';
+import type { PaneLayout } from '@window-shell/browser/layout';
+import { DIVIDER_HEIGHT } from '@/stores/layoutStore';
+import { ResizeSeparator } from './ResizeSeparator';
 
-interface DividerProps {
-  availableHeight: number;
-}
-
-export function Divider({ availableHeight }: DividerProps) {
-  const { topCollapsed, bottomCollapsed, setBottomHeight, bottomHeight } =
-    useLayoutStore();
-
-  const isDraggable = !topCollapsed && !bottomCollapsed;
-
-  const handleDragStart = (e: React.PointerEvent) => {
-    if (!isDraggable) return;
-    const startY = e.clientY;
-    const startHeight = bottomHeight;
-    const onMove = (ev: PointerEvent) => {
-      const delta = startY - ev.clientY;
-      setBottomHeight(startHeight + delta, availableHeight);
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
+export function Divider({ layout, resizable, onPreview, onResize }: {
+  layout: PaneLayout;
+  resizable: boolean;
+  onPreview: (size: number | null) => void;
+  onResize: (size: number) => void;
+}) {
+  if (!resizable) return <div className="border-t border-shell-divider" aria-hidden="true" />;
   return (
-    <div
-      className={isDraggable ? 'z-10 border-t border-slate-200 cursor-row-resize' : 'z-10 border-t border-slate-200'}
+    <ResizeSeparator
+      className="z-10 cursor-row-resize border-t border-shell-divider"
       style={{ height: DIVIDER_HEIGHT }}
-      onPointerDown={handleDragStart}
-      title={isDraggable ? 'Drag to resize panes' : undefined}
+      label="Resize bottom pane"
+      controls="studio-bottom-pane"
+      axis="y"
+      direction={-1}
+      layout={layout}
+      onPreview={onPreview}
+      onResize={onResize}
     />
   );
 }

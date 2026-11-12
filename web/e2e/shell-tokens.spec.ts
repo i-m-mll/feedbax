@@ -7,7 +7,7 @@ test.use({
 });
 
 test('uses the pinned shell surfaces and keeps Studio’s accent and native inset', async ({ page }) => {
-  await page.route('**/api/**', (route) => route.fulfill({ status: 503 }));
+  await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 503 }));
   await page.route(/^https:\/\/fonts\./, (route) => route.abort());
   await page.goto('/');
 

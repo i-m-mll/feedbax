@@ -7,22 +7,23 @@
  */
 
 import { AnalysisLibrary } from '@/components/panels/AnalysisLibrary';
+import type { PaneLayout } from '@window-shell/browser/layout';
 import { useLayoutStore } from '@/stores/layoutStore';
+import { ResizeSeparator } from './ResizeSeparator';
 
-export function BottomSidebar() {
-  const {
-    bottomSidebarWidth,
-    bottomSidebarCollapsed,
-    setBottomSidebarWidth,
-  } = useLayoutStore();
-
-  if (bottomSidebarCollapsed) {
-    return null;
-  }
+export function BottomSidebar({ layout, onPreview }: {
+  layout: PaneLayout;
+  onPreview: (size: number | null) => void;
+}) {
+  const { bottomSidebarCollapsed, setBottomSidebarWidth } = useLayoutStore();
+  if (bottomSidebarCollapsed) return null;
 
   return (
     <aside
-      style={{ width: bottomSidebarWidth }}
+      id="studio-analysis-library"
+      aria-label="Analysis library"
+      hidden={!layout.open}
+      style={{ width: layout.size, display: layout.open ? undefined : 'none' }}
       className="border-r border-slate-100 bg-white/90 backdrop-blur-sm flex flex-col relative shrink-0"
     >
       <div className="px-4 pt-4 pb-2 flex items-center justify-between">
@@ -31,24 +32,9 @@ export function BottomSidebar() {
         </span>
       </div>
       <AnalysisLibrary />
-      {/* Resize handle — right edge */}
-      <div
-        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-brand-300/50 active:bg-brand-400/50"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          const startX = e.clientX;
-          const startWidth = bottomSidebarWidth;
-          const onMove = (me: PointerEvent) => {
-            setBottomSidebarWidth(startWidth + (me.clientX - startX));
-          };
-          const onUp = () => {
-            window.removeEventListener('pointermove', onMove);
-            window.removeEventListener('pointerup', onUp);
-          };
-          window.addEventListener('pointermove', onMove);
-          window.addEventListener('pointerup', onUp);
-        }}
-      />
+      {layout.open && <ResizeSeparator className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-shell-hover"
+        label="Resize analysis library" controls="studio-analysis-library" axis="x" direction={1}
+        layout={layout} onPreview={onPreview} onResize={setBottomSidebarWidth} />}
     </aside>
   );
 }

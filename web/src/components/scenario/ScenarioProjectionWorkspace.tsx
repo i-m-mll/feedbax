@@ -265,7 +265,7 @@ function niceScaleLength(targetMeters: number): number {
   return step * base;
 }
 
-export function ScenarioProjectionToolbar({ availableHeight }: { availableHeight: number }) {
+export function ScenarioProjectionToolbar() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const {
@@ -301,7 +301,7 @@ export function ScenarioProjectionToolbar({ availableHeight }: { availableHeight
               type="button"
               onClick={() => {
                 setTopPaneProjection(projection.id);
-                if (topCollapsed) toggleTop(availableHeight);
+                if (topCollapsed) toggleTop();
               }}
               className={clsx(
                 'inline-flex h-10 items-center gap-2 border-b-2 px-4 text-xs font-semibold uppercase tracking-[0.12em] transition-colors',
@@ -319,7 +319,7 @@ export function ScenarioProjectionToolbar({ availableHeight }: { availableHeight
       <div className="flex h-full shrink-0 items-end gap-1 pb-1">
         <button
           type="button"
-          onClick={() => toggleTop(availableHeight)}
+          onClick={toggleTop}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           title={topCollapsed ? 'Expand top pane' : 'Collapse top pane'}
         >

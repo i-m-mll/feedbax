@@ -1,3 +1,4 @@
+import { appTip } from '@window-shell/browser/tooltip';
 import {
   Settings,
   Save,
@@ -229,7 +230,7 @@ export function Header() {
         onOpenSaved={handleOpen}
       />
     )}
-    <header className="relative z-40 h-shell-header flex items-center gap-2 pr-shell-inset pl-[calc(var(--space-3)+var(--studio-native-controls))] border-b border-shell-divider bg-shell-chrome text-shell-foreground backdrop-blur">
+    <header className="shell-frame__bar relative z-40 h-shell-header flex items-center gap-2 pr-shell-inset pl-[calc(var(--space-3)+var(--studio-native-controls))] border-b border-shell-divider bg-shell-chrome text-shell-foreground backdrop-blur">
       {/* Logo — fixed width */}
       <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-shell-muted pr-2">
         <img src="/icon.svg" alt="feedbax studio logo" className="h-7 w-7" />
@@ -366,7 +367,8 @@ export function Header() {
         {import.meta.env.VITE_FEEDBAX_DESKTOP === '1' && <DesktopJobs />}
         <button
           className="p-1.5 rounded-full hover:bg-shell-hover"
-          title="New project"
+          aria-label="New project"
+          {...appTip('New project')}
           onClick={() => {
             setProjectOverlaySection(null);
             setSettingsOpen(false);
@@ -377,11 +379,13 @@ export function Header() {
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-shell-hover disabled:opacity-40 disabled:cursor-not-allowed"
-          title={
+          aria-label="Save"
+          aria-keyshortcuts="Meta+S Control+S"
+          {...appTip(
             inSubgraph
               ? 'Return to model root to save'
-              : saveError ?? (saveStatus === 'saving' ? 'Saving' : 'Save')
-          }
+              : saveError ?? (saveStatus === 'saving' ? 'Saving' : 'Save (⌘S / Ctrl+S)')
+          )}
           onClick={handleSave}
           disabled={inSubgraph}
         >
@@ -389,7 +393,8 @@ export function Header() {
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-shell-hover disabled:opacity-40 disabled:cursor-not-allowed"
-          title={inSubgraph ? 'Return to model root to export' : 'Export JSON'}
+          aria-label="Export JSON"
+          {...appTip(inSubgraph ? 'Return to model root to export' : 'Export JSON')}
           onClick={handleExport}
           disabled={!graphId || exporting || inSubgraph}
         >
@@ -397,7 +402,8 @@ export function Header() {
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-shell-hover text-shell-muted"
-          title="Open project"
+          aria-label="Open project"
+          {...appTip('Open project')}
           onClick={() => {
             setSettingsOpen(false);
             setProjectOverlaySection('projects');
@@ -407,7 +413,8 @@ export function Header() {
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-shell-hover"
-          title="Settings"
+          aria-label="Settings"
+          {...appTip('Settings')}
           onClick={() => {
             setProjectOverlaySection(null);
             setSettingsOpen((prev) => !prev);

@@ -1,6 +1,9 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useState } from 'react';
+import { fitPanes } from '@window-shell/browser/layout';
 import { Sidebar } from '@/components/layout/Sidebar';
-import { useLayoutStore } from '@/stores/layoutStore';
+import { MAX_LEFT_WIDTH, MAX_RIGHT_WIDTH, MIN_LEFT_WIDTH, MIN_RIGHT_WIDTH, useLayoutStore } from '@/stores/layoutStore';
+import { getTopPaneState, useWorkspaceStore } from '@/stores/workspaceStore';
+import { useDrawerSpace, WORKSPACE_MIN_WIDTH } from './useDrawerSpace';
 
 const RightPanel = lazy(() =>
   import('@/components/panels/RightPanel').then((module) => ({ default: module.RightPanel }))
@@ -27,24 +30,34 @@ function TopShelfFallback() {
 
 export function TopShelf({
   height,
-  availableHeight,
 }: {
-  height: number;
-  availableHeight: number;
+  height?: number;
 }) {
-  const { topCollapsed } = useLayoutStore();
+  const {
+    topCollapsed, taskSidebarWidth, leftSidebarVisible, leftSidebarWidth, rightSidebarVisible, rightSidebarWidth,
+  } = useLayoutStore();
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const taskWidth = getTopPaneState(workspace).active_projection === 'task' ? taskSidebarWidth : 0;
+  const { ref, width } = useDrawerSpace();
+  const [leftPreview, setLeftPreview] = useState<number | null>(null);
+  const [rightPreview, setRightPreview] = useState<number | null>(null);
+  const { panes: [left, right] } = fitPanes(width, WORKSPACE_MIN_WIDTH + taskWidth, [
+    { open: leftSidebarVisible, preferredSize: leftPreview ?? leftSidebarWidth, minSize: MIN_LEFT_WIDTH, maxSize: MAX_LEFT_WIDTH },
+    { open: rightSidebarVisible, preferredSize: rightPreview ?? rightSidebarWidth, minSize: MIN_RIGHT_WIDTH, maxSize: MAX_RIGHT_WIDTH },
+  ]);
 
   return (
     <section
+      ref={ref}
       className="flex h-full w-full max-w-full flex-col overflow-hidden min-h-0 bg-white/80 backdrop-blur-sm"
       style={{ height }}
     >
       <Suspense fallback={<div style={{ height: 44 }} className="border-b border-slate-100" />}>
-        <ScenarioProjectionToolbar availableHeight={availableHeight} />
+        <ScenarioProjectionToolbar />
       </Suspense>
       {!topCollapsed && (
         <div className="flex min-w-0 flex-1 min-h-0">
-          <Sidebar />
+          <Sidebar layout={left!} onPreview={setLeftPreview} />
           <Suspense fallback={<TopShelfFallback />}>
             <TaskScenarioPanel />
           </Suspense>
@@ -54,7 +67,7 @@ export function TopShelf({
             </Suspense>
           </main>
           <Suspense fallback={<TopShelfFallback />}>
-            <RightPanel />
+            <RightPanel layout={right!} onPreview={setRightPreview} />
           </Suspense>
         </div>
       )}

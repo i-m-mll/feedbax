@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { fitPanes } from '@window-shell/browser/layout';
+import { installTooltips } from '@window-shell/browser/tooltip';
 import { toast, Toaster } from 'sonner';
 import { Header } from '@/components/layout/Header';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -76,13 +78,11 @@ export default function App() {
   }, []);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [availableHeight, setAvailableHeight] = useState(0);
-  const {
-    topCollapsed,
-    bottomCollapsed,
-    bottomHeight,
-    initializeBottomHeight,
-  } = useLayoutStore();
+  const [availableHeight, setAvailableHeight] = useState<number | null>(null);
+  const [previewHeight, setPreviewHeight] = useState<number | null>(null);
+  const { topCollapsed, bottomCollapsed, bottomHeight, setBottomHeight } = useLayoutStore();
+
+  useLayoutEffect(() => installTooltips(), []);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -96,69 +96,41 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    if (availableHeight > 0) {
-      initializeBottomHeight(availableHeight);
-    }
-  }, [availableHeight, initializeBottomHeight]);
-
-  const { topHeight, bottomEffectiveHeight } = useMemo(() => {
-    if (availableHeight <= 0) {
-      return {
-        topHeight: undefined,
-        bottomEffectiveHeight: undefined,
-      };
-    }
-    const adjustedAvailable = availableHeight - DIVIDER_HEIGHT;
-    if (topCollapsed) {
-      const bottom = Math.max(adjustedAvailable - TOP_COLLAPSED_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
-      return {
-        topHeight: TOP_COLLAPSED_HEIGHT,
-        bottomEffectiveHeight: bottom,
-      };
-    }
-    if (bottomCollapsed) {
-      const top = Math.max(adjustedAvailable - BOTTOM_COLLAPSED_HEIGHT, MIN_TOP_HEIGHT);
-      return {
-        topHeight: top,
-        bottomEffectiveHeight: BOTTOM_COLLAPSED_HEIGHT,
-      };
-    }
-    const clampedBottom = Math.max(
-      MIN_BOTTOM_HEIGHT,
-      Math.min(adjustedAvailable - MIN_TOP_HEIGHT, bottomHeight)
-    );
-    return {
-      topHeight: Math.max(adjustedAvailable - clampedBottom, MIN_TOP_HEIGHT),
-      bottomEffectiveHeight: clampedBottom,
-    };
-  }, [availableHeight, topCollapsed, bottomCollapsed, bottomHeight]);
+  const splitSpace = Math.max(0, (availableHeight ?? 0) - DIVIDER_HEIGHT);
+  const topMinimum = topCollapsed ? TOP_COLLAPSED_HEIGHT : MIN_TOP_HEIGHT;
+  const split = fitPanes(splitSpace, topMinimum, [{
+    open: !bottomCollapsed,
+    preferredSize: topCollapsed
+      ? splitSpace - topMinimum
+      : previewHeight ?? bottomHeight ?? Math.round(splitSpace / 2),
+    minSize: MIN_BOTTOM_HEIGHT + 1,
+    collapsedSize: BOTTOM_COLLAPSED_HEIGHT,
+  }]);
+  const bottom = split.panes[0]!;
 
   return (
     <>
     <Toaster theme="dark" position="bottom-right" />
-    <div className="flex min-h-screen w-full max-w-full flex-col overflow-hidden">
+    <div className="shell-frame h-[100dvh] w-full max-w-full overflow-hidden">
       <Header />
-      <div ref={containerRef} className="min-w-0 flex-1 min-h-0">
+      <div ref={containerRef} className="shell-frame__content overflow-hidden">
         <div
           className="grid h-full min-h-0 w-full max-w-full overflow-hidden"
           style={{
             gridTemplateRows:
-              topHeight === undefined || bottomEffectiveHeight === undefined
+              availableHeight === null
                 ? '1fr auto auto'
-                : `${topHeight}px ${DIVIDER_HEIGHT}px ${bottomEffectiveHeight}px`,
+                : `${split.mainSize}px ${DIVIDER_HEIGHT}px ${bottom.size}px`,
           }}
         >
           <div className="min-w-0 min-h-0 overflow-hidden">
-            <TopShelf
-              height={topHeight ?? TOP_COLLAPSED_HEIGHT}
-              availableHeight={availableHeight}
-            />
+            <TopShelf height={availableHeight === null ? undefined : split.mainSize} />
           </div>
-          <Divider availableHeight={availableHeight} />
+          <Divider layout={bottom} resizable={!topCollapsed && bottom.open}
+            onPreview={setPreviewHeight} onResize={setBottomHeight} />
           <BottomShelf
-            height={bottomEffectiveHeight ?? BOTTOM_COLLAPSED_HEIGHT}
-            availableHeight={availableHeight}
+            height={availableHeight === null ? BOTTOM_COLLAPSED_HEIGHT : bottom.size}
+            collapsed={availableHeight === null ? bottomCollapsed : !bottom.open}
           />
         </div>
       </div>
