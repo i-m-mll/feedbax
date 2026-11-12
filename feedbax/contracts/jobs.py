@@ -193,6 +193,7 @@ class StudioProjectWindowMapStep(StrictModel):
     group: str | None
     inputs: list[StudioProjectWindowMapInput]
     document_ids: dict[str, str]
+    document_uses: list[str] = Field(default_factory=list)
     status_counts: dict[str, int]
 
 

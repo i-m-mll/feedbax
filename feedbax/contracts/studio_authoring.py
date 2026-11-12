@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, StrictFloat, StrictInt
+from pydantic import Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.project import Sha256
+from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.project import DocumentOverridePath, Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
-from feedbax.contracts.studio_project import ProjectValueEdit
+from feedbax.contracts.studio_project import ProjectValueEdit, StudioProjectFilePatch
 
 
 class StudioAuthoringMethod(StrictModel):
@@ -51,6 +52,27 @@ class StudioAuthoringSource(StrictModel):
     kind: Literal["document", "step"]
     name: str
     path: str
+
+
+class StudioDocumentAuthoringChange(StrictModel):
+    lit_steps: list[ProjectName] = Field(min_length=1)
+    path: DocumentOverridePath
+    value: StrictStr | StrictInt | StrictFloat | StrictBool
+
+
+class StudioDocumentAuthoringRequest(StrictModel):
+    revision: Sha256
+    run: StudioSavedTrainKey
+    field: Literal["graph", "task"]
+    change: StudioDocumentAuthoringChange | None = None
+
+
+class StudioDocumentAuthoring(StrictModel):
+    revision: Sha256
+    document: ProjectName
+    payload: JsonValue
+    sources: dict[str, StudioAuthoringSource]
+    files: list[StudioProjectFilePatch]
 
 
 class StudioSweepValue(StrictModel):

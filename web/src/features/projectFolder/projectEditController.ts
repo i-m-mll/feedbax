@@ -4,7 +4,9 @@ import type {
   ProjectValueEdit,
   StudioProjectCreateFile,
   StudioProjectDocument,
+  StudioProjectFilePatch,
   StudioProjectPatch,
+  StudioProjectPatchBatch,
   StudioProjectRename,
   StudioProjectRevision,
   StudioProjectSnapshot,
@@ -13,7 +15,7 @@ import { addressKey, applyAuthoredEdits, sameAuthoredFile, type AuthoredProject 
 
 export interface ProjectEditTransport {
   read: (id: string, signal?: AbortSignal) => Promise<StudioProjectDocument>;
-  write: (id: string, body: StudioProjectPatch, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
+  write: (id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   create: (id: string, body: StudioProjectCreateFile, signal?: AbortSignal) => Promise<StudioProjectDocument>;
 }
@@ -21,11 +23,11 @@ export interface ProjectEditTransport {
 type NamedFileCreation = StudioProjectCreateFile['file'];
 
 interface Gesture {
-  readonly address: AuthoredFileAddress;
   readonly name: string;
-  readonly edits: readonly ProjectValueEdit[];
-  readonly inverse: readonly ProjectValueEdit[];
+  readonly files: readonly StudioProjectFilePatch[];
+  readonly inverse: readonly StudioProjectFilePatch[];
   readonly validate?: ProjectEditValidation;
+  readonly reviewedRevision?: string;
 }
 
 export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
@@ -39,7 +41,7 @@ interface PendingEdit {
   readonly base: AuthoredProject;
   readonly gesture: Gesture;
   readonly direction: 'edit' | 'undo' | 'redo';
-  readonly edits: readonly ProjectValueEdit[];
+  readonly files: readonly StudioProjectFilePatch[];
   readonly historyAfter: History;
 }
 
@@ -80,8 +82,21 @@ function unchangedFiles(previous: StudioProjectSnapshot, next: StudioProjectSnap
 }
 
 function withoutChangedFiles(history: History, unchanged: ReadonlySet<string>): History {
-  const usable = ({ address }: Gesture) => unchanged.has(addressKey(address));
+  const usable = ({ files }: Gesture) => files.every(({ address }) => unchanged.has(addressKey(address)));
   return { undo: history.undo.filter(usable), redo: history.redo.filter(usable) };
+}
+
+function applyFiles(project: AuthoredProject, changes: readonly StudioProjectFilePatch[], checkOrder = false) {
+  const files: StudioProjectFilePatch[] = [];
+  const inverse: StudioProjectFilePatch[] = [];
+  for (const { address, patches } of changes) {
+    const applied = applyAuthoredEdits(project, address, patches, checkOrder);
+    project = applied.project;
+    if (!applied.inverse.length) continue;
+    files.push({ address, patches: applied.edits });
+    inverse.unshift({ address, patches: applied.inverse });
+  }
+  return { project, files, inverse };
 }
 
 function versionsMatch(a: StudioProjectRevision, b: StudioProjectRevision) {
@@ -152,20 +167,28 @@ export class ProjectEditController {
   };
 
   edit(address: AuthoredFileAddress, name: string, edits: readonly ProjectValueEdit[], validate?: ProjectEditValidation) {
+    this.editFiles(name, [{ address, patches: [...edits] }], { validate });
+  }
+
+  editFiles(name: string, changes: readonly StudioProjectFilePatch[], options: {
+    validate?: ProjectEditValidation; reviewedRevision?: string;
+  } = {}) {
     this.requireEditable();
-    if (!edits.length) return;
-    const authored = structuredClone(edits);
-    const applied = applyAuthoredEdits(this.draft, address, authored, true);
+    const { reviewedRevision, validate } = options;
+    if (reviewedRevision !== undefined && (this.saved.revision !== reviewedRevision || this.queued.length)) {
+      throw new ProjectEditConflictError();
+    }
+    const applied = applyFiles(this.draft, structuredClone(changes), true);
     if (!applied.inverse.length) return;
-    const gesture = { address: { ...address }, name, edits: authored, inverse: applied.inverse, validate };
-    this.stage(gesture, 'edit', authored, applied.project);
+    const gesture = { name, files: applied.files, inverse: applied.inverse, validate, reviewedRevision };
+    this.stage(gesture, 'edit', gesture.files, applied.project);
   }
 
   undo() {
     this.requireEditable();
     const gesture = this.history.undo[this.history.undo.length - 1];
     if (!gesture) return;
-    const { project } = applyAuthoredEdits(this.draft, gesture.address, gesture.inverse);
+    const { project } = applyFiles(this.draft, gesture.inverse);
     this.stage(gesture, 'undo', gesture.inverse, project);
   }
 
@@ -173,8 +196,8 @@ export class ProjectEditController {
     this.requireEditable();
     const gesture = this.history.redo[this.history.redo.length - 1];
     if (!gesture) return;
-    const { project } = applyAuthoredEdits(this.draft, gesture.address, gesture.edits);
-    this.stage(gesture, 'redo', gesture.edits, project);
+    const { project } = applyFiles(this.draft, gesture.files);
+    this.stage(gesture, 'redo', gesture.files, project);
   }
 
   flush(): Promise<string> {
@@ -285,7 +308,20 @@ export class ProjectEditController {
       const alreadyOnDisk = new Set<string>();
       try {
         for (const pending of this.queued) {
-          const { address, name } = pending.gesture;
+          const { files, gesture } = pending;
+          if (files.length !== 1 || gesture.reviewedRevision !== undefined) {
+            if (files.every(({ address }) => sameAuthoredFile(this.draft, latest.snapshot.project, address))) continue;
+            if (pending.direction === 'edit' && gesture.reviewedRevision !== undefined ||
+                !files.every(({ address }) => unchanged.has(addressKey(address)))) {
+              throw new ProjectEditConflictError();
+            }
+            const base = project;
+            project = applyFiles(base, files).project;
+            history = moveHistory(history, gesture, pending.direction);
+            rebased.push({ ...pending, base, historyAfter: history });
+            continue;
+          }
+          const [{ address, patches }] = files;
           const key = addressKey(address);
           const sameFile = unchanged.has(key);
           // A save response can be lost after the file was written. Keep the
@@ -295,14 +331,15 @@ export class ProjectEditController {
             continue;
           }
           const base = project;
-          const applied = applyAuthoredEdits(base, address, pending.edits, !sameFile, sameFile ? undefined : pending.base);
+          const applied = applyAuthoredEdits(base, address, patches, !sameFile, sameFile ? undefined : pending.base);
           if (!applied.inverse.length) continue;
           pending.gesture.validate?.(base, applied.project);
-          const gesture = sameFile ? pending.gesture : { ...pending.gesture, address, name, edits: applied.edits, inverse: applied.inverse };
+          const edits = [{ address, patches: applied.edits }];
+          const adjusted = sameFile ? gesture : { ...gesture, files: edits, inverse: [{ address, patches: applied.inverse }] };
           const direction = sameFile ? pending.direction : 'edit';
           project = applied.project;
-          history = moveHistory(history, gesture, direction);
-          rebased.push({ base, gesture, direction, edits: applied.edits, historyAfter: history });
+          history = moveHistory(history, adjusted, direction);
+          rebased.push({ base, gesture: adjusted, direction, files: edits, historyAfter: history });
         }
       } catch (error) {
         this.error = error;
@@ -355,12 +392,12 @@ export class ProjectEditController {
   private stage(
     gesture: Gesture,
     direction: PendingEdit['direction'],
-    edits: readonly ProjectValueEdit[],
+    files: readonly StudioProjectFilePatch[],
     project: AuthoredProject,
   ) {
     gesture.validate?.(this.draft, project);
     const historyAfter = moveHistory(this.history, gesture, direction);
-    this.queued.push({ base: this.draft, gesture, direction, edits, historyAfter });
+    this.queued.push({ base: this.draft, gesture, direction, files, historyAfter });
     this.draft = project;
     this.history = historyAfter;
     this.publish();
@@ -409,7 +446,7 @@ export class ProjectEditController {
       let draft = latest.project;
       const rebased = this.queued.map((pending) => {
         const base = draft;
-        draft = applyAuthoredEdits(base, pending.gesture.address, pending.edits).project;
+        draft = applyFiles(base, pending.files).project;
         return { ...pending, base };
       });
       this.queued.splice(0, this.queued.length, ...rebased);
@@ -457,6 +494,30 @@ export class ProjectEditController {
     }
   }
 
+  private async savePatch(body: StudioProjectPatch | StudioProjectPatchBatch, exact: boolean) {
+    try {
+      return await this.transport.write(this.saved.project_id, body, this.abort.signal);
+    } catch (error) {
+      if (!exact || !canRetryOnReconnect(error)) throw error;
+      const observed = await this.read().catch(() => undefined);
+      if (!observed) throw error;
+      const files = 'files' in body ? body.files : [body];
+      const before = this.saved;
+      const latest = observed.snapshot;
+      const changed = new Set(files.map(({ address }) => addressKey(address)));
+      const unchanged = unchangedFiles(before, latest);
+      const intended = applyFiles(before.project, files).project;
+      if (before.file_revisions.length !== latest.file_revisions.length ||
+          !latest.file_revisions.every(({ address }) => {
+            const key = addressKey(address);
+            return unchanged.has(key) || changed.has(key);
+          }) ||
+          JSON.stringify(before.project.sweep) !== JSON.stringify(latest.project.sweep) ||
+          !files.every(({ address }) => sameAuthoredFile(intended, latest.project, address))) throw error;
+      return latest;
+    }
+  }
+
   private async drain() {
     this.requireEditable();
     if (!this.queued.length) return;
@@ -466,15 +527,26 @@ export class ProjectEditController {
     try {
       while (this.queued.length) {
         const first = this.queued[0];
-        const address = first.gesture.address;
-        const key = addressKey(address);
-        const boundary = this.queued.findIndex(({ gesture }) => addressKey(gesture.address) !== key);
-        const batch = this.queued.slice(0, boundary === -1 ? this.queued.length : boundary);
-        const latest = await this.transport.write(this.saved.project_id, {
-          revision: this.saved.revision,
-          address,
-          patches: batch.flatMap(({ edits }) => edits),
-        }, this.abort.signal);
+        const revision = this.saved.revision;
+        if (first.direction === 'edit' && first.gesture.reviewedRevision !== undefined &&
+            first.gesture.reviewedRevision !== revision) throw new ProjectEditConflictError();
+        const batch = [first];
+        let body: StudioProjectPatch | StudioProjectPatchBatch;
+        if (first.files.length === 1) {
+          const [{ address, patches }] = first.files;
+          const key = addressKey(address);
+          if (first.gesture.reviewedRevision === undefined) {
+            for (const pending of this.queued.slice(1)) {
+              if (pending.gesture.reviewedRevision !== undefined || pending.files.length !== 1 ||
+                  addressKey(pending.files[0].address) !== key) break;
+              batch.push(pending);
+            }
+          }
+          body = { revision, address, patches: batch.length === 1 ? patches : batch.flatMap(({ files }) => files[0].patches) };
+        } else {
+          body = { revision, files: [...first.files] };
+        }
+        const latest = await this.savePatch(body, first.gesture.reviewedRevision !== undefined || first.files.length > 1);
         this.abort.signal.throwIfAborted();
         this.document = { ...this.document, snapshot: latest };
         this.savedHistory = batch[batch.length - 1].historyAfter;

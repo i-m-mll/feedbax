@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import type { StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { StudioDocumentAuthoring, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
@@ -142,6 +142,143 @@ test('an empty saved project starts its first Train by keyboard and pointer', as
       expect(reopened.window_map?.problems).toMatchObject([{ path: '/graph/nodes', document: 'model' }]);
     });
   }
+});
+
+test('Model edits follow the lit users of a saved shared document', async ({ page, request }) => {
+  test.setTimeout(45_000);
+  const [model, task, train] = await fixture('files');
+  const alpha = { ...train, id: 'alpha' };
+  const beta = { ...train, id: 'beta' };
+  const gamma = { kind: 'step', id: 'gamma', step: { kind: 'train', base: { step: 'alpha' } } };
+  const otherModel = { ...model, id: 'other-model' };
+  const other = { ...train, id: 'other', step: { ...train.step, base: { inline: {
+    ...train.step.base.inline, graph: { document: 'other-model' },
+  } } } };
+  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, otherModel, alpha, beta, gamma, other]);
+  const massPath = '/nodes/plant/params/mass';
+
+  async function readPlan(revision: string) {
+    const response = await request.get(`${projectPath}/train-runs?revision=${revision}&window_map=true`);
+    expect(response.ok(), await response.text()).toBe(true);
+    const plan = await response.json() as StudioSavedTrainRuns;
+    expect(plan.rows.map(({ key }) => key.step).sort()).toEqual(['alpha', 'beta', 'gamma', 'other']);
+    return Object.fromEntries(plan.rows.map((row) => [row.key.step, row]));
+  }
+
+  async function definition(revision: string, run: StudioSavedTrainRuns['rows'][number]['key']) {
+    const response = await request.post(`${projectPath}/authoring/document`, {
+      data: { revision, run, field: 'graph' },
+    });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioDocumentAuthoring;
+  }
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await expect(mapStep(page, 'alpha')).toBeVisible();
+  await page.keyboard.press('Meta+2');
+  const modelView = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const count = modelView.locator('header').getByRole('status').filter({ hasText: /^\s*· \d+ of \d+\s*$/ });
+  const card = (step: string) => page.getByRole('article', { name: `Train ${step}`, exact: true });
+  await expect(modelView).toBeFocused();
+  await expect(count).toHaveText('· 3 of 3');
+  await expect(modelView.getByRole('combobox', { name: 'Edit Model' }).locator('option:checked')).toHaveText('model');
+  for (const step of ['alpha', 'beta', 'gamma']) await expect(card(step)).toHaveAttribute('data-document-scope', 'lit');
+  await expect(card('other')).toHaveAttribute('data-document-scope', 'faint');
+  await expect(mapStep(page, 'alpha')).toHaveAttribute('aria-current', 'step');
+  const initial = await readPlan(snapshot.revision);
+
+  const component = page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'plant', exact: true });
+  await component.click();
+  const mass = region(page, 'inspector').getByRole('spinbutton', { name: 'Edit Mass', exact: true });
+  const write = () => page.waitForResponse((response) =>
+    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+  async function edit(value: string) {
+    const writing = write();
+    await enter(mass, value);
+    const response = await writing;
+    expect(response.ok(), await response.text()).toBe(true);
+    return { written: await response.json() as StudioProjectSnapshot, body: response.request().postDataJSON() };
+  }
+  const documentValue = (saved: StudioProjectSnapshot) => saved.project.documents?.model.payload;
+  const valueAt = (mass: number) => ({ nodes: { plant: { params: { mass } } } });
+  const changes = (value: number) => ({ model: { [massPath]: value } });
+
+  await expect(mass).toHaveValue('1');
+  const shared = await edit('2');
+  expect(shared.body.address).toEqual({ kind: 'document', id: 'model' });
+  expect(documentValue(shared.written)).toMatchObject(valueAt(2));
+  const afterShared = await readPlan(shared.written.revision);
+  for (const step of ['alpha', 'beta', 'gamma']) expect(afterShared[step].request_id).not.toEqual(initial[step].request_id);
+  expect(afterShared.other.request_id).toEqual(initial.other.request_id);
+
+  await expect(count).toHaveText('· 3 of 3');
+  await activate(page, mapStep(page, 'gamma'), 'Shift+Enter');
+  await activate(page, mapStep(page, 'alpha'), 'Shift+Enter');
+  await expect(count).toHaveText('· 2 of 3');
+  await expect(card('gamma')).toHaveAttribute('data-document-scope', 'plain');
+  await expect(card('alpha')).toHaveAttribute('data-document-scope', 'lit');
+  await expect(mapStep(page, 'alpha')).toHaveAttribute('aria-current', 'step');
+
+  await page.keyboard.press('Meta+1');
+  await expect(page.getByRole('tabpanel', { name: 'Runs', exact: true })).toBeFocused();
+  await expect(card('beta')).not.toHaveAttribute('data-document-scope');
+  await page.keyboard.press('Meta+2');
+  await expect(modelView).toBeFocused();
+  await expect(count).toHaveText('· 2 of 3');
+  await expect(mass).toHaveValue('2');
+
+  const narrowed = await edit('3');
+  expect(narrowed.body.files.map(({ address }: { address: { kind: string; id: string } }) => address)).toEqual([
+    { kind: 'step', id: 'alpha' }, { kind: 'step', id: 'beta' },
+  ]);
+  expect(documentValue(narrowed.written)).toMatchObject(valueAt(2));
+  expect(narrowed.written.project.steps?.alpha.document_overrides).toEqual(changes(3));
+  expect(narrowed.written.project.steps?.beta.document_overrides).toEqual(changes(3));
+  const afterNarrowed = await readPlan(narrowed.written.revision);
+  for (const step of ['alpha', 'beta']) expect(afterNarrowed[step].request_id).not.toEqual(afterShared[step].request_id);
+  for (const step of ['gamma', 'other']) expect(afterNarrowed[step].request_id).toEqual(afterShared[step].request_id);
+  const alphaLocal = await definition(narrowed.written.revision, afterNarrowed.alpha.key);
+  const betaLocal = await definition(narrowed.written.revision, afterNarrowed.beta.key);
+  const excluded = await definition(narrowed.written.revision, afterNarrowed.gamma.key);
+  expect(alphaLocal.payload).toMatchObject(valueAt(3));
+  expect(betaLocal.payload).toMatchObject(valueAt(3));
+  expect(excluded.payload).toMatchObject(valueAt(2));
+  expect(alphaLocal.sources[massPath]).toMatchObject({ kind: 'step', name: 'alpha' });
+  expect(betaLocal.sources[massPath]).toMatchObject({ kind: 'step', name: 'beta' });
+  expect(excluded.sources[massPath]).toMatchObject({ kind: 'document', name: 'model' });
+  await expect(mass).toHaveValue('3');
+
+  await expect(count).toHaveText('· 2 of 3');
+  await activate(page, mapStep(page, 'gamma'), 'Shift+Enter');
+  await expect(count).toHaveText('· 3 of 3');
+  const restored = await edit('4');
+  expect(restored.body.files).toHaveLength(3);
+  expect(documentValue(restored.written)).toMatchObject(valueAt(4));
+  expect(restored.written.project.steps?.alpha.document_overrides).toEqual({});
+  expect(restored.written.project.steps?.beta.document_overrides).toEqual({});
+  const afterRestore = await readPlan(restored.written.revision);
+  for (const step of ['alpha', 'beta', 'gamma']) expect(afterRestore[step].request_id).not.toEqual(afterNarrowed[step].request_id);
+  expect(afterRestore.other.request_id).toEqual(afterNarrowed.other.request_id);
+
+  const undoing = write();
+  await page.keyboard.press('Meta+Z');
+  const undone = await undoing;
+  expect(undone.ok(), await undone.text()).toBe(true);
+  expect(undone.request().postDataJSON().files).toHaveLength(3);
+  const beforeReload = await undone.json() as StudioProjectSnapshot;
+  expect(documentValue(beforeReload)).toMatchObject(valueAt(2));
+  expect(beforeReload.project.steps?.alpha.document_overrides).toEqual(changes(3));
+  expect(beforeReload.project.steps?.beta.document_overrides).toEqual(changes(3));
+  await expect(mass).toHaveValue('3');
+
+  await page.reload();
+  await expect(count).toHaveText('· 3 of 3');
+  await component.click();
+  await expect(mass).toHaveValue('3');
+  const reopened = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+  expect(reopened.revision).toBe(beforeReload.revision);
+  const plan = await readPlan(reopened.revision);
+  for (const step of ['alpha', 'beta', 'gamma', 'other']) expect(plan[step].request_id).toEqual(afterNarrowed[step].request_id);
 });
 
 test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }) => {

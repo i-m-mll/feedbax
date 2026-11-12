@@ -2371,6 +2371,8 @@ export type Document = {
   "payload": JsonValue;
 };
 
+export type DocumentOverridePath = string;
+
 export type DocumentPresentation = {
   "positions"?: Record<string, PresentationPosition>;
   "camera"?: PresentationCamera | null;
@@ -2548,6 +2550,7 @@ export type Step = {
   "kind": StepKind;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, Record<string, JsonValue>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -2654,6 +2657,27 @@ export type StudioAuthoringSweepChange = {
   "edit": StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue;
 };
 
+export type StudioDocumentAuthoring = {
+  "revision": Sha256;
+  "document": string;
+  "payload": JsonValue;
+  "sources": Record<string, StudioAuthoringSource>;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioDocumentAuthoringChange = {
+  "lit_steps": Array<string>;
+  "path": DocumentOverridePath;
+  "value": string | number | boolean;
+};
+
+export type StudioDocumentAuthoringRequest = {
+  "revision": Sha256;
+  "run": StudioSavedTrainKey;
+  "field": "graph" | "task";
+  "change"?: StudioDocumentAuthoringChange | null;
+};
+
 export type StudioNameSweepValue = {
   "kind": "nameSweepValue";
   "sweep_id": string;
@@ -2676,10 +2700,20 @@ export type StudioProjectDocument = {
   "snapshot": StudioProjectSnapshot;
 };
 
-export type StudioProjectPatch = {
-  "revision": Sha256;
+export type StudioProjectFilePatch = {
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
+};
+
+export type StudioProjectPatch = {
+  "address": AuthoredFileAddress;
+  "patches": Array<ProjectValueEdit>;
+  "revision": Sha256;
+};
+
+export type StudioProjectPatchBatch = {
+  "revision": Sha256;
+  "files": Array<StudioProjectFilePatch>;
 };
 
 export type StudioProjectRename = {
@@ -2753,6 +2787,7 @@ export type StudioProjectWindowMapStep = {
   "group": string | null;
   "inputs": Array<StudioProjectWindowMapInput>;
   "document_ids": Record<string, string>;
+  "document_uses"?: Array<string>;
   "status_counts": Record<string, number>;
 };
 
@@ -2830,6 +2865,7 @@ export type StudioTrainStep = {
   "kind": "train";
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, Record<string, JsonValue>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -6966,6 +7002,10 @@ export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Document>;
 
+export const DocumentOverridePathSchema: z.ZodType<DocumentOverridePath> = z.lazy(() =>
+  z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
+) as unknown as z.ZodType<DocumentOverridePath>;
+
 export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.lazy(() =>
   z.object({
     "positions": z.record(z.string(), PresentationPositionSchema).optional(),
@@ -7224,6 +7264,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "kind": StepKindSchema,
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(DocumentOverridePathSchema, jsonValueSchema)).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -7363,6 +7404,33 @@ export const StudioAuthoringSweepChangeSchema: z.ZodType<StudioAuthoringSweepCha
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSweepChange>;
 
+export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "payload": jsonValueSchema,
+    "sources": z.record(z.string(), StudioAuthoringSourceSchema),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioDocumentAuthoring>;
+
+export const StudioDocumentAuthoringChangeSchema: z.ZodType<StudioDocumentAuthoringChange> = z.lazy(() =>
+  z.object({
+    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+    "path": DocumentOverridePathSchema,
+    "value": z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean()]),
+  }).strict()
+) as unknown as z.ZodType<StudioDocumentAuthoringChange>;
+
+export const StudioDocumentAuthoringRequestSchema: z.ZodType<StudioDocumentAuthoringRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "run": StudioSavedTrainKeySchema,
+    "field": z.union([z.literal("graph"), z.literal("task")]),
+    "change": z.union([StudioDocumentAuthoringChangeSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioDocumentAuthoringRequest>;
+
 export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
   z.object({
     "kind": z.literal("nameSweepValue"),
@@ -7393,13 +7461,27 @@ export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.l
   }).strict()
 ) as unknown as z.ZodType<StudioProjectDocument>;
 
-export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
+export const StudioProjectFilePatchSchema: z.ZodType<StudioProjectFilePatch> = z.lazy(() =>
   z.object({
-    "revision": Sha256Schema,
     "address": AuthoredFileAddressSchema,
     "patches": z.array(ProjectValueEditSchema).min(1),
   }).strict()
+) as unknown as z.ZodType<StudioProjectFilePatch>;
+
+export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
+  z.object({
+    "address": AuthoredFileAddressSchema,
+    "patches": z.array(ProjectValueEditSchema).min(1),
+    "revision": Sha256Schema,
+  }).strict()
 ) as unknown as z.ZodType<StudioProjectPatch>;
+
+export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(StudioProjectFilePatchSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectPatchBatch>;
 
 export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(() =>
   z.object({
@@ -7491,6 +7573,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
     "group": z.union([z.string(), z.null()]),
     "inputs": z.array(StudioProjectWindowMapInputSchema),
     "document_ids": z.record(z.string(), z.string()),
+    "document_uses": z.array(z.string()).optional(),
     "status_counts": z.record(z.string(), z.number().int().safe()),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapStep>;
@@ -7592,6 +7675,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "kind": z.literal("train"),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(DocumentOverridePathSchema, jsonValueSchema)).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -7674,6 +7758,8 @@ export const contractSchemas = {
   StudioRunSelection: StudioRunSelectionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
+  StudioDocumentAuthoring: StudioDocumentAuthoringSchema,
+  StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequestSchema,
   StudioTrainAuthoring: StudioTrainAuthoringSchema,
   StudioTrainAuthoringRequest: StudioTrainAuthoringRequestSchema,
   AuthoredFileAddress: AuthoredFileAddressSchema,
@@ -7685,6 +7771,7 @@ export const contractSchemas = {
   StudioProjectDocument: StudioProjectDocumentSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
+  StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
   StudioProjectRename: StudioProjectRenameSchema,
   StudioProjectRevision: StudioProjectRevisionSchema,
   StudioProjectSnapshot: StudioProjectSnapshotSchema,
@@ -7780,6 +7867,8 @@ export interface ContractTypeMap {
   StudioRunSelection: StudioRunSelection;
   StudioSubmissionItem: StudioSubmissionItem;
   StudioAuthoringSurface: StudioAuthoringSurface;
+  StudioDocumentAuthoring: StudioDocumentAuthoring;
+  StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequest;
   StudioTrainAuthoring: StudioTrainAuthoring;
   StudioTrainAuthoringRequest: StudioTrainAuthoringRequest;
   AuthoredFileAddress: AuthoredFileAddress;
@@ -7791,6 +7880,7 @@ export interface ContractTypeMap {
   StudioProjectDocument: StudioProjectDocument;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
+  StudioProjectPatchBatch: StudioProjectPatchBatch;
   StudioProjectRename: StudioProjectRename;
   StudioProjectRevision: StudioProjectRevision;
   StudioProjectSnapshot: StudioProjectSnapshot;

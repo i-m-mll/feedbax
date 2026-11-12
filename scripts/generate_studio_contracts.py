@@ -328,6 +328,8 @@ from feedbax.web.models.trajectory import (
 )
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringSurface,
+    StudioDocumentAuthoring,
+    StudioDocumentAuthoringRequest,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
 )
@@ -340,6 +342,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectDocument,
     StudioProjectPatch,
+    StudioProjectPatchBatch,
     StudioProjectRename,
     StudioProjectRevision,
     StudioProjectSnapshot,
@@ -389,6 +392,8 @@ JOB_MODELS = (
 
 AUTHORED_CONTRACT_MODELS = (
     StudioAuthoringSurface,
+    StudioDocumentAuthoring,
+    StudioDocumentAuthoringRequest,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
     AuthoredFileAddress,
@@ -400,6 +405,7 @@ AUTHORED_CONTRACT_MODELS = (
     StudioProjectDocument,
     StudioProjectWindowMap,
     StudioProjectPatch,
+    StudioProjectPatchBatch,
     StudioProjectRename,
     StudioProjectRevision,
     StudioProjectSnapshot,

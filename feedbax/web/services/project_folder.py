@@ -18,9 +18,9 @@ from pydantic import TypeAdapter, ValidationError
 
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import directory_open_flags, rename_no_replace
-from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
-from feedbax.contracts.project import Project, json_pointer_parts
+from feedbax.contracts.project import Project, Sha256, json_pointer_parts
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
@@ -45,6 +45,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectDocument,
     StudioProjectCreateFile,
     StudioProjectPatch,
+    StudioProjectPatchBatch,
     StudioProjectRename,
     StudioProjectRevision,
     StudioProjectSnapshot,
@@ -52,6 +53,7 @@ from feedbax.contracts.studio_project import (
 
 
 _PRESENTATION = "presentation.json"
+_PATCH_JOURNAL = ".studio-patch.json"
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
 _KINDS = {family: kind for kind, family in _FAMILIES.items()}
 _FOLDER_ID = TypeAdapter(ProjectName)
@@ -111,12 +113,60 @@ def _file_stamp(path: Path, root: Path) -> _FileStamp:
     )
 
 
+class _PendingFile(StrictModel):
+    address: AuthoredFileAddress
+    before: Sha256
+    data: str
+
+    @property
+    def relative(self) -> str:
+        return f"{_FAMILIES[self.address.kind]}/{self.address.id}.json"
+
+
+_PENDING_FILES = TypeAdapter(list[_PendingFile])
+
+
+def _finish_patch(root: Path) -> None:
+    journal = root / _PATCH_JOURNAL
+    try:
+        _regular(journal)
+    except FileNotFoundError:
+        return
+    try:
+        files = _PENDING_FILES.validate_json(journal.read_bytes())
+    except ValidationError as error:
+        raise ProjectFolderInvalid("Studio edit journal is invalid") from error
+    replacements = []
+    for file in files:
+        path = root / file.relative
+        if not stat.S_ISDIR(path.parent.lstat().st_mode):
+            raise ProjectFolderInvalid(f"{path.parent.name} must be a directory")
+        mode = stat.S_IMODE(_regular(path).st_mode)
+        data = file.data.encode()
+        current = sha256_bytes(path.read_bytes())
+        if current == sha256_bytes(data):
+            continue
+        if current != file.before:
+            raise ProjectFolderInvalid(f"{file.relative} changed during a Studio edit")
+        replacements.append((file, path, mode, data))
+
+    for file, path, mode, data in replacements:
+        def guard() -> None:
+            _regular(path)
+            if sha256_bytes(path.read_bytes()) != file.before:
+                raise ProjectFolderInvalid(f"{file.relative} changed during a Studio edit")
+
+        write_bytes_atomic(path, data, mode=mode, before_publish=guard)
+    journal.unlink()
+    sync_parent_directories(journal)
+
+
 @contextmanager
-def _writer_lock(root: Path) -> Iterator[None]:
+def _folder_lock(root: Path, *, write: bool = True) -> Iterator[None]:
     lock = root / ".studio-write.lock"
     descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(descriptor, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
         opened = os.fstat(descriptor)
         current = _regular(lock)
         if opened.st_nlink != 1 or (opened.st_dev, opened.st_ino) != (
@@ -124,6 +174,10 @@ def _writer_lock(root: Path) -> Iterator[None]:
             current.st_ino,
         ):
             raise ProjectFolderInvalid("Project write lock changed")
+        if os.path.lexists(root / _PATCH_JOURNAL):
+            if not write:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _finish_patch(root)
         yield
     finally:
         os.close(descriptor)
@@ -184,11 +238,12 @@ class ProjectFolderService:
 
     def fingerprint(self, project_id: str) -> tuple[_FileStamp, ...]:
         root = self._folder(project_id)
-        authored = self._authored_fingerprint(root)
-        try:
-            return (*authored, _file_stamp(root / _PRESENTATION, root))
-        except FileNotFoundError:
-            return authored
+        with _folder_lock(root, write=False):
+            authored = self._authored_fingerprint(root)
+            try:
+                return (*authored, _file_stamp(root / _PRESENTATION, root))
+            except FileNotFoundError:
+                return authored
 
     def _load(self, root: Path) -> TextProject:
         before = self._authored_fingerprint(root)
@@ -237,10 +292,15 @@ class ProjectFolderService:
         )
 
     def open(self, project_id: str) -> StudioProjectDocument:
-        return self._document(project_id, self._load(self._folder(project_id)))
+        return self._document(project_id, self._read_text(project_id))
+
+    def _read_text(self, project_id: str) -> TextProject:
+        root = self._folder(project_id)
+        with _folder_lock(root, write=False):
+            return self._load(root)
 
     def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:
-        text = self._load(self._folder(project_id))
+        text = self._read_text(project_id)
         if revision is not None:
             _check_revision("project", revision, text.revision)
         return self._snapshot(project_id, text)
@@ -249,9 +309,14 @@ class ProjectFolderService:
         self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = ()
     ) -> SettledProjectPlan:
         """Compile the acknowledged folder snapshot without opening the result store."""
-        text = self._load(self._folder(project_id))
+        text = self._read_text(project_id)
         if revision is not None:
             _check_revision("project", revision, text.revision)
+        return self._compile(project_id, text, source_runs)
+
+    def _compile(
+        self, project_id: str, text: TextProject, source_runs: Iterable[RunKey] = ()
+    ) -> SettledProjectPlan:
         return SettledProjectPlan(
             project_id,
             text.revision,
@@ -266,8 +331,9 @@ class ProjectFolderService:
     @contextmanager
     def admission_plan(self, project_id: str) -> Iterator[SettledProjectPlan]:
         """Hold the managed folder's writer lock through comparison and Host admission."""
-        with _writer_lock(self._folder(project_id)):
-            yield self.read_plan(project_id, revision=None)
+        root = self._folder(project_id)
+        with _folder_lock(root):
+            yield self._compile(project_id, self._load(root))
 
     def new(self) -> StudioProjectDocument:
         project_id = f"untitled-{uuid4().hex}"
@@ -296,7 +362,7 @@ class ProjectFolderService:
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
         root = self._folder(project_id)
-        with _writer_lock(root):
+        with _folder_lock(root):
             text = self._load(root)
             _check_revision("project", body.revision, text.revision)
             if body.name != text.configuration.project:
@@ -322,7 +388,7 @@ class ProjectFolderService:
         file = body.file
         family = _FAMILIES[file.kind]
         relative = f"{family}/{file.id}.json"
-        with _writer_lock(root):
+        with _folder_lock(root):
             text = self._load(root)
             _check_revision("project", body.revision, text.revision)
             entries = text.project.documents if isinstance(file, CreateNamedDocument) else text.project.steps
@@ -348,49 +414,74 @@ class ProjectFolderService:
             return self._document(project_id, self._load(root))
 
     def revision(self, project_id: str) -> StudioProjectRevision:
-        root = self._folder(project_id)
+        text = self._read_text(project_id)
         return StudioProjectRevision(
             project_id=project_id,
-            revision=self._load(root).revision,
-            presentation_revision=_read_presentation(root)[1],
+            revision=text.revision,
+            presentation_revision=_read_presentation(text.root)[1],
         )
 
-    def patch(self, project_id: str, body: StudioProjectPatch) -> StudioProjectSnapshot:
+    def patch(self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch) -> StudioProjectSnapshot:
         root = self._folder(project_id)
-        with _writer_lock(root):
+        with _folder_lock(root):
             text = self._load(root)
             _check_revision("project", body.revision, text.revision)
-            family = _FAMILIES[body.address.kind]
-            relative = f"{family}/{body.address.id}.json"
+            files = body.files if isinstance(body, StudioProjectPatchBatch) else [body]
             original = dump_text_project(text.project, text.configuration)
-            if relative not in original:
-                raise ProjectFolderNotFound(body.address.id)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-            target = payload["sweep"]["rows"] if family == "variants" else payload[family]
-            entry = target[body.address.id]
+            addresses = {}
             try:
-                for patch in body.patches:
-                    apply_value_patch_in_place(
-                        entry,
-                        json_pointer_parts(patch.path),
-                        patch.op,
-                        patch.value if isinstance(patch, SetProjectValue) else None,
-                        path=patch.path,
-                    )
+                for file in files:
+                    family = _FAMILIES[file.address.kind]
+                    relative = f"{family}/{file.address.id}.json"
+                    if relative not in original:
+                        raise ProjectFolderNotFound(file.address.id)
+                    if relative in addresses:
+                        raise ProjectFolderInvalid(f"{relative} is addressed twice")
+                    addresses[relative] = file.address
+                    target = payload["sweep"]["rows"] if family == "variants" else payload[family]
+                    entry = target[file.address.id]
+                    for patch in file.patches:
+                        apply_value_patch_in_place(
+                            entry,
+                            json_pointer_parts(patch.path),
+                            patch.op,
+                            patch.value if isinstance(patch, SetProjectValue) else None,
+                            path=patch.path,
+                        )
                 project = Project.model_validate(payload)
-                replacement = dump_text_project(project, text.configuration)[relative]
+                encoded = dump_text_project(project, text.configuration)
             except (ValueError, TypeError, RecursionError) as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            if replacement != original[relative]:
+            changed = [relative for relative in addresses if encoded[relative] != original[relative]]
+
+            def guard() -> None:
+                _check_revision("project", text.revision, self._load(root).revision)
+
+            if len(changed) == 1:
+                relative = changed[0]
                 path = root / relative
                 write_bytes_atomic(
                     path,
-                    replacement,
+                    encoded[relative],
                     mode=stat.S_IMODE(_regular(path).st_mode),
-                    before_publish=lambda: _check_revision(
-                        "project", text.revision, self._load(root).revision
-                    ),
+                    before_publish=guard,
                 )
+            elif changed:
+                pending = [
+                    _PendingFile(
+                        address=addresses[relative], before=text.file_revisions[relative],
+                        data=encoded[relative].decode(),
+                    )
+                    for relative in changed
+                ]
+                # Publishing the journal commits the edit. Readers recover it before opening the folder.
+                write_bytes_atomic(
+                    root / _PATCH_JOURNAL, _PENDING_FILES.dump_json(pending), replace=False,
+                    before_publish=guard,
+                )
+                _finish_patch(root)
+            if changed:
                 text = self._load(root)
             return self._snapshot(project_id, text)
 
@@ -398,7 +489,7 @@ class ProjectFolderService:
         self, project_id: str, body: StudioPresentationWrite
     ) -> StudioProjectSnapshot:
         root = self._folder(project_id)
-        with _writer_lock(root):
+        with _folder_lock(root):
             text = self._load(root)
             data, revision = _read_presentation(root)
             _check_revision("presentation", body.revision, revision)

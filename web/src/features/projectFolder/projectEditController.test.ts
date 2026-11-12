@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
-import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectSnapshot } from '@/generated/studioContracts';
+import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
@@ -41,7 +41,9 @@ function fixture(settleMs = 400) {
   };
   const write = vi.fn<ProjectEditTransport['write']>(async (_id, body) => {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach', 'Changed', { status: 409 });
-    return external(body.address, body.patches);
+    const files = 'files' in body ? body.files : [body];
+    for (const { address, patches } of files) external(address, patches);
+    return current;
   });
   const externalRename = (next: string) => {
     name = next;
@@ -59,6 +61,32 @@ function fixture(settleMs = 400) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it('acknowledges every file of a scoped edit after a lost response and undoes it together', async () => {
+  const { editor, external, write, current } = fixture();
+  write.mockImplementationOnce(async (_id, body) => {
+    if (!('files' in body)) throw new Error('Expected the whole gesture');
+    for (const { address, patches } of body.files) external(address, patches);
+    throw new ApiRequestError('network', '/api/projects/reach', 'Response lost');
+  });
+  editor.editFiles('Mass', [
+    { address: model, patches: [value(2)] },
+    { address: task, patches: [value(2)] },
+  ], { reviewedRevision: initial.revision });
+  const revision = await editor.flush();
+  expect(revision).toBe(current().revision);
+  expect(editor.getSnapshot().undoName).toBe('Mass');
+  expect(write).toHaveBeenCalledTimes(1);
+  editor.undo();
+  await editor.flush();
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(write.mock.calls[1][1]).toMatchObject({ files: expect.arrayContaining([
+    { address: model, patches: [value(1)] },
+    { address: task, patches: [value(1)] },
+  ]) });
+  expect(current().project).toEqual(initial.project);
+  editor.dispose();
+});
 
 it('does not attribute a preexisting identical file to a failed create', async () => {
   const { editor, create } = fixture();
@@ -138,16 +166,16 @@ it('coalesces settled edits per file and preserves one undo entry per gesture', 
   expect(write).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
   expect(write).toHaveBeenCalledTimes(1);
-  expect(write.mock.calls[0][1].patches).toEqual([value(2), value(3)]);
+  expect((write.mock.calls[0][1] as StudioProjectFilePatch).patches).toEqual([value(2), value(3)]);
   expect(editor.getSnapshot().saved.revision).toBe(current().revision);
   editor.undo();
   await editor.flush();
-  expect(write.mock.calls[1][1].patches).toEqual([value(2)]);
+  expect((write.mock.calls[1][1] as StudioProjectFilePatch).patches).toEqual([value(2)]);
   expect(editor.getSnapshot().undoName).toBe('First value');
   expect(editor.getSnapshot().redoName).toBe('Second value');
   editor.redo();
   expect(await editor.flush()).toBe(current().revision);
-  expect(write.mock.calls[2][1].patches).toEqual([value(3)]);
+  expect((write.mock.calls[2][1] as StudioProjectFilePatch).patches).toEqual([value(3)]);
   editor.dispose();
 });
 
@@ -182,7 +210,7 @@ it('rebases kept edits over the latest revision and gives undo the outside value
   expect(write.mock.calls[1][1]).toEqual({ address: model, revision: outside.revision, patches: [value(2)] });
   editor.undo();
   await editor.flush();
-  expect(write.mock.calls[2][1].patches).toEqual([value(3)]);
+  expect((write.mock.calls[2][1] as StudioProjectFilePatch).patches).toEqual([value(3)]);
   editor.dispose();
 });
 
@@ -221,6 +249,7 @@ it('retries a lost connection after a fresh read and flushes edits arriving duri
   const waiting = new Promise<void>((resolve) => { complete = resolve; });
   write.mockImplementationOnce(async (_id, body) => {
     await waiting;
+    if ('files' in body) throw new Error('Expected one file');
     return external(body.address, body.patches);
   });
   editor.edit(model, 'Waiting edit', [value(3)]);
@@ -229,7 +258,7 @@ it('retries a lost connection after a fresh read and flushes edits arriving duri
   editor.edit(task, 'Queued edit', [value(4)]);
   complete();
   expect(await flushing).toBe(current().revision);
-  expect(write.mock.calls.map((call) => call[1].address.id)).toEqual(['model', 'model', 'model', 'task']);
+  expect(write.mock.calls.map((call) => (call[1] as StudioProjectFilePatch).address.id)).toEqual(['model', 'model', 'model', 'task']);
   expect(editor.getSnapshot().pending).toBe(0);
   editor.dispose();
 });
@@ -248,6 +277,7 @@ it('gets a current saved revision for a clean flush before the next folder notic
 it('keeps an observed postimage after a lost save response without adding a second write or undo entry', async () => {
   const { editor, external, write, current } = fixture();
   write.mockImplementationOnce(async (_id, body) => {
+    if ('files' in body) throw new Error('Expected one file');
     external(body.address, body.patches);
     throw new ApiRequestError('network', '/api/projects/reach', 'Response lost');
   });
@@ -256,7 +286,7 @@ it('keeps an observed postimage after a lost save response without adding a seco
     { op: 'replace', path: '/payload/added/field', value: 2 },
   ]);
   await expect(editor.flush()).rejects.toMatchObject({ kind: 'network' });
-  expect(write.mock.calls[0][1].patches[0]).toMatchObject({ value: { field: 1 } });
+  expect((write.mock.calls[0][1] as StudioProjectFilePatch).patches[0]).toMatchObject({ value: { field: 1 } });
   editor.connected();
   await vi.waitFor(() => expect(editor.getSnapshot().outside?.revision).toBe(current().revision));
   await editor.keep('edits');

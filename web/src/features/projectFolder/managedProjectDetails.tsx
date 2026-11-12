@@ -4,10 +4,12 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchComponents } from '@/api/client';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
+import { fetchDocumentAuthoring } from '@/api/projectFolders';
 import { apiErrorMessage } from '@/api/request';
 import { studioRegionIssue } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioReason, type StudioNameId, type StudioReasonId } from '@/components/activity/studioVocabulary';
 import { StudioDefinitionForm, type StudioDefinitionField, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
+import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneHeaderControls } from '@/components/scene/SceneRegion';
 import { SceneClockControls } from '@/components/scene/SceneClockControls';
 import type { PlanarScenePose } from '@/components/scene/planarModel';
@@ -21,7 +23,7 @@ import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplay
 import {
   DocumentReferenceSchema, GraphSpecSchema, TaskSpecSchema,
   type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type StudioSavedEvaluationRow, type TaskSpec, type WireSpec,
-  type WorkspaceReplayTrial,
+  type StudioDocumentAuthoring, type StudioDocumentAuthoringRequest, type StudioSavedTrainKey, type WorkspaceReplayTrial,
 } from '@/generated/studioContracts';
 import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
@@ -34,7 +36,13 @@ type Definition = {
   readonly label: string;
   readonly payload: JsonValue;
   readonly shared: boolean;
+  readonly authored?: StudioDocumentAuthoring;
 };
+
+export interface NamedDocumentScope extends MapDocumentScope {
+  readonly key: string;
+  readonly document: string;
+}
 
 export interface ManagedProjectDetail {
   readonly documentId?: string;
@@ -55,13 +63,8 @@ interface DetailInputs {
   readonly evaluation?: StudioSavedEvaluationRow;
   readonly evaluationReplay: ReturnType<typeof useSavedEvaluationScene>;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
-}
-
-function mentionsDocument(value: unknown, id: string): boolean {
-  if (Array.isArray(value)) return value.some((child) => mentionsDocument(child, id));
-  if (!value || typeof value !== 'object') return false;
-  if ('document' in value && value.document === id && DocumentReferenceSchema.safeParse(value).success) return true;
-  return Object.values(value).some((child) => mentionsDocument(child, id));
+  readonly namedRun?: StudioSavedTrainKey;
+  readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
 }
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
@@ -76,11 +79,7 @@ function authoredDefinition(project: AuthoredProject, stepId: string, field: Def
   const { document: id, pointer } = reference.data;
   const document = project.documents?.[id];
   if (pointer || document?.schema !== (field === 'graph' ? 'feedbax.spec.graph' : 'feedbax.spec.task')) return null;
-  const { [field]: _, ...otherFields } = inline;
-  const shared = inherited || mentionsDocument(otherFields, id) ||
-    otherSteps.some((other) => mentionsDocument(other, id)) ||
-    Object.entries(project.documents ?? {}).some(([otherId, other]) => otherId !== id && mentionsDocument(other.payload, id));
-  return { id, label: id, payload: document.payload, shared };
+  return { id, label: id, payload: document.payload, shared: true };
 }
 
 function detailHeader(definition: Definition | null) {
@@ -210,11 +209,12 @@ function StructuredValue({ value }: { value: unknown }) {
   return <>{typeof value === 'boolean' ? studioName(value ? 'true' : 'false') : value == null ? '—' : String(value)}</>;
 }
 
-function ParameterDetails({ params, definition, selection, schemas, onEdit }: {
+function ParameterDetails({ params, definition, selection, schemas, path, onEdit }: {
   params: Record<string, unknown>;
   definition: Definition;
   selection: PipelineSelection;
   schemas?: ParamSchema[];
+  path: readonly string[];
   onEdit?: (field: string, value: JsonPrimitive) => void;
 }) {
   const fields: StudioDefinitionField[] = [];
@@ -222,8 +222,10 @@ function ParameterDetails({ params, definition, selection, schemas, onEdit }: {
   for (const [name, value] of Object.entries(params)) {
     if (!scalar(value)) { structured.push([name, value]); continue; }
     const schema = schemas?.find((candidate) => candidate.name === name);
-    const control = onEdit && (!schemas || schema) ? fieldControl(value, schema) : undefined;
-    fields.push({ id: name, label: humanizeLabel(name), control, resolved: [{ id: name, value, source: definition.label }],
+    const source = definition.authored?.sources[authoredPointer([...path, name])];
+    const control = onEdit && (!schemas || schema) && (!definition.authored || source)
+      ? fieldControl(value, schema) : undefined;
+    fields.push({ id: name, label: humanizeLabel(name), control, resolved: [{ id: name, value, source: source?.name ?? definition.label }],
       actions: control ? ['set'] : [] });
   }
   return <>
@@ -236,22 +238,36 @@ function ParameterDetails({ params, definition, selection, schemas, onEdit }: {
   </>;
 }
 
-function useDefinitionEdit(editor: ProjectEditController, scope: string, stepId: string | null, selection: PipelineSelection | null) {
+function useDefinitionEdit(input: DetailInputs, scope: string) {
+  const { editor, stepId, selection, namedRun, documentScopes } = input;
   const [issue, setIssue] = useState<{ scope: string; field: DefinitionField; message: string }>();
   return {
     issue: (field: DefinitionField) => issue?.scope === scope && issue.field === field ? issue.message : null,
-    edit(field: DefinitionField, definition: Definition, label: string, path: string[], value: JsonPrimitive) {
-      if (!stepId || selection?.kind !== 'steps' || definition.shared) return;
+    async edit(field: DefinitionField, definition: Definition, label: string, path: string[], value: JsonPrimitive) {
+      if (!stepId || selection?.kind !== 'steps') return;
       const id = definition.id;
-      const check = (project: AuthoredProject) => {
-        const latest = authoredDefinition(project, stepId, field);
-        if (!latest || latest.id !== id || latest.shared) throw new ProjectEditConflictError();
-      };
       try {
-        check(editor.getSnapshot().draft);
-        editor.edit(id ? { kind: 'document', id } : { kind: 'step', id: stepId }, label, [
-          { op: 'replace', path: authoredPointer([...(id ? ['payload'] : ['base', 'inline', field]), ...path]), value },
-        ], (before) => check(before));
+        if (id) {
+          const { saved, pending } = editor.getSnapshot();
+          const target = documentScopes[field];
+          if (pending || !target || target.document !== id || !namedRun || value === null ||
+              definition.authored?.revision !== saved.revision) throw new ProjectEditConflictError();
+          const reviewed = await fetchDocumentAuthoring(saved.project_id, {
+            revision: saved.revision, run: namedRun, field,
+            change: { lit_steps: [...target.lit], path: authoredPointer(path), value },
+          });
+          if (reviewed.document !== id) throw new ProjectEditConflictError();
+          editor.editFiles(label, reviewed.files, { reviewedRevision: reviewed.revision });
+        } else {
+          const check = (project: AuthoredProject) => {
+            const latest = authoredDefinition(project, stepId, field);
+            if (!latest || latest.id || latest.shared) throw new ProjectEditConflictError();
+          };
+          check(editor.getSnapshot().draft);
+          editor.edit({ kind: 'step', id: stepId }, label, [
+            { op: 'replace', path: authoredPointer(['base', 'inline', field, ...path]), value },
+          ], (before) => check(before));
+        }
         setIssue(undefined);
       } catch (error) {
         setIssue({ scope, field, message: apiErrorMessage(error) });
@@ -402,13 +418,24 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
   const scope = JSON.stringify([subjectScope, selection, focus]);
+  const namedField = activeView === 'model' ? 'graph' : activeView === 'task' ? 'task' : undefined;
+  const namedDocument = namedField && input.step?.documentIds?.[`payload.${namedField}`];
+  const reviewed: StudioDocumentAuthoringRequest | undefined = namedField && namedDocument && input.namedRun
+    ? { revision: saved.revision, run: input.namedRun, field: namedField } : undefined;
+  const named = useQuery({
+    queryKey: ['named-definition', saved.project_id, reviewed],
+    enabled: !!reviewed, retry: false,
+    queryFn: ({ signal }) => fetchDocumentAuthoring(saved.project_id, reviewed!, signal),
+  });
   const definitions = useMemo(() => {
     const train = stepId && variantId === null;
+    const authored = named.data?.document === namedDocument ? named.data : undefined;
+    const namedDefinition = authored && { id: authored.document, label: authored.document, payload: authored.payload, shared: true, authored };
     return {
-      model: train ? authoredDefinition(draft, stepId, 'graph') : null,
-      task: train ? authoredDefinition(draft, stepId, 'task') : null,
+      model: namedField === 'graph' && namedDefinition ? namedDefinition : train ? authoredDefinition(draft, stepId, 'graph') : null,
+      task: namedField === 'task' && namedDefinition ? namedDefinition : train ? authoredDefinition(draft, stepId, 'task') : null,
     };
-  }, [draft, stepId, variantId]);
+  }, [draft, stepId, variantId, named.data, namedDocument, namedField]);
   const graph = useMemo(() => {
     const result = GraphSpecSchema.safeParse(definitions.model?.payload);
     return result.success ? result.data : null;
@@ -420,12 +447,17 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
   const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]));
   const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]));
-  const change = useDefinitionEdit(editor, scope, stepId, selection);
+  const change = useDefinitionEdit(input, scope);
+  function editable(field: DefinitionField, definition: Definition) {
+    return canEdit && (definition.id
+      ? definition.authored?.revision === saved.revision && input.documentScopes[field]?.document === definition.id
+      : !definition.shared);
+  }
   const components = Object.entries(graph?.nodes ?? {});
   const component = components.find(([id]) => modelSelection.selectedId === `component:${id}`);
   const wire = graph?.wires?.find((_, index) => modelSelection.selectedId === `wire:${index}`);
   const registry = useQuery({ queryKey: ['components'], queryFn: fetchComponents, staleTime: 5 * 60 * 1000,
-    enabled: !!component && !definitions.model?.shared && activeView === 'model' });
+    enabled: !!component && activeView === 'model' });
   const model = definitions.model;
   const positions = model?.id ? saved.presentation?.documents?.[model.id]?.positions : undefined;
   const scene = useSceneDetail(input, model, graph, JSON.stringify([scope, model?.id]), saved.project_id, saved.revision);
@@ -437,14 +469,16 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     const issue = change.issue('graph');
     const inline = stepId && !definition.id && !definition.shared;
     const raw = component.params ?? {};
+    const path = ['nodes', id, 'params'];
     const parameterDetails = (projected: ReadonlySet<string>) => <ParameterDetails
       params={Object.fromEntries(Object.entries(raw).filter(([name]) => !projected.has(authoredPointer(['graph', 'nodes', id, 'params', name]))))}
-      definition={definition} selection={selected} schemas={schemas}
-      onEdit={canEdit && !definition.shared ? (field, value) => change.edit('graph', definition, field, ['nodes', id, 'params', field], value) : undefined} />;
+      definition={definition} selection={selected} schemas={schemas} path={path}
+      onEdit={editable('graph', definition) ? (field, value) => { void change.edit('graph', definition, field, [...path, field], value); } : undefined} />;
     return <section key={id} aria-label={studioName('details')} className="space-y-2">
       <h3 className="font-medium">{id}</h3>
       <p className="text-sm">{component.type}</p>
-      {definition.shared && <DetailReason reason="definitionReadOnly" name="model" />}
+      {definition.shared && !editable('graph', definition) && <DetailReason reason="definitionReadOnly" name="model" />}
+      {named.error && <p role="alert">{apiErrorMessage(named.error)}</p>}
       {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
       {inline ? <StudioTrainAuthoringForm editor={editor} stepId={stepId} component={id}
         step={input.step} selection={selected} onChooseSweepValue={input.onChooseSweepValue} renderAdditionalFields={parameterDetails} />
@@ -475,8 +509,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       header: detailHeader(taskDocument),
       body: task && taskDocument && selection
         ? <TaskDetails key={JSON.stringify([scope, taskDocument.id])} task={task} definition={taskDocument} selection={selection}
-          issue={change.issue('task')} onEdit={canEdit && !taskDocument.shared
-            ? (field, value) => change.edit('task', taskDocument, field, ['params', field], value) : undefined} />
+          issue={change.issue('task') ?? (named.error ? apiErrorMessage(named.error) : null)} onEdit={editable('task', taskDocument)
+            ? (field, value) => { void change.edit('task', taskDocument, field, ['params', field], value); } : undefined} />
         : <DetailReason reason="definitionUnavailable" name="task" />,
       drawer: task && Object.keys(task.params ?? {}).length > 0
         ? <DetailList name="parameters" items={Object.keys(task.params ?? {}).map((name) => ({ id: name, label: humanizeLabel(name) }))} {...taskSelection} />
@@ -498,8 +532,8 @@ function TaskDetails({ task, definition, selection, onEdit, issue }: {
 }) {
   return <section className="space-y-2 p-3" aria-label={studioName('task')}>
     <dl className="flex gap-2 text-sm"><dt>{studioName('type')}</dt><dd className="font-medium">{task.type}</dd></dl>
-    {definition.shared && <DetailReason reason="definitionReadOnly" name="task" />}
-    <ParameterDetails params={task.params ?? {}} definition={definition} selection={selection} onEdit={onEdit} />
+    {definition.shared && !onEdit && <DetailReason reason="definitionReadOnly" name="task" />}
+    <ParameterDetails params={task.params ?? {}} definition={definition} selection={selection} path={['params']} onEdit={onEdit} />
     {task.timeline?.epochs?.length ? <section aria-label={studioName('epochs')}>
       <h3 className="font-medium">{studioName('epochs')}</h3>
       <ul>{task.timeline.epochs.map(({ id, label }) => <li key={id}>{label}</li>)}</ul>

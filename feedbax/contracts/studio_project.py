@@ -78,10 +78,18 @@ class RemoveProjectValue(StrictModel):
 type ProjectValueEdit = Annotated[SetProjectValue | RemoveProjectValue, Field(discriminator="op")]
 
 
-class StudioProjectPatch(StrictModel):
-    revision: Sha256
+class StudioProjectFilePatch(StrictModel):
     address: AuthoredFileAddress
     patches: list[ProjectValueEdit] = Field(min_length=1)
+
+
+class StudioProjectPatch(StudioProjectFilePatch):
+    revision: Sha256
+
+
+class StudioProjectPatchBatch(StrictModel):
+    revision: Sha256
+    files: list[StudioProjectFilePatch] = Field(min_length=1)
 
 
 class StudioPresentationWrite(StrictModel):

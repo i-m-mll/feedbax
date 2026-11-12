@@ -94,6 +94,7 @@ class PlannedRow:
     label: str | None
     coordinates: Mapping[str, SweepCoordinate]
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,7 @@ class SelectedRunDefinition:
     payload: Payload
     sources: Mapping[str, ValueSource]
     document_ids: Mapping[str, str]
+    document_uses: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,11 @@ class ProjectPlan:
     diagnostics: tuple[ProjectDiagnostic, ...]
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
     selected_definitions: Mapping[RunKey, SelectedRunDefinition]
+
+    def document_users(self, variant: str, document: str) -> frozenset[str]:
+        return frozenset(
+            row.key.step for row in self.rows if row.key.variant == variant and document in row.document_uses
+        )
 
     @property
     def sources(self) -> Mapping[RunKey, Mapping[str, ValueSource]]:
@@ -266,6 +273,7 @@ class _LoweredRow:
     encoding_stamp: tuple[StepKind, str, bytes] | None = None
     admission_problem: RunProblem | None = None
     document_ids: Mapping[str, str] = field(default_factory=dict)
+    document_uses: frozenset[str] = frozenset()
 
 
 def _encode_row(
@@ -586,7 +594,7 @@ class _Compiler:
                     row=producer.row,
                 )
             return SelectedRunDefinition(
-                resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids)
+                resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
             )
 
         if self.previous is None:
@@ -629,24 +637,27 @@ class _Compiler:
                     return _LoweredRow(None, (replace(resolved, variant=key.variant),))
                 payload = resolved.payload
                 document_ids = MappingProxyType(resolved.document_ids)
+                document_uses = resolved.document_uses
             else:
                 if reader is not None:
                     for name, _ in self.work.definitions[key].documents:
                         reader(name)
                 payload = definition.payload
                 document_ids = definition.document_ids
+                document_uses = definition.document_uses
             encoding_stamp = (
                 (kind, sha256_bytes(to_json(payload)), member)
                 if basis is not None else None
             )
             if previous is not None and previous.encoding_stamp == encoding_stamp:
-                return replace(previous, document_ids=document_ids)
+                return replace(previous, document_ids=document_ids, document_uses=document_uses)
             return replace(
                 _encode_row(
                     key, kind, payload, role, chosen, encoding_stamp,
                     self.work.request_documents if self.previous is not None else None,
                 ),
                 document_ids=document_ids,
+                document_uses=document_uses,
             )
 
         if self.previous is None:
@@ -777,7 +788,7 @@ class _Compiler:
             self.diagnostics.extend(lowered.diagnostics)
             if (encoded := lowered.request) is None:
                 self.rows[run_key] = replace(
-                    self.rows[run_key], document_ids=lowered.document_ids,
+                    self.rows[run_key], document_ids=lowered.document_ids, document_uses=lowered.document_uses,
                 )
                 continue
             self.requests[encoded.id] = encoded.data
@@ -793,6 +804,7 @@ class _Compiler:
                 template.requires,
                 admission_problem=lowered.admission_problem,
                 document_ids=lowered.document_ids,
+                document_uses=lowered.document_uses,
             )
             self.rows[run_key] = run
             result.append(run)

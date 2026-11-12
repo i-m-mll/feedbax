@@ -93,6 +93,42 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
     }
 
 
+def test_named_document_difference_is_local_and_updates_memoized_sources():
+    data, _ = _project_data()
+    data["steps"]["sibling"] = {"kind": "train", "base": {"step": "fit"}}
+    data["steps"]["fit"]["sweep"] = {
+        "axes": {"seed": {"values": {"fixed": {"patches": {"seed": {"value": 2}}}}}},
+    }
+    project = Project.model_validate(data)
+    memo = ProjectPlanMemo()
+    first = compile_project(project, memo=memo)
+    fit = next(run for run in first.runs if run.key.step == "fit")
+    sibling = next(run for run in first.runs if run.key.step == "sibling")
+    keys = [fit.key, sibling.key]
+    assert first.document_users("default", "model") == {"fit", "sibling"}
+
+    path = "/nodes/gain/params/gain"
+    data["steps"]["fit"]["document_overrides"] = {"model": {path: 3}}
+    scoped = Project.model_validate(data)
+    plan = compile_project(scoped, source_runs=keys, memo=memo)
+    assert plan == compile_project(scoped, source_runs=keys)
+    requests = {run.key: run.request_id for run in plan.runs}
+    assert requests[fit.key] != fit.request_id
+    assert requests[sibling.key] == sibling.request_id
+    assert plan.document_users("default", "model") == {"fit", "sibling"}
+    fit_source = plan.sources[fit.key]["/payload/graph" + path]
+    assert (fit_source.kind, fit_source.name) == ("step", "fit")
+    assert plan.sources[sibling.key]["/payload/graph" + path].name == "model"
+    assert plan.selected_definitions[fit.key].payload["seed"] == 2
+
+    data["documents"]["model"]["payload"]["nodes"]["gain"]["params"]["gain"] = 4
+    del data["steps"]["fit"]["document_overrides"]
+    shared = Project.model_validate(data)
+    plan = compile_project(shared, source_runs=keys, memo=memo)
+    assert plan == compile_project(shared, source_runs=keys)
+    assert plan.sources[fit.key]["/payload/graph" + path].name == "model"
+
+
 def test_fanout_selects_rows_and_requires_a_valid_static_subject():
     data, _ = _project_data()
     fit = data["steps"]["fit"]

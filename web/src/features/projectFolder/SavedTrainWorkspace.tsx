@@ -4,7 +4,7 @@ import { TriangleAlert } from 'lucide-react';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
-import { studioName, studioStep } from '@/components/activity/studioVocabulary';
+import { studioCountOf, studioName, studioStep } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
@@ -22,7 +22,7 @@ import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } fr
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
-import { useManagedProjectDetails, useSavedEvaluationScene } from './managedProjectDetails';
+import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { openProjectEditor } from './openProjectEditor';
@@ -138,6 +138,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [focusRequest, requestSlotFocus] = useState(0);
   const [pivotSlots, setPivotSlots] = useState<Partial<Record<ProjectWindowSlot, string>>>({});
   const [problemStep, setProblemStep] = useState<string>();
+  const [excludedUsers, setExcludedUsers] = useState<Readonly<Record<string, readonly string[]>>>({});
   const problemCountId = useId();
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
@@ -176,6 +177,33 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const availableViews = step ? viewsByKind[step.kind] : emptyViews;
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
+  const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
+  const focusView = focusSlot === 'secondary' ? secondaryView : primaryView;
+  function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
+    const document = step?.documentIds?.[`payload.${field}`];
+    if (!document || !step || !wholeStep || saved.project.sweep || step.kind !== 'train') return undefined;
+    const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.includes(document)).map(({ id }) => id));
+    if (!users.has(step.id)) return undefined;
+    const key = JSON.stringify([step.id, document, variant]);
+    const excluded = excludedUsers[key] ?? [];
+    return { document, key, users, lit: new Set([...users].filter((id) => id === step.id || !excluded.includes(id))) };
+  }
+  const documentScopes = { graph: documentScope('graph'), task: documentScope('task') };
+  const activeDocumentScope = windowState.mode === 'map' ? undefined
+    : focusView === 'model' ? documentScopes.graph : focusView === 'task' ? documentScopes.task : undefined;
+  function chooseMapStep(id: string, extend: boolean) {
+    if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
+      if (id === step?.id || !activeDocumentScope.users.has(id)) return;
+      const { key } = activeDocumentScope;
+      setExcludedUsers((current) => {
+        const ids = current[key] ?? [];
+        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => excluded !== id) : [...ids, id] };
+      });
+      return;
+    }
+    if (!extend) setExcludedUsers({});
+    selection.select(selectStep(state, id, extend));
+  }
   const row = data?.rows.find(({ key }) => key.step === step?.id && savedRunId(key) === state.focus?.runId);
   const attempt = row?.attempts.at(-1);
   const ready = Boolean(data && !pending && !outside);
@@ -198,9 +226,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const runnableRows = state.selection
     ? [...runnableTrainRows, ...evaluationRows.filter(({ can_run }) => can_run)] : runnableTrainRows;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
+  const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
+  const namedRun = definitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ?? definitionRows[0]?.key;
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
+    namedRun, documentScopes,
   };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });
@@ -356,10 +387,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
 
   const mapProps = {
     plan, state, onSelectionChange: selection.select, onProblems: openProblems,
-    newStepCommand, newSweepCommand,
+    newStepCommand, newSweepCommand, onChooseStep: chooseMapStep,
+    documentScope: activeDocumentScope && activeDocumentScope.users.size > 1 ? activeDocumentScope : undefined,
   };
-  const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
-  const focusView = focusSlot === 'secondary' ? secondaryView : primaryView;
   const activity = bindStudioCommand('activity', () => setPanel((current) => current === 'activity' ? null : 'activity'));
   const problemCommand = bindStudioCommand('problems', () => openProblems());
   const retryCommand = bindStudioCommand('retry', retry);
@@ -462,7 +492,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const header = view !== 'scene' && authoring && wholeStep
             ? <StudioTrainAuthoringForm {...authoring} view={view} documentPicker />
             : details[view].header;
-          return { ...details[view], header, body: <StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary> };
+          const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
+          return { ...details[view], header: <>
+            {header}
+            {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
+              {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
+            </span>}
+          </>, body: <StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary> };
         }
         if (!step) return { body: null };
         if (view === 'runs') return { body: <StudioErrorBoundary region={studioName('runs')}>

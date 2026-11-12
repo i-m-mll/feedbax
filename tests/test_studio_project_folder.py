@@ -979,6 +979,42 @@ def test_external_change_while_staging_is_detected_before_replace(study, monkeyp
     assert not list(path.parent.glob(".*.tmp"))
 
 
+def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkeypatch):
+    root, client = study
+    before = _read(client)
+    files = [
+        {
+            "address": {"kind": "document", "id": "model"},
+            "patches": [{"op": "replace", "path": _GAIN, "value": 3}],
+        },
+        {
+            "address": {"kind": "step", "id": "fit"},
+            "patches": [{"op": "add", "path": "/note", "value": {"reason": "shared edit"}}],
+        },
+    ]
+    fail = True
+
+    def interrupt(target, data, **kwargs):
+        nonlocal fail
+        if target.name == "fit.json" and fail:
+            fail = False
+            raise OSError("simulated interruption after the first file")
+        return write_bytes_atomic(target, data, **kwargs)
+
+    monkeypatch.setattr(project_folder, "write_bytes_atomic", interrupt)
+    interrupted = client.patch(_URL, json={"revision": before["revision"], "files": files})
+    assert interrupted.status_code == 503
+    assert (root / ".studio-patch.json").is_file()
+    after = _read(client)
+    assert after["revision"] != before["revision"]
+    assert _gain(root) == 3
+    assert after["project"]["steps"]["fit"]["note"]["reason"] == "shared edit"
+    assert not (root / ".studio-patch.json").exists()
+    stale = client.patch(_URL, json={"revision": before["revision"], "files": files})
+    assert stale.status_code == 409
+    assert _read(client)["revision"] == after["revision"]
+
+
 def test_unreadable_presentation_does_not_hide_the_authored_project(study):
     root, client = study
     before = _read(client)

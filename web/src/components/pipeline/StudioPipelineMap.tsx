@@ -50,10 +50,33 @@ export interface PipelineMapStepSource {
   selection: StepRunSelection | null;
 }
 
+export interface MapDocumentScope {
+  readonly users: ReadonlySet<string>;
+  readonly lit: ReadonlySet<string>;
+}
+
+type ChooseStep = (id: string, extend: boolean) => void;
+
+function documentLevel(scope: MapDocumentScope | undefined, step: string) {
+  return !scope ? undefined : scope.lit.has(step) ? 'lit' : scope.users.has(step) ? 'plain' : 'faint';
+}
+
+const documentLevelStyle = 'data-[document-scope=faint]:opacity-60 focus-within:opacity-100';
+const documentLitStyle = 'data-[document-scope=lit]:ring-1 data-[document-scope=lit]:ring-slate-500';
+
+function chooseMapStep(apply: ApplyMapSelection, toggle?: ChooseStep): ChooseStep {
+  return (id, extend) => {
+    if (toggle) toggle(id, extend);
+    else apply((state) => selectStep(state, id, extend));
+  };
+}
+
 export interface StudioPipelineMapProps {
   plan: PlanView;
   state: PipelineSelectionState;
   onSelectionChange: (state: PipelineSelectionState) => void;
+  documentScope?: MapDocumentScope;
+  onChooseStep?: ChooseStep;
   mode?: 'map' | 'line';
   drawerOpen?: boolean;
   presentation?: Readonly<Record<string, PipelineCardPresentation>>;
@@ -236,6 +259,8 @@ const StepCard = memo(function StepCard({
   selection,
   presentation,
   applySelection,
+  chooseStep,
+  documentScope,
   onPresentationChange,
   newStep,
   newSweep,
@@ -245,6 +270,8 @@ const StepCard = memo(function StepCard({
   selection: PipelineSelection | null;
   presentation: PipelineCardPresentation;
   applySelection: ApplyMapSelection;
+  chooseStep: ChooseStep;
+  documentScope?: MapDocumentScope;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   newStep?: StudioCommand;
   newSweep?: StudioCommand;
@@ -252,16 +279,18 @@ const StepCard = memo(function StepCard({
 }) {
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
   const folded = foldedMapSweep(step, sweeps, presentation);
+  const level = documentLevel(documentScope, step.id);
   const selected = useMemo(() => new Set(
-    selectedRuns(step, selection).map(({ id }) => id),
-  ), [step, selection]);
+    (level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
+  ), [step, selection, level]);
   const terms = selection?.kind === 'steps' ? [] : selectionTerms(step, selection);
   const { tint, name: kind } = studioStep(step.kind);
   return (
     <article
       data-map-card
+      data-document-scope={level}
       aria-label={studioAccessibleName(step.kind, step.label)}
-      className="relative w-64 space-y-2 rounded-lg border-2 bg-white px-3 py-2 text-sm shadow-sm focus-within:z-20"
+      className={`relative w-64 space-y-2 rounded-lg border-2 bg-white px-3 py-2 text-sm shadow-sm focus-within:z-20 ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
       style={{ borderColor: tint }}
     >
       <span id={`map-step-${step.id}-summary`} className="sr-only">
@@ -272,11 +301,12 @@ const StepCard = memo(function StepCard({
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-3 top-1/2" />
         <button
           type="button"
-          className="w-full rounded px-1 py-1 text-left text-slate-900 hover:bg-slate-100 aria-pressed:bg-slate-200"
+          className="w-full rounded px-1 py-1 text-left text-slate-900 hover:bg-slate-100 aria-[current=step]:bg-slate-200"
           aria-label={studioAccessibleName('select', step.label)}
           aria-describedby={`map-step-${step.id}-summary map-step-${step.id}-status`}
-          aria-pressed={selection?.kind === 'steps'}
-          {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
+          aria-current={selection?.kind === 'steps' ? 'step' : undefined}
+          aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
+          {...selectionButton((extend) => chooseStep(step.id, extend))}
         >
           <StepName step={step} />
         </button>
@@ -393,7 +423,8 @@ function MapDrawer({
   selection,
   related,
   focusedStepId,
-  applySelection,
+  chooseStep,
+  documentScope,
   newStep,
   onProblems,
   framed = false,
@@ -402,7 +433,8 @@ function MapDrawer({
   selection: PipelineSelection | null;
   related: RunSetsByStep | null;
   focusedStepId?: string;
-  applySelection: ApplyMapSelection;
+  chooseStep: ChooseStep;
+  documentScope?: MapDocumentScope;
   newStep?: StudioCommand;
   onProblems?: StudioPipelineMapProps['onProblems'];
   framed?: boolean;
@@ -423,14 +455,17 @@ function MapDrawer({
             <ul>{entries.map((step) => {
           const scope = stepSelection(selection, step.id);
           const count = (related?.get(step.id)?.size ?? 0) + Number(focusedStepId === step.id);
+          const level = documentLevel(documentScope, step.id);
           return (
-            <li key={step.id}>
+            <li key={step.id} data-document-scope={level} className={documentLevelStyle}>
               <button
                 type="button"
-                className={`w-full space-y-1 rounded p-1.5 text-left text-sm hover:bg-slate-100 aria-[current=step]:bg-slate-200 ${related && !count ? 'opacity-60' : ''}`}
+                className={`w-full space-y-1 rounded p-1.5 text-left text-sm hover:bg-slate-100 aria-[current=step]:bg-slate-200 ${related && !count ? 'opacity-60' : ''} ${!scope ? documentLitStyle : ''}`}
                 aria-label={studioAccessibleName('select', step.label)}
                 aria-current={scope ? 'step' : undefined}
-                {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
+                aria-pressed={documentScope ? level === 'lit' : undefined}
+                data-document-scope={level}
+                {...selectionButton((extend) => chooseStep(step.id, extend))}
               >
                 <StepName step={step} />
                 {related && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
@@ -453,12 +488,13 @@ function MapDrawer({
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, onProblems }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'onProblems'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, onProblems, documentScope, onChooseStep }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'onProblems' | 'documentScope' | 'onChooseStep'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
-    focusedStepId={state.focus?.stepId} applySelection={(change) => onSelectionChange(change(state))}
+    focusedStepId={state.focus?.stepId} documentScope={documentScope}
+    chooseStep={chooseMapStep((change) => onSelectionChange(change(state)), onChooseStep)}
     newStep={plan.steps.length ? newStepCommand?.() : undefined} onProblems={onProblems} framed />;
 }
 
@@ -466,18 +502,20 @@ function MapLine({
   plan,
   layout,
   selection,
-  applySelection,
+  chooseStep,
+  documentScope,
 }: {
   plan: PlanView;
   layout: MapLayout;
   selection: PipelineSelection | null;
-  applySelection: ApplyMapSelection;
+  chooseStep: ChooseStep;
+  documentScope?: MapDocumentScope;
 }) {
   const selected = plan.steps.filter(({ id }) => stepSelection(selection, id));
   const center = selected.length === 1 ? selected[0] : null;
   const before = center ? plan.steps.filter(({ id }) => layout.upstream.get(center.id)?.has(id)) : [];
   const after = center ? plan.steps.filter(({ id }) => layout.downstream.get(center.id)?.has(id)) : [];
-  const groups = [before, selected.length ? selected : plan.steps, after].filter((steps) => steps.length);
+  const groups = documentScope ? [plan.steps] : [before, selected.length ? selected : plan.steps, after].filter((steps) => steps.length);
   return (
     <div className="flex items-center gap-2 overflow-auto p-2">
       {groups.map((steps, index) => (
@@ -487,11 +525,13 @@ function MapLine({
             <button
               key={step.id}
               type="button"
-              className={`${smallButton} border-2 text-sm aria-[current=step]:bg-slate-200`}
+              className={`${smallButton} border-2 text-sm aria-[current=step]:bg-slate-200 ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
               style={{ borderColor: studioStep(step.kind).tint }}
               aria-label={studioAccessibleName('select', step.label)}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
-              {...selectionButton((extend) => applySelection((state) => selectStep(state, step.id, extend)))}
+              aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
+              data-document-scope={documentLevel(documentScope, step.id)}
+              {...selectionButton((extend) => chooseStep(step.id, extend))}
             >
               <StepName step={step} />
             </button>
@@ -506,6 +546,8 @@ export function StudioPipelineMap({
   plan,
   state,
   onSelectionChange,
+  onChooseStep,
+  documentScope,
   mode = 'map',
   drawerOpen = false,
   presentation,
@@ -519,6 +561,7 @@ export function StudioPipelineMap({
   const applySelection = useCallback<ApplyMapSelection>((change) => {
     onSelectionChange(change(current.current));
   }, [onSelectionChange]);
+  const chooseStep = chooseMapStep(applySelection, onChooseStep);
   const clearFocus = useCallback(() => {
     if (current.current.focus) onSelectionChange({ ...current.current, focus: null });
   }, [onSelectionChange]);
@@ -549,7 +592,7 @@ export function StudioPipelineMap({
           </button>
         )
       ) : mode === 'line' ? (
-        <MapLine plan={plan} layout={layout} selection={state.selection} applySelection={applySelection} />
+        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} />
       ) : (
         <>
           {drawDrawer && (
@@ -558,7 +601,8 @@ export function StudioPipelineMap({
               selection={state.selection}
               related={related}
               focusedStepId={state.focus?.stepId}
-              applySelection={applySelection}
+              chooseStep={chooseStep}
+              documentScope={documentScope}
               newStep={firstStep}
               onProblems={onProblems}
             />
@@ -573,6 +617,8 @@ export function StudioPipelineMap({
                     selection={stepSelection(state.selection, step.id)}
                     presentation={presentation?.[step.id] ?? emptyPresentation}
                     applySelection={applySelection}
+                    chooseStep={chooseStep}
+                    documentScope={documentScope}
                     onPresentationChange={onPresentationChange}
                     newStep={newStepCommand?.({ stepId: step.id,
                       selection: state.selection?.kind !== 'steps' && state.selection?.stepId === step.id ? state.selection : null,

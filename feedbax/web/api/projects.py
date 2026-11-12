@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringSurface,
+    StudioDocumentAuthoring,
+    StudioDocumentAuthoringRequest,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
 )
@@ -17,6 +19,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectDocument,
     StudioProjectPatch,
+    StudioProjectPatchBatch,
     StudioProjectRename,
     StudioProjectRevision,
     StudioProjectSnapshot,
@@ -101,6 +104,17 @@ def read_train_authoring(
     return _project_response(response, project_fields)
 
 
+@router.post("/{project_id}/authoring/document")
+def read_document_authoring(
+    project_id: ProjectName, body: StudioDocumentAuthoringRequest, request: Request, response: Response,
+) -> StudioDocumentAuthoring:
+    from feedbax.web.services.document_authoring import document_authoring
+
+    return _project_response(
+        response, lambda: document_authoring(request.app.state.project_folders, project_id, body),
+    )
+
+
 @router.post("/{project_id}/scene/planar")
 def read_planar_scene(
     project_id: ProjectName, body: StudioPlanarSceneRequest, request: Request, response: Response,
@@ -132,7 +146,7 @@ def read_project(
 @router.patch("/{project_id}", response_model_exclude_unset=True)
 def patch_project(
     project_id: ProjectName,
-    body: StudioProjectPatch,
+    body: StudioProjectPatch | StudioProjectPatchBatch,
     request: Request,
     response: Response,
 ) -> StudioProjectSnapshot:

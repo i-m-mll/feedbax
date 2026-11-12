@@ -2,9 +2,11 @@ import { asApiRequestError, requestJson } from '@/api/request';
 import {
   parseContract,
   type ContractTypeMap,
+  type StudioDocumentAuthoringRequest,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
   type StudioProjectPatch,
+  type StudioProjectPatchBatch,
   type StudioProjectRename,
 } from '@/generated/studioContracts';
 
@@ -30,7 +32,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectCreateFile'>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioDocumentAuthoringRequest' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectCreateFile'>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -63,9 +65,24 @@ export function createProjectFile(id: string, body: StudioProjectCreateFile, sig
   });
 }
 
-export async function patchProjectFolder(id: string, body: StudioProjectPatch, signal?: AbortSignal) {
+export async function patchProjectFolder(id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) {
   const path = projectPath(id);
-  return readFolder('StudioProjectSnapshot', id, path, { method: 'PATCH', body: mutationBody('StudioProjectPatch', body, path), signal });
+  const payload = 'files' in body ? mutationBody('StudioProjectPatchBatch', body, path) : mutationBody('StudioProjectPatch', body, path);
+  return readFolder('StudioProjectSnapshot', id, path, { method: 'PATCH', body: payload, signal });
+}
+
+export async function fetchDocumentAuthoring(id: string, body: StudioDocumentAuthoringRequest, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/authoring/document`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: mutationBody('StudioDocumentAuthoringRequest', body, path), signal, cache: 'no-store',
+    });
+    const definition = parseContract('StudioDocumentAuthoring', response);
+    if (definition.revision !== body.revision) throw new Error('Document definition has the wrong revision');
+    return definition;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The document definition did not match its contract');
+  }
 }
 
 export async function writeProjectPresentation(id: string, body: StudioPresentationWrite, signal?: AbortSignal) {

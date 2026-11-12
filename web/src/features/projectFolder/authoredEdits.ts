@@ -102,7 +102,10 @@ function fileEntry(project: AuthoredProject, address: AuthoredFileAddress) {
 }
 
 export function sameAuthoredFile(a: AuthoredProject, b: AuthoredProject, address: AuthoredFileAddress) {
-  return JSON.stringify(fileEntry(a, address)) === JSON.stringify(fileEntry(b, address));
+  const left = Object.entries(fileEntry(a, address));
+  const right = fileEntry(b, address);
+  return left.length === Object.keys(right).length && left.every(([key, value]) =>
+    own(right, key) && JSON.stringify(value) === JSON.stringify(right[key]));
 }
 
 function shouldReapply(before: Container, latest: Container, edit: ProjectValueEdit) {

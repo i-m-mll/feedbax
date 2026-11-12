@@ -65,8 +65,10 @@ class ProjectPlanRead:
         """Project authored steps and compiler facts from the acknowledged Plan."""
         plan = self.settled.plan
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
+        document_uses: dict[tuple[str, str], set[str]] = defaultdict(set)
         for row in plan.rows:
             key = row.key.variant, row.key.step
+            document_uses[key].update(row.document_uses)
             shared = document_ids.get(key)
             document_ids[key] = (
                 dict(row.document_ids)
@@ -99,6 +101,7 @@ class ProjectPlanRead:
                     variant=variant, step_id=step_id, kind=step.kind, group=step.group,
                     inputs=list(inputs(variant, step_id)),
                     document_ids=document_ids.get((variant, step_id), {}),
+                    document_uses=sorted(document_uses[variant, step_id]),
                     status_counts=dict(counts[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items()

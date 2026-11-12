@@ -13,7 +13,7 @@ from pydantic import JsonValue, ValidationError
 from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.matrix_core import apply_override_patch_copy
+from feedbax.contracts.matrix_core import apply_override_patch_copy, apply_value_patch_in_place
 from feedbax.contracts.project import (
     Document,
     DocumentReference,
@@ -95,6 +95,7 @@ class ResolvedStep:
     inputs: dict[str, InputBinding]
     sources: dict[str, ValueSource] | None = None
     document_ids: dict[str, str] = field(default_factory=dict)
+    document_uses: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -172,10 +173,14 @@ class _Documents:
         step: str | None = None,
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
+        overrides: Mapping[str, Mapping[str, JsonValue]] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
+        self.overrides = overrides or {}
+        self.used: set[str] = set()
+        self.edited: dict[str, JsonValue] = {}
 
     def select(self, reference: DocumentReference, path: str) -> Any:
         document = self.read_document(reference.document)
@@ -187,8 +192,24 @@ class _Documents:
                 step=self.step,
                 document=reference.document,
             )
+        self.used.add(reference.document)
+        payload = document.payload
+        if edits := self.overrides.get(reference.document):
+            if reference.document not in self.edited:
+                draft = deepcopy(payload)
+                try:
+                    if not isinstance(draft, dict):
+                        raise ValueError("Document differences require an object payload")
+                    for target, value in edits.items():
+                        apply_value_patch_in_place(draft, json_pointer_parts(target), "replace", value, path=target)
+                except ValueError as error:
+                    raise _Problem(
+                        ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
+                    ) from error
+                self.edited[reference.document] = draft
+            payload = self.edited[reference.document]
         try:
-            return _select(document.payload, json_pointer_parts(reference.pointer))
+            return _select(payload, json_pointer_parts(reference.pointer))
         except KeyError as error:
             raise _Problem(
                 ResolutionCode.BAD_POINTER,
@@ -227,11 +248,26 @@ class _Documents:
 
     def source(self, reference: DocumentReference, value: Any) -> Any:
         parts = json_pointer_parts(reference.pointer)
-        return source_shape(
+        shape = source_shape(
             value,
             ValueSource("document", reference.document, pointer(parts)),
             source_at(self.variant_sources, ("documents", reference.document, "payload", *parts)),
         )
+        for target, edited in self.overrides.get(reference.document, {}).items():
+            tokens = json_pointer_parts(target)
+            if tokens[:len(parts)] != parts:
+                continue
+            relative = tokens[len(parts):]
+            assert self.step is not None
+            source = ValueSource(
+                "step", self.step, pointer(("document_overrides", reference.document, target)), step=self.step,
+            )
+            changed = source_shape(edited, source)
+            if not relative:
+                shape = changed
+            else:
+                apply_value_patch_in_place(shape, relative, "replace", changed, path=target)
+        return shape
 
     def inline_sources(
         self, value: Any, shape: Any, path: str, active: tuple[tuple[str, str], ...] = ()
@@ -325,6 +361,7 @@ class _StepState:
     requires: tuple[str, ...] = ()
     written: set[str] = field(default_factory=set)
     origins: Any = None
+    document_uses: frozenset[str] = frozenset()
 
 
 class _Resolver:
@@ -462,6 +499,7 @@ class _Resolver:
             tuple(dict.fromkeys((*parent.requires, *step.requires))),
             written,
             origins,
+            parent.document_uses,
         )
 
     def read_base(self, step: str, base: InlineBase | RunBase | ExternalBase) -> JsonValue:
@@ -532,6 +570,7 @@ class _Resolver:
                 generated.payload,
                 inputs=generated.inputs,
                 requires=parent.requires,
+                document_uses=parent_step.document_uses,
             )
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
@@ -546,7 +585,9 @@ class _Resolver:
             if self.track_sources
             else None
         )
-        return _StepState(selected.payload, inputs=selected.inputs, origins=origins)
+        return _StepState(
+            selected.payload, inputs=selected.inputs, origins=origins, document_uses=selected.document_uses,
+        )
 
     def row_source(self, author: str, row: ExpandedRow, path: str) -> tuple[ValueSource, Any]:
         kind, *ids = row.patch_origins[path]
@@ -613,10 +654,14 @@ class _Resolver:
                 raise _Problem(
                     ResolutionCode.INVALID_SWEEP, patch.path, str(error), step=name, layer=row.id
                 ) from error
-        return _StepState(payload, inputs=state.inputs, requires=state.requires, origins=origins)
+        return _StepState(
+            payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=state.document_uses,
+        )
 
     def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
-        documents = self.documents(name)
+        documents = _Documents(
+            self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
+        )
         document_ids: dict[str, str] = {}
         payload = documents.inline(state.payload, "payload", document_ids=document_ids)
         if not isinstance(payload, dict):
@@ -653,6 +698,7 @@ class _Resolver:
                 else None
             ),
             document_ids,
+            state.document_uses.union(documents.used),
         )
 
 
@@ -662,11 +708,14 @@ class StepComposition:
 
     name: str
     _state: _StepState
+    _document_overrides: Mapping[str, Mapping[str, JsonValue]]
 
     @cached_property
     def row_basis(self) -> str:
         """Hash the ordered payload and required paths before row-local patches."""
-        return sha256_bytes(to_json((self._state.payload, self._state.requires)))
+        return sha256_bytes(to_json((
+            self._state.payload, self._state.requires, sorted(self._state.document_uses), self._document_overrides,
+        )))
 
     @property
     def sweep(self) -> Sweep | None:
@@ -754,7 +803,8 @@ def compose_step(
     """Compose inherited layers and prepare a step for sweep expansion."""
     resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
     try:
-        return StepTemplate(StepComposition(step, resolver.state(step)), resolver)
+        state = resolver.state(step)
+        return StepTemplate(StepComposition(step, state, project.steps[step].document_overrides), resolver)
     except _Problem as error:
         return error.diagnostic
 

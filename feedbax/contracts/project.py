@@ -13,6 +13,7 @@ from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
 type Payload = dict[str, JsonValue]
 type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
+type DocumentOverridePath = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "evaluate", "analyze", "report"]
 
@@ -66,6 +67,8 @@ class Step(StrictModel):
     kind: StepKind
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
+    # These differences apply when this step reads the named document.
+    document_overrides: dict[ProjectName, dict[DocumentOverridePath, JsonValue]] = Field(default_factory=dict)
     sweep: Sweep | None = None
     inputs: dict[ProjectName, InputBinding | None] = Field(default_factory=dict)
     requires: list[PatchPath] = Field(default_factory=list)

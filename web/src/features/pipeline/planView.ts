@@ -53,6 +53,8 @@ export interface PlanStepView {
   readonly sweeps: readonly PlanSweepView[];
   readonly runs: readonly PlanRunView[];
   readonly inputs: readonly PlanInputView[];
+  readonly documentIds?: Readonly<Record<string, string>>;
+  readonly documentUses?: readonly string[];
   readonly statusCounts: Readonly<Partial<Record<StudioRunStatusId, number>>>;
 }
 

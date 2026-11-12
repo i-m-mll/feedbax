@@ -77,6 +77,8 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
   const steps = source.map(({ id, kind, group, projected }): PlanStepView => {
     return {
       id, label: id, kind, group,
+      documentIds: projected?.document_ids,
+      documentUses: projected?.document_uses,
       inputs: projected?.inputs.map((input) => ({
         id: input.id, label: input.id, sourceStepId: input.source_step_id ?? undefined,
         subset: input.subset ? {
