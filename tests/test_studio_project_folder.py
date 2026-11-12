@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import json
 from pathlib import Path
 from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
+from pydantic import Field
 import pytest
 
 from feedbax._atomic import write_bytes_atomic
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
+from feedbax.contracts.request_identity import REQUEST_KINDS
+from feedbax.contracts.studio_authoring import StudioAuthoringChange
+from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
 from feedbax.host import HostError
+from feedbax.plugins.application import TRAINING_PROGRAMS, new_application_registry_bundle
+from feedbax.plugins.bootstrap import BootstrapState, PluginProvenance
+from feedbax.studio.authoring import authoring_surface, project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from feedbax.web.services import project_folder
@@ -230,6 +239,139 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     assert (conflict.value.resource, conflict.value.current) == ("project", current["revision"])
     assert _folder_state(root) == files
     assert not (root / "results").exists()
+
+
+def test_authoring_surface_uses_bootstrapped_method_declarations():
+    class PluginPayload(StrictModel):
+        plateau_updates: int = Field(gt=0)
+
+    bundle = new_application_registry_bundle()
+    registry = bundle.training_programs
+    builtin = registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
+    method = replace(
+        builtin,
+        method_ref="example/authoring/v1",
+        payload_model=PluginPayload,
+        payload_schema_id="example.spec.authoring",
+        payload_schema_version="example.spec.authoring.v1",
+        owner="example.authoring",
+        package="example",
+    )
+    registry.register(method)
+    source = PluginProvenance(
+        plugin_id="example.authoring",
+        plugin_version="v1",
+        downstream_protocol_version=1,
+        distribution="example",
+        distribution_version="1",
+        fingerprint="test",
+        entry_point_name="example",
+        entry_point_value="example:register",
+        family_protocols={TRAINING_PROGRAMS.family: TRAINING_PROGRAMS.protocol_version},
+        registration_order=0,
+        registered_keys={TRAINING_PROGRAMS.family: (method.method_ref,)},
+    )
+    surface = authoring_surface(BootstrapState(bundle, (source,)))
+
+    assert surface.project_grammar == Project.model_json_schema()
+    assert surface.step_payloads == {"train": REQUEST_KINDS["train"].spec_type.model_json_schema()}
+    declaration = next(item for item in surface.training_methods if item.key == method.method_ref)
+    assert declaration.plugin == source.plugin_id
+    assert declaration.owner == method.owner
+    assert declaration.payload_schema == PluginPayload.model_json_schema()
+
+
+def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(study):
+    root, client = study
+    with client:
+        snapshot = _read(client)
+        original = _folder_state(root)
+        composed = client.post(
+            f"{_URL}/authoring/train/fit", json={"revision": snapshot["revision"]},
+        )
+        assert composed.status_code == 422, composed.text
+        assert _folder_state(root) == original
+        response = client.post(
+            f"{_URL}/files",
+            json={
+                "revision": snapshot["revision"],
+                "file": {
+                    "kind": "step", "id": "train",
+                    "step": {"kind": "train", "base": {"inline": {}}},
+                },
+            },
+        )
+        assert response.status_code == 201, response.text
+        revision = response.json()["snapshot"]["revision"]
+        original = _folder_state(root)
+        url = f"{_URL}/authoring/train/train"
+        projection = client.post(url, json={"revision": revision})
+        assert projection.status_code == 200, projection.text
+        assert projection.headers["Cache-Control"] == "no-store"
+        fields = {field["id"]: field for field in projection.json()["fields"]}
+        assert fields["/graph"]["control"]["options"] == [{"label": "model", "value": "model"}]
+        assert fields["/task"]["control"] is None
+        invalid = client.post(url, json={
+            "revision": revision, "change": {"field": "/task", "value": "model"},
+        })
+        assert invalid.status_code == 422
+        assert _folder_state(root) == original
+
+
+def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
+    registry = new_application_registry_bundle().training_programs
+    method = registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
+    project = Project.model_validate({
+        "steps": {
+            "train": {"kind": "train", "base": {"inline": {
+                "task": {"type": "SimpleReaches", "params": {"n_steps": 80}},
+                "method_ref": STUDIO_GRAPH_METHOD.model_dump(),
+                "method_payload": {
+                    "schema_id": method.payload_schema_id,
+                    "schema_version": method.payload_schema_version,
+                    "payload": {
+                        "optimizer": {"type": "adam", "params": {"learning_rate": 0.02}},
+                        "target_total": 25,
+                    },
+                },
+            }}},
+        },
+    })
+    _, patches, _ = project_train_fields(
+        project, "train", registry,
+        StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
+    )
+    patch, = patches
+    assert patch.path == "/base/inline/training_config"
+    assert patch.value == {
+        "n_batches": 25, "learning_rate": 0.02, "batch_size": 1, "n_reach_steps": 80,
+        "snapshot_interval": 12,
+    }
+
+
+    raw = project.model_dump()
+    inline = raw["steps"]["train"]["base"]["inline"]
+    inline["training_config"] = patch.value
+    reference = {"document": "parameters"}
+    inline["method_payload"]["payload"]["optimizer"]["params"] = reference
+    raw["documents"] = {
+        "parameters": {"schema_id": "example.optimizer", "payload": {"learning_rate": 0.02}},
+    }
+    referenced = Project.model_validate(raw, by_name=True)
+    with pytest.raises(ValueError, match="has no supported edit"):
+        project_train_fields(
+            referenced, "train", registry,
+            StudioAuthoringChange(field="/training_config/learning_rate", value=0.03),
+        )
+    assert inline["method_payload"]["payload"]["optimizer"]["params"] == reference
+
+    _, patches, _ = project_train_fields(
+        project, "train", registry,
+        StudioAuthoringChange(field="/method_payload/payload/seed", value=7.0),
+    )
+    seed, = patches
+    assert seed.path == "/base/inline/method_payload/payload/seed"
+    assert type(seed.value) is int and seed.value == 7
 
 
 def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):

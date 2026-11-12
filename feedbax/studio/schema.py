@@ -2104,7 +2104,7 @@ def _graph_structural_selector_targets(
         )
     if graph.retained_observables:
         for observable in graph.retained_observables:
-            selector = _retained_observable_selector(observable)
+            selector = retained_observable_selector(observable)
             targets.append(_selector_target_from_retained_observable(observable, selector))
     return targets
 
@@ -2281,7 +2281,7 @@ def _explicit_probe_selector_targets(
         )
         if not isinstance(probe_dict, dict):
             continue
-        selector = _retained_observable_selector(probe_dict)
+        selector = retained_observable_selector(probe_dict)
         if not isinstance(selector, str) or not selector:
             continue
         target = _selector_target_from_retained_observable(probe_dict, selector)
@@ -2290,7 +2290,7 @@ def _explicit_probe_selector_targets(
     return targets
 
 
-def _retained_observable_selector(observable: Any) -> str:
+def retained_observable_selector(observable: Any) -> str:
     if hasattr(observable, "model_dump"):
         observable = observable.model_dump(mode="json", exclude_none=True)
     if not isinstance(observable, dict):
