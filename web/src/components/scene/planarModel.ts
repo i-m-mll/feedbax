@@ -9,6 +9,8 @@ export type PlanarScenePose =
   | { kind: 'inspection'; qpos: readonly number[] }
   | { kind: 'recorded'; sample: { modelIdentity: string; qpos: readonly number[] } | null };
 
+export type PlanarGeometry = Omit<ScenePlanarModel, 'model_identity'>;
+
 interface PlanarFrame {
   position: ScenePoint;
   angle: number;
@@ -20,18 +22,15 @@ function pointInWorld(frame: PlanarFrame, [x, y]: readonly number[]): ScenePoint
   return [frame.position[0] + x * cosine - y * sine, frame.position[1] + x * sine + y * cosine];
 }
 
-export function posePlanarModel(model: ScenePlanarModel, pose: PlanarScenePose) {
-  if (pose.kind === 'recorded' && !pose.sample) {
-    return { ok: false, code: 'scene.pose_unavailable', message: 'The recording has no planar pose at this time.' } as const;
-  }
-  if (pose.kind === 'recorded' && pose.sample?.modelIdentity !== model.model_identity) {
-    return { ok: false, code: 'scene.pose_model_mismatch', message: 'The recorded pose belongs to a different model.' } as const;
-  }
+export function frameLocalDelta(frame: Pick<PlanarFrame, 'angle'>, delta: ScenePoint): ScenePoint {
+  return pointInWorld({ position: [0, 0], angle: -frame.angle }, delta);
+}
+
+function poseGeometry(model: PlanarGeometry, qpos: readonly number[]) {
   if (model.links.length !== model.reference_qpos.length || model.links.some((link, index) => link.qpos_index !== index)) {
     return { ok: false, code: 'scene.invalid_layout', message: 'The model has an invalid planar joint layout.' } as const;
   }
-  const qpos = pose.kind === 'reference' ? model.reference_qpos : pose.kind === 'inspection' ? pose.qpos : pose.sample?.qpos;
-  if (!qpos || qpos.length !== model.reference_qpos.length || !Array.from(qpos).every(Number.isFinite)) {
+  if (qpos.length !== model.reference_qpos.length || !Array.from(qpos).every(Number.isFinite)) {
     return { ok: false, code: 'scene.invalid_pose', message: 'The pose requires one finite configuration coordinate per joint.' } as const;
   }
 
@@ -56,11 +55,26 @@ export function posePlanarModel(model: ScenePlanarModel, pose: PlanarScenePose) 
   return { ok: true, frames, joints } as const;
 }
 
+function posePlanarModel(model: ScenePlanarModel, pose: PlanarScenePose) {
+  if (pose.kind === 'recorded') {
+    if (!pose.sample) return { ok: false, code: 'scene.pose_unavailable', message: 'The recording has no planar pose at this time.' } as const;
+    if (pose.sample.modelIdentity !== model.model_identity) {
+      return { ok: false, code: 'scene.pose_model_mismatch', message: 'The recorded pose belongs to a different model.' } as const;
+    }
+    return poseGeometry(model, pose.sample.qpos);
+  }
+  return posePlanarPreview(model, pose);
+}
+
+export function posePlanarPreview(model: PlanarGeometry, pose: Exclude<PlanarScenePose, { kind: 'recorded' }>) {
+  return poseGeometry(model, pose.kind === 'reference' ? model.reference_qpos : pose.qpos);
+}
+
 export function planarSceneEntityId(source: StudioPlanarSceneResponse, nodeId: string) {
   return JSON.stringify([source.project_id, source.document_id, source.node_path, nodeId]);
 }
 
-export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pose: PlanarScenePose): ResolvedScene {
+export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pose: PlanarScenePose, preview?: PlanarGeometry): ResolvedScene {
   const scene: ResolvedScene = {
     scenario_id: null, frame: 'world.xy', units: 'm', entities: [], anchors: [], elements: [], required_selectors: [],
     validation: source.diagnostics.map((diagnostic): ResolvedSceneValidationMessage => ({
@@ -68,9 +82,9 @@ export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pos
       entity_id: diagnostic.node_ids?.length ? planarSceneEntityId(source, diagnostic.node_ids[0]) : null,
     })),
   };
-  const { model } = source;
-  if (!model) return scene;
-  const posed = posePlanarModel(model, pose);
+  if (!source.model) return scene;
+  const model = (pose.kind !== 'recorded' && preview) || source.model;
+  const posed = pose.kind !== 'recorded' ? posePlanarPreview(model, pose) : posePlanarModel(source.model, pose);
   if (!posed.ok) {
     scene.validation.push({
       type: posed.code, message: posed.message, severity: 'error',
@@ -134,7 +148,7 @@ export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pos
       for (const [index, point] of muscle.points.entries()) {
         const role = index === 0 ? 'origin' : index === muscle.points.length - 1 ? 'insertion' : 'guide';
         anchors.push(addAnchor(id, `${id}/point/${index}`, `${point.frame} ${role}`, role, points[index], {
-          authored_frame: point.frame, offset: point.position,
+          authored_frame: point.frame, offset: point.position, muscle: muscle.node_id, point_index: index,
         }));
       }
     }

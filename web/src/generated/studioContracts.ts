@@ -3024,7 +3024,7 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
     })
     .strict()
     .superRefine((value, ctx) => {
-      if (Object.values(value.params).some(invalidTypedParamEnvelope)) {
+      if (Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "typed component parameter envelopes must satisfy their declared schema",
@@ -3200,7 +3200,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
           message: "Wrap geometry overlays require a planar multibody graph",
         });
       }
-      if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {
+      if (Object.values(value.nodes ?? {}).some((node) => Object.values(node.params ?? {}).some(containsArrayValueEnvelope))) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "AcausalGraphSpec does not support component-param array value schemas",

@@ -21,7 +21,10 @@ interface Gesture {
   readonly name: string;
   readonly edits: readonly ProjectValueEdit[];
   readonly inverse: readonly ProjectValueEdit[];
+  readonly validate?: ProjectEditValidation;
 }
+
+export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
 
 interface History {
   readonly undo: readonly Gesture[];
@@ -121,13 +124,13 @@ export class ProjectEditController {
     return () => { this.listeners.delete(listener); };
   };
 
-  edit(address: AuthoredFileAddress, name: string, edits: readonly ProjectValueEdit[]) {
+  edit(address: AuthoredFileAddress, name: string, edits: readonly ProjectValueEdit[], validate?: ProjectEditValidation) {
     this.requireEditable();
     if (!edits.length) return;
     const authored = structuredClone(edits);
     const applied = applyAuthoredEdits(this.draft, address, authored, true);
     if (!applied.inverse.length) return;
-    const gesture = { address: { ...address }, name, edits: authored, inverse: applied.inverse };
+    const gesture = { address: { ...address }, name, edits: authored, inverse: applied.inverse, validate };
     this.stage(gesture, 'edit', authored, applied.project);
   }
 
@@ -237,7 +240,8 @@ export class ProjectEditController {
           const base = project;
           const applied = applyAuthoredEdits(base, address, pending.edits, !sameFile, sameFile ? undefined : pending.base);
           if (!applied.inverse.length) continue;
-          const gesture = sameFile ? pending.gesture : { address, name, edits: applied.edits, inverse: applied.inverse };
+          pending.gesture.validate?.(base, applied.project);
+          const gesture = sameFile ? pending.gesture : { ...pending.gesture, address, name, edits: applied.edits, inverse: applied.inverse };
           const direction = sameFile ? pending.direction : 'edit';
           project = applied.project;
           history = moveHistory(history, gesture, direction);
@@ -297,6 +301,7 @@ export class ProjectEditController {
     edits: readonly ProjectValueEdit[],
     project: AuthoredProject,
   ) {
+    gesture.validate?.(this.draft, project);
     const historyAfter = moveHistory(this.history, gesture, direction);
     this.queued.push({ base: this.draft, gesture, direction, edits, historyAfter });
     this.draft = project;

@@ -54,6 +54,27 @@ def _project_response[Result](response: Response, operation: Callable[[], Result
     return snapshot
 
 
+@router.post("/{project_id}/scene/planar")
+def read_planar_scene(
+    project_id: ProjectName, body: StudioPlanarSceneRequest, request: Request, response: Response,
+) -> StudioPlanarSceneResponse:
+    from feedbax.studio.scene_geometry import prepare_project_scene
+
+    def prepare() -> StudioPlanarSceneResponse:
+        snapshot = request.app.state.project_folders.read(project_id)
+        if snapshot.revision != body.revision:
+            raise ProjectRevisionConflict("project", snapshot.revision)
+        model, diagnostics = prepare_project_scene(
+            snapshot.project, body.document_id, body.node_path,
+            request.app.state.bootstrap_state.bundle.components,
+        )
+        return StudioPlanarSceneResponse(
+            project_id=project_id, **body.model_dump(), model=model, diagnostics=diagnostics,
+        )
+
+    return _project_response(response, prepare)
+
+
 @router.get("/{project_id}", response_model_exclude_unset=True)
 def read_project(
     project_id: ProjectName, request: Request, response: Response
@@ -106,27 +127,6 @@ def rename_project(
     return _project_response(
         response, lambda: request.app.state.project_folders.rename(project_id, body)
     )
-
-
-@router.post("/{project_id}/scene/planar")
-def read_planar_scene(
-    project_id: ProjectName, body: StudioPlanarSceneRequest, request: Request, response: Response,
-) -> StudioPlanarSceneResponse:
-    from feedbax.studio.scene_geometry import prepare_project_scene
-
-    def prepare() -> StudioPlanarSceneResponse:
-        snapshot = request.app.state.project_folders.read(project_id)
-        if snapshot.revision != body.revision:
-            raise ProjectRevisionConflict("project", snapshot.revision)
-        model, diagnostics = prepare_project_scene(
-            snapshot.project, body.document_id, body.node_path,
-            request.app.state.bootstrap_state.bundle.components,
-        )
-        return StudioPlanarSceneResponse(
-            project_id=project_id, **body.model_dump(), model=model, diagnostics=diagnostics,
-        )
-
-    return _project_response(response, prepare)
 
 
 class ProjectRevisionWatch:

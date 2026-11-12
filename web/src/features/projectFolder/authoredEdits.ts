@@ -120,6 +120,11 @@ function shouldReapply(before: Container, latest: Container, edit: ProjectValueE
     if (index === path.length - 1) {
       if (edit.op === 'remove' && !exists) return false;
       if (edit.op === 'add' && exists && JSON.stringify(latest[key]) === JSON.stringify(edit.value)) return false;
+      if (edit.op === 'replace' && before[key] !== null && typeof before[key] === 'object' &&
+          JSON.stringify(before[key]) !== JSON.stringify(latest[key])) {
+        if (JSON.stringify(latest[key]) === JSON.stringify(edit.value)) return false;
+        throw new Error(`The authored structure at ${edit.path} changed outside Studio.`);
+      }
       return true;
     }
     if (!exists || !own(before, key)) throw new Error(`The field at ${edit.path} no longer exists.`);

@@ -145,6 +145,29 @@ it('rebases kept edits over the latest revision and gives undo the outside value
   editor.dispose();
 });
 
+it('checks a structural edit guard against outside dependencies on undo and Keep Edits', async () => {
+  const validate = (_before: StudioProjectSnapshot['project'], after: StudioProjectSnapshot['project']) => {
+    const payload = after.documents?.task?.payload as { value: number };
+    if (payload.value !== 1) throw new Error('The task now depends on the existing model layout.');
+  };
+  const saved = fixture();
+  saved.editor.edit(model, 'Change layout', [value(2)], validate);
+  await saved.editor.flush();
+  saved.editor.observe(saved.external(task, [value(5)]));
+  await saved.editor.flush();
+  expect(() => saved.editor.undo()).toThrow('depends on the existing model layout');
+  expect(saved.editor.getSnapshot()).toMatchObject({ pending: 0, undoName: 'Change layout' });
+  saved.editor.dispose();
+
+  const pending = fixture();
+  pending.editor.edit(model, 'Change layout', [value(2)], validate);
+  const outside = pending.external(task, [value(5)]);
+  await expect(pending.editor.flush()).rejects.toMatchObject({ status: 409 });
+  await expect(pending.editor.keep('edits')).rejects.toThrow('depends on the existing model layout');
+  expect(pending.editor.getSnapshot()).toMatchObject({ outside, pending: 1 });
+  pending.editor.dispose();
+});
+
 it('retries a lost connection after a fresh read and flushes edits arriving during a write', async () => {
   const { editor, current, write, external } = fixture();
   write.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach', 'Offline'));

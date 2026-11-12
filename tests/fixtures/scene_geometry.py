@@ -13,8 +13,8 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 _LINKS = ("upper", "forearm", "hand")
 _JOINTS = ("shoulder", "elbow", "wrist")
 _POSES = {
-    "single": [[0.32], [-0.61]],
-    "chain": [[0.43, -0.67, 0.26], [-0.31, 0.58, -0.48], [0.64, 0.15, -0.72]],
+    1: [[0.32], [-0.61]],
+    3: [[0.43, -0.67, 0.26], [-0.31, 0.58, -0.48], [0.64, 0.15, -0.72]],
 }
 
 
@@ -128,7 +128,7 @@ def native_scene_samples(root: Path, document: str):
     model = compiled.model
     interior = graph.subgraphs["mechanics"]
     samples = []
-    for qpos in _POSES[document]:
+    for qpos in _POSES[model.nq]:
         data = mujoco.MjData(model)
         data.qpos[:] = qpos
         mujoco.mj_kinematics(model, data)

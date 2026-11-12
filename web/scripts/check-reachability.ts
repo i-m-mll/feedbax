@@ -22,6 +22,7 @@ const entries = [
   'components/scene/SceneRegion.tsx', // 1479f9c
   'components/scene/SceneClockControls.tsx', // 1479f9c
   'components/scene/useProjectPlanarScene.ts', // 78e8bea
+  'components/scene/ScenePlanarFields.tsx', // 6a1fe16
   'components/pipeline/StudioPipelineMap.tsx', // 3e0ceba
   'components/pipeline/StudioRuns.tsx', // 339d687
   'components/pipeline/StudioRunInputs.tsx', // 339d687
