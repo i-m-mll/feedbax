@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from feedbax.cli import main
+from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -134,3 +135,34 @@ def test_cli_refuses_writes_to_the_project_inputs_or_store(tmp_path, capsys):
         assert "review file" in capsys.readouterr().err
     assert _files(root) == files
     assert not (root / "results").exists()
+
+
+def test_cli_resolves_a_project_relative_figure_pin_without_changing_the_plan(tmp_path, capsys):
+    root = tmp_path / "reaching"
+    project, files = _write_walkthrough(root)
+    baseline = tmp_path / "plan.json"
+    assert main(["plan", str(root), "--out", str(baseline)]) == 0
+    capsys.readouterr()
+    shared = tmp_path / "shared-figure.json"
+    raw = json.dumps({"payload": project.documents["velocity-figure"].payload}).encode()
+    shared.write_bytes(raw)
+    digest = sha256_bytes(raw)
+
+    def pin(document):
+        document.clear()
+        document.update(path="../shared-figure.json", sha256=digest, pointer="/payload")
+
+    _edit(root, files, "velocity-figure", pin)
+    assert main(["plan", str(root / "steps"), "--check", str(baseline)]) == 0
+    assert "default/analyze/default/profile unchanged render:" in capsys.readouterr().out
+    assert main(["plan", str(root), "--out", str(shared)]) == 2
+    assert "review file overlaps an authored project file" in capsys.readouterr().err
+    assert shared.read_bytes() == raw
+
+    shared.write_bytes(b"{")
+    assert main(["plan", str(root), "--check", str(baseline)]) == 2
+    captured = capsys.readouterr()
+    assert "default/analyze/default/align unchanged analyze:" in captured.out
+    assert "documents/velocity-figure.json:payload.sha256" in captured.err
+    assert f"[bad_external_content]: expected {digest}, got {sha256_bytes(b'{')}" in captured.err
+    assert _files(root) == files

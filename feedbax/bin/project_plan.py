@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from feedbax._atomic import write_bytes_atomic
+from feedbax.contracts._authoring_inputs import AuthoringInputs
 from feedbax.contracts.project_io import (
     PROJECT_DECLARATION_FILENAME,
     PROJECT_FILE_FAMILIES,
@@ -30,6 +31,7 @@ from feedbax.contracts.project_plan_io import (
     run_key,
     select_plan_requests,
 )
+from feedbax.contracts.project_resolution import BaseReaders
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
@@ -59,7 +61,7 @@ def _address(key: RunKey | ElementKey) -> str:
     return f"{address}/{key.name}" if isinstance(key, ElementKey) else address
 
 
-def _output_path(path: Path, text: TextProject) -> Path:
+def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Path:
     root = text.root
     destination = path.parent.resolve() / path.name
     resolved = destination.resolve()
@@ -73,6 +75,7 @@ def _output_path(path: Path, text: TextProject) -> Path:
             STUDIO_WRITE_LOCK_FILENAME,
         )
     }
+    owned.update(external_paths)
     owned.update(path.resolve() for path in tuple(owned))
     families = {root / name for name in PROJECT_FILE_FAMILIES}
     families.update(path.resolve() for path in tuple(families))
@@ -120,7 +123,22 @@ def _plan(args: argparse.Namespace) -> int:
     operations = OperationRegistry()
     register_builtin_operations(operations)
     operations.seal()
-    plan = compile_project(text.project, operations=operations)
+    external = AuthoringInputs()
+    external_paths: set[Path] = set()
+    store = text.store_path
+
+    def read_external(name: str) -> bytes:
+        source = root / name
+        try:
+            target = source.resolve()
+            if target.is_relative_to(store):
+                raise OSError(f"{source}: an external pin cannot read the declared Store")
+            external_paths.update((source, target))
+            return external.read_bytes(source, resolved_path=target)
+        except (ValueError, RuntimeError) as error:
+            raise OSError(str(error)) from error
+
+    plan = compile_project(text.project, operations=operations, readers=BaseReaders(external=read_external))
     current = PlanRequests.from_plan(plan)
     known_variants = set(plan.variants)
     variants = tuple(sorted(set(args.variant))) if args.variant else None
@@ -153,7 +171,8 @@ def _plan(args: argparse.Namespace) -> int:
     for problem in problems:
         source = f"steps/{problem.step}.json" if problem.step else PROJECT_DECLARATION_FILENAME
         layer = f" ({problem.layer})" if problem.layer else ""
-        document = f" [documents/{problem.document}.json]" if problem.document else ""
+        authored_path = f":{problem.document_path}" if problem.document_path else ""
+        document = f" [documents/{problem.document}.json{authored_path}]" if problem.document else ""
         print(
             f"{source}{layer}{document} {problem.path} [{problem.code}]: {problem.detail}",
             file=sys.stderr,
@@ -165,7 +184,7 @@ def _plan(args: argparse.Namespace) -> int:
         for key, request in scoped.entries.items():
             print(f"{_address(key)} {request.request_id}")
         if args.out is not None and not problems:
-            destination = _output_path(args.out, text)
+            destination = _output_path(args.out, text, external_paths)
             write_bytes_atomic(destination, dump_plan_requests(current, variants))
     return 2 if problems else status
 

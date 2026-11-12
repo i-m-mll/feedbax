@@ -6,6 +6,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from functools import cache
 from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -188,6 +189,8 @@ class SelectedRunDefinition:
     sources: Mapping[str, ValueSource]
     document_ids: Mapping[str, str]
     document_uses: frozenset[str]
+    document_pointers: Mapping[str, str] = field(default_factory=dict)
+    document_problems: tuple[ProjectDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -662,12 +665,13 @@ class _Compiler:
         *,
         sources: bool = False,
     ) -> ResolvedStep | ProjectDiagnostic:
+        project = self.variants[key.variant]
         return composition.bind(
-            self.variants[key.variant],
+            project,
             readers=self.readers,
             variant_sources=self.variant_sources.get(key.variant),
             read_document=reader,
-        ).resolve(row, include_sources=sources)
+        ).resolve(row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze")
 
     def project_definition(
         self,
@@ -696,6 +700,8 @@ class _Compiler:
                 )
             return SelectedRunDefinition(
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
+                MappingProxyType(resolved.document_pointers),
+                resolved.document_problems,
             )
 
         if self.previous is None:
@@ -1006,6 +1012,9 @@ class _Compiler:
             key,
             resolved.payload,
             resolved.document_ids,
+            resolved.document_pointers,
+            self.variants[key.variant].documents,
+            tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
             source,
             evaluation.spec,
             self.operations,
@@ -1219,6 +1228,8 @@ def compile_project(
     operations: OperationRegistry | None = None,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
+    if readers.external is not None:
+        readers = replace(readers, external=cache(readers.external))
     if memo is None or any(reader is not None for reader in (readers.run, readers.external, readers.row)):
         return _Compiler(project, readers, source_runs, operations=operations).plan()
     authority = _compiler_authority()

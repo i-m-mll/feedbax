@@ -7,7 +7,7 @@ from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.analysis_document import (
     AnalysisDocument,
@@ -18,13 +18,16 @@ from feedbax.contracts.analysis_document import (
     StepDataset,
 )
 from feedbax.contracts.figure_document import (
+    FIGURE_DOCUMENT_SCHEMA,
     PLOTLY_FIGURE_ROLE,
     FigureBindingError,
+    FigureDocument,
     PlotlyFigurePort,
+    is_figure_document_pin,
     validate_figure_bindings,
 )
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
-from feedbax.contracts.project import Payload
+from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.contracts.project_plan import ElementKey, PlannedElement, PlannedInput, RunKey
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
@@ -52,12 +55,16 @@ class _Lowerer:
         self,
         key: RunKey,
         document_ids: Mapping[str, str],
+        document_pointers: Mapping[str, str],
+        documents: Mapping[str, Document],
         source: PlannedInput,
         evaluation: RequestSpec,
         operations: OperationRegistry,
     ):
         self.key = key
         self.document_ids = document_ids
+        self.document_pointers = document_pointers
+        self.documents = documents
         self.source = source
         self.evaluation = evaluation
         self.operations = operations
@@ -72,22 +79,31 @@ class _Lowerer:
         element: str | None = None,
         *,
         code: ResolutionCode = ResolutionCode.INVALID_PAYLOAD,
+        document_path: str | None = None,
     ) -> None:
         doc_path = max(
             (base for base in self.document_ids if path == base or path.startswith(base + ".")),
             key=len,
             default=None,
         )
+        name = self.document_ids[doc_path] if doc_path is not None else None
+        if name is not None and doc_path is not None and document_path is None and path.split(".", 4)[3:4] == ["figure"]:
+            authored = self.documents[name]
+            document_path = (
+                "payload.path" if authored.schema_id == FIGURE_DOCUMENT_SCHEMA and is_figure_document_pin(authored.payload)
+                else ".".join(("payload", *json_pointer_parts(self.document_pointers.get(doc_path)))) + path[len(doc_path):]
+            )
         self.problems.append(
             ProjectDiagnostic(
                 code,
                 path,
                 detail,
                 self.key.step,
-                document=self.document_ids[doc_path] if doc_path is not None else None,
+                document=name,
                 row=self.key.row,
                 variant=self.key.variant,
                 element=element,
+                document_path=document_path,
             )
         )
 
@@ -219,40 +235,67 @@ class _Lowerer:
         except ValueError as error:
             self.problem(path, str(error), name)
 
-    def view(self, name: str, element: FigureElement) -> None:
+    def view(self, name: str, element: FigureElement[JsonValue]) -> None:
         path = f"payload.views.{name}"
+        figure_path = path + ".figure"
+        document = self.document_ids.get(figure_path)
+        if document is not None:
+            schema = self.documents[document].schema_id
+            if schema != FIGURE_DOCUMENT_SCHEMA:
+                self.problem(
+                    figure_path, f"Expected {FIGURE_DOCUMENT_SCHEMA!r}, found {schema!r}.", name,
+                    code=ResolutionCode.INVALID_DOCUMENT, document_path="schema",
+                )
+                return
         try:
-            inputs, schemas = self._inputs(element.inputs, set(element.figure.data))
+            figure = FigureDocument.model_validate(element.figure)
+        except ValidationError as error:
+            for item in error.errors(include_url=False, include_input=False):
+                location = item["loc"]
+                if location[:1] == ("layers",) and location[2:3] in {("line",), ("band",)}:
+                    location = (*location[:2], *location[3:])
+                self.problem(
+                    ".".join(map(str, (figure_path, *location))), item["msg"], name,
+                    code=ResolutionCode.INVALID_DOCUMENT if document else ResolutionCode.INVALID_PAYLOAD,
+                )
+            return
+        try:
+            inputs, schemas = self._inputs(element.inputs, set(figure.data))
         except _ElementIssue as error:
             self.problem(
                 f"{path}.{error.path}", str(error), name, code=ResolutionCode.BAD_REFERENCE
             )
             return
         try:
-            validate_figure_bindings(element.figure, schemas)
+            validate_figure_bindings(figure, schemas)
             self._record(
                 name,
-                RenderRequestSpec(figure=None, document=element.figure),
+                RenderRequestSpec(figure=None, document=figure),
                 inputs,
                 {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
             )
         except FigureBindingError as error:
-            self.problem(f"{path}.figure.{error.path}", str(error), name)
+            self.problem(f"{figure_path}.{error.path}", str(error), name)
         except ValueError as error:
-            self.problem(path + ".figure", str(error), name)
+            self.problem(figure_path, str(error), name)
 
 
 def lower_analyze(
     key: RunKey,
     payload: Payload,
     document_ids: Mapping[str, str],
+    document_pointers: Mapping[str, str],
+    documents: Mapping[str, Document],
+    document_problems: tuple[ProjectDiagnostic, ...],
     source: PlannedInput,
     evaluation: RequestSpec,
     operations: OperationRegistry,
 ) -> tuple[dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic]]:
-    lower = _Lowerer(key, document_ids, source, evaluation, operations)
+    lower = _Lowerer(key, document_ids, document_pointers, documents, source, evaluation, operations)
+    lower.problems.extend(document_problems)
     try:
-        document = AnalysisDocument.model_validate(payload)
+        # Each figure validates below so a bad figure leaves its siblings plannable.
+        document = AnalysisDocument[JsonValue].model_validate(payload)
     except ValidationError as error:
         for item in error.errors(include_url=False, include_input=False):
             location = item["loc"]
@@ -301,6 +344,8 @@ def lower_analyze(
             name,
             code=ResolutionCode.BAD_REFERENCE,
         )
+    refused = {problem.element for problem in document_problems}
     for name, element in sorted(document.views.items()):
-        lower.view(name, element)
+        if name not in refused:
+            lower.view(name, element)
     return lower.elements, lower.encoded, lower.problems
