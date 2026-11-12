@@ -67,7 +67,7 @@ export function StatusBar() {
   const status = useTrainingStore((state) => state.status);
 
   return (
-    <footer className="h-6 px-4 border-t border-slate-100 bg-white/80 text-xs text-slate-500 flex items-center gap-4">
+    <footer className="shell-frame__footer h-6 px-4 border-t border-shell-divider bg-shell-chrome text-xs text-shell-muted flex items-center gap-4">
       <div className="flex items-center gap-1" role="status" aria-label="Studio connection">
         <Circle
           className={`w-2.5 h-2.5 ${connection.isError ? 'text-red-600' : connection.isSuccess ? 'text-mint-500' : 'text-slate-400'}`}

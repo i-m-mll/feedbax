@@ -16,9 +16,12 @@ tauri = { version = "=2.10.2", features = [] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
+window-shell-geometry = { path = "../../vendor/window-shell/native-geometry", features = ["appkit"] }
 libc = "0.2"
 objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSString", "NSNotification", "NSOperation", "block2"] }
 objc2-service-management = "0.3.2"
 
 [profile.release]

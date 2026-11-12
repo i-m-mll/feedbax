@@ -1,8 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { fitPanes } from '@window-shell/browser/layout';
 import clsx from 'clsx';
 import { useStudioRunFocus } from '@/components/activity/studioRunFocus';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
-import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
+import { MAX_BOTTOM_SIDEBAR_WIDTH, MIN_BOTTOM_SIDEBAR_WIDTH, useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
+import { useDrawerSpace, WORKSPACE_MIN_WIDTH } from './useDrawerSpace';
 import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -82,14 +84,17 @@ function PanelLoading() {
 
 export function BottomShelf({
   height,
+  collapsed,
   availableHeight,
 }: {
   height: number;
+  collapsed: boolean;
   availableHeight: number;
 }) {
   const {
     bottomCollapsed,
     bottomSidebarCollapsed,
+    bottomSidebarWidth,
     bottomRightSidebarCollapsed,
     bottomShelfMode,
     toggleBottom,
@@ -111,19 +116,25 @@ export function BottomShelf({
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const markDirty = useGraphStore((state) => state.markDirty);
   const tabsRef = useRef<HTMLDivElement | null>(null);
-  const latestHeight = useRef(availableHeight);
-  latestHeight.current = availableHeight;
   const heightReady = availableHeight > 0;
   const [fadeState, setFadeState] = useState({ left: false, right: false });
   const isAnalysisMode = mode === 'stage' && activeStage?.kind === 'analysis';
+  const { ref, width } = useDrawerSpace();
+  const [sidebarPreview, setSidebarPreview] = useState<number | null>(null);
+  const { panes: [analysisDrawer] } = fitPanes(width, WORKSPACE_MIN_WIDTH, [{
+    open: !bottomSidebarCollapsed,
+    preferredSize: sidebarPreview ?? bottomSidebarWidth,
+    minSize: MIN_BOTTOM_SIDEBAR_WIDTH,
+    maxSize: MAX_BOTTOM_SIDEBAR_WIDTH,
+  }]);
   const LeftSidebarIcon = bottomSidebarCollapsed ? PanelLeftOpen : PanelLeftClose;
   const RightSidebarIcon = bottomRightSidebarCollapsed ? PanelRightOpen : PanelRightClose;
-  const BottomIcon = bottomCollapsed ? UnfoldVertical : FoldVertical;
+  const BottomIcon = collapsed ? UnfoldVertical : FoldVertical;
 
   useEffect(() => {
     if (!focusedStage?.id || !heightReady) return;
     const layout = useLayoutStore.getState();
-    if (layout.bottomCollapsed) layout.toggleBottom(latestHeight.current);
+    if (layout.bottomCollapsed) layout.toggleBottom();
     if (layout.bottomShelfMode !== 'stage') layout.setBottomShelfMode('stage');
   }, [focus, focusedStage?.id, heightReady]);
 
@@ -139,12 +150,12 @@ export function BottomShelf({
   const selectStage = useCallback(
     (stageId: string) => {
       useStudioRunFocus.getState().select(null);
-      if (bottomCollapsed) toggleBottom(availableHeight);
+      if (bottomCollapsed) toggleBottom();
       setBottomShelfMode('stage');
       setActiveStage(stageId);
       markDirty();
     },
-    [availableHeight, bottomCollapsed, markDirty, setActiveStage, setBottomShelfMode, toggleBottom]
+    [bottomCollapsed, markDirty, setActiveStage, setBottomShelfMode, toggleBottom]
   );
 
   const updateFades = useCallback(() => {
@@ -166,10 +177,12 @@ export function BottomShelf({
       el.removeEventListener('scroll', handle);
       window.removeEventListener('resize', handle);
     };
-  }, [bottomCollapsed, updateFades]);
+  }, [collapsed, updateFades]);
 
   return (
     <section
+      ref={ref}
+      id="studio-bottom-pane"
       className="relative w-full max-w-full overflow-hidden bg-white/90 backdrop-blur-sm border-t border-slate-100"
       style={{ height }}
     >
@@ -188,7 +201,7 @@ export function BottomShelf({
           </button>
         )}
         <div className="relative flex-1 min-w-0">
-          <div ref={tabsRef} className="flex items-end overflow-x-auto">
+          <div ref={tabsRef} className="shell-scroll-rail flex items-end" data-axis="x">
             {stages.map((stage) => {
               const Icon = stageIcons[stage.kind] ?? Workflow;
               const active = mode === 'stage' && stage.id === activeStage?.id;
@@ -213,7 +226,7 @@ export function BottomShelf({
             <button
               onClick={() => {
                 useStudioRunFocus.getState().select(null);
-                if (bottomCollapsed) toggleBottom(availableHeight);
+                if (bottomCollapsed) toggleBottom();
                 setBottomShelfMode('console');
               }}
               className={clsx(
@@ -237,9 +250,11 @@ export function BottomShelf({
         <div className="flex h-full shrink-0 items-end gap-1 pb-1">
           <button
             type="button"
-            onClick={() => toggleBottom(availableHeight)}
+            onClick={toggleBottom}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            title={bottomCollapsed ? 'Expand bottom pane' : 'Collapse bottom pane'}
+            disabled={collapsed && !bottomCollapsed}
+            aria-expanded={!collapsed}
+            title={collapsed ? 'Expand bottom pane' : 'Collapse bottom pane'}
           >
             <BottomIcon className="h-4 w-4" />
           </button>
@@ -259,7 +274,7 @@ export function BottomShelf({
           )}
         </div>
       </div>
-      {!bottomCollapsed && (
+      {!collapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
           className={clsx(
@@ -270,7 +285,7 @@ export function BottomShelf({
           {mode === 'stage' && activeStage?.kind === 'analysis' && (
             <StudioErrorBoundary region="Analysis library">
               <Suspense fallback={null}>
-                <BottomSidebar />
+                <BottomSidebar layout={analysisDrawer!} onPreview={setSidebarPreview} />
               </Suspense>
             </StudioErrorBoundary>
           )}

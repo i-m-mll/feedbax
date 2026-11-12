@@ -1,6 +1,8 @@
 // Note: Analysis palette moved to BottomSidebar. When unified graph canvas is implemented, merge back.
 
 import { useState } from 'react';
+import type { PaneLayout } from '@window-shell/browser/layout';
+import { ResizeSeparator } from './ResizeSeparator';
 import { ComponentLibrary } from '@/components/panels/ComponentLibrary';
 import { TaskLibrary } from '@/components/panels/TaskLibrary';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -21,23 +23,25 @@ import clsx from 'clsx';
 
 type ActiveTab = 'components' | 'templates';
 
-export function Sidebar() {
-  const { leftSidebarWidth, leftSidebarVisible, setLeftSidebarWidth } =
-    useLayoutStore();
+export function Sidebar({ layout, onPreview }: {
+  layout: PaneLayout;
+  onPreview: (size: number | null) => void;
+}) {
+  const { leftSidebarVisible, setLeftSidebarWidth } = useLayoutStore();
   const [activeTab, setActiveTab] = useState<ActiveTab>('components');
   const workspace = useWorkspaceStore((state) => state.workspace);
   const topPane = getTopPaneState(workspace);
-
-  if (!leftSidebarVisible) {
-    return null;
-  }
+  if (!leftSidebarVisible) return null;
 
   const isModelProjection = topPane.active_projection === 'model';
   const isTaskProjection = topPane.active_projection === 'task';
 
   return (
     <aside
-      style={{ width: leftSidebarWidth }}
+      id="studio-component-palette"
+      aria-label="Component palette"
+      hidden={!layout.open}
+      style={{ width: layout.size, display: layout.open ? undefined : 'none' }}
       className="border-r border-slate-100 bg-white/90 backdrop-blur-sm flex flex-col relative shrink-0"
     >
       <div className="px-4 pt-4 pb-2 flex items-center">
@@ -74,23 +78,9 @@ export function Sidebar() {
         topPane.active_projection === 'objectives') && (
         <ProjectionSidebar projection={topPane.active_projection} />
       )}
-      <div
-        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-brand-300/50 active:bg-brand-400/50"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          const startX = e.clientX;
-          const startWidth = leftSidebarWidth;
-          const onMove = (me: PointerEvent) => {
-            setLeftSidebarWidth(startWidth + (me.clientX - startX));
-          };
-          const onUp = () => {
-            window.removeEventListener('pointermove', onMove);
-            window.removeEventListener('pointerup', onUp);
-          };
-          window.addEventListener('pointermove', onMove);
-          window.addEventListener('pointerup', onUp);
-        }}
-      />
+      {layout.open && <ResizeSeparator className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-shell-hover"
+        label="Resize component palette" controls="studio-component-palette" axis="x" direction={1}
+        layout={layout} onPreview={onPreview} onResize={setLeftSidebarWidth} />}
     </aside>
   );
 }

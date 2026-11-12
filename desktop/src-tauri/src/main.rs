@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod native_frame;
 mod service;
 
 use serde_json::Value;
@@ -46,15 +48,34 @@ fn show_studio(app: &AppHandle, url: &str, paths: service::Paths) -> tauri::Resu
         window.set_focus()?;
     } else {
         let origin = url.origin();
-        WebviewWindowBuilder::new(app, "studio", WebviewUrl::External(url))
+        #[cfg(target_os = "macos")]
+        let frame = native_frame::StudioFrame::new(&url)?;
+        let builder = WebviewWindowBuilder::new(app, "studio", WebviewUrl::External(url))
             .title(TITLE)
             .inner_size(1350., 910.)
             .min_inner_size(820., 560.)
             .devtools(false)
             .data_store_identifier(paths.storage_id)
             .on_navigation(move |url| url.origin() == origin)
-            .on_new_window(|_, _| NewWindowResponse::Deny)
-            .build()?;
+            .on_new_window(|_, _| NewWindowResponse::Deny);
+        #[cfg(target_os = "macos")]
+        let builder = {
+            let load_frame = frame.clone();
+            builder
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .on_page_load(move |window, page| {
+                    if load_frame.matches(page.url()) {
+                        load_frame.refresh(&window);
+                    }
+                })
+        };
+        let window = builder.build()?;
+        #[cfg(target_os = "macos")]
+        if let Err(error) = frame.install(&window) {
+            window.destroy()?;
+            return Err(error);
+        }
     }
     if let Some(window) = app.get_webview_window("status") {
         window.destroy()?;

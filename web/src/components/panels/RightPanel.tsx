@@ -1,19 +1,23 @@
+import type { PaneLayout } from '@window-shell/browser/layout';
+import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { ScenarioInspectorPanel } from '@/components/panels/ScenarioInspectorPanel';
 import { TreescopePanel } from '@/components/panels/TreescopePanel';
 import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { useLayoutStore } from '@/stores/layoutStore';
 
-export function RightPanel() {
-  const { rightSidebarWidth, rightSidebarVisible, setRightSidebarWidth } =
-    useLayoutStore();
-
-  if (!rightSidebarVisible) {
-    return null;
-  }
+export function RightPanel({ layout, onPreview }: {
+  layout: PaneLayout;
+  onPreview: (size: number | null) => void;
+}) {
+  const { rightSidebarVisible, setRightSidebarWidth } = useLayoutStore();
+  if (!rightSidebarVisible) return null;
 
   return (
     <aside
-      style={{ width: rightSidebarWidth }}
+      id="studio-properties"
+      aria-label="Properties"
+      hidden={!layout.open}
+      style={{ width: layout.size, display: layout.open ? undefined : 'none' }}
       className="max-w-full border-l border-slate-100 bg-white/90 backdrop-blur-sm flex flex-col overflow-x-hidden relative shrink-0"
     >
       <div className="px-4 pt-4">
@@ -26,23 +30,9 @@ export function RightPanel() {
         <TreescopePanel />
         <ValidationPanel />
       </div>
-      <div
-        className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-brand-300/50 active:bg-brand-400/50"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          const startX = e.clientX;
-          const startWidth = rightSidebarWidth;
-          const onMove = (me: PointerEvent) => {
-            setRightSidebarWidth(startWidth - (me.clientX - startX));
-          };
-          const onUp = () => {
-            window.removeEventListener('pointermove', onMove);
-            window.removeEventListener('pointerup', onUp);
-          };
-          window.addEventListener('pointermove', onMove);
-          window.addEventListener('pointerup', onUp);
-        }}
-      />
+      {layout.open && <ResizeSeparator className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-shell-hover"
+        label="Resize properties" controls="studio-properties" axis="x" direction={-1}
+        layout={layout} onPreview={onPreview} onResize={setRightSidebarWidth} />}
     </aside>
   );
 }
