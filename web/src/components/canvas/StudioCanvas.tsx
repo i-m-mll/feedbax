@@ -76,7 +76,6 @@ export function StudioCanvas({
   }, (a, b) => a?.x === b?.x && a?.y === b?.y && a?.width === b?.width && a?.height === b?.height);
   const bounds = contentBounds === undefined ? nodesBounds : contentBounds;
   const boundsKey = bounds && [bounds.x, bounds.y, bounds.width, bounds.height].join('/');
-  const fitKey = boundsKey && (fitNewContent ? `${boundsKey}/${width}/${height}` : boundsKey);
   const fitted = useRef<string>();
   const moved = useRef(false);
   const root = useRef<HTMLDivElement>(null);
@@ -94,16 +93,16 @@ export function StudioCanvas({
   useImperativeHandle(viewportRef, () => viewport);
   useEffect(() => {
     if (lockAutoFit) moved.current = true;
-    if (!fitReady || !bounds || !fitKey || !viewportInitialized || !width || !height || moved.current) return;
-    if (fitted.current === fitKey || (fitted.current && !fitNewContent)) return;
+    if (!fitReady || !bounds || !boundsKey || !viewportInitialized || !width || !height || moved.current) return;
+    if (fitted.current === boundsKey || (fitted.current && !fitNewContent)) return;
     const frame = requestAnimationFrame(() => {
       if (moved.current) return;
-      fitted.current = fitKey;
+      fitted.current = boundsKey;
       if (fitNewContent || bounds.x < 0 || bounds.y < 0 || bounds.width + bounds.x > width ||
           bounds.height + bounds.y > height) fit();
     });
     return () => cancelAnimationFrame(frame);
-  }, [fit, fitKey, bounds, fitReady, viewportInitialized, width, height, fitNewContent, lockAutoFit]);
+  }, [fit, boundsKey, bounds, fitReady, viewportInitialized, width, height, fitNewContent, lockAutoFit]);
   useEffect(() => () => {
     if (revealFrame.current !== undefined) cancelAnimationFrame(revealFrame.current);
   }, []);

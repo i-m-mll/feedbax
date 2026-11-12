@@ -59,6 +59,22 @@ test('places and connects a Model component for exactly the lit steps', async ({
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(button(drawer, 'Add GRU')).toBeEnabled();
+  const viewport = model.locator('.react-flow__viewport');
+  const pose = () => viewport.evaluate((node) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(node).transform);
+    return [matrix.a, matrix.e, matrix.f];
+  });
+  await expect.poll(pose).not.toEqual([1, 0, 0]);
+  const fittedPose = await pose();
+  const pane = model.locator('.react-flow__pane');
+  const paneHeight = () => pane.evaluate((node) => node.getBoundingClientRect().height);
+  const fittedHeight = await paneHeight();
+  await page.setViewportSize({ width: 1440, height: 740 });
+  await expect.poll(paneHeight).toBeLessThan(fittedHeight);
+  await viewport.evaluate(() => new Promise<void>((paint) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => paint()))));
+  expect(await pose()).toEqual(fittedPose);
+  await page.setViewportSize({ width: 1440, height: 900 });
   const initialRequests = await requests(original.revision);
   expect(Object.keys(initialRequests).sort()).toEqual(['lit', 'train', 'unlit']);
   await mapStep(page, 'unlit').click({ modifiers: ['Meta'] });

@@ -363,6 +363,16 @@ def build_parser() -> argparse.ArgumentParser:
     project_plan_cli.configure_status_parser(subparsers.add_parser(
         "status", prog="feedbax status", help="Show saved project run and element states.",
     ))
+    describe_parser = subparsers.add_parser(
+        "describe", prog="feedbax describe", help="Show authored schemas and registry declarations.",
+    )
+    describe_parser.add_argument(
+        "selector", nargs="?",
+        help="Family, step kind or registry. Qualify with family:, step: or registry: as needed.",
+    )
+    describe_parser.add_argument(
+        "--plugin", action="append", help="Load a plugin module's declarations. May be repeated.",
+    )
     migration_parser = subparsers.add_parser(
         "migrate-content-store",
         help="Offline conversion of legacy custody into canonical content references.",
@@ -788,6 +798,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrap_state = asyncio.run(
         compose_application(modules=tuple(getattr(args, "plugin", None) or ()))
     )
+    if args.command == "describe":
+        from feedbax.bin.describe import describe
+
+        return describe(bootstrap_state, args.selector)
     registries = bootstrap_state.bundle
     if args.command == "matrix-harness":
         from feedbax.analysis.harness import main as harness_main

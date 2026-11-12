@@ -16,6 +16,12 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   } } } };
   successor.step.inputs.checkpoint.where = { axes: { seed: ['first', 'third'] } };
   const { snapshot, projectPath } = await seedManagedProject(request, [model, task, train, successor, unrelated]);
+  const region = page.locator('[data-studio-focus-region="map"]:visible');
+  const canvas = page.locator('[data-map-canvas]');
+  const edge = canvas.locator('[data-map-edge]');
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await expect(edge).toHaveCount(1);
+
   const planResponse = await request.get(`${projectPath}/train-runs`, {
     params: { revision: snapshot.revision, window_map: 'true' },
   });
@@ -27,8 +33,6 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   const included = runs.find(({ key }) => edges!.some(({ from_key }) => from_key.row === key.row))!;
   const excluded = runs.find(({ key }) => !edges!.some(({ from_key }) => from_key.row === key.row))!;
 
-  const region = page.locator('[data-studio-focus-region="map"]:visible');
-  const canvas = page.locator('[data-map-canvas]');
   const viewport = canvas.locator('.react-flow__viewport');
   const camera = () => viewport.evaluate((node) => {
     const matrix = new DOMMatrixReadOnly(getComputedStyle(node).transform);
@@ -37,13 +41,10 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   const card = (name: string) => canvas.locator(`[data-map-step="${name}"]`);
   const source = card('train');
   const child = card('successor');
-  const edge = canvas.locator('[data-map-edge]');
   const mark = (row: typeof included) => source.getByRole('button', {
     name: new RegExp(`^Select seed ${row.coordinates.seed.label ?? row.coordinates.seed.value_id} · `),
   });
 
-  await page.goto(`/?project=${snapshot.project_id}`);
-  await expect(edge).toHaveCount(1);
   await page.keyboard.press('Control+Meta+1');
   await expect(region).toBeFocused();
   await page.keyboard.press('Shift+F6');
