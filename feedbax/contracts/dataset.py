@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from math import prod
 from typing import Annotated, Literal
 
@@ -15,8 +16,10 @@ from pydantic import (
     model_validator,
 )
 
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.request_refs import ContentRef, ReferenceValue, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
 
@@ -106,6 +109,19 @@ class DatasetDescriptor(StrictModel):
             if field.inline_values is None
         )
 
+    def validate_tensor_shapes(self, tensor_shapes: Mapping[str, Sequence[int]]) -> None:
+        """Require an exact tensor-name and dimension-size match to the physical header."""
+        expected = self.tensor_names
+        if tensor_shapes.keys() != expected:
+            missing = sorted(expected - tensor_shapes.keys())
+            extra = sorted(tensor_shapes.keys() - expected)
+            raise ValueError(f"dataset tensor names differ from descriptor: {missing=}, {extra=}")
+        for name, shape in tensor_shapes.items():
+            actual = tuple(shape)
+            expected_shape = self.shape(name)
+            if actual != expected_shape:
+                raise ValueError(f"tensor {name!r} has shape {actual}, expected {expected_shape}")
+
     def json_value(self) -> dict[str, JsonValue]:
         """The semantic metadata value embedded by the array container."""
         return self.model_dump(mode="json", exclude_none=True)
@@ -122,3 +138,25 @@ class DatasetDescriptor(StrictModel):
     @classmethod
     def from_json(cls, payload: bytes | str) -> DatasetDescriptor:
         return cls.from_json_value(strict_json_loads(payload))
+
+
+class DatasetProductRef(ReferenceValue):
+    """An exact dataset object and the independent digest of its array descriptor."""
+
+    content: ContentRef
+    descriptor_sha256: Sha256
+
+    @model_validator(mode="after")
+    def _require_blob(self) -> DatasetProductRef:
+        if self.content.tree:
+            raise ValueError("a dataset product must refer to a single content object")
+        return self
+
+    @property
+    def object_ref(self) -> ContentObjectRef:
+        """The custody reference derived from the portable content identity."""
+        return ContentObjectRef(
+            object_id=f"{CONTENT_OBJECT_REF_PREFIX}{self.content.sha256}",
+            sha256=self.content.sha256,
+            size_bytes=self.content.size,
+        )
