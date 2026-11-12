@@ -134,6 +134,11 @@ export interface StudioSavedTrainChange {
   after: JsonValue;
 }
 
+export interface StudioSavedTrainCoordinate {
+  value_id: string;
+  label: string;
+}
+
 export interface StudioSavedTrainKey {
   variant: string;
   step: string;
@@ -151,6 +156,8 @@ export interface StudioSavedTrainRow {
   key: StudioSavedTrainKey;
   label: string;
   request_id: string;
+  coordinates: Record<string, StudioSavedTrainCoordinate>;
+  checkpoint_producer: StudioSavedTrainKey | null;
   attempts: StudioSavedTrainAttempt[];
   status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
@@ -168,6 +175,16 @@ export interface StudioSavedTrainRunRequest {
 export interface StudioSavedTrainRuns {
   revision: string;
   rows: StudioSavedTrainRow[];
+  checkpoint_subsets: StudioSavedTrainSubset[];
+}
+
+export interface StudioSavedTrainSubset {
+  variant: string;
+  step: string;
+  source_step: string;
+  terms: SubsetTerms;
+  count: number;
+  total: number;
 }
 
 export interface StudioTrainCheckpointSource {
@@ -3048,6 +3065,15 @@ export const StudioSavedTrainChangeSchema: z.ZodType<StudioSavedTrainChange> = z
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainChange>;
 
+export const StudioSavedTrainCoordinateSchema: z.ZodType<StudioSavedTrainCoordinate> = z.lazy(() =>
+  z
+    .object({
+      "value_id": z.string(),
+      "label": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainCoordinate>;
+
 export const StudioSavedTrainKeySchema: z.ZodType<StudioSavedTrainKey> = z.lazy(() =>
   z
     .object({
@@ -3075,6 +3101,8 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
       "key": StudioSavedTrainKeySchema,
       "label": z.string(),
       "request_id": z.string(),
+      "coordinates": z.record(z.string(), StudioSavedTrainCoordinateSchema),
+      "checkpoint_producer": StudioSavedTrainKeySchema.nullable(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
       "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
@@ -3100,9 +3128,23 @@ export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.laz
     .object({
       "revision": z.string(),
       "rows": z.array(StudioSavedTrainRowSchema),
+      "checkpoint_subsets": z.array(StudioSavedTrainSubsetSchema),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRuns>;
+
+export const StudioSavedTrainSubsetSchema: z.ZodType<StudioSavedTrainSubset> = z.lazy(() =>
+  z
+    .object({
+      "variant": z.string(),
+      "step": z.string(),
+      "source_step": z.string(),
+      "terms": SubsetTermsSchema,
+      "count": z.number().int().safe(),
+      "total": z.number().int().safe(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainSubset>;
 
 export const StudioTrainCheckpointSourceSchema: z.ZodType<StudioTrainCheckpointSource> = z.lazy(() =>
   z
@@ -7309,11 +7351,13 @@ export const contractSchemas = {
   StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
   StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
   StudioSavedTrainChange: StudioSavedTrainChangeSchema,
+  StudioSavedTrainCoordinate: StudioSavedTrainCoordinateSchema,
   StudioSavedTrainKey: StudioSavedTrainKeySchema,
   StudioSavedTrainResult: StudioSavedTrainResultSchema,
   StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
+  StudioSavedTrainSubset: StudioSavedTrainSubsetSchema,
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioPreviewIssue: StudioPreviewIssueSchema,
@@ -7410,11 +7454,13 @@ export interface ContractTypeMap {
   StudioJobSubmissionRequest: StudioJobSubmissionRequest;
   StudioSavedTrainAttempt: StudioSavedTrainAttempt;
   StudioSavedTrainChange: StudioSavedTrainChange;
+  StudioSavedTrainCoordinate: StudioSavedTrainCoordinate;
   StudioSavedTrainKey: StudioSavedTrainKey;
   StudioSavedTrainResult: StudioSavedTrainResult;
   StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedTrainRuns: StudioSavedTrainRuns;
+  StudioSavedTrainSubset: StudioSavedTrainSubset;
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioPreviewIssue: StudioPreviewIssue;

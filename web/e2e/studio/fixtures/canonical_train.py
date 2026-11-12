@@ -184,6 +184,17 @@ def history_files():
     return [model, task, train, sibling]
 
 
+def swept_files():
+    model, task, train, _ = authored_files()
+    train["step"]["sweep"] = {"axes": {"seed": {"values": {
+        name: {"label": label, "patches": {
+            "method_payload.payload.seed": {"op": "add", "value": seed},
+        }}
+        for name, label, seed in (("a", "Replicate A", 71), ("b", "Replicate B", 72), ("c", "Replicate C", 73))
+    }}}}
+    return [model, task, train]
+
+
 def observe_history(home: Path, project: str, revision: str):
     paths = AppPaths.resolve(instance_root=home)
     folders = ProjectFolderService(paths.web / "projects")
@@ -215,6 +226,8 @@ if __name__ == "__main__":
         print(json.dumps(authored_files()))
     elif action == "history-files" and not arguments:
         print(json.dumps(history_files()))
+    elif action == "swept-files" and not arguments:
+        print(json.dumps(swept_files()))
     elif action == "observe":
         home, project, revision, attempt, stopped_attempt, successor_attempt = arguments
         print(json.dumps(observe(Path(home), project, revision, attempt, stopped_attempt, successor_attempt)))

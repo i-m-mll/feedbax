@@ -269,3 +269,116 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
+
+test('Map New Step saves a swept Train continuation and runs only the paired rows', async ({ page, request }) => {
+  test.setTimeout(47_000);
+  const created = await request.post('/api/projects');
+  expect(created.status()).toBe(201);
+  let { snapshot } = await created.json() as StudioProjectDocument;
+  const id = snapshot.project_id;
+  const projectPath = `/api/projects/${id}`;
+  const filesPath = `${projectPath}/files`;
+  const runsPath = `${projectPath}/train-runs`;
+  for (const file of await fixture('swept-files')) {
+    const saved = await request.post(filesPath, { data: { revision: snapshot.revision, file } });
+    expect(saved.status(), await saved.text()).toBe(201);
+    ({ snapshot } = await saved.json() as StudioProjectDocument);
+  }
+  const plan = async () => {
+    const response = await request.get(`${runsPath}?revision=${snapshot.revision}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  };
+  const map = page.getByRole('region', { name: 'Pipeline Map' });
+  const source = map.getByRole('article', { name: 'Train train', exact: true });
+  const runs = page.getByRole('region', { name: 'Runs', exact: true });
+  const table = runs.getByRole('table', { name: 'Runs' });
+  const run = async (step: string) => {
+    const response = submitted(page, runsPath);
+    await runs.getByRole('button', { name: 'Run', exact: true }).click();
+    const admitted = await response;
+    expect(admitted.status(), await admitted.text()).toBe(202);
+    expect(admitted.request().postDataJSON().run_keys).toEqual(
+      ['a', 'c'].map((value) => ({ variant: 'default', step, row: `seed=${value}` })),
+    );
+    const result = await admitted.json() as StudioJobSubmission;
+    expect(result.items.map(({ disposition }) => disposition)).toEqual(['admitted', 'admitted']);
+    await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
+    return result.items;
+  };
+
+  await page.goto(`/e2e/studio/fixtures/saved_train_pipeline.html?project=${encodeURIComponent(id)}`);
+  const valueButton = (name: string) => source.getByRole('button', { name: `Select seed Replicate ${name}`, exact: true });
+  await valueButton('A').click();
+  await valueButton('C').click({ modifiers: ['Shift'] });
+  await expect(valueButton('A')).toHaveAttribute('aria-pressed', 'true');
+  await expect(valueButton('C')).toHaveAttribute('aria-pressed', 'true');
+  await expect(valueButton('B')).toHaveAttribute('aria-pressed', 'false');
+  await expect(source).toContainText('2 of 3');
+  const prefix = await run('train');
+
+  const create = submitted(page, filesPath);
+  await source.getByRole('button', { name: 'New Step train', exact: true }).click();
+  const accepted = await create;
+  expect(accepted.status(), await accepted.text()).toBe(201);
+  ({ snapshot } = await accepted.json() as StudioProjectDocument);
+  const childId = 'train-continuation';
+  expect(snapshot.project.steps?.[childId]).toMatchObject({
+    base: { step: 'train' },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { axes: { seed: ['a', 'c'] } } } },
+  });
+  const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
+  await expect(child.getByRole('button', { name: `Select ${childId}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(child).toContainText('seed Replicate A, Replicate C · 2 of 3');
+  await expect(runs.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
+
+  const edit = page.waitForResponse((response) =>
+    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+  const batches = runs.getByRole('spinbutton', { name: 'Edit N Batches' });
+  await batches.fill('4');
+  await batches.press('Enter');
+  const acknowledged = await edit;
+  expect(acknowledged.ok(), await acknowledged.text()).toBe(true);
+  snapshot = await acknowledged.json() as StudioProjectSnapshot;
+  expect(snapshot.project.steps?.[childId]?.deltas).toHaveLength(2);
+  const successors = await run(childId);
+  const compiled = await plan();
+  const successorRows = compiled.rows.filter(({ key }) => key.step === childId);
+  expect(successorRows.map(({ key }) => key.row)).toEqual(['seed=a', 'seed=c']);
+  const jobFor = (items: StudioJobSubmission['items'], { variant, step, row }: StudioSavedTrainRuns['rows'][number]['key']) =>
+    items.find((item) => item.run_key === JSON.stringify([variant, step, row]))?.job_id;
+  for (const row of successorRows) {
+    const producer = compiled.rows.find(({ key }) => key.step === 'train' && key.row === row.key.row)!;
+    expect(row.checkpoint_producer).toEqual(producer.key);
+    expect(row.attempts).toEqual([expect.objectContaining({
+      job_id: jobFor(successors, row.key),
+      progress: { completed_updates: 4, total_updates: 4 },
+      checkpoint_source: {
+        job_id: jobFor(prefix, producer.key), request_id: producer.request_id, completed_updates: 2,
+      },
+    })]);
+  }
+  const unselected = compiled.rows.find(({ key }) => key.step === 'train' && key.row === 'seed=b')!;
+  expect(unselected.attempts).toEqual([]);
+
+  await source.getByRole('button', { name: 'Select train', exact: true }).click();
+  await table.getByRole('row').filter({ hasText: 'Replicate A' }).getByRole('button').click();
+  const explicit = submitted(page, filesPath);
+  await runs.getByRole('button', { name: 'New Step', exact: true }).click();
+  const rowSaved = await explicit;
+  expect(rowSaved.status(), await rowSaved.text()).toBe(201);
+  ({ snapshot } = await rowSaved.json() as StudioProjectDocument);
+  const rowChild = 'train-continuation-2';
+  expect(snapshot.project.steps?.[rowChild]).toMatchObject({
+    base: { step: 'train' },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { rows: ['seed=a'] } } },
+  });
+  expect((await plan()).rows.filter(({ key }) => key.step === rowChild).map(({ key }) => key.row)).toEqual(['seed=a']);
+  console.info('Mounted swept Train pairing', JSON.stringify({
+    project: id, revision: snapshot.revision,
+    rows: successorRows.map(({ key, request_id, checkpoint_producer, attempts }) => ({
+      key, request_id, checkpoint_producer, attempt: attempts[0],
+    })),
+    excluded: unselected.key, explicit: snapshot.project.steps?.[rowChild]?.inputs,
+  }));
+});

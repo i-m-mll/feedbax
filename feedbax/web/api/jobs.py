@@ -25,13 +25,15 @@ from feedbax.contracts.jobs import (
     StudioRunPreview,
     StudioRunPreviewRequest,
     StudioSavedTrainAttempt,
+    StudioSavedTrainCoordinate,
     StudioSavedTrainKey,
     StudioSavedTrainRow,
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
+    StudioSavedTrainSubset,
 )
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_inputs import ProjectName, StepReference
 from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
@@ -72,6 +74,7 @@ def saved_train_runs(
 ) -> StudioSavedTrainRuns:
     def read() -> StudioSavedTrainRuns:
         view = request.app.state.project_plan.read(project_id, revision=revision)
+        plan = view.settled.plan
         return StudioSavedTrainRuns(
             revision=view.settled.revision,
             rows=[
@@ -79,6 +82,16 @@ def saved_train_runs(
                     key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
                     label=run.label or run.key.row,
                     request_id=run.request_id,
+                    coordinates={
+                        axis: StudioSavedTrainCoordinate(
+                            value_id=coordinate.value_id, label=coordinate.label or coordinate.value_id,
+                        )
+                        for axis, coordinate in run.coordinates.items()
+                    },
+                    checkpoint_producer=(
+                        StudioSavedTrainKey.model_validate(checkpoint.producer, from_attributes=True)
+                        if (checkpoint := run.inputs.get("checkpoint")) is not None else None
+                    ),
                     attempts=[
                         StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
                         for attempt in view.attempts_by_run.get(run.key, ())
@@ -89,8 +102,17 @@ def saved_train_runs(
                     previous=view.history[run.key].previous,
                     change=view.history[run.key].change,
                 )
-                for run in view.settled.plan.runs
+                for run in plan.runs
                 if run.kind == "train"
+            ],
+            checkpoint_subsets=[
+                StudioSavedTrainSubset(
+                    variant=variant, step=step, source_step=reference.step, terms=subset.terms,
+                    count=len(subset.members), total=subset.candidates,
+                )
+                for (variant, step, role), subset in plan.subsets.items()
+                if role == "checkpoint"
+                and isinstance(reference := (plan.steps[variant, step].inputs or {}).get(role), StepReference)
             ],
         )
 

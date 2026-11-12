@@ -1,32 +1,31 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
+import type { PipelineMapStepSource, StudioPipelineMapProps } from '@/components/pipeline/StudioPipelineMap';
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
-import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
-import { emptyPipelineSelection, selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
+import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
+import {
+  emptyPipelineSelection, selectedRuns, selectStep,
+  type PipelineSelection, type PipelineSelectionState,
+} from '@/features/pipeline/selection';
 import type { StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
+import { createCheckpointTrain, rowId, savedTrainPlan } from './savedTrainPlan';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
 type SavedRow = StudioSavedTrainRuns['rows'][number];
 
-function rowId({ key }: SavedRow) {
-  return JSON.stringify([key.variant, key.step, key.row]);
+export interface SavedTrainRegions {
+  map: StudioPipelineMapProps;
+  details: ReactNode;
 }
 
-function runView(row: SavedRow): PlanRunView {
-  const attempt = row.attempts.at(-1);
-  return {
-    id: rowId(row), label: row.label, variant: row.key.variant, values: {},
-    status: row.status, reason: row.reason ?? undefined,
-    progress: attempt?.progress ?? undefined,
-  };
-}
+type PlaceRegions = (regions: SavedTrainRegions) => ReactNode;
 
 function TrainReceipts({ row }: { row: SavedRow }) {
   const results = [
@@ -62,7 +61,10 @@ function TrainReceipts({ row }: { row: SavedRow }) {
   );
 }
 
-export default function SavedTrainWorkspace({ projectId }: { projectId: string }) {
+export default function SavedTrainWorkspace({ projectId, placeRegions }: {
+  projectId: string;
+  placeRegions?: PlaceRegions;
+}) {
   const [session, setSession] = useState<EditorSession>();
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -77,16 +79,21 @@ export default function SavedTrainWorkspace({ projectId }: { projectId: string }
   }, [projectId]);
   if (error) return <main className="p-4"><p role="alert">{error}</p></main>;
   if (!session) return <main aria-busy="true" />;
-  return <SavedProjectTrain editor={session.editor} />;
+  return <SavedProjectTrain editor={session.editor} placeRegions={placeRegions} />;
 }
 
-function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
+function SavedProjectTrain({ editor, placeRegions }: { editor: ProjectEditController; placeRegions?: PlaceRegions }) {
   const { saved, configuration, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const jobs = useStudioJobs();
-  const steps = Object.entries(saved.project.steps ?? {}).filter(([, step]) => step.kind === 'train');
-  const [requestedStep, setRequestedStep] = useState<string>();
+  const stepIds = useMemo(() => Object.entries(saved.project.steps ?? {})
+    .filter(([, step]) => step.kind === 'train').map(([id]) => id), [saved.project.steps]);
+  const [selection, setSelection] = useState(emptyPipelineSelection);
+  const [focusStep, setFocusStep] = useState<string>();
   const [commandError, setCommandError] = useState<string>();
-  const stepId = steps.find(([id]) => id === requestedStep)?.[0] ?? steps[0]?.[0];
+  const creating = useRef(false);
+  const selected = selection.selection;
+  const requested = selected?.kind === 'steps' ? selected.stepIds.at(-1) : selected?.stepId;
+  const stepId = requested && stepIds.includes(requested) ? requested : stepIds[0];
   const projection = useQuery({
     queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor],
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal),
@@ -96,14 +103,40 @@ function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
   });
   const data = projection.data;
   const rows = data?.rows.filter((row) => row.key.step === stepId) ?? [];
-  const view: PlanView = {
-    edges: [],
-    steps: steps.map(([id]) => ({
-      id, label: id, kind: 'train', inputs: [], sweeps: [], statusCounts: {},
-      runs: (data?.rows ?? []).filter((row) => row.key.step === id).map(runView),
-    })),
-  };
+  const view = useMemo(() => savedTrainPlan(stepIds, data), [stepIds, data]);
   const step = view.steps.find(({ id }) => id === stepId);
+  const ready = data?.revision === saved.revision && !pending && !outside;
+
+  function choose(next: PipelineSelectionState) {
+    setSelection(next);
+    setFocusStep(undefined);
+    setCommandError(undefined);
+  }
+
+  async function newStep(source?: PipelineMapStepSource) {
+    if (!source || !data || !ready || creating.current) return;
+    creating.current = true;
+    setCommandError(undefined);
+    try {
+      const id = await createCheckpointTrain(editor, source, view, data);
+      setSelection(selectStep(emptyPipelineSelection, id));
+      setFocusStep(id);
+    } catch (error) {
+      setCommandError(apiErrorMessage(error));
+    } finally {
+      creating.current = false;
+    }
+  }
+
+  const details = step && (
+    <SavedTrainStep
+      key={`${step.id}:${data?.revision}`} editor={editor} project={saved.project_id}
+      step={step} rows={rows} view={view} revision={data?.revision}
+      planRows={data?.rows ?? []} ready={ready} reportError={setCommandError}
+      selection={selection} onSelectionChange={choose} onNewStep={newStep}
+      focusFirstField={ready && focusStep === step.id} onFirstFieldFocused={() => setFocusStep(undefined)}
+    />
+  );
   return (
     <main className="mx-auto max-w-4xl space-y-4 p-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -111,10 +144,7 @@ function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
         {step && (
           <label className="flex gap-2">
             Train step
-            <select value={step.id} onChange={(event) => {
-              setRequestedStep(event.target.value);
-              setCommandError(undefined);
-            }}>
+            <select value={step.id} onChange={(event) => choose(selectStep(selection, event.target.value))}>
               {view.steps.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
             </select>
           </label>
@@ -123,20 +153,18 @@ function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
       {jobs.error && <p role="alert">{apiErrorMessage(jobs.error)}</p>}
       {projection.error && <p role="alert">{apiErrorMessage(projection.error)}</p>}
       {commandError && <p role="alert">{commandError}</p>}
-      {step && (
-        <SavedTrainStep
-          key={`${step.id}:${data?.revision}`} editor={editor} project={saved.project_id}
-          step={step} rows={rows} view={view} revision={data?.revision}
-          planRows={data?.rows ?? []}
-          ready={data?.revision === saved.revision && !pending && !outside}
-          reportError={setCommandError}
-        />
-      )}
+      {placeRegions ? placeRegions({
+        map: { plan: view, state: selection, onSelectionChange: choose, onNewStep: ready && step ? newStep : undefined },
+        details,
+      }) : details}
     </main>
   );
 }
 
-function SavedTrainStep({ editor, project, step, rows, planRows, view, revision, ready, reportError }: {
+function SavedTrainStep({
+  editor, project, step, rows, planRows, view, revision, ready, reportError,
+  selection, onSelectionChange, onNewStep, focusFirstField, onFirstFieldFocused,
+}: {
   editor: ProjectEditController;
   project: string;
   step: PlanStepView;
@@ -146,13 +174,17 @@ function SavedTrainStep({ editor, project, step, rows, planRows, view, revision,
   revision: string | undefined;
   ready: boolean;
   reportError: (message: string | undefined) => void;
+  selection: PipelineSelectionState;
+  onSelectionChange: (state: PipelineSelectionState) => void;
+  onNewStep: (source: PipelineMapStepSource) => void;
+  focusFirstField: boolean;
+  onFirstFieldFocused: () => void;
 }) {
-  const [selection, setSelection] = useState(emptyPipelineSelection);
   const [busy, setBusy] = useState(false);
   const submission = useRef<{ intent: string; token: string } | undefined>(undefined);
   const jobs = useStudioJobActions();
-  const selected = selectedRuns(step, selection.selection);
-  const focusedRow = selected.length === 1 ? rows.find((row) => rowId(row) === selected[0].id) : undefined;
+  const focus = selection.focus;
+  const focusedRow = focus?.stepId === step.id ? rows.find((row) => rowId(row) === focus.runId) : undefined;
   const attempt = focusedRow?.attempts.at(-1);
 
   async function run(selected: PipelineSelection) {
@@ -183,10 +215,16 @@ function SavedTrainStep({ editor, project, step, rows, planRows, view, revision,
   return (
     <>
       <StudioRuns
-        plan={view} step={step} state={selection} onSelectionChange={setSelection}
+        plan={view} step={step} state={selection} onSelectionChange={onSelectionChange}
         region={{ kind: 'result', missing: [] }}
-        definition={<StudioTrainAuthoringForm editor={editor} stepId={step.id} />}
-        commands={[{ name: 'run', enabled: ready && !busy, perform: run }]}
+        definition={<StudioTrainAuthoringForm editor={editor} stepId={step.id}
+          focusFirstField={focusFirstField} onFirstFieldFocused={onFirstFieldFocused} />}
+        commands={[
+          { name: 'run', enabled: ready && !busy, perform: run },
+          { name: 'newStep', enabled: ready && !busy, perform: (scope) => {
+            onNewStep({ stepId: step.id, selection: scope.kind === 'steps' ? null : scope });
+          } },
+        ]}
       />
       {ready && focusedRow && (
         <>

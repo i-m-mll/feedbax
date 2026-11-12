@@ -9,6 +9,7 @@ from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.graph import GraphSpec, StudioWorkspaceSpec
+from feedbax.contracts.project_inputs import SubsetTerms
 
 
 Token = Annotated[str, Field(min_length=1, max_length=128)]
@@ -123,10 +124,26 @@ class StudioSavedTrainChange(StrictModel):
     after: JsonValue
 
 
+class StudioSavedTrainCoordinate(StrictModel):
+    value_id: str
+    label: str
+
+
+class StudioSavedTrainSubset(StrictModel):
+    variant: str
+    step: str
+    source_step: str
+    terms: SubsetTerms
+    count: int
+    total: int
+
+
 class StudioSavedTrainRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     request_id: str
+    coordinates: dict[str, StudioSavedTrainCoordinate]
+    checkpoint_producer: StudioSavedTrainKey | None
     attempts: list[StudioSavedTrainAttempt]
     status: JobStatus
     reason: str | None
@@ -138,6 +155,7 @@ class StudioSavedTrainRow(StrictModel):
 class StudioSavedTrainRuns(StrictModel):
     revision: str
     rows: list[StudioSavedTrainRow]
+    checkpoint_subsets: list[StudioSavedTrainSubset]
 
 
 class StudioSavedTrainRunRequest(StrictModel):

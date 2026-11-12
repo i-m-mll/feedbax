@@ -3,6 +3,7 @@ import { ApiRequestError } from '@/api/request';
 import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
+import { createCheckpointTrain, rowId, savedTrainPlan } from './savedTrainPlan';
 
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
 const task: AuthoredFileAddress = { kind: 'document', id: 'task' };
@@ -66,6 +67,33 @@ it('does not attribute a preexisting identical file to a failed create', async (
   })).rejects.toMatchObject({ kind: 'network' });
   expect(create).toHaveBeenCalledTimes(1);
   expect(editor.getSnapshot().saved.revision).toBe(initial.revision);
+  editor.dispose();
+});
+
+it('refuses to create a file from a stale reviewed project', async () => {
+  const { editor, create, external } = fixture();
+  external(model, [value(2)]);
+  await expect(editor.createFile({
+    kind: 'step', id: 'continuation', step: { kind: 'train', base: { step: 'train' } },
+  }, initial.revision)).rejects.toBeInstanceOf(ProjectEditConflictError);
+  expect(create).not.toHaveBeenCalled();
+  editor.dispose();
+});
+
+it('does not widen a selected Train row to an unselected variant', async () => {
+  const { editor, create } = fixture();
+  const rows = ['baseline', 'compare'].map((variant) => ({
+    key: { variant, step: 'train', row: 'seed=a' },
+    label: 'Replicate A', request_id: variant,
+    coordinates: { seed: { value_id: 'a', label: 'Replicate A' } },
+    checkpoint_producer: null, attempts: [], status: 'not_run' as const,
+    reason: null, result: null, previous: null, change: null,
+  }));
+  const projection = { revision: initial.revision, rows, checkpoint_subsets: [] };
+  await expect(createCheckpointTrain(editor, {
+    stepId: 'train', selection: { kind: 'rows', stepId: 'train', runIds: [rowId(rows[1])] },
+  }, savedTrainPlan(['train'], projection), projection)).rejects.toThrow('every variant');
+  expect(create).not.toHaveBeenCalled();
   editor.dispose();
 });
 
