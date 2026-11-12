@@ -26,12 +26,17 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
+    STUDIO_PATCH_JOURNAL_FILENAME,
+    STUDIO_PRESENTATION_FILENAME,
+    STUDIO_WRITE_LOCK_FILENAME,
+    TextFileStamp,
     TextProject,
     dump_text_project,
-    load_text_project,
+    read_text_project_snapshot,
     project_semantic_root,
     rename_text_project_declaration,
-    text_project_paths,
+    text_file_stamp,
+    text_project_fingerprint,
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.strict_json import strict_json_loads
@@ -52,12 +57,9 @@ from feedbax.contracts.studio_project import (
 )
 
 
-_PRESENTATION = "presentation.json"
-_PATCH_JOURNAL = ".studio-patch.json"
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
 _KINDS = {family: kind for kind, family in _FAMILIES.items()}
 _FOLDER_ID = TypeAdapter(ProjectName)
-type _FileStamp = tuple[str, int, int, int, int, int]
 type _Resource = Literal["project", "presentation"]
 
 
@@ -101,18 +103,6 @@ def _regular(path: Path) -> os.stat_result:
     return info
 
 
-def _file_stamp(path: Path, root: Path) -> _FileStamp:
-    info = _regular(path)
-    return (
-        path.relative_to(root).as_posix(),
-        info.st_dev,
-        info.st_ino,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
-
-
 class _PendingFile(StrictModel):
     address: AuthoredFileAddress
     before: Sha256
@@ -127,7 +117,7 @@ _PENDING_FILES = TypeAdapter(list[_PendingFile])
 
 
 def _finish_patch(root: Path) -> None:
-    journal = root / _PATCH_JOURNAL
+    journal = root / STUDIO_PATCH_JOURNAL_FILENAME
     try:
         _regular(journal)
     except FileNotFoundError:
@@ -163,7 +153,7 @@ def _finish_patch(root: Path) -> None:
 
 @contextmanager
 def _folder_lock(root: Path, *, write: bool = True) -> Iterator[None]:
-    lock = root / ".studio-write.lock"
+    lock = root / STUDIO_WRITE_LOCK_FILENAME
     descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
@@ -174,7 +164,7 @@ def _folder_lock(root: Path, *, write: bool = True) -> Iterator[None]:
             current.st_ino,
         ):
             raise ProjectFolderInvalid("Project write lock changed")
-        if os.path.lexists(root / _PATCH_JOURNAL):
+        if os.path.lexists(root / STUDIO_PATCH_JOURNAL_FILENAME):
             if not write:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
             _finish_patch(root)
@@ -189,7 +179,7 @@ def _check_revision(resource: _Resource, expected: str, current: str) -> None:
 
 
 def _read_presentation(root: Path) -> tuple[bytes | None, str]:
-    path = root / _PRESENTATION
+    path = root / STUDIO_PRESENTATION_FILENAME
     try:
         _regular(path)
         data = path.read_bytes()
@@ -223,44 +213,30 @@ class ProjectFolderService:
             raise ProjectFolderInvalid("Project must be a directory")
         return folder
 
-    def _authored_fingerprint(self, root: Path) -> tuple[_FileStamp, ...]:
-        for family in _FAMILIES.values():
-            try:
-                info = (root / family).lstat()
-            except FileNotFoundError:
-                continue
-            if not stat.S_ISDIR(info.st_mode):
-                raise ProjectFolderInvalid(f"{family} must be a directory")
-        try:
-            return tuple(_file_stamp(path, root) for path in text_project_paths(root))
-        except (OSError, ProjectReadError) as error:
-            raise ProjectFolderInvalid("Project files are unreadable") from error
-
-    def fingerprint(self, project_id: str) -> tuple[_FileStamp, ...]:
+    def fingerprint(self, project_id: str) -> tuple[TextFileStamp, ...]:
         root = self._folder(project_id)
         with _folder_lock(root, write=False):
-            authored = self._authored_fingerprint(root)
             try:
-                return (*authored, _file_stamp(root / _PRESENTATION, root))
-            except FileNotFoundError:
-                return authored
+                authored = text_project_fingerprint(root)
+                try:
+                    return (*authored, text_file_stamp(root / STUDIO_PRESENTATION_FILENAME, root))
+                except FileNotFoundError:
+                    return authored
+            except (OSError, ProjectReadError) as error:
+                raise ProjectFolderInvalid(str(error)) from error
 
     def _load(self, root: Path) -> TextProject:
-        before = self._authored_fingerprint(root)
         try:
-            text = load_text_project(root)
+            return read_text_project_snapshot(root)
         except ProjectReadError as error:
             raise ProjectFolderInvalid(str(error)) from error
-        if before != self._authored_fingerprint(root):
-            raise ProjectFolderInvalid("Project changed while it was being read")
-        return text
 
     def _snapshot(self, project_id: str, text: TextProject) -> StudioProjectSnapshot:
         data, presentation_revision = _read_presentation(text.root)
         presentation_error = None
         try:
             presentation = (
-                PresentationDocument.model_validate(strict_json_loads(data, ref=_PRESENTATION))
+                PresentationDocument.model_validate(strict_json_loads(data, ref=STUDIO_PRESENTATION_FILENAME))
                 if data is not None
                 else PresentationDocument()
             )
@@ -339,7 +315,7 @@ class ProjectFolderService:
         project_id = f"untitled-{uuid4().hex}"
         configuration = ProjectConfiguration(project=project_id, store="results")
         files = dump_text_project(Project(), configuration)
-        files[_PRESENTATION] = _encode_presentation(PresentationDocument())
+        files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument())
         self.root.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=".studio-project-", dir=self.root) as staged:
             staging = Path(staged)
@@ -477,7 +453,7 @@ class ProjectFolderService:
                 ]
                 # Publishing the journal commits the edit. Readers recover it before opening the folder.
                 write_bytes_atomic(
-                    root / _PATCH_JOURNAL, _PENDING_FILES.dump_json(pending), replace=False,
+                    root / STUDIO_PATCH_JOURNAL_FILENAME, _PENDING_FILES.dump_json(pending), replace=False,
                     before_publish=guard,
                 )
                 _finish_patch(root)
@@ -495,7 +471,7 @@ class ProjectFolderService:
             _check_revision("presentation", body.revision, revision)
             replacement = _encode_presentation(body.presentation)
             if replacement != data:
-                path = root / _PRESENTATION
+                path = root / STUDIO_PRESENTATION_FILENAME
                 mode = stat.S_IMODE(_regular(path).st_mode) if data is not None else 0o600
                 write_bytes_atomic(
                     path,
