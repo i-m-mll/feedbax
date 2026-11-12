@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
-import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { join } from 'node:path';
+import type { StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -83,4 +84,63 @@ test('the managed window shares selection and restores the folded slot without e
   const reopened = await latest.json() as StudioProjectSnapshot;
   expect(reopened.revision).toBe(snapshot.revision);
   expect(reopened.presentation_revision).toBe(snapshot.presentation_revision);
+});
+
+test('mounted Scene owns its drawer and inspector and Problems matches the saved Plan', async ({ page, request }, info) => {
+  const home = String(info.config.metadata.home);
+  const id = 'project-window-scene';
+  const path = `/api/projects/${id}`;
+  await runProjectFixture('tests.fixtures.scene_geometry', 'seed',
+    join(home, 'state', 'web', 'projects', id), join(home, 'project-window-scene.json'));
+  const initial = await request.get(path);
+  expect(initial.ok()).toBe(true);
+  let snapshot = await initial.json() as StudioProjectSnapshot;
+  const [, task, template] = await fixture('files');
+  for (const file of [
+    task,
+    { ...template, step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'chain' } } } } },
+    { ...template, id: 'single', step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'single' } } } } },
+    { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: {} } } },
+  ]) {
+    const saved = await request.post(`${path}/files`, { data: { revision: snapshot.revision, file } });
+    expect(saved.status(), await saved.text()).toBe(201);
+    ({ snapshot } = await saved.json() as StudioProjectDocument);
+  }
+  await page.goto(`/?project=${id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('button', { name: 'Split View', exact: true }).click();
+  const scene = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Scene', exact: true }).first();
+  const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
+  await expect(upper).toBeVisible();
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
+  await drawer.getByRole('region', { name: 'Bodies' }).getByRole('button', { name: 'upper', exact: true }).click();
+  await expect(upper).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
+  const primary = page.locator('[data-slot="primary"] > section');
+  await primary.focus();
+  await page.keyboard.press('Control+3');
+  await expect(primary.getByRole('heading', { name: 'Task', exact: true })).toBeVisible();
+  await expect(primary.locator('.studio-window-slot__controls')).toContainText('task');
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
+  await scene.focus();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
+  await mapStep(page, 'single').click();
+  await expect(scene.locator('header')).toContainText('single');
+  await expect(scene.getByRole('button', { name: 'Select forearm', exact: true })).toBeHidden();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(upper).toBeVisible();
+
+  const read = await request.get(`${path}/train-runs?revision=${snapshot.revision}&window_map=true`);
+  expect(read.ok()).toBe(true);
+  const { window_map } = await read.json() as StudioSavedTrainRuns;
+  const problems = window_map!.problems.filter(({ variant }) => variant === null || variant === 'default');
+  expect(problems.some(({ step }) => step === 'broken')).toBe(true);
+  await page.getByRole('button', { name: `Problems ${problems.length}`, exact: true }).click();
+  const list = page.getByRole('dialog', { name: 'Problems' });
+  await expect(list.getByRole('listitem')).toHaveCount(problems.length);
+  const problem = problems.find(({ step }) => step === 'broken')!;
+  await list.getByRole('button', { name: `${problem.path}: ${problem.detail}`, exact: true }).first().click();
+  await expect(mapStep(page, 'broken')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('dialog', { name: 'Problems' })).toBeHidden();
 });

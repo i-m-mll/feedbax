@@ -140,7 +140,7 @@ test('reports that the backend stopped and recovers in the same window', async (
   await studio.stopBackend();
   await expect(connection).toHaveText(/service unreachable/i);
 
-  await page.getByTitle('Open project', { exact: true }).click();
+  await page.getByRole('button', { name: 'Open project', exact: true }).click();
   const projects = openOverlay(page);
   const runs = page.getByRole('region', { name: 'Runs', exact: true });
   const projectFailure = projects.getByRole('alert').filter({ hasText: /service unreachable/i });

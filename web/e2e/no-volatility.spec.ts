@@ -330,7 +330,7 @@ test('parameter editing preserves geometry and survives save/reload', async ({ p
     .poll(() => page.evaluate(() => window.feedbaxE2E?.nodeParam('cell', 'hidden_size')))
     .toBe(128);
   await expectStableGeometry();
-  await page.getByTitle('Save', { exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   expect((await saved).ok()).toBe(true);
 
   await page.evaluate((localTabsKey) => localStorage.removeItem(localTabsKey), LOCAL_TABS_KEY);
@@ -420,7 +420,7 @@ test('keyboard history restores a deleted model node and its task binding togeth
       bindings: workspace?.scenarios?.[scenarioId]?.task_binding_spec?.bindings,
     };
   };
-  const save = page.getByTitle('Save', { exact: true });
+  const save = page.getByRole('button', { name: 'Save', exact: true });
   const deleted = { node: undefined, bindings: [] };
   await save.click();
   await expect.poll(savedNodeAndBindings).toEqual(deleted);

@@ -91,7 +91,7 @@ test('creates and edits an external component using its served port policy', asy
   await slots.fill('2');
   await slots.press('Enter');
   await expect(node.getByRole('button', { name: 'branch-5', exact: true })).toBeVisible();
-  await page.getByTitle('Save', { exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   expect((await saved).ok()).toBe(true);
   expect(graph.nodes[nodeId]).toMatchObject({ type: 'example.Fanout', revision: 2, params: { slots: 2 } });
   await page.reload();

@@ -41,7 +41,7 @@ function summarize(samples: number[]) {
 
 async function openMeasurementGraph(page: Page, componentCount: number) {
   await page.goto('/');
-  await page.getByTitle('New project', { exact: true }).click();
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   const name = page.getByPlaceholder('Tab name...');
   await name.fill('Measurement seed');
   await name.press('Enter');
@@ -52,7 +52,7 @@ async function openMeasurementGraph(page: Page, componentCount: number) {
         .some((node) => node.type === 'feedbax.Linear'),
   );
   await page.getByTitle('Add feedbax.Linear', { exact: true }).click();
-  await page.getByTitle('Save', { exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   const seed = (await save).postDataJSON() as StudioPersistenceDocument;
   const component = Object.values(seed.graph?.nodes ?? {})[0];
   if (!component || !seed.graph?.metadata || !seed.workspace_document) {
@@ -130,7 +130,7 @@ test.describe('Studio responsiveness baseline', () => {
           && request.postDataJSON().graph?.nodes?.[nodeId]?.params?.output_size === 123;
       });
       const commitMs = await sample(() => size.press('Enter'));
-      await page.getByTitle('Save', { exact: true }).click();
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
       const saved = await committed;
       expect(saved.ok(), `Project save returned ${saved.status()}`).toBe(true);
 

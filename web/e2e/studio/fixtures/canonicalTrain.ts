@@ -7,11 +7,15 @@ import type { StudioProjectDocument } from '../../../src/generated/studioContrac
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const run = promisify(execFile);
 
-export async function fixture(...arguments_: string[]) {
+export async function runProjectFixture(module: string, ...arguments_: string[]) {
   const { stdout } = await run('uv', [
-    'run', '--no-sync', 'python', '-B', '-m', 'web.e2e.studio.fixtures.canonical_train', ...arguments_,
+    'run', '--no-sync', 'python', '-B', '-m', module, ...arguments_,
   ], { cwd: repo, timeout: 12_000 });
-  return JSON.parse(stdout);
+  return stdout;
+}
+
+export async function fixture(...arguments_: string[]) {
+  return JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_train', ...arguments_));
 }
 
 export async function seedManagedProject(request: APIRequestContext, files: readonly unknown[]) {

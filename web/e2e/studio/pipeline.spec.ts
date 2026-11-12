@@ -16,7 +16,7 @@ test('adds a composite with Train open and reopens the saved graph from another 
   async ({ page, browser, baseURL, request }) => {
     const name = 'Walkthrough authoring';
     await page.goto('/');
-    await page.getByTitle('New project', { exact: true }).click();
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
     await page.getByPlaceholder('Tab name...').fill(name);
     await page.getByPlaceholder('Tab name...').press('Enter');
     await page.getByRole('button', { name: 'Train', exact: true }).click();
@@ -46,7 +46,7 @@ test('adds a composite with Train open and reopens the saved graph from another 
     await template.click();
     await expect(page.locator('.react-flow__node')).toHaveCount(count);
     await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeVisible();
-    await page.getByTitle('Save', { exact: true }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
     const save = await saving;
     expect(save.ok(), await save.text()).toBe(true);
     const id = save.request().method() === 'POST'
@@ -84,7 +84,7 @@ test('opens a readable project beside an older unreadable one', async ({ page, r
   await writeFile(legacyPath, JSON.stringify(project), { flag: 'wx' });
   try {
     await page.goto('/');
-    await page.getByTitle('Open project', { exact: true }).click();
+    await page.getByRole('button', { name: 'Open project', exact: true }).click();
     const overlay = openOverlay(page);
     const unreadable = overlay.getByText(legacyName, { exact: true });
     await expect(unreadable).toBeVisible();

@@ -8,7 +8,7 @@ export function openOverlay(page: Page) {
 }
 
 export async function openSavedProject(page: Page, name: string) {
-  await page.getByTitle('Open project', { exact: true }).click();
+  await page.getByRole('button', { name: 'Open project', exact: true }).click();
   const overlay = openOverlay(page);
   await overlay.getByRole('button', { name: new RegExp(`^${RegExp.escape(name)}(?: |$)`) }).click();
   await expect(overlay).toHaveCount(0);
