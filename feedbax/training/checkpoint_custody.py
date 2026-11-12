@@ -110,6 +110,7 @@ from feedbax.contracts.base import (
     ArtifactRef,
     ArtifactMigrationRecord,
     ParentRef,
+    authenticated_manifest_ref_metadata,
     canonical_json_bytes,
     feedbax_version,
     sha256_bytes,
@@ -672,7 +673,7 @@ class CheckpointForkResult:
 def _publish_checkpoint_content(
     provider: ArtifactBlobProvider,
     *,
-    latest_pointer_path: Path,
+    latest_pointer_path: Path | ContentObjectRef,
     manifest_path: Path,
     checkpoint_set_path: Path,
     manifest: CheckpointTransactionManifest,
@@ -3506,6 +3507,43 @@ def load_latest_checkpoint(
         continuation_request=continuation_request,
         allow_new_lineage_override=allow_new_lineage_override,
     )
+
+
+def bind_published_checkpoint_content(
+    root: Path,
+    pointer: CheckpointLatestPointer,
+    provider: ArtifactBlobProvider,
+) -> tuple[ParentRef, ContentBinding]:
+    """Retain the exact bound publication for native checkpoint initialization."""
+    authenticated = authenticate_checkpoint_custody_ref(
+        _checkpoint_latest_parent_ref(pointer), allowed_root=root,
+    )
+    manifest_path, manifest = _manifest_from_latest_pointer(root, pointer)
+    if (
+        manifest.run_id != pointer.run_id
+        or manifest.completed_coordinate != pointer.completed_coordinate
+        or manifest.completed_training_batches != pointer.completed_training_batches
+    ):
+        raise CheckpointIntegrityError("Bound checkpoint disagrees with the published coordinate.")
+    checkpoint_set = load_checkpoint_set(root, pointer.transaction_id)
+    latest = provider.store_object(_durable_json_bytes(
+        pointer.model_dump(mode="json", exclude_none=True)
+    ))
+    binding, _ = _publish_checkpoint_content(
+        provider,
+        latest_pointer_path=latest,
+        manifest_path=manifest_path,
+        checkpoint_set_path=manifest_path.parent / CHECKPOINT_SET_NAME,
+        manifest=manifest,
+        checkpoint_set=checkpoint_set,
+    )
+    source = authenticated.parent_ref.model_copy(update={
+        "uri": None,
+        "metadata": authenticated_manifest_ref_metadata(
+            pointer.manifest_sha256, checkpoint_set.transaction.bytes.size_bytes,
+        ),
+    })
+    return source, binding
 
 
 def migrate_path_backed_checkpoint(

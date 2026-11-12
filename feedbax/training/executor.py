@@ -137,6 +137,7 @@ from feedbax.training.checkpoint_custody import (
     structural_abi_fingerprint,
     write_checkpoint_transaction,
     materialize_concatenated_checkpoint_histories,
+    checkpoint_slot_names,
 )
 from feedbax.training.checkpoint_transform import (
     CheckpointTransformRefused,
@@ -693,6 +694,7 @@ def execute_training_run_spec(
     checkpoint_source_pointer: CheckpointLatestPointer | None = None,
     checkpoint_history_parent_roots: Mapping[str, Path | str] | None = None,
     checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
+    checkpoint_initialization_request: CheckpointInitializationRequest | None = None,
     checkpoint_fork_plan: CheckpointForkPlan | None = None,
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
     checkpoint_fork_target_id: str | None = None,
@@ -980,12 +982,13 @@ def execute_training_run_spec(
         run_id=resolved_run_id,
     )
     initialization_authorities = sum(
-        value is not None for value in (checkpoint_initialization_plan, checkpoint_fork_plan)
+        value is not None for value in (
+            checkpoint_initialization_plan, checkpoint_initialization_request, checkpoint_fork_plan
+        )
     )
     if initialization_authorities > 1:
         raise TrainingRunExecutorError(
-            "checkpoint initialization accepts either a same-graph initialization plan or "
-            "an explicit graph-changing fork plan, not both"
+            "checkpoint initialization accepts one request, initialization plan or fork plan"
         )
     if initialization_authorities and resume:
         raise TrainingRunExecutorError(
@@ -1041,9 +1044,10 @@ def execute_training_run_spec(
             checkpoint_content_provider,
             owner=f"training-executor:{resolved_run_id}",
         ) as canonical_source_root:
-            if checkpoint_initialization_plan is not None:
+            initialization = checkpoint_initialization_plan or checkpoint_initialization_request
+            if initialization is not None:
                 resolved_initialization = _resolve_checkpoint_initialization(
-                    checkpoint_initialization_plan,
+                    initialization,
                     source_root=canonical_source_root,
                     target_slots=slots,
                     state_slots=effective_phase.state_slots,
@@ -2520,7 +2524,7 @@ def _initial_slots(
 
 
 def _resolve_checkpoint_initialization(
-    plan: CheckpointInitializationPlan,
+    initialization: CheckpointInitializationPlan | CheckpointInitializationRequest,
     *,
     source_root: Path,
     target_slots: Mapping[str, Any],
@@ -2528,9 +2532,13 @@ def _resolve_checkpoint_initialization(
     run_spec: TrainingRunSpec,
     phase_program: Any,
 ) -> _ResolvedCheckpointInitialization:
-    """Authenticate, revalidate, and apply one same-graph initialization plan."""
+    """Authenticate and apply a same-graph initialization request or plan."""
 
-    request = CheckpointInitializationRequest(mode=plan.mode, source=plan.source)
+    plan = initialization if isinstance(initialization, CheckpointInitializationPlan) else None
+    request = (
+        CheckpointInitializationRequest(mode=plan.mode, source=plan.source)
+        if plan is not None else initialization
+    )
     expected_profile = authenticated_manifest_ref_profile(request.source)
     assert expected_profile is not None
     expected_manifest_sha256, expected_manifest_size = expected_profile
@@ -2568,7 +2576,7 @@ def _resolve_checkpoint_initialization(
         authenticated.parent_ref,
         allowed_root=source_root,
     )
-    if plan.mode == "continue_from":
+    if request.mode == "continue_from":
         continuation = run_spec.checkpoint_progress.continuation
         if continuation is None:
             raise TrainingRunExecutorError(
@@ -2592,7 +2600,10 @@ def _resolve_checkpoint_initialization(
     else:
         resolved_manifest = resolved.manifest
         resolved_slots = resolved.slots
-    declared_slots = {entry.slot: entry for entry in plan.slots}
+    declared_slots = (
+        [entry.slot for entry in plan.slots] if plan is not None
+        else list(checkpoint_slot_names(phase_program, resolved_manifest.barrier))
+    )
     missing_targets = sorted(set(declared_slots) - set(target_slots))
     if missing_targets:
         raise TrainingRunExecutorError(
@@ -2605,23 +2616,25 @@ def _resolve_checkpoint_initialization(
         phase_program=phase_program,
         names=list(declared_slots),
     )
+    source_structure = checkpoint_structure_from_manifest(resolved_manifest)
     validated_plan = lower_checkpoint_initialization(
         request,
-        source=checkpoint_structure_from_manifest(resolved_manifest),
+        source=source_structure,
         target=target_structure,
     )
-    if validated_plan != plan:
+    if plan is not None and validated_plan != plan:
         raise TrainingRunExecutorError(
             "checkpoint initialization plan disagrees with the authenticated source and "
             "prepared target structures"
         )
 
+    plan = validated_plan
     try:
         initialized = apply_semantic_checkpoint_initialization(
             plan,
-            source_structure=checkpoint_structure_from_manifest(resolved_manifest),
+            source_structure=source_structure,
             target_structure=target_structure,
-            source_values={entry.slot: resolved_slots[entry.slot] for entry in plan.slots},
+            source_values=resolved_slots,
             target_values={entry.slot: target_slots[entry.slot] for entry in plan.slots},
         )
     except CheckpointTransformRefused as exc:

@@ -252,8 +252,10 @@ class Store:
                     continue
                 self._validate_job(job)
                 payload = job["launch"]["payload"]
-                canonical_train = payload.get("canonical_request") is not None
-                if canonical_train and (
+                canonical_request = payload.get("canonical_request")
+                if canonical_request is not None and not isinstance(canonical_request, dict):
+                    raise HostError("invalid_request", "Invalid canonical Train binding.")
+                if canonical_request is not None and (
                     payload.get("project_id"), payload.get("request_id")
                 ) != (job["project"], job["request"]):
                     raise HostError("invalid_request", "Canonical Train launch identity differs from its job.")
@@ -263,6 +265,29 @@ class Store:
                         completion and (edge["publication"] is not None or not allow_completion)
                     ):
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
+                checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
+                checkpoint_parent = None
+                if checkpoint is not None and job["continues"] is None:
+                    edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
+                    if len(edges) != 1 or not isinstance(checkpoint, dict):
+                        raise HostError("invalid_request", "Train requires one authenticated checkpoint edge.")
+                    parent_id = edges[0]["job_id"]
+                    checkpoint_parent = aliases.get(parent_id, parent_id)
+                    source = self.get(checkpoint_parent)
+                    if source is None:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": "/inputs/checkpoint: the selected predecessor was not admitted",
+                        })
+                        continue
+                    source_payload = json.loads(source["launch"])["payload"]
+                    if (
+                        source["project"] != job["project"]
+                        or source["request"] != checkpoint.get("request_id")
+                        or source_payload.get("manifest_root") != payload.get("manifest_root")
+                        or source_payload.get("canonical_request") is None
+                    ):
+                        raise HostError("invalid_request", "Train checkpoint edge differs from its canonical input.")
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
@@ -274,13 +299,19 @@ class Store:
                         raise HostError(
                             "job_id_conflict", "Job id already names a different request."
                         )
-                    if _train_binding_conflicts(payload, by_id["launch"]):
+                    if _train_binding_conflicts(payload, by_id["launch"]) or (
+                        checkpoint_parent is not None
+                        and self._completion_parent(by_id["id"]) != checkpoint_parent
+                    ):
                         raise HostError(
                             "job_id_conflict", "Job id already names a different Train binding."
                         )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
-                    if _train_binding_conflicts(payload, live["launch"], live=True):
+                    if _train_binding_conflicts(payload, live["launch"], live=True) or (
+                        checkpoint_parent is not None
+                        and self._completion_parent(live["id"]) != checkpoint_parent
+                    ):
                         results.append({
                             "run_key": run_key,
                             "job_id": None,
@@ -345,6 +376,12 @@ class Store:
             raise HostError(
                 "admission_changed", f"Request {job['request']} succeeded during admission."
             )
+
+    def _completion_parent(self, job_id: str) -> str | None:
+        row = self.db.execute(
+            "SELECT parent FROM edges WHERE job=? AND authenticated_completion", (job_id,)
+        ).fetchone()
+        return row[0] if row is not None else None
 
     def _bind_edges(self, job: dict, aliases: dict[str, str]) -> None:
         job_id, continues = job["id"], job["continues"]

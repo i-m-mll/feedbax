@@ -177,6 +177,7 @@ def main(argv: Sequence[str]) -> int:
 def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> _Result:
     from feedbax._atomic import write_bytes_atomic
     from feedbax.contracts.base import ParentRef, sha256_file
+    from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
     from feedbax.contracts.manifest import (
         TrainingRunManifest,
         canonical_manifest_path,
@@ -198,13 +199,18 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         verify_training_completion,
     )
     from feedbax.orchestration.events import normalize_serialized_metrics
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
     from feedbax.studio.canonical_train import (
         BoundStudioTrainingJobInput,
+        PinnedTrainCheckpoint,
         verify_training_request_binding,
     )
-    from feedbax.training.checkpoint_custody import CheckpointCustodyError
+    from feedbax.training.checkpoint_custody import (
+        CheckpointCustodyError,
+        bind_published_checkpoint_content,
+    )
     from feedbax.training.executor import execute_training_run_spec
     from feedbax.training.invocation import prepare_training_invocation
     from feedbax.training.manifest_preflight import build_training_run_manifest_spec_payloads
@@ -224,12 +230,41 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         if launch.manifest_root != manifest_root:
             raise ValueError("Canonical Train store must be absolute and canonical")
         verify_training_request_binding(launch)
+    if launch.checkpoint_input is not None:
+        raise ValueError("The Host delivery owns the resolved Train checkpoint input.")
     checkpoint_root = _attempt_root(manifest_root, job_id)
     binding_path = training_binding_path(manifest_root, job_id)
+    dependencies = []
     if sidecar := os.environ.get("FEEDBAX_HOST_COMPLETION_BINDINGS"):
-        dependencies = strict_json_loads(Path(sidecar).read_text())
-        for dependency in dependencies["bindings"]:
-            verify_bound_training_completion(dependency["completion"])
+        try:
+            raw_dependencies = Path(sidecar).read_bytes()
+        except OSError as error:
+            raise CompletionFileError("Host completion bindings are unavailable.") from error
+        if sha256(raw_dependencies).hexdigest() != os.environ.get(
+            "FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"
+        ):
+            raise CompletionFileError("Host completion bindings changed after assignment.")
+        dependencies = strict_json_loads(raw_dependencies)["bindings"]
+    for dependency in dependencies:
+        verify_bound_training_completion(dependency["completion"])
+    checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
+    if checkpoint_ref is not None:
+        if len(dependencies) != 1:
+            raise CompletionFileError("Train requires one bound predecessor checkpoint.")
+        product = dependencies[0]["completion"]
+        if (
+            product["project_id"] != launch.project_id
+            or product["request_id"] != checkpoint_ref.request_id
+            or product["manifest_root"] != str(manifest_root)
+        ):
+            raise CompletionFileError("Bound Train checkpoint differs from its canonical input.")
+        launch = launch.model_copy(update={"checkpoint_input": PinnedTrainCheckpoint(
+            producer_job_id=product["producer_job_id"],
+            receipt=product["receipt"],
+            checkpoint=PublishedTrainingCheckpoint.model_validate(product["checkpoint"]),
+        )})
+    elif method.checkpoint_initialization is not None:
+        raise ValueError("Checkpoint initialization requires a canonical Train input.")
     resume = launch.resume
     if resume is not None:
         events.current_phase = "restoring"
@@ -398,16 +433,31 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             publish_progress()
             publish_frame()
 
-        if resume is not None:
+        initialization = None
+        source_content = None
+        provider = None
+        source_root = resume.checkpoint_root if resume is not None else None
+        if resume is not None or launch.checkpoint_input is not None:
             events.phase("restoring")
+        if resume is None and launch.checkpoint_input is not None:
+            checkpoint = launch.checkpoint_input.checkpoint
+            source_root = checkpoint.checkpoint_root
+            provider = ImmutableArtifactBlobProvider(manifest_root)
+            source, source_content = bind_published_checkpoint_content(
+                source_root, checkpoint.pointer, provider,
+            )
+            initialization = CheckpointInitializationRequest(mode="initialize_from", source=source)
         result = execute_training_run_spec(
             spec,
             run_id=job_id,
             preparation=preparation,
             manifest_root=manifest_root,
             checkpoint_root=checkpoint_root,
-            checkpoint_source_root=resume.checkpoint_root if resume is not None else None,
+            checkpoint_source_root=source_root,
             checkpoint_source_pointer=resume.pointer if resume is not None else None,
+            checkpoint_initialization_request=initialization,
+            checkpoint_content_provider=provider,
+            checkpoint_source_content_binding=source_content,
             resume=resume is not None,
             registry=registries.training_programs,
             stop_before_update=stop_before_update,
