@@ -11,6 +11,7 @@ from importlib.resources import files
 from typing import Any
 
 from pydantic import TypeAdapter
+from pydantic_core import to_json
 
 from feedbax.contracts._request_codec import decode, describe_models, encode
 from feedbax.contracts.base import sha256_bytes
@@ -51,9 +52,6 @@ REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
     "render": RequestDescriptor(RenderRequestSpec),
     "report": RequestDescriptor(ReportRequestSpec),
 }
-_KIND_BY_MODEL = {descriptor.spec_type: kind for kind, descriptor in REQUEST_KINDS.items()}
-
-
 @dataclass(frozen=True)
 class EncodedRequest:
     """A request ID, its stored bytes, and the named bytes it references."""
@@ -80,6 +78,19 @@ def _identity_contract() -> dict[str, Any]:
 def identity_contract() -> dict[str, Any]:
     """Return a copy of the checked-in field and retirement table."""
     return deepcopy(_identity_contract())
+
+
+def request_codec_authority() -> tuple[object, ...]:
+    """Identify the loaded request descriptors, validators and identity pins."""
+    return (
+        encode_request,
+        encode,
+        tuple(
+            (kind, descriptor, descriptor.spec_type.__pydantic_validator__)
+            for kind, descriptor in REQUEST_KINDS.items()
+        ),
+        sha256_bytes(to_json(_identity_contract())),
+    )
 
 
 def generate_identity_fields() -> dict[str, Any]:
@@ -133,7 +144,11 @@ def request_id(kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs) -
 
 def encode_request(spec: RequestSpec, inputs: RequestInputs) -> EncodedRequest:
     """Encode a typed, validated author request and compute its identity."""
-    if (kind := _KIND_BY_MODEL.get(type(spec))) is None:
+    kind = next(
+        (kind for kind, descriptor in REQUEST_KINDS.items() if descriptor.spec_type is type(spec)),
+        None,
+    )
+    if kind is None:
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
     descriptor = REQUEST_KINDS[kind]
     inputs = _validated_inputs(inputs)

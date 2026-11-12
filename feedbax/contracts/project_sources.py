@@ -28,6 +28,9 @@ class ValueSource:
     variant: str | None = None
     row: str | None = None
 
+    def __deepcopy__(self, _memo: dict[int, Any]) -> ValueSource:
+        return self
+
     def child(self, part: str) -> ValueSource:
         return replace(self, path=self.path + pointer((part,)))
 

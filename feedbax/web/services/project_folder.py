@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
+from functools import lru_cache
 import os
 from pathlib import Path
 import stat
@@ -32,7 +33,7 @@ from feedbax.contracts.project_io import (
     rename_text_project_declaration,
     text_project_paths,
 )
-from feedbax.contracts.project_plan import ProjectPlan, RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
@@ -151,6 +152,7 @@ class ProjectFolderService:
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
+        self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
 
     def _folder(self, project_id: str) -> Path:
         try:
@@ -250,7 +252,9 @@ class ProjectFolderService:
             text.revision,
             project_semantic_root(text.project),
             text.configuration,
-            compile_project(text.project, source_runs=source_runs),
+            compile_project(
+                text.project, source_runs=source_runs, memo=self._plan_memo(project_id)
+            ),
         )
 
     def new(self) -> StudioProjectDocument:
