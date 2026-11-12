@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from functools import wraps
 import json
 from pathlib import Path
 from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 import pytest
 
 from feedbax._atomic import write_bytes_atomic
+from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
@@ -80,7 +85,7 @@ def _read(client: TestClient):
 def _patch(
     client: TestClient,
     revision: str,
-    value: int | float | str,
+    value: JsonValue,
     *,
     kind="document",
     name="model",
@@ -348,6 +353,140 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
         current.selected_definitions[selected].payload["graph"]["nodes"]["gain"]["params"]["gain"]
         == 4
     )
+    assert _read_plan(client, root, changed.json(), selected) == current
+
+
+def _plan_dependencies(root: Path) -> None:
+    original = load_text_project(root)
+    authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    fit = authored["steps"]["fit"]
+    fit["sweep"]["axes"]["seed"]["values"]["10"]["label"] = "First"
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": ["seed=10"]}}
+    authored["steps"]["follow"] = {
+        "kind": "train",
+        "base": {"step": "fit"},
+        "sweep": {"axes": {"seed": None}},
+        "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
+    }
+    independent = dict(fit["base"]["inline"], seed=88)
+    authored["steps"]["independent"] = {"kind": "train", "base": {"inline": independent}}
+    project = Project.model_validate(authored)
+    for relative, data in dump_text_project(project, original.configuration).items():
+        path = root / relative
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+
+
+def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(study, monkeypatch):
+    root, client = study
+    _plan_dependencies(root)
+    work = Counter()
+
+    def count(owner, name):
+        original = getattr(owner, name)
+
+        @wraps(original)
+        def counted(*args, **kwargs):
+            work[name] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, counted)
+
+    count(project_plan, "compose_step")
+    count(project_plan.StepTemplate, "resolve")
+    count(request_identity, "encode_request")
+
+    first = RunKey("default", "fit", "seed=10")
+    second = RunKey("default", "fit", "seed=2")
+    follow = RunKey("default", "follow", "default")
+    independent = RunKey("default", "independent", "default")
+    snapshot = _read(client)
+
+    def check(*keys):
+        work.clear()
+        plan = _read_plan(client, root, snapshot, *keys)
+        observed = work.copy()
+        fresh = compile_project(load_text_project(root).project, source_runs=keys)
+        assert plan == fresh
+        return plan, observed
+
+    def patch(value, *, name="fit", path):
+        response = _patch(client, snapshot["revision"], value, kind="step", name=name, path=path)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    cold, counts = check(first)
+    assert counts["compose_step"] == 3 and counts["encode_request"] == 4
+    assert counts["resolve"] >= 4
+    warm, counts = check(first)
+    assert not counts
+    warm.selected_definitions[first].payload["graph"]["nodes"]["gain"]["params"]["gain"] = 999
+    assert check(first)[0] == cold
+
+    selected, counts = check(second)
+    assert counts == {"resolve": 1}
+    assert selected.requests == cold.requests and set(selected.sources) == {second}
+
+    prefix = "/sweep/axes/seed/values/10"
+    snapshot = patch("Renamed", path=f"{prefix}/label")
+    relabelled, counts = check(first)
+    assert counts["encode_request"] == 0
+    assert relabelled.requests == cold.requests
+    old_row = next(run for run in cold.runs if run.key == first)
+    renamed_row = next(run for run in relabelled.runs if run.key == first)
+    assert renamed_row.coordinates["seed"].label == "Renamed"
+    assert renamed_row.label != old_row.label
+
+    snapshot = patch(7, path=f"{prefix}/patches/seed/value")
+    edited, counts = check(first)
+    assert counts["encode_request"] == 2 and counts["compose_step"] == 2
+    before_ids = {run.key: run.request_id for run in cold.runs}
+    assert {run.key for run in edited.runs if run.request_id != before_ids[run.key]} == {first, follow}
+
+    model = load_text_project(root).project.documents["model"].payload
+    snapshot = patch(model, path="/base/inline/graph")
+    inlined, counts = check(first)
+    assert counts["encode_request"] == 0 and inlined.requests == edited.requests
+    assert inlined.sources[first]["/payload/graph/schema_id"].kind == "step"
+    assert edited.sources[first]["/payload/graph/schema_id"].kind == "document"
+
+    response = _patch(client, snapshot["revision"], 4)
+    assert response.status_code == 200, response.text
+    snapshot = response.json()
+    document_edit, counts = check(first)
+    assert counts["encode_request"] == 1 and counts["resolve"] == 1
+    assert {
+        run.key for run, old in zip(document_edit.runs, inlined.runs, strict=True)
+        if run.request_id != old.request_id
+    } == {independent}
+
+    fit = load_text_project(root).project.steps["fit"].model_dump(mode="json", exclude_unset=True)
+    values = fit["sweep"]["axes"]["seed"]["values"]
+    snapshot = patch(
+        {"2": values["2"], "repeat": values["2"], "10": values["10"]},
+        path="/sweep/axes/seed/values",
+    )
+    reordered, counts = check(first)
+    assert counts["encode_request"] == 1 and reordered.requests == document_edit.requests
+    assert [run.key.row for run in reordered.runs if run.key.step == "fit"] == [
+        "seed=2", "seed=repeat", "seed=10",
+    ]
+    assert reordered.subsets["default", "follow", "checkpoint"].candidates == 3
+
+    snapshot = patch("follow", name="follow", path="/base/step")
+    cyclic, _ = check(first)
+    assert any(problem.code is ResolutionCode.STEP_CYCLE for problem in cyclic.diagnostics)
+    snapshot = patch("fit", name="follow", path="/base/step")
+    assert check(first)[0] == reordered
+
+    descriptor = request_identity.REQUEST_KINDS["train"]
+    monkeypatch.setitem(
+        request_identity.REQUEST_KINDS, "train",
+        replace(descriptor, documents=descriptor.documents[:-1]),
+    )
+    updated_authority, counts = check(first)
+    assert counts["encode_request"] == 5 and counts["compose_step"] == 3
+    assert set(updated_authority.requests).isdisjoint(reordered.requests)
 
 
 def test_new_projects_are_durable_openable_and_distinct(tmp_path):

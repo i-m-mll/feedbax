@@ -10,6 +10,7 @@ from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.request_identity import (
     REQUEST_KINDS,
+    RequestDocumentMemo,
     decode_request,
     encode_request,
     generate_identity_fields,
@@ -51,6 +52,34 @@ def test_downstream_identity_corpus_round_trips():
         stored = decode_request(request.data, request.documents.__getitem__)
         assert stored.id == request.id == row["id"], row["source"]
         assert encode_request(stored.spec, stored.inputs) == request
+
+
+def test_factored_document_reuse_keeps_current_values_and_input_bindings():
+    source = next(row for row in _read_corpus() if row["kind"] == "train")
+    raw = source["spec"]
+    raw["method_payload"]["payload"]["typed_value"] = True
+    spec = TrainingRequestSpec.model_validate(raw)
+    memo = RequestDocumentMemo()
+    first = encode_request(spec, {}, document_memo=memo)
+    assert first == encode_request(spec, {})
+
+    new_seed = spec.seed + 1 if spec.seed is not None else 0
+    spec = spec.model_copy(update={"seed": new_seed})
+    seeded = encode_request(spec, {}, document_memo=memo)
+    assert seeded == encode_request(spec, {})
+    assert seeded.id != first.id and seeded.documents == first.documents
+
+    inputs = {"checkpoint": (InputMember(
+        key="first", reference=ProductRef(request_id=first.id, role="checkpoint")
+    ),)}
+    bound = encode_request(spec, inputs, document_memo=memo)
+    assert bound == encode_request(spec, inputs)
+    assert bound.id != seeded.id and bound.documents == seeded.documents
+
+    spec.method_payload.payload["typed_value"] = 1
+    changed = encode_request(spec, inputs, document_memo=memo)
+    assert changed == encode_request(spec, inputs)
+    assert changed.id != bound.id and len(changed.documents.keys() - bound.documents.keys()) == 1
 
 
 def test_absent_values_and_retired_spellings_contract():

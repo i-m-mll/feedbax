@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import cached_property
 from typing import Any, cast
 
 from pydantic import JsonValue, ValidationError
+from pydantic_core import to_json
 
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.matrix_core import apply_override_patch_in_place
+from feedbax.contracts.matrix_core import apply_override_patch_copy
 from feedbax.contracts.project import (
+    Document,
     DocumentReference,
     ExternalBase,
     InlineBase,
@@ -32,7 +35,6 @@ from feedbax.contracts.project_sources import (
     patch_source,
     pointer,
     source_at,
-    source_leaves,
     source_shape,
 )
 from feedbax.contracts.project_sweep import (
@@ -163,13 +165,19 @@ def _pack(value: Any, path: str, step: str | None) -> Any:
 
 
 class _Documents:
-    def __init__(self, project: Project, step: str | None = None, variant_sources: Any = None):
-        self.project = project
+    def __init__(
+        self,
+        project: Project,
+        step: str | None = None,
+        variant_sources: Any = None,
+        read_document: Callable[[str], Document | None] | None = None,
+    ):
         self.step = step
         self.variant_sources = variant_sources
+        self.read_document = project.documents.get if read_document is None else read_document
 
     def select(self, reference: DocumentReference, path: str) -> Any:
-        document = self.project.documents.get(reference.document)
+        document = self.read_document(reference.document)
         if document is None:
             raise _Problem(
                 ResolutionCode.MISSING_DOCUMENT,
@@ -250,6 +258,38 @@ class _Documents:
             )
         return shape
 
+    def source_leaves(
+        self,
+        value: Any,
+        shape: Any,
+        path: str,
+        output: str = "",
+        active: tuple[tuple[str, str], ...] = (),
+    ) -> Iterator[tuple[str, ValueSource]]:
+        if isinstance(value, DocumentReference):
+            selected, active = self._follow(value, path, active)
+            yield from self.source_leaves(
+                selected, self.source(value, selected), path, output, active
+            )
+        elif isinstance(value, dict) and value:
+            for key, item in value.items():
+                yield from self.source_leaves(
+                    item, source_at(shape, (key,)), f"{path}.{key}",
+                    output + pointer((key,)), active,
+                )
+        elif isinstance(value, list) and value:
+            for i, item in enumerate(value):
+                index = str(i)
+                yield from self.source_leaves(
+                    item, source_at(shape, (index,)), f"{path}.{index}", f"{output}/{index}", active
+                )
+        else:
+            container = (isinstance(value, dict) and isinstance(shape, SourceObject)
+                         or isinstance(value, list) and isinstance(shape, SourceList))
+            source = shape.source if container else first_source(shape)
+            if source is not None:
+                yield output, source
+
     def inline(
         self,
         value: Any,
@@ -283,11 +323,18 @@ class _Resolver:
         readers: BaseReaders,
         track_sources: bool = False,
         variant_sources: Any = None,
+        read_document: Callable[[str], Document | None] | None = None,
+        inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
     ):
         self.project = project
         self.readers = readers
         self.track_sources = track_sources
         self.variant_sources = variant_sources
+        self.read_document = read_document
+        self.inline_origin = inline_origin
+
+    def documents(self, step: str) -> _Documents:
+        return _Documents(self.project, step, self.variant_sources, self.read_document)
 
     def base_origins(
         self, name: str, base: InlineBase | RunBase | ExternalBase, payload: Any
@@ -297,10 +344,11 @@ class _Resolver:
         if isinstance(base, ExternalBase):
             return source_shape(payload, ValueSource("document", base.path, base.pointer or ""))
         path = ("steps", name, "base", "inline")
-        return source_shape(
-            payload,
-            ValueSource("step", name, pointer(path[2:]), step=name),
-            source_at(self.variant_sources, path),
+        source = ValueSource("step", name, pointer(path[2:]), step=name)
+        override = source_at(self.variant_sources, path)
+        return (
+            self.inline_origin(payload, source)
+            if override is None else source_shape(payload, source, override)
         )
 
     def state(self, name: str, active: tuple[str, ...] = ()) -> _StepState:
@@ -323,7 +371,7 @@ class _Resolver:
                 parent = self.select_row(name, base, parent)
         else:
             if isinstance(base, DocumentReference):
-                documents = _Documents(self.project, name, self.variant_sources)
+                documents = self.documents(name)
                 payload, reference = documents.base(base)
                 origins = documents.source(reference, payload) if self.track_sources else None
             else:
@@ -387,7 +435,7 @@ class _Resolver:
                     path = ("deltas", str(i), "patches", str(j), "value")
                     source = ValueSource("step", name, pointer(path), step=name)
                     override = source_at(self.variant_sources, ("steps", name, *path))
-                    patch_source(origins, patch, source_shape(patch.value, source, override))
+                    origins = patch_source(origins, patch, source_shape(patch.value, source, override))
         try:
             sweep = inherit_sweep(
                 parent.sweep, step.sweep, author=name if self.track_sources else None
@@ -477,7 +525,7 @@ class _Resolver:
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
         selected = self.finish(base.step, state)
-        documents = _Documents(self.project, base.step, self.variant_sources)
+        documents = self.documents(base.step)
         origins = (
             documents.inline_sources(state.payload, state.origins, "payload")
             if state.origins is not None
@@ -537,19 +585,19 @@ class _Resolver:
         state: _StepState,
         row: ExpandedRow,
     ) -> _StepState:
-        payload = deepcopy(state.payload)
-        origins = deepcopy(state.origins)
+        payload = state.payload
+        origins = state.origins
         for patch in sweep_patches(row.patches):
             try:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
-                apply_override_patch_in_place(payload, patch)
+                payload = apply_override_patch_copy(payload, patch)
                 if origins is not None:
                     author = row.patch_authors.get(patch.path, name)
                     source, override = self.row_source(author, row, patch.path)
-                    patch_source(origins, patch, source_shape(patch.value, source, override))
+                    origins = patch_source(origins, patch, source_shape(patch.value, source, override))
             except ValueError as error:
                 raise _Problem(
                     ResolutionCode.INVALID_SWEEP, patch.path, str(error), step=name, layer=row.id
@@ -557,7 +605,7 @@ class _Resolver:
         return _StepState(payload, inputs=state.inputs, requires=state.requires, origins=origins)
 
     def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
-        documents = _Documents(self.project, name, self.variant_sources)
+        documents = self.documents(name)
         payload = documents.inline(state.payload, "payload")
         if not isinstance(payload, dict):
             raise _Problem(
@@ -587,7 +635,7 @@ class _Resolver:
             deepcopy(state.inputs),
             (
                 dict(
-                    source_leaves(documents.inline_sources(state.payload, state.origins, "payload"))
+                    documents.source_leaves(state.payload, state.origins, "payload")
                 )
                 if state.origins is not None
                 else None
@@ -595,13 +643,17 @@ class _Resolver:
         )
 
 
-@dataclass(frozen=True)
-class StepTemplate:
-    """Composed step whose requirements are checked on each final row."""
+@dataclass(frozen=True, eq=False)
+class StepComposition:
+    """Composed authored state, independent of the project used to resolve rows."""
 
-    _resolver: _Resolver
     name: str
     _state: _StepState
+
+    @cached_property
+    def row_basis(self) -> str:
+        """Hash the ordered payload and required paths before row-local patches."""
+        return sha256_bytes(to_json((self._state.payload, self._state.requires)))
 
     @property
     def sweep(self) -> Sweep | None:
@@ -615,16 +667,54 @@ class StepTemplate:
     def requires(self) -> tuple[str, ...]:
         return self._state.requires
 
+    def bind(
+        self,
+        project: Project,
+        *,
+        readers: BaseReaders = BaseReaders(),
+        variant_sources: Any = None,
+        read_document: Callable[[str], Document | None] | None = None,
+    ) -> StepTemplate:
+        return StepTemplate(
+            self, _Resolver(
+                project, readers, self._state.origins is not None, variant_sources, read_document
+            )
+        )
+
+
+@dataclass(frozen=True)
+class StepTemplate:
+    """Composed step whose requirements are checked on each final row."""
+
+    composition: StepComposition
+    _resolver: _Resolver
+
+    @property
+    def name(self) -> str:
+        return self.composition.name
+
+    @property
+    def sweep(self) -> Sweep | None:
+        return self.composition.sweep
+
+    @property
+    def inputs(self) -> Mapping[str, InputBinding]:
+        return self.composition.inputs
+
+    @property
+    def requires(self) -> tuple[str, ...]:
+        return self.composition.requires
+
     def resolve(
         self, row: ExpandedRow | None = None, *, include_sources: bool = False
     ) -> ResolvedStep | ProjectDiagnostic:
         try:
-            state = self._state
+            state = self.composition._state
             if not include_sources and state.origins is not None:
                 state = replace(state, origins=None)
             if row is not None:
-                state = self._resolver.apply_row(self.name, state, row)
-            return self._resolver.finish(self.name, state)
+                state = self._resolver.apply_row(self.composition.name, state, row)
+            return self._resolver.finish(self.composition.name, state)
         except _Problem as error:
             if row is not None:
                 return replace(error.diagnostic, row=row.id)
@@ -638,11 +728,13 @@ def compose_step(
     readers: BaseReaders = BaseReaders(),
     track_sources: bool = False,
     variant_sources: Any = None,
+    read_document: Callable[[str], Document | None] | None = None,
+    inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
 ) -> StepTemplate | ProjectDiagnostic:
     """Compose inherited layers and prepare a step for sweep expansion."""
-    resolver = _Resolver(project, readers, track_sources, variant_sources)
+    resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
     try:
-        return StepTemplate(resolver, step, resolver.state(step))
+        return StepTemplate(StepComposition(step, resolver.state(step)), resolver)
     except _Problem as error:
         return error.diagnostic
 
