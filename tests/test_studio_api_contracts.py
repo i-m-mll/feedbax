@@ -521,6 +521,8 @@ def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
 
 
 def test_generated_studio_contracts_are_current() -> None:
+    # OpenAPI can annotate recursive root references through endpoint fields.
+    create_app().openapi()
     assert OUTPUT.read_text(encoding="utf-8") == generate()
 
 

@@ -173,7 +173,7 @@ def emit_authored_contracts(
         if name in shared:
             previous = shared[name].model_json_schema()
             previous_definitions = previous.pop("$defs", {})
-            if previous == {"$ref": f"#/$defs/{name}"}:
+                if previous.get("$ref") == f"#/$defs/{name}":
                 previous = previous_definitions[name]
             if definition != previous:
                     diff = "\n".join(unified_diff(
