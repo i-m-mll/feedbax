@@ -145,7 +145,7 @@ class ProjectPlanService:
     ) -> ProjectPlanRead:
         """Read one saved revision and its request-scoped attempt evidence."""
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
-        requests = {run.request_id for run in settled.plan.runs if run.kind == "train"}
+        requests = {run.request_id for run in settled.plan.runs if run.kind in {"train", "evaluate"}}
         jobs = self.jobs.read_plan_attempts(
             project=settled.project_id, store=settled.store_path, requests=requests
         )

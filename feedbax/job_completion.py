@@ -227,7 +227,7 @@ def verify_training_completion(
 
 def verify_bound_training_completion(
     completion: dict, *, scope: CheckpointReadScope = "full",
-) -> None:
+) -> BoundStudioTrainingJobInput:
     """Recheck a pinned producer binding immediately before a consumer uses it."""
     try:
         root = Path(completion["manifest_root"])
@@ -246,6 +246,7 @@ def verify_bound_training_completion(
         )
         if actual != completion:
             raise CompletionFileError("Rechecked completion differs from its pinned binding.")
+        return launch
     except CompletionFileError:
         raise
     except (ValueError, KeyError, OSError) as error:

@@ -552,7 +552,7 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
 
 
 def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
-    registered_models = set(MODEL_TYPES)
+    registered_models = set(MODEL_TYPES).union(AUTHORED_CONTRACT_MODELS)
     missing = {
         model.__name__: sorted(
             dependency.__name__

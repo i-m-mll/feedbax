@@ -103,8 +103,13 @@ def dump(value, *, sort_keys: bool = False) -> str:
     return json.dumps(value, sort_keys=sort_keys, separators=(",", ":"), allow_nan=False)
 
 
-def _train_binding_conflicts(payload: dict, stored_launch: str, *, live: bool = False) -> bool:
-    stored = json.loads(stored_launch)["payload"]
+def _canonical_binding_conflicts(
+    launch: dict, stored_launch: str, *, evaluate: bool, live: bool = False,
+) -> bool:
+    recorded = json.loads(stored_launch)
+    if evaluate:
+        return dump(launch, sort_keys=True) != dump(recorded, sort_keys=True)
+    payload, stored = launch["payload"], recorded["payload"]
     if payload.get("canonical_request") is None and stored.get("canonical_request") is None:
         return False
     if live:
@@ -260,12 +265,14 @@ class Store:
                 self._validate_job(job)
                 payload = job["launch"]["payload"]
                 canonical_request = payload.get("canonical_request")
+                evaluate = job["request"].startswith("evaluate:") and canonical_request is not None
+                input_path = "/inputs/subject" if evaluate else "/inputs/checkpoint"
                 if canonical_request is not None and not isinstance(canonical_request, dict):
-                    raise HostError("invalid_request", "Invalid canonical Train binding.")
+                    raise HostError("invalid_request", "Invalid canonical request binding.")
                 if canonical_request is not None and (
                     payload.get("project_id"), payload.get("request_id")
                 ) != (job["project"], job["request"]):
-                    raise HostError("invalid_request", "Canonical Train launch identity differs from its job.")
+                    raise HostError("invalid_request", "Canonical launch identity differs from its job.")
                 for edge in job["edges"]:
                     completion = edge.get("authenticated_completion", False)
                     if type(completion) is not bool or (
@@ -292,17 +299,21 @@ class Store:
                         raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
                 checkpoint_parent = None
+                if evaluate and (
+                    checkpoint is None or job["continues"] is not None or len(job["edges"]) != 1
+                ):
+                    raise HostError("invalid_request", f"{input_path}: Evaluate requires a Train subject.")
                 if checkpoint is not None and job["continues"] is None:
                     edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
                     if len(edges) != 1 or not isinstance(checkpoint, dict):
-                        raise HostError("invalid_request", "Train requires one authenticated checkpoint edge.")
+                        raise HostError("invalid_request", f"{input_path}: requires one authenticated checkpoint edge.")
                     parent_id = edges[0]["job_id"]
                     checkpoint_parent = aliases.get(parent_id, parent_id)
                     source = self.get(checkpoint_parent)
                     if source is None:
                         results.append({
                             "run_key": run_key, "job_id": None, "disposition": "rejected",
-                            "reason": "/inputs/checkpoint: the selected predecessor was not admitted",
+                            "reason": f"{input_path}: the selected predecessor was not admitted",
                         })
                         continue
                     source_payload = json.loads(source["launch"])["payload"]
@@ -312,7 +323,7 @@ class Store:
                         or source_payload.get("manifest_root") != payload.get("manifest_root")
                         or source_payload.get("canonical_request") is None
                     ):
-                        raise HostError("invalid_request", "Train checkpoint edge differs from its canonical input.")
+                        raise HostError("invalid_request", f"{input_path}: checkpoint edge differs from its canonical input.")
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
@@ -324,16 +335,18 @@ class Store:
                         raise HostError(
                             "job_id_conflict", "Job id already names a different request."
                         )
-                    if _train_binding_conflicts(payload, by_id["launch"]) or (
+                    if _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
                         checkpoint_parent is not None
                         and self._completion_parent(by_id["id"]) != checkpoint_parent
                     ):
                         raise HostError(
-                            "job_id_conflict", "Job id already names a different Train binding."
+                            "job_id_conflict", "Job id already names a different canonical binding."
                         )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
-                    if _train_binding_conflicts(payload, live["launch"], live=True) or (
+                    if _canonical_binding_conflicts(
+                        job["launch"], live["launch"], evaluate=evaluate, live=True,
+                    ) or (
                         checkpoint_parent is not None
                         and self._completion_parent(live["id"]) != checkpoint_parent
                     ):
@@ -341,7 +354,11 @@ class Store:
                             "run_key": run_key,
                             "job_id": None,
                             "disposition": "rejected",
-                            "reason": "The live Train request has a different store or execution binding.",
+                            "reason": (
+                                f"{input_path}: the live Evaluate has a different execution binding."
+                                if evaluate else
+                                "The live Train request has a different store or execution binding."
+                            ),
                         })
                         continue
                     if job["continues"] is not None and live["continues"] != job["continues"]:
