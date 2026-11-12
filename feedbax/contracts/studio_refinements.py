@@ -314,6 +314,13 @@ CROSS_FIELD_REFINEMENTS.update(
             ),
         ),
         "GraphSpec": (
+            CrossFieldRefinement(
+                "causal-graph.wire-ids",
+                "Wire IDs must be unique within a graph",
+                lambda value: len(ids := [wire.id for wire in value.wires if wire.id is not None])
+                != len(set(ids)),
+                "hasDuplicate((value.wires ?? []).flatMap((wire) => wire.id == null ? [] : [wire.id]))",
+            ),
             _typescript_refinement(
                 "graph.subgraph-family",
                 "GraphSpec subgraphs must use a supported graph schema identity",
@@ -515,7 +522,7 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     ),
     "AdditiveGraphChannelTargetSpec": frozenset({"validate_target"}),
     "AnalysisDataProductRequirement": frozenset({"validate_schema_identity"}),
-    "GraphSpec": frozenset({"validate_subgraph_schema_family"}),
+    "GraphSpec": frozenset({"validate_subgraph_schema_family", "_unique_wire_ids"}),
     "StudioValueEnumerableSpec": frozenset({"validate_form_payload"}),
     "StudioValueVariationSpec": frozenset({"validate_scope_payload"}),
     "StudioValueSpec": frozenset({"validate_value_variation"}),

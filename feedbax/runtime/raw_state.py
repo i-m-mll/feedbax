@@ -84,6 +84,11 @@ def _bind_owner(
     index = getattr(component, "state_index", None)
     slots = jax.tree.leaves(component, is_leaf=lambda item: isinstance(item, StateIndex))
     indices = [slot for slot in slots if isinstance(slot, StateIndex)]
+    for name in owner.configuration_slots:
+        configured = getattr(component, name, None)
+        if not any(slot is configured for slot in indices):
+            raise StateLayoutError(path, "runtime configuration slots differ from the owner declaration")
+        indices = [slot for slot in indices if slot is not configured]
     declared = owner.states
     if not indices and (not declared or binding.type_id == "feedbax.GRU" and index is None):
         return ()
@@ -144,7 +149,9 @@ def _bind_carries(graph: Graph, authored: GraphSpec) -> tuple[BoundStateValue, .
             or authored.nodes[node].type != "feedbax.GRU"
             or target in expected
         ):
-            raise StateLayoutError(path, "recurrent wire has no qualified stable carry ID")
+            raise StateLayoutError(
+                f"{path}/{wire.authored_id()}", "recurrent wire has no qualified raw carry declaration",
+            )
         expected[target] = wire
     actual = {
         (wire.target_node, wire.target_port): (wire.source_node, wire.source_port)

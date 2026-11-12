@@ -27,6 +27,8 @@ class ModelOwner:
     states: tuple[StateValue, ...] | None = None
     clock: str | None = None
     checkpointable: bool = True
+    scene_effector_port: str | None = None
+    configuration_slots: tuple[str, ...] = ()
 
 
 def _learned(*values: tuple[str, str]) -> tuple[ModelValue, ...]:
@@ -76,6 +78,7 @@ MODEL_OWNERS = {
             *_cartesian("effector", ("effector",)),
         ),
         clock="dt",
+        scene_effector_port="effector",
     ),
     "feedbax.RigidTendonHillMuscleThelen": ModelOwner(
         2,
@@ -87,5 +90,8 @@ MODEL_OWNERS = {
         clock="dt",
     ),
     "feedbax.Scale": ModelOwner(1, _source("scale"), states=(), checkpointable=False),
+    "feedbax.CurlField": ModelOwner(
+        2, (), states=(), checkpointable=False, configuration_slots=("params_index",),
+    ),
     SPATIAL_OWNER: ModelOwner(1, ()),
 }

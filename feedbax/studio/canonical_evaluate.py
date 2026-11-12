@@ -27,6 +27,7 @@ from feedbax.contracts.rollout import (
     ROLLOUT_TYPE as ROLLOUT_TYPE,
     STATES_SCHEMA as STATES_SCHEMA,
     RolloutParameters as RolloutParameters,
+    authored_variation,
 )
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.workspace_replay import (
@@ -95,9 +96,9 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
-    for index, patch in enumerate(params.variation):
+    for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
-            raise CannotRun(f"/params/variation/{index}/op", "declare the override operation explicitly")
+            raise CannotRun(f"{path}/op", "declare the override operation explicitly")
     return spec, params, subject
 
 

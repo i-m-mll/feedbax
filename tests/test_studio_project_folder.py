@@ -1247,6 +1247,7 @@ def test_model_topology_patches_resolve_only_for_lit_steps(study):
     for operation in (
         {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1, "position": {"x": 8, "y": -9}},
         {"kind": "connectPorts", "wire": {
+            "id": "gru-carry",
             "source_node": "gru", "source_port": "hidden", "target_node": "gru", "target_port": "hidden",
         }},
         {"kind": "exposeOutput", "source_node": "gru", "source_port": "hidden"},
@@ -1269,7 +1270,8 @@ def test_model_topology_patches_resolve_only_for_lit_steps(study):
             assert run.request_id == originals[run.key]
         else:
             assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
-            assert sum(wire["source_node"] == "gru" for wire in graph["wires"]) == 1
+            (carry,) = (wire for wire in graph["wires"] if wire["source_node"] == "gru")
+            assert carry["id"] == "gru-carry"
             assert run.request_id != originals[run.key]
             source = scoped.sources[run.key]["/payload/graph/nodes/gru/params/hidden_size"]
             assert (source.kind, source.name) == ("step", run.key.step)

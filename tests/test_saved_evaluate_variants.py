@@ -6,18 +6,23 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.graph import GraphSpec, WireSpec
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.rollout import RolloutParameters, authored_variation
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
-from feedbax.jobs import JobService
+from feedbax.host import HostClient
+from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA
+from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, CannotRun
 from feedbax.training.checkpoint_custody import open_published_model_slot
+from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.worker.execution import prototypes_from_task_bindings
@@ -47,20 +52,23 @@ def _saved_variants():
     different_horizon["params"]["n_steps"] = 80
     wires = deepcopy(graph["wires"])
     force = next(wire for wire in wires if wire["target_node"] == "plant")
-    force.update(target_node="force_scale", target_port="input")
-    wires.append({
+    force_id = WireSpec.model_validate(force).authored_id()
+    scale_output = {
         "source_node": "force_scale", "source_port": "output",
         "target_node": "plant", "target_port": "force",
-    })
+    }
     scale = [
         _patch("graph.nodes.force_scale", {
             "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
             "input_ports": ["input"], "output_ports": ["output"],
         }, op="add"),
-        _patch("graph.wires", wires),
+        _patch(f"graph.wires.{force_id}.target_node", "force_scale"),
+        _patch(f"graph.wires.{force_id}.target_port", "input"),
+        _patch("graph.wires.scale-output", scale_output, op="add"),
     ]
     wider = deepcopy(graph["wires"])
     recurrent = next(wire for wire in wider if wire["temporality"] == "recurrent")
+    recurrent_id = WireSpec.model_validate(recurrent).authored_id()
     recurrent["recurrent_initializer"]["shape"] = [101]
 
     def step(variation):
@@ -82,10 +90,73 @@ def _saved_variants():
             "incompatible": step([
                 _patch("graph.nodes.cell.params.hidden_size", 101),
                 _patch("graph.nodes.readout.params.input_size", 101),
-                _patch("graph.wires", wider),
+                _patch(f"graph.wires.{recurrent_id}", recurrent),
             ]),
         },
     }), source
+
+
+def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
+    authored, source = authored_evaluation_project()
+    definition = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    graph = GraphSpec.model_validate(source.graph.inline)
+    first = next(wire for wire in graph.wires if wire.target_node == "plant")
+    second = next(wire for wire in graph.wires if wire.target_node == "readout")
+    baseline = deepcopy(definition["steps"]["baseline"])
+    baseline["base"]["inline"]["params"]["variation"] = {}
+    axes, ordered = {}, []
+    for name, wire in (("first", first), ("second", second)):
+        wire_id = wire.authored_id()
+        node = f"scale_{name}"
+        edits = [
+            _patch(f"graph.nodes.{node}", {
+                "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
+                "input_ports": ["input"], "output_ports": ["output"],
+            }, op="add"),
+            _patch(f"graph.wires.{wire_id}.target_node", node),
+            _patch(f"graph.wires.{wire_id}.target_port", "input"),
+            _patch(f"graph.wires.{name}-out", {
+                "source_node": node, "source_port": "output",
+                "target_node": wire.target_node, "target_port": wire.target_port,
+            }, op="add"),
+        ]
+        ordered.extend(edits)
+        axes[name] = {"values": {"inserted": {"patches": {
+            f"params.variation.{name}-{index}": {"op": "add", "value": edit}
+            for index, edit in enumerate(edits)
+        }}}}
+    baseline["sweep"] = {"axes": axes}
+    invalid = deepcopy(definition["steps"]["baseline"])
+    invalid["base"]["inline"]["params"]["variation"] = {
+        "bad-port": _patch(f"graph.wires.{first.authored_id()}.target_port", "unavailable"),
+    }
+    project = Project.model_validate({"steps": {
+        "train": definition["steps"]["train"], "crossed": baseline, "invalid": invalid,
+    }})
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "crossed", project)
+    plan = folders.read_plan("crossed", revision=None).plan
+    assert not plan.diagnostics
+    (run,) = (run for run in plan.runs if run.key.step == "crossed")
+    request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+    named = RolloutParameters.model_validate(request.spec.params).variation
+    listed = RolloutParameters.model_validate(request.spec.params | {"variation": ordered}).variation
+    variant = resolve_evaluation_variant(graph, source.task, named)
+    assert variant == resolve_evaluation_variant(graph, source.task, listed)
+    unchanged = [wire for wire in graph.wires if wire not in (first, second)]
+    assert all(wire in variant.graph.wires for wire in unchanged)
+    assert len(named) == 8 and all(edit.path != "graph.wires" for _, edit in authored_variation(named))
+    wires = {wire.authored_id(): wire for wire in variant.graph.wires}
+    for name, original in (("first", first), ("second", second)):
+        before, after = wires[original.authored_id()], wires[f"{name}-out"]
+        assert (before.target_node, before.target_port) == (f"scale_{name}", "input")
+        assert (after.source_node, after.source_port) == (f"scale_{name}", "output")
+        assert (after.target_node, after.target_port) == (original.target_node, original.target_port)
+    reader = PlanJobReader(HostClient(), enable_evaluation_candidate=True)
+    reader.evaluation_parameters(plan, run)
+    (bad,) = (run for run in plan.runs if run.key.step == "invalid")
+    with pytest.raises(CannotRun, match="/params/variation/bad-port: .*does not exist"):
+        reader.evaluation_parameters(plan, bad)
 
 
 def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host, tmp_path, monkeypatch):
@@ -120,7 +191,10 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     started = jobs.admit_plan(
         folders, reviewed, run_keys=tuple(planned[name].key for name in cases), token="variants",
     )
-    assert [item.disposition for item in started.items] == ["admitted"] * len(cases)
+    assert [item.disposition for item in started.items] == ["admitted"] * (len(cases) - 1) + ["rejected"]
+    assert started.items[-1].job_id is None
+    assert "/params/variation/0/value" in started.items[-1].reason
+    assert "preserve the horizon" in started.items[-1].reason
 
     def settled(job_id):
         return wait_until(lambda: (
@@ -137,17 +211,9 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     hidden = "/v1/model/state/cell/hidden"
     target = "/v1/task/output/reach_target"
     data, descriptors, results = {}, {}, {}
-    for name, item in zip(cases, started.items, strict=True):
+    for name, item in zip(cases[:-1], started.items[:-1], strict=True):
         row = settled(item.job_id)
         assert row["edges"][0]["binding"]["completion"] == completion
-        if name == "different-horizon":
-            assert row["state"] == "failed"
-            error = row["outcome"]["error"]
-            assert error["code"] == "cannot_run"
-            assert error["path"] == "/params/variation/0/value"
-            assert "preserve the horizon" in error["message"]
-            assert "receipt" not in row["outcome"]
-            continue
         if name in {"incompatible", "different-dtype"}:
             assert row["state"] == "failed"
             error = row["outcome"]["error"]

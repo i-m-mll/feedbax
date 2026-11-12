@@ -66,7 +66,7 @@ def authored_evaluation_project():
     }
     sweep = {"axes": {"mass": {"values": {
         name: {"value": mass, "patches": {"params.variation": {"value": [
-            {"path": "nodes.plant.params.mass", "op": "replace", "value": mass},
+            {"path": "graph.nodes.plant.params.mass", "op": "replace", "value": mass},
         ]}}}
         for name, mass in (("nominal", 1), ("heavy", 2))
     }}}}
@@ -109,6 +109,9 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     legacy = json.loads(json.dumps(baseline_step))
     legacy["base"]["inline"]["params"]["retention"] = "observations"
     definition["steps"]["legacy"] = legacy
+    stoppable = json.loads(json.dumps(baseline_step))
+    stoppable["base"]["inline"]["params"]["seed"] += 1
+    definition["steps"]["stoppable"] = stoppable
     _save_project(folders, project, Project.model_validate(definition))
     plan = folders.read_plan(project, revision=None)
     assert not plan.plan.diagnostics
@@ -165,8 +168,9 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert row["state"] == "queued" and not row["edges"][0]["satisfied"]
         assert row["launch"]["warm_entrypoint"] == f"{evaluate_worker.__name__}:main"
         assert row["edges"][0]["authenticated_completion"]
-    unavailable = RunKey("default", "unsupported-condition", "default")
-    (queued,) = launch(jobs, (unavailable,), "evaluate-queued-stop").items
+    stoppable_key = RunKey("default", "stoppable", "default")
+    (queued,) = launch(jobs, (stoppable_key,), "evaluate-queued-stop").items
+    assert queued.disposition == "admitted"
     (stopped,) = jobs.stop((queued.job_id,), "checkpoint")
     assert stopped.job.status == "stopped" and not stopped.job.can_resume
     with pytest.raises(JobConflict, match="resubmit the saved Evaluate row"):
@@ -208,6 +212,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             gated.read_evaluation_result(project=project, store=root, job_id=item.job_id)
 
     joined = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
+    (invalid_condition,) = (
+        problem for problem in joined.evaluation_problems if problem.step == "unsupported-condition"
+    )
+    assert invalid_condition.path == "/params/variation/0"
     for key, item in zip(keys, submitted.items, strict=True):
         (attempt,) = joined.attempts_by_run[key]
         assert attempt.job_id == item.job_id and attempt.successful_receipt == outcomes[key].receipt
@@ -358,10 +366,11 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert result.receipt.manifest_sha256 in live
         assert result._manifest().artifacts[0].sha256 in live
 
+    unavailable = RunKey("default", "unsupported-condition", "default")
     (unsupported_condition,) = launch(jobs, (unavailable,), "unsupported-condition").items
-    failed = wait_until(lambda: job_row(host, unsupported_condition.job_id, "failed"))
-    assert failed["outcome"]["error"]["code"] == "cannot_run"
-    assert failed["outcome"]["error"]["path"] == "/params/variation/0"
+    assert unsupported_condition.disposition == "rejected"
+    assert unsupported_condition.job_id is None
+    assert "cannot_run /params/variation/0" in unsupported_condition.reason
 
     (legacy_attempt,) = launch(jobs, (RunKey("default", "legacy", "default"),), "legacy-observations").items
     legacy_job = wait_until(lambda: (
@@ -461,10 +470,6 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     (consumer,) = jobs.admit_plan(
         folders, reviewed, run_keys=(RunKey("default", "baseline", "default"),), token="evaluate",
     ).items
-    result = wait_until(lambda: (
-        job_row(host, consumer.job_id, "succeeded") or job_row(host, consumer.job_id, "failed")
-    ))
-    assert result["state"] == "failed"
-    assert result["outcome"]["error"]["code"] == "cannot_run"
-    assert result["outcome"]["error"]["path"] == "/inputs/subject/graph/nodes/passthrough"
-    assert "receipt" not in result["outcome"]
+    assert consumer.disposition == "rejected"
+    assert consumer.job_id is None
+    assert "cannot_run /inputs/subject/graph/nodes/passthrough" in consumer.reason

@@ -1,5 +1,7 @@
 # Core modeling and runtime for project training and evaluation
 
+The [shared core and executor contract](shared_core_executor_contract.md) owns scientific addresses, restoration, the root clock, paired trials, the objective and checkpoint selection. It records the qualification and production gates for those boundaries.
+
 Design home: [issue:f02fdbe]. Product contract: [issue:4007bf2]. Coverage tracker: [issue:96a8f22]. Historical scientific compiler program: [issue:1eef16a].
 
 Proposed M2 design, 2026-11-11. Source inspection used develop `6e3491e2e045a89770db3d3be8e7a1cf639a885d`. Numerical measurements come from the workloads cited below. The gates in §11 specify evidence still needed for delivery.
@@ -141,9 +143,9 @@ State history is a named observation projection, not a second runtime state syst
 
 ### Randomness and mapping
 
-Retain the existing scoped occurrence key schedule. Training sampler, validation sampler, model initialization, trial reset, graph step, component occurrence, and intervention noise have separate named streams. Store the schedule identity and typed-key implementation as needed for exact continuation. Trial and condition coordinates determine scientific streams; batch size, launch order, and row chunking must not change them.
+The [shared trial-key contract](shared_core_executor_contract.md#4-paired-trial-streams) defines stream purposes, pairing, and independence. The runtime supplies named occurrence scopes and accepts explicit trial keys.
 
-Plan-level sweep rows are requests. Within one request, trial, condition, ensemble, and a method's population axes are declared mapped dimensions. The preparation layer presents their names, coordinates, leaf broadcast/mapped status and valid shapes once; methods do not infer them from tree position. Same-shape groups may be vmapped or mapped/chunked without changing scientific identity, provided their math and reduction order contract remain the same. A reduction or batch change that changes training mathematics belongs in the request, not a scheduler optimization.
+Plan-level sweep rows are runs. Within one request, trial, condition, ensemble, and a method's population axes are declared mapped dimensions. The preparation layer presents their names, coordinates, leaf broadcast/mapped status and valid shapes once; methods do not infer them from tree position. Same-shape groups may be vmapped or mapped/chunked without changing scientific identity, provided their math and reduction order contract remain the same. A reduction or batch change that changes training mathematics belongs in the request.
 
 ## 6. Tasks, objectives, interventions, and evaluation
 
@@ -157,33 +159,9 @@ Within-trial reactive behavior is ordinary graph computation. For a live adversa
 
 Objectives are typed functions/reducers over named observations, trial targets/timelines, and explicit model-value inputs. They are not causal nodes unless their output actually feeds the model's dynamics. The compiler derives a single observation plan for objective terms, requested retention, and diagnostics. Streaming evaluation is used only when the objective declares an equivalent recurrence; otherwise the required trajectory is retained. No approximate or different loss is selected silently to save memory. Training and built-in evaluation call the same objective implementation and report the same term IDs and reduction semantics.
 
-### Conditions and checkpoint order
+### Evaluation variants and binding
 
-A condition is a typed patch of task fields or eligible model numerical parameters, plus a declared intervention program. It is included in the evaluate spec and request identity. Parameter ownership and permitted override paths come from component declarations. Trainability and override eligibility are independent.
-
-**Load order is mandatory:**
-
-1. Resolve the selected source checkpoint and its source-model definition from the job's exact binding.
-2. Reconstruct the source template and restore the complete model slot, including frozen numerical fields and any persistent inference state.
-3. Apply evaluation condition overrides to that restored source model using semantic parameter paths.
-4. Recompute affected derived native/solver quantities through the owning binder; validate layout, model invariants, and backend capabilities.
-5. Lower/apply declared interventions, prepare the evaluation task, reset each trial, and run.
-
-Never restore the model slot after applying conditions. For example, checkpoint mass 1 and condition mass 2 must execute mass 2 while retaining the checkpoint's trained weights. If mass requires an engine-derived inertia matrix to change, the binder updates both; independently patching a stale derived buffer is invalid.
-
-An ordinary evaluate condition preserves the source model's checkpoint layout, component topology, and semantic port shapes. A task horizon or supported intervention can require a fresh executable while preserving that model layout. Reject an incompatible model edit at plan when known, or at bind when only the actual checkpoint exposes it. Initializing a different model from selected checkpoint parameters is an explicit new training request with a transfer mapping and its own identity.
-
-A stale successful model receipt can still supply values under the umbrella's freshness policy. That permission is not a compatibility waiver. Reconstruct its original authored source using current registered migrations/implementations, check the descriptor, and report any incompatibility at its path. A compatible changed-code evaluation records the actual current code and the exact source checkpoint; it does not claim historical numerical replay. An unavailable component schema, unresolved function binding, missing asset, or incompatible layout prevents execution. Accepting a code difference does not remove these failures.
-
-### Plan-time and bind-time validation
-
-At plan time, validate condition paths, value schemas, intervention selectors, task bindings, requested observations and capability requirements against the candidate training definitions already in the plan. The source is the upstream run's resolved scientific definition, not whatever model document happens to be open now. A result-selected subset or best-checkpoint rule remains unresolved; the request covers the rule and candidate request IDs.
-
-At job start, the jobs/kernel layer resolves the rule once. Core checks that the selected model descriptor matches its promised definition, source closure is reconstructible, slot paths/shapes/types are valid, and conditions remain compatible. Resume inherits that binding. These checks also apply to a checkpoint published by a still-running job, before any terminal receipt exists.
-
-A last or best rule binds one model checkpoint; an every-k rule can bind an ordered finite set. In the latter case one evaluate request has a checkpoint dimension, and each checkpoint contributes its exact model projection and source coordinate. Core never discovers new checkpoints during execution. The host decides readiness from the declared prerequisite/publication edge, and the binding records the finite selection as of start. Members must satisfy the same model/observation compatibility rules as condition members. Per-checkpoint requests require explicit plan-level fan-out over already known candidates; a result-selected checkpoint set does not silently add unplanned jobs.
-
-A condition grid in one evaluate request must share variable names, component feature shapes, and units. Trial/condition members may have different finite horizons: group execution by compatible horizon, then publish a padded time dimension with an explicit valid-sample mask, per-member length and physical-time coordinates. No silent resampling or treating padding as observations. Objectives mask before reduction. If a grid changes feature shape or units, refuse stacking and name the incompatible members; the author uses separate evaluation runs. This rule prevents a shape-dependent batching implementation from deciding scientific meaning.
+The [shared evaluation contract](shared_core_executor_contract.md#1-evaluation-uses-the-existing-project-variation-model) defines the authorized model/task diff, owner compatibility and value precedence. The [finite set contract](shared_core_executor_contract.md#9-finite-checkpoint-sets-bind-by-coordinate) owns plan-time candidate coordinates, readiness and exact binding. Core validates authored paths, required runtime capabilities, task binding, state alignment and variable stackability. Plan exposes the resulting diagnostics. The worker validates the authenticated selected model before realization.
 
 ### Intervention semantics
 
@@ -219,11 +197,11 @@ The following names describe the interface, not a demand for these exact class n
 | Core error | Structured source/path/capability/numerical refusal | Convert to the executor's terminal error and outcome; jobs records it and surfaces the same reason |
 | Runtime cost facts | Preparation/compile/step timings and shapes, actual capability | Report phases and metrics; choose launch resource limits and rehearsal bounds |
 
-A method owns its mathematical update. The executor owns update count, phase progression, checkpoint cadence, publication, stop, and durable cursor. Core neither embeds an optimizer loop in Graph nor knows a job ID.
+A method owns its mathematical update. The executor owns request-local work, checkpoint cadence, publication, stop, and durable cursor. Core neither embeds an optimizer loop in Graph nor knows a job ID.
 
 The method-facing transition is conceptually update(prepared, model_slot, method_state, executor_inputs) → update_result. The result contains a coherent new model slot, method state, committed progress coordinate, metrics, and any explicitly retained continuation state. Methods may implement gradient descent, RL, local update rules, or population methods without receiving a different job lifecycle. A method requiring reverse-mode simulator derivatives cannot run against a forward-only mechanics configuration. PPO can require controller derivatives without simulator derivatives; those capabilities must be distinct.
 
-Method construction receives parameter/state descriptors and mapped axes, not an opaque model tree that it must rediscover. Named parameter selections are checked once against those descriptors. Full M2 method API, phase/schedule semantics and adoption of existing trainers belong to the jobs/training design ([issue:a1382d5]); this core contract does not choose a second executor or prescribe method-specific state.
+Method construction receives parameter/state descriptors and mapped axes, not an opaque model tree that it must rediscover. Named parameter selections are checked once against those descriptors. The jobs and training design owns the method API, schedule and optimizer carry policy, and executor replacement. Core supplies the descriptors and compatible restoration used by that executor. [issue:a1382d5]
 
 Metrics travel from committed updates. Emit available metrics at 2 Hz or better when updates are fast enough; during a longer compiled update emit phase/heartbeat progress with the last completed metric, rather than fabricating new measurements. One logical update may contain multiple device calls, but only a complete method transition is checkpointable unless the method explicitly declares additional safe continuation boundaries.
 
@@ -233,21 +211,9 @@ A rehearsal uses the exact preparation and method path on a separate bounded req
 
 ## 8. Checkpoint reconstruction and continuation
 
-The kernel array container ([issue:129ede5]) is the one storage implementation. Core owns the scientific layout and reconstruction bindings; each method owns its declared state layout. There is no separate core checkpoint writer.
+Core supplies the model descriptor, typed value destinations and effective-value-first realization under the [shared restoration contract](shared_core_executor_contract.md#3-model-value-authority-and-reconstruction). The model projection supports fresh trials. Each method supplies the layout of its own continuation state, including carried episodes when required. The kernel owns content custody and the executor owns publication. Prepared implementation structures come from compatible registrations.
 
-A checkpoint content root names its exact source scientific definitions, model descriptor, slot digests, and deterministic completed cursor and barrier. The descriptor reflects the effective model at that phase, including any supported explicit phase transition. The producing attempt, publication time, and supersession belong to the publication record and eventual receipt. Equal checkpoint content at the same scientific cursor therefore retains one digest when published by different attempts. The model descriptor defines typed semantic leaf paths, shapes/dtypes, allowed changing scalar/union leaf types, component schema bindings, and the template/asset closure. The root and model-only projection retain enough document and asset closure to rebuild the model even when published as progress and no successful receipt exists.
-
-The model slot includes everything needed for fresh-trial inference. It does not include a previous episode's transient hidden state merely because both use Equinox State. Components declare which state is persistent inference state and which resets per trial. A continuing-episode method stores its complete RunCarry in a separate named continuation slot. Optimizer, method state, RNG/sampler state, phase/schedule counters, and update cursor belong to their own slots.
-
-Non-array structure supplied by a declared template is reconstructed; callable bindings are checked against the current implementation/trace, never executed from serialized checkpoint bytes. Mutable non-array data is read from the descriptor under its registered type, including an allowed transition from None to a numeric adaptive-state value. A registered state-leaf codec validates its data; it is not an arbitrary class import hook.
-
-Restoration has three explicit forms:
-
-- **Resume:** same request and inherited input binding; restore every required slot, cursor, RNG stream, and continuation state. No reinitialization of missing slots. Same locked runtime and numerical configuration are required for a claim of exact continuation.
-- **Continue/fork:** a new request names a checkpoint input and declares which state is retained/reset, new phase/schedule semantics, and any supported parameter mapping. This never modifies the source.
-- **Evaluate/model initialization:** load the model projection and its reconstruction closure. Evaluation resets trial state and applies conditions afterward; initialization of another training model uses its explicit transfer contract.
-
-Readable bytes and compatible state descriptors can survive dependency or class-location changes. Bitwise continuation across dependency versions, devices, or numerical algorithms is not promised. Freshness differences, load compatibility, and exact-resume equivalence are separate facts.
+Each Train request prepares its own effective model and method template. A downstream Train step resolves inherited settings through ordinary project definitions and obtains authoritative predecessor values through its bound `last` checkpoint input. Core validates retained value destinations and restores or initializes the resulting model under the [shared chained Train contract](shared_core_executor_contract.md#chained-train-steps). The executor applies the declared method and optimizer state policy. The production semantic address and slot format gates remain there.
 
 ## 9. Mechanics and acausal boundaries
 
@@ -281,7 +247,7 @@ All performance numbers below are targets unless linked to an existing measureme
 
 ### Before M2 consumers
 
-1. Publish this core contract in [issue:f02fdbe] and the executor-side agreement on [issue:30fae90]. Resolve slot ownership, inference state, method requirements, phase/stop semantics, mapped axes and reconstruction in both descriptions before the train and evaluate request consumers build.
+1. Publish this core contract in [issue:f02fdbe] and the executor-side agreement on [issue:30fae90]. Resolve slot ownership, inference state, method requirements, checkpoint initialization and stop semantics, mapped axes and reconstruction in both descriptions before the train and evaluate request consumers build.
 2. Complete the request identity ([issue:d601693]), execution trace ([issue:fca88cd]), and project conversion ([issue:26cf5d3]) gates.
 3. Freeze a shared smallest complete train→checkpoint→restore→evaluate fixture, plus the MLP and condition-order adversarial cases. Reuse historical downstream exact-resume evidence as an acceptance source; migration of that downstream corpus remains M5 and the user's choice.
 
@@ -357,6 +323,6 @@ The training-executor issues listed in [issue:96a8f22] remain the jobs/training 
 
 The core design is owned by [issue:f02fdbe]. The training and job contracts are owned by [issue:a1382d5] and [issue:30fae90]. The checkpoint container and built-in evaluation specifications are [issue:129ede5] and [issue:dbbfb13].
 
-The engineering decisions are sufficiently specific to implement: single component declaration, source-mapped compiler split, explicit numerical ownership, one carry/clock, restore-before-condition order, model-only closure, shape refusal, typed interventions, existing mechanics engines, and distinct freshness/compatibility/exactness. The remaining coordination choices are the exact shared fixture and the executor's final API spelling, method-state layout and phase specification; these belong in the jobs agreement before dependent implementation.
+The engineering decisions are sufficiently specific to implement: single component declaration, source-mapped compiler split, explicit numerical ownership, one carry/clock, restore-before-condition order, model-only closure, shape refusal, typed interventions, existing mechanics engines, and distinct freshness/compatibility/exactness. The remaining coordination choices are the exact shared fixture and the executor's final API spelling, method-state layout and checkpoint compatibility declarations; these belong in the jobs agreement before dependent implementation.
 
 The remaining evidence gates are real work, not design ambiguity: production restoration round trips, actual stop/resume, numerical intervention and timing equivalence, native derived-parameter rebuilding, bound-checkpoint closure, and measured plan/worker performance. A result remains a proposal until that evidence is recorded.

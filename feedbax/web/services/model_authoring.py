@@ -82,7 +82,9 @@ class ModelAdditions:
                 wire = WireSpec.model_validate(edit.value)
                 shared_wire = WireSpec.model_validate(entries[edit.path])
                 overlaps = _wire_address(wire) == _wire_address(shared_wire)
-                if overlaps and wire != shared_wire:
+                if overlaps and wire.model_copy(update={"id": wire.authored_id()}) != (
+                    shared_wire.model_copy(update={"id": shared_wire.authored_id()})
+                ):
                     raise ProjectFolderInvalid(
                         f"{step} has a different wire declaration for {wire.target_node}.{wire.target_port}."
                     )
@@ -177,10 +179,12 @@ def prepare_model_edit(
             if type(width) is not int or width <= 0 or not isinstance(dtype, str):
                 raise ProjectFolderInvalid("Set the GRU hidden size and dtype before connecting its carry.")
             wire = WireSpec(
+                id=wire.id,
                 source_node=wire.source_node, source_port="hidden",
                 target_node=wire.target_node, target_port="hidden", temporality="recurrent",
                 recurrent_initializer=recurrent_zero_initializer(width, state_slot="hidden", dtype=dtype),
             )
+        wire = wire.model_copy(update={"id": wire.authored_id()})
         return ModelAdditions((_add("wires", "-", wire.model_dump(mode="json", exclude_none=True)),))
 
     name = operation.source_port

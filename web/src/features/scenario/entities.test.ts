@@ -38,6 +38,7 @@ const graph: GraphSpec = {
   },
   wires: [
     {
+      id: 'readout-drive',
       source_node: 'network',
       source_port: 'output',
       target_node: 'mechanics',
@@ -222,6 +223,7 @@ describe('scenario entity registry', () => {
     });
     expect(registry.entities[graphEdgeEntityId(graphEdgeId(wire))]).toMatchObject({
       kind: 'graph_edge',
+      selector: { target_id: 'readout-drive', compact: 'edge:network.output->mechanics.force' },
       metadata: {
         edge_type: 'port_wire',
         temporality: 'instant',
@@ -348,7 +350,7 @@ describe('scenario entity registry', () => {
     expect(selectorToEntityId({
       namespace: 'graph_edge',
       compact: 'edge:network.output->mechanics.force',
-      target_id: 'network:output->mechanics:force',
+      target_id: 'readout-drive',
       path: null,
       metadata: {},
     })).toBe(graphEdgeEntityId(graphEdgeId(graph.wires[0])));

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.mapping import WhereDict
@@ -101,6 +102,25 @@ def test_serialized_tap_changes_only_its_selected_fanout(namespace, compact, exp
     ]
     assert len(generated) == (3 if namespace == "graph_edge" else 4)
     assert {entry.authored_path for entry in generated} == {"/graph/taps/0"}
+
+
+def test_tap_resolves_wire_id_and_preserves_it_through_serialization():
+    spec = _fanout()
+    spec["wires"][0]["id"] = "left-wire"
+    tap = _tap(
+        "graph_edge", "edge:stale.output->left.input", operation="clamp", bounds={"min": 0, "max": 1},
+    )
+    tap["transform"]["intervention"]["target_selector"]["target_id"] = "left-wire"
+    spec["taps"] = [tap]
+    graph = _compile(spec).graph
+    transform = "__studio_tap__change__transform"
+    (before,) = (wire for wire in graph.wires if wire.target_node == transform)
+    (after,) = (wire for wire in graph.wires if wire.source_node == transform)
+    assert (after.id, after.target_node) == ("left-wire", "left")
+    assert before.id and before.id != after.id
+    assert [wire.id for wire in graph_to_spec(graph).wires] == [wire.id for wire in graph.wires]
+    outputs, _ = graph({}, init_state_from_component(graph), key=jr.key(0))
+    assert outputs == {"direct": 2, "left": 1, "right": 2}
 
 
 @pytest.mark.parametrize(

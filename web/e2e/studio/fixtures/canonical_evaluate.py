@@ -44,7 +44,7 @@ def walkthrough_files():
     baseline = project.steps["baseline"].model_dump(mode="json", exclude_unset=True)
     heavy = project.steps["baseline"].model_dump(mode="json", exclude_unset=True)
     heavy["base"]["inline"]["params"]["variation"] = [
-        {"path": "nodes.plant.params.mass", "op": "replace", "value": 2},
+        {"path": "graph.nodes.plant.params.mass", "op": "replace", "value": 2},
     ]
     return {
         "train": [{"kind": "step", "id": "train", "step": train}],
