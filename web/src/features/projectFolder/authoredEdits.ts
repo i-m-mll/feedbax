@@ -40,7 +40,7 @@ function parts(pointer: string) {
   return pointer.slice(1).split('/').map((token) => token.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
-function pointer(path: Patch['path']) {
+export function authoredPointer(path: Readonly<Patch['path']>) {
   return '/' + path.map((token) => String(token).replace(/~/g, '~0').replace(/\//g, '~1')).join('/');
 }
 
@@ -167,7 +167,7 @@ export function applyAuthoredEdits(
     project: updated as unknown as AuthoredProject,
     edits: reapplied,
     inverse: inverse.map((patch): ProjectValueEdit => patch.op === 'remove'
-      ? { op: 'remove', path: pointer(patch.path) }
-      : { op: patch.op, path: pointer(patch.path), value: patch.value as JsonValue }),
+      ? { op: 'remove', path: authoredPointer(patch.path) }
+      : { op: patch.op, path: authoredPointer(patch.path), value: patch.value as JsonValue }),
   };
 }

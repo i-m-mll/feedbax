@@ -1,7 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { fixture, mapStep, openResultsSlot } from './fixtures/canonicalTrain';
 import type {
   StudioActivityJob,
   StudioJobSnapshot,
@@ -11,14 +9,7 @@ import type {
   StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 
-const repo = fileURLToPath(new URL('../../../', import.meta.url));
-const run = promisify(execFile);
-async function fixture(...arguments_: string[]) {
-  const { stdout } = await run('uv', [
-    'run', '--no-sync', 'python', '-B', '-m', 'web.e2e.studio.fixtures.canonical_train', ...arguments_,
-  ], { cwd: repo, timeout: 12_000 });
-  return JSON.parse(stdout);
-}
+test.use({ trace: 'off', launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] } });
 
 function submitted(page: Page, path: string) {
   return page.waitForResponse((response) =>
@@ -40,9 +31,8 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   const path = `${projectPath}/train-runs`;
   const table = page.getByRole('table', { name: 'Runs' });
   const runButton = page.getByRole('button', { name: 'Run', exact: true });
-  const step = page.getByRole('combobox', { name: 'Train step' });
   await page.goto(`/?project=${encodeURIComponent(id)}`);
-  await step.selectOption('train');
+  await mapStep(page, 'train').click();
   await table.getByRole('button').first().click();
   const initial = await request.get(`${path}?revision=${snapshot.revision}`);
   expect(initial.ok(), await initial.text()).toBe(true);
@@ -60,7 +50,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   const job = items[0].job_id!;
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
   await page.reload();
-  await step.selectOption('train');
+  await mapStep(page, 'train').click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
   const reopened = await request.get(`${path}?revision=${snapshot.revision}`);
   const current = await reopened.json() as StudioSavedTrainRuns;
@@ -71,7 +61,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
     successful_receipt: expect.objectContaining({ manifest_sha256: expect.any(String) }),
   })]);
 
-  await step.selectOption('successor');
+  await mapStep(page, 'successor').click();
   await table.getByRole('button').first().click();
   const chained = submitted(page, path);
   await runButton.click();
@@ -82,7 +72,8 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
     run_key: '["default","successor","default"]', disposition: 'admitted', job_id: expect.any(String),
   })]);
   const stoppedJob = successorSubmission.items[0].job_id!;
-  const results = page.getByRole('region', { name: 'Results', exact: true });
+  await openResultsSlot(page);
+  const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
   await expect(loss.locator('line title').filter({ hasText: stoppedJob }).first()).toBeAttached({ timeout: 14_000 });
   const stop = await request.post('/api/jobs/stop', { data: { job_ids: [stoppedJob], mode: 'checkpoint' } });
@@ -99,9 +90,8 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   expect(await replay.json()).toEqual(successorSubmission);
 
   await page.reload();
-  await step.selectOption('successor');
+  await mapStep(page, 'successor').click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
-  await expect(results).toHaveCount(0);
   await table.getByRole('button').first().click();
   const evidence = await fixture(
     'observe', String(info.config.metadata.home), id, snapshot.revision, job, stoppedJob, successorJob,
@@ -139,7 +129,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await expect(successorResult).toContainText(evidence.successor.request);
   await expect(successorResult).toContainText(evidence.successor.receipt.manifest_sha256);
 
-  await step.selectOption('train');
+  await mapStep(page, 'train').click();
   await table.getByRole('button').first().click();
   await expect(results.getByText('Cumulative updates')).toHaveCount(0);
   await expect(results.getByText('Updates', { exact: true })).toBeVisible();
@@ -178,10 +168,9 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     ({ snapshot } = await response.json() as StudioProjectDocument);
   }
   const table = page.getByRole('table', { name: 'Runs' });
-  const step = page.getByRole('combobox', { name: 'Train step' });
   const runButton = page.getByRole('button', { name: 'Run', exact: true });
   async function select(name: string) {
-    await step.selectOption(name);
+    await mapStep(page, name).click();
     await table.getByRole('button').first().click();
   }
   async function runSelected(name: string) {
@@ -210,8 +199,8 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     return (await rows()).find(({ key }) => key.step === 'train')!;
   }
   async function editNumber(label: string, value: number, before: string) {
-    await step.selectOption('train');
-    await expect(step).toHaveValue('train');
+    await mapStep(page, 'train').click();
+    await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
     const field = page.getByRole('spinbutton', { name: `Edit ${label}` });
     await expect(field).toHaveValue(before);
     const saved = page.waitForResponse((response) => {
@@ -262,6 +251,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(changed.previous).toEqual(first);
   await page.reload();
   await select('train');
+  await openResultsSlot(page);
   await page.getByText('Compare receipts', { exact: true }).click();
   await expect(page.getByRole('region', { name: 'Current result' })).toContainText(changed.result!.receipt.manifest_sha256);
   await expect(page.getByRole('region', { name: 'Previous result' })).toContainText(first.receipt.manifest_sha256);

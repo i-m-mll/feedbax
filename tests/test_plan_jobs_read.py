@@ -34,6 +34,7 @@ from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
+from tests.test_project_plan import _project_data
 from web.e2e.studio.fixtures.reaching_project import reaching_project
 
 
@@ -133,6 +134,70 @@ def test_plan_join_does_not_start_an_absent_host(tmp_path, monkeypatch):
         assert error.value.code == "disconnected"
     assert not host_root.exists()
     assert not (projects / "empty" / "results").exists()
+
+
+def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    root = projects / "reach"
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
+    data, _ = _project_data()
+    data["steps"]["fit"]["sweep"] = {"axes": {"seed": {"values": {
+        "a": {"label": "11", "patches": {"seed": {"value": 11}}},
+        "b": {"label": "12", "patches": {"seed": {"value": 12}}},
+    }}}}
+    data["steps"]["evaluate"]["inputs"]["subject"]["where"] = {"rows": ["seed=a"]}
+    data["steps"]["report"] = {
+        "kind": "report", "base": {"inline": {}}, "inputs": {"source": {"step": "evaluate"}},
+    }
+    data["steps"]["broken"] = {"kind": "train", "base": {"document": "missing"}}
+    for name, content in dump_text_project(
+        Project.model_validate(data), ProjectConfiguration(project="reach", store="results")
+    ).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    pid = HostClient().ping()["pid"]
+    try:
+        with TestClient(create_app(projects_dir=projects)) as client:
+            revision = client.get("/api/projects/reach").json()["revision"]
+            route = "/api/projects/reach/train-runs"
+            old = client.get(route, params={"revision": revision})
+            projected = client.get(route, params={"revision": revision, "window_map": "true"})
+    finally:
+        os.kill(pid, signal.SIGTERM)
+
+    assert old.status_code == projected.status_code == 200
+    response = projected.json()
+    window = response.pop("window_map")
+    assert response == old.json()
+    assert set(response) == {"revision", "rows"}
+    assert window["variants"] == ["default"]
+    steps = {step["step_id"]: step for step in window["steps"]}
+    assert steps["fit"]["document_ids"] == {"payload.graph": "model"}
+    assert steps["fit"]["status_counts"] == {"not_run": 2}
+    [subject] = steps["evaluate"]["inputs"]
+    assert subject["source_step_id"] == "fit"
+    assert subject["subset"]["terms"]["rows"] == ["seed=a"]
+    assert (subject["subset"]["count"], subject["subset"]["total"]) == (1, 2)
+    assert steps["evaluate"]["status_counts"] == {}
+    assert steps["report"]["inputs"][0]["source_step_id"] == "evaluate"
+    fit_a = {"variant": "default", "step": "fit", "row": "seed=a"}
+    [edge] = window["edges"]
+    assert edge == {
+        "from_key": fit_a,
+        "to_key": {"variant": "default", "step": "evaluate", "row": "default"},
+    }
+    row = next(item for item in window["rows"] if item["key"] == fit_a)
+    assert row["coordinates"]["seed"]["label"] == "11"
+    assert all(item["key"]["step"] == "fit" for item in response["rows"])
+    assert any(
+        (problem["step"], problem["document"], problem["code"]) == ("broken", "missing", "missing_document")
+        for problem in window["problems"]
+    )
+    assert not (root / "results").exists()
 
 
 def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, monkeypatch, record_property):

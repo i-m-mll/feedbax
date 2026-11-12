@@ -23,12 +23,12 @@ import {
 } from '@/stores/layoutStore';
 
 const PROJECT_CHANNEL_NAME = 'feedbax:studio-project-presence';
-const SavedTrainWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
+const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
 export default function App({ projectId }: { projectId: string | null }) {
   return projectId ? (
     <Suspense fallback={<main aria-busy="true" />}>
-      <SavedTrainWorkspace projectId={projectId} />
+      <StudioProjectWorkspace projectId={projectId} />
     </Suspense>
   ) : <Workspace />;
 }

@@ -66,13 +66,14 @@ def preview_submission(body: StudioRunPreviewRequest, request: Request) -> Studi
     return _jobs(request).preview(body)
 
 
-@router.get("/projects/{project_id}/train-runs")
+@router.get("/projects/{project_id}/train-runs", response_model_exclude_unset=True)
 def saved_train_runs(
     project_id: ProjectName, revision: Sha256, request: Request, response: Response,
+    window_map: bool = False,
 ) -> StudioSavedTrainRuns:
     def read() -> StudioSavedTrainRuns:
         view = request.app.state.project_plan.read(project_id, revision=revision)
-        return StudioSavedTrainRuns(
+        result = StudioSavedTrainRuns(
             revision=view.settled.revision,
             rows=[
                 StudioSavedTrainRow(
@@ -93,6 +94,9 @@ def saved_train_runs(
                 if run.kind == "train"
             ],
         )
+        if window_map:
+            result.window_map = view.window_map()
+        return result
 
     try:
         return _project_response(response, read)

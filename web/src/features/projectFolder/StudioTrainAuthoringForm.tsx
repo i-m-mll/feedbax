@@ -13,10 +13,20 @@ import { ProjectEditConflictError, type ProjectEditController, type ProjectEditV
 interface Props {
   readonly editor: ProjectEditController;
   readonly stepId: string;
+  readonly view?: 'model' | 'task' | 'objective' | 'training';
 }
 
-function formFields(projection: StudioTrainAuthoring): StudioDefinitionField[] {
-  return projection.fields.map(({ id, label, value, source, control }) => ({
+const viewPrefixes = {
+  model: ['/graph'],
+  task: ['/task'],
+  objective: ['/objective'],
+  training: ['/training_config', '/method_ref', '/method_payload'],
+} as const;
+
+function formFields(projection: StudioTrainAuthoring, view: Props['view']): StudioDefinitionField[] {
+  return projection.fields.filter(({ id }) => !view || viewPrefixes[view].some(
+    (path) => id === path || id.startsWith(`${path}/`),
+  )).map(({ id, label, value, source, control }) => ({
     id,
     label,
     control: control?.kind === 'number'
@@ -47,7 +57,7 @@ function validateRecipe(
   };
 }
 
-export function StudioTrainAuthoringForm({ editor, stepId }: Props) {
+export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
   const [projection, setProjection] = useState<StudioTrainAuthoring | null>(null);
@@ -116,7 +126,7 @@ export function StudioTrainAuthoringForm({ editor, stepId }: Props) {
         ? (
           <fieldset disabled={editing || pending > 0 || outside !== null}>
             <StudioDefinitionForm
-              fields={formFields(current)} selection={{ kind: 'steps', stepIds: [stepId] }}
+              fields={formFields(current, view)} selection={{ kind: 'steps', stepIds: [stepId] }}
               onEdit={(change) => { void apply(change); }}
             />
           </fieldset>

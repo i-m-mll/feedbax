@@ -58,7 +58,7 @@ function savedTrainRunsPath(project: string) {
 }
 
 export function fetchSavedTrainRuns(project: string, revision: string, signal?: AbortSignal) {
-  const query = new URLSearchParams({ revision });
+  const query = new URLSearchParams({ revision, window_map: 'true' });
   return readContract(`${savedTrainRunsPath(project)}?${query}`, 'StudioSavedTrainRuns', { signal });
 }
 

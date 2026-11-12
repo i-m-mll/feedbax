@@ -94,6 +94,7 @@ class ResolvedStep:
     sweep: Sweep | None
     inputs: dict[str, InputBinding]
     sources: dict[str, ValueSource] | None = None
+    document_ids: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -295,14 +296,24 @@ class _Documents:
         value: Any,
         path: str,
         active: tuple[tuple[str, str], ...] = (),
+        *,
+        document_ids: dict[str, str] | None = None,
     ) -> JsonValue:
         if isinstance(value, DocumentReference):
             selected, active = self._follow(value, path, active)
-            return self.inline(selected, path, active)
+            if document_ids is not None:
+                document_ids[path] = value.document
+            return self.inline(selected, path, active, document_ids=document_ids)
         if isinstance(value, dict):
-            return {key: self.inline(item, f"{path}.{key}", active) for key, item in value.items()}
+            return {
+                key: self.inline(item, f"{path}.{key}", active, document_ids=document_ids)
+                for key, item in value.items()
+            }
         if isinstance(value, list):
-            return [self.inline(item, f"{path}.{i}", active) for i, item in enumerate(value)]
+            return [
+                self.inline(item, f"{path}.{i}", active, document_ids=document_ids)
+                for i, item in enumerate(value)
+            ]
         return cast(JsonValue, value)
 
 
@@ -606,7 +617,8 @@ class _Resolver:
 
     def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
         documents = self.documents(name)
-        payload = documents.inline(state.payload, "payload")
+        document_ids: dict[str, str] = {}
+        payload = documents.inline(state.payload, "payload", document_ids=document_ids)
         if not isinstance(payload, dict):
             raise _Problem(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -640,6 +652,7 @@ class _Resolver:
                 if state.origins is not None
                 else None
             ),
+            document_ids,
         )
 
 

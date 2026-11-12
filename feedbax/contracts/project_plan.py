@@ -92,6 +92,7 @@ class PlannedRow:
     kind: StepKind
     label: str | None
     coordinates: Mapping[str, SweepCoordinate]
+    document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class PlannedStep:
 class SelectedRunDefinition:
     payload: Payload
     sources: Mapping[str, ValueSource]
+    document_ids: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -254,6 +256,7 @@ class _LoweredRow:
     request: EncodedRequest | None
     diagnostics: tuple[ProjectDiagnostic, ...]
     encoding_stamp: tuple[StepKind, str, bytes] | None = None
+    document_ids: Mapping[str, str] = field(default_factory=dict)
 
 
 def _encode_row(
@@ -567,7 +570,9 @@ class _Compiler:
                     variant=producer.variant,
                     row=producer.row,
                 )
-            return SelectedRunDefinition(resolved.payload, MappingProxyType(sources))
+            return SelectedRunDefinition(
+                resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids)
+            )
 
         if self.previous is None:
             return project()
@@ -608,20 +613,25 @@ class _Compiler:
                 if isinstance(resolved, ProjectDiagnostic):
                     return _LoweredRow(None, (replace(resolved, variant=key.variant),))
                 payload = resolved.payload
+                document_ids = MappingProxyType(resolved.document_ids)
             else:
                 if reader is not None:
                     for name, _ in self.work.definitions[key].documents:
                         reader(name)
                 payload = definition.payload
+                document_ids = definition.document_ids
             encoding_stamp = (
                 (kind, sha256_bytes(to_json(payload)), member)
                 if basis is not None else None
             )
             if previous is not None and previous.encoding_stamp == encoding_stamp:
-                return previous
-            return _encode_row(
-                key, kind, payload, role, chosen, encoding_stamp,
-                self.work.request_documents if self.previous is not None else None,
+                return replace(previous, document_ids=document_ids)
+            return replace(
+                _encode_row(
+                    key, kind, payload, role, chosen, encoding_stamp,
+                    self.work.request_documents if self.previous is not None else None,
+                ),
+                document_ids=document_ids,
             )
 
         if self.previous is None:
@@ -743,6 +753,9 @@ class _Compiler:
             lowered = self.lower_row(template, run_key, row, kind, role, chosen, basis, definition)
             self.diagnostics.extend(lowered.diagnostics)
             if (encoded := lowered.request) is None:
+                self.rows[run_key] = replace(
+                    self.rows[run_key], document_ids=lowered.document_ids,
+                )
                 continue
             self.requests[encoded.id] = encoded.data
             self.documents.update(encoded.documents)
@@ -755,6 +768,7 @@ class _Compiler:
                 MappingProxyType({role.name: chosen} if chosen else {}),
                 MappingProxyType(omissions),
                 template.requires,
+                document_ids=lowered.document_ids,
             )
             self.rows[run_key] = run
             result.append(run)

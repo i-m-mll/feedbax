@@ -1,6 +1,7 @@
 """Join the acknowledged compiler projection to observed Jobs attempts."""
 
-from collections.abc import Iterable, Mapping
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -9,8 +10,20 @@ from types import MappingProxyType
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
-    JobStatus, StudioSavedTrainChange, StudioSavedTrainResult,
+    JobStatus,
+    StudioProjectWindowMap,
+    StudioProjectWindowMapCoordinate,
+    StudioProjectWindowMapEdge,
+    StudioProjectWindowMapInput,
+    StudioProjectWindowMapProblem,
+    StudioProjectWindowMapRow,
+    StudioProjectWindowMapStep,
+    StudioProjectWindowMapSubset,
+    StudioSavedTrainChange,
+    StudioSavedTrainKey,
+    StudioSavedTrainResult,
 )
+from feedbax.contracts.project_inputs import InputBinding, StepReference
 from feedbax.contracts.project_plan import PlannedRun, RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.host.completion import completion_file
@@ -37,6 +50,89 @@ class ProjectPlanRead:
     jobs: PlanJobAttempts
     attempts_by_run: Mapping[RunKey, tuple[PlanJobAttempt, ...]]
     history: Mapping[RunKey, TrainRowHistory]
+
+    def window_map(self) -> StudioProjectWindowMap:
+        """Project authored steps and compiler facts from the acknowledged Plan."""
+        plan = self.settled.plan
+        document_ids: dict[tuple[str, str], dict[str, str]] = {}
+        for row in plan.rows:
+            key = row.key.variant, row.key.step
+            shared = document_ids.get(key)
+            document_ids[key] = (
+                dict(row.document_ids)
+                if shared is None
+                else {path: name for path, name in shared.items() if row.document_ids.get(path) == name}
+            )
+        counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+        for key, row in self.history.items():
+            counts[key.variant, key.step][row.status.value] += 1
+
+        def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
+            step = plan.steps[variant, step_id]
+            for role, binding in (step.inputs if step.inputs is not None else step.authored_inputs).items():
+                subset = plan.subsets.get((variant, step_id, role))
+                for input_id, reference in _step_references(role, binding):
+                    yield StudioProjectWindowMapInput(
+                        id=input_id,
+                        source_step_id=reference.step,
+                        subset=StudioProjectWindowMapSubset(
+                            terms=subset.terms, count=len(subset.members), total=subset.candidates,
+                            document=subset.document,
+                        ) if subset is not None else None,
+                    )
+
+        return StudioProjectWindowMap(
+            variants=list(plan.variants),
+            steps=[
+                StudioProjectWindowMapStep(
+                    variant=variant, step_id=step_id, kind=step.kind, group=step.group,
+                    inputs=list(inputs(variant, step_id)),
+                    document_ids=document_ids.get((variant, step_id), {}),
+                    status_counts=dict(counts[variant, step_id]),
+                )
+                for (variant, step_id), step in plan.steps.items()
+            ],
+            rows=[
+                StudioProjectWindowMapRow(
+                    key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
+                    label=row.label or row.key.row,
+                    coordinates={
+                        axis: StudioProjectWindowMapCoordinate.model_validate(
+                            coordinate, from_attributes=True
+                        )
+                        for axis, coordinate in row.coordinates.items()
+                    },
+                )
+                for row in plan.rows
+            ],
+            edges=[
+                StudioProjectWindowMapEdge(
+                    from_key=StudioSavedTrainKey.model_validate(binding.producer, from_attributes=True),
+                    to_key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
+                )
+                for run in plan.runs
+                for binding in run.inputs.values()
+            ],
+            problems=[
+                StudioProjectWindowMapProblem.model_validate(problem, from_attributes=True)
+                for problem in plan.diagnostics
+            ],
+        )
+
+
+def _step_references(
+    role: str, binding: InputBinding | None,
+) -> Iterator[tuple[str, StepReference]]:
+    if isinstance(binding, StepReference):
+        yield role, binding
+    elif isinstance(binding, list):
+        for index, reference in enumerate(binding):
+            if isinstance(reference, StepReference):
+                yield f"{role}.{index}", reference
+    elif isinstance(binding, dict):
+        for key, reference in binding.items():
+            if isinstance(reference, StepReference):
+                yield f"{role}.{key}", reference
 
 
 class ProjectPlanService:

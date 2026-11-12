@@ -12,7 +12,7 @@ test('uses the pinned shell surfaces and keeps Studio’s accent and native inse
   await page.goto('/');
 
   const header = page.locator('header').filter({ has: page.getByAltText('feedbax studio logo') });
-  const status = page.locator('footer').filter({ hasText: 'Connected' });
+  const status = page.locator('footer');
   const accent = () => header.evaluate((element) =>
     getComputedStyle(element).getPropertyValue('--studio-shell-accent').trim());
   await expect(header).toHaveCSS('background-color', 'rgb(242, 242, 242)');

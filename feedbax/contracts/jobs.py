@@ -9,6 +9,8 @@ from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.graph import GraphSpec, StudioWorkspaceSpec
+from feedbax.contracts.project import StepKind
+from feedbax.contracts.project_inputs import SubsetTerms
 
 
 Token = Annotated[str, Field(min_length=1, max_length=128)]
@@ -135,9 +137,68 @@ class StudioSavedTrainRow(StrictModel):
     change: StudioSavedTrainChange | None
 
 
+class StudioProjectWindowMapCoordinate(StrictModel):
+    value_id: str
+    label: str | None
+    value: JsonValue
+
+
+class StudioProjectWindowMapRow(StrictModel):
+    key: StudioSavedTrainKey
+    label: str
+    coordinates: dict[str, StudioProjectWindowMapCoordinate]
+
+
+class StudioProjectWindowMapSubset(StrictModel):
+    terms: SubsetTerms
+    count: int
+    total: int
+    document: str | None
+
+
+class StudioProjectWindowMapInput(StrictModel):
+    id: str
+    source_step_id: str
+    subset: StudioProjectWindowMapSubset | None
+
+
+class StudioProjectWindowMapStep(StrictModel):
+    variant: str
+    step_id: str
+    kind: StepKind
+    group: str | None
+    inputs: list[StudioProjectWindowMapInput]
+    document_ids: dict[str, str]
+    status_counts: dict[str, int]
+
+
+class StudioProjectWindowMapEdge(StrictModel):
+    from_key: StudioSavedTrainKey
+    to_key: StudioSavedTrainKey
+
+
+class StudioProjectWindowMapProblem(StrictModel):
+    code: str
+    path: str
+    detail: str
+    variant: str | None
+    step: str | None
+    row: str | None
+    document: str | None
+
+
+class StudioProjectWindowMap(StrictModel):
+    variants: list[str]
+    steps: list[StudioProjectWindowMapStep]
+    rows: list[StudioProjectWindowMapRow]
+    edges: list[StudioProjectWindowMapEdge]
+    problems: list[StudioProjectWindowMapProblem]
+
+
 class StudioSavedTrainRuns(StrictModel):
     revision: str
     rows: list[StudioSavedTrainRow]
+    window_map: StudioProjectWindowMap | None = None
 
 
 class StudioSavedTrainRunRequest(StrictModel):

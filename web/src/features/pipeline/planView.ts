@@ -48,6 +48,7 @@ export interface PlanStepView {
   readonly id: string;
   readonly label: string;
   readonly kind: "train" | "evaluate" | "analyze" | "report";
+  readonly group?: string | null;
   readonly sweeps: readonly PlanSweepView[];
   readonly runs: readonly PlanRunView[];
   readonly inputs: readonly PlanInputView[];

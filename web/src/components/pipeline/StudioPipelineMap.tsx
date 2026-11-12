@@ -59,6 +59,7 @@ export interface StudioPipelineMapProps {
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   onNewStep?: (source?: PipelineMapStepSource) => void;
   onNewSweep?: (stepId: string) => void;
+  onProblems?: (stepId: string) => void;
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
@@ -70,15 +71,17 @@ function stepSelection(selection: PipelineSelection | null, stepId: string) {
   return selection.stepId === stepId ? selection : null;
 }
 
-function StatusCounts({ counts }: { counts: PlanStepView['statusCounts'] }) {
+function StatusCounts({ counts, onProblems }: { counts: PlanStepView['statusCounts']; onProblems?: () => void }) {
   return (
     <span className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-slate-700">
-      {(Object.entries(counts) as [StudioRunStatusId, number][]).map(([status, count]) => count > 0 && (
-        <span key={status} className="inline-flex items-center gap-1 whitespace-nowrap">
-          <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${studioRunMarkClass(status)}`} />
-          {count} {studioRunStatus(status)}
-        </span>
-      ))}
+      {(Object.entries(counts) as [StudioRunStatusId, number][]).map(([status, count]) => {
+        if (count <= 0) return null;
+        const mark = <><span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${studioRunMarkClass(status)}`} />{count} {studioRunStatus(status)}</>;
+        const className = 'inline-flex items-center gap-1 whitespace-nowrap';
+        return status === 'cannot_run' && onProblems
+          ? <button type="button" key={status} className={`${className} underline`} onClick={onProblems}>{mark}</button>
+          : <span key={status} className={className}>{mark}</span>;
+      })}
     </span>
   );
 }
@@ -235,6 +238,7 @@ const StepCard = memo(function StepCard({
   onPresentationChange,
   onNewStep,
   onNewSweep,
+  onProblems,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -243,6 +247,7 @@ const StepCard = memo(function StepCard({
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   onNewStep?: StudioPipelineMapProps['onNewStep'];
   onNewSweep?: StudioPipelineMapProps['onNewSweep'];
+  onProblems?: StudioPipelineMapProps['onProblems'];
 }) {
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
   const folded = foldedMapSweep(step, sweeps, presentation);
@@ -284,7 +289,7 @@ const StepCard = memo(function StepCard({
         onPresentationChange={onPresentationChange}
         onNewSweep={onNewSweep}
       />
-      <StatusCounts counts={step.statusCounts} />
+      <StatusCounts counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} />
       {selection && (
         <p className="truncate rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
           {[...terms, studioCountOf(selected.size, step.runs.length)].join(' · ')}
@@ -391,6 +396,8 @@ function MapDrawer({
   focusedStepId,
   applySelection,
   onNewStep,
+  onProblems,
+  framed = false,
 }: {
   steps: readonly PlanStepView[];
   selection: PipelineSelection | null;
@@ -398,11 +405,23 @@ function MapDrawer({
   focusedStepId?: string;
   applySelection: ApplyMapSelection;
   onNewStep?: StudioPipelineMapProps['onNewStep'];
+  onProblems?: StudioPipelineMapProps['onProblems'];
+  framed?: boolean;
 }) {
+  const groups = new Map<string | null, PlanStepView[]>();
+  for (const step of steps) {
+    const group = step.group ?? null;
+    const entries = groups.get(group);
+    if (entries) entries.push(step);
+    else groups.set(group, [step]);
+  }
   return (
-    <nav aria-label={studioName('steps')} className="w-52 shrink-0 overflow-auto border-r border-slate-200 bg-slate-50 p-2">
+    <nav aria-label={studioName('steps')} className={`p-2 ${framed ? '' : 'w-52 shrink-0 overflow-auto border-r border-shell-divider bg-shell-chrome'}`}>
       <ul className="space-y-1">
-        {steps.map((step) => {
+        {Array.from(groups).map(([group, entries]) => (
+          <li key={group ?? ''}>
+            {group && <h3 className="px-1.5 text-xs font-medium text-shell-muted">{group}</h3>}
+            <ul>{entries.map((step) => {
           const scope = stepSelection(selection, step.id);
           const count = (related?.get(step.id)?.size ?? 0) + Number(focusedStepId === step.id);
           return (
@@ -418,12 +437,12 @@ function MapDrawer({
                 }}
               >
                 <StepName step={step} />
-                <StatusCounts counts={step.statusCounts} />
                 {related && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
               </button>
+              <div className="px-1.5"><StatusCounts counts={step.statusCounts} onProblems={onProblems && (() => onProblems(step.id))} /></div>
             </li>
           );
-        })}
+        })}</ul></li>))}
         {onNewStep && (
           <li>
             <button type="button" className={`${smallButton} inline-flex items-center gap-1`} onClick={() => onNewStep()}>
@@ -435,6 +454,15 @@ function MapDrawer({
       </ul>
     </nav>
   );
+}
+
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, onNewStep, onProblems }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'onNewStep' | 'onProblems'
+>) {
+  const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
+  return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
+    focusedStepId={state.focus?.stepId} applySelection={(change) => onSelectionChange(change(state))}
+    onNewStep={onNewStep} onProblems={onProblems} framed />;
 }
 
 function MapLine({
@@ -490,6 +518,7 @@ export function StudioPipelineMap({
   onPresentationChange,
   onNewStep,
   onNewSweep,
+  onProblems,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -536,6 +565,7 @@ export function StudioPipelineMap({
               focusedStepId={state.focus?.stepId}
               applySelection={applySelection}
               onNewStep={onNewStep}
+              onProblems={onProblems}
             />
           )}
           <MapDiagram layout={layout} clearFocus={clearFocus}>
@@ -551,6 +581,7 @@ export function StudioPipelineMap({
                     onPresentationChange={onPresentationChange}
                     onNewStep={onNewStep}
                     onNewSweep={onNewSweep}
+                    onProblems={onProblems}
                   />
                 ))}
               </div>

@@ -168,6 +168,7 @@ export interface StudioSavedTrainRunRequest {
 export interface StudioSavedTrainRuns {
   revision: string;
   rows: StudioSavedTrainRow[];
+  window_map?: StudioProjectWindowMap | null;
 }
 
 export interface StudioTrainCheckpointSource {
@@ -2663,6 +2664,64 @@ export type StudioProjectSnapshot = {
   "file_revisions": Array<StudioAuthoredFileRevision>;
 };
 
+export type StudioProjectWindowMap = {
+  "variants": Array<string>;
+  "steps": Array<StudioProjectWindowMapStep>;
+  "rows": Array<StudioProjectWindowMapRow>;
+  "edges": Array<StudioProjectWindowMapEdge>;
+  "problems": Array<StudioProjectWindowMapProblem>;
+};
+
+export type StudioProjectWindowMapCoordinate = {
+  "value_id": string;
+  "label": string | null;
+  "value": JsonValue;
+};
+
+export type StudioProjectWindowMapEdge = {
+  "from_key": StudioSavedTrainKey;
+  "to_key": StudioSavedTrainKey;
+};
+
+export type StudioProjectWindowMapInput = {
+  "id": string;
+  "source_step_id": string;
+  "subset": StudioProjectWindowMapSubset | null;
+};
+
+export type StudioProjectWindowMapProblem = {
+  "code": string;
+  "path": string;
+  "detail": string;
+  "variant": string | null;
+  "step": string | null;
+  "row": string | null;
+  "document": string | null;
+};
+
+export type StudioProjectWindowMapRow = {
+  "key": StudioSavedTrainKey;
+  "label": string;
+  "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
+};
+
+export type StudioProjectWindowMapStep = {
+  "variant": string;
+  "step_id": string;
+  "kind": StepKind;
+  "group": string | null;
+  "inputs": Array<StudioProjectWindowMapInput>;
+  "document_ids": Record<string, string>;
+  "status_counts": Record<string, number>;
+};
+
+export type StudioProjectWindowMapSubset = {
+  "terms": SubsetTerms;
+  "count": number;
+  "total": number;
+  "document": string | null;
+};
+
 export type StudioTrainAuthoring = {
   "project_id": string;
   "step_id": string;
@@ -3100,6 +3159,7 @@ export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.laz
     .object({
       "revision": z.string(),
       "rows": z.array(StudioSavedTrainRowSchema),
+      "window_map": StudioProjectWindowMapSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRuns>;
@@ -7221,6 +7281,80 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
 
+export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z.lazy(() =>
+  z.object({
+    "variants": z.array(z.string()),
+    "steps": z.array(StudioProjectWindowMapStepSchema),
+    "rows": z.array(StudioProjectWindowMapRowSchema),
+    "edges": z.array(StudioProjectWindowMapEdgeSchema),
+    "problems": z.array(StudioProjectWindowMapProblemSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMap>;
+
+export const StudioProjectWindowMapCoordinateSchema: z.ZodType<StudioProjectWindowMapCoordinate> = z.lazy(() =>
+  z.object({
+    "value_id": z.string(),
+    "label": z.union([z.string(), z.null()]),
+    "value": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapCoordinate>;
+
+export const StudioProjectWindowMapEdgeSchema: z.ZodType<StudioProjectWindowMapEdge> = z.lazy(() =>
+  z.object({
+    "from_key": StudioSavedTrainKeySchema,
+    "to_key": StudioSavedTrainKeySchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapEdge>;
+
+export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMapInput> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "source_step_id": z.string(),
+    "subset": z.union([StudioProjectWindowMapSubsetSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapInput>;
+
+export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowMapProblem> = z.lazy(() =>
+  z.object({
+    "code": z.string(),
+    "path": z.string(),
+    "detail": z.string(),
+    "variant": z.union([z.string(), z.null()]),
+    "step": z.union([z.string(), z.null()]),
+    "row": z.union([z.string(), z.null()]),
+    "document": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
+
+export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRow> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "label": z.string(),
+    "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapRow>;
+
+export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapStep> = z.lazy(() =>
+  z.object({
+    "variant": z.string(),
+    "step_id": z.string(),
+    "kind": StepKindSchema,
+    "group": z.union([z.string(), z.null()]),
+    "inputs": z.array(StudioProjectWindowMapInputSchema),
+    "document_ids": z.record(z.string(), z.string()),
+    "status_counts": z.record(z.string(), z.number().int().safe()),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapStep>;
+
+export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMapSubset> = z.lazy(() =>
+  z.object({
+    "terms": SubsetTermsSchema,
+    "count": z.number().int().safe(),
+    "total": z.number().int().safe(),
+    "document": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
+
 export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.lazy(() =>
   z.object({
     "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -7332,6 +7466,7 @@ export const contractSchemas = {
   StudioPresentationWrite: StudioPresentationWriteSchema,
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
+  StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectRename: StudioProjectRenameSchema,
   StudioProjectRevision: StudioProjectRevisionSchema,
@@ -7433,6 +7568,7 @@ export interface ContractTypeMap {
   StudioPresentationWrite: StudioPresentationWrite;
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectDocument: StudioProjectDocument;
+  StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectRename: StudioProjectRename;
   StudioProjectRevision: StudioProjectRevision;

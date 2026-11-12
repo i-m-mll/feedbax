@@ -10,12 +10,14 @@ export function HeaderActivity({
   onClose,
   onOpenRun,
   projectNames,
+  placement = 'below',
 }: {
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
   onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
   projectNames: ReadonlyMap<string, string>;
+  placement?: 'above' | 'below';
 }) {
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -50,7 +52,7 @@ export function HeaderActivity({
               closePanel();
             }
           }}
-          className="absolute right-0 top-full z-50 mt-2 grid max-h-[calc(100vh-5rem)] w-[min(34rem,85vw)] gap-3 overflow-auto rounded-lg border border-slate-200 bg-white p-4 text-slate-900 shadow-xl"
+          className={`absolute right-0 z-50 grid max-h-[calc(100vh-5rem)] w-[min(34rem,85vw)] gap-3 overflow-auto rounded-lg border border-shell-divider bg-shell-chrome p-4 text-shell-foreground shadow-xl ${placement === 'above' ? 'bottom-full mb-2' : 'top-full mt-2'}`}
         >
           <header className="flex items-center justify-between">
             <h2 className="font-semibold">{studioName('activity')}</h2>
