@@ -98,8 +98,8 @@ test('the saved Train field, map and Runs share named sweep values and row ident
     }
   }
 
-  await card.getByRole('button', { name: 'New Sweep train' }).click();
-  await page.getByRole('dialog', { name: 'New Sweep' }).getByRole('button', { name: 'Seed', exact: true }).click();
+  await card.getByRole('button', { name: 'Add Sweep train' }).click();
+  await page.getByRole('dialog', { name: 'Add Sweep' }).getByRole('button', { name: 'Seed', exact: true }).click();
   const seed = page.getByRole('group', { name: 'Seed', exact: true });
   await seed.getByRole('button', { name: 'Add Value Seed' }).click();
   await expect(seed.getByRole('spinbutton')).toHaveCount(2);
@@ -107,14 +107,21 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await expect(seed.getByRole('spinbutton', { name: 'Edit Seed 9' })).toBeEnabled();
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
-  await expect(card).toContainText('learning-rate 3×seed 2');
+  await expect(card).toContainText(/learning-rate 3\s*×\s*seed 2/);
   await rate.getByRole('button', { name: 'Select Learning Rate Medium', exact: true }).click();
-  await expect(rows.filter({ has: table.getByRole('cell', { name: 'Medium · 0.00275', exact: true }) })).toHaveCount(2);
-  await expect(rows.and(table.locator('tr[data-selected=true]'))).toHaveCount(2);
+  const selected = rows.and(table.locator('tr[data-selected=true]'));
+  await expect(selected).toHaveCount(2);
+  await expect(selected.getByRole('cell', { name: 'Medium · 0.00275', exact: true })).toHaveCount(2);
+  await expect(seed.getByRole('button', { name: /^Select Seed /, pressed: true })).toHaveCount(2);
   await expect(card.getByText('2 of 6', { exact: false })).toBeVisible();
   await expect(rate.getByRole('button', { name: 'Select Learning Rate Medium' })).toHaveAttribute('aria-pressed', 'true');
   await expect(rate.getByRole('button', { name: 'Select Learning Rate Slow' })).toHaveAttribute('aria-pressed', 'false');
 
+  const { plan: crossed } = await readPlan(request, projectPath);
+  const keptBySeed = new Map(crossed.window_map!.rows.filter(({ coordinates }) =>
+    coordinates['learning-rate']?.value_id === medium.coordinates['learning-rate'].value_id,
+  ).map(({ key, coordinates }) => [coordinates.seed.value_id,
+    crossed.rows.find((row) => row.key.row === key.row)!.request_id]));
   await rate.getByRole('button', { name: 'To Field Learning Rate Medium', exact: true }).click();
   await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');
@@ -122,6 +129,11 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   const { plan: reduced, snapshot: kept } = await readPlan(request, projectPath);
   expect(reduced.rows).toHaveLength(2);
   expect(reduced.window_map!.rows.map(({ coordinates }) => Object.keys(coordinates))).toEqual([['seed'], ['seed']]);
+  expect(reduced.window_map!.rows.map(({ coordinates }) => coordinates.seed.value)).toEqual([0, 9]);
+  for (const { key, coordinates } of reduced.window_map!.rows) {
+    const row = reduced.rows.find((item) => item.key.row === key.row)!;
+    expect(row.request_id).toBe(keptBySeed.get(coordinates.seed.value_id));
+  }
   const base = kept.project.steps?.train.base;
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
     training_config: { learning_rate: 0.00275 },
