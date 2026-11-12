@@ -27,6 +27,7 @@ from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, Studi
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plot.dataset_figure import render
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, ROLLOUT_TYPE, STATES_SCHEMA, state_key
@@ -36,6 +37,7 @@ from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.worker.execution import prototypes_from_task_bindings
+from tests.test_dataset_figure import velocity_summary_figure
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
 from tests.test_studio_training_host_worker import _authored_run
 
@@ -322,6 +324,12 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             summary.data("standard_deviation")[0, 0], expected.std(axis=0, ddof=1), atol=1e-6,
         )
         np.testing.assert_array_equal(summary.data("state_time"), dataset.data("state_time"))
+        figure = render(velocity_summary_figure(), {"summary": summary})
+        center, upper, lower = figure.data
+        assert center.name == dataset.data("condition")[0]
+        for trace, name in ((center, "mean"), (upper, "upper"), (lower, "lower")):
+            np.testing.assert_array_equal(trace.x, dataset.data("state_time"))
+            np.testing.assert_array_equal(trace.y, summary.data(name)[0, 0])
     for sample in range(4):
         plant_state = state.get(restored.nodes["plant"].state_index)
         cell_state = state.get(restored.nodes["cell"].state_index)

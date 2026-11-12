@@ -13,8 +13,13 @@ from typing import Any, Literal
 import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
-from pydantic import Field, field_validator
+from pydantic import field_validator
 
+from feedbax.contracts.figure_layout import (
+    ComparisonGridParams,
+    FigureMarginParams as FigureMarginParams,
+    FigureView,
+)
 from feedbax.contracts.figures import (
     ColorscaleSpec,
     DataDerivedAxisRange,
@@ -167,43 +172,11 @@ class VRectParams(StrictModel):
     event_line_width: float = 1.5
 
 
-class ComparisonGridParams(StrictModel):
-    """Defaults for panel population."""
-
-    shared_xaxes: bool | str = False
-    shared_yaxes: bool | str = "all"
-    horizontal_spacing: float | None = None
-    vertical_spacing: float | None = None
-
-
-class FigureMarginParams(StrictModel):
-    """Optional Plotly figure margins."""
-
-    l: float | None = None  # noqa: E741 - Plotly's public margin key is "l".
-    r: float | None = None
-    t: float | None = None
-    b: float | None = None
-    pad: float | None = None
-    autoexpand: bool | None = None
-
-
-class GridFigureParams(StrictModel):
+class GridFigureParams(FigureView):
     """Defaults for whole-figure layout."""
 
     panel_constructor: str = "feedbax.comparison_grid"
-    width: int | None = None
-    height: int | None = None
-    title: str | None = None
-    legend_tracegroupgap: int | None = None
-    legend_x: float | None = None
-    legend_y: float | None = None
-    legend_xanchor: Literal["auto", "left", "center", "right"] | None = None
-    legend_yanchor: Literal["auto", "top", "middle", "bottom"] | None = None
-    margin: FigureMarginParams | None = None
-    hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
     template: str | dict[str, Any] | None = None
-    row_label_gutter: float | None = Field(default=None, ge=0.0, le=256.0)
-    legend_gutter: float | None = Field(default=None, ge=0.0, le=512.0)
     # Resolved by figure execution from FigureSpec.colorbar; not authored here.
     colorbar: FigureColorbar | None = None
     # Resolved by figure execution from FigureSpec.semantic_range_policy.
@@ -1376,7 +1349,9 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         )
 
 
-def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
+def _comparison_grid(
+    panels: Sequence[PanelContent], params: StrictModel, *, figure: go.Figure | None = None,
+) -> go.Figure:
     p = ComparisonGridParams.model_validate(params.model_dump())
     panel_list = list(panels) or [PanelContent(name="main")]
     max_row = max(
@@ -1408,6 +1383,7 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
         horizontal_spacing=p.horizontal_spacing,
         vertical_spacing=p.vertical_spacing,
         specs=_subplot_specs(panel_list, rows=max_row, cols=max_col),
+        figure=figure,
     )
     populated_row_titles = [
         (row, label) for row, label in enumerate(row_titles, start=1) if label is not None
