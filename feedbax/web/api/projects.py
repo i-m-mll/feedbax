@@ -15,6 +15,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
 from feedbax.web.services.project_folder import (
     ProjectFolderInvalid,
     ProjectFolderNotFound,
@@ -27,9 +28,7 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
-def _project_response[Result: StudioProjectDocument | StudioProjectSnapshot](
-    response: Response, operation: Callable[[], Result]
-) -> Result:
+def _project_response[Result](response: Response, operation: Callable[[], Result]) -> Result:
     try:
         snapshot = operation()
     except ProjectFolderNotFound as exc:
@@ -107,6 +106,27 @@ def rename_project(
     return _project_response(
         response, lambda: request.app.state.project_folders.rename(project_id, body)
     )
+
+
+@router.post("/{project_id}/scene/planar")
+def read_planar_scene(
+    project_id: ProjectName, body: StudioPlanarSceneRequest, request: Request, response: Response,
+) -> StudioPlanarSceneResponse:
+    from feedbax.studio.scene_geometry import prepare_project_scene
+
+    def prepare() -> StudioPlanarSceneResponse:
+        snapshot = request.app.state.project_folders.read(project_id)
+        if snapshot.revision != body.revision:
+            raise ProjectRevisionConflict("project", snapshot.revision)
+        model, diagnostics = prepare_project_scene(
+            snapshot.project, body.document_id, body.node_path,
+            request.app.state.bootstrap_state.bundle.components,
+        )
+        return StudioPlanarSceneResponse(
+            project_id=project_id, **body.model_dump(), model=model, diagnostics=diagnostics,
+        )
+
+    return _project_response(response, prepare)
 
 
 class ProjectRevisionWatch:

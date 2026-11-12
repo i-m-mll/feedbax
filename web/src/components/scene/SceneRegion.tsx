@@ -86,6 +86,7 @@ function SceneDrawingCanvas({
     return !overlay || !hiddenOverlays.has(overlay);
   };
   const visibleElements = scene.elements.filter((element) => entityIsVisible(element.entity_id));
+  const diagnosedEntities = new Set(scene.validation.map((issue) => issue.entity_id));
   const marked = new Set<string>();
 
   const beginPan = (event: PointerEvent<SVGSVGElement>) => {
@@ -138,7 +139,8 @@ function SceneDrawingCanvas({
           const entity = entities.get(element.entity_id);
           if (!entity) return null;
           const point = elementPosition(element);
-          const mark = point && problemEntityIds?.has(entity.id) && !marked.has(entity.id) ? project(point) : null;
+          const hasProblem = diagnosedEntities.has(entity.id) || problemEntityIds?.has(entity.id);
+          const mark = point && hasProblem && !marked.has(entity.id) ? project(point) : null;
           if (mark) marked.add(entity.id);
           return (
             <g key={element.id}>
@@ -183,6 +185,15 @@ function SceneDrawingCanvas({
   );
 }
 
+function SceneIssues({ issues }: { issues: ResolvedScene['validation'] }) {
+  if (!issues.length) return null;
+  return (
+    <ul role="alert" className="space-y-1 px-2 text-sm text-red-700">
+      {issues.map((issue) => <li key={JSON.stringify([issue.type, issue.entity_id, issue.message])}>{issue.message}</li>)}
+    </ul>
+  );
+}
+
 export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: SceneView }) {
   switch (view.kind) {
     case 'geometry':
@@ -190,7 +201,9 @@ export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: Sc
     case 'replay':
       return (
         <StudioRegionBoundary name="scene">
-          <SceneDrawingCanvas view={view} {...drawing} />
+          {view.kind === 'geometry' && !view.scene.elements.some(({ geometry }) => geometry.kind !== 'none') && view.scene.validation.length
+            ? <SceneIssues issues={view.scene.validation} />
+            : <SceneDrawingCanvas view={view} {...drawing} />}
         </StudioRegionBoundary>
       );
     case 'loading':
@@ -261,6 +274,10 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
   };
 }) {
   const muscleIds = new Set(scene.elements.filter((element) => element.archetype === 'muscle_path').map((element) => element.entity_id));
+  const issuesByEntity = new Map<string, ResolvedScene['validation']>();
+  for (const issue of scene.validation) {
+    if (issue.entity_id) issuesByEntity.set(issue.entity_id, [...(issuesByEntity.get(issue.entity_id) ?? []), issue]);
+  }
   const groups = new Map<DrawerGroup, { id: string; label: string }[]>();
   function add(group: DrawerGroup, item: { id: string; label: string }) {
     const items = groups.get(group);
@@ -300,6 +317,7 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
                     className="w-full rounded px-2 py-1 text-left text-sm text-slate-900 hover:bg-slate-100 aria-pressed:bg-violet-100">
                     {item.label}
                   </button>
+                  <SceneIssues issues={issuesByEntity.get(item.id) ?? []} />
                 </li>
               ))}
             </ul>
@@ -313,6 +331,11 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
 
 const coordinateFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
 
+function inspectorPosition(anchor: ResolvedScene['anchors'][number]) {
+  const { authored_frame: frame, offset } = anchor.metadata;
+  return typeof frame === 'string' && Array.isArray(offset) && offset.every(Number.isFinite) ? offset : anchor.position;
+}
+
 export function SceneElementInspector({ scene, selectedId }: { scene: ResolvedScene; selectedId: string | null }) {
   const entity = scene.entities.find((item) => item.id === selectedId);
   const anchor = scene.anchors.find((item) => item.id === selectedId);
@@ -323,12 +346,15 @@ export function SceneElementInspector({ scene, selectedId }: { scene: ResolvedSc
     <section aria-label={studioName('details')} className="space-y-2">
       <h3 className="font-medium text-slate-900">{selected.label}</h3>
       <dl className="grid gap-2">
-        {anchors.map((item) => item.position && (
-          <div key={item.id} className="flex flex-wrap justify-between gap-2 text-sm">
-            <dt className="text-slate-700">{item.label}</dt>
-            <dd className="tabular-nums">{item.position.map((coordinate) => coordinateFormat.format(coordinate)).join(', ')} {studioUnit('meter')}</dd>
-          </div>
-        ))}
+        {anchors.map((item) => {
+          const position = inspectorPosition(item);
+          return position && (
+            <div key={item.id} className="flex flex-wrap justify-between gap-2 text-sm">
+              <dt className="text-slate-700">{item.label}</dt>
+              <dd className="tabular-nums">{position.map((coordinate) => coordinateFormat.format(coordinate)).join(', ')} {studioUnit('meter')}</dd>
+            </div>
+          );
+        })}
       </dl>
     </section>
   );
