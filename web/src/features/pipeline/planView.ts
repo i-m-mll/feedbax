@@ -30,6 +30,7 @@ export interface PlanRunView {
   readonly reason?: string;
   readonly progress?: NonNullable<StudioActivityJob["progress"]>;
   readonly etaSeconds?: number;
+  readonly sizeBytes?: number;
   readonly variant?: string;
 }
 

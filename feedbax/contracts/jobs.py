@@ -112,6 +112,30 @@ class StudioSavedTrainKey(StrictModel):
     row: str
 
 
+class StudioSavedEvaluationResult(StrictModel):
+    job_id: str
+    receipt: JobReceipt
+    checkpoint_source: StudioTrainCheckpointSource
+    size_bytes: int = Field(ge=0)
+
+
+class StudioSavedEvaluationRow(StrictModel):
+    key: StudioSavedTrainKey
+    request_id: str
+    status: JobStatus
+    reason: str | None
+    can_run: bool
+    trials: list[str]
+    result: StudioSavedEvaluationResult | None
+
+
+class StudioSavedEvaluationReplayRequest(StrictModel):
+    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    key: StudioSavedTrainKey
+    job_id: str
+    trial: str
+
+
 class StudioSavedTrainResult(StrictModel):
     request_id: str
     job_id: str
@@ -193,6 +217,7 @@ class StudioProjectWindowMap(StrictModel):
     rows: list[StudioProjectWindowMapRow]
     edges: list[StudioProjectWindowMapEdge]
     problems: list[StudioProjectWindowMapProblem]
+    evaluations: list[StudioSavedEvaluationRow] = Field(default_factory=list)
 
 
 class StudioSavedTrainRuns(StrictModel):

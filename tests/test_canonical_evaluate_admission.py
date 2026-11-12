@@ -9,6 +9,7 @@ import pytest
 
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.dataset import DatasetProductRef
+from feedbax.contracts.jobs import StudioSavedEvaluationReplayRequest, StudioSavedTrainKey
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
@@ -31,13 +32,7 @@ from tests.test_studio_training_host_worker import _authored_run
 host = host_fixture
 
 
-def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypatch):
-    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    registry = new_application_registry_bundle()
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
-    folders = ProjectFolderService(tmp_path / "projects")
-    project = "reaching"
+def authored_evaluation_project():
     spec = _authored_run(batches=2, sampled_hold=True).spec
     train_payload = TrainingRequestSpec(
         graph=spec.graph.inline, task=spec.task, task_binding_spec=spec.task_binding_spec,
@@ -78,6 +73,17 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             "inputs": {"subject": {"step": "train", "checkpoint": {"best_by": "loss"}}},
         },
     }})
+    return authored, spec
+
+
+def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    registry = new_application_registry_bundle()
+    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "reaching"
+    authored, spec = authored_evaluation_project()
     for name, data in dump_text_project(
         authored, ProjectConfiguration(project=project, store="results"),
     ).items():
@@ -279,6 +285,15 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
 
     (rerun,) = launch(jobs, (baseline,), "evaluate-rerun").items
     assert rerun.disposition == "admitted" and rerun.job_id != submitted.items[0].job_id
+    original_trial = ProjectPlanService(folders, jobs).evaluation_replay(
+        project, StudioSavedEvaluationReplayRequest(
+            revision=plan.revision,
+            key=StudioSavedTrainKey.model_validate(baseline, from_attributes=True),
+            job_id=submitted.items[0].job_id,
+            trial="alpha",
+        ),
+    )
+    assert original_trial == replay
     manifest_ref, raw = store.resolve_manifest("EvaluationRunManifest", outcomes[baseline].receipt.manifest_id)
     manifest_path = store.object_path(manifest_ref.object)
     try:

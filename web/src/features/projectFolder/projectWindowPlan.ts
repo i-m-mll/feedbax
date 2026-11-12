@@ -27,7 +27,14 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
   const map = saved?.window_map;
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const byRun = new Map<string, PlanRunView['values']>();
+  const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
+  const runsByStep = new Map<string, PlanRunView[]>();
+  function addRun(step: string, run: PlanRunView) {
+    const runs = runsByStep.get(step);
+    if (runs) runs.push(run);
+    else runsByStep.set(step, [run]);
+  }
   for (const row of map?.rows ?? []) {
     if (row.key.variant !== scope) continue;
     let sweeps = sweepsByStep.get(row.key.step);
@@ -42,19 +49,22 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
         ? `${label} · ${number}` : label ?? number ?? coordinate.value_id);
       values[sweep] = coordinate.value_id;
     }
-    byRun.set(savedRunId(row.key), values);
+    const id = savedRunId(row.key);
+    byRun.set(id, values);
+    const evaluation = evaluations.get(id);
+    if (evaluation) addRun(row.key.step, {
+      id, values, label: row.label, status: evaluation.status, reason: evaluation.reason ?? undefined,
+      sizeBytes: evaluation.result?.size_bytes, variant: row.key.variant,
+    });
   }
-  const runsByStep = new Map<string, PlanRunView[]>();
   for (const row of saved?.rows ?? []) {
     if (row.key.variant !== scope) continue;
     const id = savedRunId(row.key);
-    let runs = runsByStep.get(row.key.step);
-    if (!runs) runsByStep.set(row.key.step, runs = []);
     const change = row.change;
     const reason = change && row.status === 'stale'
       ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
       : row.reason ?? undefined;
-    runs.push({ id, label: row.label, values: byRun.get(id) ?? {}, status: row.status, reason,
+    addRun(row.key.step, { id, label: row.label, values: byRun.get(id) ?? {}, status: row.status, reason,
       progress: row.attempts.at(-1)?.progress ?? undefined, variant: row.key.variant });
   }
   const source = map

@@ -182,7 +182,14 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert subject["source_step_id"] == "fit"
     assert subject["subset"]["terms"]["rows"] == ["seed=a"]
     assert (subject["subset"]["count"], subject["subset"]["total"]) == (1, 2)
-    assert steps["evaluate"]["status_counts"] == {}
+    assert steps["evaluate"]["status_counts"] == {"cannot_run": 1}
+    [evaluation] = window["evaluations"]
+    assert evaluation["status"] == "cannot_run" and not evaluation["can_run"]
+    assert evaluation["result"] is None
+    assert any(
+        (problem["step"], problem["path"], problem["code"]) == ("evaluate", "/evaluation_type", "cannot_run")
+        for problem in window["problems"]
+    )
     assert steps["report"]["inputs"][0]["source_step_id"] == "evaluate"
     fit_a = {"variant": "default", "step": "fit", "row": "seed=a"}
     [edge] = window["edges"]

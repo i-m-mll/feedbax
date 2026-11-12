@@ -3,19 +3,25 @@ import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/reac
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchComponents } from '@/api/client';
+import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
+import { studioRegionIssue } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioReason, type StudioNameId, type StudioReasonId } from '@/components/activity/studioVocabulary';
 import { StudioDefinitionForm, type StudioDefinitionField, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneHeaderControls } from '@/components/scene/SceneRegion';
+import { SceneClockControls } from '@/components/scene/SceneClockControls';
 import type { PlanarScenePose } from '@/components/scene/planarModel';
-import { fittedCamera, type SceneCamera, type SceneOverlay } from '@/components/scene/sceneView';
+import { fittedCamera, sceneGeometry, sceneTimeline, type SceneCamera, type SceneDrawing, type SceneOverlay, type SceneView } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
+import type { ResolvedScene } from '@/features/scenario/projections';
+import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
   DocumentReferenceSchema, GraphSpecSchema, TaskSpecSchema,
-  type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type TaskSpec, type WireSpec,
+  type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type StudioSavedEvaluationRow, type TaskSpec, type WireSpec,
+  type WorkspaceReplayTrial,
 } from '@/generated/studioContracts';
 import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
@@ -36,7 +42,6 @@ export interface ManagedProjectDetail {
   readonly body: ReactNode;
   readonly drawer?: ReactNode;
   readonly inspector?: ReactNode;
-  readonly clock?: ReactNode;
 }
 
 interface DetailInputs {
@@ -47,6 +52,8 @@ interface DetailInputs {
   readonly focus: RunAddress | null;
   readonly activeView?: string;
   readonly step?: PlanStepView;
+  readonly evaluation?: StudioSavedEvaluationRow;
+  readonly evaluationReplay: ReturnType<typeof useSavedEvaluationScene>;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
 }
 
@@ -246,22 +253,97 @@ function planarInteriors(graph: GraphSpec, prefix: string[] = []): string[][] {
 const referencePose: PlanarScenePose = { kind: 'reference' };
 const shownOverlays = new Set<SceneOverlay>();
 
-function useSceneDetail({ editor, activeView, focus }: DetailInputs, definition: Definition | null,
+const emptyReplayScene: ResolvedScene = {
+  scenario_id: null, frame: 'world', units: 'm', entities: [], anchors: [], elements: [],
+  required_selectors: [], validation: [],
+};
+
+function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
+  const track = primaryWorkspaceReplayTrack(trial);
+  if (!track) return { kind: 'replay', trial, scene: emptyReplayScene };
+  const id = track.anchor_id;
+  const anchorId = `${id}:position`;
+  const label = studioName('effector');
+  const frame = track.frame ?? emptyReplayScene.frame;
+  const sceneAt = (time: number): ResolvedScene => {
+    const position = workspaceReplaySampleAt(track, workspaceReplayFrameIndex(trial, time));
+    return {
+      ...emptyReplayScene, frame, units: track.units ?? emptyReplayScene.units,
+      entities: [{
+        id, label, kind: 'mechanics_object', summary: null, related_entity_ids: [],
+        anchor_ids: [anchorId], element_ids: [id],
+      }],
+      anchors: [{
+        id: anchorId, entity_id: id, local_id: 'position', label, semantic_role: 'effector',
+        position, selectable: true, hoverable: true, interaction_roles: [], objective_roles: [],
+        frame, selector: track.selector, metadata: {},
+      }],
+      elements: [{
+        id, entity_id: id, local_id: 'point', archetype: 'point', anchor_ids: [anchorId], frame,
+        scale_invariant: true, style: {}, metadata: {},
+        geometry: { kind: 'points', points: position ? [position] : [] },
+      }],
+    };
+  };
+  return { kind: 'replay', trial, scene: sceneAt(0), sceneAt };
+}
+
+export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined, visible: boolean) {
+  const jobId = evaluation?.result?.job_id;
+  const [chosenTrial, setTrial] = useState<{ jobId: string; trial: string }>();
+  const trial = jobId && (chosenTrial?.jobId === jobId ? chosenTrial.trial : evaluation?.trials[0]);
+  const replay = useQuery({
+    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial],
+    queryFn: ({ signal }) => {
+      if (!evaluation || !jobId || !trial) throw new Error('Select a saved Evaluate trial.');
+      return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial }, signal);
+    },
+    enabled: visible && !!trial,
+    retry: false,
+  });
+  const replayDrawing = useMemo(() => replay.data && evaluationScene(replay.data), [replay.data]);
+  const view: SceneView = replay.error
+    ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
+    : replayDrawing ?? { kind: trial ? 'loading' : 'empty' };
+  const timeScope = JSON.stringify([jobId, trial]);
+  const [clock, setClock] = useState<{ scope: string; time: number }>();
+  const [speed, setSpeed] = useState(1);
+  const time = clock?.scope === timeScope ? clock.time : 0;
+  const trials = jobId && trial && evaluation ? {
+    choices: evaluation.trials.map((id) => ({ id, label: id })),
+    selectedId: trial,
+    onSelect: (value: string) => {
+      setTrial({ jobId, trial: value });
+      setClock(undefined);
+    },
+  } : undefined;
+  return {
+    view, time, trials,
+    clock: visible && view.kind === 'replay' && <SceneClockControls key={timeScope} timeline={sceneTimeline(view)} time={time}
+      speed={speed} onSpeedChange={setSpeed} onTimeChange={(value) => setClock({ scope: timeScope, time: value })} />,
+  };
+}
+
+function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluationReplay }: DetailInputs, definition: Definition | null,
   graph: GraphSpec | null, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const interiors = useMemo(() => graph && definition?.id ? planarInteriors(graph) : [], [graph, definition?.id]);
   const interior = useElementSelection(scope);
   const path = interiors.find((candidate) => JSON.stringify(candidate) === interior.selectedId) ?? interiors[0];
   const source = definition?.id && path && activeView === 'scene'
     ? { document_id: definition.id, node_path: path, revision } : null;
-  const view = useProjectPlanarScene(projectId, source, referencePose, () => editor.connected());
-  const sceneScope = JSON.stringify([scope, path]);
+  const geometry = useProjectPlanarScene(projectId, source, referencePose, () => editor.connected());
+  const evaluating = step?.kind === 'evaluate';
+  const view = evaluating ? evaluationReplay.view : geometry;
+  const time = evaluating ? evaluationReplay.time : 0;
+  const trials = evaluating ? evaluationReplay.trials : undefined;
+  const sceneScope = JSON.stringify([scope, path, evaluation?.result?.job_id]);
   const selection = useElementSelection(sceneScope);
   const [cameraState, setCamera] = useState<{ scope: string; value: SceneCamera }>();
   const [overlayState, setOverlays] = useState<{ scope: string; value: ReadonlySet<SceneOverlay> }>();
   const camera = cameraState?.scope === sceneScope ? cameraState.value : fittedCamera;
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenOverlays = overlayState?.scope === sceneScope ? overlayState.value : shownOverlays;
-  const scene = view.kind === 'geometry' ? view.scene : null;
+  const scene = view.kind === 'geometry' || view.kind === 'replay' ? sceneGeometry(view, time) : null;
   const omission = !graph ? <DetailReason reason="definitionUnavailable" name="scene" />
     : definition?.id ? <DetailReason reason="planarSceneUnavailable" name="model" />
     : <DetailReason reason="sceneDocumentRequired" name="scene" />;
@@ -283,11 +365,14 @@ function useSceneDetail({ editor, activeView, focus }: DetailInputs, definition:
           setOverlays({ scope: sceneScope, value: next });
         }} />
     </>,
-    body: source ? <>
-      <SceneCanvas view={view} time={0} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} {...selection} />
-      {focus && scene && <DetailReason reason="scenePlaybackUnavailable" name="playback" />}
-    </> : omission,
-    drawer: scene ? <SceneDrawer scene={scene} {...selection} /> : null,
+    body: source || trials ? <>
+      <SceneCanvas view={view} time={time} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} {...selection} />
+      {!evaluating && focus && scene && <DetailReason reason="scenePlaybackUnavailable" name="playback" />}
+    </> : evaluating
+      ? evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
+        : <DetailReason reason="scenePlaybackUnavailable" name="playback" />
+      : omission,
+    drawer: (scene || trials) && <SceneDrawer scene={scene ?? emptyReplayScene} trials={trials} {...selection} />,
     inspector: scene ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
   };
 }

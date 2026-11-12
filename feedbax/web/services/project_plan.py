@@ -19,6 +19,9 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapRow,
     StudioProjectWindowMapStep,
     StudioProjectWindowMapSubset,
+    StudioSavedEvaluationReplayRequest,
+    StudioSavedEvaluationResult,
+    StudioSavedEvaluationRow,
     StudioSavedTrainChange,
     StudioSavedTrainKey,
     StudioSavedTrainResult,
@@ -26,11 +29,16 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project_inputs import InputBinding, StepReference
 from feedbax.contracts.project_plan import PlannedRun, RunKey
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
 from feedbax.job_completion import training_binding_path
-from feedbax.jobs import JobService, PlanJobAttempt, PlanJobAttempts, saved_train_status
+from feedbax.jobs import (
+    EVALUATION_SUBJECT_REQUIRED, JobConflict, JobNotFound, JobService, PlanJobAttempt, PlanJobAttempts,
+    saved_train_status,
+)
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
 
@@ -50,6 +58,8 @@ class ProjectPlanRead:
     jobs: PlanJobAttempts
     attempts_by_run: Mapping[RunKey, tuple[PlanJobAttempt, ...]]
     history: Mapping[RunKey, TrainRowHistory]
+    evaluations: Mapping[RunKey, StudioSavedEvaluationRow]
+    evaluation_problems: tuple[StudioProjectWindowMapProblem, ...]
 
     def window_map(self) -> StudioProjectWindowMap:
         """Project authored steps and compiler facts from the acknowledged Plan."""
@@ -64,8 +74,9 @@ class ProjectPlanRead:
                 else {path: name for path, name in shared.items() if row.document_ids.get(path) == name}
             )
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
-        for key, row in self.history.items():
-            counts[key.variant, key.step][row.status.value] += 1
+        for rows in (self.history, self.evaluations):
+            for key, row in rows.items():
+                counts[key.variant, key.step][row.status.value] += 1
 
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
             step = plan.steps[variant, step_id]
@@ -114,9 +125,11 @@ class ProjectPlanRead:
                 for binding in run.inputs.values()
             ],
             problems=[
-                StudioProjectWindowMapProblem.model_validate(problem, from_attributes=True)
-                for problem in plan.diagnostics
+                *(StudioProjectWindowMapProblem.model_validate(problem, from_attributes=True)
+                  for problem in plan.diagnostics),
+                *self.evaluation_problems,
             ],
+            evaluations=list(self.evaluations.values()),
         )
 
 
@@ -149,6 +162,14 @@ class ProjectPlanService:
         jobs = self.jobs.read_plan_attempts(
             project=settled.project_id, store=settled.store_path, requests=requests
         )
+        evaluations = {}
+        evaluation_problems = []
+        for run in settled.plan.runs:
+            if run.kind == "evaluate":
+                row, problem = self._evaluation_row(settled, run, jobs)
+                evaluations[run.key] = row
+                if problem is not None:
+                    evaluation_problems.append(problem)
         return ProjectPlanRead(
             settled,
             jobs,
@@ -158,7 +179,67 @@ class ProjectPlanService:
                 if (attempts := jobs.by_request.get(run.request_id)) is not None
             }),
             _train_history(settled, jobs),
+            MappingProxyType(evaluations),
+            tuple(evaluation_problems),
         )
+
+    def _evaluation_row(
+        self, settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts,
+    ) -> tuple[StudioSavedEvaluationRow, StudioProjectWindowMapProblem | None]:
+        key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
+        trials = []
+        problem = None
+        try:
+            params, subject = self.jobs.evaluation_parameters(settled.plan, run)
+            trials = list(params.trials)
+            if subject.request_id not in jobs.checkpoint_producers:
+                raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
+        except CannotRun as error:
+            problem = StudioProjectWindowMapProblem(
+                code="cannot_run", path=error.path, detail=str(error),
+                variant=key.variant, step=key.step, row=key.row, document=None,
+            )
+        attempts = jobs.by_request.get(run.request_id, ())
+        latest = attempts[-1] if attempts else None
+        result = None
+        if (
+            latest is not None and latest.successful_receipt is not None
+            and latest.checkpoint_source is not None and latest.output_size_bytes is not None
+        ):
+            result = StudioSavedEvaluationResult(
+                job_id=latest.job_id, receipt=latest.successful_receipt,
+                checkpoint_source=latest.checkpoint_source, size_bytes=latest.output_size_bytes,
+            )
+        return StudioSavedEvaluationRow(
+            key=key, request_id=run.request_id,
+            status=latest.status if latest else JobStatus.CANNOT_RUN if problem else JobStatus.NOT_RUN,
+            reason=problem.detail if problem else latest.reason if latest else None,
+            can_run=problem is None, trials=trials, result=result,
+        ), problem
+
+    def evaluation_replay(
+        self, project_id: str, body: StudioSavedEvaluationReplayRequest,
+    ) -> WorkspaceReplayTrial:
+        view = self.read(project_id, revision=body.revision)
+        key = RunKey(body.key.variant, body.key.step, body.key.row)
+        row = view.evaluations.get(key)
+        receipt = next((
+            attempt.successful_receipt for attempt in view.attempts_by_run.get(key, ())
+            if attempt.job_id == body.job_id
+        ), None)
+        if row is None or receipt is None:
+            raise JobNotFound(body.job_id)
+        if body.trial not in row.trials:
+            raise ProjectFolderInvalid("The selected trial is absent from the saved Evaluate request.")
+        result = self.jobs.read_evaluation_result(
+            project=project_id, store=view.settled.store_path, job_id=body.job_id,
+        )
+        if result.receipt != receipt:
+            raise JobConflict("The selected Evaluate receipt changed.")
+        try:
+            return result.replay_trial(body.trial, anchor_id="effector")
+        except (OSError, ValueError, KeyError) as error:
+            raise JobConflict("The retained data for the selected Evaluate trial could not be read and authenticated.") from error
 
 
 def _train_history(

@@ -118,6 +118,30 @@ export interface StudioJobSubmissionRequest {
   policy?: "out_of_date" | "all";
 }
 
+export interface StudioSavedEvaluationReplayRequest {
+  revision: string;
+  key: StudioSavedTrainKey;
+  job_id: string;
+  trial: string;
+}
+
+export interface StudioSavedEvaluationResult {
+  job_id: string;
+  receipt: JobReceipt;
+  checkpoint_source: StudioTrainCheckpointSource;
+  size_bytes: number;
+}
+
+export interface StudioSavedEvaluationRow {
+  key: StudioSavedTrainKey;
+  request_id: string;
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  reason: string | null;
+  can_run: boolean;
+  trials: string[];
+  result: StudioSavedEvaluationResult | null;
+}
+
 export interface StudioSavedTrainAttempt {
   job_id: string;
   status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
@@ -2379,6 +2403,8 @@ export type InputAxis = {
 
 export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
 
+export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+
 export type ListedAxis = {
   "path": PatchPath;
   "values": Array<JsonValue>;
@@ -2684,6 +2710,7 @@ export type StudioProjectWindowMap = {
   "rows": Array<StudioProjectWindowMapRow>;
   "edges": Array<StudioProjectWindowMapEdge>;
   "problems": Array<StudioProjectWindowMapProblem>;
+  "evaluations"?: Array<StudioSavedEvaluationRow>;
 };
 
 export type StudioProjectWindowMapCoordinate = {
@@ -3145,6 +3172,42 @@ export const StudioJobSubmissionRequestSchema: z.ZodType<StudioJobSubmissionRequ
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmissionRequest>;
+
+export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEvaluationReplayRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
+      "trial": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
+
+export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationResult> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "receipt": JobReceiptSchema,
+      "checkpoint_source": StudioTrainCheckpointSourceSchema,
+      "size_bytes": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationResult>;
+
+export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "request_id": z.string(),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "reason": z.string().nullable(),
+      "can_run": z.boolean(),
+      "trials": z.array(z.string()),
+      "result": StudioSavedEvaluationResultSchema.nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationRow>;
 
 export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> = z.lazy(() =>
   z
@@ -6951,6 +7014,10 @@ export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
   z.union([ReferenceSchema, z.array(ReferenceSchema), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), ReferenceSchema)])
 ) as unknown as z.ZodType<InputBinding>;
 
+export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
+  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
+) as unknown as z.ZodType<JobStatus>;
+
 export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   z.object({
     "path": PatchPathSchema,
@@ -7369,6 +7436,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "rows": z.array(StudioProjectWindowMapRowSchema),
     "edges": z.array(StudioProjectWindowMapEdgeSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema),
+    "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 
@@ -7587,6 +7655,9 @@ export const contractSchemas = {
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
   StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
+  StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequestSchema,
+  StudioSavedEvaluationResult: StudioSavedEvaluationResultSchema,
+  StudioSavedEvaluationRow: StudioSavedEvaluationRowSchema,
   StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
   StudioSavedTrainChange: StudioSavedTrainChangeSchema,
   StudioSavedTrainKey: StudioSavedTrainKeySchema,
@@ -7631,6 +7702,7 @@ export const contractSchemas = {
   DomainCompileReport: DomainCompileReportSchema,
   StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
   StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
+  WorkspaceReplayTrial: WorkspaceReplayTrialSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
@@ -7689,6 +7761,9 @@ export interface ContractTypeMap {
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;
   StudioJobSubmissionRequest: StudioJobSubmissionRequest;
+  StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequest;
+  StudioSavedEvaluationResult: StudioSavedEvaluationResult;
+  StudioSavedEvaluationRow: StudioSavedEvaluationRow;
   StudioSavedTrainAttempt: StudioSavedTrainAttempt;
   StudioSavedTrainChange: StudioSavedTrainChange;
   StudioSavedTrainKey: StudioSavedTrainKey;
@@ -7733,6 +7808,7 @@ export interface ContractTypeMap {
   DomainCompileReport: DomainCompileReport;
   StudioPlanarSceneRequest: StudioPlanarSceneRequest;
   StudioPlanarSceneResponse: StudioPlanarSceneResponse;
+  WorkspaceReplayTrial: WorkspaceReplayTrial;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;

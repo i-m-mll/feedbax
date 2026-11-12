@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -51,6 +52,7 @@ def create_app(
     studio_controller: StudioController | None = None,
     desktop_job_root: Path | None = None,
     projects_dir: Path | None = None,
+    enable_evaluation_candidate: bool = False,
 ) -> FastAPI:
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
@@ -58,6 +60,7 @@ def create_app(
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
+            enable_evaluation_candidate=enable_evaluation_candidate,
         )
         app.state.project_plan = ProjectPlanService(app.state.project_folders, app.state.job_service)
         if desktop_job_root is None:
@@ -147,4 +150,4 @@ def create_app(
     return app
 
 
-app = create_app()
+app = create_app(enable_evaluation_candidate=os.environ.get("FEEDBAX_STUDIO_EVALUATION_CANDIDATE") == "1")

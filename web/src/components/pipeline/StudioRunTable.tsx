@@ -13,6 +13,8 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 
+const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
+
 export interface RunSelectionProps {
   step: PlanStepView;
   state: PipelineSelectionState;
@@ -104,6 +106,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
   }
   const relatedIds = related.get(step.id);
   const items = virtual.getVirtualItems();
+  const measure = step.kind === "evaluate" ? "size" : "progress";
   const width = sweeps.length + (showVariant ? 4 : 3);
   const first = items[0];
   const last = items[items.length - 1];
@@ -119,7 +122,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
             {showVariant && <th scope="col" className="p-2">{studioName("variant")}</th>}
             {sweeps.map((sweep) => <th key={sweep.id} scope="col" className="p-2">{sweep.label}</th>)}
             <th scope="col" className="p-2">{studioName("status")}</th>
-            <th scope="col" className="p-2">{studioName("progress")}</th>
+            <th scope="col" className="p-2">{studioName(measure)}</th>
           </tr>
         </thead>
         <tbody>
@@ -176,6 +179,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
                 </td>
                 <td className="border-t border-slate-200 p-2">
                   {run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
+                  {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </td>
               </tr>
             );

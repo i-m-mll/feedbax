@@ -24,6 +24,7 @@ from feedbax.contracts.jobs import (
     StudioLocalSession,
     StudioRunPreview,
     StudioRunPreviewRequest,
+    StudioSavedEvaluationReplayRequest,
     StudioSavedTrainAttempt,
     StudioSavedTrainKey,
     StudioSavedTrainRow,
@@ -33,6 +34,7 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.web.api.projects import ProjectRevisionWatch, _project_response
@@ -120,6 +122,22 @@ def run_saved_train(
 
     try:
         return _project_response(response, admit)
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+
+
+@router.post("/projects/{project_id}/evaluate-replay")
+def saved_evaluation_replay(
+    project_id: ProjectName, body: StudioSavedEvaluationReplayRequest, request: Request, response: Response,
+) -> WorkspaceReplayTrial:
+    try:
+        return _project_response(
+            response, lambda: request.app.state.project_plan.evaluation_replay(project_id, body)
+        )
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="Evaluate receipt is absent from the saved Plan.") from exc
     except JobConflict as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:

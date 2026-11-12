@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -75,7 +76,7 @@ from feedbax.studio.training_requests import (
 )
 
 if TYPE_CHECKING:
-    from feedbax.studio.canonical_evaluate import EvaluationResult
+    from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
     from feedbax.web.services.project_folder import ProjectFolderService, SettledProjectPlan
 
 
@@ -94,6 +95,7 @@ _ACTIVITY_EVENTS = frozenset(
         "terminal",
     }
 )
+EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
 
 
 class JobNotFound(LookupError):
@@ -125,6 +127,7 @@ class PlanJobAttempts:
     cursor: int
     by_request: Mapping[RequestId, tuple[PlanJobAttempt, ...]]
     plan_ref: AuthoredTrainPlanRef | None = None
+    checkpoint_producers: frozenset[RequestId] = frozenset()
 
 
 class JobService:
@@ -305,13 +308,12 @@ class JobService:
                         )
                         items[name] = _rejected(name, f"The selected Evaluate request changed at {path}.")
                         continue
-                    if run.requires:
-                        items[name] = _rejected(name, "cannot_run /requires: Evaluate has unresolved capabilities.")
-                        continue
                     data = _plan_run_data(name, run)
                     try:
-                        item, checkpoint = self._evaluation_item(
+                        _, checkpoint = self.evaluation_parameters(current.plan, run)
+                        item = self._evaluation_item(
                             project, run.request_id, current.plan.requests[run.request_id], data, store,
+                            checkpoint,
                         )
                     except (ValueError, KeyError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
@@ -376,7 +378,7 @@ class JobService:
                     if anchor is None:
                         items[name] = _rejected(
                             name,
-                            "cannot_run /inputs/subject: select an unambiguous admitted Train subject"
+                            f"cannot_run /inputs/subject: {EVALUATION_SUBJECT_REQUIRED}"
                             if evaluate else
                             "/inputs/checkpoint: select an unambiguous admitted Train predecessor",
                         )
@@ -448,23 +450,32 @@ class JobService:
         anchors = [
             row["id"]
             for row in self.host.jobs(project=project, request=request, include_launch=True)
-            if row["continues"] is None
-            and row["launch"]["payload"].get("canonical_request") is not None
-            and row["launch"]["payload"].get("manifest_root") == str(root)
+            if _is_checkpoint_producer(row, str(root))
         ]
         return anchors[0] if len(anchors) == 1 else None
 
+    def evaluation_parameters(
+        self, plan: ProjectPlan, run: PlannedRun,
+    ) -> tuple[RolloutParameters, ProductRef]:
+        """Resolve the saved request capability shared by Plan and admission."""
+        from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
+
+        if not self._enable_evaluation_candidate:
+            raise CannotRun("/evaluation_type", "Evaluate activation is held.")
+        if run.requires:
+            raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
+        _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
+        return params, checkpoint
+
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
-        store: ImmutableArtifactBlobProvider,
-    ) -> tuple[AdmissionItem, ProductRef]:
+        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef,
+    ) -> AdmissionItem:
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput,
             EvaluationRequestBinding,
-            decode_rollout_request,
         )
 
-        _, _, checkpoint = decode_rollout_request(request_id, raw)
         root = store.root
         payload = BoundEvaluationJobInput(
             project_id=project,
@@ -486,7 +497,7 @@ class JobService:
                 id=uuid4().hex, project=project, request=request_id, launch=launch,
                 data=data | {"manifest_root": str(root), "runtime": sys.executable},
             ),
-        ), checkpoint
+        )
 
     def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
         """Locate an authenticated candidate result by exact project and attempt."""
@@ -629,7 +640,12 @@ class JobService:
         """Read saved Plan attempt facts at the settled store locator from one Host snapshot."""
         manifest_root = str(store)
         key = plan_ref_key(project, manifest_root)
-        snapshot = self.host.jobs_snapshot(project=project, start_host=False, record_keys=(key,))
+        include_producers = self._enable_evaluation_candidate and any(
+            request.startswith("evaluate:") for request in requests
+        )
+        snapshot = self.host.jobs_snapshot(
+            project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
+        )
         plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
         wanted = set(requests)
         if plan_ref is not None:
@@ -641,6 +657,11 @@ class JobService:
             job["id"]: job for job in snapshot["jobs"]
             if job["data"].get("manifest_root") == manifest_root
         }
+        producers = Counter(
+            job["request"] for job in by_id.values()
+            if include_producers and job["request"].startswith("train:")
+            and _is_checkpoint_producer(job, manifest_root)
+        )
         for job in by_id.values():
             request_id = job["request"]
             if request_id not in wanted:
@@ -683,6 +704,7 @@ class JobService:
             snapshot["cursor"],
             MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
             plan_ref,
+            frozenset(request for request, count in producers.items() if count == 1),
         )
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:
@@ -897,6 +919,15 @@ class JobService:
                 earlier_definition=current.get(key, request_id) != request_id,
             )
         return result
+
+
+def _is_checkpoint_producer(job: dict[str, Any], manifest_root: str) -> bool:
+    payload = job["launch"]["payload"]
+    return (
+        job["continues"] is None
+        and payload.get("canonical_request") is not None
+        and payload.get("manifest_root") == manifest_root
+    )
 
 
 def _plan_run_data(name: str, run: PlannedRun) -> dict[str, Any]:

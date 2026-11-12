@@ -6,6 +6,7 @@ import {
   type StudioJobEvent,
   type StudioJobSubmissionRequest,
   type StudioRunPreviewRequest,
+  type StudioSavedEvaluationReplayRequest,
   type StudioSavedTrainRunRequest,
 } from '@/generated/studioContracts';
 import type { GraphSpec } from '@/types/graph';
@@ -67,6 +68,15 @@ export function runSavedTrain(project: string, input: StudioSavedTrainRunRequest
   return readContract(savedTrainRunsPath(project), 'StudioJobSubmission', {
     method: 'POST',
     body: JSON.stringify(body),
+  });
+}
+
+export function fetchSavedEvaluationReplay(project: string, input: StudioSavedEvaluationReplayRequest, signal?: AbortSignal) {
+  const body = parseContract('StudioSavedEvaluationReplayRequest', input);
+  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-replay`, 'WorkspaceReplayTrial', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal,
   });
 }
 
