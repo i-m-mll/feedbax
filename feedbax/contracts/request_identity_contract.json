@@ -1,0 +1,1767 @@
+{
+  "fields": {
+    "feedbax.contracts.acausal.AcausalConnectionSpec": {
+      "a": {},
+      "b": {}
+    },
+    "feedbax.contracts.acausal.AcausalGraphSpec": {
+      "connections": {
+        "absent": []
+      },
+      "mujoco_asset": {
+        "absent": null
+      },
+      "nodes": {
+        "absent": {}
+      },
+      "physical_domain": {
+        "values": [
+          "planar_multibody",
+          "rotational",
+          "spatial_multibody",
+          "translational"
+        ]
+      },
+      "planar_dynamics": {
+        "absent": null
+      },
+      "solver": {},
+      "subgraphs": {
+        "absent": null
+      },
+      "wrap_geometries": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.acausal.JointDampingMode": {
+      "coefficients": {},
+      "damping": {}
+    },
+    "feedbax.contracts.acausal.MuJoCoAssetBinding": {
+      "asset": {},
+      "effector_site": {},
+      "paths": {
+        "absent": {}
+      },
+      "sites": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.acausal.MuscleWrap": {
+      "after_site": {},
+      "geom": {},
+      "side_site": {}
+    },
+    "feedbax.contracts.acausal.PlanarDynamicsSpec": {
+      "gravity": {
+        "absent": [
+          0.0,
+          -9.81
+        ]
+      },
+      "joint_dampers": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.acausal.PlanarWrapGeometry": {
+      "frame": {},
+      "kind": {
+        "values": [
+          "cylinder",
+          "sphere"
+        ]
+      },
+      "offset": {
+        "absent": [
+          0.0,
+          0.0
+        ]
+      },
+      "radius": {}
+    },
+    "feedbax.contracts.acausal.RootFinderSpec": {
+      "atol": {
+        "absent": 1e-06
+      },
+      "max_steps": {
+        "absent": 32
+      },
+      "method": {
+        "absent": "newton",
+        "values": [
+          "newton"
+        ]
+      },
+      "rtol": {
+        "absent": 1e-06
+      }
+    },
+    "feedbax.contracts.acausal.SolverConfigSpec": {
+      "dt": {},
+      "mjx_backend": {
+        "absent": "jax",
+        "values": [
+          "jax",
+          "warp"
+        ]
+      },
+      "planar_substeps": {
+        "absent": null
+      },
+      "root_finder": {
+        "absent": null
+      },
+      "solver_type": {
+        "values": [
+          "euler",
+          "implicit_euler",
+          "kvaerno5",
+          "mujoco",
+          "tsit5"
+        ]
+      }
+    },
+    "feedbax.contracts.acausal.SpatialMusclePath": {
+      "law": {},
+      "law_revision": {
+        "absent": null
+      },
+      "parameters": {
+        "absent": {}
+      },
+      "sites": {},
+      "state_size": {},
+      "wraps": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.acausal.SpatialSite": {
+      "body": {},
+      "position": {}
+    },
+    "feedbax.contracts.artifact_custody.ContentObjectRef": {
+      "object_id": {},
+      "sha256": {},
+      "size_bytes": {}
+    },
+    "feedbax.contracts.base.ParentRef": {
+      "id": {},
+      "kind": {},
+      "metadata": {
+        "absent": {}
+      },
+      "role": {
+        "absent": null
+      },
+      "uri": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.expressions.AllOf": {
+      "exprs": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "kind": {
+        "absent": "all",
+        "values": [
+          "all"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.AnyOf": {
+      "exprs": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "kind": {
+        "absent": "any",
+        "values": [
+          "any"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.Coalesce": {
+      "default": {
+        "absent": null
+      },
+      "queries": {}
+    },
+    "feedbax.contracts.expressions.Coerce": {
+      "scale": {
+        "absent": null
+      },
+      "to": {
+        "absent": null,
+        "values": [
+          "bool",
+          "float",
+          "int",
+          "str"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.Compare": {
+      "item": {},
+      "kind": {
+        "absent": "compare",
+        "values": [
+          "compare"
+        ]
+      },
+      "op": {
+        "values": [
+          "approx_eq",
+          "contains",
+          "endswith",
+          "eq",
+          "exists",
+          "ge",
+          "gt",
+          "has_type",
+          "in",
+          "le",
+          "lt",
+          "ne",
+          "startswith"
+        ]
+      },
+      "path": {
+        "absent": ""
+      },
+      "tolerance": {
+        "absent": null
+      },
+      "value": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.expressions.Filter": {
+      "where": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.MapObjectList": {
+      "item_output_path": {},
+      "items": {},
+      "kind": {
+        "absent": "map_object_list",
+        "values": [
+          "map_object_list"
+        ]
+      },
+      "template": {}
+    },
+    "feedbax.contracts.expressions.NamedPredicateRef": {
+      "kind": {
+        "absent": "named",
+        "values": [
+          "named"
+        ]
+      },
+      "params": {
+        "absent": {}
+      },
+      "predicate_id": {}
+    },
+    "feedbax.contracts.expressions.Not": {
+      "expr": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "kind": {
+        "absent": "not",
+        "values": [
+          "not"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.Select": {
+      "where": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.ValueQuery": {
+      "coerce": {
+        "absent": null
+      },
+      "default": {
+        "absent": null
+      },
+      "filter": {
+        "absent": null
+      },
+      "item": {},
+      "path": {
+        "absent": ""
+      },
+      "select": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.AxisLabels": {
+      "x": {
+        "absent": null
+      },
+      "y": {
+        "absent": null
+      },
+      "z": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.AxisSemanticClass": {
+      "frame": {
+        "absent": null
+      },
+      "quantity": {},
+      "unit": {}
+    },
+    "feedbax.contracts.figures.ColorbarPanelPlacement": {
+      "center_fraction": {
+        "absent": 0.5
+      },
+      "length_fraction": {},
+      "offset_fraction": {
+        "absent": 0.0
+      },
+      "panel": {},
+      "side": {
+        "absent": "right",
+        "values": [
+          "left",
+          "right"
+        ]
+      }
+    },
+    "feedbax.contracts.figures.DataDerivedAxisRange": {
+      "group": {},
+      "padding_fraction": {}
+    },
+    "feedbax.contracts.figures.EqualDataAspect": {
+      "ratio": {
+        "absent": 1,
+        "values": [
+          1
+        ]
+      }
+    },
+    "feedbax.contracts.figures.FigureArtifactPayload": {
+      "artifact_provider": {},
+      "artifact_role": {},
+      "authority": {
+        "absent": "artifact_provider",
+        "values": [
+          "artifact_provider"
+        ]
+      },
+      "manifest_role": {},
+      "manifest_status": {
+        "absent": "completed",
+        "values": [
+          "completed"
+        ]
+      },
+      "media_type": {
+        "absent": "application/json"
+      },
+      "name": {},
+      "payload_schema_id": {
+        "absent": null
+      },
+      "payload_schema_version": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.FigureColorbar": {
+      "colorscale": {
+        "absent": null
+      },
+      "family": {
+        "absent": null
+      },
+      "placement": {
+        "absent": null
+      },
+      "range": {
+        "absent": null
+      },
+      "title": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.FigureDataProductArtifactPayload": {
+      "artifact_provider": {},
+      "artifact_role": {},
+      "authority": {
+        "absent": "analysis_data_product",
+        "values": [
+          "analysis_data_product"
+        ]
+      },
+      "manifest_role": {},
+      "manifest_status": {
+        "absent": "completed",
+        "values": [
+          "completed"
+        ]
+      },
+      "media_type": {
+        "absent": "application/json"
+      },
+      "name": {},
+      "payload_schema_id": {
+        "absent": null
+      },
+      "payload_schema_version": {
+        "absent": null
+      },
+      "product_role": {},
+      "product_schema_id": {},
+      "product_schema_version": {}
+    },
+    "feedbax.contracts.figures.FigureInputAuthority": {
+      "artifact_payloads": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.figures.FigureArtifactPayload",
+          "feedbax.spec.figure_data_product_payload"
+        ]
+      },
+      "parent": {}
+    },
+    "feedbax.contracts.figures.FigureInputRoleAuthority": {
+      "artifact_payloads": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.figures.FigureArtifactPayload",
+          "feedbax.spec.figure_data_product_payload"
+        ]
+      },
+      "input_role": {}
+    },
+    "feedbax.contracts.figures.FigureSlotFamily": {
+      "constructor": {
+        "absent": ""
+      },
+      "data": {
+        "absent": {},
+        "families": [
+          "$json",
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "name": {},
+      "params": {
+        "absent": {}
+      },
+      "required": {
+        "absent": false
+      },
+      "rows": {},
+      "slot": {}
+    },
+    "feedbax.contracts.figures.FigureSlotFamilyRow": {
+      "color": {},
+      "data_paths": {
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "label": {},
+      "marker": {},
+      "name": {},
+      "panel": {}
+    },
+    "feedbax.contracts.figures.FigureSpec": {
+      "assembler": {
+        "absent": null
+      },
+      "assembler_params": {
+        "absent": {}
+      },
+      "colorbar": {
+        "absent": null
+      },
+      "exclude_pieces": {
+        "absent": []
+      },
+      "facet_bindings": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "figure_routing": {
+        "absent": {}
+      },
+      "input_authorities": {
+        "absent": [],
+        "families": [
+          "feedbax.spec.figure_input_authority",
+          "feedbax.spec.figure_input_role_authority"
+        ]
+      },
+      "inputs": {
+        "absent": []
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "name": {},
+      "panels": {
+        "absent": []
+      },
+      "pieces": {
+        "absent": []
+      },
+      "run_condition": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "semantic_range_policy": {
+        "absent": null
+      },
+      "slot_bindings": {
+        "absent": {}
+      },
+      "slot_families": {
+        "absent": null
+      },
+      "template": {
+        "absent": null
+      },
+      "trace_families": {
+        "absent": null
+      },
+      "traces": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.figures.FigureTemplate": {
+      "assembler": {},
+      "assembler_params": {
+        "absent": {}
+      },
+      "default_pieces": {
+        "absent": []
+      },
+      "description": {},
+      "facet_by": {
+        "absent": []
+      },
+      "facet_target": {
+        "absent": "figures",
+        "values": [
+          "figures",
+          "panels"
+        ]
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "name": {},
+      "slots": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.figures.PanelAxis": {
+      "derived_range": {
+        "absent": null
+      },
+      "frame": {
+        "absent": null
+      },
+      "quantity": {
+        "absent": null
+      },
+      "range": {
+        "absent": null
+      },
+      "type": {
+        "absent": null,
+        "values": [
+          "linear",
+          "log"
+        ]
+      },
+      "unit": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.PanelSpec": {
+      "axes_labels": {
+        "absent": null
+      },
+      "camera": {
+        "absent": null
+      },
+      "col": {
+        "absent": null
+      },
+      "col_span": {
+        "absent": null
+      },
+      "equal_data_aspect": {
+        "absent": null
+      },
+      "name": {},
+      "panel_type": {
+        "absent": null,
+        "values": [
+          "scene",
+          "xy"
+        ]
+      },
+      "row": {
+        "absent": null
+      },
+      "row_label": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "row_span": {
+        "absent": null
+      },
+      "title": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "x_axis": {
+        "absent": null
+      },
+      "y_axis": {
+        "absent": null
+      },
+      "z_axis": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.SceneCamera": {
+      "azimuth": {},
+      "distance": {
+        "absent": 2.1650635094610964
+      },
+      "elevation": {},
+      "projection": {
+        "absent": null,
+        "values": [
+          "orthographic",
+          "perspective"
+        ]
+      }
+    },
+    "feedbax.contracts.figures.SemanticAxisRangePolicy": {
+      "classes": {
+        "absent": "all",
+        "values": [
+          "all"
+        ]
+      },
+      "padding_fraction": {}
+    },
+    "feedbax.contracts.figures.SlotSpec": {
+      "constructor": {},
+      "multiplicity": {
+        "absent": "one",
+        "values": [
+          "many",
+          "one",
+          "per_facet"
+        ]
+      },
+      "name": {},
+      "params_defaults": {
+        "absent": {}
+      },
+      "required": {
+        "absent": true
+      }
+    },
+    "feedbax.contracts.figures.TraceBinding": {
+      "constructor": {},
+      "data": {
+        "absent": {},
+        "families": [
+          "$json",
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "include_when": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "name": {},
+      "panel": {
+        "absent": null
+      },
+      "params": {
+        "absent": {}
+      },
+      "piece": {
+        "absent": null
+      },
+      "required": {
+        "absent": false
+      }
+    },
+    "feedbax.contracts.figures.TraceFamily": {
+      "colorscale": {
+        "absent": null
+      },
+      "index": {},
+      "interleave_group": {
+        "absent": null
+      },
+      "legend_index": {
+        "absent": null
+      },
+      "name": {},
+      "trace": {},
+      "values": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.TraceFamilyIndex": {
+      "range": {
+        "absent": null
+      },
+      "values": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.TraceFamilyRange": {
+      "start": {
+        "absent": 0
+      },
+      "step": {
+        "absent": 1
+      },
+      "stop": {}
+    },
+    "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec": {
+      "adapter_node": {
+        "absent": null
+      },
+      "input_key": {},
+      "label": {},
+      "metadata": {
+        "absent": {}
+      },
+      "payload_dtype": {
+        "absent": null
+      },
+      "payload_shape": {
+        "absent": null
+      },
+      "provenance_role": {
+        "absent": null
+      },
+      "target": {}
+    },
+    "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec": {
+      "kind": {
+        "values": [
+          "edge",
+          "input"
+        ]
+      },
+      "source_node": {
+        "absent": null
+      },
+      "source_port": {
+        "absent": null
+      },
+      "target_node": {},
+      "target_port": {}
+    },
+    "feedbax.contracts.graph.BarnacleSpec": {
+      "id": {},
+      "kind": {
+        "values": [
+          "intervention",
+          "probe"
+        ]
+      },
+      "label": {},
+      "read_paths": {
+        "absent": []
+      },
+      "timing": {
+        "values": [
+          "input",
+          "output"
+        ]
+      },
+      "transform": {
+        "absent": ""
+      },
+      "write_paths": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.graph.ComponentSpec": {
+      "input_ports": {
+        "absent": []
+      },
+      "output_ports": {
+        "absent": []
+      },
+      "params": {
+        "absent": {}
+      },
+      "revision": {
+        "absent": null
+      },
+      "type": {}
+    },
+    "feedbax.contracts.graph.DerivedDimensionRuleSpec": {
+      "axis": {
+        "absent": -1
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "node": {},
+      "param": {},
+      "port": {},
+      "source": {
+        "absent": "input_port",
+        "values": [
+          "input_port"
+        ]
+      }
+    },
+    "feedbax.contracts.graph.GraphSpec": {
+      "additive_channel_adapters": {
+        "absent": []
+      },
+      "barnacles": {
+        "absent": null
+      },
+      "derived_dimensions": {
+        "absent": []
+      },
+      "input_bindings": {
+        "absent": {}
+      },
+      "input_ports": {
+        "absent": []
+      },
+      "nodes": {
+        "absent": {}
+      },
+      "output_bindings": {
+        "absent": {}
+      },
+      "output_ports": {
+        "absent": []
+      },
+      "parameter_constraints": {
+        "absent": []
+      },
+      "retained_observables": {
+        "absent": null
+      },
+      "subgraphs": {
+        "absent": null,
+        "families": [
+          "feedbax.spec.acausal_graph",
+          "feedbax.spec.graph"
+        ]
+      },
+      "taps": {
+        "absent": null
+      },
+      "user_ports": {
+        "absent": null
+      },
+      "wires": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.graph.ParameterConstraintSpec": {
+      "mask": {},
+      "node": {},
+      "role": {},
+      "value": {
+        "absent": 0.0
+      }
+    },
+    "feedbax.contracts.graph.RetainedObservableSpec": {
+      "id": {},
+      "label": {
+        "absent": null
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "retention": {
+        "absent": {}
+      },
+      "selector": {
+        "absent": null
+      },
+      "target": {
+        "absent": null
+      },
+      "value_schema": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.RetainedObservableTargetSpec": {
+      "edge_id": {
+        "absent": null
+      },
+      "kind": {
+        "values": [
+          "edge",
+          "graph_output",
+          "port",
+          "recurrent_carry",
+          "state_path",
+          "task_data"
+        ]
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "node_id": {
+        "absent": null
+      },
+      "path": {
+        "absent": null
+      },
+      "port": {
+        "absent": null
+      },
+      "selector": {},
+      "timing": {
+        "absent": null,
+        "values": [
+          "final",
+          "initial",
+          "input",
+          "output",
+          "step"
+        ]
+      }
+    },
+    "feedbax.contracts.graph.RetentionPolicySpec": {
+      "metadata": {
+        "absent": {}
+      },
+      "mode": {
+        "absent": "trajectory",
+        "values": [
+          "stream",
+          "trajectory",
+          "window"
+        ]
+      },
+      "order": {
+        "absent": null
+      },
+      "reason": {
+        "absent": null
+      },
+      "window_size": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.StudioEpochValueSpec": {
+      "epoch_id": {},
+      "target_id": {},
+      "value_spec": {}
+    },
+    "feedbax.contracts.graph.StudioSelectorRef": {
+      "compact": {},
+      "dtype": {
+        "absent": null
+      },
+      "expected_shape": {
+        "absent": null
+      },
+      "frame": {
+        "absent": null
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "namespace": {
+        "values": [
+          "analysis_output",
+          "artifact_field",
+          "biomechanics_object",
+          "custom",
+          "graph_edge",
+          "graph_output",
+          "graph_port",
+          "mechanics_object",
+          "probe",
+          "recurrent_carry",
+          "retained_observable",
+          "state_path",
+          "task_binding",
+          "task_data",
+          "task_object"
+        ]
+      },
+      "path": {
+        "absent": null
+      },
+      "role": {
+        "absent": null
+      },
+      "target_id": {
+        "absent": null
+      },
+      "units": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.StudioTaskBinding": {
+      "id": {},
+      "metadata": {
+        "absent": {}
+      },
+      "role": {},
+      "source_data_id": {},
+      "target_node_id": {},
+      "target_port": {}
+    },
+    "feedbax.contracts.graph.StudioTaskBindingSpec": {
+      "bindings": {
+        "absent": []
+      },
+      "exposed_data": {
+        "absent": []
+      },
+      "metadata": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.graph.StudioTaskDataSpec": {
+      "bindable": {},
+      "dtype": {
+        "absent": null
+      },
+      "expected_shape": {
+        "absent": null
+      },
+      "frame": {
+        "absent": null
+      },
+      "id": {},
+      "kind": {},
+      "label": {},
+      "metadata": {
+        "absent": {}
+      },
+      "path": {},
+      "role": {
+        "absent": null
+      },
+      "units": {
+        "absent": null
+      },
+      "value_spec": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.StudioTaskEpochSpec": {
+      "id": {},
+      "index": {},
+      "label": {},
+      "length": {},
+      "metadata": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec": {
+      "epoch_ids": {
+        "absent": []
+      },
+      "id": {},
+      "label": {},
+      "metadata": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.graph.StudioTaskTimelineSignalSpec": {
+      "id": {},
+      "kind": {},
+      "label": {},
+      "metadata": {
+        "absent": {}
+      },
+      "path": {},
+      "task_data_id": {
+        "absent": null
+      },
+      "task_data_schema": {
+        "absent": null
+      },
+      "value_schema": {
+        "absent": null
+      },
+      "value_spec": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.StudioTaskTimelineSpec": {
+      "epoch_value_specs": {
+        "absent": []
+      },
+      "epochs": {
+        "absent": []
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "segments": {
+        "absent": []
+      },
+      "signals": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.graph.StudioValueEnumerableSpec": {
+      "count": {
+        "absent": null
+      },
+      "form": {
+        "values": [
+          "list",
+          "range",
+          "sampler"
+        ]
+      },
+      "n": {
+        "absent": null
+      },
+      "sampler": {
+        "absent": null
+      },
+      "scale": {
+        "absent": "linear",
+        "values": [
+          "linear",
+          "log"
+        ]
+      },
+      "start": {
+        "absent": null
+      },
+      "stop": {
+        "absent": null
+      },
+      "values": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.StudioValueSpec": {
+      "distribution": {
+        "absent": null
+      },
+      "dtype": {
+        "absent": null
+      },
+      "expression": {
+        "absent": null
+      },
+      "frame": {
+        "absent": null
+      },
+      "function_id": {
+        "absent": null
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "mode": {},
+      "parameters": {
+        "absent": null
+      },
+      "reference": {
+        "absent": null
+      },
+      "sampling_scope": {
+        "absent": null
+      },
+      "schedule": {
+        "absent": null
+      },
+      "shape": {
+        "absent": null
+      },
+      "units": {
+        "absent": null
+      },
+      "value": {
+        "absent": null
+      },
+      "value_form": {
+        "values": [
+          "distribution",
+          "expression",
+          "function",
+          "literal",
+          "reference",
+          "schedule"
+        ]
+      },
+      "variation": {
+        "absent": {
+          "scope": "fixed"
+        }
+      }
+    },
+    "feedbax.contracts.graph.StudioValueVariationSpec": {
+      "enumerable": {
+        "absent": null
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "scope": {
+        "values": [
+          "epoch",
+          "fixed",
+          "replicate",
+          "run",
+          "snapshot",
+          "sweep",
+          "timestep",
+          "trial"
+        ]
+      },
+      "stochastic_policy": {
+        "absent": null,
+        "values": [
+          "resample_per_replicate",
+          "shared_per_run"
+        ]
+      }
+    },
+    "feedbax.contracts.graph.TapPositionSpec": {
+      "afterNode": {},
+      "targetNode": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.TapSpec": {
+      "id": {},
+      "paths": {
+        "absent": {}
+      },
+      "position": {},
+      "transform": {
+        "absent": null
+      },
+      "type": {
+        "values": [
+          "intervention",
+          "probe"
+        ]
+      }
+    },
+    "feedbax.contracts.graph.TapTransform": {
+      "intervention": {
+        "absent": null
+      },
+      "params": {
+        "absent": {}
+      },
+      "type": {}
+    },
+    "feedbax.contracts.graph.UserPortSpec": {
+      "inputs": {
+        "absent": []
+      },
+      "outputs": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.graph.WireSpec": {
+      "recurrent_initializer": {
+        "absent": null
+      },
+      "source_node": {},
+      "source_port": {},
+      "target_node": {},
+      "target_port": {},
+      "temporality": {
+        "absent": "instant",
+        "values": [
+          "instant",
+          "recurrent"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.BarrierMember": {
+      "kind": {
+        "absent": "barrier",
+        "values": [
+          "barrier"
+        ]
+      },
+      "name": {}
+    },
+    "feedbax.contracts.request_refs.BatchMember": {
+      "batch": {},
+      "kind": {
+        "absent": "batch",
+        "values": [
+          "batch"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.BestMember": {
+      "kind": {
+        "absent": "best_by",
+        "values": [
+          "best_by"
+        ]
+      },
+      "metric": {}
+    },
+    "feedbax.contracts.request_refs.ContentRef": {
+      "media_type": {
+        "absent": null
+      },
+      "sha256": {},
+      "size": {},
+      "tree": {
+        "absent": false
+      }
+    },
+    "feedbax.contracts.request_refs.InputMember": {
+      "key": {},
+      "reference": {
+        "families": [
+          "content",
+          "product"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.LastMember": {
+      "kind": {
+        "absent": "last",
+        "values": [
+          "last"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.NamedMember": {
+      "kind": {
+        "absent": "member",
+        "values": [
+          "member"
+        ]
+      },
+      "member": {}
+    },
+    "feedbax.contracts.request_refs.ProductRef": {
+      "request_id": {},
+      "role": {},
+      "select": {
+        "absent": null,
+        "families": [
+          "barrier",
+          "batch",
+          "best_by",
+          "last",
+          "member",
+          "slot"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.SlotMember": {
+      "kind": {
+        "absent": "slot",
+        "values": [
+          "slot"
+        ]
+      },
+      "slot": {}
+    },
+    "feedbax.contracts.request_specs.AnalysisRequestSpec": {
+      "analysis_type": {},
+      "evaluation_states_policy": {
+        "absent": "recompute",
+        "values": [
+          "recompute",
+          "require_durable"
+        ]
+      },
+      "numerical_settings": {
+        "absent": {}
+      },
+      "params": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.EvaluationRequestSpec": {
+      "evaluation_type": {},
+      "numerical_settings": {
+        "absent": {}
+      },
+      "params": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.NumericalSettings": {
+      "deterministic": {
+        "absent": null
+      },
+      "floating_point_bits": {
+        "absent": null,
+        "values": [
+          32,
+          64
+        ]
+      },
+      "matmul_precision": {
+        "absent": null,
+        "values": [
+          "bfloat16",
+          "default",
+          "float32",
+          "high",
+          "highest",
+          "tensorfloat32"
+        ]
+      }
+    },
+    "feedbax.contracts.request_specs.RenderRequestSpec": {
+      "figure": {},
+      "numerical_settings": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.ReportRequestSpec": {
+      "narrative": {
+        "absent": null
+      },
+      "numerical_settings": {
+        "absent": {}
+      },
+      "params": {
+        "absent": {}
+      },
+      "report_type": {}
+    },
+    "feedbax.contracts.request_specs.TrainingRequestSpec": {
+      "graph": {},
+      "method_payload": {},
+      "method_ref": {},
+      "numerical_settings": {
+        "absent": {}
+      },
+      "objective": {},
+      "on_nan": {
+        "absent": "raise",
+        "values": [
+          "halt_restore_checkpoint",
+          "raise"
+        ]
+      },
+      "risk_aggregation": {
+        "absent": {}
+      },
+      "seed": {
+        "absent": null
+      },
+      "task": {},
+      "task_binding_spec": {
+        "absent": null
+      },
+      "training_config": {}
+    },
+    "feedbax.contracts.training.LossTermSpec": {
+      "children": {
+        "absent": null
+      },
+      "label": {},
+      "matrix": {
+        "absent": null
+      },
+      "matrix_kind": {
+        "absent": null,
+        "values": [
+          "dense",
+          "diagonal"
+        ]
+      },
+      "norm": {
+        "absent": null,
+        "values": [
+          "huber",
+          "l1",
+          "l2",
+          "squared_l2"
+        ]
+      },
+      "retention": {
+        "absent": null
+      },
+      "selector": {
+        "absent": null
+      },
+      "target_selector": {
+        "absent": null
+      },
+      "target_value": {
+        "absent": null
+      },
+      "time_agg": {
+        "absent": null
+      },
+      "type": {},
+      "weight": {
+        "absent": 1.0
+      }
+    },
+    "feedbax.contracts.training.MethodPayloadEnvelope": {
+      "metadata": {
+        "absent": {}
+      },
+      "payload": {
+        "absent": {}
+      },
+      "schema_id": {},
+      "schema_version": {}
+    },
+    "feedbax.contracts.training.MethodRefSpec": {
+      "name": {},
+      "package": {},
+      "version": {}
+    },
+    "feedbax.contracts.training.ObjectiveSlotSpec": {
+      "kind": {
+        "absent": "loss_term",
+        "values": [
+          "external",
+          "loss_term",
+          "objective_spec"
+        ]
+      },
+      "loss": {
+        "absent": null
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "payload": {
+        "absent": null
+      },
+      "schema_id": {
+        "absent": null
+      },
+      "schema_version": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.training.RiskAggregationSpec": {
+      "metadata": {
+        "absent": {}
+      },
+      "realization": {
+        "absent": "none",
+        "values": [
+          "custom",
+          "max",
+          "mean",
+          "min",
+          "none",
+          "sum"
+        ]
+      },
+      "replicate": {
+        "absent": "none",
+        "values": [
+          "custom",
+          "max",
+          "mean",
+          "min",
+          "none",
+          "sum"
+        ]
+      },
+      "time": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.training.TaskSpec": {
+      "params": {
+        "absent": {}
+      },
+      "timeline": {
+        "absent": null
+      },
+      "type": {}
+    },
+    "feedbax.contracts.training.TimeAggregationSpec": {
+      "discount": {
+        "absent": null,
+        "values": [
+          "linear",
+          "none",
+          "power"
+        ]
+      },
+      "discount_exp": {
+        "absent": null
+      },
+      "end": {
+        "absent": null
+      },
+      "mode": {
+        "absent": "all",
+        "values": [
+          "all",
+          "custom",
+          "final",
+          "mean",
+          "range",
+          "segment",
+          "sum"
+        ]
+      },
+      "segment_name": {
+        "absent": null
+      },
+      "start": {
+        "absent": null
+      },
+      "time_idxs": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.training.TrainingConfig": {
+      "batch_size": {
+        "absent": 128
+      },
+      "effort_weight": {
+        "absent": 2.5
+      },
+      "grad_clip": {
+        "absent": 1.0
+      },
+      "hidden_dim": {
+        "absent": 128
+      },
+      "learning_rate": {
+        "absent": 0.001
+      },
+      "n_batches": {
+        "absent": 2000
+      },
+      "n_reach_steps": {
+        "absent": 80
+      },
+      "network_type": {
+        "absent": "gru"
+      },
+      "snapshot_interval": {
+        "absent": 100
+      }
+    },
+    "feedbax.contracts.value_schema.ValueSchema": {
+      "dtype": {
+        "absent": null
+      },
+      "frame": {
+        "absent": null
+      },
+      "id": {},
+      "kind": {},
+      "label": {},
+      "metadata": {
+        "absent": {}
+      },
+      "origin": {
+        "absent": "unknown",
+        "values": [
+          "curated_fallback",
+          "declared",
+          "inferred_static",
+          "runtime_sample",
+          "unknown"
+        ]
+      },
+      "quantity": {
+        "absent": null
+      },
+      "rank": {
+        "absent": null
+      },
+      "shape": {
+        "absent": null
+      },
+      "units": {
+        "absent": null
+      }
+    }
+  },
+  "retired": {
+    "fields": [],
+    "values": []
+  }
+}

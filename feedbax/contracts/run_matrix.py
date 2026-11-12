@@ -916,6 +916,15 @@ class TrainingRunMatrixSpec(_TrainingRunMatrixSpecCore):
 TrainingRunMatrixSpecVersioned: TypeAlias = TrainingRunMatrixSpecV5 | TrainingRunMatrixSpec
 
 
+class CompositionDeltaError(ValueError):
+    """A patch error with its authored layer and path."""
+
+    def __init__(self, layer: str, path: str, message: str):
+        self.layer = layer
+        self.path = path
+        super().__init__(message)
+
+
 def apply_composition_deltas(
     payload: dict[str, Any],
     deltas: list[MatrixCompositionDelta],
@@ -983,14 +992,18 @@ def _apply_composition_deltas(
                 )
             ]
             if unacknowledged:
-                raise ValueError(
+                raise CompositionDeltaError(
+                    delta.layer_id,
+                    patch.path,
                     f"/deltas/{delta.layer_id}/{patch.path} overlaps ancestor-written "
-                    f"paths {unacknowledged!r} without explicit acknowledgement"
+                    f"paths {unacknowledged!r} without explicit acknowledgement",
                 )
             try:
                 apply_override_patch_in_place(result, patch)
             except ValueError as error:
-                raise ValueError(f"/deltas/{delta.layer_id}: {error}") from error
+                raise CompositionDeltaError(
+                    delta.layer_id, patch.path, f"/deltas/{delta.layer_id}: {error}"
+                ) from error
             written.add(patch.path)
             if patch.op == "add" and patch.path.endswith(".-"):
                 same_layer_appends.add(patch.path)

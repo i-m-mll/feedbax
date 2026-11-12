@@ -22,6 +22,7 @@ from feedbax.contracts.artifact_custody import (
     ContentTree,
     ContentTreeFile,
 )
+from feedbax.contracts.project_io import load_text_project
 from feedbax.persistence import (
     ArtifactBlobContainmentError,
     ArtifactBlobCustodyError,
@@ -36,7 +37,10 @@ from feedbax.persistence import (
     ImmutableArtifactBlobProviderSpec,
     open_immutable_artifact_blob_provider,
 )
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider as CanonicalProvider
+from feedbax.persistence.artifact_custody import (
+    ImmutableArtifactBlobProvider as CanonicalProvider,
+    open_project_store,
+)
 
 
 pytestmark = pytest.mark.feedbax_contract
@@ -47,6 +51,26 @@ _VALID_ARTIFACT_ID = f"artifact://sha256/{_VALID_DIGEST}"
 
 def _artifact_path(root: Path, digest: str) -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / digest
+
+
+def test_project_store_resolves_owned_objects_after_cwd_change_and_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "authored-project"
+    project_root.mkdir()
+    (project_root / "feedbax.project.json").write_text(
+        '{"schema_version":"feedbax.project.v1","project":"witness","store":"local/store"}'
+    )
+    store = open_project_store(load_text_project(project_root))
+    reference = store.store_object(b"retained object")
+
+    monkeypatch.chdir(tmp_path)
+    moved_root = project_root.rename(tmp_path / "moved-project")
+    reopened = open_project_store(load_text_project(moved_root))
+    assert reopened.root == moved_root / "local" / "store"
+    assert reopened.get_object(reference) == b"retained object"
+    with reopened.open_owned_object(reference) as pinned:
+        assert pinned.read_bytes() == b"retained object"
 
 
 def test_path_backed_migration_streams_large_source_without_whole_file_read(
