@@ -429,8 +429,8 @@ while not Path({str(release)!r}).exists():
     )
 
 
-def _bound_edge(host):
-    row = job_row(host, "consumer")
+def _bound_edge(host, job_id="consumer"):
+    row = job_row(host, job_id)
     return next(edge["binding"] for edge in row["edges"] if edge.get("authenticated_completion"))
 
 
@@ -494,6 +494,156 @@ def test_authenticated_completion_rejects_tamper_after_pinning(
     assert blocked["delivery"] == 0
     assert _bound_edge(host) == pinned
     assert not (tmp_path / "consumed.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    ("first_result", "success_source"),
+    [
+        ("stopped", "original"),
+        ("failed", "original"),
+        ("missing-product", "original"),
+        ("wrong-input", "original"),
+        ("corrupt-success", "original"),
+        ("stopped", "first"),
+    ],
+)
+def test_authenticated_completion_resolves_exact_resume_branches(
+    host, tmp_path, completion_worker, first_result, success_source
+):
+    original = completion_worker("original")
+    consumer = _completion_consumer(tmp_path, original.id)
+    gate = _completion_gate(tmp_path)
+    submission = admit(host, "resume-branches", original, consumer, gate)
+
+    def stop(job):
+        wait_until(lambda: job_row(host, job.id)["checkpoint"])
+        host.stop([job.id], "checkpoint")
+        return wait_until(lambda: job_row(host, job.id, "stopped"))
+
+    original_checkpoint = stop(original)["checkpoint"]
+    first_input = original_checkpoint
+    if first_result == "wrong-input":
+        first_input = original_checkpoint | {"completed_updates": True}
+    first = completion_worker(
+        "first",
+        continues=original.id,
+        resume=first_input,
+        mode={
+            "failed": "failed",
+            "missing-product": "missing",
+            "corrupt-success": "wrong_request",
+        }.get(first_result, "complete"),
+    )
+    admit(host, "first-resume", first)
+    if first_result == "stopped":
+        first_row = stop(first)
+    else:
+        (tmp_path / "release-first").touch()
+        first_state = "failed" if first_result == "failed" else "succeeded"
+        first_row = wait_until(lambda: job_row(host, first.id, first_state))
+    restart(host)
+    assert job_row(host, consumer.id)["state"] == "queued"
+    assert _bound_edge(host) is None
+    rejection_stage = {"wrong-input": "continuation", "corrupt-success": "completion"}.get(
+        first_result
+    )
+
+    def check_rejections(dependents):
+        rejections = [
+            event for event in host.events()["events"] if event["kind"] == "dependency_rejected"
+        ]
+        assert [event["job_id"] for event in rejections] == (
+            [dependent.id for dependent in dependents] if rejection_stage is not None else []
+        )
+        for event in rejections:
+            assert event["data"]["dependency_job_id"] == original.id
+            assert event["data"]["candidate_job_id"] == first.id
+            assert event["data"]["stage"] == rejection_stage
+            assert event["data"]["error"]["code"] == "dependency_corrupt"
+
+    check_rejections((consumer,))
+
+    source_checkpoint = (
+        original_checkpoint if success_source == original.id else first_row["checkpoint"]
+    )
+    selected = completion_worker("selected", continues=success_source, resume=source_checkpoint)
+    admit(host, "successful-resume", selected)
+    (tmp_path / "release-selected").touch()
+    settled = wait_until(lambda: job_row(host, selected.id, "succeeded"))
+    pinned = wait_until(lambda: _bound_edge(host))
+    assert pinned == {
+        "dependency_job_id": original.id,
+        "completion": settled["outcome"]["completion"],
+    }
+
+    # A descendant on a different branch can succeed after the first pin.
+    later_source = (
+        first.id if first_result == "stopped" and success_source == original.id else original.id
+    )
+    later_checkpoint = (
+        first_row["checkpoint"] if later_source == first.id else original_checkpoint
+    )
+    later = completion_worker("later", continues=later_source, resume=later_checkpoint)
+    admit(host, "later-resume", later)
+    (tmp_path / "release-later").touch()
+    newer = wait_until(lambda: job_row(host, later.id, "succeeded"))
+    assert newer["outcome"]["receipt"] != pinned["completion"]["receipt"]
+    fresh = replace(consumer, id="fresh-consumer", request="fresh-consumer")
+    fresh_submission = admit(host, "fresh-consumer", fresh)
+    assert wait_until(lambda: _bound_edge(host, fresh.id)) == pinned
+    restart(host)
+    assert _bound_edge(host) == _bound_edge(host, fresh.id) == pinned
+    assert admit(host, "resume-branches", original, consumer, gate) == submission
+    assert admit(host, "fresh-consumer", fresh) == fresh_submission
+
+    (tmp_path / "open-gate").touch()
+    for dependent in (consumer, fresh):
+        assert wait_until(lambda: job_row(host, dependent.id, "succeeded"))["delivery"] == 1
+    restart(host)
+    deliveries = (tmp_path / "consumed.jsonl").read_text().splitlines()
+    assert [json.loads(row) for row in deliveries] == [{"bindings": [pinned]}] * 2
+    check_rejections((consumer, fresh))
+    assert [
+        (event["job_id"], event["data"])
+        for event in host.events()["events"]
+        if event["kind"] == "dependency_bound"
+    ] == [(consumer.id, pinned), (fresh.id, pinned)]
+
+
+def test_authenticated_completion_keeps_a_corrupt_pin_when_a_sibling_succeeds(
+    host, tmp_path, completion_worker
+):
+    original = completion_worker("original")
+    consumer = _completion_consumer(tmp_path, original.id)
+    admit(host, "corrupt-pin", original, consumer, _completion_gate(tmp_path))
+    wait_until(lambda: job_row(host, original.id)["checkpoint"])
+    host.stop([original.id], "checkpoint")
+    checkpoint = wait_until(lambda: job_row(host, original.id, "stopped"))["checkpoint"]
+
+    first = completion_worker("first", continues=original.id, resume=checkpoint)
+    admit(host, "first-resume", first)
+    (tmp_path / "release-first").touch()
+    pinned = wait_until(lambda: _bound_edge(host))
+    (tmp_path / "first-checkpoint.json").write_text('{"changed":true}')
+
+    later = completion_worker("later", continues=original.id, resume=checkpoint)
+    admit(host, "later-resume", later)
+    (tmp_path / "release-later").touch()
+    succeeded = wait_until(lambda: job_row(host, later.id, "succeeded"))
+    fresh = replace(consumer, id="fresh-consumer", request="fresh-consumer")
+    admit(host, "fresh-consumer", fresh)
+    healthy = wait_until(lambda: _bound_edge(host, fresh.id))
+    assert healthy["completion"] == succeeded["outcome"]["completion"]
+
+    restart(host)
+    assert _bound_edge(host) == pinned
+    assert _bound_edge(host, fresh.id) == healthy
+    (tmp_path / "open-gate").touch()
+    blocked = wait_until(lambda: job_row(host, consumer.id, "blocked"))
+    assert blocked["outcome"]["error"]["code"] == "dependency_corrupt"
+    assert blocked["delivery"] == 0
+    assert wait_until(lambda: job_row(host, fresh.id, "succeeded"))["delivery"] == 1
+    assert json.loads((tmp_path / "consumed.jsonl").read_text()) == {"bindings": [healthy]}
 
 
 @pytest.mark.parametrize(
