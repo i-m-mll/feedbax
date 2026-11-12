@@ -18,16 +18,19 @@ import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene'
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
+import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
   DocumentReferenceSchema, GraphSpecSchema, TaskSpecSchema,
   type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type StudioSavedEvaluationRow, type TaskSpec, type WireSpec,
-  type StudioDocumentAuthoring, type StudioDocumentAuthoringRequest, type StudioSavedTrainKey, type WorkspaceReplayTrial,
+  type PresentationPosition, type StudioDocumentAuthoring, type StudioDocumentAuthoringRequest,
+  type StudioSavedTrainKey, type WorkspaceReplayTrial,
 } from '@/generated/studioContracts';
 import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
+import { useModelAuthoring } from './useModelAuthoring';
 
 type DetailName = 'model' | 'task' | 'scene';
 type DefinitionField = 'graph' | 'task';
@@ -50,6 +53,8 @@ export interface ManagedProjectDetail {
   readonly body: ReactNode;
   readonly drawer?: ReactNode;
   readonly inspector?: ReactNode;
+  readonly commands?: readonly StudioCommand[];
+  readonly overlay?: ReactNode;
 }
 
 interface DetailInputs {
@@ -65,6 +70,7 @@ interface DetailInputs {
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly namedRun?: StudioSavedTrainKey;
   readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
+  readonly saveComponentPosition: (document: string, node: string, position: PresentationPosition) => Promise<unknown>;
 }
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
@@ -120,11 +126,14 @@ function DetailList({ name, items, selectedId, onSelect }: ReturnType<typeof use
 
 const endpoint = (node: string, port: string) => `${node}.${port}`;
 
-function ModelCanvas({ graph, positions, selectedId, onSelect }: ReturnType<typeof useElementSelection> & {
+function ModelCanvas({ graph, positions, selectedId, onSelect, openAt, rememberPoint, placing }: ReturnType<typeof useElementSelection> & {
   graph: GraphSpec;
-  positions?: Record<string, { x: number; y: number }>;
+  positions?: Record<string, PresentationPosition>;
+  openAt?: (point: PresentationPosition) => void;
+  rememberPoint: (point: PresentationPosition | null) => void;
+  placing: boolean;
 }) {
-  const { fitBounds, viewportInitialized } = useReactFlow();
+  const { fitBounds, viewportInitialized, screenToFlowPosition } = useReactFlow();
   const width = useStore((state) => state.width);
   const height = useStore((state) => state.height);
   // The graph owns authored nodes. React Flow owns their rendered dimensions.
@@ -156,16 +165,27 @@ function ModelCanvas({ graph, positions, selectedId, onSelect }: ReturnType<type
   const shownNodes = useMemo(() => nodes.map((node) => ({ ...node, selected: selectedId === `component:${node.id}` })), [nodes, selectedId]);
   const shownEdges = useMemo(() => edges.map((edge) => ({ ...edge, selected: selectedId === edge.id })), [edges, selectedId]);
   useEffect(() => {
+    if (placing) navigated.current = true;
     if (!bounds || !viewportInitialized || !width || !height) return;
     const frame = requestAnimationFrame(() => {
       if (!navigated.current) void fitBounds(bounds, { padding: 0.14 });
     });
     return () => cancelAnimationFrame(frame);
-  }, [fitBounds, bounds, viewportInitialized, width, height]);
+  }, [fitBounds, bounds, viewportInitialized, width, height, placing]);
   return (
-    <div className="h-full min-h-0">
+    <div className="h-full min-h-0"
+      onPointerMove={(event) => {
+        if (openAt) rememberPoint(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+      }}
+      onPointerLeave={() => rememberPoint(null)}
+      onDoubleClick={(event) => {
+        if (openAt && event.target instanceof Element && event.target.classList.contains('react-flow__pane')) {
+          openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        }
+      }}>
       <ReactFlow nodes={shownNodes} edges={shownEdges}
-        nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null} proOptions={{ hideAttribution: true }}
+        nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null} zoomOnDoubleClick={!openAt}
+        proOptions={{ hideAttribution: true }}
         onMove={(event) => { if (event) navigated.current = true; }}
         onNodesChange={(changes) => {
           const change = changes.find((item) => item.type === 'select' && item.selected);
@@ -416,7 +436,7 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
 
 export function useManagedProjectDetails(input: DetailInputs): Record<DetailName, ManagedProjectDetail> {
   const { editor, stepId, selection, variantId, focus, activeView } = input;
-  const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const { saved, draft, outside, pending } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
   const scope = JSON.stringify([subjectScope, selection, focus]);
   const namedField = activeView === 'model' ? 'graph' : activeView === 'task' ? 'task' : undefined;
@@ -451,16 +471,24 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const change = useDefinitionEdit(input, scope);
   function editable(field: DefinitionField, definition: Definition) {
     return canEdit && (definition.id
-      ? definition.authored?.revision === saved.revision && input.documentScopes[field]?.document === definition.id
+      ? !pending && definition.authored?.revision === saved.revision && input.documentScopes[field]?.document === definition.id
       : !definition.shared);
   }
   const components = Object.entries(graph?.nodes ?? {});
   const component = components.find(([id]) => modelSelection.selectedId === `component:${id}`);
   const wire = graph?.wires?.find((_, index) => modelSelection.selectedId === `wire:${index}`);
   const registry = useQuery({ queryKey: ['components'], queryFn: fetchComponents, staleTime: 5 * 60 * 1000,
-    enabled: !!component && activeView === 'model' });
+    enabled: activeView === 'model' });
   const model = definitions.model;
   const positions = model?.id ? saved.presentation?.documents?.[model.id]?.positions : undefined;
+  const graphScope = input.documentScopes.graph;
+  const authorModel = useModelAuthoring({
+    editor, graph, registry: registry.data, documentScope: graphScope, onSelect: modelSelection.onSelect,
+    savePosition: input.saveComponentPosition,
+    review: !pending && activeView === 'model' && model?.id && graphScope && input.namedRun && editable('graph', model)
+      ? { revision: saved.revision, document: model.id, run: input.namedRun, litSteps: [...graphScope.lit] }
+      : undefined,
+  });
   const scene = useSceneDetail(input, model, graph, JSON.stringify([scope, model?.id]), saved.project_id, saved.revision);
 
   function componentParameters(definition: Definition, [id, component]: typeof components[number], selected: PipelineSelection) {
@@ -494,15 +522,23 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     model: {
       documentId: model?.id,
       header: detailHeader(model),
-      body: graph ? <ReactFlowProvider key={JSON.stringify([saved.project_id, model?.id ?? stepId])}>
-        <ModelCanvas graph={graph} positions={positions} {...modelSelection} />
-      </ReactFlowProvider> : <DetailReason reason="definitionUnavailable" name="model" />,
-      drawer: graph && (components.length > 0 || (graph.wires?.length ?? 0) > 0) ? <>
+      body: graph ? <div className="flex h-full min-h-0 flex-col">
+        {authorModel.issue}
+        <div className="min-h-0 flex-1"><ReactFlowProvider key={JSON.stringify([saved.project_id, model?.id ?? stepId])}>
+          <ModelCanvas graph={graph} positions={positions} openAt={authorModel.openAt} rememberPoint={authorModel.rememberPoint}
+            placing={authorModel.placing} {...modelSelection} />
+        </ReactFlowProvider></div>
+      </div> : <DetailReason reason="definitionUnavailable" name="model" />,
+      drawer: graph && (registry.error || authorModel.drawer || components.length > 0 || (graph.wires?.length ?? 0) > 0) ? <>
+        {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
+        {authorModel.drawer}
         <DetailList name="components" items={components.map(([id]) => ({ id: `component:${id}`, label: id }))} {...modelSelection} />
         <DetailList name="wires" items={(graph.wires ?? []).map((item, index) => ({
           id: `wire:${index}`, label: `${endpoint(item.source_node, item.source_port)} → ${endpoint(item.target_node, item.target_port)}`,
         }))} {...modelSelection} />
       </> : null,
+      commands: authorModel.commands,
+      overlay: authorModel.overlay,
       inspector: model && component && selection ? componentParameters(model, component, selection) : wire ? <WireDetails wire={wire} /> : null,
     },
     task: {

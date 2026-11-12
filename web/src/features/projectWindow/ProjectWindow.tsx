@@ -256,6 +256,8 @@ export function ProjectWindow({
       const command = matchesShortcut(event, palette.shortcut) ? palette
         : paletteCommands.find((item) => matchesShortcut(event, item.shortcut));
       if (!command) return;
+      if (command.id === 'addComponent' && !(event.target instanceof Element &&
+          event.target.closest('[role="tabpanel"], [data-studio-focus-region="drawer"]'))) return;
       if (!commandInContext(command, { ...context, activity: false })) return;
       event.preventDefault();
       if (!commandInContext(command, context) || nativeOwnsShortcut(command, event)) return;

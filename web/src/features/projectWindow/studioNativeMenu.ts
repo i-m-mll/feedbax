@@ -5,7 +5,7 @@ import {
 } from './studioCommands';
 
 const groups = {
-  Edit: ['undo', 'redo'],
+  Edit: ['undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput'],
   View: [
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',
     'splitDetails', 'switchSlot', ...projectWindowViews, 'back', 'forward', 'nextRegion', 'previousRegion',
@@ -22,7 +22,7 @@ type Context = ReturnType<typeof studioCommandContext>;
 function accelerator(command: StudioCommand) {
   const shortcut = command.shortcut;
   // Escape also cancels controls and dialogs inside the webview.
-  if (!shortcut || command.id === 'clearFocus') return undefined;
+  if (!shortcut || command.id === 'clearFocus' || command.id === 'addComponent') return undefined;
   return [
     shortcut.control && 'Ctrl', shortcut.alt && 'Alt', shortcut.shift && 'Shift',
     shortcut.primary && 'Cmd', shortcut.key,

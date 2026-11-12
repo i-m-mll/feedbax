@@ -33,14 +33,16 @@ const shortcuts = {
   nextRegion: { key: 'F6' },
   previousRegion: { key: 'F6', shift: true },
   clearFocus: { key: 'Escape' },
+  addComponent: { key: 'A', shift: true },
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
   'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
-  'pivot' | 'fold' | 'unfold' | 'dismiss';
+  'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
+  'addComponent', 'connectPorts', 'exposeOutput',
 ]);
 
 export interface StudioCommand {
@@ -116,7 +118,7 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
 
 export function commandInContext(command: StudioCommand, context: ReturnType<typeof studioCommandContext>) {
   if (context.dialog && !(context.paletteOpen && command.id === 'commandPalette')) return false;
-  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run')) return false;
+  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run' || command.id === 'addComponent')) return false;
   return !(context.activity && command.selectionScoped);
 }
 

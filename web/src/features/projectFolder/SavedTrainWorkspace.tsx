@@ -18,7 +18,7 @@ import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioComm
 import {
   projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
-import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { PresentationDocument, PresentationPosition, StudioActivityJob, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
@@ -228,13 +228,25 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
   const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const namedRun = definitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ?? definitionRows[0]?.key;
+  function saveComponentPosition(document: string, node: string, position: PresentationPosition) {
+    const { outside, saved } = editor.getSnapshot();
+    const current = (outside ?? saved).presentation ?? {};
+    const prior = current.documents?.[document];
+    return session.savePresentation({
+      ...current, documents: { ...current.documents, [document]: {
+        ...prior, positions: { ...prior?.positions, [node]: position },
+      } },
+    });
+  }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes,
+    namedRun, documentScopes, saveComponentPosition,
   };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });
+  const focusedModel = windowState.mode !== 'map' && focusView === 'model'
+    ? (focusSlot === 'primary' ? primary : secondary).model : undefined;
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const selectedJobs = state.selection ? runRows.flatMap((item) => {
     const latest = item.attempts.at(-1);
@@ -424,6 +436,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const folded = step && selectedAxis ? foldedMapSweep(step, orderedMapSweeps(step, cardPresentation), cardPresentation) : undefined;
   const commands = [
     ...runCommands,
+    ...(focusedModel?.commands ?? []),
     newStepCommand(),
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
@@ -449,6 +462,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>}
       overlay={<>
+        {focusedModel?.overlay}
         {firstStepRevision && <Dialog ariaLabel={studioName('newStep')} onClose={() => setFirstStepRevision(undefined)} manageFocus
           panelClassName="w-[min(20rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           <button type="button" className={`${control} flex w-full items-center gap-2 text-sm`} data-dialog-autofocus onClick={chooseFirstTrain}>

@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.graph import WireSpec
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import DocumentOverridePath, Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
@@ -60,11 +61,36 @@ class StudioDocumentAuthoringChange(StrictModel):
     value: StrictStr | StrictInt | StrictFloat | StrictBool
 
 
+class StudioModelAddComponent(StrictModel):
+    kind: Literal["addComponent"]
+    component: Literal["feedbax.GRU", "feedbax.Linear", "feedbax.PointMass"]
+    revision: Annotated[StrictInt, Field(gt=0)]
+
+
+class StudioModelConnectPorts(StrictModel):
+    kind: Literal["connectPorts"]
+    wire: WireSpec
+
+
+class StudioModelExposeOutput(StrictModel):
+    kind: Literal["exposeOutput"]
+    source_node: NonemptyText
+    source_port: NonemptyText
+
+
+class StudioModelAuthoringChange(StrictModel):
+    lit_steps: list[ProjectName] = Field(min_length=1)
+    operation: Annotated[
+        StudioModelAddComponent | StudioModelConnectPorts | StudioModelExposeOutput,
+        Field(discriminator="kind"),
+    ]
+
+
 class StudioDocumentAuthoringRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
     field: Literal["graph", "task"]
-    change: StudioDocumentAuthoringChange | None = None
+    change: StudioDocumentAuthoringChange | StudioModelAuthoringChange | None = None
 
 
 class StudioDocumentAuthoring(StrictModel):
@@ -73,6 +99,7 @@ class StudioDocumentAuthoring(StrictModel):
     payload: JsonValue
     sources: dict[str, StudioAuthoringSource]
     files: list[StudioProjectFilePatch]
+    created_component: str | None = None
 
 
 class StudioSweepValue(StrictModel):
