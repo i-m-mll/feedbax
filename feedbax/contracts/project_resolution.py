@@ -13,6 +13,7 @@ from pydantic import JsonValue, ValidationError
 from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_override_patch_copy, apply_value_patch_in_place
 from feedbax.contracts.project import (
     Document,
@@ -85,6 +86,7 @@ class ProjectDiagnostic:
     row: str | None = None
     variant: str | None = None
     element: str | None = None
+    document_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,8 @@ class ResolvedStep:
     sources: dict[str, ValueSource] | None = None
     document_ids: dict[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
+    document_pointers: dict[str, str] = field(default_factory=dict)
+    document_problems: tuple[ProjectDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -132,8 +136,11 @@ class _Problem(Exception):
         step: str | None = None,
         layer: str | None = None,
         document: str | None = None,
+        document_path: str | None = None,
     ):
-        self.diagnostic = ProjectDiagnostic(code, path, detail, step, layer, document)
+        self.diagnostic = ProjectDiagnostic(
+            code, path, detail, step, layer, document, document_path=document_path,
+        )
         super().__init__(detail)
 
 
@@ -151,6 +158,37 @@ def _select(value: Any, parts: tuple[str, ...]) -> Any:
         else:
             raise KeyError(part)
     return value
+
+
+def _read_external(
+    base: ExternalBase, external: Callable[[str], bytes | None] | None, path: str,
+    *, step: str | None, document: str | None = None,
+) -> JsonValue:
+    def problem(code: ResolutionCode, field: str, detail: str) -> _Problem:
+        return _Problem(
+            code, f"{path}.{field}", detail, step=step, document=document,
+            document_path=f"payload.{field}" if document is not None else None,
+        )
+
+    try:
+        data = external(base.path) if external is not None else None
+    except OSError as error:
+        raise problem(ResolutionCode.MISSING_AUTHORITY, "path", str(error)) from error
+    if data is None:
+        raise problem(ResolutionCode.MISSING_AUTHORITY, "path", base.path)
+    observed = sha256_bytes(data)
+    if observed != base.sha256:
+        raise problem(
+            ResolutionCode.BAD_EXTERNAL_CONTENT, "sha256", f"expected {base.sha256}, got {observed}",
+        )
+    try:
+        payload = strict_json_loads(data, ref=base.path)
+    except (ValueError, UnicodeError) as error:
+        raise problem(ResolutionCode.BAD_EXTERNAL_CONTENT, "path", str(error)) from error
+    try:
+        return _select(payload, json_pointer_parts(base.pointer))
+    except KeyError as error:
+        raise problem(ResolutionCode.BAD_POINTER, "pointer", base.pointer or "") from error
 
 
 def _pack(value: Any, path: str, step: str | None) -> Any:
@@ -175,6 +213,9 @@ class _Documents:
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
         overrides: Mapping[str, Mapping[str, JsonValue]] | None = None,
+        *,
+        external: Callable[[str], bytes | None] | None = None,
+        partial_figures: bool = False,
     ):
         self.step = step
         self.variant_sources = variant_sources
@@ -182,6 +223,10 @@ class _Documents:
         self.overrides = overrides or {}
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
+        self.external = external
+        self.pinned: dict[str, tuple[ExternalBase, JsonValue]] = {}
+        self.partial_figures = partial_figures
+        self.figure_problems: dict[str, ProjectDiagnostic] = {}
 
     def select(self, reference: DocumentReference, path: str) -> Any:
         document = self.read_document(reference.document)
@@ -209,6 +254,22 @@ class _Documents:
                     ) from error
                 self.edited[reference.document] = draft
             payload = self.edited[reference.document]
+        if document.schema_id == FIGURE_DOCUMENT_SCHEMA and is_figure_document_pin(payload):
+            name = reference.document
+            if name not in self.pinned:
+                try:
+                    pin = ExternalBase.model_validate(payload)
+                except ValidationError as error:
+                    issue = error.errors(include_url=False, include_input=False)[0]
+                    field_path = ".".join(map(str, issue["loc"]))
+                    raise _Problem(
+                        ResolutionCode.BAD_REFERENCE, f"{path}.{field_path}", issue["msg"],
+                        step=self.step, document=name, document_path=f"payload.{field_path}",
+                    ) from error
+                self.pinned[name] = (
+                    pin, _read_external(pin, self.external, path, step=self.step, document=name),
+                )
+            payload = self.pinned[name][1]
         try:
             return _select(payload, json_pointer_parts(reference.pointer))
         except KeyError as error:
@@ -249,6 +310,11 @@ class _Documents:
 
     def source(self, reference: DocumentReference, value: Any) -> Any:
         parts = json_pointer_parts(reference.pointer)
+        if reference.document in self.pinned:
+            pin, _ = self.pinned[reference.document]
+            return source_shape(
+                value, ValueSource("document", pin.path, pointer((*json_pointer_parts(pin.pointer), *parts))),
+            )
         shape = source_shape(
             value,
             ValueSource("document", reference.document, pointer(parts)),
@@ -304,6 +370,8 @@ class _Documents:
         output: str = "",
         active: tuple[tuple[str, str], ...] = (),
     ) -> Iterator[tuple[str, ValueSource]]:
+        if path in self.figure_problems:
+            return
         if isinstance(value, DocumentReference):
             selected, active = self._follow(value, path, active)
             yield from self.source_leaves(
@@ -335,20 +403,46 @@ class _Documents:
         active: tuple[tuple[str, str], ...] = (),
         *,
         document_ids: dict[str, str] | None = None,
+        document_pointers: dict[str, str] | None = None,
     ) -> JsonValue:
         if isinstance(value, DocumentReference):
-            selected, active = self._follow(value, path, active)
+            try:
+                selected, active = self._follow(value, path, active)
+            except _Problem as error:
+                parts = path.split(".")
+                problem = error.diagnostic
+                if not (
+                    self.partial_figures and len(parts) == 4 and parts[:2] == ["payload", "views"]
+                    and parts[3] == "figure" and problem.document_path is not None
+                ):
+                    raise
+                self.figure_problems[path] = replace(problem, element=parts[2])
+                if document_ids is not None and problem.document is not None:
+                    document_ids[path] = problem.document
+                return None
             if document_ids is not None:
                 document_ids[path] = value.document
-            return self.inline(selected, path, active, document_ids=document_ids)
+            if document_pointers is not None:
+                if value.pointer:
+                    document_pointers[path] = value.pointer
+                else:
+                    document_pointers.pop(path, None)
+            return self.inline(
+                selected, path, active, document_ids=document_ids, document_pointers=document_pointers,
+            )
         if isinstance(value, dict):
             return {
-                key: self.inline(item, f"{path}.{key}", active, document_ids=document_ids)
+                key: self.inline(
+                    item, f"{path}.{key}", active,
+                    document_ids=document_ids, document_pointers=document_pointers,
+                )
                 for key, item in value.items()
             }
         if isinstance(value, list):
             return [
-                self.inline(item, f"{path}.{i}", active, document_ids=document_ids)
+                self.inline(
+                    item, f"{path}.{i}", active, document_ids=document_ids, document_pointers=document_pointers,
+                )
                 for i, item in enumerate(value)
             ]
         return cast(JsonValue, value)
@@ -384,7 +478,9 @@ class _Resolver:
         self.inline_origin = inline_origin
 
     def documents(self, step: str) -> _Documents:
-        return _Documents(self.project, step, self.variant_sources, self.read_document)
+        return _Documents(
+            self.project, step, self.variant_sources, self.read_document, external=self.readers.external,
+        )
 
     def base_origins(
         self, name: str, base: InlineBase | RunBase | ExternalBase, payload: Any
@@ -524,34 +620,7 @@ class _Resolver:
             if payload is None:
                 raise _Problem(ResolutionCode.MISSING_AUTHORITY, "base.run", base.run, step=step)
             return payload
-        try:
-            data = self.readers.external(base.path) if self.readers.external is not None else None
-        except OSError as error:
-            raise _Problem(
-                ResolutionCode.MISSING_AUTHORITY, "base.path", str(error), step=step
-            ) from error
-        if data is None:
-            raise _Problem(ResolutionCode.MISSING_AUTHORITY, "base.path", base.path, step=step)
-        observed = sha256_bytes(data)
-        if observed != base.sha256:
-            raise _Problem(
-                ResolutionCode.BAD_EXTERNAL_CONTENT,
-                "base.sha256",
-                f"expected {base.sha256}, got {observed}",
-                step=step,
-            )
-        try:
-            payload = strict_json_loads(data, ref=base.path)
-        except (ValueError, UnicodeError) as error:
-            raise _Problem(
-                ResolutionCode.BAD_EXTERNAL_CONTENT, "base.path", str(error), step=step
-            ) from error
-        try:
-            return _select(payload, json_pointer_parts(base.pointer))
-        except KeyError as error:
-            raise _Problem(
-                ResolutionCode.BAD_POINTER, "base.pointer", base.pointer or "", step=step
-            ) from error
+        return _read_external(base, self.readers.external, "base", step=step)
 
     def select_row(self, child: str, base: StepBase, parent: _StepState) -> _StepState:
         assert base.row is not None
@@ -670,12 +739,19 @@ class _Resolver:
             root_document=state.root_document,
         )
 
-    def finish(self, name: str, state: _StepState, *, check_requires: bool = True) -> ResolvedStep:
+    def finish(
+        self, name: str, state: _StepState, *, check_requires: bool = True, partial_figures: bool = False,
+    ) -> ResolvedStep:
         documents = _Documents(
             self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
+            external=self.readers.external,
+            partial_figures=partial_figures,
         )
         document_ids = {"payload": state.root_document} if state.root_document is not None else {}
-        payload = documents.inline(state.payload, "payload", document_ids=document_ids)
+        document_pointers: dict[str, str] = {}
+        payload = documents.inline(
+            state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
+        )
         if not isinstance(payload, dict):
             raise _Problem(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -711,6 +787,8 @@ class _Resolver:
             ),
             document_ids,
             state.document_uses.union(documents.used),
+            document_pointers,
+            tuple(documents.figure_problems.values()),
         )
 
 
@@ -787,7 +865,7 @@ class StepTemplate:
         return to_jsonable_python(payload, by_alias=True)
 
     def resolve(
-        self, row: ExpandedRow | None = None, *, include_sources: bool = False
+        self, row: ExpandedRow | None = None, *, include_sources: bool = False, partial_figures: bool = False,
     ) -> ResolvedStep | ProjectDiagnostic:
         try:
             state = self.composition._state
@@ -795,7 +873,7 @@ class StepTemplate:
                 state = replace(state, origins=None)
             if row is not None:
                 state = self._resolver.apply_row(self.composition.name, state, row)
-            return self._resolver.finish(self.composition.name, state)
+            return self._resolver.finish(self.composition.name, state, partial_figures=partial_figures)
         except _Problem as error:
             if row is not None:
                 return replace(error.diagnostic, row=row.id)
@@ -832,9 +910,11 @@ def resolve_step(
 def validate_project_documents(
     project: Project,
     schemas: Mapping[str, Callable[[JsonValue], object]],
+    *,
+    readers: BaseReaders = BaseReaders(),
 ) -> tuple[ProjectDiagnostic, ...]:
     """Validate inlined document payloads using the caller's explicit schema authorities."""
-    documents = _Documents(project)
+    documents = _Documents(project, external=readers.external)
     failures = []
     for name, document in project.documents.items():
         validator = schemas.get(document.schema_id)

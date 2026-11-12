@@ -6,9 +6,10 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from functools import cache
 from threading import Lock
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import ValidationError
 from pydantic_core import to_json
@@ -67,6 +68,7 @@ from feedbax.contracts.request_refs import (
     ProductRef,
     ProductSelector,
     RequestId,
+    RequestKind,
 )
 from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSpec
 
@@ -85,6 +87,10 @@ class RunKey:
 class ElementKey:
     run: RunKey
     name: str
+
+    def payload_path(self, kind: RequestKind) -> str:
+        family = "operations" if kind == "analyze" else "views"
+        return f"payload.{family}.{self.name}"
 
 
 @dataclass(frozen=True)
@@ -149,8 +155,7 @@ class PlannedElement:
 
     @property
     def path(self) -> str:
-        family = "operations" if self.kind == "analyze" else "views"
-        return f"payload.{family}.{self.key.name}"
+        return self.key.payload_path(self.kind)
 
 
 @dataclass(frozen=True)
@@ -185,6 +190,8 @@ class SelectedRunDefinition:
     sources: Mapping[str, ValueSource]
     document_ids: Mapping[str, str]
     document_uses: frozenset[str]
+    document_pointers: Mapping[str, str] = field(default_factory=dict)
+    document_problems: tuple[ProjectDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -659,12 +666,13 @@ class _Compiler:
         *,
         sources: bool = False,
     ) -> ResolvedStep | ProjectDiagnostic:
+        project = self.variants[key.variant]
         return composition.bind(
-            self.variants[key.variant],
+            project,
             readers=self.readers,
             variant_sources=self.variant_sources.get(key.variant),
             read_document=reader,
-        ).resolve(row, include_sources=sources)
+        ).resolve(row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze")
 
     def project_definition(
         self,
@@ -693,6 +701,8 @@ class _Compiler:
                 )
             return SelectedRunDefinition(
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
+                MappingProxyType(resolved.document_pointers),
+                resolved.document_problems,
             )
 
         if self.previous is None:
@@ -1003,6 +1013,9 @@ class _Compiler:
             key,
             resolved.payload,
             resolved.document_ids,
+            resolved.document_pointers,
+            self.variants[key.variant].documents,
+            tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
             source,
             evaluation.spec,
             self.operations,
@@ -1216,6 +1229,8 @@ def compile_project(
     operations: OperationRegistry | None = None,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
+    if readers.external is not None:
+        readers = replace(readers, external=cache(readers.external))
     if memo is None or any(reader is not None for reader in (readers.run, readers.external, readers.row)):
         return _Compiler(project, readers, source_runs, operations=operations).plan()
     authority = _compiler_authority()
@@ -1227,28 +1242,76 @@ def compile_project(
     return plan
 
 
+@dataclass(frozen=True)
+class PlanRequest:
+    """The authored address and producer attribution of a planned request."""
+
+    key: RunKey | ElementKey
+    request_id: RequestId
+    element_inputs: Mapping[str, ElementKey]
+
+    @property
+    def kind(self) -> RequestKind:
+        return cast(RequestKind, self.request_id.split(":", 1)[0])
+
+    @property
+    def path(self) -> str:
+        return self.key.payload_path(self.kind) if isinstance(self.key, ElementKey) else "payload"
+
+
+@dataclass(frozen=True)
+class PlanRequests:
+    """The request objects and authored addresses used in a Plan comparison."""
+
+    entries: Mapping[RunKey | ElementKey, PlanRequest]
+    requests: Mapping[RequestId, bytes]
+    documents: Mapping[str, bytes]
+
+    @classmethod
+    def from_plan(cls, plan: ProjectPlan) -> PlanRequests:
+        return cls._from_requests(plan, (*plan.runs, *plan.elements.values()))
+
+    @classmethod
+    def _from_requests(
+        cls, plan: ProjectPlan, requests: Iterable[PlannedRun | PlannedElement],
+    ) -> PlanRequests:
+        entries = {
+            request.key: PlanRequest(
+                request.key,
+                request.request_id,
+                {
+                    role: element
+                    for role, binding in request.inputs.items()
+                    if (element := binding.element) is not None
+                },
+            )
+            for request in requests
+        }
+        return cls(entries, plan.requests, plan.documents)
+
+
 def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[ElementKey, ElementChange]:
     """Compare element requests and locate the authored edit or changed input."""
-    return _diff_requests(before, after, before.elements, after.elements)
+    changes = diff_plan_requests(
+        PlanRequests._from_requests(before, before.elements.values()),
+        PlanRequests._from_requests(after, after.elements.values()),
+    )
+    return MappingProxyType({
+        key: change for key, change in changes.items() if isinstance(key, ElementKey)
+    })
 
 
 def diff_plan_requests(
-    before: ProjectPlan, after: ProjectPlan,
+    before: ProjectPlan | PlanRequests, after: ProjectPlan | PlanRequests,
 ) -> Mapping[RunKey | ElementKey, ElementChange]:
     """Compare all authored request addresses in two plans."""
-    def addresses(plan: ProjectPlan) -> dict[RunKey | ElementKey, PlannedRun | PlannedElement]:
-        return {run.key: run for run in plan.runs} | dict(plan.elements)
-
-    return _diff_requests(before, after, addresses(before), addresses(after))
-
-
-def _diff_requests[K: RunKey | ElementKey](
-    before: ProjectPlan, after: ProjectPlan,
-    old: Mapping[K, PlannedRun | PlannedElement], new: Mapping[K, PlannedRun | PlannedElement],
-) -> Mapping[K, ElementChange]:
+    if isinstance(before, ProjectPlan):
+        before = PlanRequests.from_plan(before)
+    if isinstance(after, ProjectPlan):
+        after = PlanRequests.from_plan(after)
     changes = {}
-    for key in dict.fromkeys((*old, *new)):
-        left, right = old.get(key), new.get(key)
+    for key in dict.fromkeys((*before.entries, *after.entries)):
+        left, right = before.entries.get(key), after.entries.get(key)
         if left is None:
             changes[key] = ElementChange("added")
         elif right is None:
@@ -1256,33 +1319,29 @@ def _diff_requests[K: RunKey | ElementKey](
         elif left.request_id == right.request_id:
             changes[key] = ElementChange("unchanged")
         elif left.kind != right.kind:
-            path = right.path if isinstance(right, PlannedElement) else "payload"
-            changes[key] = ElementChange("changed", path)
+            changes[key] = ElementChange("changed", right.path)
         else:
             changes[key] = _request_change(before, after, left, right)
     return MappingProxyType(changes)
 
 
 def _request_change(
-    before: ProjectPlan, after: ProjectPlan,
-    left: PlannedRun | PlannedElement, right: PlannedRun | PlannedElement,
+    before: PlanRequests, after: PlanRequests, left: PlanRequest, right: PlanRequest,
 ) -> ElementChange:
     old = request_identity.decode_request(before.requests[left.request_id], before.documents.__getitem__)
     new = request_identity.decode_request(after.requests[right.request_id], after.documents.__getitem__)
     change = first_request_change(old, new)
-    path = right.path if isinstance(right, PlannedElement) else "payload"
     if change.path == "inputs":
         role = next(
             role for role in sorted(old.inputs.keys() | new.inputs.keys())
             if old.inputs.get(role) != new.inputs.get(role)
         )
-        earlier, later = left.inputs.get(role), right.inputs.get(role)
-        cause = (
-            later.element
-            if later is not None and earlier is not None and later.element == earlier.element
-            else None
-        )
-        input_path = f"{path}.inputs.{role}" if isinstance(right, PlannedElement) else f"inputs.{role}"
+        cause = right.element_inputs.get(role)
+        if cause != left.element_inputs.get(role):
+            cause = None
+        input_path = f"inputs.{role}"
+        if isinstance(right.key, ElementKey):
+            input_path = f"{right.path}.{input_path}"
         return ElementChange("changed", input_path, cause)
     relative = change.path.removeprefix("payload.")
     if relative == "analysis_type":
@@ -1291,4 +1350,4 @@ def _request_change(
         relative = "figure." + relative.removeprefix("document.")
     elif right.kind == "report":
         relative = relative.removeprefix("document.")
-    return ElementChange("changed", f"{path}.{relative}")
+    return ElementChange("changed", f"{right.path}.{relative}")

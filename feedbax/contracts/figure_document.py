@@ -16,6 +16,14 @@ from feedbax.contracts.project_inputs import NonemptyText
 from feedbax.contracts.request_refs import ContentRef
 
 
+FIGURE_DOCUMENT_SCHEMA = "feedbax.figure_document.v1"
+
+
+def is_figure_document_pin(payload: object) -> bool:
+    """Recognize the pin fields reserved by a named figure payload."""
+    return isinstance(payload, dict) and bool(payload.keys() & {"path", "sha256"})
+
+
 class IndexSelection(StrictModel):
     index: Annotated[StrictInt, Field(ge=0)]
 
@@ -99,7 +107,7 @@ class FigureDocumentView(FigureView, ComparisonGridParams):
 class FigureDocument(StrictModel):
     """One figure composed of dataset-bound marks."""
 
-    schema_version: Literal["feedbax.figure_document.v1"] = "feedbax.figure_document.v1"
+    schema_version: Literal["feedbax.figure_document.v1"] = FIGURE_DOCUMENT_SCHEMA
     data: tuple[Name, ...] = Field(min_length=1)
     layout: tuple[FigurePanel, ...] = Field(min_length=1)
     layers: tuple[FigureLayer, ...] = Field(min_length=1)

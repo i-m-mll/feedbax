@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import TypeAdapter
 
+from feedbax.bin import project_plan as project_plan_cli
 from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
 from feedbax.contracts.checkpoint_initialization import CheckpointInitializationPlan
@@ -356,6 +357,9 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    project_plan_cli.configure_parser(subparsers.add_parser(
+        "plan", prog="feedbax plan", help="Compile an authored text project for review.",
+    ))
     migration_parser = subparsers.add_parser(
         "migrate-content-store",
         help="Offline conversion of legacy custody into canonical content references.",
@@ -725,6 +729,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     command_started_at = time.perf_counter()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "plan":
+        return project_plan_cli.run(args)
     if args.command == "migrate-content-store":
         if args.packet_v1:
             from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1

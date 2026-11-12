@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 from feedbax.analysis.figure_presets import velocity_summary_figure
-from feedbax.contracts.project import Document, Project, Step
+from feedbax.contracts.analysis_document import FigureElement
+from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.project import Document, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -23,6 +25,8 @@ from feedbax.contracts.project_plan import (
     compile_project,
     diff_analyze_elements,
 )
+from feedbax.contracts.project_resolution import BaseReaders, ResolutionCode
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.plugins.application import new_application_registry_bundle
@@ -186,6 +190,97 @@ def test_element_edit_and_upstream_attribution_leave_independent_requests_equal(
         summary: ElementChange("unchanged"),
         figure: ElementChange("changed", "payload.views.profile.figure.theme"),
     }
+
+
+def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
+    project = _project()
+    views = project.documents["velocity-analysis"].payload["views"]
+    views["second"] = deepcopy(views["profile"])
+    views["inline"] = deepcopy(views["profile"])
+    views["inline"]["figure"] = deepcopy(project.documents["velocity-figure"].payload)
+    assert isinstance(FigureElement.model_validate(views["second"]).figure, DocumentReference)
+    assert FigureElement.model_validate(views["inline"]).figure == velocity_summary_figure()
+    project.sweep = Sweep.model_validate({"rows": {"base": {}, "dark": {}}})
+    operations = _operations()
+    memo = ProjectPlanMemo()
+    base, dark = (RunKey(variant, "analyze", "default") for variant in ("base", "dark"))
+    initial = compile_project(project, operations=operations, source_runs=(base, dark), memo=memo)
+    assert not initial.diagnostics
+    keys = {ElementKey(row, view) for row in (base, dark) for view in views}
+    (request_id,) = {initial.elements[key].request_id for key in keys}
+    inline = deepcopy(project)
+    inline_views = inline.documents["velocity-analysis"].payload["views"]
+    for view in inline_views.values():
+        view["figure"] = deepcopy(inline_views["inline"]["figure"])
+    reference = compile_project(inline, operations=operations)
+    assert initial.requests[request_id] == reference.requests[request_id]
+    assert initial.documents == reference.documents
+
+    pinned = deepcopy(project)
+    document = pinned.documents["velocity-figure"]
+    raw = json.dumps(document.payload).encode()
+    document.payload = {"path": "../shared-figure.json", "sha256": sha256_bytes(raw)}
+    reads = []
+
+    def read_external(path):
+        reads.append(path)
+        return raw
+
+    pin_plan = compile_project(
+        pinned, operations=operations, source_runs=(base, dark),
+        readers=BaseReaders(external=read_external),
+    )
+    assert not pin_plan.diagnostics
+    assert pin_plan.requests == initial.requests and pin_plan.documents == initial.documents
+    assert reads == ["../shared-figure.json"]
+    pin_source = pin_plan.sources[dark]["/payload/views/second/figure/theme"]
+    assert (pin_source.kind, pin_source.name, pin_source.path) == ("document", "../shared-figure.json", "/theme")
+
+    project.sweep = Sweep.model_validate({"rows": {
+        "base": {}, "dark": {"patches": {"documents.velocity-figure.payload.theme": {"value": "plotly_dark"}}},
+    }})
+    revised = compile_project(project, operations=operations, source_runs=(base, dark), memo=memo)
+    assert not revised.diagnostics and revised.runs == initial.runs
+    assert revised == compile_project(project, operations=operations, source_runs=(base, dark))
+    changes = diff_analyze_elements(initial, revised)
+    assert {key: value for key, value in changes.items() if value.state != "unchanged"} == {
+        ElementKey(dark, view): ElementChange("changed", f"payload.views.{view}.figure.theme")
+        for view in ("profile", "second")
+    }
+    assert revised.requests[request_id] == initial.requests[request_id]
+    assert len({revised.elements[ElementKey(dark, view)].request_id for view in ("profile", "second")}) == 1
+    for view in ("profile", "second"):
+        source = revised.sources[dark][f"/payload/views/{view}/figure/theme"]
+        assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
+
+
+def test_refuses_named_figure_at_its_authored_field_and_keeps_inline_sibling():
+    project = _project()
+    operations = _operations()
+    figure = project.documents["velocity-figure"]
+    views = project.documents["velocity-analysis"].payload["views"]
+    views["inline"] = deepcopy(views["profile"])
+    views["inline"]["figure"] = deepcopy(figure.payload)
+    initial = compile_project(project, operations=operations)
+    assert not initial.diagnostics
+    figure.schema_id = "example.not-a-figure"
+    wrong_schema = compile_project(project, operations=operations)
+    (problem,) = wrong_schema.diagnostics
+    assert (problem.code, problem.document, problem.document_path, problem.path) == (
+        ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "schema", "payload.views.profile.figure",
+    )
+
+    figure.schema_id = "feedbax.figure_document.v1"
+    figure.payload["layers"][0].setdefault("style", {})["band_alpha"] = -1
+    malformed = compile_project(project, operations=operations)
+    (problem,) = malformed.diagnostics
+    assert (problem.code, problem.document, problem.document_path, problem.path, problem.element) == (
+        ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "payload.layers.0.style.band_alpha",
+        "payload.views.profile.figure.layers.0.style.band_alpha", "profile",
+    )
+    for refused in (wrong_schema, malformed):
+        assert set(refused.elements) == set(initial.elements) - {ElementKey(_KEY, "profile")}
+        assert all(refused.elements[key].request_id == initial.elements[key].request_id for key in refused.elements)
 
 
 def test_element_aliases_share_identity_and_refusals_name_the_authored_element():
