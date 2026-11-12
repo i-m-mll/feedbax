@@ -1040,6 +1040,30 @@ describe('graphStore recurrent connections', () => {
     );
   });
 
+  it('keeps a reconciled wire ID and assigns a fresh ID when duplicating both nodes', () => {
+    const { graph, uiState } = graphWithTwoNodes();
+    graph.wires[0].id = 'original-wire';
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+    const edge = useGraphStore.getState().edges.find((item) => item.type === 'routed')!;
+    expect(edge.data?.authoredWireId).toBe('original-wire');
+
+    useGraphStore.getState().onEdgesChange([{
+      type: 'replace',
+      id: edge.id,
+      item: { ...edge, data: { ...edge.data!, authoredWireId: 'reconciled-wire' } },
+    }]);
+    const reconciled = useGraphStore.getState().edges.find((item) => item.id === edge.id);
+    expect(reconciled?.data?.authoredWireId).toBe('reconciled-wire');
+
+    useGraphStore.getState().selectAll();
+    useGraphStore.getState().duplicateSelected();
+    const [original, duplicate] = activeCausalGraph().wires;
+    expect(original.id).toBe('reconciled-wire');
+    expect(duplicate.id).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(duplicate.id).not.toBe(original.id);
+    expect(duplicate).toMatchObject({ source_node: 'a2', target_node: 'b2' });
+  });
+
   it('rejects a new wire to an exposed root input', () => {
     const { uiState } = useGraphStore.getState();
     const graph = activeCausalGraph();
@@ -1077,6 +1101,8 @@ describe('graphStore recurrent connections', () => {
     expect(wire?.temporality).toBe('recurrent');
     expect(wire?.recurrent_initializer?.kind).toBe('zeros');
     expect(edge?.data?.temporality).toBe('recurrent');
+    expect(wire?.id).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(edge?.data?.authoredWireId).toBe(wire?.id);
   });
 });
 
@@ -1319,20 +1345,24 @@ describe('graphStore template insertion', () => {
     expect(Object.keys(state.graph.nodes)).toEqual(['source', 'input_mux', 'cell', 'readout']);
     expect(state.graph.nodes['Recurrent Controller']).toBeUndefined();
     expect(state.graph.nodes.cell.params._subgraph).toBeUndefined();
-    expect(activeCausalGraph().wires).toEqual([
+    const importedWires = activeCausalGraph().wires;
+    expect(importedWires).toEqual([
       {
+        id: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
         source_node: 'input_mux',
         source_port: 'output',
         target_node: 'cell',
         target_port: 'input',
       },
       {
+        id: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
         source_node: 'cell',
         source_port: 'output',
         target_node: 'readout',
         target_port: 'input',
       },
     ]);
+    expect(new Set(importedWires.map((wire) => wire.id)).size).toBe(importedWires.length);
     expect(state.graph.subgraphs?.cell?.nodes.inner.type).toBe('feedbax.Linear');
     expect(state.uiState.subgraph_states?.cell?.node_states.inner).toBeDefined();
     expect(state.uiState.node_states.input_mux.position).toEqual({ x: 200, y: 160 });

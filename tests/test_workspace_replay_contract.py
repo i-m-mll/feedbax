@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from feedbax.contracts.graph import GraphSpec, StudioArtifactRef, StudioSelectorRef
+from feedbax.contracts.graph import GraphSpec, StudioArtifactRef, StudioSelectorRef, WireSpec
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
@@ -100,6 +100,23 @@ def test_workspace_replay_compile_rejects_unresolved_representation_anchor() -> 
                 }
             ]
         )
+
+
+def test_workspace_replay_retains_recurrent_carry_with_stable_wire_id() -> None:
+    graph = _graph()
+    graph.wires = [
+        WireSpec(
+            id="carry", source_node="plant", source_port="effector",
+            target_node="plant", target_port="force", temporality="recurrent",
+            recurrent_initializer={"kind": "zeros", "shape": [2]},
+        ),
+    ]
+    endpoint = "edge:plant.effector->plant.force"
+    graph.retained_observables = compile_workspace_replay_retention([{
+        "anchor_id": "carry",
+        "selector": _selector("recurrent_carry", endpoint, target_id="carry"),
+    }])
+    assert lower_retention_plan(graph).by_selector[endpoint].selector.edge_id == endpoint
 
 
 def test_workspace_replay_product_records_trials_tracks_and_manifest_refs() -> None:

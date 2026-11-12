@@ -2079,6 +2079,7 @@ def _graph_structural_selector_targets(
                 origin=source_schema.origin,
                 source={
                     "wire_index": index,
+                    **({"wire_id": wire.id} if wire.id is not None else {}),
                     "source_node": wire.source_node,
                     "source_port": wire.source_port,
                     "target_node": wire.target_node,

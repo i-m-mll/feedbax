@@ -453,7 +453,8 @@ function schemaTargetSelectorRef(
     role = graphPortDirection === 'input' ? 'editable' : 'observed';
   } else if (target.kind === 'recurrent_carry' || target.kind === 'edge' || parsedEdge) {
     namespace = target.kind === 'recurrent_carry' ? 'recurrent_carry' : 'graph_edge';
-    targetId = stringValue(target.source.edge_id) ?? parsedEdge?.edgeId ?? targetId;
+    targetId = stringValue(target.source.wire_id) ?? stringValue(target.source.edge_id)
+      ?? parsedEdge?.edgeId ?? targetId;
     path = null;
   } else if (target.kind === 'graph_output' || graphOutput) {
     namespace = 'graph_output';

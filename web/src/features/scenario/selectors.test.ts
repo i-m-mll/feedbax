@@ -260,12 +260,15 @@ describe('scenario selector options', () => {
     const schema = schemaRegistry();
     const edge = schema.selector_targets.find((target) => target.kind === 'edge')!;
     edge.kind = 'recurrent_carry';
+    edge.source.wire_id = 'recurrent-wire';
 
     const options = selectorOptionsForRegistry({ registry: registry(), schemaRegistry: schema });
     const option = options.find((candidate) => candidate.schema_target_id === edge.id);
 
     expect(option?.selector.namespace).toBe('recurrent_carry');
     expect(option?.selector.compact).toBe(edge.selector);
+    expect(option?.selector.target_id).toBe('recurrent-wire');
+    expect(option?.selector.metadata.edge_id).toBe('decoder:readout->mechanics:force');
   });
 
   it('represents graph structural selector target kinds from provider schema', () => {

@@ -269,7 +269,7 @@ export function PropertiesPanel() {
         ? {
             namespace: temporality === 'recurrent' ? 'recurrent_carry' : 'graph_edge',
             compact: `edge:${selectedEdge.source}.${sourceHandle}->${selectedEdge.target}.${targetHandle}`,
-            target_id: selectedEdge.id,
+            target_id: edgeData?.authoredWireId ?? selectedEdge.id,
             path: null,
             role: 'observed',
             metadata: {
