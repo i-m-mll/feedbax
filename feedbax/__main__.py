@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 from pydantic import TypeAdapter
 
 from feedbax.bin import project_plan as project_plan_cli
+from feedbax.bin import store as store_cli
 from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
 from feedbax.contracts.checkpoint_initialization import CheckpointInitializationPlan
@@ -362,6 +363,9 @@ def build_parser() -> argparse.ArgumentParser:
     ))
     project_plan_cli.configure_status_parser(subparsers.add_parser(
         "status", prog="feedbax status", help="Show saved project run and element states.",
+    ))
+    store_cli.configure_parser(subparsers.add_parser(
+        "store", prog="feedbax store", help="Inspect the declared project Store.",
     ))
     describe_parser = subparsers.add_parser(
         "describe", prog="feedbax describe", help="Show authored schemas and registry declarations.",
@@ -746,6 +750,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return project_plan_cli.run(args)
     if args.command == "status":
         return project_plan_cli.run_status(args)
+    if args.command == "store":
+        return store_cli.run(args)
     if args.command == "migrate-content-store":
         if args.packet_v1:
             from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1

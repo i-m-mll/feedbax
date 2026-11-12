@@ -110,7 +110,7 @@ def _manifest_reference_key(kind: str, manifest_id: str) -> str:
 
 
 @contextmanager
-def _exclusive_store_lock(root: Path) -> Iterator[None]:
+def _exclusive_store_lock(root: Path, *, create: bool = True) -> Iterator[None]:
     lock_key = str(root)
     held = getattr(_store_lock_state, "held", {})
     if lock_key in held:
@@ -120,9 +120,11 @@ def _exclusive_store_lock(root: Path) -> Iterator[None]:
         finally:
             held[lock_key] -= 1
         return
-    root.mkdir(parents=True, exist_ok=True)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".content-store.lock"
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    flags = (os.O_RDWR | os.O_CREAT) if create else os.O_RDONLY
+    descriptor = os.open(lock_path, flags | os.O_NOFOLLOW, 0o600)
     try:
         lock_stat = os.fstat(descriptor)
         path_stat = os.stat(lock_path, follow_symlinks=False)
@@ -718,9 +720,9 @@ class ImmutableArtifactBlobProvider:
         )
         object.__setattr__(self, "root", _canonicalize_trusted_system_aliases(root_path))
 
-    def _exclusive_lock(self) -> AbstractContextManager[None]:
+    def _exclusive_lock(self, *, create: bool = True) -> AbstractContextManager[None]:
         """Return the one store lock shared by references and retention state."""
-        return _exclusive_store_lock(self.root)
+        return _exclusive_store_lock(self.root, create=create)
 
     @property
     def store_id(self) -> str:
