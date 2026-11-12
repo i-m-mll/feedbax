@@ -10,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
-from feedbax.contracts.base import ArtifactRef, ParentRef, Provenance
+from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
@@ -20,7 +20,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.request_refs import BatchSetMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -35,6 +35,7 @@ from feedbax.studio.canonical_evaluate import (
     RolloutParameters,
     decode_rollout_request,
     evaluation_manifest_id,
+    evaluation_subject_provenance,
     state_key,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
@@ -43,25 +44,32 @@ from feedbax.training_host_worker import _Events, _Result, _error
 
 def _bound_subject(
     request: BoundEvaluationJobInput,
-) -> tuple[BoundStudioTrainingJobInput, PublishedTrainingCheckpoint, dict]:
-    from feedbax.job_completion import verify_bound_training_completion
+) -> tuple[tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...], dict]:
+    from feedbax.job_completion import (
+        load_bound_checkpoint_selection,
+        read_host_completion_binding,
+        verify_bound_training_completion,
+    )
 
-    path = Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"])
-    raw = path.read_bytes()
-    if sha256(raw).hexdigest() != os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"]:
-        raise CompletionFileError("Host completion binding changed after assignment.")
-    (binding,) = strict_json_loads(raw)["bindings"]
+    subject = request.canonical_request.checkpoint
+    binding = read_host_completion_binding()
+    if isinstance(subject.select, BatchSetMember):
+        return load_bound_checkpoint_selection(
+            binding, root=request.manifest_root, producer_request=subject.request_id,
+            coordinates=subject.select.batches, project=request.project_id,
+        ), binding
     completion = binding["completion"]
     if (
         completion["project_id"] != request.project_id
-        or completion["request_id"] != request.canonical_request.checkpoint.request_id
+        or completion["request_id"] != subject.request_id
         or completion["manifest_root"] != str(request.manifest_root)
     ):
         raise CompletionFileError("Pinned completion differs from the authored Train subject.")
     source = verify_bound_training_completion(completion)
     if source.canonical_request is None:
         raise CompletionFileError("Pinned subject is missing its canonical Train request.")
-    return source, PublishedTrainingCheckpoint.model_validate(completion["checkpoint"]), completion
+    checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
+    return ((checkpoint, source),), binding
 
 
 def _rollouts(
@@ -291,6 +299,41 @@ def _rollouts(
     ), {"objective/total": float(np.mean(totals))}
 
 
+def _checkpoint_dataset(datasets):
+    """Concatenate singleton rollout datasets along their existing checkpoint axis."""
+    if len(datasets) == 1:
+        return datasets[0]
+    import numpy as np
+
+    from feedbax.dataset import Dataset, Variable
+
+    descriptors = [dataset.descriptor for dataset in datasets]
+    base = descriptors[0]
+    member_graphs = [descriptor.attrs.pop("effective_graph_sha256", None) for descriptor in descriptors]
+    if any(descriptor != base for descriptor in descriptors[1:]):
+        raise CannotRun("/inputs/subject/checkpoint", "selected checkpoints have different dataset layouts")
+
+    def join(name, field):
+        values = [dataset.data(name) for dataset in datasets]
+        if "checkpoint" in field.dims:
+            if any(value.dtype != values[0].dtype for value in values[1:]):
+                raise CannotRun("/inputs/subject/checkpoint", f"selected checkpoints differ in dtype for {name}")
+            array = np.concatenate(values, axis=field.dims.index("checkpoint"))
+        else:
+            if any(not np.array_equal(value, values[0]) for value in values[1:]):
+                raise CannotRun("/inputs/subject/checkpoint", f"selected checkpoints differ in coordinate {name}")
+            array = values[0]
+        return Variable(array, field.dims, units=field.units, quantity=field.quantity, frame=field.frame)
+
+    coords = {name: join(name, field) for name, field in base.coords.items()}
+    if any(graph is not None for graph in member_graphs):
+        coords["effective_graph_sha256"] = Variable(np.asarray(member_graphs), ("checkpoint",))
+    return Dataset.from_arrays(
+        {name: join(name, field) for name, field in base.variables.items()},
+        coords=coords, attrs=base.attrs, schema_id=base.schema_id,
+    )
+
+
 def main(argv: Sequence[str]) -> int:
     events = _Events(Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]))
     try:
@@ -309,34 +352,23 @@ def main(argv: Sequence[str]) -> int:
         if subject != request.canonical_request.checkpoint:
             raise ValueError("Launch subject differs from the canonical Evaluate request.")
         events.phase("restoring")
-        source, checkpoint, completion = _bound_subject(request)
+        members, binding = _bound_subject(request)
         events.phase("running")
-        result = _rollouts(source, checkpoint, params, stop)
-        if result is None or stop.exists():
-            return events.result(_Result("stopped"))
-        dataset, summary = result
+        datasets, summaries = [], []
+        for checkpoint, source in members:
+            result = _rollouts(source, checkpoint, params, stop)
+            if result is None or stop.exists():
+                return events.result(_Result("stopped"))
+            dataset, summary = result
+            datasets.append(dataset)
+            summaries.append(summary["objective/total"])
+        dataset = _checkpoint_dataset(datasets)
+        summary = {"objective/total": sum(summaries) / len(summaries)}
         events.phase("finalizing")
-        source_receipt = JobReceipt.model_validate(completion["receipt"])
-        train = ParentRef(
-            kind="TrainingRunManifest",
-            id=source_receipt.manifest_id,
-            role="subject",
-            metadata={"manifest_sha256": source_receipt.manifest_sha256},
-        )
-        pointer = checkpoint.pointer
-        model = ParentRef(
-            kind="TrainingCheckpointTransactionManifest",
-            id=pointer.transaction_id,
-            role="checkpoint",
-            metadata={
-                "manifest_sha256": pointer.manifest_sha256,
-                "completed_updates": checkpoint.completed_updates,
-                "producer_job_id": pointer.run_id,
-            },
-        )
+        train, provenance = evaluation_subject_provenance(binding)
         projection = EvaluationRunSpec(
-            evaluation_type=ROLLOUT_TYPE, training_run_ids=[train.id], inputs=[model],
-            params=spec.params,
+            evaluation_type=ROLLOUT_TYPE, training_run_ids=[parent.id for parent in train],
+            inputs=provenance.parents, params=spec.params,
         )
         with store._exclusive_lock():
             ref = publish_dataset(store, dataset)
@@ -346,8 +378,8 @@ def main(argv: Sequence[str]) -> int:
                 evaluation_spec=SpecPayload(
                     kind="EvaluationRunSpec", inline=projection.model_dump(mode="json"),
                 ),
-                input_training_runs=[train],
-                provenance=Provenance(parents=[model]),
+                input_training_runs=train,
+                provenance=provenance,
                 artifacts=[
                     ArtifactRef(
                         role="states", logical_name="states", sha256=ref.content.sha256,

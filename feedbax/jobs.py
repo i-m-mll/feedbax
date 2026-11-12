@@ -6,7 +6,7 @@ import os
 import sys
 from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
@@ -21,6 +21,7 @@ from feedbax._secure_fs import (
     open_existing_file,
     recheck_directory_chain,
 )
+from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import default_manifest_root
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -56,11 +57,11 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_plan import PlannedRun, ProjectPlan, RunKey
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import ProductRef, RequestId
+from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
+from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
-from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, finite_coordinates
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -118,6 +119,7 @@ class PlanJobAttempt:
     continues: str | None = None
     checkpoint_source: StudioTrainCheckpointSource | None = None
     output_size_bytes: int | None = None
+    checkpoint_sources: tuple[StudioTrainCheckpointSource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,7 @@ class PlanJobAttempts:
     by_request: Mapping[RequestId, tuple[PlanJobAttempt, ...]]
     plan_ref: AuthoredTrainPlanRef | None = None
     checkpoint_producers: frozenset[RequestId] = frozenset()
+    checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
 
 
 class JobService:
@@ -276,7 +279,7 @@ class JobService:
         }
         if checkpoint_catalog:
             if evaluate:
-                raise JobConflict("/inputs/subject/checkpoint: the candidate supports terminal last.")
+                raise JobConflict("/inputs/subject/checkpoint: checkpoint catalogue belongs to Train.")
             checkpoint_catalog = finite_coordinates(checkpoint_catalog)
             command["checkpoint_catalog"] = list(checkpoint_catalog)
         if previous := self._retry(token, project=project, continues=None, command=command):
@@ -286,10 +289,13 @@ class JobService:
         runs = {}
         checkpoints = {}
         names_by_key = {key: name for name, key in selected.items()}
+        freeze_catalogs = self._enable_evaluation_candidate and "train" in kinds
+        reviewed_catalogs = _planned_checkpoint_catalogs(reviewed.plan) if freeze_catalogs else {}
         with folders.admission_plan(project) as current:
             if current.store_path != reviewed.store_path:
                 raise JobConflict("The saved project's store changed since the reviewed Plan.")
             after = {run.key: run for run in current.plan.runs}
+            current_catalogs = _planned_checkpoint_catalogs(current.plan) if freeze_catalogs else {}
             store = ImmutableArtifactBlobProvider(current.store_path)
             for name, key in selected.items():
                 old, run = before.get(key), after.get(key)
@@ -349,6 +355,17 @@ class JobService:
                 except (ValueError, KeyError) as error:
                     items[name] = _rejected(name, str(error))
                     continue
+                catalog = checkpoint_catalog
+                requested = current_catalogs.get(run.request_id)
+                if requested != reviewed_catalogs.get(old.request_id):
+                    items[name] = _rejected(name, "/checkpoint_catalog: the reviewed publication demand changed.")
+                    continue
+                if requested:
+                    try:
+                        catalog = finite_coordinates(tuple(sorted(set(catalog) | requested)))
+                    except ValueError as error:
+                        items[name] = _rejected(name, f"/checkpoint_catalog: {error}")
+                        continue
                 if binding.checkpoint is not None:
                     planned = run.inputs.get("checkpoint")
                     if planned is None or planned.member.reference != binding.checkpoint:
@@ -358,7 +375,7 @@ class JobService:
                 runs[name] = data | {"request_id": run.request_id}
                 items[name] = self._training_item(
                     project, run.request_id, spec, data, current.store_path,
-                    canonical_request=binding, checkpoint_catalog=checkpoint_catalog,
+                    canonical_request=binding, checkpoint_catalog=catalog,
                 )
             order = list(selected)
             if checkpoints:
@@ -662,6 +679,11 @@ class JobService:
             if include_producers and job["request"].startswith("train:")
             and _is_checkpoint_producer(job, manifest_root)
         )
+        catalogs = {
+            job["request"]: tuple(job["launch"]["payload"].get("checkpoint_catalog", ()))
+            for job in by_id.values()
+            if producers[job["request"]] == 1 and _is_checkpoint_producer(job, manifest_root)
+        }
         for job in by_id.values():
             request_id = job["request"]
             if request_id not in wanted:
@@ -698,13 +720,15 @@ class JobService:
                     continues=job["continues"],
                     checkpoint_source=_train_checkpoint_source(job, by_id),
                     output_size_bytes=size,
+                    checkpoint_sources=_finite_checkpoint_sources(job) if evaluate and receipt is not None else (),
                 )
             )
         return PlanJobAttempts(
             snapshot["cursor"],
             MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
             plan_ref,
-            frozenset(request for request, count in producers.items() if count == 1),
+            frozenset(catalogs),
+            MappingProxyType(catalogs),
         )
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:
@@ -1028,32 +1052,66 @@ def _seen_key(job_id: str) -> str:
     return f"activity/seen/{job_id}"
 
 
+def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]:
+    catalogs = {}
+    for run in plan.runs:
+        planned = run.inputs.get("subject")
+        if planned is not None and isinstance(ref := planned.member.reference, ProductRef):
+            if isinstance(ref.select, BatchSetMember):
+                catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
+    return catalogs
+
+
 def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobReceipt, int] | None:
-    from feedbax.studio.canonical_evaluate import read_evaluation_manifest, states_ref
+    from feedbax.studio.canonical_evaluate import (
+        evaluation_subject_provenance, read_evaluation_manifest, states_ref,
+    )
 
     try:
         receipt = JobReceipt.model_validate((job.get("outcome") or {}).get("receipt"))
         manifest, subject = read_evaluation_manifest(store, job["id"], job["request"], receipt)
         (edge,) = (edge for edge in job["edges"] if edge.get("authenticated_completion"))
-        completion = edge["binding"]["completion"]
-        source = completion["receipt"]
-        (train,) = manifest.input_training_runs
-        (model,) = manifest.provenance.parents
-        pointer = completion["checkpoint"]["pointer"]
+        if not edge["satisfied"]:
+            return None
+        binding = edge["binding"]
+        if isinstance(subject.select, BatchSetMember):
+            selection = binding["checkpoint_selection"]
+            members = selection["members"]
+            if list(subject.select.batches) != selection["requested"] or list(subject.select.batches) != [
+                member["checkpoint"]["completed_updates"] for member in members
+            ]:
+                return None
+        else:
+            members = [binding["completion"]]
+        if any(
+            member["request_id"] != subject.request_id
+            or member["project_id"] != job["project"]
+            or member["manifest_root"] != str(store)
+            for member in members
+        ):
+            return None
+        train, provenance = evaluation_subject_provenance(binding)
         if (
-            not edge["satisfied"]
-            or completion["request_id"] != subject.request_id
-            or completion["project_id"] != job["project"]
-            or completion["manifest_root"] != str(store)
-            or (train.id, train.metadata.get("manifest_sha256"))
-            != (source["manifest_id"], source["manifest_sha256"])
-            or (model.id, model.metadata.get("manifest_sha256"))
-            != (pointer["transaction_id"], pointer["manifest_sha256"])
+            manifest.input_training_runs != train
+            or manifest.provenance.parents != provenance.parents
+            or manifest.provenance.metadata != provenance.metadata
         ):
             return None
         return receipt, states_ref(manifest).content.size
     except (OSError, TypeError, ValueError, KeyError):
         return None
+
+
+def _finite_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckpointSource, ...]:
+    return tuple(
+        StudioTrainCheckpointSource(
+            job_id=member["producer_job_id"], request_id=member["request_id"],
+            completed_updates=member["checkpoint"]["completed_updates"],
+        )
+        for edge in job["edges"]
+        if edge.get("authenticated_completion") and edge["satisfied"]
+        for member in edge["binding"].get("checkpoint_selection", {}).get("members", ())
+    )
 
 
 def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
@@ -1100,6 +1158,8 @@ def _train_checkpoint_source(
         if not (edge.get("authenticated_completion") and edge["satisfied"]):
             continue
         binding = edge["binding"]
+        if "completion" not in binding:
+            continue
         completion = binding["completion"]
         producer = by_id.get(completion["producer_job_id"])
         if (

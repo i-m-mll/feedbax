@@ -9,7 +9,7 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.host.checkpoint_selection import (
-    EVALUATION_ENTRYPOINT, finite_coordinates, selector_sha256, verify_selected_publication,
+    requested_batches, selector_sha256, verify_selected_publication,
 )
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
@@ -279,24 +279,25 @@ class Store:
                         completion and (edge["publication"] is not None or not allow_completion)
                     ):
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
-                if job["launch"].get("warm_entrypoint") == EVALUATION_ENTRYPOINT:
-                    try:
-                        selected = finite_coordinates(payload["coordinates"])
+                try:
+                    selected = requested_batches(job["request"], job["launch"])
+                    if selected is not None and not evaluate:
                         edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
                         if len(edges) != 1 or job["continues"] is not None:
                             raise ValueError("Private evaluation requires one exact producer edge.")
                         producer = self.get(aliases.get(edges[0]["job_id"], edges[0]["job_id"]))
                         source = json.loads(producer["launch"])["payload"] if producer is not None else {}
                         if (
-                            producer is None or producer["project"] != job["project"]
+                            producer is None or producer["id"] != payload["producer"]
+                            or producer["project"] != job["project"]
                             or producer["request"] != payload["producer_request"]
                             or source.get("manifest_root") != payload["manifest_root"]
                             or source.get("canonical_request") is None
                             or not set(selected) <= set(source.get("checkpoint_catalog", ()))
                         ):
                             raise ValueError("Private evaluation differs from its admitted Train catalogue.")
-                    except (ValueError, KeyError, TypeError) as exc:
-                        raise HostError("invalid_request", str(exc)) from exc
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
                 checkpoint_parent = None
                 if evaluate and (
@@ -324,6 +325,12 @@ class Store:
                         or source_payload.get("canonical_request") is None
                     ):
                         raise HostError("invalid_request", f"{input_path}: checkpoint edge differs from its canonical input.")
+                    if selected is not None and not set(selected) <= set(source_payload.get("checkpoint_catalog", ())):
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}/checkpoint: admitted Train catalogue omits requested batches",
+                        })
+                        continue
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
@@ -913,6 +920,7 @@ class Store:
         return None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",
+            **({"path": "/inputs/subject/checkpoint"} if coordinates is not None else {}),
         }, rejections
 
     def _record_completion_rejections(
@@ -952,10 +960,7 @@ class Store:
                     continue
                 anchor = edge["parent"]
                 launch = json.loads(job["launch"])
-                coordinates = (
-                    finite_coordinates(launch["payload"]["coordinates"])
-                    if launch.get("warm_entrypoint") == EVALUATION_ENTRYPOINT else None
-                )
+                coordinates = requested_batches(job["request"], launch)
                 key = anchor, coordinates
                 if key not in candidates:
                     candidates[key] = self._completion_candidate(anchor, coordinates)

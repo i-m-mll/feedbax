@@ -115,8 +115,9 @@ class StudioSavedTrainKey(StrictModel):
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
     receipt: JobReceipt
-    checkpoint_source: StudioTrainCheckpointSource
+    checkpoint_source: StudioTrainCheckpointSource | None
     size_bytes: int = Field(ge=0)
+    checkpoint_sources: list[StudioTrainCheckpointSource] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSavedEvaluationRow(StrictModel):
@@ -134,6 +135,7 @@ class StudioSavedEvaluationReplayRequest(StrictModel):
     key: StudioSavedTrainKey
     job_id: str
     trial: str
+    checkpoint: int | None = Field(default=None, ge=0)
 
 
 class StudioSavedTrainResult(StrictModel):

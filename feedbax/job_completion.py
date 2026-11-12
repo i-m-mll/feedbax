@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import os
 from pathlib import Path
 
 from feedbax.contracts.base import ParentRef
@@ -16,7 +17,9 @@ from feedbax.contracts.studio_training import (
     PublishedTrainingCheckpoint,
     StudioGraphMethodPayload,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.training import TrainingRunSpec
+from feedbax.host.checkpoint_selection import verify_dependency_files
 from feedbax.host.completion import CompletionFileError, completion_file
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
@@ -26,6 +29,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
     CheckpointReadScope,
     CheckpointWriteResult,
+    _checkpoint_latest_parent_ref,
     authenticate_checkpoint_custody_ref,
     checkpoint_slot_files,
     validate_checkpoint_run_contract,
@@ -251,3 +255,71 @@ def verify_bound_training_completion(
         raise
     except (ValueError, KeyError, OSError) as error:
         raise CompletionFileError(str(error)) from error
+
+def read_host_completion_binding() -> dict:
+    """Authenticate the single subject edge supplied to this worker delivery."""
+    path = Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"])
+    raw = path.read_bytes()
+    if sha256(raw).hexdigest() != os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"]:
+        raise CompletionFileError("Host completion binding changed after assignment.")
+    (binding,) = strict_json_loads(raw)["bindings"]
+    return binding
+
+
+def load_bound_checkpoint_selection(
+    binding: dict, *, root: Path, producer_request: str, coordinates: tuple[int, ...],
+    project: str | None = None,
+) -> tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...]:
+    """Open exactly the ordered checkpoint publications already bound by the Host."""
+    selection = binding["checkpoint_selection"]
+    if selection["requested"] != list(coordinates):
+        raise CompletionFileError("Host selection differs from the authored finite batch set.")
+    verify_dependency_files(binding)
+    pinned = []
+    for update, member in zip(coordinates, selection["members"], strict=True):
+        if (
+            member["request_id"] != producer_request
+            or member["manifest_root"] != str(root)
+            or (project is not None and member["project_id"] != project)
+        ):
+            raise CompletionFileError("/inputs: selected member is from a different Train request")
+        checkpoint = PublishedTrainingCheckpoint.model_validate(member["checkpoint"])
+        attempt = member["producer_job_id"]
+        if (
+            checkpoint.pointer.run_id != attempt
+            or checkpoint.completed_updates != update
+            or checkpoint.checkpoint_root != root / "checkpoints" / attempt
+            or checkpoint.pointer.completed_training_batches != update
+        ):
+            raise CompletionFileError("/inputs: selected checkpoint has a different attempt or batch")
+        launch = BoundStudioTrainingJobInput.model_validate_json(
+            _read_exact(root, training_binding_path(root, attempt), member["binding_sha256"]),
+        )
+        if (
+            launch.request_id != producer_request
+            or launch.project_id != member["project_id"]
+            or launch.manifest_root != root
+            or launch.canonical_request is None
+        ):
+            raise CompletionFileError("/inputs: selected checkpoint lacks its canonical Train binding")
+        verify_training_request_binding(launch)
+        custody = authenticate_checkpoint_custody_ref(
+            _checkpoint_latest_parent_ref(checkpoint.pointer),
+            allowed_root=checkpoint.checkpoint_root,
+        )
+        manifest = custody.manifest
+        if (
+            manifest.completed_training_batches != update
+            or manifest.barrier != "after_train_batch"
+            or manifest.completed_coordinate != checkpoint.pointer.completed_coordinate
+            or manifest.content_integrity_digest.transaction_root_sha256
+            != checkpoint.pointer.transaction_root_sha256
+        ):
+            raise CompletionFileError("/inputs: selected checkpoint differs from the verified transaction")
+        validate_checkpoint_run_contract(
+            manifest,
+            launch.spec,
+            launch.spec.worker_execution.effective_phase.phase_program,
+        )
+        pinned.append((checkpoint, launch))
+    return tuple(pinned)

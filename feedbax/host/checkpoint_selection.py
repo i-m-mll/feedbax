@@ -1,4 +1,4 @@
-"""Private finite checkpoint selection for the local evaluation qualification."""
+"""Exact finite checkpoint publications and lineage bindings for the local Host."""
 
 from __future__ import annotations
 
@@ -7,20 +7,28 @@ from hashlib import sha256
 import json
 from pathlib import PurePosixPath
 
+from feedbax.checkpoint_coordinates import cadence_coordinates, finite_coordinates
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 
 EVALUATION_ENTRYPOINT = "feedbax.training.private_evaluation:main"
 
 
-def finite_coordinates(values: Sequence[int]) -> tuple[int, ...]:
-    coordinates = tuple(values)
-    if (
-        not 0 < len(coordinates) <= 64
-        or any(type(value) is not int or value <= 0 for value in coordinates)
-        or len(set(coordinates)) != len(coordinates)
-    ):
-        raise ValueError("/coordinates: expected one to 64 distinct positive batch numbers")
-    return coordinates
+def requested_batches(request: str, launch: dict) -> tuple[int, ...] | None:
+    """Read the finite selector from the existing canonical or private input binding."""
+    payload = launch["payload"]
+    if launch.get("warm_entrypoint") == EVALUATION_ENTRYPOINT:
+        return finite_coordinates(payload["coordinates"])
+    if request.startswith("evaluate:"):
+        binding = payload.get("canonical_request") or {}
+        selector = (binding.get("checkpoint") or {}).get("select")
+        if isinstance(selector, dict) and selector.get("kind") == "batch_set":
+            coordinates = finite_coordinates(selector["batches"])
+            if (cadence := selector.get("cadence")) is not None and coordinates != cadence_coordinates(
+                cadence["every_k"], cadence["through"],
+            ):
+                raise ValueError("checkpoint batches differ from the bounded cadence")
+            return coordinates
+    return None
 
 
 def selector_sha256(anchor: str, coordinates: Sequence[int]) -> str:

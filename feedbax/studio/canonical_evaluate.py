@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import Field, ValidationError, field_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.base import StrictModel
+from feedbax.contracts.base import ParentRef, Provenance, StrictModel
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.graph import StudioManifestRef, StudioSelectorRef
 from feedbax.contracts.jobs import JobReceipt
@@ -22,7 +22,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BatchSetMember, ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.workspace_replay import (
@@ -100,9 +100,9 @@ def decode_rollout_request(
         not isinstance(subject, ProductRef)
         or subject.role != "checkpoint"
         or not subject.request_id.startswith("train:")
-        or not isinstance(subject.select, LastMember)
+        or not isinstance(subject.select, (LastMember, BatchSetMember))
     ):
-        raise CannotRun("/inputs/subject/checkpoint", "requires a Train checkpoint selected by last")
+        raise CannotRun("/inputs/subject/checkpoint", "requires a Train checkpoint selected by last or a complete batch set")
     try:
         params = RolloutParameters.model_validate(spec.params)
     except ValidationError as error:
@@ -122,6 +122,49 @@ def state_key(owner: str, symbol: str) -> str:
 
 def evaluation_manifest_id(job_id: str) -> str:
     return f"feedbax-evaluate-attempt:{job_id}"
+
+
+def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Provenance]:
+    """Project the exact Host edge into an Evaluate receipt without reselection."""
+    if selection := binding.get("checkpoint_selection"):
+        members = selection["members"]
+        metadata = {
+            "checkpoint_selection": {
+                "anchor": binding["dependency_job_id"],
+                **{key: selection[key] for key in ("requested", "selector_sha256", "lineage", "lineage_tip")},
+            },
+        }
+        train = []
+    else:
+        completion = binding["completion"]
+        members = [completion]
+        metadata = {}
+        receipt = JobReceipt.model_validate(completion["receipt"])
+        train = [ParentRef(
+            kind="TrainingRunManifest", id=receipt.manifest_id, role="subject",
+            metadata={"manifest_sha256": receipt.manifest_sha256},
+        )]
+    parents = []
+    for member in members:
+        checkpoint = member["checkpoint"]
+        point = checkpoint["pointer"]
+        attributes = {
+            "manifest_sha256": point["manifest_sha256"],
+            "completed_updates": checkpoint["completed_updates"],
+            "producer_job_id": point["run_id"],
+        }
+        if selection:
+            attributes.update({
+                "publication_cursor": member["publication_cursor"],
+                "binding_sha256": member["binding_sha256"],
+                "producer_request_id": member["request_id"],
+                "transaction_root_sha256": point["transaction_root_sha256"],
+            })
+        parents.append(ParentRef(
+            kind="TrainingCheckpointTransactionManifest", id=point["transaction_id"],
+            role="checkpoint", metadata=attributes,
+        ))
+    return train, Provenance(parents=parents, metadata=metadata)
 
 
 def read_evaluation_manifest(
@@ -199,13 +242,23 @@ class EvaluationResult:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset
 
-    def replay_trial(self, trial: str, *, anchor_id: str) -> WorkspaceReplayTrial:
+    def replay_trial(
+        self, trial: str, *, anchor_id: str, checkpoint: int | None = None,
+    ) -> WorkspaceReplayTrial:
         """Project the declared position selector into the existing Scene trial contract."""
         with self.open_states() as dataset:
             descriptor = dataset.descriptor
             name = descriptor.attrs["scene_position"]
-            axis = dataset.data("state_time")
-            values = dataset.select(name, labels={"trial": trial})[0, 0]
+            if checkpoint is None:
+                if descriptor.dimensions["checkpoint"] != 1:
+                    raise CannotRun("/checkpoint", "choose a retained checkpoint for replay")
+                axis = dataset.data("state_time")
+                values = dataset.select(name, labels={"trial": trial})[0, 0]
+            else:
+                if checkpoint not in dataset.data("checkpoint").tolist():
+                    raise CannotRun("/checkpoint", "the chosen checkpoint is absent from the retained set")
+                axis = dataset.data("state_time")
+                values = dataset.select(name, labels={"checkpoint": checkpoint, "trial": trial})[0]
             trials = dataset.data("trial").tolist()
         return WorkspaceReplayTrial(
             identity=WorkspaceReplayTrialIdentity(index=trials.index(trial), stable_id=trial),

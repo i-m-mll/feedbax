@@ -44,28 +44,7 @@ def _damaged_prng(checkpoint):
         path.write_bytes(original)
 
 
-def test_saved_train_finite_selection_and_private_evaluation(host, tmp_path, monkeypatch):
-    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    jobs = JobService(host, new_application_registry_bundle())
-    folders = ProjectFolderService(tmp_path / "projects")
-    snapshot = folders.new().snapshot
-    spec = _authored_run(batches=12, sampled_hold=True).spec
-    payload = TrainingRequestSpec(
-        graph=spec.graph.inline,
-        task=spec.task,
-        task_binding_spec=spec.task_binding_spec,
-        objective=spec.objective,
-        method_ref=spec.method_ref,
-        method_payload=spec.method_payload,
-        training_config=spec.training_config.model_copy(update={"snapshot_interval": 2}),
-    ).model_dump(mode="json", exclude_none=True)
-    snapshot = _saved_step(
-        folders, snapshot, "reaching", {"kind": "train", "base": {"inline": payload}}
-    )
-    reviewed = folders.read_plan(snapshot.project_id, revision=snapshot.revision)
-    key = RunKey("default", "reaching", "default")
-    host.policy(compute=1)
-
+def install_finite_gate(jobs, tmp_path, *, stop_at, resume_at):
     (tmp_path / "finite_gate.py").write_text("""
 import json
 import os
@@ -94,13 +73,13 @@ def main(argv):
 
         def on_commit(coordinate, completed, slots):
             commit(coordinate, completed, slots)
-            if source.get("resume") is None and completed == 5:
+            if source.get("resume") is None and completed == int(os.environ["FINITE_STOP_AT"]):
                 (root / "before-stop").touch()
                 wait(stop)
 
         def on_publish(write):
             published(write)
-            if source.get("resume") and write.latest_pointer.completed_training_batches == 6:
+            if source.get("resume") and write.latest_pointer.completed_training_batches == int(os.environ["FINITE_RESUME_AT"]):
                 (root / "resumed-interior").touch()
                 wait(root / "finish-train")
 
@@ -116,10 +95,36 @@ def main(argv):
         | {
             "JAX_PLATFORMS": "cpu",
             "FINITE_PROOF_ROOT": str(tmp_path),
+            "FINITE_STOP_AT": str(stop_at),
+            "FINITE_RESUME_AT": str(resume_at),
             "PYTHONPATH": f"{tmp_path}:{Path.cwd()}",
         },
         warm_entrypoint="finite_gate:main",
     )
+
+def test_saved_train_finite_selection_and_private_evaluation(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    jobs = JobService(host, new_application_registry_bundle())
+    folders = ProjectFolderService(tmp_path / "projects")
+    snapshot = folders.new().snapshot
+    spec = _authored_run(batches=12, sampled_hold=True).spec
+    payload = TrainingRequestSpec(
+        graph=spec.graph.inline,
+        task=spec.task,
+        task_binding_spec=spec.task_binding_spec,
+        objective=spec.objective,
+        method_ref=spec.method_ref,
+        method_payload=spec.method_payload,
+        training_config=spec.training_config.model_copy(update={"snapshot_interval": 2}),
+    ).model_dump(mode="json", exclude_none=True)
+    snapshot = _saved_step(
+        folders, snapshot, "reaching", {"kind": "train", "base": {"inline": payload}}
+    )
+    reviewed = folders.read_plan(snapshot.project_id, revision=snapshot.revision)
+    key = RunKey("default", "reaching", "default")
+    host.policy(compute=1)
+
+    install_finite_gate(jobs, tmp_path, stop_at=5, resume_at=6)
     submitted = jobs.admit_plan(
         folders,
         reviewed,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from hashlib import sha256
 from math import isfinite
 import os
 from pathlib import Path
@@ -12,10 +11,10 @@ from typing import Sequence
 
 from pydantic import model_validator
 
+from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.host.checkpoint_selection import finite_coordinates, verify_dependency_files
 
 
 class PrivateEvaluationRequest(StrictModel):
@@ -48,76 +47,16 @@ class PrivateEvaluationRequest(StrictModel):
 
 
 def _bound_selection(request: PrivateEvaluationRequest):
-    from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-    from feedbax.job_completion import _read_exact, training_binding_path
-    from feedbax.studio.canonical_train import (
-        BoundStudioTrainingJobInput,
-        verify_training_request_binding,
-    )
-    from feedbax.training.checkpoint_custody import (
-        _checkpoint_latest_parent_ref,
-        authenticate_checkpoint_custody_ref,
-        validate_checkpoint_run_contract,
-    )
+    from feedbax.job_completion import load_bound_checkpoint_selection, read_host_completion_binding
 
-    path = Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"])
-    raw = path.read_bytes()
-    if sha256(raw).hexdigest() != os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"]:
-        raise ValueError("/inputs: Host checkpoint selection changed after assignment")
-    (binding,) = strict_json_loads(raw)["bindings"]
-    selection = binding["checkpoint_selection"]
-    if (
-        binding["dependency_job_id"] != request.producer
-        or selection["requested"] != list(request.coordinates)
-        or len(selection["members"]) != len(request.coordinates)
-    ):
-        raise ValueError("/inputs: Host checkpoint selection differs from the authored finite set")
-    verify_dependency_files(binding)
-    pinned = []
-    for update, member in zip(request.coordinates, selection["members"], strict=True):
-        root = request.manifest_root
-        if member["request_id"] != request.producer_request or member["manifest_root"] != str(root):
-            raise ValueError("/inputs: selected member is from a different Train request")
-        checkpoint = PublishedTrainingCheckpoint.model_validate(member["checkpoint"])
-        attempt = member["producer_job_id"]
-        if (
-            checkpoint.pointer.run_id != attempt
-            or checkpoint.completed_updates != update
-            or checkpoint.checkpoint_root != root / "checkpoints" / attempt
-            or checkpoint.pointer.completed_training_batches != update
-        ):
-            raise ValueError("/inputs: selected checkpoint has a different attempt or batch")
-        launch = BoundStudioTrainingJobInput.model_validate_json(
-            _read_exact(root, training_binding_path(root, attempt), member["binding_sha256"]),
-        )
-        if (
-            launch.request_id != request.producer_request
-            or launch.project_id != member["project_id"]
-            or launch.manifest_root != root
-            or launch.canonical_request is None
-        ):
-            raise ValueError("/inputs: selected checkpoint lacks its canonical Train binding")
-        verify_training_request_binding(launch)
-        custody = authenticate_checkpoint_custody_ref(
-            _checkpoint_latest_parent_ref(checkpoint.pointer),
-            allowed_root=checkpoint.checkpoint_root,
-        )
-        manifest = custody.manifest
-        if (
-            manifest.completed_training_batches != update
-            or manifest.barrier != "after_train_batch"
-            or manifest.completed_coordinate != checkpoint.pointer.completed_coordinate
-            or manifest.content_integrity_digest.transaction_root_sha256
-            != checkpoint.pointer.transaction_root_sha256
-        ):
-            raise ValueError("/inputs: selected checkpoint differs from the verified transaction")
-        validate_checkpoint_run_contract(
-            manifest,
-            launch.spec,
-            launch.spec.worker_execution.effective_phase.phase_program,
-        )
-        pinned.append((checkpoint, launch))
-    return selection["lineage_tip"], pinned
+    binding = read_host_completion_binding()
+    if binding["dependency_job_id"] != request.producer:
+        raise ValueError("/inputs: Host selection differs from the authored producer")
+    pinned = load_bound_checkpoint_selection(
+        binding, root=request.manifest_root, producer_request=request.producer_request,
+        coordinates=request.coordinates,
+    )
+    return binding["checkpoint_selection"]["lineage_tip"], pinned
 
 
 def _evaluate(request: PrivateEvaluationRequest, checkpoint, launch):

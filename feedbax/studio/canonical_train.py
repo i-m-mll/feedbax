@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import Field, field_validator
 
+from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
 from feedbax.contracts.request_identity import decode_request
@@ -26,7 +27,6 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
 )
-from feedbax.host.checkpoint_selection import finite_coordinates
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.protocol import infer_task_n_steps
 

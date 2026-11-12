@@ -22,6 +22,8 @@ from feedbax.contracts.project_inputs import (
     BatchCheckpoint,
     BestCheckpoint,
     CheckpointRule,
+    CheckpointBatches,
+    CheckpointCadence,
     InputBinding,
     NamedSubset,
     OmittedReference,
@@ -54,6 +56,7 @@ from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMe
 from feedbax.contracts.request_refs import (
     BarrierMember,
     BatchMember,
+    BatchSetMember,
     BestMember,
     InputMember,
     LastMember,
@@ -165,6 +168,10 @@ def _checkpoint(rule: CheckpointRule | None) -> ProductSelector | None:
             return BestMember(metric=metric)
         case BatchCheckpoint(at=batch):
             return BatchMember(batch=batch)
+        case CheckpointBatches(batches=batches):
+            return BatchSetMember(batches=batches)
+        case CheckpointCadence():
+            return BatchSetMember(batches=rule.coordinates(), cadence=rule)
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
 
@@ -904,6 +911,12 @@ class _Compiler:
                 f"no plannable rows for {reference.step!r}",
                 name,
             )
+        selector = _checkpoint(reference.checkpoint)
+        if isinstance(selector, BatchSetMember) and role.name != "subject":
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
+                "finite checkpoint sets require an Evaluate subject", name,
+            )
         members = tuple(
             (
                 PlannedInput(
@@ -915,7 +928,7 @@ class _Compiler:
                         reference=ProductRef(
                             request_id=run.request_id,
                             role=role.product_role,
-                            select=_checkpoint(reference.checkpoint),
+                            select=selector,
                         ),
                     ),
                 ),
