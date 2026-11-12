@@ -127,6 +127,11 @@ class ProjectPlanRead:
             problems=[
                 *(StudioProjectWindowMapProblem.model_validate(problem, from_attributes=True)
                   for problem in plan.diagnostics),
+                *(StudioProjectWindowMapProblem(
+                    code="cannot_run", path=problem.path, detail=problem.detail,
+                    variant=run.key.variant, step=run.key.step, row=run.key.row,
+                    document=run.document_ids.get("payload.graph"),
+                ) for run in plan.runs if (problem := run.admission_problem) is not None),
                 *self.evaluation_problems,
             ],
             evaluations=list(self.evaluations.values()),
@@ -287,7 +292,10 @@ def _train_history(
                     settled, run, older, by_attempt[older.request_id, older.job_id]
                 )
             change = changes[key]
-        status, reason = saved_train_status(attempts, changed_path=change.path if change else None)
+        if (problem := run.admission_problem) is not None:
+            status, reason = JobStatus.CANNOT_RUN, problem.detail
+        else:
+            status, reason = saved_train_status(attempts, changed_path=change.path if change else None)
         history[run.key] = TrainRowHistory(status, reason, _result(current, by_attempt), older, change)
     return MappingProxyType(history)
 

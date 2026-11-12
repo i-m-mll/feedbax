@@ -459,7 +459,7 @@ export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newSte
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} applySelection={(change) => onSelectionChange(change(state))}
-    newStep={newStepCommand?.()} onProblems={onProblems} framed />;
+    newStep={plan.steps.length ? newStepCommand?.() : undefined} onProblems={onProblems} framed />;
 }
 
 function MapLine({
@@ -543,10 +543,9 @@ export function StudioPipelineMap({
     >
       {!plan.steps.length ? (
         firstStep && (
-          <button type="button" className={`${smallButton} m-4 inline-flex items-center gap-1.5`}
+          <button type="button" className={`${smallButton} m-4 grid h-11 w-[150px] shrink-0 place-items-center self-start border border-dashed border-slate-400`}
             {...commandAttributes(firstStep)} disabled={!firstStep.enabled} onClick={firstStep.invoke}>
             <Plus aria-hidden="true" className="h-4 w-4" />
-            {studioName('newStep')}
           </button>
         )
       ) : mode === 'line' ? (

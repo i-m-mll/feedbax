@@ -92,7 +92,7 @@ function canRetryOnReconnect(error: unknown) {
   return error instanceof ApiRequestError && (error.kind === 'network' || (error.status ?? 0) >= 500);
 }
 
-function containsCreatedFile(project: AuthoredProject, file: NamedFileCreation) {
+export function containsCreatedFile(project: AuthoredProject, file: NamedFileCreation) {
   const collection = file.kind === 'document' ? project.documents : project.steps;
   if (!collection || !Object.prototype.hasOwnProperty.call(collection, file.id)) return false;
   const actual = new Map(Object.entries(collection[file.id]));

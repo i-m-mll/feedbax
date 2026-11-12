@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { defaultTaskSpec } from '@/features/scenario/defaultTaskSpec';
 import type { LiveTrainingFrame } from '@/features/scenario/liveTraining';
 import type {
   LossTermSpec,
@@ -15,6 +16,7 @@ import type {
 import type { DomainDiagnostic } from '@/generated/studioContracts';
 import { LOSS_TERM_SPEC_SCHEMA_ID, LOSS_TERM_SPEC_SCHEMA_VERSION } from '@/types/training';
 
+export { defaultTaskSpec } from '@/features/scenario/defaultTaskSpec';
 export type TrajectorySnapshot = LiveTrainingFrame;
 
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
@@ -76,20 +78,6 @@ export const defaultTrainingSpec: TrainingSpec = {
   },
   n_batches: 1000,
   batch_size: 64,
-};
-
-export const defaultTaskSpec: TaskSpec = {
-  type: 'SimpleReaches',
-  params: {
-    n_steps: 200,
-    workspace: [
-      [-1.0, -1.0],
-      [1.0, 1.0],
-    ],
-    eval_n_directions: 7,
-    eval_reach_length: 0.5,
-    eval_grid_n: 1,
-  },
 };
 
 const MAX_LOSS_HISTORY = 2000;

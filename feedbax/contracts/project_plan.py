@@ -61,6 +61,7 @@ from feedbax.contracts.request_refs import (
     ProductSelector,
     RequestId,
 )
+from feedbax.contracts.request_specs import TrainingRequestSpec
 
 
 @dataclass(frozen=True)
@@ -96,11 +97,18 @@ class PlannedRow:
 
 
 @dataclass(frozen=True)
+class RunProblem:
+    path: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class PlannedRun(PlannedRow):
     request_id: RequestId
     inputs: Mapping[str, PlannedInput]
     omissions: Mapping[str, str]
     requires: tuple[str, ...]
+    admission_problem: RunProblem | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +264,7 @@ class _LoweredRow:
     request: EncodedRequest | None
     diagnostics: tuple[ProjectDiagnostic, ...]
     encoding_stamp: tuple[StepKind, str, bytes] | None = None
+    admission_problem: RunProblem | None = None
     document_ids: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -283,7 +292,12 @@ def _encode_row(
     except ValueError as error:
         problems = (("", str(error)),)
     else:
-        return _LoweredRow(encoded, (), encoding_stamp)
+        problem = (
+            RunProblem("/graph/nodes", "Model has no components.")
+            if isinstance(spec, TrainingRequestSpec) and not spec.graph.nodes
+            else None
+        )
+        return _LoweredRow(encoded, (), encoding_stamp, admission_problem=problem)
     return _LoweredRow(
         None,
         tuple(
@@ -777,6 +791,7 @@ class _Compiler:
                 MappingProxyType({role.name: chosen} if chosen else {}),
                 MappingProxyType(omissions),
                 template.requires,
+                admission_problem=lowered.admission_problem,
                 document_ids=lowered.document_ids,
             )
             self.rows[run_key] = run

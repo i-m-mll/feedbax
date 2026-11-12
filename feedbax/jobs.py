@@ -335,6 +335,9 @@ class JobService:
                     path = _changed_request_path(reviewed.plan, old.request_id, current.plan, run.request_id)
                     items[name] = _rejected(name, f"The selected Train request changed at {path}.")
                     continue
+                if problem := run.admission_problem:
+                    items[name] = _rejected(name, f"{problem.path}: {problem.detail}")
+                    continue
                 if run.requires:
                     items[name] = _rejected(name, "/requires: Train has unresolved capabilities.")
                     continue

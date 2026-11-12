@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import type { StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import type { StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -49,6 +49,100 @@ async function number(page: Page, target: Locator, value: string) {
 function post(page: Page, path: string) {
   return page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
+
+test('an empty saved project starts its first Train by keyboard and pointer', async ({ page, request }) => {
+  for (const input of ['keyboard', 'pointer'] as const) {
+    await test.step(input, async () => {
+      const { snapshot, projectPath } = await seedManagedProject(request, []);
+      expect(snapshot.project.steps ?? {}).toEqual({});
+      expect(snapshot.project.documents ?? {}).toEqual({});
+      await page.goto(`/?project=${snapshot.project_id}`);
+
+      const add = page.getByRole('button', { name: 'New Step', exact: true });
+      await expect(add).toBeEnabled();
+      await expect(add).toHaveText('');
+      if (input === 'keyboard') await activate(page, add);
+      else await add.click();
+      const chooser = page.getByRole('dialog', { name: 'New Step', exact: true });
+      const train = chooser.getByRole('button', { name: 'Train', exact: true });
+      await expect(chooser.getByRole('button')).toHaveCount(1);
+      await expect(train).toBeFocused();
+      const creation = page.waitForResponse((response) =>
+        response.request().method() === 'POST' && new URL(response.url()).pathname === `${projectPath}/files` &&
+        response.request().postDataJSON().file.kind === 'step');
+      if (input === 'keyboard') await page.keyboard.press('Enter');
+      else await train.click();
+      const created = await creation;
+      expect(created.status(), await created.text()).toBe(201);
+      const { snapshot: saved } = await created.json() as StudioProjectDocument;
+      expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
+      expect(saved.project.steps?.train).toMatchObject({
+        kind: 'train', base: { inline: { graph: { document: 'model' }, task: { document: 'task' } } },
+      });
+      expect(saved.project.documents).toMatchObject({
+        model: { schema: 'feedbax.spec.graph', payload: { nodes: {}, wires: [] } },
+        task: { schema: 'feedbax.spec.task', payload: { type: 'SimpleReaches', params: { n_steps: 200 } } },
+      });
+
+      const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+      await expect(chooser).toBeHidden();
+      await expect(model).toBeFocused();
+      await expect(model.locator('.react-flow')).toBeVisible();
+      await expect(model.locator('.react-flow__node')).toHaveCount(0);
+      await expect(model.getByRole('combobox', { name: 'Edit Model' }).locator('option:checked')).toHaveText('model');
+      const card = page.getByRole('article', { name: 'Train train', exact: true });
+      await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
+
+      async function readPlan(revision: string) {
+        const response = await request.get(`${projectPath}/train-runs?revision=${revision}&window_map=true`);
+        expect(response.ok(), await response.text()).toBe(true);
+        return await response.json() as StudioSavedTrainRuns;
+      }
+      const plan = await readPlan(saved.revision);
+      expect(plan.rows).toHaveLength(1);
+      const [run] = plan.rows;
+      expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
+      expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
+      expect(plan.window_map?.problems).toMatchObject([{ path: '/graph/nodes', document: 'model' }]);
+      if (input === 'pointer') {
+        const refused = await request.post(`${projectPath}/train-runs`, {
+          data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
+        });
+        expect(refused.status(), await refused.text()).toBe(202);
+        expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
+          { disposition: 'rejected', reason: '/graph/nodes: Model has no components.' },
+        ]);
+      }
+
+      const tab = (name: string) => page.getByRole('tab', { name, exact: true });
+      await tab('Training').click();
+      await expect(page.getByRole('spinbutton', { name: 'Edit N Batches', exact: true })).toBeEnabled();
+      await tab('Task').click();
+      const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+      const reach = task.getByRole('spinbutton', { name: 'Edit Eval Reach Length', exact: true });
+      await expect(reach).toHaveValue('0.5');
+      await expect(task.getByRole('alert')).toHaveCount(0);
+      const edit = page.waitForResponse((response) =>
+        response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+      await enter(reach, '0.6');
+      const edited = await edit;
+      expect(edited.ok(), await edited.text()).toBe(true);
+      const current = await edited.json() as StudioProjectSnapshot;
+      await tab('Model').click();
+
+      await page.reload();
+      await expect(model.locator('.react-flow')).toBeVisible();
+      await expect(model.getByRole('combobox', { name: 'Edit Model' }).locator('option:checked')).toHaveText('model');
+      await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
+      const persisted = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+      expect(persisted).toMatchObject({ revision: current.revision, project: current.project });
+      expect(persisted.project.documents?.task).toMatchObject({ payload: { params: { eval_reach_length: 0.6 } } });
+      const reopened = await readPlan(persisted.revision);
+      expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
+      expect(reopened.window_map?.problems).toMatchObject([{ path: '/graph/nodes', document: 'model' }]);
+    });
+  }
+});
 
 test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }) => {
   const [model, task, train, successor] = await fixture('files');

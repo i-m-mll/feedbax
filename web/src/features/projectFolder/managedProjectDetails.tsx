@@ -459,9 +459,9 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     model: {
       documentId: model?.id,
       header: detailHeader(model),
-      body: graph && components.length ? <ReactFlowProvider key={JSON.stringify([saved.project_id, model?.id ?? stepId])}>
+      body: graph ? <ReactFlowProvider key={JSON.stringify([saved.project_id, model?.id ?? stepId])}>
         <ModelCanvas graph={graph} positions={positions} {...modelSelection} />
-      </ReactFlowProvider> : <DetailReason reason={graph ? 'unavailable' : 'definitionUnavailable'} name={graph ? 'components' : 'model'} />,
+      </ReactFlowProvider> : <DetailReason reason="definitionUnavailable" name="model" />,
       drawer: graph && (components.length > 0 || (graph.wires?.length ?? 0) > 0) ? <>
         <DetailList name="components" items={components.map(([id]) => ({ id: `component:${id}`, label: id }))} {...modelSelection} />
         <DetailList name="wires" items={(graph.wires ?? []).map((item, index) => ({
