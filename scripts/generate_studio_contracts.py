@@ -241,6 +241,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRow,
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
+    StudioTrainCheckpointSource,
     StudioRunSelection,
     StudioSubmissionItem,
 )
@@ -369,6 +370,7 @@ JOB_MODELS = (
     StudioSavedTrainRow,
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
+    StudioTrainCheckpointSource,
     StudioLocalSession,
     StudioPreviewIssue,
     StudioPreviewRow,

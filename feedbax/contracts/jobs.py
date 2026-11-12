@@ -88,12 +88,20 @@ class JobReceipt(StrictModel):
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class StudioTrainCheckpointSource(StrictModel):
+    job_id: str
+    request_id: str
+    completed_updates: int = Field(ge=0)
+
+
 class StudioSavedTrainAttempt(StrictModel):
     job_id: str
     status: JobStatus
     reason: str | None
     progress: JobProgress | None
     successful_receipt: JobReceipt | None
+    continues: str | None
+    checkpoint_source: StudioTrainCheckpointSource | None
 
 
 class StudioSavedTrainKey(StrictModel):

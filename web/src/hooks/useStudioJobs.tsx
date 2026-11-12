@@ -40,9 +40,10 @@ function useStudioJobsContext() {
   return context;
 }
 
-export function StudioJobsProvider({ children }: PropsWithChildren) {
+export function StudioJobsProvider({ children, folderProjectId }: PropsWithChildren<{ folderProjectId: string | null }>) {
   const cache = useQueryClient();
-  const projectId = useGraphStore((state) => state.graphId);
+  const graphId = useGraphStore((state) => state.graphId);
+  const projectId = folderProjectId || graphId;
   // The window owns replay. Closing its last inspector must not cancel it.
   useQuery<StudioJobEvent[]>({
     queryKey: historyKey(projectId),

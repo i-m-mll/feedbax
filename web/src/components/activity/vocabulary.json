@@ -45,6 +45,10 @@
     "logarithmic": "Logarithmic",
     "loop": "Loop",
     "loss": "Loss",
+    "cumulativeUpdates": "Cumulative updates",
+    "checkpoint": "Checkpoint",
+    "trainStages": "Train stages",
+    "results": "Results",
     "machine": "Machine",
     "madeFrom": "Made From",
     "members": "Members",
@@ -173,7 +177,8 @@
     "ofCount": "{count} of {total}",
     "lastLossAtUpdate": "Last loss at update {end}",
     "lossIntervalDescription": "Interval mean loss with minimum and maximum bars",
-    "lossInterval": "Updates {start}–{end} ({count} samples), {min}–{max}"
+    "lossInterval": "Updates {start}–{end} ({count} samples), {min}–{max}",
+    "lossStageSample": "{stage} · Local updates {start}–{end} · Attempt {attempt}"
   },
   "step": {
     "train": { "glyph": "flask", "tint": "#c4b5fd" },

@@ -43,6 +43,7 @@ from feedbax.contracts.jobs import (
     StudioRunPreview,
     StudioRunPreviewRequest,
     StudioSubmissionItem,
+    StudioTrainCheckpointSource,
 )
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
@@ -108,6 +109,8 @@ class PlanJobAttempt:
     reason: str | None
     successful_receipt: JobReceipt | None
     binding_sha256: str | None = None
+    continues: str | None = None
+    checkpoint_source: StudioTrainCheckpointSource | None = None
 
 
 @dataclass(frozen=True)
@@ -495,9 +498,13 @@ class JobService:
                 wanted.add(row["request_id"])
                 wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
         attempts: dict[RequestId, list[PlanJobAttempt]] = {}
-        for job in snapshot["jobs"]:
+        by_id = {
+            job["id"]: job for job in snapshot["jobs"]
+            if job["data"].get("manifest_root") == manifest_root
+        }
+        for job in by_id.values():
             request_id = job["request"]
-            if request_id not in wanted or job["data"].get("manifest_root") != manifest_root:
+            if request_id not in wanted:
                 continue
             succeeded = job["state"] == "succeeded"
             receipt = _verified_training_receipt(job, store) if succeeded else None
@@ -520,6 +527,8 @@ class JobService:
                 PlanJobAttempt(
                     job["id"], status, (job.get("phase") or {}).get("phase"),
                     progress, reason, receipt, binding_sha256,
+                    continues=job["continues"],
+                    checkpoint_source=_train_checkpoint_source(job, by_id),
                 )
             )
         return PlanJobAttempts(
@@ -850,6 +859,31 @@ def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt |
             return receipt
     except (OSError, ValueError):
         return None
+    return None
+
+
+def _train_checkpoint_source(
+    job: dict[str, Any], by_id: Mapping[str, dict[str, Any]]
+) -> StudioTrainCheckpointSource | None:
+    """Project the producer completion pinned to this attempt, including copied Resume edges."""
+    for edge in job["edges"]:
+        if not (edge.get("authenticated_completion") and edge["satisfied"]):
+            continue
+        binding = edge["binding"]
+        completion = binding["completion"]
+        producer = by_id.get(completion["producer_job_id"])
+        if (
+            producer is not None
+            and producer["state"] == "succeeded"
+            and producer["project"] == completion["project_id"] == job["project"]
+            and producer["request"] == completion["request_id"]
+            and producer["data"]["manifest_root"] == completion["manifest_root"]
+            and producer["outcome"]["completion"] == completion
+        ):
+            return StudioTrainCheckpointSource(
+                job_id=producer["id"], request_id=producer["request"],
+                completed_updates=completion["checkpoint"]["completed_updates"],
+            )
     return None
 
 

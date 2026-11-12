@@ -9,6 +9,7 @@ import './index.css';
 import '@xyflow/react/dist/style.css';
 
 const queryClient = new QueryClient();
+const folderProjectId = new URLSearchParams(window.location.search).get('project');
 
 if (import.meta.env.VITE_FEEDBAX_E2E === '1') {
   void import('./test/e2eHarness').then(({ installE2EHarness }) => installE2EHarness());
@@ -18,9 +19,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <StudioErrorBoundary region="Studio">
       <QueryClientProvider client={queryClient}>
-        <StudioJobsProvider>
+        <StudioJobsProvider folderProjectId={folderProjectId}>
           <ReactFlowProvider>
-            <App />
+            <App projectId={folderProjectId} />
           </ReactFlowProvider>
         </StudioJobsProvider>
       </QueryClientProvider>

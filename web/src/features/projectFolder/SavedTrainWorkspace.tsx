@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
+import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { emptyPipelineSelection, selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
@@ -27,7 +28,7 @@ function runView(row: SavedRow): PlanRunView {
   };
 }
 
-function TrainResults({ row }: { row: SavedRow }) {
+function TrainReceipts({ row }: { row: SavedRow }) {
   const results = [
     ...(row.result ? [{ label: 'Current result', result: row.result }] : []),
     ...(row.previous ? [{ label: 'Previous result', result: row.previous }] : []),
@@ -124,8 +125,9 @@ function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
       {commandError && <p role="alert">{commandError}</p>}
       {step && (
         <SavedTrainStep
-          key={`${step.id}:${data?.revision}`} editor={editor}
+          key={`${step.id}:${data?.revision}`} editor={editor} project={saved.project_id}
           step={step} rows={rows} view={view} revision={data?.revision}
+          planRows={data?.rows ?? []}
           ready={data?.revision === saved.revision && !pending && !outside}
           reportError={setCommandError}
         />
@@ -134,10 +136,12 @@ function SavedProjectTrain({ editor }: { editor: ProjectEditController }) {
   );
 }
 
-function SavedTrainStep({ editor, step, rows, view, revision, ready, reportError }: {
+function SavedTrainStep({ editor, project, step, rows, planRows, view, revision, ready, reportError }: {
   editor: ProjectEditController;
+  project: string;
   step: PlanStepView;
   rows: SavedRow[];
+  planRows: SavedRow[];
   view: PlanView;
   revision: string | undefined;
   ready: boolean;
@@ -149,6 +153,7 @@ function SavedTrainStep({ editor, step, rows, view, revision, ready, reportError
   const jobs = useStudioJobActions();
   const selected = selectedRuns(step, selection.selection);
   const focusedRow = selected.length === 1 ? rows.find((row) => rowId(row) === selected[0].id) : undefined;
+  const attempt = focusedRow?.attempts.at(-1);
 
   async function run(selected: PipelineSelection) {
     if (busy || !ready || !revision) return;
@@ -183,7 +188,12 @@ function SavedTrainStep({ editor, step, rows, view, revision, ready, reportError
         definition={<StudioTrainAuthoringForm editor={editor} stepId={step.id} />}
         commands={[{ name: 'run', enabled: ready && !busy, perform: run }]}
       />
-      {ready && focusedRow && <TrainResults key={rowId(focusedRow)} row={focusedRow} />}
+      {ready && focusedRow && (
+        <>
+          {attempt && <StudioTrainResults project={project} rows={planRows} row={focusedRow} attempt={attempt} />}
+          <TrainReceipts key={rowId(focusedRow)} row={focusedRow} />
+        </>
+      )}
     </>
   );
 }

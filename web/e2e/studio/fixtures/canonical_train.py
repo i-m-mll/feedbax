@@ -57,18 +57,24 @@ def authored_files():
             "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
             "deltas": [{
                 "layer_id": "initialize",
-                "patches": [{
-                    "path": "method_payload.payload.checkpoint_initialization",
-                    "op": "add",
-                    "value": "initialize_from",
-                }],
+                "patches": [
+                    {
+                        "path": "method_payload.payload.checkpoint_initialization",
+                        "op": "add",
+                        "value": "initialize_from",
+                    },
+                    {"path": "method_payload.payload.target_total", "value": 1200},
+                    {"path": "training_config.n_batches", "value": 1200},
+                ],
             }],
         }},
     ])
     return files
 
 
-def observe(home: Path, project: str, revision: str, attempt: str, successor_attempt: str):
+def observe(
+    home: Path, project: str, revision: str, attempt: str, stopped_attempt: str, successor_attempt: str,
+):
     paths = AppPaths.resolve(instance_root=home)
     folders = ProjectFolderService(paths.web / "projects")
     host = HostClient(paths.host)
@@ -81,7 +87,7 @@ def observe(home: Path, project: str, revision: str, attempt: str, successor_att
     assert not plan.diagnostics
     snapshot = host.jobs_snapshot(project=project, include_launch=True, start_host=False)
     jobs = {job["id"]: job for job in snapshot["jobs"]}
-    assert set(jobs) == {attempt, successor_attempt}
+    assert set(jobs) == {attempt, stopped_attempt, successor_attempt}
     job = jobs[attempt]
     assert (job["id"], job["request"], job["delivery"]) == (attempt, rows[train].request_id, 1)
     launch = BoundStudioTrainingJobInput.model_validate(job["launch"]["payload"])
@@ -107,20 +113,26 @@ def observe(home: Path, project: str, revision: str, attempt: str, successor_att
     assert checkpoint.reference.request_id == launch.request_id
     child_job = jobs[successor_attempt]
     assert child_job["request"] == child.request_id
+    stopped = jobs[stopped_attempt]
+    assert (stopped["state"], child_job["continues"]) == ("stopped", stopped_attempt)
+    assert child_job["launch"]["payload"]["resume"] == stopped["checkpoint"]
     (edge,) = child_job["edges"]
     assert edge["satisfied"] and edge["authenticated_completion"]
     assert edge["binding"] == {"dependency_job_id": attempt, "completion": completion}
+    assert stopped["edges"] == child_job["edges"]
     child_completion = child_job["outcome"]["completion"]
     verify_bound_training_completion(child_completion)
     assert child_completion["producer_job_id"] == successor_attempt
     assert child_completion["request_id"] == child.request_id
-    (joined_child,) = view.attempts_by_run[successor]
+    joined_stopped, joined_child = view.attempts_by_run[successor]
     assert joined_child.job_id == successor_attempt
+    assert joined_stopped.job_id == stopped_attempt
+    assert joined_child.checkpoint_source == joined_stopped.checkpoint_source
     assert joined_child.successful_receipt.model_dump(mode="json") == child_completion["receipt"]
     assert view.history[successor].result.receipt == joined_child.successful_receipt
 
     child_manifest = load_manifest(canonical_manifest_path(
-        "TrainingRunManifest", child_completion["receipt"]["manifest_id"], root=view.settled.store_path,
+        "TrainingRunManifest", stopped["outcome"]["receipt"]["manifest_id"], root=view.settled.store_path,
     ))
     initialization = child_manifest.provenance.metadata["checkpoint_initialization"]
     pointer = completion["checkpoint"]["pointer"]
@@ -138,6 +150,13 @@ def observe(home: Path, project: str, revision: str, attempt: str, successor_att
             plan_run_key(key.variant, key.step, key.row): row.request_id for key, row in rows.items()
         },
     }
+    terminal_loss = next(
+        event["data"]["metric_interval"]
+        for event in reversed(host.events(projects=(project,), limit=1024)["events"])
+        if event["job_id"] == successor_attempt
+        and event["kind"] == "progress"
+        and "metric_interval" in event["data"]
+    )
     return {
         "project": project, "revision": revision, "semantic_root": view.settled.semantic_root,
         "request": launch.request_id, "attempt": attempt, "delivery": job["delivery"],
@@ -149,6 +168,8 @@ def observe(home: Path, project: str, revision: str, attempt: str, successor_att
             "completion_updates": child_completion["checkpoint"]["completed_updates"],
             "receipt": child_completion["receipt"], "joined_status": joined_child.status,
             "initialization": initialization,
+            "resumed_from": stopped["checkpoint"]["completed_updates"],
+            "terminal_loss": terminal_loss,
         },
         "admitted_plan": admitted_plan,
         "checkpoint_input": checkpoint.reference.model_dump(mode="json"),
@@ -195,8 +216,8 @@ if __name__ == "__main__":
     elif action == "history-files" and not arguments:
         print(json.dumps(history_files()))
     elif action == "observe":
-        home, project, revision, attempt, successor_attempt = arguments
-        print(json.dumps(observe(Path(home), project, revision, attempt, successor_attempt)))
+        home, project, revision, attempt, stopped_attempt, successor_attempt = arguments
+        print(json.dumps(observe(Path(home), project, revision, attempt, stopped_attempt, successor_attempt)))
     elif action == "observe-history":
         home, project, revision = arguments
         print(json.dumps(observe_history(Path(home), project, revision)))

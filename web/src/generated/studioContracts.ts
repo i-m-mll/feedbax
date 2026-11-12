@@ -124,6 +124,8 @@ export interface StudioSavedTrainAttempt {
   reason: string | null;
   progress: JobProgress | null;
   successful_receipt: JobReceipt | null;
+  continues: string | null;
+  checkpoint_source: StudioTrainCheckpointSource | null;
 }
 
 export interface StudioSavedTrainChange {
@@ -166,6 +168,12 @@ export interface StudioSavedTrainRunRequest {
 export interface StudioSavedTrainRuns {
   revision: string;
   rows: StudioSavedTrainRow[];
+}
+
+export interface StudioTrainCheckpointSource {
+  job_id: string;
+  request_id: string;
+  completed_updates: number;
 }
 
 export interface StudioLocalSession {
@@ -3024,6 +3032,8 @@ export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> =
       "reason": z.string().nullable(),
       "progress": JobProgressSchema.nullable(),
       "successful_receipt": JobReceiptSchema.nullable(),
+      "continues": z.string().nullable(),
+      "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainAttempt>;
@@ -3093,6 +3103,16 @@ export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.laz
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRuns>;
+
+export const StudioTrainCheckpointSourceSchema: z.ZodType<StudioTrainCheckpointSource> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "request_id": z.string(),
+      "completed_updates": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioTrainCheckpointSource>;
 
 export const StudioLocalSessionSchema: z.ZodType<StudioLocalSession> = z.lazy(() =>
   z
@@ -7294,6 +7314,7 @@ export const contractSchemas = {
   StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
+  StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioPreviewIssue: StudioPreviewIssueSchema,
   StudioPreviewRow: StudioPreviewRowSchema,
@@ -7394,6 +7415,7 @@ export interface ContractTypeMap {
   StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedTrainRuns: StudioSavedTrainRuns;
+  StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioPreviewIssue: StudioPreviewIssue;
   StudioPreviewRow: StudioPreviewRow;

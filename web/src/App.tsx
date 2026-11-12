@@ -23,8 +23,7 @@ import {
 const PROJECT_CHANNEL_NAME = 'feedbax:studio-project-presence';
 const SavedTrainWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
-export default function App() {
-  const projectId = new URLSearchParams(window.location.search).get('project');
+export default function App({ projectId }: { projectId: string | null }) {
   return projectId ? (
     <Suspense fallback={<main aria-busy="true" />}>
       <SavedTrainWorkspace projectId={projectId} />
