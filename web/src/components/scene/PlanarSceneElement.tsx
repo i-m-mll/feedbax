@@ -1,6 +1,5 @@
 import type { SVGProps } from 'react';
 import type { ResolvedSceneElement } from '@/features/scenario/projections';
-import { semanticTokens } from '@/components/ui/semanticTokens';
 import type { ScenePoint } from './planarProjection';
 
 export function PlanarSceneElement({
@@ -16,8 +15,9 @@ export function PlanarSceneElement({
   scale: number;
   interaction: SVGProps<SVGGElement>;
 }) {
-  const stroke = active ? '#0f766e' : '#64748b';
-  const fill = active ? '#ccfbf1' : '#f8fafc';
+  const stroke = active ? 'var(--text-primary)' : 'var(--studio-scene-outline)';
+  const fill = active ? 'var(--studio-shell-selection)' : 'var(--surface-main)';
+  const feature = active ? stroke : 'var(--studio-scene-feature)';
   const markerRadius = element.scale_invariant ? 7 : Math.max(4, Math.min(18, scale * 0.02));
 
   if (element.geometry.kind === 'bounds') {
@@ -30,9 +30,9 @@ export function PlanarSceneElement({
           y={Math.min(y0, y1)}
           width={Math.abs(x1 - x0)}
           height={Math.abs(y1 - y0)}
-          fill={active ? '#dcfce7' : '#f0fdf4'}
-          stroke={active ? '#16a34a' : '#86efac'}
-          strokeWidth={1.5}
+          fill={active ? fill : 'var(--surface-toolbar)'}
+          stroke={stroke}
+          strokeWidth={active ? 2.5 : 1.5}
           vectorEffect="non-scaling-stroke"
         />
       </g>
@@ -47,7 +47,7 @@ export function PlanarSceneElement({
         <polyline
           points={points}
           fill="none"
-          stroke={active ? '#b45309' : stroke}
+          stroke={stroke}
           strokeWidth={active ? 8 : 6}
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -61,8 +61,8 @@ export function PlanarSceneElement({
               cx={x}
               cy={y}
               r={index === geometry.points.length - 1 ? markerRadius : 4.5}
-              fill={index === geometry.points.length - 1 ? '#475569' : '#ffffff'}
-              stroke={active ? '#92400e' : '#64748b'}
+              fill={index === geometry.points.length - 1 ? stroke : 'var(--surface-main)'}
+              stroke={stroke}
               strokeWidth={1.5}
               vectorEffect="non-scaling-stroke"
             />
@@ -88,7 +88,7 @@ export function PlanarSceneElement({
                     cy={y}
                     r={markerRadius + 3}
                     fill="none"
-                    stroke={active ? '#059669' : '#34d399'}
+                    stroke={feature}
                     strokeWidth={1.5}
                     vectorEffect="non-scaling-stroke"
                   />
@@ -96,7 +96,7 @@ export function PlanarSceneElement({
                     cx={x}
                     cy={y}
                     r={markerRadius * 0.45}
-                    fill={active ? '#059669' : '#a7f3d0'}
+                    fill={feature}
                   />
                 </>
               ) : (
@@ -127,7 +127,7 @@ export function PlanarSceneElement({
           y1={points[0][1]}
           x2={points[1][0]}
           y2={points[1][1]}
-          stroke={active ? semanticTokens.objective.strongStroke : semanticTokens.objective.stroke}
+          stroke={feature}
           strokeWidth={active ? 3 : 2.25}
           strokeDasharray="6 5"
           opacity={active ? 0.95 : 0.72}

@@ -8,7 +8,7 @@ import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
-import { StudioRuns } from '@/components/pipeline/StudioRuns';
+import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
@@ -84,7 +84,7 @@ function TrainReceipts({ row }: { row: SavedRow }) {
   ];
   if (!results.length) return null;
   return (
-    <details className="mt-3 rounded border border-slate-200 p-3 text-sm">
+    <details className="mt-3 rounded border border-shell-divider p-3 text-sm">
       <summary className="cursor-pointer font-medium">
         {results.length === 2 ? 'Compare receipts' : results[0].label}
       </summary>
@@ -422,7 +422,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       if (view === 'model') setFocusFirstModel(id);
       if (view === 'runs') setFocusCreatedStep(id);
       if (view === 'analysis' || view === 'document') requestSlotFocus((count) => count + 1);
-      setWindowState((current) => showProjectWindowView(current, view));
+      setWindowState((current) => showProjectWindowView(
+        view === 'runs' ? { ...current, detailsDrawerOpen: true } : current, view,
+      ));
     },
   };
 
@@ -651,16 +653,38 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         if (view === 'document') return { body: withProblem(
           <StudioErrorBoundary region={studioName('document')}>{report.body ?? noView}</StudioErrorBoundary>,
         ) };
-        if (view === 'runs') return { body: withProblem(<StudioErrorBoundary region={studioName('runs')}>
-          <StudioRuns plan={plan} step={step} state={state} onSelectionChange={mapProps.onSelectionChange}
-            region={step.kind === 'train' || (step.kind === 'evaluate' || step.kind === 'report') && step.runs.length
-              ? { kind: 'result', missing: [] } : { kind: 'empty' }}
-            definition={authoring && <StudioTrainAuthoringForm {...authoring}
-              focusFirstField={ready && focusCreatedStep === step.id && windowState.focusedSlot === slot}
-              onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
-            commands={step.kind === 'train' || step.kind === 'evaluate' ? runCommands : undefined}
-            pivotCommand={pivotCommand(slot)} pivotActive={pivotSlots[slot] === step.id} />
-        </StudioErrorBoundary>) };
+        if (view === 'runs') {
+          const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };
+          const pivot = pivotCommand(slot);
+          const pivotActive = pivotSlots[slot] === step.id;
+          const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
+          return {
+            header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' ? runCommands : undefined}
+              pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
+            drawer: (authoring || step.inputs.length > 0) ? <div className="space-y-3 text-sm">
+              {authoring && <StudioTrainAuthoringForm {...authoring}
+                  focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
+                  onDetachedEditError={setCommandError}
+                  onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
+              {step.inputs.length > 0 && <section aria-label={studioName('inputs')} className="space-y-1">
+                <h3 className="font-semibold">{studioName('inputs')}</h3>
+                <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
+                  <dt>{label}</dt>
+                  <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
+                  {subset && <dd className="text-shell-muted">{[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}</dd>}
+                </div>)}</dl>
+              </section>}
+            </div> : undefined,
+            inspector: selectedRuns(step, state.selection).length > 0
+              ? <StudioRunDetails plan={plan} {...runSelection} /> : undefined,
+            body: withProblem(<StudioErrorBoundary region={studioName('runs')}>
+              <StudioRuns plan={plan} {...runSelection}
+                region={step.kind === 'train' || step.runs.length > 0
+                  ? { kind: 'result', missing: [] } : { kind: 'empty' }}
+                pivotActive={Boolean(pivot) && pivotActive} />
+            </StudioErrorBoundary>),
+          };
+        }
         if ((view === 'training' || view === 'objective') && authoring) {
           return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} />) };
         }

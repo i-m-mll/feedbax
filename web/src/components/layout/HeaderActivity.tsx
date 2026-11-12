@@ -45,7 +45,7 @@ export function HeaderActivity({
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={onToggle}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-shell-muted hover:bg-shell-hover"
       >
         <Activity aria-hidden="true" className="size-4" />
         {studioName('activity')}
@@ -71,7 +71,7 @@ export function HeaderActivity({
               ref={close}
               aria-label={studioName('close')}
               onClick={closePanel}
-              className="rounded p-1 hover:bg-slate-100"
+              className="rounded p-1 hover:bg-shell-hover"
             >
               <X aria-hidden="true" className="size-4" />
             </button>

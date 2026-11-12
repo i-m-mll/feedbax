@@ -203,7 +203,7 @@ test('authors, reopens, and trains a reaching Model from an empty folder', async
 
   await mapStep(page, 'train').click();
   await tab('Runs').click();
-  const runs = page.getByRole('region', { name: 'Runs', exact: true });
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const run = runs.getByRole('button', { name: 'Run', exact: true });
   await expect(run).toBeVisible();
   const planPath = `${projectPath}/train-runs`;

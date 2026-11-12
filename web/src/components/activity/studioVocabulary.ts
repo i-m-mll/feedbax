@@ -66,6 +66,6 @@ export function studioReason(id: StudioReasonId, value: string) {
 }
 
 export function studioStep(kind: keyof typeof vocabulary.step) {
-  const { glyph, tint } = vocabulary.step[kind];
-  return { Icon: stepGlyphs[glyph as keyof typeof stepGlyphs], tint, name: studioName(kind) };
+  const { glyph } = vocabulary.step[kind];
+  return { Icon: stepGlyphs[glyph as keyof typeof stepGlyphs], tint: `var(--studio-kind-${kind})`, name: studioName(kind) };
 }

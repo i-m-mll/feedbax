@@ -121,6 +121,8 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   fireEvent.click(card.getByRole('button', { name: select('seed 1') }), { metaKey: true });
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('false');
+  expect(first.closest('[role="gridcell"]')?.hasAttribute('data-map-group-cell')).toBe(true);
+  expect(second.closest('[role="gridcell"]')?.hasAttribute('data-map-group-cell')).toBe(false);
 
   fireEvent.click(first);
   fireEvent.click(second, { metaKey: true });

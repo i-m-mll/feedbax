@@ -19,7 +19,7 @@ function ClockButton({ name, icon: Icon, onClick, pressed }: {
 }) {
   return (
     <button type="button" aria-label={studioName(name)} aria-pressed={pressed} onClick={onClick}
-      className="rounded p-1.5 text-slate-700 hover:bg-slate-100 aria-pressed:bg-violet-100">
+      className="rounded p-1.5 text-shell-muted hover:bg-shell-hover aria-pressed:bg-shell-selected">
       <Icon className="size-4" aria-hidden="true" />
     </button>
   );
@@ -39,25 +39,25 @@ function SceneClock({ timeline, time, speed, onTimeChange, onSpeedChange }: Scen
       </div>
       <div className="min-w-16 grow">
         {(bands.length > 0 || eventTicks.length > 0) && (
-          <div className="relative h-1.5 overflow-hidden rounded-sm bg-slate-100" aria-hidden="true">
+          <div className="relative h-1.5 overflow-hidden rounded-sm bg-shell-subtle" aria-hidden="true">
             {bands.map((band) => (
-              <span key={band.id} className={band.kind === 'loss_window' ? 'absolute h-full bg-violet-300' : 'absolute h-full bg-teal-300'}
+              <span key={band.id} className={band.kind === 'loss_window' ? 'absolute h-full bg-shell-scene-guide' : 'absolute h-full bg-shell-scene-feature'}
                 style={{ left: timelineOffset(band.start, duration), right: timelineOffset(duration - band.end, duration) }} />
             ))}
             {eventTicks.map((tick) => (
-              <span key={tick.id} className="absolute h-full w-px bg-slate-800" style={{ left: timelineOffset(tick.time, duration) }} />
+              <span key={tick.id} className="absolute h-full w-px bg-shell-foreground" style={{ left: timelineOffset(tick.time, duration) }} />
             ))}
           </div>
         )}
         <input type="range" min={0} max={duration} step="any" value={transport.bounded}
           aria-label={studioName('playbackPosition')} onChange={(event) => transport.seek(event.currentTarget.valueAsNumber)}
-          className="block w-full accent-violet-700" />
+          className="block w-full accent-shell-foreground" />
       </div>
-      <output className="whitespace-nowrap text-xs tabular-nums text-slate-700">
+      <output className="whitespace-nowrap text-xs tabular-nums text-shell-muted">
         {transport.bounded.toFixed(2)} / {duration.toFixed(2)} {units ?? studioUnit('second')}
       </output>
       <select value={speed} onChange={(event) => onSpeedChange(Number(event.currentTarget.value))}
-        aria-label={studioName('playbackSpeed')} className="rounded border border-slate-300 bg-white px-1 py-0.5 text-xs">
+        aria-label={studioName('playbackSpeed')} className="rounded border border-shell-control bg-shell-surface px-1 py-0.5 text-xs">
         {SPEED_OPTIONS.map((option) => <option key={option} value={option}>{option}×</option>)}
       </select>
     </div>

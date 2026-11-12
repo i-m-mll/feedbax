@@ -142,7 +142,7 @@ test('reports that the backend stopped and recovers in the same window', async (
 
   await page.getByRole('button', { name: 'Open project', exact: true }).click();
   const projects = openOverlay(page);
-  const runs = page.getByRole('region', { name: 'Runs', exact: true });
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const projectFailure = projects.getByRole('alert').filter({ hasText: /service unreachable/i });
   const runFailure = runs.getByRole('alert').filter({ hasText: /service unreachable/i });
   await expect(projectFailure).toBeVisible();
@@ -178,7 +178,7 @@ test('reopens the same live run and restores loss after backend and host restart
   await page.getByRole('button', { name: 'Train', exact: true }).click();
   const submission = page.waitForResponse((response) =>
     new URL(response.url()).pathname === '/api/submissions' && response.request().method() === 'POST');
-  await page.getByRole('region', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
   const admission = await submission;
   expect(admission.status()).toBe(202);
   const { items } = await admission.json() as StudioJobSubmission;

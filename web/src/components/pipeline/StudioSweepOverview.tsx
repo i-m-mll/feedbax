@@ -27,7 +27,7 @@ interface SweepOverviewProps {
   onToRows?: () => void;
 }
 
-const commandClass = "rounded border border-slate-300 px-2 py-1 text-sm";
+const commandClass = "rounded border border-shell-control px-2 py-1 text-sm";
 
 function Changes({ entries }: { entries: ExceptionView["changes"] }) {
   return (
@@ -54,7 +54,7 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
         )}
         {onToRows && <button type="button" className={commandClass} onClick={onToRows}>{studioName("toRows")}</button>}
       </div>
-      <ul className="divide-y divide-slate-200 rounded border border-slate-200">
+      <ul className="divide-y divide-shell-divider rounded border border-shell-divider">
         {axes.map((axis, index) => (
           <li className="p-2" key={axis.id}>
             <div className="flex flex-wrap items-baseline gap-2">
@@ -68,7 +68,7 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
             </div>
             <ul className="mt-1 grid gap-1 sm:grid-cols-2">
               {axis.values.map((value) => (
-                <li key={value.id} className="rounded bg-slate-50 p-1.5">
+                <li key={value.id} className="rounded bg-shell-subtle p-1.5">
                   <span className="font-medium">{value.label}</span>
                   <Changes entries={value.changes} />
                 </li>
@@ -80,7 +80,7 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
       {exceptions.length > 0 && (
         <div className="space-y-1">
           <h3 className="font-medium">{studioName("exceptions")}</h3>
-          <ul className="divide-y divide-slate-200 rounded border border-slate-200">
+          <ul className="divide-y divide-shell-divider rounded border border-shell-divider">
             {exceptions.map((exception) => (
               <li key={exception.id} className="space-y-1 p-2">
                 <div className="flex items-baseline justify-between gap-2">

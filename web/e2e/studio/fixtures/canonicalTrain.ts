@@ -54,17 +54,26 @@ export async function enter(field: Locator, value: string) {
   await field.press('Enter');
 }
 
+export async function openSweepEditor(field: Locator, name: string) {
+  const edit = field.getByRole('button', { name: `Edit ${name}`, exact: true });
+  await expect(edit).toBeEnabled();
+  if (await edit.getAttribute('aria-expanded') !== 'true') await edit.click();
+}
+
 export async function authorLearningRateSweep(rate: Locator) {
   await rate.getByRole('button', { name: 'To Sweep Learning Rate', exact: true }).click();
+  await openSweepEditor(rate, 'Learning Rate 0.001');
   await expect(rate.getByRole('spinbutton')).toHaveValue('0.001');
   await enter(rate.getByRole('textbox'), 'Slow');
   await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Slow' })).toBeEnabled();
   for (const [index, [value, label]] of [['0.002', 'Medium'], ['0.003', 'Fast']].entries()) {
     await rate.getByRole('button', { name: 'Add Value Learning Rate' }).click();
-    await expect(rate.getByRole('spinbutton')).toHaveCount(index + 2);
-    await enter(rate.getByRole('spinbutton').last(), value);
+    const edits = rate.getByRole('button', { name: /^Edit Learning Rate / });
+    await expect(edits).toHaveCount(index + 2);
+    await edits.last().click();
+    await enter(rate.getByRole('spinbutton'), value);
     await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${value}`, exact: true })).toBeEnabled();
-    await enter(rate.getByRole('textbox').last(), label);
+    await enter(rate.getByRole('textbox'), label);
     await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${label}`, exact: true })).toBeEnabled();
   }
 }

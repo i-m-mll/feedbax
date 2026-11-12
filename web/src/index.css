@@ -10,8 +10,23 @@
 :root {
   --studio-native-controls: 0px;
   --studio-shell-accent: #5d4b87;
-  --studio-shell-selection: rgba(93, 75, 135, 0.12);
+  --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
   --shell-focus-color: var(--studio-shell-accent);
+  --studio-control-border: color-mix(in srgb, var(--text-muted) 45%, var(--surface-main));
+  --studio-status-idle: var(--studio-control-border);
+  --studio-status-neutral: var(--text-muted);
+  --studio-status-warning: #aa7100;
+  --studio-status-running: #2459c4;
+  --studio-status-success: #27713f;
+  --studio-status-failure: #af2b32;
+  --studio-kind-train: #a17d66;
+  --studio-kind-evaluate: #a17385;
+  --studio-kind-analyze: #85758d;
+  --studio-kind-report: #73716f;
+  --studio-scene-feature: #7b4c6d;
+  --studio-scene-guide: #917967;
+  --studio-scene-outline: var(--text-muted);
+  --studio-scene-grid: color-mix(in srgb, var(--app-divider) 60%, var(--surface-main));
   --gray-50: #fafafa;
   --gray-100: #f4f4f5;
   --gray-200: #e4e4e7;
@@ -32,7 +47,18 @@
 
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
-  --studio-shell-selection: rgba(193, 174, 223, 0.18);
+}
+
+.studio-running-progress {
+  appearance: none;
+}
+
+.studio-running-progress::-webkit-progress-bar {
+  background: var(--surface-toolbar);
+}
+
+.studio-running-progress::-webkit-progress-value {
+  background: var(--studio-status-running);
 }
 
 * {

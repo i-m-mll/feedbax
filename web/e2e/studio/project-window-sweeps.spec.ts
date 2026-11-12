@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, openSweepEditor, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -47,6 +47,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
 
   const pending = (await readPlan(request, projectPath)).plan;
   const medium = pending.window_map!.rows.find(({ coordinates }) => coordinates['learning-rate']?.label === 'Medium')!;
+  await openSweepEditor(rate, 'Learning Rate Medium');
   await enter(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Medium' }), '0.0025');
   await expect(table.getByRole('cell', { name: 'Medium · 0.0025' })).toBeVisible();
   const changedBeforeRun = (await readPlan(request, projectPath)).plan.rows;
@@ -62,11 +63,15 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await expect(table.getByText('Done', { exact: true })).toHaveCount(3, { timeout: 25_000 });
   const done = (await readPlan(request, projectPath)).plan.rows;
 
+  await openSweepEditor(rate, 'Learning Rate Medium');
   await enter(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Medium' }), '0.00275');
   await expect(table.getByText('Out of date', { exact: true })).toHaveCount(1);
   await expect(card.getByText('1 Out of date')).toBeVisible();
-  await expect(table.getByText('0.0025 → 0.00275', { exact: false })).toBeVisible();
+  await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByText('0.0025 → 0.00275', { exact: false })).toBeVisible();
   await page.reload();
+  await openSweepEditor(rate, 'Learning Rate Medium');
   await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Medium' })).toHaveValue('0.00275');
   await expect(table.getByText('Done', { exact: true })).toHaveCount(2);
   const { plan: reopened } = await readPlan(request, projectPath);
@@ -86,8 +91,10 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await page.getByRole('dialog', { name: 'Add Sweep' }).getByRole('button', { name: 'Seed', exact: true }).click();
   const seed = page.getByRole('group', { name: 'Seed', exact: true });
   await seed.getByRole('button', { name: 'Add Value Seed' }).click();
-  await expect(seed.getByRole('spinbutton')).toHaveCount(2);
-  await enter(seed.getByRole('spinbutton').last(), '9');
+  const seedEdits = seed.getByRole('button', { name: /^Edit Seed / });
+  await expect(seedEdits).toHaveCount(2);
+  await seedEdits.last().click();
+  await enter(seed.getByRole('spinbutton'), '9');
   await expect(seed.getByRole('spinbutton', { name: 'Edit Seed 9' })).toBeEnabled();
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
@@ -106,6 +113,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
     coordinates['learning-rate']?.value_id === medium.coordinates['learning-rate'].value_id,
   ).map(({ key, coordinates }) => [coordinates.seed.value_id,
     crossed.rows.find((row) => row.key.row === key.row)!.request_id]));
+  await openSweepEditor(rate, 'Learning Rate Medium');
   await rate.getByRole('button', { name: 'To Field Learning Rate Medium', exact: true }).click();
   await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');

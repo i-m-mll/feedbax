@@ -405,9 +405,10 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
     const add = rate.getByRole('button', { name: 'Add Value Learning Rate', exact: true });
     await expect(add).toBeEnabled();
     await activate(page, add);
-    await expect(rate.getByRole('spinbutton')).toHaveCount(index + 2);
-    await page.keyboard.press('Meta+5');
-    await number(page, rate.getByRole('spinbutton').last(), value);
+    const edits = rate.getByRole('button', { name: /^Edit Learning Rate / });
+    await expect(edits).toHaveCount(index + 2);
+    await activate(page, edits.last());
+    await number(page, rate.getByRole('spinbutton'), value);
     await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${value}`, exact: true })).toBeEnabled();
   }
   await page.keyboard.press('Control+Meta+2');
@@ -452,9 +453,10 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   });
   expect(plan.rows.filter(({ key }) => key.step === child).map(({ key }) => key.row)).toEqual(sourceKeys.map(({ row }) => row));
 
-  const runs = page.getByRole('region', { name: 'Runs', exact: true });
-  await expect(runs.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
-  const batches = runs.getByRole('spinbutton', { name: 'Edit N Batches' });
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await expect(drawer.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
+  const batches = drawer.getByRole('spinbutton', { name: 'Edit N Batches' });
   await number(page, batches, '1200');
   await expect(batches).toBeEnabled();
   await page.keyboard.press('Meta+1');

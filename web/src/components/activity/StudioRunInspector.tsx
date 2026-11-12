@@ -50,14 +50,14 @@ function RunScene({ event, retry }: { event?: StudioJobEvent; retry: () => void 
             viewBox={`0 0 ${plotWidth} ${plotHeight}`}
             role="img"
             aria-label={studioName('scene')}
-            className="h-28 w-full rounded border border-slate-200 bg-white"
+            className="h-28 w-full rounded border border-shell-divider bg-shell-surface"
           >
-            <PlotTrack points={goal} stroke="text-violet-700" />
-            <PlotTrack points={effector} stroke="text-blue-700" />
+            <PlotTrack points={goal} dashed />
+            <PlotTrack points={effector} />
           </svg>
           <div className="flex flex-wrap gap-2 text-xs">
-            {effector.length > 0 && <span className="text-blue-700">{studioName('effector')}</span>}
-            {goal.length > 0 && <span className="text-violet-700">{studioName('goal')}</span>}
+            {effector.length > 0 && <span className="text-shell-foreground">{studioName('effector')}</span>}
+            {goal.length > 0 && <span className="decoration-dashed underline">{studioName('goal')}</span>}
           </div>
         </>
       )}
@@ -88,14 +88,14 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
       </div>
       <section aria-label={studioName('log')} className="min-w-0 space-y-1">
         <h4 className="text-xs font-medium">{studioName('log')}</h4>
-        <pre className="min-h-9 max-h-32 select-text overflow-auto whitespace-pre-wrap break-words rounded border border-slate-200 bg-white p-2 text-xs text-slate-700">
+        <pre className="min-h-9 max-h-32 select-text overflow-auto whitespace-pre-wrap break-words rounded border border-shell-divider bg-shell-surface p-2 text-xs text-shell-muted">
           {data.log}
         </pre>
       </section>
     </>
   );
   return (
-    <section aria-label={studioName('inspector')} className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+    <section aria-label={studioName('inspector')} className="space-y-3 rounded-md border border-shell-divider bg-shell-subtle p-3">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="break-words font-medium">{job.label}</h3>
@@ -103,10 +103,10 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
         </div>
         <StudioRunStatus status={job.status} />
       </header>
-      {job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
+      {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
       <StudioRegion
         state={state}
-        skeleton={<div className="h-36 animate-pulse rounded bg-slate-200" />}
+        skeleton={<div className="h-36 animate-pulse rounded bg-shell-divider" />}
         empty={fields}
       >
         {fields}

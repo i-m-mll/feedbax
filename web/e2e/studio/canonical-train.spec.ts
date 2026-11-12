@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, enter, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
@@ -227,7 +227,9 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(first.job_id).toBe(firstJob);
   await editNumber('Seed', 7, '0');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
-  await expect(table.getByText(/Definition changed at .*seed/)).toBeVisible();
+  await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByText(/Definition changed at .*seed/)).toBeVisible();
   const stale = await trainRow();
   expect(stale).toMatchObject({ status: 'stale', result: null, previous: first });
   expect(stale.request_id).not.toBe(first.request_id);
@@ -275,11 +277,17 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   };
   const map = page.getByRole('region', { name: 'Pipeline Map' });
   const source = map.getByRole('article', { name: 'Train train', exact: true });
-  const runs = page.getByRole('region', { name: 'Runs', exact: true });
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const table = runs.getByRole('table', { name: 'Runs' });
   await page.goto(`/?project=${encodeURIComponent(id)}`);
   await mapStep(page, 'train').click();
-  await authorLearningRateSweep(runs.getByRole('group', { name: 'Learning Rate', exact: true }));
+  await expect(table).toBeInViewport();
+  await expect(runs.getByRole('region', { name: 'Definition' })).toHaveCount(0);
+  await expect(drawer.getByRole('region', { name: 'Definition' })).toBeVisible();
+  await expect(source).toHaveCSS('outline-width', '2px');
+  await expect(mapStep(page, 'train')).toHaveCSS('background-color', await source.evaluate((node) => getComputedStyle(node).color));
+  await authorLearningRateSweep(drawer.getByRole('group', { name: 'Learning Rate', exact: true }));
 
   const sweep = source.getByRole('button', { name: 'Sweep learning-rate', exact: true });
   await expect(sweep).toHaveText('learning-rate 3');
@@ -340,9 +348,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(child.getByRole('button', { name: `Select ${childId}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(runs.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
 
-  const carryover = runs.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
+  const carryover = drawer.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
   const carryoverPath = 'method_payload.payload.checkpoint_initialization';
   const methodTarget = 'method_payload.payload.target_total';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
@@ -370,9 +378,12 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   expect(afterCarry.window_map?.edges).toEqual(beforeCarry.window_map?.edges);
   expect(afterCarry.window_map?.problems).toEqual([]);
 
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await runs.focus();
   const edit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  await enter(runs.getByRole('spinbutton', { name: 'Edit N Batches' }), '4');
+  await drawer.getByRole('spinbutton', { name: 'Edit N Batches' }).fill('4');
+  await page.getByRole('tabpanel', { name: 'Scene', exact: true }).focus();
   const acknowledged = await edit;
   expect(acknowledged.ok(), await acknowledged.text()).toBe(true);
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
@@ -381,6 +392,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     expect.objectContaining({ path: methodTarget, value: 6 }),
     expect.objectContaining({ path: `${carryoverPath}.progress.additional_batches`, value: 4 }),
   ]);
+  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
   const successors = await run(childId);
   const compiled = await plan();
   expect(compiled.window_map?.problems).toEqual([]);
@@ -407,6 +419,15 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await valueButton('Slow · 0.001').click();
   await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
   await sweep.click();
+  await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
+  await expect(source.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(0);
+  await captureStudioWindow(page, info, 'visual-map-group');
+  await page.keyboard.press('Tab');
+  await mark.focus();
+  await expect(mark).not.toHaveCSS('box-shadow', 'none');
+  await mark.press('Enter');
+  await expect(mark).toHaveAttribute('data-boxed', '');
+  await expect(source.locator('.studio-map-group-box')).toHaveCount(0);
   await page.keyboard.press('Tab');
   await firstRow.getByRole('button').focus();
   await expect(firstRow).toHaveCSS('outline-style', 'solid');
@@ -450,9 +471,26 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
         learning_rate_schedule_policy: 'continue', producer_content_binding: { root_kind: 'checkpoint-custody' },
       },
     });
-    await table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button').click();
-    if (index === 0) await openResultsSlot(page);
+    const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+    const selectedRow = table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button');
+    await selectedRow.click();
+    await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
+    await expect(inspector.getByRole('region', { name: 'Made From' })).toContainText('train');
+    await expect(table.getByRole('progressbar')).toHaveCount(0);
+    if (index === 0) {
+      await openResultsSlot(page);
+      await expect(drawer).toBeHidden();
+      await expect(inspector).toBeHidden();
+      await expect(page.getByRole('button', { name: 'Show Drawer', exact: true })).toBeDisabled();
+      await runs.focus();
+      await expect(drawer).toBeVisible();
+      await expect(inspector).toBeVisible();
+      await page.getByRole('tabpanel', { name: 'Results', exact: true }).focus();
+      await expect(drawer).toBeHidden();
+      await expect(inspector).toBeHidden();
+    }
     await expect(loss.locator('polyline')).toHaveCount(1);
+    await expect(loss.locator('polyline')).toHaveCSS('stroke', await loss.evaluate((node) => getComputedStyle(node).color));
     await expect(results.getByRole('list', { name: 'Train stages' }).getByRole('listitem')).toHaveText([
       'train 1–2', `${childId} 3–6`,
     ]);

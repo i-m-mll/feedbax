@@ -33,6 +33,7 @@ interface Props {
   readonly taskBinding?: boolean;
   readonly focusFirstField?: boolean;
   readonly onFirstFieldFocused?: () => void;
+  readonly onDetachedEditError?: (message: string) => void;
 }
 
 const viewPrefixes = {
@@ -220,9 +221,8 @@ export function StudioTrainAuthoringForm(props: Props) {
     setEditError(null);
     try {
       const recipe = await readStudioTrainAuthoring(
-        projectId, stepId, { revision, change }, lifetime.signal,
+        projectId, stepId, { revision, change }, editor.signal,
       );
-      lifetime.signal.throwIfAborted();
       const latest = editor.getSnapshot();
       if (latest.saved.revision !== revision || latest.pending || latest.outside) {
         throw new ProjectEditConflictError();
@@ -235,10 +235,10 @@ export function StudioTrainAuthoringForm(props: Props) {
       const address = { kind: 'step', id: stepId } as const;
       editor.edit(address, label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
       await editor.flush();
-      lifetime.signal.throwIfAborted();
-      picker?.();
+      if (!lifetime.signal.aborted) picker?.();
     } catch (error) {
       if (!lifetime.signal.aborted) setEditError(apiErrorMessage(error));
+      else if (!editor.signal.aborted) props.onDetachedEditError?.(apiErrorMessage(error));
     } finally {
       if (command.current === lifetime) command.current = null;
       if (!lifetime.signal.aborted) setEditing(false);

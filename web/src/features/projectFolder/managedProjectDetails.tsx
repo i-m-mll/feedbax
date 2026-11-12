@@ -95,7 +95,7 @@ function detailHeader(definition: Definition | null) {
 }
 
 function DetailReason({ reason, name }: { reason: StudioReasonId; name: StudioNameId }) {
-  return <p role="status" className="px-3 py-2 text-sm text-slate-600">{studioReason(reason, studioName(name))}</p>;
+  return <p role="status" className="px-3 py-2 text-sm text-shell-muted">{studioReason(reason, studioName(name))}</p>;
 }
 
 function DetailList({ name, items, selectedId, onSelect }: ReturnType<typeof useElementSelection> & {
@@ -105,11 +105,11 @@ function DetailList({ name, items, selectedId, onSelect }: ReturnType<typeof use
   if (!items.length) return null;
   return (
     <section className="space-y-1" aria-label={studioName(name)}>
-      <h3 className="px-2 text-xs font-medium text-slate-700">{studioName(name)}</h3>
+      <h3 className="px-2 text-xs font-medium text-shell-muted">{studioName(name)}</h3>
       <ul>
         {items.map(({ id, label }) => <li key={id}>
           <button type="button" aria-pressed={selectedId === id} onClick={() => onSelect(id)}
-            className="w-full rounded px-2 py-1 text-left text-sm hover:bg-slate-100 aria-pressed:bg-violet-100">
+            className="w-full rounded px-2 py-1 text-left text-sm hover:bg-shell-hover aria-pressed:bg-shell-selected">
             {label}
           </button>
         </li>)}
@@ -175,7 +175,7 @@ function ParameterDetails({ params, definition, selection, schemas, path, onEdit
     {fields.length > 0 && <StudioDefinitionForm fields={fields} selection={selection}
       onEdit={({ fieldId, edit }) => { if (edit.kind === 'set') onEdit?.(fieldId, edit.value); }} />}
     {structured.length > 0 && <dl className="space-y-2 text-sm">{structured.map(([name, value]) =>
-      <div key={name} className="rounded border border-slate-200 p-2">
+      <div key={name} className="rounded border border-shell-divider p-2">
         <dt className="font-medium">{humanizeLabel(name)}</dt><dd><StructuredValue value={value} /></dd>
       </div>)}</dl>}
   </>;

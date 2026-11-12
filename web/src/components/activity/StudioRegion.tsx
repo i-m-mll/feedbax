@@ -49,7 +49,7 @@ export function StudioRegion({
         <>
           {children}
           {state.missing.length > 0 && (
-            <ul className="flex flex-wrap gap-2 py-1 text-sm text-slate-700" aria-live="polite">
+            <ul className="flex flex-wrap gap-2 py-1 text-sm text-shell-muted" aria-live="polite">
               {state.missing.map(({ status, count }) => (
                 <li key={status}>{count} {studioRunStatus(status)}</li>
               ))}
@@ -71,17 +71,17 @@ function RegionLoading({ children }: { children: ReactNode }) {
 
 function RegionFailure({ issue, retry }: { issue: StudioRegionIssue; retry: () => void }) {
   return (
-    <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
-      <p role="alert" className="text-red-700">{issue.reason}</p>
+    <div className="space-y-2 rounded-md border border-shell-divider bg-shell-subtle p-3 text-sm">
+      <p role="alert" className="text-shell-status-failure">{issue.reason}</p>
       <button
         type="button"
-        className="rounded-md border border-slate-300 bg-white px-2 py-1 font-medium hover:bg-slate-100"
+        className="rounded-md border border-shell-control bg-shell-surface px-2 py-1 font-medium hover:bg-shell-hover"
         onClick={retry}
       >
         {studioName('retry')}
       </button>
       {issue.detail && issue.detail !== issue.reason && (
-        <details className="text-xs text-slate-700">
+        <details className="text-xs text-shell-muted">
           <summary className="cursor-pointer">{studioName('details')}</summary>
           <pre className="mt-2 select-text whitespace-pre-wrap break-words">{issue.detail}</pre>
         </details>

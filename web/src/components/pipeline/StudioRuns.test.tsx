@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { PlanStepView, PlanView } from "@/features/pipeline/planView";
 import { emptyPipelineSelection, selectStep, type PipelineSelection, type PipelineSelectionState } from "@/features/pipeline/selection";
 import { bindStudioCommand } from "@/features/projectWindow/studioCommands";
-import { StudioRuns } from "./StudioRuns";
+import { StudioRunControls, StudioRunDetails, StudioRuns } from "./StudioRuns";
 
 const train: PlanStepView = {
   id: "train",
@@ -44,10 +44,14 @@ function showRuns(step: PlanStepView, run?: (selection: PipelineSelection | null
   function TestRuns() {
     const [state, setState] = useState<PipelineSelectionState>(() => selectStep(emptyPipelineSelection, step.id));
     const [pivot, setPivot] = useState(false);
-    return <StudioRuns plan={plan} step={step} region={result}
-      commands={run ? [bindStudioCommand("run", () => run(state.selection))] : undefined}
-      pivotCommand={step.sweeps.length > 1 ? bindStudioCommand("pivot", () => setPivot(!pivot)) : undefined}
-      pivotActive={pivot} state={state} onSelectionChange={setState} />;
+    const selection = { step, state, onSelectionChange: setState };
+    return <>
+      <StudioRunControls commands={run ? [bindStudioCommand("run", () => run(state.selection))] : undefined}
+        pivotCommand={step.sweeps.length > 1 ? bindStudioCommand("pivot", () => setPivot(!pivot)) : undefined}
+        pivotActive={pivot} />
+      <StudioRuns plan={plan} region={result} pivotActive={pivot} {...selection} />
+      {state.selection?.kind !== "steps" && <StudioRunDetails plan={plan} {...selection} />}
+    </>;
   }
   return render(<TestRuns />);
 }
@@ -68,6 +72,7 @@ it("preserves the sweep and row handles through the same Run command", () => {
   expect(within(table).getByRole("button", { name: "C" }).getAttribute("aria-current")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
   expect(perform).toHaveBeenLastCalledWith({ kind: "rows", stepId: "train", runIds: ["b", "c"] });
+  expect(within(table).queryByText("Learning rate 0.001 → 0.003")).toBeNull();
   expect(screen.getByText("Learning rate 0.001 → 0.003")).toBeDefined();
   expect(within(screen.getByRole("region", { name: "Used By" })).getByRole("button", { name: "Select Test reach · 1 of 1" })).toBeDefined();
 });

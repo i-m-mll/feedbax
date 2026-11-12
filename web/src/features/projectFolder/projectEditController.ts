@@ -198,6 +198,8 @@ export class ProjectEditController {
 
   private get saved() { return this.document.snapshot; }
 
+  get signal() { return this.abort.signal; }
+
   getSnapshot = () => this.snapshot;
 
   subscribe = (listener: () => void) => {

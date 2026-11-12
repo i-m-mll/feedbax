@@ -27,13 +27,15 @@ it("keeps the current typed value when turning the field into a sweep, then edit
     ] },
   };
   view.rerender(<StudioDefinitionForm fields={[swept]} selection={selection} onEdit={edit} onChooseSweepValue={choose} />);
-  expect(screen.getByText("Fast rate")).toBeDefined();
   const pick = screen.getByRole("button", { name: "Select Learning rate 0.003" });
+  expect(pick.getAttribute("aria-description")).toBe("Fast rate");
   expect(pick.getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(pick);
   expect(choose).toHaveBeenLastCalledWith("learning-rate", "stable-b", false);
   fireEvent.click(pick, { shiftKey: true });
   expect(choose).toHaveBeenLastCalledWith("learning-rate", "stable-b", true);
+  fireEvent.click(screen.getByRole("button", { name: "Edit Learning rate 0.003" }));
+  expect(screen.getByText("Fast rate")).toBeDefined();
   const value = screen.getByRole("spinbutton", { name: "Edit Learning rate 0.003" });
   fireEvent.change(value, { target: { value: "0.005125" } });
   fireEvent.blur(value);

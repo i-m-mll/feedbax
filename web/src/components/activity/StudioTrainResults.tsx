@@ -75,8 +75,8 @@ function TrainLoss({ project, rows, row, attempt }: {
         ? { kind: 'failed' as const, issue: { reason: studioReason('unavailable', studioName('checkpoint')) }, retry }
         : { kind: 'result' as const, missing: [] };
   return (
-    <section aria-label={studioName('results')} className="mt-3 rounded border border-slate-200 p-3">
-      <StudioRegion state={state} skeleton={<div className="h-28 animate-pulse rounded bg-slate-200" />} empty={null}>
+    <section aria-label={studioName('results')} className="mt-3 rounded border border-shell-divider p-3">
+      <StudioRegion state={state} skeleton={<div className="h-28 animate-pulse rounded bg-shell-divider" />} empty={null}>
         {stages && <LossPlot stages={stages} />}
       </StudioRegion>
     </section>

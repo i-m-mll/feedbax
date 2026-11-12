@@ -75,7 +75,7 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
       await row(page, `Learning rate=${rate}`).getByRole('checkbox').check();
     }
     const submitted = post(page, '/api/submissions');
-    await page.getByRole('region', { name: 'Runs', exact: true })
+    await page.getByRole('tabpanel', { name: 'Runs', exact: true })
       .getByRole('button', { name: 'Run', exact: true }).click();
     const admission = await submitted;
     expect(admission.status(), await admission.text()).toBe(202);
@@ -218,7 +218,7 @@ test('opens a ninth project window while one stream serves active projects', asy
     ));
     await Promise.all(owners.map(async (window) => {
       const submitted = post(window, '/api/submissions');
-      await window.getByRole('region', { name: 'Runs', exact: true })
+      await window.getByRole('tabpanel', { name: 'Runs', exact: true })
         .getByRole('button', { name: 'Run', exact: true }).click();
       const response = await submitted;
       expect(response.status(), await response.text()).toBe(202);

@@ -34,7 +34,7 @@ function selectionHandlers(id: string, label: string, selectedId: string | null,
     tabIndex: 0,
     'aria-label': studioAccessibleName('select', label),
     'aria-pressed': id === selectedId,
-    className: 'cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-violet-700',
+    className: 'cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-shell-accent',
     onPointerDown: (event) => event.stopPropagation(),
     onClick: (event) => { event.stopPropagation(); onSelect(id); },
     onKeyDown: (event) => {
@@ -174,7 +174,7 @@ function SceneDrawingCanvas({
     <svg
       ref={canvas}
       viewBox={`0 0 ${viewportWidth} ${viewportHeight}`}
-      className="h-full min-h-0 w-full touch-none bg-white"
+      className="h-full min-h-0 w-full touch-none bg-shell-surface"
       role="group"
       aria-label={studioName('scene')}
       onPointerDown={beginPan}
@@ -204,7 +204,7 @@ function SceneDrawingCanvas({
     >
       <defs>
         <pattern id={gridId} width="32" height="32" patternUnits="userSpaceOnUse">
-          <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#eef2f7" strokeWidth="1" />
+          <path d="M 32 0 L 0 0 0 32" fill="none" stroke="var(--studio-scene-grid)" strokeWidth="1" />
         </pattern>
       </defs>
       <rect width={viewportWidth} height={viewportHeight} fill={`url(#${gridId})`} />
@@ -225,7 +225,7 @@ function SceneDrawingCanvas({
                 scale={scale}
                 interaction={selectionHandlers(entity.id, entity.label, selectedId, onSelect)}
               />
-              {mark && <circle cx={mark[0]} cy={mark[1]} r={9} fill="none" stroke="#b91c1c" strokeWidth={2} pointerEvents="none" />}
+              {mark && <circle cx={mark[0]} cy={mark[1]} r={9} fill="none" stroke="var(--studio-status-failure)" strokeWidth={2} pointerEvents="none" />}
             </g>
           );
         })}
@@ -233,10 +233,10 @@ function SceneDrawingCanvas({
       <g pointerEvents="none" aria-hidden="true">
         {path.length > 1 && (
           <polyline points={path.map((point) => project(point).join(',')).join(' ')} fill="none"
-            stroke="#0f766e" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
+            stroke="var(--text-primary)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
         )}
-        {goal && <circle cx={project(goal)[0]} cy={project(goal)[1]} r={8} fill="none" stroke="#7c3aed" strokeWidth={2} />}
-        {cursor && <circle data-scene-cursor cx={project(cursor)[0]} cy={project(cursor)[1]} r={6} fill="#0f766e" stroke="#fff" strokeWidth={2} />}
+        {goal && <circle cx={project(goal)[0]} cy={project(goal)[1]} r={8} fill="none" stroke="var(--studio-scene-feature)" strokeWidth={2} />}
+        {cursor && <circle data-scene-cursor cx={project(cursor)[0]} cy={project(cursor)[1]} r={6} fill="var(--text-primary)" stroke="var(--surface-main)" strokeWidth={2} />}
       </g>
       {scene.anchors.map((anchor) => {
         if (!anchor.position || !anchor.selectable || !entityIsVisible(anchor.entity_id) ||
@@ -245,7 +245,7 @@ function SceneDrawingCanvas({
         return (
           <g key={anchor.id} {...selectionHandlers(anchor.id, anchor.label, selectedId, onSelect)}>
             <circle cx={x} cy={y} r={8} fill="transparent" />
-            <circle cx={x} cy={y} r={selectedId === anchor.id ? 5 : 3} fill={selectedId === anchor.id ? '#7c3aed' : '#475569'} />
+            <circle cx={x} cy={y} r={selectedId === anchor.id ? 5 : 3} fill={selectedId === anchor.id ? 'var(--text-primary)' : 'var(--studio-scene-outline)'} />
           </g>
         );
       })}
@@ -253,9 +253,9 @@ function SceneDrawingCanvas({
         if (!anchor.position || selectedEntity !== anchor.entity_id || typeof anchor.metadata.point_index !== 'number') return null;
         const [x, y] = project(anchor.position);
         return (
-          <circle key={anchor.id} cx={x} cy={y} r={7} fill="#fff" stroke="#0f766e" strokeWidth={2}
+          <circle key={anchor.id} cx={x} cy={y} r={7} fill="var(--surface-main)" stroke="var(--text-primary)" strokeWidth={2}
             role="button" tabIndex={0} aria-label={anchor.label} aria-pressed={anchor.id === selectedId}
-            className="cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-violet-700"
+            className="cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-shell-accent"
             onPointerDown={(event) => startAttachment(event, anchor)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(anchor.id); }
@@ -264,8 +264,8 @@ function SceneDrawingCanvas({
         );
       })}
       <g transform={`translate(28 ${viewportHeight - 32})`} pointerEvents="none" aria-hidden="true">
-        <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="#334155" strokeWidth={2} />
-        <text y={-9} className="fill-slate-600 text-[11px] font-medium">
+        <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="var(--text-primary)" strokeWidth={2} />
+        <text y={-9} className="fill-shell-muted text-[11px] font-medium">
           {meters >= 1 ? `${meters} ${studioUnit('meter')}` : `${Math.round(meters * 100)} ${studioUnit('centimeter')}`}
         </text>
       </g>
@@ -276,7 +276,7 @@ function SceneDrawingCanvas({
 function SceneIssues({ issues }: { issues: ResolvedScene['validation'] }) {
   if (!issues.length) return null;
   return (
-    <ul role="alert" className="space-y-1 px-2 text-sm text-red-700">
+    <ul role="alert" className="space-y-1 px-2 text-sm text-shell-status-failure">
       {issues.map((issue) => <li key={JSON.stringify([issue.type, issue.entity_id, issue.message])}>{issue.message}</li>)}
     </ul>
   );
@@ -298,8 +298,8 @@ export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: Sc
     case 'empty':
     case 'failed':
       return (
-        <StudioRegion state={view} skeleton={<div className="h-full min-h-16 animate-pulse bg-slate-100" />}
-          empty={<div className="h-full min-h-16 bg-slate-50" />}>
+        <StudioRegion state={view} skeleton={<div className="h-full min-h-16 animate-pulse bg-shell-subtle" />}
+          empty={<div className="h-full min-h-16 bg-shell-subtle" />}>
           {null}
         </StudioRegion>
       );
@@ -322,7 +322,7 @@ export function SceneHeaderControls({
     !sceneTrack(view)?.samples.length) return null;
   const overlays = new Set(view.scene.entities.filter((entity) => drawableIds.has(entity.id)).map(sceneEntityOverlay));
   const control = (id: StudioNameId, button: ReactNode) => renderControl ? renderControl(id, button) : button;
-  const buttonClass = 'rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 aria-pressed:bg-violet-100';
+  const buttonClass = 'rounded px-2 py-1 text-xs font-medium text-shell-muted hover:bg-shell-hover aria-pressed:bg-shell-selected';
   return (
     <div className="studio-scene-controls flex flex-wrap items-center gap-1">
       {control('zoomIn', <button type="button" aria-label={studioName('zoomIn')} className={buttonClass} onClick={() => onCameraChange(zoomScene(camera, 1.2))}><ZoomIn className="size-4" aria-hidden="true" /></button>)}
@@ -397,12 +397,12 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
         if (!items) return null;
         return (
           <section key={group} aria-label={studioName(group)}>
-            <h3 className="px-2 pb-1 text-xs font-medium text-slate-700">{studioName(group)}</h3>
+            <h3 className="px-2 pb-1 text-xs font-medium text-shell-muted">{studioName(group)}</h3>
             <ul>
               {items.map((item) => (
                 <li key={item.id}>
                   <button type="button" aria-pressed={item.id === selectedId} onClick={() => onSelect(item.id)}
-                    className="w-full rounded px-2 py-1 text-left text-sm text-slate-900 hover:bg-slate-100 aria-pressed:bg-violet-100">
+                    className="w-full rounded px-2 py-1 text-left text-sm text-shell-foreground hover:bg-shell-hover aria-pressed:bg-shell-selected">
                     {item.label}
                   </button>
                   <SceneIssues issues={issuesByEntity.get(item.id) ?? []} />
@@ -432,13 +432,13 @@ export function SceneElementInspector({ scene, selectedId }: { scene: ResolvedSc
   const anchors = anchor ? [anchor] : scene.anchors.filter((item) => item.entity_id === entity?.id);
   return (
     <section aria-label={studioName('details')} className="space-y-2">
-      <h3 className="font-medium text-slate-900">{selected.label}</h3>
+      <h3 className="font-medium text-shell-foreground">{selected.label}</h3>
       <dl className="grid gap-2">
         {anchors.map((item) => {
           const position = inspectorPosition(item);
           return position && (
             <div key={item.id} className="flex flex-wrap justify-between gap-2 text-sm">
-              <dt className="text-slate-700">{item.label}</dt>
+              <dt className="text-shell-muted">{item.label}</dt>
               <dd className="tabular-nums">{position.map((coordinate) => coordinateFormat.format(coordinate)).join(', ')} {studioUnit('meter')}</dd>
             </div>
           );

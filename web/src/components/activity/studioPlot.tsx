@@ -41,16 +41,17 @@ export function projectSeries(series: readonly Point[][], preserveAspect = false
   ]));
 }
 
-export function PlotTrack({ points, stroke }: { points: Point[]; stroke: string }) {
+export function PlotTrack({ points, dashed }: { points: Point[]; dashed?: boolean }) {
   const last = points[points.length - 1];
   if (!last) return null;
   return (
-    <g className={stroke}>
+    <g className="text-shell-foreground">
       <polyline
         points={points.map(([x, y]) => `${x},${y}`).join(' ')}
         fill="none"
         stroke="currentColor"
         strokeWidth={2}
+        strokeDasharray={dashed ? '4 3' : undefined}
         strokeLinejoin="round"
         vectorEffect="non-scaling-stroke"
       />

@@ -75,7 +75,7 @@ function documentLevel(scope: MapDocumentScope | undefined, step: string) {
 }
 
 const documentLevelStyle = 'data-[document-scope=faint]:opacity-60 focus-within:opacity-100';
-const documentLitStyle = 'data-[document-scope=lit]:ring-1 data-[document-scope=lit]:ring-slate-500';
+const documentLitStyle = 'data-[document-scope=lit]:ring-1 data-[document-scope=lit]:ring-shell-muted';
 
 function chooseMapStep(apply: ApplyMapSelection, toggle?: ChooseStep): ChooseStep {
   return (id, extend) => {
@@ -104,7 +104,7 @@ export interface StudioPipelineMapProps {
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
-const smallButton = 'rounded border border-slate-300 bg-white p-1 text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-slate-900';
+const smallButton = 'rounded border border-shell-control bg-shell-surface p-1 text-shell-muted hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-shell-accent';
 
 function stepSelection(selection: PipelineSelection | null, stepId: string) {
   if (!selection) return null;
@@ -121,7 +121,7 @@ function StatusCounts({ id, counts, onProblems }: {
   const statuses = Object.entries(counts) as [StudioRunStatusId, number][];
   if (onProblems && counts.cannot_run === undefined) statuses.push(['cannot_run', 0]);
   return (
-    <span id={id} className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-slate-700">
+    <span id={id} className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-shell-muted">
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
         if (count <= 0 && !problem) return null;
@@ -142,7 +142,7 @@ function StepName({ step }: { step: PlanStepView }) {
     <span className="flex min-w-0 items-center gap-1.5">
       <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
       <span className="truncate font-medium">{step.label}</span>
-      <span className="shrink-0 text-xs text-slate-600">{name}</span>
+      <span data-map-kind-label className="shrink-0 text-xs text-shell-muted">{name}</span>
     </span>
   );
 }
@@ -161,10 +161,10 @@ function CompactStatus({ id, counts, onProblems, related, total }: {
     <span id={id} className="sr-only">{names.join(' · ')}</span>
     <div aria-hidden="true" className="relative flex h-1.5 overflow-hidden rounded-sm">
       {statuses.map(([status, count]) => <span key={status} className={studioRunMarkClass(status)} style={{ flexGrow: count }} />)}
-      {related > 0 && total > 0 && <span className="absolute left-0 top-0 border-t-2 border-dotted border-slate-900"
+      {related > 0 && total > 0 && <span className="absolute left-0 top-0 border-t-2 border-dotted border-shell-foreground"
         style={{ width: `${100 * related / total}%` }} />}
     </div>
-    {onProblems && <button type="button" className="text-xs text-slate-700 underline"
+    {onProblems && <button type="button" className="text-xs text-shell-muted underline"
       aria-haspopup="dialog" onClick={(event) => onProblems(event.currentTarget)}>
       {counts.cannot_run ? `${counts.cannot_run} ` : ''}{studioRunStatus('cannot_run')}
     </button>}
@@ -223,7 +223,7 @@ function StepShape({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-1 text-xs text-slate-700">
+    <div className="flex flex-wrap items-center gap-1 text-xs text-shell-muted">
       {sweeps.map((sweep, index) => {
         const isFolded = sweep.id === folded?.id;
         return (
@@ -232,7 +232,7 @@ function StepShape({
             <div className="relative">
               <button
                 type="button"
-                className="rounded px-1 py-0.5 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-slate-900 aria-expanded:bg-slate-100"
+                className="rounded px-1 py-0.5 hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-shell-accent aria-expanded:bg-shell-subtle"
                 aria-label={studioAccessibleName('sweep', sweep.label)}
                 aria-expanded={openSweep === sweep.id}
                 draggable={Boolean(onPresentationChange)}
@@ -251,7 +251,7 @@ function StepShape({
                 {isFolded ? '(' : ''}{sweep.label} {sweep.values.length}{isFolded ? ')' : ''}
               </button>
               {openSweep === sweep.id && (
-                <div className="absolute left-0 top-full z-20 w-max max-w-56 rounded-md border border-slate-200 bg-white p-2 shadow-md">
+                <div className="absolute left-0 top-full z-20 w-max max-w-56 rounded-md border border-shell-divider bg-shell-surface p-2 shadow-md">
                   <ul className="nowheel max-h-36 space-y-0.5 overflow-y-auto">
                     {sweep.values.map((value) => (
                       <li key={value.id}>
@@ -266,7 +266,7 @@ function StepShape({
                     ))}
                   </ul>
                   {onPresentationChange && (
-                    <div className="mt-2 flex items-center gap-1 border-t border-slate-100 pt-1">
+                    <div className="mt-2 flex items-center gap-1 border-t border-shell-divider pt-1">
                       <FoldSweep command={bindSweepFold(step.id, sweep, isFolded, presentation, onPresentationChange)} />
                       <button
                         type="button"
@@ -352,12 +352,13 @@ const StepCard = memo(function StepCard({
       data-canvas-item
       data-map-step={step.id}
       data-map-density={compact ? 'compact' : 'full'}
+      data-map-selection={selection?.kind}
       data-map-related={related || undefined}
       data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
       aria-label={studioAccessibleName(step.kind, step.label)}
-      className={`nopan pointer-events-auto relative space-y-2 rounded-lg border-2 bg-white px-3 py-2 text-sm shadow-sm focus-within:z-20 data-[map-dimmed=true]:opacity-60 ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
-      style={{ borderColor: tint, width: compact ? compactMapCardWidth : mapCardWidth }}
+      className={`studio-map-card nopan pointer-events-auto relative space-y-2 rounded-lg border-2 bg-shell-surface px-3 py-2 text-sm shadow-sm focus-within:z-20 data-[map-dimmed=true]:opacity-60 ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
+      style={{ borderColor: selection?.kind === 'steps' ? 'var(--text-primary)' : tint, width: compact ? compactMapCardWidth : mapCardWidth }}
     >
       <span id={`map-step-${step.id}-summary`} className="sr-only">
         {[kind, ...sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`)].join(' · ')}
@@ -368,7 +369,7 @@ const StepCard = memo(function StepCard({
         <button
           type="button"
           data-canvas-focus
-          className="w-full rounded px-1 py-1 text-left text-slate-900 hover:bg-slate-100 aria-[current=step]:bg-slate-200"
+          className="studio-map-card__head w-full rounded px-1 py-1 text-left hover:bg-shell-hover"
           aria-label={studioAccessibleName('select', step.label)}
           aria-describedby={`map-step-${step.id}-summary map-step-${step.id}-status`}
           aria-description={related ? studioCountOf(related, step.runs.length) : undefined}
@@ -393,12 +394,6 @@ const StepCard = memo(function StepCard({
         newSweep={newSweep}
       />
       <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={problem} />
-      {selection && (
-        <p className="flex items-baseline gap-x-1 rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
-          {terms.length > 0 && <span className="min-w-0 truncate">{terms.join(' · ')}</span>}
-          <span className="shrink-0 whitespace-nowrap tabular-nums">{studioCountOf(selected.size, step.runs.length)}</span>
-        </p>
-      )}
       <PipelineRunMarks
         step={step}
         sweeps={sweeps}
@@ -410,9 +405,9 @@ const StepCard = memo(function StepCard({
         applySelection={applySelection}
       />
       {step.inputs.some((input) => input.subset) && (
-        <ul className="-mx-3 divide-y divide-slate-100 border-t border-slate-200">
+        <ul className="-mx-3 divide-y divide-shell-divider border-t border-shell-divider">
           {step.inputs.map(({ id, label, subset }) => subset && (
-            <li key={id} className="relative px-3 py-1 text-xs text-slate-700">
+            <li key={id} className="relative px-3 py-1 text-xs text-shell-muted">
               <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in', id)} className="pointer-events-none absolute left-0 top-1/2" />
               <strong className="block font-medium">{label}</strong>
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-1">
@@ -422,6 +417,12 @@ const StepCard = memo(function StepCard({
             </li>
           ))}
         </ul>
+      )}
+      {selection && (
+        <p className="flex items-baseline justify-between gap-x-1 text-xs text-shell-muted">
+          {terms.length > 0 && <span className="min-w-0 truncate" title={terms.join(' · ')}>{terms.join(' · ')}</span>}
+          <span className="shrink-0 whitespace-nowrap tabular-nums">{studioCountOf(selected.size, step.runs.length)}</span>
+        </p>
       )}
       {newStep && (
         <button type="button" className={`${smallButton} absolute -right-3 top-1/2 -translate-y-1/2`}
@@ -508,7 +509,7 @@ function MapDiagram({
             <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full">
               {geometry?.paths.map(({ id, d }) => <path key={id} d={d} stroke="currentColor" fill="none"
                 data-map-edge={id} data-map-emphasis={strongEdges.has(id) ? 'strong' : 'light'}
-                className={strongEdges.has(id) ? 'text-slate-600' : 'text-slate-300'}
+                className={strongEdges.has(id) ? 'text-shell-muted' : 'text-shell-divider'}
                 strokeWidth={strongEdges.has(id) ? 2 : 1.5} />)}
             </svg>
             {children(compact)}
@@ -557,13 +558,13 @@ function MapDrawer({
             {group && <h3 className="px-1.5 text-xs font-medium text-shell-muted">{group}</h3>}
             <ul>{entries.map((step) => {
           const scope = stepSelection(selection, step.id);
-          const count = (related?.get(step.id)?.size ?? 0) + Number(focusedStepId === step.id);
+          const count = related?.get(step.id)?.size ?? 0;
           const level = documentLevel(documentScope, step.id);
           return (
             <li key={step.id} data-document-scope={level} className={documentLevelStyle}>
               <button
                 type="button"
-                className={`w-full space-y-1 rounded p-1.5 text-left text-sm hover:bg-slate-100 aria-[current=step]:bg-slate-200 ${related && !count ? 'opacity-60' : ''} ${!scope ? documentLitStyle : ''}`}
+                className={`w-full space-y-1 rounded p-1.5 text-left text-sm hover:bg-shell-hover aria-[current=step]:bg-shell-divider ${related && !count && focusedStepId !== step.id ? 'opacity-60' : ''} ${!scope ? documentLitStyle : ''}`}
                 aria-label={studioAccessibleName('select', step.label)}
                 aria-current={scope ? 'step' : undefined}
                 aria-pressed={documentScope ? level === 'lit' : undefined}
@@ -571,7 +572,7 @@ function MapDrawer({
                 {...selectionButton((extend) => chooseStep(step.id, extend))}
               >
                 <StepName step={step} />
-                {related && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
+                {related && focusedStepId !== step.id && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
               </button>
               <div className="px-1.5"><StatusCounts counts={step.statusCounts}
                 onProblems={problemSteps?.has(step.id) && onProblems ? (opener) => onProblems(step.id, opener) : undefined} /></div>
@@ -624,16 +625,17 @@ function MapLine({
     <div className="flex items-center gap-2 overflow-auto p-2">
       {groups.map((steps, index) => (
         <div key={index} className="flex shrink-0 items-center gap-2">
-          {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-slate-500" />}
+          {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-shell-muted" />}
           {steps.map((step) => (
             <button
               key={step.id}
               type="button"
-              className={`${smallButton} border-2 text-sm aria-[current=step]:bg-slate-200 ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
-              style={{ borderColor: studioStep(step.kind).tint }}
+              className={`studio-map-line-step ${smallButton} border-2 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
+              style={{ borderColor: stepSelection(selection, step.id)?.kind === 'steps' ? 'var(--text-primary)' : studioStep(step.kind).tint }}
               aria-label={studioAccessibleName('select', step.label)}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
               aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
+              data-map-selection={stepSelection(selection, step.id)?.kind}
               data-document-scope={documentLevel(documentScope, step.id)}
               {...selectionButton((extend) => chooseStep(step.id, extend))}
             >
@@ -700,7 +702,7 @@ export function StudioPipelineMap({
   return (
     <section
       aria-label={studioName('pipelineMap')}
-      className="flex h-full min-h-0 min-w-0 overflow-hidden bg-slate-50"
+      className="flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
       onKeyDown={(event) => {
         if (event.key === 'Escape' && state.focus) {
           event.stopPropagation();
@@ -710,7 +712,7 @@ export function StudioPipelineMap({
     >
       {!plan.steps.length ? (
         firstStep && (
-          <button type="button" className={`${smallButton} m-4 grid h-11 w-[150px] shrink-0 place-items-center self-start border border-dashed border-slate-400`}
+          <button type="button" className={`${smallButton} m-4 grid h-11 w-[150px] shrink-0 place-items-center self-start border border-dashed border-shell-muted`}
             {...commandAttributes(firstStep)} disabled={!firstStep.enabled} onClick={firstStep.invoke}>
             <Plus aria-hidden="true" className="h-4 w-4" />
           </button>

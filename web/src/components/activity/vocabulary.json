@@ -257,10 +257,10 @@
     "lossStageSample": "{stage} · Local updates {start}–{end} · Attempt {attempt}"
   },
   "step": {
-    "train": { "glyph": "flask", "tint": "#c4b5fd" },
-    "evaluate": { "glyph": "play", "tint": "#f5add8" },
-    "analyze": { "glyph": "chart", "tint": "#f0abfc" },
-    "report": { "glyph": "page", "tint": "#cbd5e1" }
+    "train": { "glyph": "flask" },
+    "evaluate": { "glyph": "play" },
+    "analyze": { "glyph": "chart" },
+    "report": { "glyph": "page" }
   },
   "retired": [
     "node", "stage", "scenario", "request", "receipt", "reference", "trace", "store",

@@ -56,7 +56,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
     await mapStep(page, step).click();
     await tab(page, 'Runs').click();
     const admitted = mutation('POST', runPath);
-    await page.getByRole('region', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
+    await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
     expect((await admitted).status()).toBe(202);
     await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toBeVisible({
       timeout: 18_000,

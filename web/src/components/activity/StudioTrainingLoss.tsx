@@ -145,17 +145,17 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
         viewBox={`0 0 ${plotWidth} ${plotHeight}`}
         role="img"
         aria-label={studioName('loss')}
-        className="h-[148px] w-full rounded border border-slate-200 bg-white"
+        className="h-[148px] w-full rounded border border-shell-divider bg-shell-surface"
       >
         {ranges.length > 0 && <desc>{studioFormat('lossIntervalDescription')}</desc>}
-        <g aria-hidden="true" className="fill-slate-700 text-[11px] tabular-nums">
+        <g aria-hidden="true" className="fill-shell-muted text-[11px] tabular-nums">
           {yTicks.map((value) => (
             <g key={value}>
-              <line x1={left} x2={right} y1={y(value)} y2={y(value)} className="stroke-slate-200" />
+              <line x1={left} x2={right} y1={y(value)} y2={y(value)} className="stroke-shell-divider" />
               <text x={left - 6} y={y(value)} dominantBaseline="middle" textAnchor="end">{formatTrainingLoss(value)}</text>
             </g>
           ))}
-          {latest && <line x1={left} x2={right} y1={bottom} y2={bottom} className="stroke-slate-200" />}
+          {latest && <line x1={left} x2={right} y1={bottom} y2={bottom} className="stroke-shell-divider" />}
           {latest && xTicks.map((update) => (
             <text key={update} x={x(update)} y={plotHeight - 8}
               textAnchor={update === endUpdate ? 'end' : update === 0 ? 'start' : 'middle'}>{update.toLocaleString()}</text>
@@ -163,7 +163,7 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
         </g>
         {latest && stages.slice(1).map(({ offset }) => (
           <line key={offset} x1={x(offset)} x2={x(offset)} y1={top} y2={bottom}
-            className="text-slate-300" stroke="currentColor" strokeDasharray="3 3"
+            className="text-shell-divider" stroke="currentColor" strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke" />
         ))}
         {ranges.map(({ update, end, start, count, min, max, stage, jobId }) => (
@@ -173,7 +173,7 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
             x2={x(update)}
             y1={y(min)}
             y2={y(max)}
-            className="text-blue-400"
+            className="text-shell-foreground opacity-50"
             stroke="currentColor"
             vectorEffect="non-scaling-stroke"
           >
@@ -186,9 +186,9 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
             ].filter(Boolean).join(' · ')}</title>
           </line>
         ))}
-        <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} stroke="text-blue-700" />
+        <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} />
       </svg>
-      <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-slate-700">
+      <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
         {chained && (
           <ol aria-label={studioName('trainStages')} className="mr-auto flex flex-wrap gap-x-3">
             {stages.map(({ label, offset, completed }) => (

@@ -76,7 +76,7 @@ function ActivityRun({
 
   return (
     <li
-      className="space-y-2 rounded-md border border-l-4 bg-white p-3 shadow-sm"
+      className="space-y-2 rounded-md border border-l-4 bg-shell-surface p-3 shadow-sm"
       style={{ borderLeftColor: tint }}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -85,9 +85,9 @@ function ActivityRun({
           aria-current={selected ? 'true' : undefined}
           onClick={() => void open()}
           disabled={pending}
-          className="min-w-0 flex-1 rounded-sm text-left hover:text-blue-700 disabled:opacity-60"
+          className="min-w-0 flex-1 rounded-sm text-left hover:underline disabled:opacity-60"
         >
-          <span className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-shell-muted">
             <Icon aria-hidden="true" className="size-3.5 shrink-0" />
             {name}
             {project && <span className="truncate font-normal">{project}</span>}
@@ -97,7 +97,7 @@ function ActivityRun({
         <StudioRunStatus status={job.status} />
       </div>
       {coordinates.length > 0 && (
-        <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-700">
+        <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
           {coordinates.map(([axis, value]) => (
             <div key={axis} className="flex gap-1">
               <dt>{axis}</dt>
@@ -107,11 +107,11 @@ function ActivityRun({
         </dl>
       )}
       {job.earlier_definition && (
-        <p className="text-xs font-medium text-slate-700">{studioDefinitionStatus('earlier')}</p>
+        <p className="text-xs font-medium text-shell-muted">{studioDefinitionStatus('earlier')}</p>
       )}
       <StudioRunReason job={job} />
-      {job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
-      {failure && <p role="alert" className="text-xs text-red-700">{failure}</p>}
+      {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
+      {failure && <p role="alert" className="text-xs text-shell-status-failure">{failure}</p>}
       <div className="flex flex-wrap gap-2">
         {jobAllowsCommand(job, 'stop') && (
           <ActivityCommand name="stop" pending={pending} onClick={() => void stop('checkpoint')} />
@@ -146,7 +146,7 @@ function ActivityCommand({
       {...commandAttributes(command)}
       disabled={!command.enabled}
       onClick={command.invoke}
-      className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-60"
+      className="rounded border border-shell-control bg-shell-surface px-2 py-1 text-xs font-medium hover:bg-shell-hover disabled:opacity-60"
     >
       {studioName(name)}
     </button>
@@ -181,9 +181,9 @@ function ActivityContent({ projectNames, onOpenRun, onClose }: StudioActivityPan
       || a.job_id.localeCompare(b.job_id));
   const machine = snapshot.data?.sessions.find((session) => session.id === 'local');
   const machineField = machine && (
-    <dl className="flex justify-between rounded-md border border-slate-200 px-3 py-2 text-sm">
+    <dl className="flex justify-between rounded-md border border-shell-divider px-3 py-2 text-sm">
       <dt className="font-medium">{studioName('thisMac')}</dt>
-      <dd className="text-slate-700">{studioMachineStatus(machine.state)}</dd>
+      <dd className="text-shell-muted">{studioMachineStatus(machine.state)}</dd>
     </dl>
   );
   const state: StudioRegionState = connection === 'disconnected' || snapshot.isError
@@ -201,11 +201,11 @@ function ActivityContent({ projectNames, onOpenRun, onClose }: StudioActivityPan
   return (
     <StudioRegion
       state={state}
-      skeleton={<div className="h-20 animate-pulse rounded-md bg-slate-200" />}
+      skeleton={<div className="h-20 animate-pulse rounded-md bg-shell-divider" />}
       empty={(
         <>
           {machineField}
-          <ul aria-label={studioName('runs')} className="min-h-10 rounded-md border border-dashed border-slate-200" />
+          <ul aria-label={studioName('runs')} className="min-h-10 rounded-md border border-dashed border-shell-divider" />
         </>
       )}
     >

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioCountOf, studioName, studioReason } from "@/components/activity/studioVocabulary";
+import { studioCountOf, studioName } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -25,19 +25,19 @@ export function StudioSweepValues({ step, state, onSelectionChange }: RunSelecti
   const selection = state.selection;
   const terms = selection?.kind === "values" && selection.stepId === step.id ? selection.terms : [];
   return (
-    <div className="space-y-1">
+    <div className="flex flex-wrap gap-x-2 gap-y-1">
       {step.sweeps.map((sweep) => {
         const selected = terms.find(({ sweepId }) => sweepId === sweep.id);
         return (
-          <fieldset key={sweep.id} className="flex flex-wrap items-baseline gap-1.5">
-            <legend className="font-medium text-slate-800">{sweep.label}</legend>
+          <fieldset key={sweep.id} className="flex flex-wrap items-baseline gap-1">
+            <legend className="font-medium text-shell-foreground">{sweep.label}</legend>
             {sweep.values.map((value) => (
               <button
                 key={value.id}
                 type="button"
                 aria-pressed={selected?.valueIds.includes(value.id) ?? false}
                 {...selectionButton((extend) => onSelectionChange(selectSweepValue(state, step.id, sweep.id, value.id, extend)))}
-                className="rounded border border-slate-300 px-2 py-0.5 tabular-nums aria-pressed:border-violet-600 aria-pressed:bg-violet-100"
+                className="rounded border border-shell-control px-2 py-0.5 tabular-nums aria-pressed:border-shell-foreground aria-pressed:bg-shell-selected"
               >
                 {value.label}
               </button>
@@ -62,9 +62,10 @@ function useValueLabels(sweeps: readonly PlanSweepView[]) {
 interface TableProps extends RunSelectionProps {
   rows: readonly PlanRunView[];
   related: RunSetsByStep;
+  fillSlot?: boolean;
 }
 
-export function StudioRunTable({ step, state, onSelectionChange, rows, related }: TableProps) {
+export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot }: TableProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const pendingKeyboardFocus = useRef<string | null>(null);
@@ -114,9 +115,9 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
   const bottom = last ? virtual.getTotalSize() - last.end : 0;
 
   return (
-    <div ref={scroll} className="max-h-96 overflow-auto rounded-md border border-slate-200">
+    <div ref={scroll} className={`${fillSlot ? "h-full" : "max-h-96"} overflow-auto`}>
       <table className="w-full border-separate border-spacing-0 text-left text-sm" aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
-        <thead className="sticky top-0 z-10 bg-slate-50">
+        <thead className="sticky top-0 z-10 bg-shell-subtle">
           <tr aria-rowindex={1}>
             <th scope="col" className="p-2">{studioName("run")}</th>
             {showVariant && <th scope="col" className="p-2">{studioName("variant")}</th>}
@@ -139,9 +140,9 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
                 data-selected={lit || undefined}
                 data-related={relatedIds?.has(run.id) || undefined}
                 aria-rowindex={item.index + 2}
-                className="studio-run-row data-[related=true]:bg-slate-100 data-[selected=true]:bg-violet-50"
+                className="studio-run-row data-[related=true]:bg-shell-subtle data-[selected=true]:bg-shell-selected"
               >
-                <th scope="row" className="border-t border-slate-200 p-2 font-medium">
+                <th scope="row" className="border-t border-shell-divider p-2 font-medium">
                   <button
                     type="button"
                     ref={(button) => {
@@ -167,18 +168,17 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related }
                     {run.label}
                   </button>
                 </th>
-                {showVariant && <td className="border-t border-slate-200 p-2">{run.variant}</td>}
+                {showVariant && <td className="border-t border-shell-divider p-2">{run.variant}</td>}
                 {sweeps.map((sweep) => (
-                  <td key={sweep.id} className="border-t border-slate-200 p-2 tabular-nums">
+                  <td key={sweep.id} className="border-t border-shell-divider p-2 tabular-nums">
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </td>
                 ))}
-                <td className="border-t border-slate-200 p-2">
+                <td className="border-t border-shell-divider p-2">
                   <StudioRunStatus status={run.status} />
-                  {run.reason && <p className="text-xs text-slate-700">{studioReason("observed", run.reason)}</p>}
                 </td>
-                <td className="border-t border-slate-200 p-2">
-                  {run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
+                <td className="border-t border-shell-divider p-2">
+                  {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </td>
               </tr>
@@ -198,5 +198,5 @@ export function StudioSelectionSummary({ step, state }: Pick<RunSelectionProps, 
   const selected = selectedRuns(step, selection);
   const terms = selectionTerms(step, selection);
   const count = studioCountOf(selected.length, step.runs.length);
-  return <p aria-live="polite" className="text-sm text-slate-700">{[...terms, count].join(" · ")}</p>;
+  return <p aria-live="polite" className="text-xs text-shell-muted">{[...terms, count].join(" · ")}</p>;
 }

@@ -1,5 +1,5 @@
-import { useId } from "react";
-import { Circle, CircleDot, Plus } from "lucide-react";
+import { useId, useState } from "react";
+import { Circle, Info, Pencil, Plus } from "lucide-react";
 import { studioAccessibleName, studioName } from "@/components/activity/studioVocabulary";
 import type { JsonPrimitive } from "@/generated/studioContracts";
 import { selectionButton, type PipelineSelection } from "@/features/pipeline/selection";
@@ -56,7 +56,7 @@ interface FormProps {
   onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
 }
 
-const controlClass = "min-w-0 rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-60";
+const controlClass = "min-w-0 max-w-full rounded border border-shell-control bg-shell-surface px-1.5 py-0.5 disabled:opacity-60";
 
 function scalarText(value: JsonPrimitive) {
   if (typeof value === "boolean") return studioName(value ? "true" : "false");
@@ -117,9 +117,9 @@ export function StudioDocumentPicker({ field, selection, onEdit }: Pick<FormProp
 function ValueSource({ value }: { value: FieldValue }) {
   return (
     <>
-      {value.changedFrom && <span className="text-slate-600"><s>{value.changedFrom.label}</s> →</span>}
-      {value.source && <span className="rounded bg-slate-100 px-1.5 text-xs text-slate-700">{value.source}</span>}
-      {value.reason && <span className="text-xs text-red-700">{value.reason}</span>}
+      {value.changedFrom && <span className="text-shell-muted"><s>{value.changedFrom.label}</s> →</span>}
+      {value.source && <span className="rounded bg-shell-subtle px-1.5 text-xs text-shell-muted">{value.source}</span>}
+      {value.reason && <span className="text-xs text-shell-status-failure">{value.reason}</span>}
     </>
   );
 }
@@ -147,14 +147,17 @@ function RuleField({ sweep, canList, onEdit }: { sweep: Exclude<FieldSweep, { ki
 
 export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChooseSweepValue }: Omit<FormProps, "fields"> & { field: StudioDefinitionField }) {
   const labelId = useId();
+  const valueEditorId = useId();
+  const [editingValue, setEditingValue] = useState<string>();
+  const edited = field.sweep?.kind === "list" ? field.sweep.values.find(({ id }) => id === editingValue) : undefined;
   const can = (kind: FieldEdit["kind"]) => field.actions.includes(kind);
   const edit = (command: FieldEdit) => onEdit({ fieldId: field.id, selection, edit: command });
   const sweep = field.sweep;
   const onlyValue = field.resolved.length === 1 ? field.resolved[0] : undefined;
   return (
-    <div className="studio-definition-field grid gap-1 rounded border border-slate-200 p-2 sm:grid-cols-[minmax(8rem,1fr)_3fr]" role="group" aria-labelledby={labelId}>
+    <div className="studio-definition-field grid gap-1 border-t border-shell-divider py-1.5" role="group" aria-labelledby={labelId}>
       <div className="flex items-start gap-1">
-        <span id={labelId} className="font-medium">{field.label}</span>
+        <span id={labelId} className="min-w-0 font-medium">{field.label}</span>
         {!sweep && onlyValue && can("toSweep") && (
           <button type="button" className="rounded p-0.5" aria-label={studioAccessibleName("toSweep", field.label)} onClick={() => edit({ kind: "toSweep", value: onlyValue.value })}>
             <Circle aria-hidden="true" size={15} />
@@ -164,55 +167,72 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
       {!sweep && (
         <ul className="space-y-1">
           {field.resolved.map((value) => (
-            <li key={value.id} className="flex flex-wrap items-center gap-2">
-              <ValueSource value={value} />
+            <li key={value.id} className="flex min-w-0 flex-wrap items-center gap-1">
               <ScalarEditor name={field.label} value={value} control={field.control} onChange={onlyValue && can("set") ? (next) => edit({ kind: "set", value: next }) : undefined} />
-              {field.unit && <span className="text-slate-700">{field.unit}</span>}
+              {field.unit && <span className="text-shell-muted">{field.unit}</span>}
+              <ValueSource value={value} />
             </li>
           ))}
         </ul>
       )}
       {sweep?.kind === "list" && (
-        <ul className="flex flex-wrap gap-2">
-          {sweep.values.map((value) => {
-            const label = value.label ?? scalarText(value.value);
-            const name = `${field.label} ${label}`;
-            return (
-              <li key={value.id} data-selected={value.selected || undefined} className="flex flex-wrap items-center gap-1 rounded p-1 data-[selected=true]:bg-violet-100">
-                {onChooseSweepValue && (
-                  <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)} {...selectionButton((extend) => onChooseSweepValue(sweep.id, value.id, extend))} className="rounded p-0.5">
-                    <CircleDot aria-hidden="true" size={15} />
-                  </button>
-                )}
-                <ValueSource value={value} />
-                {can("nameSweepValue") ? (
-                  <input key={value.label ?? ""} type="text" className={`${controlClass} w-28`}
-                    aria-label={studioAccessibleName("name", name)} placeholder={scalarText(value.value)}
-                    defaultValue={value.label ?? ""}
-                    onBlur={({ currentTarget }) => {
-                      const next = currentTarget.value.trim() || null;
-                      if (next !== (value.label ?? null)) edit({ kind: "nameSweepValue", sweepId: sweep.id, valueId: value.id, label: next });
-                    }}
-                    onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
-                  />
-                ) : value.label && <span>{value.label}</span>}
-                <ScalarEditor name={name} value={{ ...value, label: undefined }} control={field.control} onChange={can("setSweepValue") ? (next) => edit({ kind: "setSweepValue", sweepId: sweep.id, valueId: value.id, value: next }) : undefined} />
-                {can("toField") && (
-                  <button type="button" className={controlClass} aria-label={studioAccessibleName("toField", name)} onClick={() => edit({ kind: "toField", sweepId: sweep.id, keepValueId: value.id })}>
-                    {studioName("toField")}
-                  </button>
-                )}
-              </li>
-            );
-          })}
-          {can("addValue") && (
-            <li>
-              <button type="button" className={controlClass} aria-label={studioAccessibleName("addValue", field.label)} onClick={() => edit({ kind: "addValue", sweepId: sweep.id })}>
+        <div className="min-w-0 space-y-1.5">
+          <ul className="flex flex-wrap gap-1">
+            {sweep.values.map((value) => {
+              const label = value.label ?? scalarText(value.value);
+              const name = `${field.label} ${label}`;
+              const editable = can("nameSweepValue") || can("setSweepValue") || can("toField");
+              const description = [value.source, value.changedFrom?.label, value.reason].filter(Boolean).join(" · ");
+              const Icon = editable ? Pencil : Info;
+              return (
+                <li key={value.id} data-selected={value.selected || undefined}
+                  className="flex max-w-full items-center rounded border border-shell-divider data-[selected=true]:border-shell-foreground data-[selected=true]:bg-shell-selected">
+                  {onChooseSweepValue
+                    ? <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)}
+                      aria-description={description || undefined} title={description || undefined}
+                      {...selectionButton((extend) => onChooseSweepValue(sweep.id, value.id, extend))}
+                      className="min-w-0 truncate px-1.5 py-0.5 tabular-nums">{label}</button>
+                    : <span className="min-w-0 truncate px-1.5 py-0.5 tabular-nums">{label}</span>}
+                  {(editable || description) && <button type="button" aria-label={studioAccessibleName(editable ? "edit" : "details", name)}
+                    aria-expanded={edited?.id === value.id} aria-controls={valueEditorId}
+                    onClick={() => setEditingValue(edited?.id === value.id ? undefined : value.id)}
+                    className="shrink-0 rounded p-1 hover:bg-shell-hover">
+                    <Icon aria-hidden="true" size={12} />
+                  </button>}
+                </li>
+              );
+            })}
+            {can("addValue") && <li>
+              <button type="button" className={controlClass} aria-label={studioAccessibleName("addValue", field.label)}
+                onClick={() => edit({ kind: "addValue", sweepId: sweep.id })}>
                 <Plus aria-hidden="true" size={15} />
               </button>
-            </li>
-          )}
-        </ul>
+            </li>}
+          </ul>
+          {edited && <div id={valueEditorId} className="flex min-w-0 flex-wrap items-center gap-1" key={edited.id}>
+            {can("nameSweepValue") && (
+              <input key={edited.label ?? ""} type="text" className={`${controlClass} w-24`}
+                aria-label={studioAccessibleName("name", `${field.label} ${edited.label ?? scalarText(edited.value)}`)}
+                placeholder={scalarText(edited.value)} defaultValue={edited.label ?? ""}
+                onBlur={({ currentTarget }) => {
+                  const next = currentTarget.value.trim() || null;
+                  if (next !== (edited.label ?? null)) edit({ kind: "nameSweepValue", sweepId: sweep.id, valueId: edited.id, label: next });
+                }}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+              />
+            )}
+            <ScalarEditor name={`${field.label} ${edited.label ?? scalarText(edited.value)}`} value={{ ...edited, label: undefined }}
+              control={field.control} onChange={can("setSweepValue") ? (next) => edit({ kind: "setSweepValue", sweepId: sweep.id, valueId: edited.id, value: next }) : undefined} />
+            <ValueSource value={edited} />
+            {can("toField") && (
+              <button type="button" className={controlClass}
+                aria-label={studioAccessibleName("toField", `${field.label} ${edited.label ?? scalarText(edited.value)}`)}
+                onClick={() => edit({ kind: "toField", sweepId: sweep.id, keepValueId: edited.id })}>
+                {studioName("toField")}
+              </button>
+            )}
+          </div>}
+        </div>
       )}
       {sweep && sweep.kind !== "list" && <RuleField sweep={sweep} canList={can("toList")} onEdit={edit} />}
     </div>

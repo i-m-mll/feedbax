@@ -73,7 +73,7 @@ export function ScenePlanarFields({ authoring, selectedId }: { authoring: Author
           ))}
         </fieldset>
       )}
-      {editIssue && <p role="alert" className="text-sm text-red-700">{editIssue}</p>}
+      {editIssue && <p role="alert" className="text-sm text-shell-status-failure">{editIssue}</p>}
     </div>
   );
 }

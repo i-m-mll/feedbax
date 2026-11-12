@@ -43,7 +43,7 @@ export type StudioInputEdit =
   | { readonly kind: "saveSubset" | "rename"; readonly name: string }
   | { readonly kind: "toRows" };
 
-const inputClass = "rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-50";
+const inputClass = "rounded border border-shell-control bg-shell-surface px-2 py-1 disabled:opacity-50";
 
 function MeasureEditor({ editor, onEdit }: { editor: InputSubsetView; onEdit: (rule: MeasureRule | null) => void }) {
   const measure = editor.measure;
@@ -110,7 +110,7 @@ function SubsetNameForm({ name, onEdit }: { name?: string; onEdit: (edit: Studio
 
 function InputSubset({ input, editor, onEdit }: { input: StudioRunInputView; editor: InputSubsetView; onEdit: (edit: StudioInputEdit) => void }) {
   return (
-    <div className="space-y-2 rounded bg-slate-50 p-2">
+    <div className="space-y-2 rounded bg-shell-subtle p-2">
       {input.actions.includes("value") && editor.sweeps.map((sweep) => {
         const term = editor.values.find(({ sweepId }) => sweepId === sweep.id);
         return (
@@ -164,7 +164,7 @@ export function StudioRunInputs({ inputs, onEdit }: { inputs: readonly StudioRun
     <section aria-label={studioName("inputs")} className="space-y-2">
       <h2 className="font-semibold">{studioName("inputs")}</h2>
       {inputs.map((input) => (
-        <div key={input.id} className="space-y-2 rounded border border-slate-200 p-2">
+        <div key={input.id} className="space-y-2 rounded border border-shell-divider p-2">
           <div className="flex flex-wrap items-baseline gap-2">
             <span className="font-medium">{input.label}</span>
             <select
@@ -182,10 +182,10 @@ export function StudioRunInputs({ inputs, onEdit }: { inputs: readonly StudioRun
                 ) : null;
               })}
             </select>
-            {input.reason && <p className="text-red-700">{input.reason}</p>}
+            {input.reason && <p className="text-shell-status-failure">{input.reason}</p>}
           </div>
           {input.subset && (
-            <p className="text-slate-700">{[...input.subset.terms, studioCountOf(input.subset.count, input.subset.total)].join(" · ")}</p>
+            <p className="text-shell-muted">{[...input.subset.terms, studioCountOf(input.subset.count, input.subset.total)].join(" · ")}</p>
           )}
           {input.editor && <InputSubset input={input} editor={input.editor} onEdit={(edit) => onEdit(input.id, edit)} />}
         </div>

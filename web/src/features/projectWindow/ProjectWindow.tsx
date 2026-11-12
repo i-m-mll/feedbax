@@ -124,6 +124,7 @@ export function ProjectWindow({
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
   const [paletteScope, setPaletteScope] = useState<'project' | 'activity' | null>(null);
   const [railFocus, setRailFocus] = useState<ProjectWindowView | null>(null);
+  const pointerTransition = useRef<{ slot: ProjectWindowSlot }>();
   const handledFocusRequest = useRef(focusRequest);
   const moveFocus = (region: WindowRegion) => setRequestedFocus({ region });
   useLayoutEffect(() => installTooltips(), []);
@@ -137,7 +138,13 @@ export function ProjectWindow({
     secondary: secondaryView ? renderView(secondaryView, 'secondary') : null,
   };
   const focusedRegion = regions[focusedSlot];
-  const fit = fitProjectWindow(width, height, secondaryView ? state : { ...state, secondaryView: null }, preview, {
+  const sideRegionsAvailable = shownViews[focusedSlot] !== 'results';
+  const fit = fitProjectWindow(width, height, {
+    ...state,
+    secondaryView,
+    detailsDrawerOpen: sideRegionsAvailable && state.detailsDrawerOpen,
+    inspectorOpen: sideRegionsAvailable && state.inspectorOpen,
+  }, preview, {
     drawer: Boolean(focusedRegion?.drawer), inspector: Boolean(focusedRegion?.inspector),
   });
   const detailsVisible = state.mode !== 'map';
@@ -166,6 +173,29 @@ export function ProjectWindow({
   function focusSlot(slot: ProjectWindowSlot) {
     onStateChange((previous) => previous.focusedSlot === slot ? previous : { ...previous, focusedSlot: slot });
   }
+
+  useEffect(() => {
+    let frame = 0;
+    function finishPointer() {
+      const pending = pointerTransition.current;
+      if (!pending) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (pointerTransition.current !== pending) return;
+        pointerTransition.current = undefined;
+        const region = document.activeElement?.closest<HTMLElement>('[data-studio-focus-region]');
+        if (region?.dataset.studioFocusRegion !== pending.slot) return;
+        onStateChange((state) => state.focusedSlot === pending.slot ? state : { ...state, focusedSlot: pending.slot });
+      });
+    }
+    window.addEventListener('pointerup', finishPointer, true);
+    window.addEventListener('pointercancel', finishPointer, true);
+    return () => {
+      window.removeEventListener('pointerup', finishPointer, true);
+      window.removeEventListener('pointercancel', finishPointer, true);
+      cancelAnimationFrame(frame);
+    };
+  }, [onStateChange]);
 
   function activateView(view: ProjectWindowView) {
     onStateChange((previous) => showProjectWindowView(previous, view, focusedSlot));
@@ -227,7 +257,7 @@ export function ProjectWindow({
       ...previous, mode: previous.mode === 'map' ? 'both' : previous.mode, [key]: !visible,
     }));
     moveFocus(visible ? focusedSlot : region);
-  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id });
+  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id, enabled: sideRegionsAvailable });
   const drawer = side('showDrawer', 'detailsDrawerOpen', 'drawer', detailsDrawerVisible);
   const inspector = side('showInspector', 'inspectorOpen', 'inspector', inspectorVisible);
   const splitCommand = bindStudioCommand('splitDetails', splitDetails,
@@ -384,7 +414,17 @@ export function ProjectWindow({
                 )}
                 <section id={ids[slot]} role="tabpanel" aria-labelledby={tabId(view)} data-studio-focus-region={slot} className="studio-window-slot__view" tabIndex={0}
                   data-focused={focusedSlot === slot ? '' : undefined} hidden={isFolded}
-                  onFocusCapture={() => focusSlot(slot)} onPointerDownCapture={() => focusSlot(slot)}>
+                  onFocusCapture={() => { if (pointerTransition.current?.slot !== slot) focusSlot(slot); }}
+                  onPointerDownCapture={() => {
+                    const crossesResults = slot !== focusedSlot && (view === 'results' || !sideRegionsAvailable);
+                    // Keep the clicked control under the pointer until its click is dispatched.
+                    pointerTransition.current = crossesResults ? { slot } : undefined;
+                    if (!crossesResults) focusSlot(slot);
+                  }}
+                  onClickCapture={() => {
+                    pointerTransition.current = undefined;
+                    focusSlot(slot);
+                  }}>
                   <header className="studio-window-slot__header">
                     <h2 className="studio-window-slot__name">{studioName(view)}</h2>
                     <div className="studio-window-slot__controls">{region.header}</div>
