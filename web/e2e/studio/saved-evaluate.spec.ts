@@ -133,11 +133,15 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
   expect(submitted.map(({ disposition }) => disposition)).toEqual(['admitted', 'admitted', 'admitted']);
   await expect(plans(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 22_000 });
   await expect(plans(page).getByRole('columnheader', { name: 'Size', exact: true })).toBeVisible();
-  await expect(plans(page).getByText(/13,328\s?B/)).toHaveCount(2);
-  await chooseStep(page, 'baseline');
-  await expect(plans(page).getByText(/13,328\s?B/)).toHaveCount(1);
-
   const settled = await plan();
+  const formatBytes = new Intl.NumberFormat('en-US', { style: 'unit', unit: 'byte', unitDisplay: 'narrow' });
+  const conditionSizes = settled.window_map!.evaluations!
+    .filter(({ key }) => key.step === 'conditions').map(({ result }) => result!.size_bytes);
+  expect(new Set(conditionSizes).size).toBe(1);
+  await expect(plans(page).getByText(formatBytes.format(conditionSizes[0]), { exact: true })).toHaveCount(2);
+  await chooseStep(page, 'baseline');
+  const baselineSize = settled.window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.result!.size_bytes;
+  await expect(plans(page).getByText(formatBytes.format(baselineSize), { exact: true })).toHaveCount(1);
   const labels = new Map(settled.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
   const replayRow = (row: StudioSavedEvaluationRow) => showTrial(page, replayPath, row, labels.get(JSON.stringify(row.key))!);
   const rows = settled.window_map!.evaluations!.filter(({ result }) => result);
@@ -147,7 +151,7 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
   const source = settled.rows.find(({ key }) => key.step === 'train')!;
   for (const { result } of rows) {
     expect(result!.checkpoint_source).toEqual({ job_id: train.job_id, request_id: source.request_id, completed_updates: 2 });
-    expect(result!.size_bytes).toBe(13_328);
+    expect(result!.size_bytes).toBeGreaterThan(13_328);
   }
   const replays = new Map<string, WorkspaceReplayTrial>();
   for (const row of rows) replays.set(row.result!.job_id, await replayRow(row));

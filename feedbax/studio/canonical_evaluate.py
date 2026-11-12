@@ -24,6 +24,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import EvaluationRequestSpec
+from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.workspace_replay import (
     WorkspaceReplayManifestRefs,
     WorkspaceReplaySampleAxis,
@@ -37,6 +38,7 @@ from feedbax.persistence.dataset import open_dataset
 
 ROLLOUT_TYPE = "feedbax.rollout"
 STATES_SCHEMA = "feedbax.candidate.evaluate.states.v1"
+RAW_STATES_SCHEMA = "feedbax.candidate.evaluate.raw_states.v1"
 STATES_MEDIA_TYPE = "application/vnd.safetensors"
 
 
@@ -52,7 +54,7 @@ class RolloutParameters(StrictModel):
     seed: int = Field(strict=True, ge=0, lt=2**32)
     trials: tuple[str, ...] = Field(min_length=1)
     trial_policy: Literal["paired"]
-    retention: Literal["observations"]
+    retention: Literal["raw_states", "observations"] = "raw_states"
     variation: tuple[OverridePatch, ...] = Field(max_length=1)
 
     @field_validator("trials")
@@ -114,7 +116,7 @@ def decode_rollout_request(
 
 def state_key(owner: str, symbol: str) -> str:
     """Project a declared state symbol of a root occurrence into a dataset key."""
-    return pointer(("v1", "model", "state", owner, symbol))
+    return semantic_key("model", "state", (owner,), symbol)
 
 
 def evaluation_manifest_id(job_id: str) -> str:
@@ -182,13 +184,17 @@ class EvaluationResult:
 
     @contextmanager
     def open_states(self) -> Iterator[Dataset]:
-        ref = states_ref(self._manifest())
+        manifest = self._manifest()
+        ref = states_ref(manifest)
+        spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+        params = RolloutParameters.model_validate(spec.params)
         store = ImmutableArtifactBlobProvider(self._root)
         with (
             store.open_owned_object(ref.object_ref) as path,
             open_dataset(path, expected_descriptor_sha256=ref.descriptor_sha256) as dataset,
         ):
-            if dataset.descriptor.schema_id != STATES_SCHEMA:
+            expected_schema = RAW_STATES_SCHEMA if params.retention == "raw_states" else STATES_SCHEMA
+            if dataset.descriptor.schema_id != expected_schema:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset
 

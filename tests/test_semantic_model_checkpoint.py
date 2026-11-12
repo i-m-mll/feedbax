@@ -20,7 +20,11 @@ from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.training import GraphTopologySourceSpec
 from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.dataset import Dataset, Variable
 from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
+from feedbax.persistence.array_container import ArrayContainerReader
+from feedbax.persistence.dataset import open_dataset, publish_dataset
+from feedbax.runtime.raw_state import bind_raw_state
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
@@ -79,7 +83,7 @@ def _thelen_graph(params):
     )
 
 
-def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path):
+def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path, monkeypatch):
     structural = {"n_muscles": 2, "initial_activation": 0.25}
     final_values = {
         "max_isometric_force": 710.0,
@@ -112,6 +116,47 @@ def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path):
     actual, _ = restored(inputs, restored.init_state(key=key), key=key)
     for name in ("force", "activation", "fiber_length", "fiber_velocity"):
         np.testing.assert_array_equal(expected[name], actual[name])
+
+    capture = bind_raw_state(restored, selected.graph)
+    step_inputs = {name: jnp.repeat(values[None], 4, axis=0) for name, values in inputs.items()}
+    actual, _, _, history = restored.rollout_with_trace_and_history(
+        step_inputs, restored.init_state(key=key), key=key, n_steps=4, trace=(),
+        capture_state=capture.capture,
+    )
+    expected, _ = source(step_inputs, source.init_state(key=key), key=key, n_steps=4)
+    assert not np.array_equal(actual["force"], template(
+        step_inputs, template.init_state(key=key), key=key, n_steps=4,
+    )[0]["force"])
+    np.testing.assert_allclose(actual["force"], expected["force"], rtol=2e-7)
+    variables, coordinates = capture.dataset_fields(
+        [history], axes=("checkpoint", "condition", "trial"),
+    )
+    coordinates["state_time"] = Variable(np.arange(5) * muscle.dt, ("state_time",), units="s")
+    coordinates["trial"] = Variable(np.array(["thelen"]), ("trial",))
+    dataset = Dataset.from_arrays(variables, coords=coordinates)
+    states = ImmutableArtifactBlobProvider(tmp_path / "states")
+    ref = publish_dataset(states, dataset)
+    reads = []
+    read_tensor = ArrayContainerReader.read_tensor
+
+    def selected_tensor(reader, name):
+        reads.append(name)
+        return read_tensor(reader, name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ArrayContainerReader, "read_tensor", selected_tensor)
+        with open_dataset(
+            states.object_path(ref.object_ref), expected_descriptor_sha256=ref.descriptor_sha256,
+        ) as opened:
+            name = "/v1/model/state/muscle/activation"
+            assert set(opened.descriptor.variables) == {name}
+            field = opened.descriptor.variables[name]
+            assert field.dims == ("checkpoint", "condition", "trial", "state_time", "muscle:muscle")
+            assert field.units == "1"
+            samples = opened.select(name, labels={"trial": "thelen"})[0, 0]
+        assert reads == [name]
+    np.testing.assert_array_equal(samples[0], [0.25, 0.25])
+    np.testing.assert_allclose(samples[1:], expected["activation"], rtol=2e-7)
 
     provider = ImmutableArtifactBlobProvider(tmp_path / "archives")
     reference = authenticate_published_checkpoint_custody(written.root).parent_ref

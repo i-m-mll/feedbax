@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from operator import attrgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -25,6 +25,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.semantic_values import semantic_key
 from feedbax.persistence.array_container import (
     ArrayContainerError,
     decode_array_container,
@@ -36,6 +37,7 @@ from feedbax.persistence.artifact_custody import (
     decode_content_tree_descriptor,
 )
 from feedbax.runtime.graph import Graph
+from feedbax.runtime.model_values import MODEL_OWNERS, SPATIAL_OWNER
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
@@ -54,53 +56,6 @@ class ModelCheckpointError(CheckpointCustodyError):
     def __init__(self, path: str, message: str):
         self.path = path
         super().__init__(f"{path}: {message}")
-
-
-@dataclass(frozen=True)
-class _Value:
-    symbol: str
-    field: str
-    kind: Literal["source", "learned"]
-
-
-@dataclass(frozen=True)
-class _Owner:
-    revision: int
-    values: tuple[_Value, ...]
-
-
-def _learned(*values: tuple[str, str]) -> tuple[_Value, ...]:
-    return tuple(_Value(symbol, field, "learned") for symbol, field in values)
-
-
-def _source(*names: str) -> tuple[_Value, ...]:
-    return tuple(_Value(name, name, "source") for name in names)
-
-
-_SPATIAL = "feedbax.AcausalSystem"
-_OWNERS = {
-    "feedbax.GRU": _Owner(1, _learned(
-        ("input_kernel", "cell.weight_ih"),
-        ("recurrent_kernel", "cell.weight_hh"),
-        ("gate_bias", "cell.bias"),
-        ("candidate_bias", "cell.bias_n"),
-    )),
-    "feedbax.Linear": _Owner(2, _learned(("kernel", "layer.weight"), ("bias", "layer.bias"))),
-    "feedbax.PointMass": _Owner(1, (
-        _Value("mass", "plant.skeleton.mass", "source"),
-        _Value("damping", "plant.skeleton.damping", "source"),
-        *_source("dt"),
-    )),
-    "feedbax.RigidTendonHillMuscleThelen": _Owner(2, _source(
-        "max_isometric_force", "optimal_muscle_length", "tendon_slack_length",
-        "vmax_factor", "min_activation", "tau_activation", "tau_deactivation", "dt",
-    )),
-    _SPATIAL: _Owner(1, ()),
-}
-
-
-def _pointer_token(value: str) -> str:
-    return value.replace("~", "~0").replace("/", "~1")
 
 
 def _asset_path(ref: ContentObjectRef) -> str:
@@ -157,14 +112,14 @@ class SemanticModelWriter:
         if not graph.nodes:
             return None
         for name, node in graph.nodes.items():
-            owner = _OWNERS.get(node.type)
+            owner = MODEL_OWNERS.get(node.type)
             if owner is None or node.revision not in {None, owner.revision}:
                 return None
             interior = (graph.subgraphs or {}).get(name)
-            if node.type != _SPATIAL and interior is None:
+            if node.type != SPATIAL_OWNER and interior is None:
                 continue
             if (
-                node.type == _SPATIAL
+                node.type == SPATIAL_OWNER
                 and isinstance(interior, AcausalGraphSpec)
                 and interior.mujoco_asset is not None
                 and interior.solver.solver_type == "mujoco"
@@ -278,11 +233,11 @@ class SemanticModelSlot:
         nodes = dict(template.nodes)
         for name, component in template.nodes.items():
             binding = template.component_bindings[name]
-            values = _OWNERS[binding.type_id].values
+            values = MODEL_OWNERS[binding.type_id].values
             source = {}
             learned = []
             for value in values:
-                address = f"/v1/model/value/{_pointer_token(name)}/{value.symbol}"
+                address = semantic_key("model", "value", (name,), value.symbol)
                 if address in decoded.tensors:
                     data = decoded.tensors[address]
                     if value.kind == "source":
@@ -307,15 +262,15 @@ def _describe(graph: GraphSpec, model: Graph) -> tuple[dict, dict]:
     arrays, declarations = {}, {}
     for name, component in model.nodes.items():
         binding = model.component_bindings[name]
-        owner_path = f"/v1/model/value/{_pointer_token(name)}"
-        owner = _OWNERS.get(binding.type_id)
+        owner_path = semantic_key("model", "value", (), name)
+        owner = MODEL_OWNERS.get(binding.type_id)
         if (
             owner is None or graph.nodes[name].type != binding.type_id
             or binding.revision != owner.revision
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")
         for value in owner.values:
-            path = f"{owner_path}/{value.symbol}"
+            path = semantic_key("model", "value", (name,), value.symbol)
             leaf = attrgetter(value.field)(component)
             if leaf is None and value.kind == "learned":
                 continue

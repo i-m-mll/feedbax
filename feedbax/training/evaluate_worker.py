@@ -20,12 +20,14 @@ from feedbax.contracts.manifest import (
     normalize_manifest_spec_payloads,
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
+from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.studio.canonical_evaluate import (
+    RAW_STATES_SCHEMA,
     ROLLOUT_TYPE,
     STATES_MEDIA_TYPE,
     STATES_SCHEMA,
@@ -75,6 +77,7 @@ def _rollouts(
 
     from feedbax.compiler import GraphDocument, compile_graph
     from feedbax.contracts.authored_canonical import canonical_sha256
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.matrix_core import apply_override_patches
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
@@ -83,7 +86,8 @@ def _rollouts(
     from feedbax.mechanics.direct_force_components import PointMass
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
-    from feedbax.runtime.graph import init_state_from_component
+    from feedbax.runtime.model_values import MODEL_OWNERS
+    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
     from feedbax.training.model_checkpoint import ModelCheckpointError
     from feedbax.training.checkpoint_custody import open_published_model_slot
     from feedbax.training.studio_executor import studio_training_key
@@ -103,15 +107,21 @@ def _rollouts(
         raise CannotRun("/inputs/subject/task_binding_spec", "requires declared task bindings")
     if spec.objective.loss is None:
         raise CannotRun("/inputs/subject/objective", "requires a shared loss term plan")
+    authored_graph = GraphSpec.model_validate(spec.graph.inline)
+    if authored_graph.subgraphs:
+        raise CannotRun("/inputs/subject/graph/subgraphs", "nested state owners are unavailable")
+    for name, node in authored_graph.nodes.items():
+        declaration = MODEL_OWNERS.get(node.type)
+        if declaration is None or declaration.states is None or node.revision not in {
+            None, declaration.revision,
+        }:
+            raise CannotRun(
+                json_pointer(("inputs", "subject", "graph", "nodes", name)),
+                "owner revision has no declared raw-state layout",
+            )
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
-    for name, node in slot.graph.nodes.items():
-        if node.type not in {"feedbax.GRU", "feedbax.Linear", "feedbax.PointMass"}:
-            raise CannotRun(
-                json_pointer(("inputs", "subject", "graph", "nodes", name)),
-                "this candidate has no observation or clock contract for this owner",
-            )
     outputs = slot.graph.output_bindings
     point_mass = [
         (name, node)
@@ -124,9 +134,17 @@ def _rollouts(
             "/inputs/subject/graph/output_bindings",
             "requires one declared root PointMass effector output and a single-clock graph",
         )
-    output, owner = point_mass[0]
-    if not any(item.id == "reach_target" for item in spec.task_binding_spec.exposed_data):
-        raise CannotRun("/inputs/subject/task_binding_spec/exposed_data", "requires reach_target")
+    _, owner = point_mass[0]
+    target_spec = next(
+        (item for item in spec.task_binding_spec.exposed_data if item.id == "reach_target"), None,
+    )
+    if target_spec is None or target_spec.units not in {None, "m"} or target_spec.frame not in {
+        None, "world",
+    }:
+        raise CannotRun(
+            "/inputs/subject/task_binding_spec/exposed_data",
+            "requires reach_target in the world Cartesian frame in metres",
+        )
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
     executable = compile_graph(
@@ -144,10 +162,11 @@ def _rollouts(
     if not isinstance(plant, PointMass):
         raise CannotRun(f"/inputs/subject/graph/nodes/{owner}", "requires the PointMass owner")
     for name, component in restored.nodes.items():
-        if isinstance(component, PointMass) and component.dt != plant.dt:
+        clock = MODEL_OWNERS[slot.graph.nodes[name].type].clock
+        if clock is not None and getattr(component, clock) != plant.dt:
             raise CannotRun(
-                json_pointer(("inputs", "subject", "graph", "nodes", name, "params", "dt")),
-                "PointMass clocks differ within the graph",
+                json_pointer(("inputs", "subject", "graph", "nodes", name, "params", clock)),
+                "declared owner clock differs from the PointMass control period",
             )
     graph = restored
     if params.variation:
@@ -182,48 +201,62 @@ def _rollouts(
         executable_graph=replace(executable, graph=graph),
     )
     plant = graph.nodes[owner]
-    initial = init_state_from_component(graph)
-    reset = plant.initial_outputs(initial.get(plant.state_index))["effector"]
-    positions, velocities, targets, totals = [], [], [], []
+    position = state_key(owner, "effector/position")
+    velocity = state_key(owner, "effector/velocity")
+    raw = params.retention == "raw_states"
+    try:
+        layout = bind_raw_state(
+            graph, slot.graph, selected=None if raw else frozenset({position, velocity}),
+        )
+    except StateLayoutError as error:
+        raise CannotRun(error.path, str(error)) from error
+    histories, targets, totals = [], [], []
     terms_by_id = {}
     for trial in params.trials:
         if stop.exists():
             return None
         key = derive_key(jax.random.PRNGKey(params.seed), "evaluate-trial", trial)
-        rollout = rollout_graph(graph, compiled, key=key)
-        effector = rollout["outputs"][output]
+        rollout = rollout_graph(graph, compiled, key=key, capture_state=layout.capture)
         target = np.asarray(rollout["task_data"]["reach_target"])
         if target.shape != (compiled.n_steps, 2):
             raise CannotRun("/inputs/subject/task_binding_spec/exposed_data", "requires 2D targets")
-        positions.append(np.concatenate((np.asarray(reset.pos)[None], np.asarray(effector.pos))))
-        velocities.append(np.concatenate((np.asarray(reset.vel)[None], np.asarray(effector.vel))))
+        histories.append(rollout["state_history"])
         targets.append(target)
         total, terms = _evaluate_loss(compiled, rollout)
         totals.append(float(total))
         for name, value in terms.items():
             terms_by_id.setdefault(name, []).append(float(value))
-    fields = (*positions, *velocities, *targets, totals, *terms_by_id.values())
+    fields = (*targets, totals, *terms_by_id.values())
     if any(not np.isfinite(field).all() for field in fields):
         raise FloatingPointError("Evaluation produced a nonfinite observation or objective.")
 
-    position = state_key(owner, "effector/position")
-    velocity = state_key(owner, "effector/velocity")
     axes = ("checkpoint", "condition", "trial")
     time = np.arange(compiled.n_steps + 1, dtype=np.float64) * float(plant.dt)
 
     def field(values, *dims, units=None, frame=None):
         return Variable(np.asarray(values)[None, None], (*axes, *dims), units=units, frame=frame)
 
-    variables = {
-        position: field(positions, "state_time", "xy", units="m", frame="world"),
-        velocity: field(velocities, "state_time", "xy", units="m/s", frame="world"),
-        "/v1/task/output/reach_target": field(targets, "transition", "xy", units="m", frame="world"),
+    variables, state_coordinates = layout.dataset_fields(histories, axes=axes)
+    target_key = semantic_key("task", "output", (), "reach_target")
+    variables.update({
+        target_key: field(targets, "transition", "xy", units="m", frame="world"),
         "objective/total": field(totals),
-    }
+    })
     variables.update({
         "objective/terms" + json_pointer((name,)): field(values)
         for name, values in terms_by_id.items()
     })
+    attrs = {"scene_position": position}
+    if raw:
+        attrs.update({
+            "state_sampling": "reset_and_post_transition",
+            "state_lifetime": "trial",
+            "source_graph_sha256": sha256(
+                canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
+            ).hexdigest(),
+        })
+        if any(name.startswith("/v1/model/carry/") for name in variables):
+            attrs["carry_address_migration"] = "legacy-gru-hidden-self-loop.v1"
     return Dataset.from_arrays(
         variables,
         coords={
@@ -233,13 +266,13 @@ def _rollouts(
                 ("condition",),
             ),
             "trial": Variable(np.asarray(params.trials), ("trial",)),
-            "xy": Variable(np.asarray(["x", "y"]), ("xy",)),
+            **state_coordinates,
             "state_time": Variable(time, ("state_time",), units="s"),
             "transition_start": Variable(time[:-1], ("transition",), units="s"),
             "transition_end": Variable(time[1:], ("transition",), units="s"),
         },
-        attrs={"scene_position": position},
-        schema_id=STATES_SCHEMA,
+        attrs=attrs,
+        schema_id=RAW_STATES_SCHEMA if raw else STATES_SCHEMA,
     ), {"objective/total": float(np.mean(totals))}
 
 
