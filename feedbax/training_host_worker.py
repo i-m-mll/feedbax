@@ -26,6 +26,8 @@ class _Result:
     outcome: Literal["succeeded", "stopped", "failed"]
     receipt: Mapping[str, str] | None = None
     error: Mapping[str, str] | None = None
+    completion: Mapping[str, Any] | None = None
+    completion_error: Mapping[str, str] | None = None
 
 
 @dataclass
@@ -107,6 +109,10 @@ class _Events:
             data["receipt"] = result.receipt
         if result.error is not None:
             data["error"] = result.error
+        if result.completion is not None:
+            data["completion"] = result.completion
+        if result.completion_error is not None:
+            data["completion_error"] = result.completion_error
         self.append("result", data, sync=True)
         return int(result.outcome == "failed")
 
@@ -124,7 +130,11 @@ def _error(exc: Exception, phase: str) -> dict[str, str]:
         path = diagnostics[0].source_anchor.authored_path
     elif diagnostics := getattr(exc, "diagnostics", ()):
         path = (diagnostics[0].location or {}).get("path")
-    if isinstance(exc, FloatingPointError):
+    from feedbax.host.completion import CompletionFileError
+
+    if isinstance(exc, CompletionFileError):
+        code = "dependency_corrupt"
+    elif isinstance(exc, FloatingPointError):
         code = "numerical_failure"
         phase = "running"
     elif isinstance(exc, OSError) and phase in {"binding", "running", "finalizing"}:
@@ -181,6 +191,13 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         StudioGraphMethodPayload,
         StudioTrainingJobInput,
     )
+    from feedbax.host.completion import CompletionFileError
+    from feedbax.job_completion import (
+        CompletionUnavailable,
+        training_binding_path,
+        verify_bound_training_completion,
+        verify_training_completion,
+    )
     from feedbax.orchestration.events import normalize_serialized_metrics
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
@@ -201,7 +218,11 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         raise ValueError("manifest_root must be absolute")
     manifest_root = launch.manifest_root.resolve()
     checkpoint_root = _attempt_root(manifest_root, job_id)
-    binding_path = checkpoint_root / "binding.json"
+    binding_path = training_binding_path(manifest_root, job_id)
+    if sidecar := os.environ.get("FEEDBAX_HOST_COMPLETION_BINDINGS"):
+        dependencies = strict_json_loads(Path(sidecar).read_text())
+        for dependency in dependencies["bindings"]:
+            verify_bound_training_completion(dependency["completion"])
     resume = launch.resume
     if resume is not None:
         events.current_phase = "restoring"
@@ -219,11 +240,12 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
 
     events.current_phase = "binding"
     write_bytes_atomic(binding_path, launch.model_dump_json(exclude_none=True).encode(), replace=False)
+    binding_sha256 = sha256_file(binding_path)
     events.append(
         "binding",
         {
             "binding_path": str(binding_path),
-            "binding_sha256": sha256_file(binding_path),
+            "binding_sha256": binding_sha256,
             "resume": resume.model_dump(mode="json") if resume is not None else None,
         },
         sync=True,
@@ -391,7 +413,19 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             execution_start_semantics="host_worker_entry",
         )
         if result.status == "completed" and result.end_completed_batches == target:
-            return _Result("succeeded", receipt=receipt("completed"))
+            terminal_receipt = receipt("completed")
+            try:
+                completion = verify_training_completion(
+                    producer_job_id=job_id, launch=launch, binding_sha256=binding_sha256,
+                    receipt=terminal_receipt, checkpoint=events.checkpoint,
+                )
+            except (CompletionFileError, CompletionUnavailable) as error:
+                code = "input_unavailable" if isinstance(error, CompletionUnavailable) else "dependency_corrupt"
+                return _Result(
+                    "succeeded", receipt=terminal_receipt,
+                    completion_error={"code": code, "message": str(error)},
+                )
+            return _Result("succeeded", receipt=terminal_receipt, completion=completion)
         if result.status == "cancelled" and stop_requested and events.checkpoint is not None:
             return _Result("stopped", receipt=receipt("cancelled"))
         if result.status == "failed" and result.manifest.failure_kind == "nan_guard":

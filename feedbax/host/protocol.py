@@ -26,6 +26,12 @@ LIVE_STATES = ("queued", "assigned", "running", "stopping")
 TERMINAL_STATES = ("succeeded", "stopped", "failed", "interrupted", "blocked")
 
 
+def can_resume_attempt(state: str, checkpoint: object, delivery: int) -> bool:
+    return state in {"stopped", "failed", "interrupted"} and (
+        checkpoint is not None or (state == "stopped" and delivery == 0)
+    )
+
+
 class HostError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -46,6 +52,7 @@ class Launch:
 class Edge:
     job_id: str
     publication: str | None = None
+    authenticated_completion: bool = False
 
 
 @dataclass(frozen=True, slots=True)

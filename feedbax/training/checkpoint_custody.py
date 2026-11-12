@@ -436,7 +436,7 @@ def _published_checkpoint_set(
     *,
     run_spec: TrainingRunSpec,
     manifest: CheckpointTransactionManifest,
-    parent_checkpoint_set: CheckpointSet | None = None,
+    parent: ExactRef | None = None,
 ) -> CheckpointSet:
     """Project the internal transaction protocol into its public checkpoint identity."""
     binding = manifest.run_contract_binding
@@ -478,24 +478,14 @@ def _published_checkpoint_set(
         None,
     )
     parent_transaction_id = manifest.segment_lineage.parent_transaction_id
-    if parent_transaction_id is None and parent_checkpoint_set is not None:
+    if parent_transaction_id is None and parent is not None:
         raise CheckpointCustodyError(
             "checkpoint publication supplied a parent without transaction lineage"
         )
-    if parent_transaction_id is not None and parent_checkpoint_set is None:
+    if parent_transaction_id is not None and parent is None:
         raise CheckpointCustodyError(
             "continuation checkpoint requires its authenticated parent CheckpointSet"
         )
-    if (
-        parent_checkpoint_set is not None
-        and parent_checkpoint_set.transaction.identity != parent_transaction_id
-    ):
-        raise CheckpointCustodyError(
-            "checkpoint parent publication does not match transaction lineage; "
-            f"lineage={parent_transaction_id!r} "
-            f"publication={parent_checkpoint_set.transaction.identity!r}"
-        )
-    parent = None if parent_checkpoint_set is None else parent_checkpoint_set.exact_ref
     progress = {
         key: value
         for key, value in manifest.completed_coordinate.model_dump(mode="json").items()
@@ -569,6 +559,14 @@ def load_checkpoint_set(
     ):
         raise CheckpointCustodyError(
             "native CheckpointSet does not identify its exact transaction manifest"
+        )
+    recorded_parent = manifest.metadata.get("checkpoint_segment_parent_ref")
+    if recorded_parent is not None and (
+        checkpoint_set.parent is None
+        or recorded_parent != checkpoint_set.parent.model_dump(mode="json")
+    ):
+        raise CheckpointCustodyError(
+            "native CheckpointSet parent disagrees with the authenticated segment parent"
         )
     return checkpoint_set
 
@@ -3164,6 +3162,8 @@ def _wrap_migrated_v5_batch_histories(
 def _allocate_segment_histories(
     source_slots: Mapping[str, Any],
     templates: Mapping[str, Any],
+    *,
+    preserve_history_abi: bool = False,
 ) -> tuple[dict[str, Any], set[str]]:
     """Preserve dynamical leaves while replacing histories with segment templates."""
     result = dict(source_slots)
@@ -3173,6 +3173,10 @@ def _allocate_segment_histories(
             continue
         source_leaves, source_def = jt.flatten(source, is_leaf=is_type(BatchHistory))
         target_leaves, target_def = jt.flatten(templates[slot], is_leaf=is_type(BatchHistory))
+        if preserve_history_abi and not any(
+            isinstance(leaf, BatchHistory) for leaf in (*source_leaves, *target_leaves)
+        ):
+            continue
         if source_def != target_def or len(source_leaves) != len(target_leaves):
             raise CheckpointCompatibilityError(
                 f"continuation slot structure differs before history allocation; slot={slot!r}"
@@ -3194,6 +3198,8 @@ def _allocate_segment_histories(
                     raise CheckpointCompatibilityError(
                         f"continuation BatchHistory granularity differs; slot={slot!r}"
                     )
+                if preserve_history_abi:
+                    _validate_batch_history_template(source_leaf, target_leaf, slot=slot)
                 output.append(target_leaf)
                 slot_changed = True
             else:
@@ -3202,6 +3208,30 @@ def _allocate_segment_histories(
             result[slot] = jt.unflatten(source_def, output)
             changed.add(slot)
     return result, changed
+
+
+def _validate_batch_history_template(
+    template: BatchHistory[Any],
+    restored: BatchHistory[Any],
+    *,
+    slot: str,
+) -> None:
+    template_value, restored_value = template.value, restored.value
+    if eqx.is_array(template_value) and eqx.is_array(restored_value):
+        rank = template_value.ndim
+        axis = template.batch_axis % rank if rank else 0
+        if (
+            -rank <= template.batch_axis < rank == restored_value.ndim
+            and template_value.shape[:axis] == restored_value.shape[:axis]
+            and template_value.shape[axis + 1:] == restored_value.shape[axis + 1:]
+            and template_value.dtype == restored_value.dtype
+            and bool(getattr(template_value, "weak_type", False))
+            == bool(getattr(restored_value, "weak_type", False))
+        ):
+            return
+    raise CheckpointCompatibilityError(
+        f"continuation BatchHistory array ABI differs outside the batch extent; slot={slot!r}"
+    )
 
 
 def write_checkpoint_transaction(
@@ -3222,6 +3252,7 @@ def write_checkpoint_transaction(
     segment_batch_count: int | None = None,
     segment_parent_transaction_id: str | None = None,
     segment_parent_checkpoint_set: CheckpointSet | None = None,
+    segment_parent_ref: ExactRef | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
     content_provider: ArtifactBlobProvider | None = None,
@@ -3233,6 +3264,15 @@ def write_checkpoint_transaction(
     """
     if status not in {"partial", "final"}:
         raise CheckpointCustodyError("checkpoint status must be 'partial' or 'final'")
+    if segment_parent_checkpoint_set is not None:
+        if (
+            segment_parent_ref is not None
+            or segment_parent_checkpoint_set.transaction.identity != segment_parent_transaction_id
+        ):
+            raise CheckpointCustodyError(
+                "checkpoint parent publication does not match transaction lineage"
+            )
+        segment_parent_ref = segment_parent_checkpoint_set.exact_ref
     barrier = checkpoint_barrier(phase_program, barrier_name)
     resolved_axes = _resolved_slot_axes(run_spec)
     coordinate = _checkpoint_coordinate(coordinate, resolved_axes)
@@ -3328,6 +3368,12 @@ def write_checkpoint_transaction(
         transaction_root = _transaction_root_sha256(slot_digests)
         manifest_metadata = {"phase": barrier.phase}
         manifest_metadata.update(dict(metadata or {}))
+        if segment_parent_ref is not None:
+            manifest_metadata["checkpoint_segment_parent_ref"] = segment_parent_ref.model_dump(
+                mode="json"
+            )
+        else:
+            manifest_metadata.pop("checkpoint_segment_parent_ref", None)
         _validate_program_step_units(
             coordinate,
             manifest_metadata,
@@ -3375,7 +3421,7 @@ def write_checkpoint_transaction(
         checkpoint_set = _published_checkpoint_set(
             run_spec=run_spec,
             manifest=manifest,
-            parent_checkpoint_set=segment_parent_checkpoint_set,
+            parent=segment_parent_ref,
         )
         checkpoint_set_path = tmp_dir / CHECKPOINT_SET_NAME
         _write_json_atomic(
@@ -3529,11 +3575,13 @@ def _load_checkpoint_from_pointer(
     """Load and validate a transaction through the same gates as latest resume."""
     manifest_path, manifest = _manifest_from_latest_pointer(root_path, latest)
 
+    request = _coerce_continuation_request(continuation_request)
+    continuation_applied = request is not None and _continuation_was_applied(manifest, request)
     validate_checkpoint_run_contract(
         manifest,
         expected_run_spec,
         expected_phase_program,
-        allow_new_lineage_override=allow_new_lineage_override,
+        allow_new_lineage_override=allow_new_lineage_override and not continuation_applied,
     )
     expected_predicate = derive_consistency_predicate(expected_phase_program)
     if manifest.consistency_predicate != expected_predicate:
@@ -3570,7 +3618,6 @@ def _load_checkpoint_from_pointer(
     if any(migrated_slots.get(slot) is not value for slot, value in loaded_slots.items()):
         loaded_slots = migrated_slots
         loaded_fingerprints = {}
-    request = _coerce_continuation_request(continuation_request)
     loaded_fingerprint_slots = dict(loaded_slots)
     if resume_slot_transform is not None:
         try:
@@ -3589,10 +3636,18 @@ def _load_checkpoint_from_pointer(
             for slot, fingerprint in loaded_fingerprints.items()
             if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
         }
-    if request is not None and not _continuation_was_applied(manifest, request):
-        validate_checkpoint_continuation_source_count(manifest, request)
-        loaded_slots, _ = _allocate_segment_histories(loaded_slots, expected_slots)
-        loaded_fingerprints = {}
+    if request is not None:
+        if continuation_applied:
+            _validate_batch_histories(
+                loaded_slots, segment_batch_count=manifest.segment_lineage.segment_batch_count
+            )
+            expected_slots, _ = _allocate_segment_histories(
+                expected_slots, loaded_slots, preserve_history_abi=True
+            )
+        else:
+            validate_checkpoint_continuation_source_count(manifest, request)
+            loaded_slots, _ = _allocate_segment_histories(loaded_slots, expected_slots)
+            loaded_fingerprints = {}
     _validate_structural_abi(
         manifest,
         expected_slots,
@@ -5489,6 +5544,14 @@ def _fork_checkpoint_transaction_from_path(
             manifest_metadata["checkpoint_continuation_applied"] = continuation_applied
         else:
             manifest_metadata.pop("checkpoint_continuation_applied", None)
+        segment_parent = None
+        if request is not None and continuation_applied and request.source_completed_batches > 0:
+            segment_parent = load_checkpoint_set(source.root, source.manifest.transaction_id).exact_ref
+            manifest_metadata["checkpoint_segment_parent_ref"] = segment_parent.model_dump(
+                mode="json"
+            )
+        else:
+            manifest_metadata.pop("checkpoint_segment_parent_ref", None)
         _validate_program_step_units(
             coordinate,
             manifest_metadata,
@@ -5530,7 +5593,7 @@ def _fork_checkpoint_transaction_from_path(
             segment_lineage=CheckpointSegmentLineage(
                 parent_transaction_id=(
                     source.manifest.transaction_id
-                    if request is not None and continuation_applied
+                    if segment_parent is not None
                     else None
                 ),
                 start_batch=(
@@ -5587,11 +5650,7 @@ def _fork_checkpoint_transaction_from_path(
         checkpoint_set = _published_checkpoint_set(
             run_spec=target_run_spec,
             manifest=manifest,
-            parent_checkpoint_set=(
-                load_checkpoint_set(source.root, source.manifest.transaction_id)
-                if manifest.segment_lineage.parent_transaction_id is not None
-                else None
-            ),
+            parent=segment_parent,
         )
         checkpoint_set_path = tmp_dir / CHECKPOINT_SET_NAME
         _write_json_atomic(
@@ -5804,6 +5863,7 @@ def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTr
 def _load_checkpoint_transaction_by_id(
     root: str | Path,
     transaction_id: str,
+    expected_checkpoint_set: Mapping[str, Any] | None,
 ) -> _LoadedCheckpointTransaction:
     root_path = Path(root)
     manifest_path = root_path / TRANSACTIONS_DIR_NAME / transaction_id / MANIFEST_NAME
@@ -5811,23 +5871,43 @@ def _load_checkpoint_transaction_by_id(
         raise CheckpointIntegrityError(
             f"checkpoint segment lineage parent is unavailable; transaction={transaction_id!r}"
         )
-    manifest = _load_transaction_manifest(manifest_path)
-    if manifest.transaction_id != transaction_id:
-        raise CheckpointIntegrityError(
-            f"checkpoint transaction directory identity mismatch; expected={transaction_id!r}"
+    manifest_relative_path = str(manifest_path.relative_to(root_path))
+    if expected_checkpoint_set is not None:
+        parent = load_checkpoint_set(root_path, transaction_id)
+        if parent.exact_ref.model_dump(mode="json") != expected_checkpoint_set:
+            raise CheckpointIntegrityError(
+                "checkpoint history parent does not match the exact segment parent"
+            )
+        manifest_sha256 = parent.transaction.bytes.digest
+        resolved = resolve_checkpoint_custody_ref(
+            ParentRef(
+                kind="TrainingCheckpointTransactionManifest",
+                id=transaction_id,
+                role="training_checkpoint_custody",
+                uri=manifest_relative_path,
+                metadata={"manifest_sha256": manifest_sha256},
+            ),
+            allowed_root=root_path,
         )
-    slots: dict[str, Any] = {}
-    for slot in manifest.slots:
-        slots[slot.slot] = _deserialize_checkpoint_slot(
-            slot, manifest_path.parent / slot.relative_path
-        )
+        manifest, slots = resolved.manifest, dict(resolved.slots)
+    else:
+        manifest = _load_transaction_manifest(manifest_path)
+        if manifest.transaction_id != transaction_id:
+            raise CheckpointIntegrityError(
+                f"checkpoint transaction directory identity mismatch; expected={transaction_id!r}"
+            )
+        manifest_sha256 = sha256_file(manifest_path)
+        slots = {
+            slot.slot: _deserialize_checkpoint_slot(slot, manifest_path.parent / slot.relative_path)
+            for slot in manifest.slots
+        }
     return _LoadedCheckpointTransaction(
         root=root_path,
         latest_pointer=CheckpointLatestPointer(
             run_id=manifest.run_id,
             transaction_id=transaction_id,
-            manifest_relative_path=str(manifest_path.relative_to(root_path)),
-            manifest_sha256=sha256_file(manifest_path),
+            manifest_relative_path=manifest_relative_path,
+            manifest_sha256=manifest_sha256,
             transaction_root_sha256=manifest.content_integrity_digest.transaction_root_sha256,
             completed_coordinate=manifest.completed_coordinate,
             completed_training_batches=manifest.completed_training_batches,
@@ -5863,7 +5943,9 @@ def concatenate_checkpoint_histories(
             raise CheckpointIntegrityError(
                 f"checkpoint segment lineage parent is unavailable; transaction={parent_id!r}"
             )
-        parent = _load_checkpoint_transaction_by_id(parent_root, parent_id)
+        parent = _load_checkpoint_transaction_by_id(
+            parent_root, parent_id, newest.manifest.metadata.get("checkpoint_segment_parent_ref")
+        )
         if parent.manifest.transaction_id != parent_id:
             raise CheckpointIntegrityError(
                 "checkpoint segment lineage parent root resolved the wrong transaction; "

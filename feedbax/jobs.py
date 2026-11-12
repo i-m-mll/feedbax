@@ -34,6 +34,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.host import Admission, AdmissionItem, HostClient, HostError, Job, Launch
+from feedbax.host.protocol import can_resume_attempt
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.studio.training_requests import (
     StudioTrainingLoweringError,
@@ -43,7 +44,6 @@ from feedbax.studio.training_requests import (
 
 
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
-_TERMINAL_RESUMABLE = frozenset({"failed", "interrupted", "stopped"})
 _ACTIVITY_EVENTS = frozenset(
     {
         "queued",
@@ -457,9 +457,7 @@ def _rejected(run_key: str, reason: str) -> AdmissionItem:
 
 
 def _can_resume(job: dict[str, Any]) -> bool:
-    return job["state"] in _TERMINAL_RESUMABLE and (
-        job.get("checkpoint") is not None or (job["state"] == "stopped" and job["delivery"] == 0)
-    )
+    return can_resume_attempt(job["state"], job.get("checkpoint"), job["delivery"])
 
 
 def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:

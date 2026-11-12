@@ -63,6 +63,7 @@ from feedbax.contracts.nan_attribution import (
     NanAttributionDetection,
     NanAttributionRestorationOutcome,
 )
+from feedbax.contracts.publication import checkpoint_set_id
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -142,12 +143,14 @@ from feedbax.orchestration.drivers.native_execution import (
     inject_native_execution_context,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointCustodyError,
     CheckpointForkPlanBindings,
     CheckpointCompatibilityError,
     authenticate_published_checkpoint_custody,
     concatenate_checkpoint_histories,
     fork_checkpoint_transaction,
     derive_checkpoint_fork_compatibility_projection,
+    load_checkpoint_set,
     load_latest_checkpoint,
     resolve_checkpoint_custody_ref,
     structural_abi_fingerprint,
@@ -2885,7 +2888,10 @@ def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingProgramR
     contract = standard_supervised_method_contract()
     program = contract.phase_program.model_copy(deep=True)
     phase = program.phases[0].model_copy(
-        update={"writes": [*program.phases[0].writes, "batch_history"]}
+        update={
+            "writes": [*program.phases[0].writes, "batch_history"],
+            "legal_next": ["train_batch"],
+        }
     )
     update_step = program.update_steps[0].model_copy(
         update={"writes": [*program.update_steps[0].writes, "batch_history"]}
@@ -5258,10 +5264,12 @@ def test_same_row_resume_progress_fails_closed_without_consistent_authority(
 
 
 @pytest.mark.parametrize("self_contained", [False, True])
-def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histories(
+def test_execute_training_run_spec_continuation_restarts_segment_lineage_and_histories(
     tmp_path: Path,
     self_contained: bool,
 ) -> None:
+    prefix_root = tmp_path / "prefix-custody"
+    paused_root = tmp_path / "paused-custody"
     checkpoint_root = tmp_path / "checkpoint-custody"
     initial_slots = {
         **_initial_slots(arrays=True),
@@ -5273,7 +5281,7 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
         run_id="history-source",
         initial_slots=initial_slots,
         manifest_root=tmp_path / "source-runs",
-        checkpoint_root=checkpoint_root,
+        checkpoint_root=prefix_root,
         registry=source_registry,
     )
     parent = source.checkpoint_writes[-1]
@@ -5281,36 +5289,84 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
 
     continuation = CheckpointContinuationRequest(
         source_completed_batches=1,
-        additional_batches=1,
+        additional_batches=2,
         self_contained=self_contained,
     )
-    resume_registry, resume_program = _history_registry(stop_after_program_step=2)
+    resume_registry, resume_program = _history_registry(stop_after_program_step=3)
     continuation_spec = _history_run_spec(
         resume_registry,
         continuation=continuation,
     )
+    paused_updates = []
+    paused = execute_training_run_spec(
+        continuation_spec,
+        run_id="history-paused",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "continuation-runs",
+        checkpoint_root=paused_root,
+        checkpoint_source_root=prefix_root,
+        checkpoint_source_pointer=parent.latest_pointer,
+        registry=resume_registry,
+        resume=True,
+        committed_update_callback=lambda _coordinate, completed, _slots: paused_updates.append(
+            completed
+        ),
+        stop_before_update=lambda: bool(paused_updates),
+    )
+    paused_checkpoint = paused.checkpoint_writes[-1]
+    assert paused.status == "cancelled"
+    assert paused_updates == [2]
+    assert paused_checkpoint.manifest.completed_training_batches == 2
+    assert paused_checkpoint.manifest.segment_lineage.start_batch == 1
+    assert paused_checkpoint.manifest.segment_lineage.segment_batch_count == 1
+    checkpoint_set = paused_checkpoint.checkpoint_set
+    sidecar = paused_checkpoint.checkpoint_set_path
+    original_sidecar = sidecar.read_bytes()
+    altered = checkpoint_set.model_dump(
+        mode="json", exclude={"schema_id", "schema_version", "checkpoint_id"}
+    )
+    altered["parent"] = checkpoint_set.exact_ref.model_dump(mode="json")
+    substituted_set = type(checkpoint_set)(
+        checkpoint_id=checkpoint_set_id(**altered), **altered
+    )
+    sidecar.write_text(substituted_set.model_dump_json())
+    try:
+        with pytest.raises(CheckpointCustodyError, match="authenticated segment parent"):
+            load_checkpoint_set(paused_root, paused_checkpoint.manifest.transaction_id)
+    finally:
+        sidecar.write_bytes(original_sidecar)
+
     resumed = execute_training_run_spec(
         continuation_spec,
         run_id="history-continuation",
         initial_slots=initial_slots,
         manifest_root=tmp_path / "continuation-runs",
         checkpoint_root=checkpoint_root,
+        checkpoint_source_root=paused_root,
+        checkpoint_source_pointer=paused_checkpoint.latest_pointer,
+        checkpoint_history_parent_roots={parent.manifest.transaction_id: prefix_root},
         registry=resume_registry,
         resume=True,
     )
 
     child = resumed.checkpoint_writes[-1]
     assert child.manifest.segment_lineage.parent_transaction_id == parent.manifest.transaction_id
+    resume_parent = child.manifest.parent_lineage[0]
+    assert resume_parent.transaction_id == paused_checkpoint.manifest.transaction_id
+    assert resume_parent.manifest.uri == paused_checkpoint.latest_pointer.manifest_relative_path
+    assert resume_parent.manifest.metadata["manifest_sha256"] == (
+        paused_checkpoint.latest_pointer.manifest_sha256
+    )
     assert child.manifest.segment_lineage.start_batch == 1
-    assert child.manifest.segment_lineage.segment_batch_count == 1
-    assert resumed.diagnostics.completed_batches == 2
+    assert child.manifest.segment_lineage.segment_batch_count == 2
+    assert resumed.diagnostics.completed_batches == 3
     assert resumed.diagnostics.segment_completed_batches == 1
-    assert resumed.diagnostics.cumulative_completed_batches == 2
+    assert resumed.diagnostics.cumulative_completed_batches == 3
     assert resumed.diagnostics.checkpoint_coordinates == [1]
-    assert resumed.diagnostics.checkpoint_transactions[0].cumulative_completed_batches == 2
+    assert resumed.diagnostics.checkpoint_transactions[0].cumulative_completed_batches == 3
     expected_child_slots = {
         **initial_slots,
-        "batch_history": BatchHistory(jnp.array([0], dtype=jnp.int32)),
+        "batch_history": BatchHistory(jnp.array([0, 0], dtype=jnp.int32)),
     }
     loaded = load_latest_checkpoint(
         checkpoint_root,
@@ -5318,11 +5374,13 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
         expected_phase_program=resume_program,
         expected_slots=expected_child_slots,
     )
-    assert loaded.slots["batch_history"].value.tolist() == [2]
+    assert loaded.slots["batch_history"].value.tolist() == [2, 3]
 
-    stitched = concatenate_checkpoint_histories(checkpoint_root, parent_roots={})
-    assert stitched.completed_training_batches == 2
-    assert stitched.histories["batch_history/"].value.tolist() == [1, 2]
+    stitched = concatenate_checkpoint_histories(
+        checkpoint_root, parent_roots={parent.manifest.transaction_id: prefix_root}
+    )
+    assert stitched.completed_training_batches == 3
+    assert stitched.histories["batch_history/"].value.tolist() == [1, 2, 3]
 
     derived_path = checkpoint_root / "derived" / "history-continuation-stitched-histories.pkl"
     assert derived_path.exists() is self_contained
@@ -5334,7 +5392,21 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
         assert derived["resume_source"] is False
         assert derived["source_transaction_ids"] == stitched.transaction_ids
         assert derived["completed_training_batches"] == stitched.completed_training_batches
-        assert derived["histories"]["batch_history/"].value.tolist() == [1, 2]
+        assert derived["histories"]["batch_history/"].value.tolist() == [1, 2, 3]
+
+    replay = execute_training_run_spec(
+        continuation_spec,
+        run_id="history-replay",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "continuation-runs",
+        checkpoint_root=checkpoint_root,
+        registry=resume_registry,
+        resume=True,
+    )
+    assert replay.status == "completed"
+    assert replay.start_completed_batches == replay.end_completed_batches == 3
+    assert not replay.checkpoint_writes
+    assert replay.manifest.terminal_checkpoint == loaded.parent_ref
 
 
 def test_execute_training_run_spec_applies_resume_slot_transform(

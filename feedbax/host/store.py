@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError
+from feedbax.host.completion import CompletionFileError, verify_completion_files
+from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -36,11 +37,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_job ON jobs(project, request)
     WHERE state IN ('queued','assigned','running','stopping');
 CREATE INDEX IF NOT EXISTS jobs_by_state ON jobs(state, slot, seq);
+CREATE INDEX IF NOT EXISTS jobs_by_continues ON jobs(continues, seq);
 CREATE TABLE IF NOT EXISTS edges (
     job TEXT NOT NULL REFERENCES jobs(id),
     parent TEXT NOT NULL,
     publication TEXT NOT NULL,
     satisfied INTEGER NOT NULL DEFAULT 0,
+    authenticated_completion INTEGER NOT NULL DEFAULT 0,
+    binding TEXT,
     PRIMARY KEY (job, parent, publication)
 );
 CREATE INDEX IF NOT EXISTS edges_by_parent ON edges(parent, publication);
@@ -58,6 +62,7 @@ CREATE TABLE IF NOT EXISTS events (
     time REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS project_event_cursor ON events(project, cursor);
+CREATE INDEX IF NOT EXISTS job_event_kind ON events(job, kind, cursor);
 CREATE TABLE IF NOT EXISTS submissions (
     id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, response TEXT NOT NULL
 );
@@ -100,6 +105,15 @@ class Store:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        if "authenticated_completion" not in {
+            row["name"] for row in self.db.execute("PRAGMA table_info(edges)")
+        }:
+            self.db.executescript("""
+                BEGIN;
+                ALTER TABLE edges ADD COLUMN authenticated_completion INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE edges ADD COLUMN binding TEXT;
+                COMMIT;
+            """)
         self.event_head = self.db.execute("SELECT coalesce(max(cursor), 0) FROM events").fetchone()[
             0
         ]
@@ -126,7 +140,7 @@ class Store:
         self.append(row, "terminal", outcome)
         if outcome["outcome"] == "succeeded":
             self.db.execute(
-                "UPDATE edges SET satisfied=1 WHERE parent=? AND publication=''",
+                "UPDATE edges SET satisfied=1 WHERE parent=? AND publication='' AND NOT authenticated_completion",
                 (row["id"],),
             )
 
@@ -187,7 +201,9 @@ class Store:
         if launch["warm_entrypoint"] and ":" not in launch["warm_entrypoint"]:
             raise HostError("invalid_request", "Warm entrypoint must be module:function.")
 
-    def admit(self, token: str, items: list[dict], record: dict) -> dict:
+    def admit(
+        self, token: str, items: list[dict], record: dict, *, allow_completion: bool = False
+    ) -> dict:
         require_text(token, "submission token")
         with self.db:
             previous = self.db.execute(
@@ -218,6 +234,12 @@ class Store:
                     )
                     continue
                 self._validate_job(job)
+                for edge in job["edges"]:
+                    completion = edge.get("authenticated_completion", False)
+                    if type(completion) is not bool or (
+                        completion and (edge["publication"] is not None or not allow_completion)
+                    ):
+                        raise HostError("invalid_request", "Invalid authenticated completion edge.")
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
@@ -302,11 +324,25 @@ class Store:
                     "invalid_resume", "The earlier job must be settled at the same request."
                 )
             self.db.execute("UPDATE jobs SET continues=? WHERE id=?", (continues, job_id))
+            self.db.execute(
+                """INSERT INTO edges(job, parent, publication, satisfied, authenticated_completion, binding)
+                   SELECT ?, parent, publication, satisfied, authenticated_completion, binding
+                   FROM edges WHERE job=? AND authenticated_completion""",
+                (job_id, continues),
+            )
         for edge in job["edges"]:
             parent = aliases.get(edge["job_id"], edge["job_id"])
             publication = edge["publication"] or ""
+            completion = edge.get("authenticated_completion", False)
             source = self.get(parent)
-            if publication:
+            if completion:
+                if source is None or source["project"] != job["project"]:
+                    raise HostError(
+                        "invalid_request",
+                        "Completion requires an admitted producer in the same project.",
+                    )
+                satisfied = False
+            elif publication:
                 satisfied = (
                     self.db.execute(
                         "SELECT 1 FROM publications WHERE job=? AND key=?", (parent, publication)
@@ -323,9 +359,20 @@ class Store:
             ).fetchone()
             if cycle:
                 raise HostError("dependency_cycle", f"Job {job_id} has a cyclic dependency.")
+            existing = self.db.execute(
+                "SELECT authenticated_completion FROM edges WHERE job=? AND parent=? AND publication=?",
+                (job_id, parent, publication),
+            ).fetchone()
+            if continues is not None and completion and existing is None:
+                raise HostError(
+                    "invalid_resume", "A continuation cannot add new completion inputs."
+                )
+            if existing is not None and bool(existing[0]) != completion:
+                raise HostError("invalid_request", "Conflicting dependencies on the same producer.")
             self.db.execute(
-                "INSERT OR IGNORE INTO edges VALUES (?,?,?,?)",
-                (job_id, parent, publication, int(satisfied)),
+                """INSERT OR IGNORE INTO edges(job, parent, publication, satisfied, authenticated_completion)
+                   VALUES (?,?,?,?,?)""",
+                (job_id, parent, publication, int(satisfied), int(completion)),
             )
 
     def submissions(self, *, id: str | None, token: str | None, project: str | None) -> list[dict]:
@@ -383,6 +430,16 @@ class Store:
                     "job_id": edge["parent"],
                     "publication": edge["publication"] or None,
                     "satisfied": bool(edge["satisfied"]),
+                    **(
+                        {
+                            "authenticated_completion": True,
+                            "binding": json.loads(edge["binding"])
+                            if edge["binding"] is not None
+                            else None,
+                        }
+                        if edge["authenticated_completion"]
+                        else {}
+                    ),
                 }
                 for edge in self.db.execute("SELECT * FROM edges WHERE job=?", (row["id"],))
             ]
@@ -435,7 +492,8 @@ class Store:
     def mark_satisfied(self, job_id: str, edge: dict) -> None:
         with self.db:
             updated = self.db.execute(
-                "UPDATE edges SET satisfied=1 WHERE job=? AND parent=? AND publication=?",
+                """UPDATE edges SET satisfied=1 WHERE job=? AND parent=? AND publication=?
+                   AND NOT authenticated_completion""",
                 (job_id, edge["job_id"], edge["publication"] or ""),
             )
             if not updated.rowcount:
@@ -479,12 +537,127 @@ class Store:
                 results.append({"job_id": job_id, "state": state})
         return results
 
+    def _completion_attempt(self, anchor: str) -> sqlite3.Row:
+        attempt = self.get(anchor)
+        assert attempt is not None
+        while can_resume_attempt(attempt["state"], attempt["checkpoint"], attempt["delivery"]):
+            successor = self.db.execute(
+                "SELECT * FROM jobs WHERE continues=? ORDER BY seq LIMIT 1", (attempt["id"],)
+            ).fetchone()
+            if successor is None:
+                break
+            earlier = json.loads(attempt["launch"])["payload"]
+            later = json.loads(successor["launch"])["payload"]
+            checkpoint = (
+                json.loads(attempt["checkpoint"]) if attempt["checkpoint"] is not None else None
+            )
+            if later.get("resume") != checkpoint or {
+                key: value for key, value in earlier.items() if key != "resume"
+            } != {key: value for key, value in later.items() if key != "resume"}:
+                raise CompletionFileError(
+                    "Explicit continuation changed the producer's bound input."
+                )
+            attempt = successor
+        return attempt
+
+    def _completion_candidate(self, anchor: str) -> tuple[dict | None, dict | None]:
+        try:
+            attempt = self._completion_attempt(anchor)
+            if attempt["state"] != "succeeded":
+                if attempt["state"] in LIVE_STATES or can_resume_attempt(
+                    attempt["state"], attempt["checkpoint"], attempt["delivery"]
+                ):
+                    return None, None
+                return None, {
+                    "code": "input_unavailable",
+                    "message": "Producer ended without a resumable completion.",
+                }
+            outcome = json.loads(attempt["outcome"])
+            completion = outcome.get("completion")
+            if completion is None:
+                reported = outcome.get("completion_error")
+                if reported is None:
+                    return None, {
+                        "code": "input_unavailable",
+                        "message": "Producer has no authenticated completion.",
+                    }
+                if (
+                    not isinstance(reported, dict)
+                    or reported.get("code") not in ("input_unavailable", "dependency_corrupt")
+                    or not isinstance(reported.get("message"), str)
+                ):
+                    raise CompletionFileError("Producer reported malformed completion evidence.")
+                return None, reported
+            binding_event = self.db.execute(
+                """SELECT data FROM events WHERE job=? AND kind='binding' ORDER BY cursor DESC LIMIT 1""",
+                (attempt["id"],),
+            ).fetchone()
+            launch = json.loads(attempt["launch"])["payload"]
+            if (
+                not isinstance(completion, dict)
+                or binding_event is None
+                or not isinstance(completion.get("binding_sha256"), str)
+                or completion.get("binding_sha256")
+                != json.loads(binding_event[0]).get("binding_sha256")
+                or completion.get("producer_job_id") != attempt["id"]
+                or completion.get("project_id") != attempt["project"]
+                or completion.get("request_id") != attempt["request"]
+                or completion.get("manifest_root") != launch.get("manifest_root")
+                or completion.get("receipt") != outcome.get("receipt")
+                or completion.get("checkpoint") != outcome.get("checkpoint")
+                or not completion.get("receipt")
+                or not completion.get("checkpoint")
+            ):
+                raise CompletionFileError(
+                    "Completion does not match its admitted producer and terminal outcome."
+                )
+            verify_completion_files(completion)
+            return {"dependency_job_id": anchor, "completion": completion}, None
+        except CompletionFileError as error:
+            return None, {"code": "dependency_corrupt", "message": str(error)}
+
+    def resolve_completions(self) -> None:
+        with self.db:
+            rows = self.db.execute(
+                """SELECT e.job, e.parent FROM edges e JOIN jobs j ON j.id=e.job
+                   WHERE e.authenticated_completion AND NOT e.satisfied AND j.state='queued'
+                   ORDER BY j.seq, e.parent"""
+            ).fetchall()
+            candidates = {}
+            for edge in rows:
+                job = self.get(edge["job"])
+                if job["state"] != "queued":
+                    continue
+                anchor = edge["parent"]
+                if anchor not in candidates:
+                    candidates[anchor] = self._completion_candidate(anchor)
+                binding, error = candidates[anchor]
+                if error is not None:
+                    self.finished(job, {"outcome": "blocked", "error": error})
+                elif binding is not None:
+                    self.db.execute(
+                        """UPDATE edges SET satisfied=1, binding=?
+                           WHERE job=? AND parent=? AND authenticated_completion AND NOT satisfied""",
+                        (dump(binding), edge["job"], anchor),
+                    )
+                    self.append(job, "dependency_bound", binding)
+
+    def completion_bindings(self, job_id: str) -> list[dict]:
+        return [
+            json.loads(row[0])
+            for row in self.db.execute(
+                """SELECT binding FROM edges WHERE job=? AND authenticated_completion AND satisfied
+                   ORDER BY parent""",
+                (job_id,),
+            )
+        ]
+
     def settle_blocked(self) -> None:
         with self.db:
             rows = self.db.execute(
                 f"""WITH RECURSIVE blocked(id) AS (
                         SELECT e.job FROM edges e JOIN jobs parent ON parent.id=e.parent
-                        WHERE NOT e.satisfied AND parent.state IN {TERMINAL}
+                        WHERE NOT e.satisfied AND NOT e.authenticated_completion AND parent.state IN {TERMINAL}
                         UNION SELECT e.job FROM edges e JOIN blocked b ON b.id=e.parent WHERE NOT e.satisfied
                     ) SELECT * FROM jobs WHERE state='queued' AND id IN blocked"""
             ).fetchall()

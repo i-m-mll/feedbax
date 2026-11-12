@@ -102,10 +102,16 @@ class HostClient:
         self._call("warm", launch=asdict(launch))
 
     def admit(self, token: str, items: Sequence[AdmissionItem], *, record: JsonObject) -> Admission:
+        requires_authentication = any(
+            edge.authenticated_completion
+            for item in items
+            if item.job is not None
+            for edge in item.job.edges
+        )
         return cast(
             Admission,
             self._call(
-                "admit",
+                "admit_with_completion" if requires_authentication else "admit",
                 token=token,
                 items=[asdict(item) for item in items],
                 record=record,

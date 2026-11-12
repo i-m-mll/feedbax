@@ -1,10 +1,13 @@
 """The Unix-socket client exercises the detached host and real command workers."""
 
+import json
 import os
 import signal
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -148,6 +151,71 @@ while not Path({str(release)!r}).exists():
     wait_until(lambda: job_row(host, blocked.id, "blocked"))
 
 
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_completion_edges_are_bound_to_one_attempt(host, tmp_path, stop_first):
+    """Exercise real daemon scheduling with controlled worker events."""
+    release = tmp_path / "release"
+    deliveries = tmp_path / "deliveries"
+    (tmp_path / "phase_fixture.py").write_text("""
+import json
+import os
+from pathlib import Path
+import time
+
+def main(args):
+    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
+    stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+    release = Path(payload["release"])
+    with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a", buffering=1) as stream:
+        checkpoint = {"completed_updates": 1}
+        print(json.dumps({
+            "kind": "publication", "data": {"key": "checkpoint:1", "checkpoint": checkpoint},
+        }), file=stream)
+        while not release.exists() and not stop.exists():
+            time.sleep(0.01)
+        print(json.dumps({
+            "kind": "result",
+            "data": {"outcome": "stopped", "checkpoint": checkpoint}
+                if stop.exists() else {"outcome": "succeeded"},
+        }), file=stream)
+    return 0
+""")
+    launch = Launch(
+        (sys.executable,),
+        cwd=str(tmp_path),
+        warm_entrypoint="phase_fixture:main",
+        payload={"release": str(release)},
+    )
+    prefix = Job("prefix", "project", "prefix-request", launch)
+    successor = run_job(
+        "successor",
+        f"from pathlib import Path; Path({str(deliveries)!r}).open('a').write('started\\n')",
+        edges=(Edge(prefix.id),),
+        slot="light",
+    )
+    submission = admit(host, "phases", successor, prefix)
+    wait_until(lambda: job_row(host, prefix.id)["checkpoint"] == {"completed_updates": 1})
+    assert job_row(host, successor.id)["state"] == "queued"
+    assert not deliveries.exists()
+    if stop_first:
+        assert host.stop([prefix.id], "checkpoint")[0]["state"] == "stopping"
+        assert wait_until(lambda: job_row(host, prefix.id, "stopped"))["checkpoint"]
+        blocked = wait_until(lambda: job_row(host, successor.id, "blocked"))
+        assert blocked["outcome"]["error"]["code"] == "dependency_ended"
+        continued = Job("continued", prefix.project, prefix.request, launch, continues=prefix.id)
+        admit(host, "continuation", continued)
+        release.touch()
+        wait_until(lambda: job_row(host, continued.id, "succeeded"))
+        assert job_row(host, successor.id)["state"] == "blocked"
+        assert not deliveries.exists()
+    else:
+        release.touch()
+        finished = wait_until(lambda: job_row(host, successor.id, "succeeded"))
+        assert finished["delivery"] == 1
+        assert admit(host, "phases", successor, prefix) == submission
+        assert deliveries.read_text().splitlines() == ["started"]
+
+
 def test_warm_entrypoint_reports_checkpoint_stop_and_typed_error(host, tmp_path):
     module = tmp_path / "worker_fixture.py"
     module.write_text("""
@@ -257,3 +325,355 @@ def test_admit_rechecks_success_after_service_snapshot(host):
     # Explicit rerun is independent of the service's previously observed success.
     admit(host, "followup", followup)
     wait_until(lambda: job_row(host, followup.id, "succeeded"))
+
+
+@pytest.fixture
+def completion_worker(tmp_path):
+    (tmp_path / "completion_fixture.py").write_text("""
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import time
+
+def main(args):
+    mode, = args
+    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
+    stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+    root = Path(payload["manifest_root"])
+    job_id = os.environ["FEEDBAX_HOST_JOB_ID"]
+    with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a", buffering=1) as events:
+        def emit(kind, data):
+            print(json.dumps({"kind": kind, "data": data}), file=events)
+        def member(label, value):
+            relative = f"{job_id}-{label}.json"
+            raw = json.dumps(value).encode()
+            (root / relative).write_bytes(raw)
+            return {"path": relative, "sha256": sha256(raw).hexdigest(), "size_bytes": len(raw)}
+        input_member = member("binding", payload)
+        digest = input_member["sha256"]
+        emit("binding", {"binding_sha256": digest, "resume": payload.get("resume")})
+        if mode == "failed":
+            emit("result", {"outcome": "failed"})
+            return 1
+        checkpoint = {"completed_updates": 1, "attempt": job_id}
+        emit("publication", {"key": "checkpoint:1", "checkpoint": checkpoint})
+        while not (root / f"release-{job_id}").exists() and not stop.exists():
+            time.sleep(0.01)
+        if stop.exists():
+            emit("result", {"outcome": "stopped", "checkpoint": checkpoint})
+            return 0
+        if mode == "missing":
+            emit("result", {"outcome": "succeeded"})
+            return 0
+        checkpoint = {"completed_updates": 2, "attempt": job_id}
+        receipt_file = member("receipt", checkpoint)
+        checkpoint_file = member("checkpoint", checkpoint)
+        receipt = {"manifest_id": job_id, "manifest_sha256": receipt_file["sha256"]}
+        completion = {
+            "producer_job_id": job_id, "project_id": payload["project_id"],
+            "request_id": payload["request_id"] if mode != "wrong_request" else "different",
+            "manifest_root": str(root), "binding_sha256": digest,
+            "receipt": receipt, "checkpoint": checkpoint,
+            "files": [input_member, receipt_file, checkpoint_file],
+        }
+        emit("result", {
+            "outcome": "succeeded", "receipt": receipt, "checkpoint": checkpoint,
+            "completion": completion,
+        })
+        return 0
+""")
+
+    def producer(job_id, *, request="same-request", continues=None, resume=None, mode="complete"):
+        launch = Launch(
+            (sys.executable, mode),
+            cwd=str(tmp_path),
+            warm_entrypoint="completion_fixture:main",
+            payload={
+                "manifest_root": str(tmp_path),
+                "project_id": "project",
+                "request_id": request,
+                "resume": resume,
+            },
+        )
+        return Job(job_id, "project", request, launch, continues=continues)
+
+    return producer
+
+
+def _completion_consumer(tmp_path, anchor, *, gated=True):
+    output = tmp_path / "consumed.jsonl"
+    source = f"""
+import os
+from pathlib import Path
+bindings = Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"]).read_text().strip()
+with open({str(output)!r}, "a") as stream:
+    print(bindings, file=stream)
+"""
+    edges = (Edge(anchor, authenticated_completion=True),)
+    if gated:
+        edges = (*edges, Edge("gate"))
+    return run_job("consumer", source, edges=edges, slot="light")
+
+
+def _completion_gate(tmp_path):
+    release = tmp_path / "open-gate"
+    return run_job(
+        "gate",
+        f"""
+import time
+from pathlib import Path
+while not Path({str(release)!r}).exists():
+    time.sleep(0.01)
+""",
+    )
+
+
+def _bound_edge(host):
+    row = job_row(host, "consumer")
+    return next(edge["binding"] for edge in row["edges"] if edge.get("authenticated_completion"))
+
+
+def test_authenticated_completion_pins_the_explicit_attempt_across_restart(
+    host,
+    tmp_path,
+    completion_worker,
+):
+    original = completion_worker("original")
+    consumer = _completion_consumer(tmp_path, original.id)
+    gate = _completion_gate(tmp_path)
+    submission = admit(host, "authenticated-phases", consumer, original, gate)
+    with pytest.raises(HostError, match="has no such dependency"):
+        host.mark_satisfied(consumer.id, Edge(original.id))
+    wait_until(lambda: job_row(host, original.id)["checkpoint"])
+    assert job_row(host, consumer.id)["state"] == "queued"
+
+    host.stop([original.id], "checkpoint")
+    stopped = wait_until(lambda: job_row(host, original.id, "stopped"))
+    restart(host)
+    assert job_row(host, consumer.id)["state"] == "queued"
+    assert _bound_edge(host) is None
+
+    rerun = completion_worker("unrelated-rerun")
+    admit(host, "unrelated", rerun)
+    (tmp_path / "release-unrelated-rerun").touch()
+    wait_until(lambda: job_row(host, rerun.id, "succeeded"))
+    assert _bound_edge(host) is None
+
+    continued = completion_worker("explicit", continues=original.id, resume=stopped["checkpoint"])
+    admit(host, "explicit", continued)
+    (tmp_path / "release-explicit").touch()
+    pinned = wait_until(lambda: _bound_edge(host))
+    assert pinned["dependency_job_id"] == original.id
+    assert pinned["completion"]["producer_job_id"] == continued.id
+    assert pinned["completion"]["checkpoint"]["completed_updates"] == 2
+    restart(host)
+    assert _bound_edge(host) == pinned
+    assert admit(host, "authenticated-phases", consumer, original, gate) == submission
+    (tmp_path / "open-gate").touch()
+    assert wait_until(lambda: job_row(host, consumer.id, "succeeded"))["delivery"] == 1
+    assert json.loads((tmp_path / "consumed.jsonl").read_text()) == {"bindings": [pinned]}
+    events = [event for event in host.events()["events"] if event["job_id"] == consumer.id]
+    assert [event["data"] for event in events if event["kind"] == "dependency_bound"] == [pinned]
+
+
+def test_authenticated_completion_rejects_tamper_after_pinning(
+    host,
+    tmp_path,
+    completion_worker,
+):
+    producer = completion_worker("producer")
+    consumer = _completion_consumer(tmp_path, producer.id)
+    admit(host, "tamper", producer, consumer, _completion_gate(tmp_path))
+    (tmp_path / "release-producer").touch()
+    pinned = wait_until(lambda: _bound_edge(host))
+    (tmp_path / "producer-checkpoint.json").write_text('{"changed":true}')
+    (tmp_path / "open-gate").touch()
+    blocked = wait_until(lambda: job_row(host, consumer.id, "blocked"))
+    assert blocked["outcome"]["error"]["code"] == "dependency_corrupt"
+    assert blocked["delivery"] == 0
+    assert _bound_edge(host) == pinned
+    assert not (tmp_path / "consumed.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        ("failed", "input_unavailable"),
+        ("missing", "input_unavailable"),
+        ("wrong_request", "dependency_corrupt"),
+    ],
+)
+def test_authenticated_completion_reports_definitive_dependency_errors(
+    host,
+    tmp_path,
+    completion_worker,
+    mode,
+    code,
+):
+    producer = completion_worker("producer", mode=mode)
+    consumer = _completion_consumer(tmp_path, producer.id, gated=False)
+    admit(host, "definitive", producer, consumer)
+    (tmp_path / "release-producer").touch()
+    blocked = wait_until(lambda: job_row(host, consumer.id, "blocked"))
+    assert blocked["outcome"]["error"]["code"] == code
+    assert blocked["delivery"] == 0
+    assert not (tmp_path / "consumed.jsonl").exists()
+
+
+def test_real_studio_worker_resume_binds_completion_after_daemon_restart(host, tmp_path):
+    from feedbax.job_completion import verify_bound_training_completion
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.studio.training_requests import lower_studio_training_runs
+    from feedbax.training.checkpoint_custody import LATEST_POINTER_NAME
+    from feedbax.training_host_worker import main as training_worker
+    from web.e2e.studio.fixtures.reaching_project import reaching_project
+
+    # Pause only the original attempt at its first committed update so the
+    # actual host can deliver the checkpoint stop before the next update.
+    stop_ready = tmp_path / "stop-ready"
+    (tmp_path / "gated_training.py").write_text(f"""
+import json
+import os
+import time
+from pathlib import Path
+from unittest.mock import patch
+from feedbax.training import executor
+from {training_worker.__module__} import {training_worker.__name__} as run_training
+
+def main(args):
+    launch = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
+    if launch.get("resume") is not None:
+        return run_training(args)
+    execute = executor.execute_training_run_spec
+
+    def pause_first_update(*args, **kwargs):
+        callback = kwargs["committed_update_callback"]
+
+        def wait_for_stop(coordinate, completed, slots):
+            callback(coordinate, completed, slots)
+            if completed != 1:
+                return
+            Path({str(stop_ready)!r}).touch()
+            stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+            deadline = time.monotonic() + 15
+            while not stop.exists():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Host did not deliver checkpoint stop.")
+                time.sleep(0.01)
+
+        kwargs["committed_update_callback"] = wait_for_stop
+        return execute(*args, **kwargs)
+
+    with patch.object(executor, "execute_training_run_spec", pause_first_update):
+        return run_training(args)
+""")
+
+    document = reaching_project(batches=2)
+    (row,) = lower_studio_training_runs(
+        document.workspace,
+        document.graph,
+        stage_id="stage:train",
+        registry_bundle=new_application_registry_bundle(),
+    )
+    producer = Job(
+        "real-training",
+        "project",
+        row.request_id,
+        Launch(
+            (sys.executable,),
+            cwd=os.getcwd(),
+            env={"JAX_PLATFORMS": "cpu", "PYTHONPATH": str(tmp_path)},
+            warm_entrypoint="gated_training:main",
+            payload={
+                "spec": row.spec.model_dump(mode="json"),
+                "manifest_root": str(tmp_path / "runs"),
+                "project_id": "project",
+                "request_id": row.request_id,
+            },
+        ),
+    )
+    consumer = run_job(
+        "consumer",
+        f"""
+import json
+import os
+from pathlib import Path
+from {verify_bound_training_completion.__module__} import {verify_bound_training_completion.__name__}
+bindings = json.loads(Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"]).read_text())["bindings"]
+assert len(bindings) == 1
+verify_bound_training_completion(bindings[0]["completion"])
+Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
+""",
+        edges=(Edge(producer.id, authenticated_completion=True), Edge("gate")),
+        slot="light",
+    )
+    admit(host, "real-completion", producer, consumer, _completion_gate(tmp_path))
+    wait_until(lambda: stop_ready.exists() or job_row(host, producer.id)["outcome"], timeout=20)
+    assert stop_ready.exists(), job_row(host, producer.id)
+    assert host.stop([producer.id], "checkpoint")[0]["state"] == "stopping"
+    wait_until(lambda: job_row(host, producer.id)["outcome"], timeout=20)
+    stopped = job_row(host, producer.id)
+    assert stopped["state"] == "stopped", stopped
+    checkpoint = stopped["checkpoint"]
+    assert checkpoint["completed_updates"] == 1
+    assert job_row(host, consumer.id)["state"] == "queued"
+    assert _bound_edge(host) is None
+    restart(host)
+    assert job_row(host, consumer.id)["state"] == "queued"
+
+    continued = replace(
+        producer,
+        id="real-training-resumed",
+        continues=producer.id,
+        launch=replace(producer.launch, payload=producer.launch.payload | {"resume": checkpoint}),
+    )
+    admit(host, "real-completion-resumed", continued)
+    wait_until(lambda: job_row(host, continued.id)["outcome"], timeout=20)
+    finished = job_row(host, continued.id)
+    assert finished["state"] == "succeeded", finished
+    pinned = wait_until(lambda: _bound_edge(host) or job_row(host, consumer.id, "blocked"))
+    assert "completion" in pinned, (pinned, finished["outcome"])
+    completion = pinned["completion"]
+    assert pinned["dependency_job_id"] == producer.id
+    assert completion["producer_job_id"] == continued.id
+    assert completion["receipt"] == finished["outcome"]["receipt"]
+    assert completion["checkpoint"] == finished["outcome"]["checkpoint"]
+    assert completion["checkpoint"]["completed_updates"] == 2
+    restart(host)
+    assert _bound_edge(host) == pinned
+    latest = Path(completion["checkpoint"]["checkpoint_root"]) / LATEST_POINTER_NAME
+    latest.write_text("This mutable pointer is outside the pinned completion closure.")
+    (tmp_path / "open-gate").touch()
+    terminal = wait_until(lambda: job_row(host, consumer.id)["outcome"], timeout=20)
+    assert terminal["outcome"] == "succeeded", host.events()["events"][-10:]
+    assert job_row(host, consumer.id)["delivery"] == 1
+    assert json.loads((tmp_path / "verified.json").read_text()) == pinned
+    events = [event for event in host.events()["events"] if event["job_id"] == consumer.id]
+    assert [event["data"] for event in events if event["kind"] == "dependency_bound"] == [pinned]
+
+
+def test_resumed_consumer_inherits_its_pinned_completion(host, tmp_path, completion_worker):
+    producer = completion_worker("producer")
+    consumer = _completion_consumer(tmp_path, producer.id)
+    admit(host, "dependencies", producer, consumer, _completion_gate(tmp_path))
+    (tmp_path / "release-producer").touch()
+    pinned = wait_until(lambda: _bound_edge(host))
+    assert host.stop([consumer.id], "checkpoint")[0]["state"] == "stopped"
+    assert job_row(host, consumer.id)["delivery"] == 0
+
+    newer = completion_worker("new-producer")
+    admit(host, "newer", newer)
+    (tmp_path / "release-new-producer").touch()
+    wait_until(lambda: job_row(host, newer.id, "succeeded"))
+    resumed = Job(
+        "resumed-consumer",
+        consumer.project,
+        consumer.request,
+        consumer.launch,
+        slot=consumer.slot,
+        continues=consumer.id,
+    )
+    admit(host, "resume-consumer", resumed)
+    wait_until(lambda: job_row(host, resumed.id, "succeeded"))
+    assert json.loads((tmp_path / "consumed.jsonl").read_text()) == {"bindings": [pinned]}
