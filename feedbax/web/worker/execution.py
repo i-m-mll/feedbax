@@ -11,7 +11,7 @@ import time
 from typing import Any, Callable
 
 import equinox as eqx
-from equinox.nn import StateIndex
+from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -574,6 +574,7 @@ def rollout_graph(
     compiled: CompiledTrainingRun,
     *,
     key: jax.Array,
+    capture_state: Callable[[State, dict | None], Any] | None = None,
 ) -> dict[str, Any]:
     """Roll out one trial through the executable graph boundary."""
     task_key = derive_key(key, "studio-trial", "task-data")
@@ -594,19 +595,23 @@ def rollout_graph(
         for plan in compiled.task_inputs
     }
     state = init_state_from_component(graph)
-    outputs, final_state, trace = graph.rollout_with_trace(
+    outputs, final_state, trace, history = graph.rollout_with_trace_and_history(
         inputs,
         state,
         key=graph_key,
         n_steps=compiled.n_steps,
         trace=compiled.trace_requests,
+        capture_state=capture_state,
     )
-    return {
+    result = {
         "outputs": outputs,
         "trace": trace,
         "task_data": task_data,
         "final_state": final_state,
     }
+    if capture_state is not None:
+        result["state_history"] = history
+    return result
 
 
 def _materialize_task_data(

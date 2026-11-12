@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Annotated, ClassVar, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+
+from feedbax.checkpoint_coordinates import (
+    MAX_CHECKPOINT_COORDINATE, MAX_CHECKPOINT_MEMBERS, cadence_coordinates, finite_coordinates,
+)
 
 RequestKind = Literal["train", "evaluate", "analyze", "render", "report"]
 RequestId = Annotated[
@@ -21,6 +25,44 @@ class ReferenceValue(BaseModel):
 class BatchMember(ReferenceValue):
     kind: Literal["batch"] = "batch"
     batch: int = Field(ge=0, strict=True)
+
+
+BatchCoordinate = Annotated[int, Field(gt=0, le=MAX_CHECKPOINT_COORDINATE, strict=True)]
+
+
+class CheckpointCadence(ReferenceValue):
+    every_k: BatchCoordinate
+    through: BatchCoordinate
+
+    def coordinates(self) -> tuple[int, ...]:
+        return cadence_coordinates(self.every_k, self.through)
+
+    @model_validator(mode="after")
+    def _bounded(self):
+        self.coordinates()
+        return self
+
+
+class CheckpointBatches(ReferenceValue):
+    batches: tuple[BatchCoordinate, ...] = Field(min_length=1, max_length=MAX_CHECKPOINT_MEMBERS)
+
+    @field_validator("batches")
+    @classmethod
+    def _ordered_distinct(cls, value):
+        return finite_coordinates(value)
+
+
+class BatchSetMember(CheckpointBatches):
+    """Fixed batches at the standard Train after-batch barrier, in authored order."""
+
+    kind: Literal["batch_set"] = "batch_set"
+    cadence: CheckpointCadence | None = None
+
+    @model_validator(mode="after")
+    def _compiled_coordinates(self):
+        if self.cadence is not None and self.batches != self.cadence.coordinates():
+            raise ValueError("checkpoint batches differ from the bounded cadence")
+        return self
 
 
 class SlotMember(ReferenceValue):
@@ -48,7 +90,7 @@ class BestMember(ReferenceValue):
 
 
 ProductSelector = Annotated[
-    BatchMember | SlotMember | NamedMember | BarrierMember | LastMember | BestMember,
+    BatchMember | BatchSetMember | SlotMember | NamedMember | BarrierMember | LastMember | BestMember,
     Field(discriminator="kind"),
 ]
 

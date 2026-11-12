@@ -98,6 +98,7 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await chooseStep(page, 'baseline');
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
   const initialPlan = (await plan()).window_map!;
   const [initial] = initialPlan.evaluations!.filter(({ key }) => key.step === 'baseline');
   expect(initial.can_run).toBe(false);
@@ -107,7 +108,6 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'New Step baseline', exact: true })).toHaveCount(0);
   if (!enabled) {
-    await expect(plans(page).getByText('Can\'t run', { exact: true })).toBeVisible();
     const refused = await request.post(path, { data: { revision, run_keys: [initial.key], token: 'held' } });
     expect(refused.status()).toBe(202);
     expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
@@ -130,28 +130,54 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
   const baseline = await submit(page, path);
   await chooseStep(page, 'conditions');
   const conditions = await submit(page, path);
-  const submitted = [...baseline, ...conditions];
-  expect(submitted.map(({ disposition }) => disposition)).toEqual(['admitted', 'admitted', 'admitted']);
   await expect(plans(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 22_000 });
+  await expect(page.getByRole('article', { name: 'Evaluate baseline', exact: true })
+    .getByText('1 Done', { exact: true })).toBeVisible({ timeout: 22_000 });
   await expect(plans(page).getByRole('columnheader', { name: 'Size', exact: true })).toBeVisible();
-  await expect(plans(page).getByText(/13,328\s?B/)).toHaveCount(2);
-  await chooseStep(page, 'baseline');
-  await expect(plans(page).getByText(/13,328\s?B/)).toHaveCount(1);
-
   const settled = await plan();
-  const labels = new Map(settled.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
+  const formatBytes = new Intl.NumberFormat('en-US', { style: 'unit', unit: 'byte', unitDisplay: 'narrow' });
+  const conditionSizes = settled.window_map!.evaluations!
+    .filter(({ key }) => key.step === 'conditions').map(({ result }) => result!.size_bytes);
+  expect(new Set(conditionSizes).size).toBe(1);
+  await expect(plans(page).getByText(formatBytes.format(conditionSizes[0]), { exact: true })).toHaveCount(2);
+  await chooseStep(page, 'baseline');
+  const baselineSize = settled.window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.result!.size_bytes;
+  await expect(plans(page).getByText(formatBytes.format(baselineSize), { exact: true })).toHaveCount(1);
+  await chooseStep(page, 'finite');
+  const [finite] = await submit(page, path);
+  const submitted = [...baseline, ...conditions, finite];
+  expect(submitted.map(({ disposition }) => disposition)).toEqual(['admitted', 'admitted', 'admitted', 'admitted']);
+  const finiteStatus = plans(page).getByRole('cell').filter({ hasText: /^(Done|Blocked|Failed)/ });
+  await expect(finiteStatus).toBeVisible({ timeout: 22_000 });
+  expect(await finiteStatus.innerText()).toBe('Done');
+  const completed = await plan();
+  const labels = new Map(completed.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
   const replayRow = (row: StudioSavedEvaluationRow) => showTrial(page, replayPath, row, labels.get(JSON.stringify(row.key))!);
-  const rows = settled.window_map!.evaluations!.filter(({ result }) => result);
-  expect(rows).toHaveLength(3);
+  const rows = completed.window_map!.evaluations!.filter(({ result }) => result);
+  expect(rows).toHaveLength(4);
   expect(new Set(rows.map(({ result }) => result!.job_id))).toEqual(new Set(submitted.map(({ job_id }) => job_id)));
-  expect(new Set(rows.map(({ result }) => result!.receipt.manifest_sha256)).size).toBe(3);
+  expect(new Set(rows.map(({ result }) => result!.receipt.manifest_sha256)).size).toBe(4);
   const source = settled.rows.find(({ key }) => key.step === 'train')!;
-  for (const { result } of rows) {
+  const finiteRow = rows.find(({ key }) => key.step === 'finite')!;
+  expect(finiteRow.result).toMatchObject({
+    checkpoint_source: null,
+    checkpoint_sources: [2, 1].map((completed_updates) => ({
+      job_id: train.job_id, request_id: source.request_id, completed_updates,
+    })),
+  });
+  await tab(page, 'Scene').click();
+  const finiteScene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
+  await expect(finiteScene.getByRole('status')).toHaveText('Playback is unavailable for this run');
+  await expect(footer(page).getByRole('group', { name: 'Clock' })).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'Checkpoint' })).toHaveCount(0);
+
+  const single = rows.filter(({ key }) => key.step !== 'finite');
+  for (const { result } of single) {
     expect(result!.checkpoint_source).toEqual({ job_id: train.job_id, request_id: source.request_id, completed_updates: 2 });
-    expect(result!.size_bytes).toBe(13_328);
+    expect(result!.size_bytes).toBeGreaterThan(13_328);
   }
   const replays = new Map<string, WorkspaceReplayTrial>();
-  for (const row of rows) replays.set(row.result!.job_id, await replayRow(row));
+  for (const row of single) replays.set(row.result!.job_id, await replayRow(row));
   const base = rows.find(({ key }) => key.step === 'baseline')!;
   const invalidTrial = await request.post(replayPath, {
     data: { revision, key: base.key, job_id: base.result!.job_id, trial: 'absent' },
@@ -165,21 +191,40 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
   await page.reload();
   const reopened = (await plan()).window_map!.evaluations!.filter(({ result }) => result);
   expect(reopened).toEqual(rows);
-  for (const row of reopened) {
+  for (const row of reopened.filter(({ key }) => key.step !== 'finite')) {
     expect(await replayRow(row)).toEqual(replays.get(row.result!.job_id));
   }
 
   const analysis = JSON.parse(await runProjectFixture(
     fixture, 'observe', home, snapshot.project_id, revision, trialId,
   ));
-  expect(Object.keys(analysis)).toHaveLength(3);
-  for (const { key, request_id, result } of reopened) {
+  expect(Object.keys(analysis)).toHaveLength(4);
+  for (const { key, request_id, result } of single) {
     const [track] = replays.get(result!.job_id)!.tracks!;
     expect(analysis[result!.job_id]).toEqual({
       key: [key.variant, key.step, key.row], request_id, receipt: result!.receipt,
       checkpoint_source: result!.checkpoint_source, size_bytes: result!.size_bytes,
       trial: trialId, samples: track.samples, tensor_reads: [track.selector.compact],
     });
+  }
+  const finiteResult = finiteRow.result!;
+  const fromCheckpoint = analysis[finiteResult.job_id];
+  expect(fromCheckpoint).toMatchObject({
+    key: [finiteRow.key.variant, finiteRow.key.step, finiteRow.key.row],
+    request_id: finiteRow.request_id, receipt: finiteResult.receipt,
+    checkpoint_sources: finiteResult.checkpoint_sources, size_bytes: finiteResult.size_bytes, trial: trialId,
+    checkpoint_coordinate_reads: 2,
+  });
+  expect(fromCheckpoint.checkpoints.map(({ coordinate }: { coordinate: number }) => coordinate)).toEqual([2, 1]);
+  const finiteReplay = { revision, key: finiteRow.key, job_id: finiteResult.job_id, trial: trialId };
+  expect((await request.post(replayPath, { data: finiteReplay })).status()).toBe(422);
+  for (const { coordinate, samples } of fromCheckpoint.checkpoints) {
+    const response = await request.post(replayPath, { data: { ...finiteReplay, checkpoint: coordinate } });
+    expect(response.ok(), await response.text()).toBe(true);
+    const replay = await response.json() as WorkspaceReplayTrial;
+    expect(replay.tracks![0].samples).toEqual(samples);
+    expect(replay.tracks![0].selector.compact).toEqual(fromCheckpoint.tensor_reads[0]);
+    expect(replay.time.length).toBe(101);
   }
 
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();

@@ -1372,6 +1372,18 @@
         ]
       }
     },
+    "feedbax.contracts.request_refs.BatchSetMember": {
+      "batches": {},
+      "cadence": {
+        "absent": null
+      },
+      "kind": {
+        "absent": "batch_set",
+        "values": [
+          "batch_set"
+        ]
+      }
+    },
     "feedbax.contracts.request_refs.BestMember": {
       "kind": {
         "absent": "best_by",
@@ -1380,6 +1392,10 @@
         ]
       },
       "metric": {}
+    },
+    "feedbax.contracts.request_refs.CheckpointCadence": {
+      "every_k": {},
+      "through": {}
     },
     "feedbax.contracts.request_refs.ContentRef": {
       "media_type": {
@@ -1425,6 +1441,7 @@
         "families": [
           "barrier",
           "batch",
+          "batch_set",
           "best_by",
           "last",
           "member",

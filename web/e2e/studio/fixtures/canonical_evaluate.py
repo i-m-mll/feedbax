@@ -5,13 +5,14 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 
+from feedbax.contracts.project import Step
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import state_key
+from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import authored_evaluation_project
@@ -22,6 +23,12 @@ def seed(home: str, project_id: str):
     folders = ProjectFolderService(paths.web / "projects")
     project, _ = authored_evaluation_project()
     project.steps.pop("unsupported-condition")
+    train = project.steps["train"].model_dump(mode="json", exclude_unset=True)
+    train["base"]["inline"]["training_config"]["snapshot_interval"] = 1
+    project.steps["train"] = Step.model_validate(train)
+    finite = project.steps["baseline"].model_dump(mode="json", exclude_unset=True)
+    finite["inputs"]["subject"]["checkpoint"] = {"batches": [2, 1]}
+    project.steps["finite"] = Step.model_validate(finite)
     for name, data in dump_text_project(
         project, ProjectConfiguration(project=project_id, store="results"),
     ).items():
@@ -54,19 +61,45 @@ def observe(home: str, project: str, revision: str, trial: str):
         assert result.receipt == row.result.receipt
         assert result.size_bytes == row.result.size_bytes
         reads.clear()
-        with patch.object(ArrayContainerReader, "read_tensor", read_tensor), result.open_states() as dataset:
-            samples = dataset.select(variable, labels={"trial": trial})[0, 0, :].tolist()
-        assert reads == [variable]
-        observed[row.result.job_id] = {
+        with result.open_states() as dataset:
+            coordinates = dataset.data("checkpoint").tolist()
+            descriptor = dataset.descriptor
+            assert descriptor.schema_id == RAW_STATES_SCHEMA
+            assert descriptor.dimensions["state_time"] == 101
+            assert descriptor.dimensions["checkpoint"] == len(coordinates)
+            with patch.object(ArrayContainerReader, "read_tensor", read_tensor):
+                if row.result.checkpoint_sources:
+                    samples = [
+                        dataset.select(variable, labels={"checkpoint": coordinate, "trial": trial})[0].tolist()
+                        for coordinate in coordinates
+                    ]
+                    expected_reads = ["checkpoint", variable] * len(coordinates)
+                else:
+                    samples = [dataset.select(variable, labels={"trial": trial})[0, 0].tolist()]
+                    expected_reads = [variable]
+        assert reads == expected_reads, reads
+        facts = {
             "key": [key.variant, key.step, key.row],
             "request_id": row.request_id,
             "receipt": result.receipt.model_dump(mode="json"),
-            "checkpoint_source": row.result.checkpoint_source.model_dump(mode="json"),
             "size_bytes": result.size_bytes,
             "trial": trial,
-            "tensor_reads": list(reads),
-            "samples": samples,
+            "tensor_reads": [name for name in reads if name != "checkpoint"],
         }
+        if row.result.checkpoint_sources:
+            facts["checkpoint_coordinate_reads"] = reads.count("checkpoint")
+            facts["checkpoint_sources"] = [
+                source.model_dump(mode="json") for source in row.result.checkpoint_sources
+            ]
+            facts["checkpoints"] = [
+                {"coordinate": coordinate, "samples": selected}
+                for coordinate, selected in zip(coordinates, samples, strict=True)
+            ]
+        else:
+            assert row.result.checkpoint_source is not None
+            facts["checkpoint_source"] = row.result.checkpoint_source.model_dump(mode="json")
+            facts["samples"] = samples[0]
+        observed[row.result.job_id] = facts
     return observed
 
 

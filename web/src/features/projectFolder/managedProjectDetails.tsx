@@ -323,7 +323,8 @@ function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
 }
 
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined, visible: boolean) {
-  const jobId = evaluation?.result?.job_id;
+  const result = evaluation?.result;
+  const jobId = (result?.checkpoint_sources?.length ?? 0) <= 1 ? result?.job_id : undefined;
   const [chosenTrial, setTrial] = useState<{ jobId: string; trial: string }>();
   const trial = jobId && (chosenTrial?.jobId === jobId ? chosenTrial.trial : evaluation?.trials[0]);
   const replay = useQuery({

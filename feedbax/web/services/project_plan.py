@@ -27,6 +27,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainResult,
 )
 from feedbax.contracts.project_inputs import InputBinding, StepReference
+from feedbax.contracts.request_refs import BatchSetMember
 from feedbax.contracts.project_plan import PlannedRun, RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
@@ -202,6 +203,10 @@ class ProjectPlanService:
             trials = list(params.trials)
             if subject.request_id not in jobs.checkpoint_producers:
                 raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
+            if isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
+                jobs.checkpoint_catalogs.get(subject.request_id, ())
+            ):
+                raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
         except CannotRun as error:
             problem = StudioProjectWindowMapProblem(
                 code="cannot_run", path=error.path, detail=str(error),
@@ -212,11 +217,13 @@ class ProjectPlanService:
         result = None
         if (
             latest is not None and latest.successful_receipt is not None
-            and latest.checkpoint_source is not None and latest.output_size_bytes is not None
+            and (latest.checkpoint_source is not None or latest.checkpoint_sources)
+            and latest.output_size_bytes is not None
         ):
             result = StudioSavedEvaluationResult(
                 job_id=latest.job_id, receipt=latest.successful_receipt,
                 checkpoint_source=latest.checkpoint_source, size_bytes=latest.output_size_bytes,
+                checkpoint_sources=list(latest.checkpoint_sources) or None,
             )
         return StudioSavedEvaluationRow(
             key=key, request_id=run.request_id,
@@ -245,7 +252,9 @@ class ProjectPlanService:
         if result.receipt != receipt:
             raise JobConflict("The selected Evaluate receipt changed.")
         try:
-            return result.replay_trial(body.trial, anchor_id="effector")
+            return result.replay_trial(body.trial, anchor_id="effector", checkpoint=body.checkpoint)
+        except CannotRun as error:
+            raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
             raise JobConflict("The retained data for the selected Evaluate trial could not be read and authenticated.") from error
 

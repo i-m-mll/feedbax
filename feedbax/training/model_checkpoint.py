@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from operator import attrgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -25,6 +26,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.semantic_values import semantic_key
 from feedbax.persistence.array_container import (
     ArrayContainerError,
     decode_array_container,
@@ -36,6 +38,7 @@ from feedbax.persistence.artifact_custody import (
     decode_content_tree_descriptor,
 )
 from feedbax.runtime.graph import Graph
+from feedbax.runtime.model_values import MODEL_OWNERS, SPATIAL_OWNER
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
@@ -54,53 +57,6 @@ class ModelCheckpointError(CheckpointCustodyError):
     def __init__(self, path: str, message: str):
         self.path = path
         super().__init__(f"{path}: {message}")
-
-
-@dataclass(frozen=True)
-class _Value:
-    symbol: str
-    field: str
-    kind: Literal["source", "learned"]
-
-
-@dataclass(frozen=True)
-class _Owner:
-    revision: int
-    values: tuple[_Value, ...]
-
-
-def _learned(*values: tuple[str, str]) -> tuple[_Value, ...]:
-    return tuple(_Value(symbol, field, "learned") for symbol, field in values)
-
-
-def _source(*names: str) -> tuple[_Value, ...]:
-    return tuple(_Value(name, name, "source") for name in names)
-
-
-_SPATIAL = "feedbax.AcausalSystem"
-_OWNERS = {
-    "feedbax.GRU": _Owner(1, _learned(
-        ("input_kernel", "cell.weight_ih"),
-        ("recurrent_kernel", "cell.weight_hh"),
-        ("gate_bias", "cell.bias"),
-        ("candidate_bias", "cell.bias_n"),
-    )),
-    "feedbax.Linear": _Owner(2, _learned(("kernel", "layer.weight"), ("bias", "layer.bias"))),
-    "feedbax.PointMass": _Owner(1, (
-        _Value("mass", "plant.skeleton.mass", "source"),
-        _Value("damping", "plant.skeleton.damping", "source"),
-        *_source("dt"),
-    )),
-    "feedbax.RigidTendonHillMuscleThelen": _Owner(2, _source(
-        "max_isometric_force", "optimal_muscle_length", "tendon_slack_length",
-        "vmax_factor", "min_activation", "tau_activation", "tau_deactivation", "dt",
-    )),
-    _SPATIAL: _Owner(1, ()),
-}
-
-
-def _pointer_token(value: str) -> str:
-    return value.replace("~", "~0").replace("/", "~1")
 
 
 def _asset_path(ref: ContentObjectRef) -> str:
@@ -157,14 +113,14 @@ class SemanticModelWriter:
         if not graph.nodes:
             return None
         for name, node in graph.nodes.items():
-            owner = _OWNERS.get(node.type)
-            if owner is None or node.revision not in {None, owner.revision}:
+            owner = MODEL_OWNERS.get(node.type)
+            if owner is None or not owner.checkpointable or node.revision not in {None, owner.revision}:
                 return None
             interior = (graph.subgraphs or {}).get(name)
-            if node.type != _SPATIAL and interior is None:
+            if node.type != SPATIAL_OWNER and interior is None:
                 continue
             if (
-                node.type == _SPATIAL
+                node.type == SPATIAL_OWNER
                 and isinstance(interior, AcausalGraphSpec)
                 and interior.mujoco_asset is not None
                 and interior.solver.solver_type == "mujoco"
@@ -210,6 +166,15 @@ def semantic_model_member_files(
 
 
 @dataclass(frozen=True)
+class ModelRestoreTarget:
+    """A resolved variant and its authorized scalar source-value overrides."""
+
+    graph: GraphSpec
+    template: Graph
+    source_overrides: Mapping[str, float]
+
+
+@dataclass(frozen=True)
 class SemanticModelSlot:
     provider: ImmutableArtifactBlobProvider
     graph: GraphSpec
@@ -250,7 +215,10 @@ class SemanticModelSlot:
             artifact_provider=self.provider,
         ).graph
 
-    def restore(self, template: Graph | None = None) -> Graph:
+    def restore(
+        self, template: Graph | None = None, *, target: ModelRestoreTarget | None = None,
+    ) -> Graph:
+        """Verify the source slot, then bind compatible retained values to the target."""
         if template is None:
             template = self.template()
         try:
@@ -264,31 +232,36 @@ class SemanticModelSlot:
         actual = decoded.descriptor.metadata
         if not isinstance(actual, dict):
             raise ModelCheckpointError("/v1/model", "missing value declarations")
-        keys = expected.keys()
-        unexpected = (keys ^ actual.keys()) | (keys ^ decoded.tensors.keys())
-        if unexpected:
-            raise ModelCheckpointError(min(unexpected), "missing or unexpected authoritative value")
-        for path, value in expected.items():
-            restored = decoded.tensors[path]
-            if actual[path] != declarations[path]:
-                raise ModelCheckpointError(path, "owner, revision or value schema differs")
-            if restored.shape != value.shape or restored.dtype != value.dtype:
-                raise ModelCheckpointError(path, "authoritative value shape or dtype differs")
+        _verify_values(expected, declarations, decoded.tensors, actual)
+
+        retained = self.graph.nodes.keys()
+        overrides: Mapping[str, float] = {}
+        if target is not None:
+            destination, destination_declarations = _describe(
+                target.graph, target.template, retained=retained,
+            )
+            _verify_values(destination, destination_declarations, decoded.tensors, actual)
+            template, overrides = target.template, target.source_overrides
 
         nodes = dict(template.nodes)
-        for name, component in template.nodes.items():
+        applied = set()
+        for name in retained:
+            component = nodes[name]
             binding = template.component_bindings[name]
-            values = _OWNERS[binding.type_id].values
+            values = MODEL_OWNERS[binding.type_id].values
             source = {}
             learned = []
             for value in values:
-                address = f"/v1/model/value/{_pointer_token(name)}/{value.symbol}"
-                if address in decoded.tensors:
-                    data = decoded.tensors[address]
-                    if value.kind == "source":
-                        source[value.symbol] = float(data)
-                    else:
-                        learned.append((value.field, jnp.asarray(data)))
+                address = semantic_key("model", "value", (name,), value.symbol)
+                if address not in decoded.tensors:
+                    continue
+                data = decoded.tensors[address]
+                if value.kind == "source":
+                    if address in overrides:
+                        applied.add(address)
+                    source[value.symbol] = overrides.get(address, float(data))
+                else:
+                    learned.append((value.field, jnp.asarray(data)))
             if source:
                 component = type(component).from_config(component.configuration_values() | source)
             if learned:
@@ -298,24 +271,52 @@ class SemanticModelSlot:
                     component, tensors,
                 )
             nodes[name] = component
+        if unexpected := overrides.keys() - applied:
+            raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
         return eqx.tree_at(lambda graph: graph.nodes, template, nodes).prepare()
 
 
-def _describe(graph: GraphSpec, model: Graph) -> tuple[dict, dict]:
+def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
+    keys = expected.keys()
+    unexpected = (keys ^ saved_declarations.keys()) | (keys ^ tensors.keys())
+    if unexpected:
+        raise ModelCheckpointError(min(unexpected), "missing or unexpected authoritative value")
+    for path in sorted(keys):
+        current, restored = expected[path], tensors[path]
+        if saved_declarations[path] != declarations[path]:
+            raise ModelCheckpointError(path, "owner, revision or value schema differs")
+        if restored.shape != current.shape or restored.dtype != current.dtype:
+            raise ModelCheckpointError(
+                path, f"authoritative value shape or dtype differs: "
+                f"checkpoint {restored.shape} {restored.dtype}, destination {current.shape} {current.dtype}",
+            )
+
+
+def _describe(
+    graph: GraphSpec, model: Graph, *, retained: Set[str] | None = None,
+) -> tuple[dict, dict]:
     if model.nodes.keys() != graph.nodes.keys() or model.component_bindings.keys() != graph.nodes.keys():
         raise ModelCheckpointError("/v1/model", "effective graph and realized owner occurrences differ")
     arrays, declarations = {}, {}
-    for name, component in model.nodes.items():
+    if retained is None:
+        retained = graph.nodes.keys()
+    if missing := retained - graph.nodes.keys():
+        raise ModelCheckpointError(
+            semantic_key("model", "value", (), min(missing)),
+            "retained owner has no destination",
+        )
+    for name in sorted(retained):
+        component = model.nodes[name]
         binding = model.component_bindings[name]
-        owner_path = f"/v1/model/value/{_pointer_token(name)}"
-        owner = _OWNERS.get(binding.type_id)
+        owner_path = semantic_key("model", "value", (), name)
+        owner = MODEL_OWNERS.get(binding.type_id)
         if (
-            owner is None or graph.nodes[name].type != binding.type_id
+            owner is None or not owner.checkpointable or graph.nodes[name].type != binding.type_id
             or binding.revision != owner.revision
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")
         for value in owner.values:
-            path = f"{owner_path}/{value.symbol}"
+            path = semantic_key("model", "value", (name,), value.symbol)
             leaf = attrgetter(value.field)(component)
             if leaf is None and value.kind == "learned":
                 continue

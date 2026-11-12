@@ -123,13 +123,15 @@ export interface StudioSavedEvaluationReplayRequest {
   key: StudioSavedTrainKey;
   job_id: string;
   trial: string;
+  checkpoint?: number | null;
 }
 
 export interface StudioSavedEvaluationResult {
   job_id: string;
   receipt: JobReceipt;
-  checkpoint_source: StudioTrainCheckpointSource;
+  checkpoint_source: StudioTrainCheckpointSource | null;
   size_bytes: number;
+  checkpoint_sources?: StudioTrainCheckpointSource[] | null;
 }
 
 export interface StudioSavedEvaluationRow {
@@ -2350,7 +2352,16 @@ export type BestCheckpoint = {
   "best_by": string;
 };
 
-export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint;
+export type CheckpointBatches = {
+  "batches": Array<number>;
+};
+
+export type CheckpointCadence = {
+  "every_k": number;
+  "through": number;
+};
+
+export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence;
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
 
@@ -3216,6 +3227,7 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
       "key": StudioSavedTrainKeySchema,
       "job_id": z.string(),
       "trial": z.string(),
+      "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
@@ -3225,8 +3237,9 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
     .object({
       "job_id": z.string(),
       "receipt": JobReceiptSchema,
-      "checkpoint_source": StudioTrainCheckpointSourceSchema,
+      "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "size_bytes": z.number().int().safe().gte(0),
+      "checkpoint_sources": z.array(StudioTrainCheckpointSourceSchema).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationResult>;
@@ -6971,8 +6984,21 @@ export const BestCheckpointSchema: z.ZodType<BestCheckpoint> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<BestCheckpoint>;
 
+export const CheckpointBatchesSchema: z.ZodType<CheckpointBatches> = z.lazy(() =>
+  z.object({
+    "batches": z.array(z.number().int().safe().gt(0).max(9007199254740991)).min(1).max(64),
+  }).strict()
+) as unknown as z.ZodType<CheckpointBatches>;
+
+export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =>
+  z.object({
+    "every_k": z.number().int().safe().gt(0).max(9007199254740991),
+    "through": z.number().int().safe().gt(0).max(9007199254740991),
+  }).strict()
+) as unknown as z.ZodType<CheckpointCadence>;
+
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
-  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema])
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
 
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>

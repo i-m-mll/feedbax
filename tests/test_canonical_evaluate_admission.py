@@ -4,10 +4,13 @@ from hashlib import sha256
 import json
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.jobs import StudioSavedEvaluationReplayRequest, StudioSavedTrainKey
 from feedbax.contracts.project import Project
@@ -19,7 +22,8 @@ from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import ROLLOUT_TYPE, STATES_SCHEMA, state_key
+from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, ROLLOUT_TYPE, STATES_SCHEMA, state_key
 from feedbax.training import evaluate_worker
 from feedbax.training.checkpoint_custody import open_published_model_slot
 from feedbax.training.studio_executor import studio_training_key
@@ -47,7 +51,6 @@ def authored_evaluation_project():
                 "seed": 731,
                 "trials": ["alpha", "beta", "gamma"],
                 "trial_policy": "paired",
-                "retention": "observations",
                 "variation": [],
             },
         }},
@@ -76,6 +79,15 @@ def authored_evaluation_project():
     return authored, spec
 
 
+def _save_project(folders, project, authored):
+    for name, data in dump_text_project(
+        authored, ProjectConfiguration(project=project, store="results"),
+    ).items():
+        path = folders.root / project / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
 def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
@@ -84,12 +96,12 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     folders = ProjectFolderService(tmp_path / "projects")
     project = "reaching"
     authored, spec = authored_evaluation_project()
-    for name, data in dump_text_project(
-        authored, ProjectConfiguration(project=project, store="results"),
-    ).items():
-        path = folders.root / project / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+    definition = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    baseline_step = definition["steps"]["baseline"]
+    legacy = json.loads(json.dumps(baseline_step))
+    legacy["base"]["inline"]["params"]["retention"] = "observations"
+    definition["steps"]["legacy"] = legacy
+    _save_project(folders, project, Project.model_validate(definition))
     plan = folders.read_plan(project, revision=None)
     assert not plan.plan.diagnostics
     by_key = {run.key: run for run in plan.plan.runs}
@@ -193,7 +205,16 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert attempt.job_id == item.job_id and attempt.successful_receipt == outcomes[key].receipt
         assert attempt.checkpoint_source.job_id == source.job_id
         assert attempt.output_size_bytes == outcomes[key].size_bytes
-    position = state_key("plant", "effector/position")
+    position = "/v1/model/state/plant/effector~1position"
+    carry = "/v1/model/carry/cell:hidden/hidden"
+    plant_fields = {
+        state_key("plant", f"{state}/{symbol}"): (state, leaf, units)
+        for state in ("skeleton", "effector")
+        for symbol, leaf, units in (
+            ("position", "pos", "m"), ("velocity", "vel", "m/s"), ("force", "force", "N"),
+        )
+    }
+    cell_fields = {state_key("cell", symbol): symbol for symbol in ("hidden", "output")}
     target = "/v1/task/output/reach_target"
     selected = []
     read_tensor = ArrayContainerReader.read_tensor
@@ -202,20 +223,48 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         selected.append(name)
         return read_tensor(reader, name)
 
+    replay_request = StudioSavedEvaluationReplayRequest(
+        revision=plan.revision,
+        key=StudioSavedTrainKey.model_validate(baseline, from_attributes=True),
+        job_id=submitted.items[0].job_id,
+        trial="alpha",
+    )
+    service = ProjectPlanService(folders, jobs)
     with monkeypatch.context() as context:
         context.setattr(ArrayContainerReader, "read_tensor", observed)
         with outcomes[baseline].open_states() as dataset:
             assert not selected
-            assert dataset.descriptor.schema_id == STATES_SCHEMA
-            assert dataset.descriptor.dimensions == {
+            descriptor = dataset.descriptor
+            assert descriptor.schema_id == RAW_STATES_SCHEMA
+            assert descriptor.dimensions == {
                 "checkpoint": 1, "condition": 1, "trial": 3,
-                "state_time": 101, "transition": 100, "xy": 2,
+                "state_time": 101, "transition": 100, "xy": 2, "cell:unit": 100,
             }
+            assert {key for key in descriptor.variables if key.startswith("/v1/model/")} == {
+                *plant_fields, *cell_fields, carry,
+            }
+            state_axes = ("checkpoint", "condition", "trial", "state_time")
+            for key, (_, _, units) in plant_fields.items():
+                field = descriptor.variables[key]
+                assert (field.dims, field.units, field.frame) == ((*state_axes, "xy"), units, "world")
+            for key in (*cell_fields, carry):
+                field = descriptor.variables[key]
+                assert (field.dims, field.units) == ((*state_axes, "cell:unit"), "1")
+            assert descriptor.coords["state_time"].units == "s"
+            assert descriptor.attrs["carry_address_migration"] == "legacy-gru-hidden-self-loop.v1"
+            assert descriptor.attrs["source_graph_sha256"] == sha256(
+                canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
+            ).hexdigest()
+            assert dataset.data("trial").tolist() == ["alpha", "beta", "gamma"]
             first = dataset.select(position, labels={"trial": "alpha"})[0, 0, :3]
         assert selected == [position]
         selected.clear()
-        replay = outcomes[baseline].replay_trial("alpha", anchor_id="effector")
-        assert set(selected) == {"state_time", position}
+        with outcomes[baseline].open_states() as dataset:
+            hidden = dataset.select(carry, labels={"trial": "alpha"})[0, 0, :3]
+        assert hidden.shape == (3, 100) and selected == [carry]
+        selected.clear()
+        replay = service.evaluation_replay(project, replay_request)
+        assert selected == ["state_time", position]
     assert replay.identity.stable_id == "alpha" and replay.time.length == 101
     assert replay.time.values[0] == 0.0
     assert replay.tracks[0].selector.compact == position
@@ -242,6 +291,32 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             assert len({value.tobytes() for value in tgt}) > 1
             arrays[key] = pos, tgt, dataset.data("condition")[0]
     base_pos, base_tgt, base_condition = arrays[baseline]
+    trial_key = derive_key(jax.random.PRNGKey(731), "evaluate-trial", "alpha")
+    graph_key = derive_key(trial_key, "studio-trial", "graph")
+    state = restored.init_state(key=graph_key)
+    input_name = next(name for name, port in restored.input_bindings.items() if port == ("cell", "input"))
+    cycle = restored.initial_cycle_port_values(
+        state, inputs={input_name: jnp.asarray(base_tgt[0, 0])}, key=graph_key,
+    )
+    with outcomes[baseline].open_states() as dataset:
+        np.testing.assert_allclose(dataset.data("state_time"), np.arange(101) * 0.01, atol=1e-7)
+        np.testing.assert_array_equal(dataset.data("transition_start"), dataset.data("state_time")[:-1])
+        np.testing.assert_array_equal(dataset.data("transition_end"), dataset.data("state_time")[1:])
+        state_fields = {key: dataset.data(key)[0, 0, 0, :4] for key in (*plant_fields, *cell_fields, carry)}
+    for sample in range(4):
+        plant_state = state.get(restored.nodes["plant"].state_index)
+        cell_state = state.get(restored.nodes["cell"].state_index)
+        for key, (part, leaf, _) in plant_fields.items():
+            value = plant_state.effector if part == "effector" else plant_state.plant.skeleton
+            np.testing.assert_allclose(state_fields[key][sample], getattr(value, leaf), atol=1e-7)
+        for key, symbol in cell_fields.items():
+            np.testing.assert_allclose(state_fields[key][sample], getattr(cell_state, symbol), atol=1e-7)
+        np.testing.assert_allclose(state_fields[carry][sample], cycle["cell", "hidden"], atol=1e-7)
+        if sample < 3:
+            _, state, cycle = restored.step(
+                {input_name: jnp.asarray(base_tgt[0, sample])},
+                state, cycle, key=graph_key, t=sample,
+            )
     nominal_pos, nominal_tgt, nominal_condition = arrays[conditions["nominal"]]
     heavy_pos, heavy_tgt, heavy_condition = arrays[conditions["heavy"]]
     np.testing.assert_array_equal(nominal_tgt, base_tgt)
@@ -261,6 +336,18 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert failed["outcome"]["error"]["code"] == "cannot_run"
     assert failed["outcome"]["error"]["path"] == "/params/variation/0"
 
+    (legacy_attempt,) = launch(jobs, (RunKey("default", "legacy", "default"),), "legacy-observations").items
+    legacy_job = wait_until(lambda: (
+        job_row(host, legacy_attempt.job_id, "succeeded") or job_row(host, legacy_attempt.job_id, "failed")
+    ))
+    assert legacy_job["state"] == "succeeded", legacy_job.get("outcome")
+    legacy_result = jobs.read_evaluation_result(project=project, store=root, job_id=legacy_attempt.job_id)
+    assert legacy_result.size_bytes == 13328
+    with legacy_result.open_states() as dataset:
+        assert dataset.descriptor.schema_id == STATES_SCHEMA
+        assert carry not in dataset.descriptor.variables
+        np.testing.assert_array_equal(dataset.data(position)[0, 0], base_pos)
+
     restart(host)
     assert launch(jobs, keys, "evaluate") == submitted
     original = outcomes[baseline]
@@ -272,27 +359,30 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     data_path = store.object_path(ref.object_ref)
     raw = data_path.read_bytes()
     header_end = 8 + int.from_bytes(raw[:8], "little")
-    begin, _ = json.loads(raw[8:header_end])[position]["data_offsets"]
-    offset = header_end + begin
-    try:
+    parts = json.loads(raw[8:header_end])
+
+    def corrupt_part(name):
+        begin, _ = parts[name]["data_offsets"]
+        offset = header_end + begin
         data_path.write_bytes(raw[:offset] + bytes([raw[offset] ^ 1]) + raw[offset + 1:])
+
+    try:
+        corrupt_part(carry)
+        assert service.evaluation_replay(project, replay_request) == replay
+        with original.open_states() as dataset:
+            with pytest.raises(ArrayContainerError):
+                dataset.select(carry, labels={"trial": "alpha"})
+        corrupt_part(position)
+        with pytest.raises(JobConflict, match="could not be read and authenticated"):
+            service.evaluation_replay(project, replay_request)
         with original.open_states() as dataset:
             np.testing.assert_array_equal(dataset.data(target)[0, 0], base_tgt)
-            with pytest.raises(ArrayContainerError):
-                dataset.data(position)
     finally:
         data_path.write_bytes(raw)
 
     (rerun,) = launch(jobs, (baseline,), "evaluate-rerun").items
     assert rerun.disposition == "admitted" and rerun.job_id != submitted.items[0].job_id
-    original_trial = ProjectPlanService(folders, jobs).evaluation_replay(
-        project, StudioSavedEvaluationReplayRequest(
-            revision=plan.revision,
-            key=StudioSavedTrainKey.model_validate(baseline, from_attributes=True),
-            job_id=submitted.items[0].job_id,
-            trial="alpha",
-        ),
-    )
+    original_trial = service.evaluation_replay(project, replay_request)
     assert original_trial == replay
     manifest_ref, raw = store.resolve_manifest("EvaluationRunManifest", outcomes[baseline].receipt.manifest_id)
     manifest_path = store.object_path(manifest_ref.object)
@@ -310,3 +400,44 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (stale,) = launch(jobs, (baseline,), "stale-evaluate").items
     assert stale.disposition == "rejected"
     assert "payload.params.seed" in stale.reason
+
+
+def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "unsupported-owner"
+    authored, _ = authored_evaluation_project()
+    definition = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    graph = definition["steps"]["train"]["base"]["inline"]["graph"]
+    graph["nodes"]["passthrough"] = {
+        "type": "feedbax.Gain", "params": {"gain": 1.0},
+        "input_ports": ["input"], "output_ports": ["output"],
+    }
+    graph["wires"].append({
+        "source_node": "cell", "source_port": "hidden",
+        "target_node": "passthrough", "target_port": "input",
+    })
+    graph["output_ports"].append("passthrough")
+    graph["output_bindings"]["passthrough"] = ["passthrough", "output"]
+    _save_project(folders, project, Project.model_validate(definition))
+    reviewed = folders.read_plan(project, revision=None)
+    assert not reviewed.plan.diagnostics
+    (producer,) = jobs.admit_plan(
+        folders, reviewed, run_keys=(RunKey("default", "train", "default"),), token="train",
+    ).items
+    trained = wait_until(lambda: (
+        job_row(host, producer.job_id, "succeeded") or job_row(host, producer.job_id, "failed")
+    ), timeout=24)
+    assert trained["state"] == "succeeded", trained.get("outcome")
+    (consumer,) = jobs.admit_plan(
+        folders, reviewed, run_keys=(RunKey("default", "baseline", "default"),), token="evaluate",
+    ).items
+    result = wait_until(lambda: (
+        job_row(host, consumer.job_id, "succeeded") or job_row(host, consumer.job_id, "failed")
+    ))
+    assert result["state"] == "failed"
+    assert result["outcome"]["error"]["code"] == "cannot_run"
+    assert result["outcome"]["error"]["path"] == "/inputs/subject/graph/nodes/passthrough"
+    assert "receipt" not in result["outcome"]

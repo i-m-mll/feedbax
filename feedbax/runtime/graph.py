@@ -1529,16 +1529,31 @@ class Graph(GraphNode):
         Trial initializer inputs are passed without a time axis. Other inputs
         are time-major. Each trace entry aligns with the output of that step.
         """
-        outputs, final_state, _, traces = self._scan_rollout(
-            inputs,
-            state,
-            key=key,
-            n_steps=n_steps,
-            cycle_init=cycle_init,
-            rollout_step_hook=rollout_step_hook,
-            trace=trace,
+        outputs, final_state, traces, _ = self.rollout_with_trace_and_history(
+            inputs, state, key=key, n_steps=n_steps, trace=trace,
+            cycle_init=cycle_init, rollout_step_hook=rollout_step_hook,
         )
         return outputs, final_state, traces
+
+    def rollout_with_trace_and_history(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+        n_steps: int,
+        trace: tuple[GraphTraceRequest, ...],
+        capture_state: Callable[[State, dict | None], PyTree] | None = None,
+        cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+    ) -> tuple[dict[str, PyTree], State, dict[str, PyTree], PyTree | None]:
+        """Capture declared reset-inclusive state in the same scan as post-step traces."""
+        outputs, final_state, history, traces = self._scan_rollout(
+            inputs, state, key=key, n_steps=n_steps, trace=trace,
+            cycle_init=cycle_init, rollout_step_hook=rollout_step_hook,
+            save_history=capture_state is not None, capture_state=capture_state,
+        )
+        return outputs, final_state, traces, history
 
     def _scan_rollout(
         self,
@@ -1554,6 +1569,7 @@ class Graph(GraphNode):
         rollout_step_hook: Optional[RolloutStepHook] = None,
         trace: tuple[GraphTraceRequest, ...] = (),
         checkpoint: bool | None = None,
+        capture_state: Callable[[State, dict | None], PyTree] | None = None,
     ) -> tuple[dict[str, PyTree], State, PyTree | None, dict[str, PyTree]]:
         trial_scope_sources = self.trial_initializer_input_names
         scan_inputs = {
@@ -1603,7 +1619,7 @@ class Graph(GraphNode):
             step_inputs_seq,
             keys,
             n_steps,
-            state_view_fn=self._rollout_state_view,
+            state_view_fn=self._rollout_state_view if capture_state is None else capture_state,
             init_step_carry=init_cycle_values,
             checkpoint=self.checkpoint if checkpoint is None else checkpoint,
             save_history=save_history,
