@@ -28,6 +28,14 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const byRun = new Map<string, PlanRunView['values']>();
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
+  const trainIds = new Set(saved?.rows.map(({ key }) => savedRunId(key)));
+  const rejected = new Map<string, string>();
+  for (const problem of map?.problems ?? []) {
+    const { variant, step, row, detail } = problem;
+    if (!variant || !step || !row) continue;
+    const id = savedRunId({ variant, step, row });
+    if (!rejected.has(id)) rejected.set(id, detail);
+  }
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
   const runsByStep = new Map<string, PlanRunView[]>();
   function addRun(step: string, run: PlanRunView) {
@@ -55,6 +63,9 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     if (evaluation) addRun(row.key.step, {
       id, values, label: row.label, status: evaluation.status, reason: evaluation.reason ?? undefined,
       sizeBytes: evaluation.result?.size_bytes, variant: row.key.variant,
+    });
+    else if (!trainIds.has(id) && rejected.has(id)) addRun(row.key.step, {
+      id, values, label: row.label, status: 'cannot_run', reason: rejected.get(id), variant: row.key.variant,
     });
   }
   for (const row of saved?.rows ?? []) {

@@ -139,6 +139,7 @@
     "model": "Model",
     "objective": "Objective",
     "training": "Training",
+    "trainingMethod": "Training Method",
     "analysis": "Analysis",
     "figures": "Figures",
     "document": "Document",

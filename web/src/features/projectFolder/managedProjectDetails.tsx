@@ -26,6 +26,7 @@ import {
   type StudioDocumentAuthoring, type StudioDocumentAuthoringRequest, type StudioSavedTrainKey, type WorkspaceReplayTrial,
 } from '@/generated/studioContracts';
 import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
+import type { ProblemReveal } from './projectWindowProblems';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
@@ -65,6 +66,7 @@ interface DetailInputs {
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly namedRun?: StudioSavedTrainKey;
   readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
+  readonly problemReveal?: ProblemReveal;
 }
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
@@ -90,8 +92,14 @@ function DetailReason({ reason, name }: { reason: StudioReasonId; name: StudioNa
   return <p role="status" className="px-3 py-2 text-sm text-slate-600">{studioReason(reason, studioName(name))}</p>;
 }
 
-function useElementSelection(scope: string) {
+function useElementSelection(scope: string, reveal?: ProblemReveal, revealedId?: string) {
   const [selection, setSelection] = useState<{ scope: string; id: string | null }>();
+  const handled = useRef<ProblemReveal>();
+  useEffect(() => {
+    if (!reveal || revealedId === undefined || handled.current === reveal) return;
+    handled.current = reveal;
+    setSelection({ scope, id: revealedId });
+  }, [scope, reveal, revealedId]);
   return {
     selectedId: selection?.scope === scope ? selection.id : null,
     onSelect: (id: string | null) => setSelection({ scope, id }),
@@ -445,9 +453,23 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     const result = TaskSpecSchema.safeParse(definitions.task?.payload);
     return result.success ? result.data : null;
   }, [definitions.task]);
+  const reveal = input.problemReveal;
+  const element = reveal?.target.view === activeView ? reveal?.target.element : undefined;
+  const document = reveal?.problem.document;
+  const modelElement = !document || definitions.model?.id === document ? element : undefined;
+  const wireTarget = modelElement?.kind === 'wire' ? graph?.wires?.[modelElement.index] : undefined;
+  let modelId: string | undefined;
+  if (modelElement?.kind === 'component' && graph && Object.prototype.hasOwnProperty.call(graph.nodes ?? {}, modelElement.id)) {
+    modelId = `component:${modelElement.id}`;
+  } else if (modelElement?.kind === 'wire' && wireTarget &&
+      graph?.nodes?.[wireTarget.source_node] && graph.nodes?.[wireTarget.target_node]) {
+    modelId = `wire:${modelElement.index}`;
+  }
+  const taskId = element?.kind === 'taskParameter' && (!document || definitions.task?.id === document) &&
+    task && Object.prototype.hasOwnProperty.call(task.params ?? {}, element.name) ? element.name : undefined;
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
-  const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]));
-  const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]));
+  const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]), reveal, modelId);
+  const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]), reveal, taskId);
   const change = useDefinitionEdit(input, scope);
   function editable(field: DefinitionField, definition: Definition) {
     return canEdit && (definition.id

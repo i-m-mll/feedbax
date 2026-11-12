@@ -141,12 +141,15 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const initial = await request.get(path);
   expect(initial.ok()).toBe(true);
   let snapshot = await initial.json() as StudioProjectSnapshot;
-  const [, task, template] = await fixture('files');
+  const [modelFile, task, template] = await fixture('files');
   for (const file of [
     task,
     { ...template, step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'chain' } } } } },
     { ...template, id: 'single', step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'single' } } } } },
     { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: {} } } },
+    { kind: 'step', id: 'rowless', step: { kind: 'train', base: { document: 'absent-base' } } },
+    { ...modelFile, id: 'empty-model', document: { ...modelFile.document, payload: { nodes: {} } } },
+    { ...template, id: 'empty', step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'empty-model' } } } } },
   ]) {
     const saved = await request.post(`${path}/files`, { data: { revision: snapshot.revision, file } });
     expect(saved.status(), await saved.text()).toBe(201);
@@ -232,16 +235,61 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const read = await request.get(`${path}/train-runs?revision=${snapshot.revision}&window_map=true`);
   expect(read.ok()).toBe(true);
   const { window_map } = await read.json() as StudioSavedTrainRuns;
-  const problems = window_map!.problems.filter(({ variant }) => variant === null || variant === 'default');
-  expect(problems.some(({ step }) => step === 'broken')).toBe(true);
+  const problems = window_map!.problems;
+  const brokenProblems = problems.filter(({ step }) => step === 'broken');
+  expect(brokenProblems.length).toBeGreaterThan(1);
+  expect(window_map!.steps.find(({ step_id }) => step_id === 'broken')?.status_counts).toEqual({ cannot_run: 1 });
+  expect(window_map!.rows.filter(({ key }) => key.step === 'rowless')).toHaveLength(0);
+  await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   const problemButton = page.getByRole('button', { name: 'Problems', exact: true });
   await expect(problemButton).toHaveText(`Problems ${problems.length}`);
   await expect(problemButton).toHaveAccessibleDescription(String(problems.length));
   await problemButton.click();
   const list = page.getByRole('dialog', { name: 'Problems' });
   await expect(list.getByRole('listitem')).toHaveCount(problems.length);
-  const problem = problems.find(({ step }) => step === 'broken')!;
-  await list.getByRole('button', { name: `${problem.path}: ${problem.detail}`, exact: true }).first().click();
-  await expect(mapStep(page, 'broken')).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('dialog', { name: 'Problems' })).toBeHidden();
+  const close = list.getByRole('button', { name: 'Close', exact: true });
+  await expect(close).toBeFocused();
+  async function anchored() {
+    const entry = (await problemButton.boundingBox())!;
+    const panel = (await list.boundingBox())!;
+    expect(Math.abs(panel.x + panel.width - entry.x - entry.width)).toBeLessThan(2);
+    expect(panel.y + panel.height).toBeLessThan(entry.y);
+    expect(panel.x).toBeGreaterThanOrEqual(0);
+  }
+  await anchored();
+  await close.press('Escape');
+  await expect(problemButton).toBeFocused();
+
+  const broken = page.getByRole('article', { name: 'Train broken' });
+  const scoped = broken.getByRole('button', { name: "1 Can't run", exact: true });
+  await scoped.press('Enter');
+  await expect(list.getByRole('listitem')).toHaveCount(brokenProblems.length);
+  await anchored();
+  await close.press('Escape');
+  await expect(scoped).toBeFocused();
+  await scoped.press('Enter');
+  await list.getByRole('button', { name: 'Training Method · Field required', exact: true }).press('Enter');
+  await expect(list).toBeHidden();
+  const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
+  await expect(training.getByText('Training Method · Field required', { exact: true })).toBeFocused();
+  await expect(broken.locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
+
+  const rowless = page.getByRole('article', { name: 'Train rowless' });
+  await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
+  await expect(list.getByRole('listitem')).toHaveCount(1);
+  await list.getByRole('button', { name: /absent-base/ }).click();
+  await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
+
+  await problemButton.click();
+  await list.getByRole('button', { name: /Components · Model has no components/ }).click();
+  const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
+  const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
+  await expect(empty.locator('header')).toContainText('empty-model');
+  await expect(emptyReason).toBeFocused();
+  await expect(page.getByRole('article', { name: 'Train empty' }).locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.setViewportSize({ width: 520, height: 860 });
+  await problemButton.click();
+  await expect(list.getByRole('listitem')).toHaveCount(problems.length);
+  await anchored();
 });
