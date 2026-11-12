@@ -1,4 +1,4 @@
-"""The authored project schema and the controls supported for direct Train steps."""
+"""The authored project schema and the controls supported for Train steps."""
 
 from __future__ import annotations
 
@@ -13,10 +13,13 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.project import DocumentReference, InlineBase, Project
+from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.project import DocumentReference, InlineBase, Project, StepBase, json_pointer_parts
+from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.request_identity import REQUEST_KINDS
+from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringChange,
     StudioAuthoringChoice,
@@ -166,21 +169,30 @@ class _TrainFields:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
-        if (
-            not isinstance(step.base, InlineBase)
-            or step.sweep is not None
-            or step.deltas
-            or step.inputs
-            or project.sweep is not None
-        ):
-            raise ValueError("These Train controls require a direct Train step without a sweep")
+        direct = isinstance(step.base, InlineBase) and not (step.sweep or step.deltas or step.inputs)
+        checkpoint = step.inputs.get("checkpoint")
+        linked = (
+            isinstance(step.base, StepBase) and step.base.row is None
+            and isinstance(checkpoint, StepReference) and checkpoint.step == step.base.step
+            and checkpoint.checkpoint == "last"
+        )
+        if project.sweep is not None or not (direct or linked):
+            raise ValueError("These Train controls require an independent Train or a direct checkpoint continuation")
         self.project = project
-        self.payload = step.base.inline
+        self.step = step
+        self.linked = linked
         self.registry = registry
         template = compose_step(project, step_id, track_sources=True)
         resolved = (
             template.resolve(include_sources=True) if isinstance(template, StepTemplate) else None
         )
+        if linked:
+            if not isinstance(template, StepTemplate) or not isinstance(resolved, ResolvedStep):
+                raise ValueError("The checkpoint continuation's definition could not be resolved")
+            self.payload = template.authored_payload()
+        else:
+            assert isinstance(step.base, InlineBase)
+            self.payload = step.base.inline
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
 
@@ -192,6 +204,25 @@ class _TrainFields:
             path=pointer(("base", "inline", *path)),
             value=value,
         )
+
+    def authored_edits(self, field: str, edits: list[SetProjectValue]) -> list[SetProjectValue]:
+        if not self.linked or not edits:
+            return edits
+        patches = [
+            OverridePatch(op=edit.op, path=".".join(json_pointer_parts(edit.path)[2:]), value=edit.value)
+            for edit in edits
+        ]
+        layer = MatrixCompositionDelta(
+            layer_id=f"studio-{field.replace('/', '-').strip('-')}-{len(self.step.deltas) + 1}",
+            patches=patches,
+            acknowledges_ancestor_paths=[patch.path for patch in patches],
+        ).model_dump(mode="json", exclude_unset=True)
+        has_deltas = "deltas" in self.step.model_fields_set
+        return [SetProjectValue(
+            op="add",
+            path=f"/deltas/{len(self.step.deltas)}" if has_deltas else "/deltas",
+            value=layer if has_deltas else [layer],
+        )]
 
     def field(
         self,
@@ -492,4 +523,8 @@ def project_train_fields(
                 for patch in patches
                 if (ref := _read(DocumentReference, patch.value)) is not None
             )
-    return [field.view for field in definition.fields.values()], patches, sorted(documents)
+    return (
+        [field.view for field in definition.fields.values()],
+        definition.authored_edits(change.field, patches) if change is not None else [],
+        sorted(documents),
+    )

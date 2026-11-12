@@ -195,7 +195,7 @@ export class ProjectEditController {
     );
   }
 
-  createFile(file: NamedFileCreation): Promise<StudioProjectDocument> {
+  createFile(file: NamedFileCreation, reviewedRevision?: string): Promise<StudioProjectDocument> {
     const intended = structuredClone(file);
     return this.authoredCommand(
       () => this.transport.create(this.saved.project_id, {
@@ -205,6 +205,7 @@ export class ProjectEditController {
         addressKey(address) === addressKey(intended)) &&
         containsCreatedFile(document.snapshot.project, intended),
       intended,
+      reviewedRevision,
     );
   }
 
@@ -212,12 +213,16 @@ export class ProjectEditController {
     write: () => Promise<StudioProjectDocument>,
     achieved: (document: StudioProjectDocument, before: StudioProjectSnapshot) => boolean,
     created?: NamedFileCreation,
+    reviewedRevision?: string,
   ): Promise<StudioProjectDocument> {
     this.cancelSettle();
     return this.sequence(async () => {
       await this.refresh();
       await this.drain();
       const before = this.saved;
+      if (reviewedRevision !== undefined && before.revision !== reviewedRevision) {
+        throw new ProjectEditConflictError();
+      }
       let result: StudioProjectDocument;
       try {
         result = await write();

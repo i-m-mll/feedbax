@@ -385,7 +385,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
-        "sweep": {"axes": {"seed": None}},
+        "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
     }
     authored["sweep"] = {"rows": {"base": {}, "compare": {}}}
@@ -396,14 +396,17 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
         path.write_bytes(data)
 
     snapshot = _read(client)
-    selected = RunKey("compare", "follow", "default")
+    [selected] = [
+        run.key for run in _read_plan(client, root, snapshot).runs
+        if run.key.variant == "compare" and run.key.step == "follow"
+    ]
     before = _read_plan(client, root, snapshot, selected)
     assert before.variants == ("base", "compare")
     assert len(before.runs) == len(before.rows) == 6
     assert not before.diagnostics
     assert len(before.requests) == 3
     for variant in before.variants:
-        [follower] = [run for run in before.runs if run.key == RunKey(variant, "follow", "default")]
+        [follower] = [run for run in before.runs if run.key == RunKey(variant, "follow", selected.row)]
         producer = RunKey(variant, "fit", "seed=10")
         assert follower.inputs["checkpoint"].producer == producer
         subset = before.subsets[variant, "follow", "checkpoint"]
@@ -434,7 +437,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     assert {run.key for run in after.runs if run.request_id != before_requests[run.key]} == {
         RunKey(variant, step, row)
         for variant in after.variants
-        for step, row in (("fit", "seed=10"), ("follow", "default"))
+        for step, row in (("fit", "seed=10"), ("follow", selected.row))
     }
     assert after.subsets == before.subsets and after.sources == before.sources
 
@@ -505,7 +508,7 @@ def _plan_dependencies(root: Path) -> None:
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
-        "sweep": {"axes": {"seed": None}},
+        "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
     }
     independent = dict(fit["base"]["inline"], seed=88)
@@ -538,7 +541,6 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(stu
 
     first = RunKey("default", "fit", "seed=10")
     second = RunKey("default", "fit", "seed=2")
-    follow = RunKey("default", "follow", "default")
     independent = RunKey("default", "independent", "default")
     snapshot = _read(client)
 
@@ -557,6 +559,7 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(stu
 
     cold, counts = check(first)
     assert counts["compose_step"] == 3 and counts["encode_request"] == 4
+    [follow] = [run.key for run in cold.runs if run.key.step == "follow"]
     assert counts["resolve"] >= 4
     warm, counts = check(first)
     assert not counts

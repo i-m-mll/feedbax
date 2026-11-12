@@ -10,7 +10,7 @@ from functools import cached_property
 from typing import Any, cast
 
 from pydantic import JsonValue, ValidationError
-from pydantic_core import to_json
+from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.matrix_core import apply_override_patch_copy
@@ -717,6 +717,13 @@ class StepTemplate:
     @property
     def requires(self) -> tuple[str, ...]:
         return self.composition.requires
+
+    def authored_payload(self) -> Payload:
+        """Read composed values before dereferencing their named documents."""
+        payload = self.composition._state.payload
+        if not isinstance(payload, dict):
+            raise ValueError("A root document reference is not an editable payload.")
+        return to_jsonable_python(payload, by_alias=True)
 
     def resolve(
         self, row: ExpandedRow | None = None, *, include_sources: bool = False

@@ -58,6 +58,7 @@ export interface StudioPipelineMapProps {
   presentation?: Readonly<Record<string, PipelineCardPresentation>>;
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   onNewStep?: (source?: PipelineMapStepSource) => void;
+  canNewStepFrom?: (step: PlanStepView) => boolean;
   onNewSweep?: (stepId: string) => void;
   onProblems?: (stepId: string) => void;
 }
@@ -517,6 +518,7 @@ export function StudioPipelineMap({
   presentation,
   onPresentationChange,
   onNewStep,
+  canNewStepFrom,
   onNewSweep,
   onProblems,
 }: StudioPipelineMapProps) {
@@ -579,7 +581,7 @@ export function StudioPipelineMap({
                     presentation={presentation?.[step.id] ?? emptyPresentation}
                     applySelection={applySelection}
                     onPresentationChange={onPresentationChange}
-                    onNewStep={onNewStep}
+                    onNewStep={canNewStepFrom?.(step) === false ? undefined : onNewStep}
                     onNewSweep={onNewSweep}
                     onProblems={onProblems}
                   />

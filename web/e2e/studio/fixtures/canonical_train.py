@@ -72,6 +72,16 @@ def authored_files():
     return files
 
 
+def last_train_interval(events, attempt: str):
+    return next(
+        event["data"]["metric_interval"]
+        for event in reversed(events)
+        if event["job_id"] == attempt
+        and event["kind"] == "progress"
+        and "metric_interval" in event["data"]
+    )
+
+
 def observe(
     home: Path, project: str, revision: str, attempt: str, stopped_attempt: str, successor_attempt: str,
 ):
@@ -150,12 +160,8 @@ def observe(
             plan_run_key(key.variant, key.step, key.row): row.request_id for key, row in rows.items()
         },
     }
-    terminal_loss = next(
-        event["data"]["metric_interval"]
-        for event in reversed(host.events(projects=(project,), limit=1024)["events"])
-        if event["job_id"] == successor_attempt
-        and event["kind"] == "progress"
-        and "metric_interval" in event["data"]
+    terminal_loss = last_train_interval(
+        host.events(projects=(project,), limit=1024)["events"], successor_attempt,
     )
     return {
         "project": project, "revision": revision, "semantic_root": view.settled.semantic_root,
@@ -182,6 +188,42 @@ def history_files():
     sibling["id"] = "sibling"
     sibling["step"]["base"]["inline"]["method_payload"]["payload"]["seed"] = 91
     return [model, task, train, sibling]
+
+
+def swept_files():
+    model, task, train, _ = authored_files()
+    train["step"]["sweep"] = {"axes": {"seed": {"values": {
+        name: {"label": label, "patches": {
+            "method_payload.payload.seed": {"op": "add", "value": seed},
+        }}
+        for name, label, seed in (("a", "Replicate A", 71), ("b", "Replicate B", 72), ("c", "Replicate C", 73))
+    }}}}
+    return [model, task, train]
+
+
+def observe_swept(home: Path, project: str, successors: list[str]):
+    host = HostClient(AppPaths.resolve(instance_root=home).host)
+    jobs = {job["id"]: job for job in host.jobs_snapshot(project=project, start_host=False)["jobs"]}
+    events = host.events(projects=(project,), limit=1024)["events"]
+    result = {}
+    for attempt in successors:
+        job = jobs[attempt]
+        (edge,) = job["edges"]
+        assert edge["satisfied"] and edge["authenticated_completion"]
+        source = edge["binding"]["completion"]
+        producer = source["producer_job_id"]
+        assert source == jobs[producer]["outcome"]["completion"]
+        completion = job["outcome"]["completion"]
+        assert (completion["producer_job_id"], completion["request_id"]) == (attempt, job["request"])
+        verify_bound_training_completion(source)
+        verify_bound_training_completion(completion)
+        interval = last_train_interval(events, attempt)
+        result[attempt] = {
+            "producer": producer,
+            "receipt": completion["receipt"],
+            "last_loss": interval["metrics"]["train_loss"]["last"],
+        }
+    return result
 
 
 def observe_history(home: Path, project: str, revision: str):
@@ -215,11 +257,16 @@ if __name__ == "__main__":
         print(json.dumps(authored_files()))
     elif action == "history-files" and not arguments:
         print(json.dumps(history_files()))
+    elif action == "swept-files" and not arguments:
+        print(json.dumps(swept_files()))
     elif action == "observe":
         home, project, revision, attempt, stopped_attempt, successor_attempt = arguments
         print(json.dumps(observe(Path(home), project, revision, attempt, stopped_attempt, successor_attempt)))
     elif action == "observe-history":
         home, project, revision = arguments
         print(json.dumps(observe_history(Path(home), project, revision)))
+    elif action == "observe-swept":
+        home, project, *successors = arguments
+        print(json.dumps(observe_swept(Path(home), project, successors)))
     else:
         raise ValueError(f"Unknown canonical Train fixture action {action!r}")

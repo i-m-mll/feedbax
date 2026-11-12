@@ -14,9 +14,10 @@ export function planVariants(saved: StudioSavedTrainRuns | undefined) {
   ])];
 }
 
-function subsetTerms(terms: SubsetTerms): string[] {
+function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
   return [
-    ...Object.entries(terms.axes ?? {}).map(([axis, values]) => `${axis} ${values.join(', ')}`),
+    ...Object.entries(terms.axes ?? {}).map(([axis, ids]) =>
+      `${axis} ${ids.map((id) => sweeps?.get(axis)?.get(id) ?? id).join(', ')}`),
     ...(terms.rows ?? []),
     ...(terms.best ? [terms.best.by] : []),
   ];
@@ -61,7 +62,9 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       id, label: id, kind, group,
       inputs: projected?.inputs.map((input) => ({
         id: input.id, label: input.id, sourceStepId: input.source_step_id ?? undefined,
-        subset: input.subset ? { ...input.subset, terms: subsetTerms(input.subset.terms) } : undefined,
+        subset: input.subset ? {
+          ...input.subset, terms: subsetTerms(input.subset.terms, sweepsByStep.get(input.source_step_id)),
+        } : undefined,
       })) ?? [],
       sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
         id, label: id, values: [...values].map(([id, label]) => ({ id, label })),

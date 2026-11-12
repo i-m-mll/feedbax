@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { readStudioTrainAuthoring } from '@/api/studioAuthoring';
 import {
@@ -14,6 +14,8 @@ interface Props {
   readonly editor: ProjectEditController;
   readonly stepId: string;
   readonly view?: 'model' | 'task' | 'objective' | 'training';
+  readonly focusFirstField?: boolean;
+  readonly onFirstFieldFocused?: () => void;
 }
 
 const viewPrefixes = {
@@ -40,11 +42,18 @@ function formFields(projection: StudioTrainAuthoring, view: Props['view']): Stud
 function validateRecipe(
   authored: AuthoredProject, address: AuthoredFileAddress, documents: readonly string[],
 ): ProjectEditValidation {
+  const bases: AuthoredFileAddress[] = [];
+  let source = authored.steps?.[address.id]?.base;
+  while (source && 'step' in source) {
+    bases.push({ kind: 'step', id: source.step });
+    source = authored.steps?.[source.step]?.base;
+  }
   let edited: AuthoredProject | undefined;
   const sameStep = (a: AuthoredProject, b: AuthoredProject) => sameAuthoredFile(a, b, address);
   return (before, after) => {
     if (JSON.stringify(before.sweep) !== JSON.stringify(authored.sweep) ||
-        documents.some((id) => JSON.stringify(before.documents?.[id]) !== JSON.stringify(authored.documents?.[id]))) {
+        documents.some((id) => JSON.stringify(before.documents?.[id]) !== JSON.stringify(authored.documents?.[id])) ||
+        bases.some((base) => !sameAuthoredFile(before, authored, base))) {
       throw new ProjectEditConflictError();
     }
     if (!edited && sameStep(before, authored)) {
@@ -57,7 +66,7 @@ function validateRecipe(
   };
 }
 
-export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
+export function StudioTrainAuthoringForm({ editor, stepId, view, focusFirstField, onFirstFieldFocused }: Props) {
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
   const [projection, setProjection] = useState<StudioTrainAuthoring | null>(null);
@@ -66,8 +75,18 @@ export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
   const [editing, setEditing] = useState(false);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
+  const fields = useRef<HTMLFieldSetElement | null>(null);
   const current = projection?.project_id === projectId && projection.step_id === stepId &&
     projection.revision === revision ? projection : null;
+  const disabled = editing || pending > 0 || outside !== null;
+
+  useLayoutEffect(() => {
+    if (!focusFirstField || !current || disabled) return;
+    const first = fields.current?.querySelector<HTMLElement>('input:enabled, select:enabled');
+    if (!first) return;
+    first.focus();
+    onFirstFieldFocused?.();
+  }, [focusFirstField, current, disabled, onFirstFieldFocused]);
 
   useEffect(() => {
     const lifetime = new AbortController();
@@ -124,7 +143,7 @@ export function StudioTrainAuthoringForm({ editor, stepId, view }: Props) {
       {error && <p role="alert">{error}</p>}
       {current
         ? (
-          <fieldset disabled={editing || pending > 0 || outside !== null}>
+          <fieldset ref={fields} disabled={disabled}>
             <StudioDefinitionForm
               fields={formFields(current, view)} selection={{ kind: 'steps', stepIds: [stepId] }}
               onEdit={(change) => { void apply(change); }}

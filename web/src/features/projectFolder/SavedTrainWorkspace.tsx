@@ -12,6 +12,7 @@ import { StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource 
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
+import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import {
@@ -21,6 +22,7 @@ import type { PresentationDocument, StudioActivityJob, StudioSavedTrainRuns } fr
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { useManagedProjectDetails } from './managedProjectDetails';
+import { createCheckpointTrain } from './createCheckpointTrain';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
@@ -33,13 +35,26 @@ export interface ProjectWindowCommandScope {
   readonly editor: ProjectEditController;
   readonly selection: PipelineSelectionState;
   readonly variantId: string | null;
+  readonly plan: PlanView;
+  readonly projection: StudioSavedTrainRuns | undefined;
   onSelectionChange(selection: PipelineSelectionState): void;
+  selectCreatedStep(stepId: string): void;
 }
 
 export type ProjectWindowCommands = {
-  onNewStep?: (source: PipelineMapStepSource | undefined, scope: ProjectWindowCommandScope) => void;
+  onNewStep?: (source: PipelineMapStepSource, scope: ProjectWindowCommandScope) => void | Promise<void>;
   onNewSweep?: (stepId: string, scope: ProjectWindowCommandScope) => void;
 };
+
+async function checkpointNewStep(source: PipelineMapStepSource, scope: ProjectWindowCommandScope) {
+  if (!scope.projection) return;
+  const id = await createCheckpointTrain(scope.editor, source, scope.plan, scope.projection);
+  scope.selectCreatedStep(id);
+}
+
+function canCreateContinuation(step: PlanStepView) {
+  return step.kind === 'train' && step.runs.length > 0;
+}
 
 const viewsByKind = {
   train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
@@ -86,7 +101,9 @@ function TrainReceipts({ row }: { row: SavedRow }) {
   );
 }
 
-export default function StudioProjectWorkspace({ projectId, onNewStep, onNewSweep }: { projectId: string } & ProjectWindowCommands) {
+export default function StudioProjectWorkspace({
+  projectId, onNewStep = checkpointNewStep, onNewSweep,
+}: { projectId: string } & ProjectWindowCommands) {
   const [load, setLoad] = useState<{ session: EditorSession } | { error: string }>();
   const [retry, setRetry] = useState(0);
   useEffect(() => {
@@ -121,6 +138,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState<'activity' | 'problems' | 'commands' | null>(null);
   const [problemStep, setProblemStep] = useState<string>();
+  const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
+  const creating = useRef(false);
   const submission = useRef<{ intent: string; token: string }>();
   const projection = useQuery({
     queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor],
@@ -141,11 +160,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = { editor, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, variantId: selection.variantId };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden' });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden' });
-  const selected = step ? selectedRuns(step, state.selection) : [];
-  const resultId = state.focus?.runId ?? (selected.length === 1 ? selected[0].id : undefined);
-  const row = data?.rows.find(({ key }) => key.step === step?.id && savedRunId(key) === resultId);
+  const row = data?.rows.find(({ key }) => key.step === step?.id && savedRunId(key) === state.focus?.runId);
   const attempt = row?.attempts.at(-1);
   const ready = Boolean(data && !pending && !outside);
+  const canAuthorContinuation = ready && !saved.project.sweep;
   const wholeStep = state.selection?.kind === 'steps' && state.selection.stepIds.length === 1 && selection.variantId === null;
   const names = useMemo(() => new Map([[saved.project_id, configuration.project]]), [saved.project_id, configuration.project]);
 
@@ -262,10 +280,33 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
 
   const commandScope: ProjectWindowCommandScope = {
     editor, selection: state, variantId: variant, onSelectionChange: selection.select,
+    plan, projection: data,
+    selectCreatedStep: (id) => {
+      selection.select(selectStep(state, id));
+      setFocusCreatedStep(id);
+      setWindowState((current) => showProjectWindowView(current, 'runs'));
+    },
   };
+
+  async function newStep(source?: PipelineMapStepSource) {
+    if (!source || !onNewStep || !canAuthorContinuation || busy || creating.current) return;
+    creating.current = true;
+    setBusy(true);
+    setCommandError(undefined);
+    try {
+      await onNewStep(source, commandScope);
+    } catch (error) {
+      setCommandError(apiErrorMessage(error));
+    } finally {
+      creating.current = false;
+      setBusy(false);
+    }
+  }
+
   const mapProps = {
     plan, state, onSelectionChange: selection.select, onProblems: openProblems,
-    onNewStep: onNewStep && ((source?: PipelineMapStepSource) => onNewStep(source, commandScope)),
+    onNewStep: onNewStep && canAuthorContinuation && plan.steps.some(canCreateContinuation) ? newStep : undefined,
+    canNewStepFrom: canCreateContinuation,
     onNewSweep: onNewSweep && ((stepId: string) => onNewSweep(stepId, commandScope)),
   };
   const focusView = windowState.focusedSlot === 'secondary' ? secondaryView : primaryView;
@@ -280,7 +321,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       onBack={selection.back} onForward={selection.forward}
       map={<StudioErrorBoundary region={studioName('pipelineMap')}><StudioPipelineMap {...mapProps}
         presentation={presentation} onPresentationChange={changePresentation} /></StudioErrorBoundary>}
-      mapDrawer={<StudioPipelineMapDrawer {...mapProps} />}
+      mapDrawer={<StudioPipelineMapDrawer {...mapProps} onNewStep={undefined} />}
       compactMap={<StudioPipelineMap {...mapProps} mode="line" />}
       variant={variants.length > 1 && <select aria-label={studioName('variant')} value={variant ?? ''} onChange={(event) => selection.setVariant(event.target.value === variants[0] ? null : event.target.value)}>
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
@@ -324,8 +365,15 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         if (view === 'runs') return { body: <StudioErrorBoundary region={studioName('runs')}>
           <StudioRuns plan={plan} step={step} state={state} onSelectionChange={selection.select}
             region={step.kind === 'train' ? { kind: 'result', missing: [] } : { kind: 'empty' }}
-            definition={step.kind === 'train' && wholeStep && <StudioTrainAuthoringForm editor={editor} stepId={step.id} />}
-            commands={step.kind === 'train' ? [{ name: 'run', enabled: ready && !busy, perform: run }] : undefined} />
+            definition={step.kind === 'train' && wholeStep && <StudioTrainAuthoringForm editor={editor} stepId={step.id}
+              focusFirstField={ready && focusCreatedStep === step.id && windowState.focusedSlot === slot}
+              onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
+            commands={step.kind === 'train' ? [
+              { name: 'run', enabled: ready && !busy, perform: run },
+              { name: 'newStep', enabled: canAuthorContinuation && !busy && canCreateContinuation(step), perform: (target) => {
+                void newStep({ stepId: step.id, selection: target.kind === 'steps' ? null : target });
+              } },
+            ] : undefined} />
         </StudioErrorBoundary> };
         if ((view === 'training' || view === 'objective') && step.kind === 'train' && wholeStep) {
           return { body: <StudioTrainAuthoringForm editor={editor} stepId={step.id} view={view} /> };
