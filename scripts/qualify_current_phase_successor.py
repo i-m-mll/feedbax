@@ -43,7 +43,6 @@ from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.plugins.composition import compose_application
 from feedbax.training.authoring import compile_training_method_authoring
 from feedbax.training.checkpoint_custody import (
-    CheckpointCompatibilityError,
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistry,
     CheckpointReferenceResolutionError,
@@ -53,7 +52,7 @@ from feedbax.training.checkpoint_custody import (
     require_checkpoint_semantic_state_equal,
     resolve_checkpoint_custody_ref,
 )
-from feedbax.training.executor import TrainingRunExecutorError, execute_training_run_spec
+from feedbax.training.executor import execute_training_run_spec
 from feedbax.training.invocation import prepare_training_invocation
 from feedbax.training.preparation import _thaw_runtime_value
 
@@ -243,17 +242,17 @@ def _restart(path: Path) -> None:
     request = json.loads(path.read_bytes())
     scratch = path.parent
     rows, observe = _committed_rows()
-    try:
-        result = _execute(
-            _registries(), scratch, TrainingRunSpec.model_validate(request["spec"]), request["run_id"],
-            resume=True, checkpoint_source_root=Path(request["checkpoint_root"]),
-            checkpoint_source_pointer=CheckpointLatestPointer.model_validate(request["pointer"]),
-            committed_update_callback=observe,
-        )
-    except (CheckpointCompatibilityError, TrainingRunExecutorError) as error:
-        print(json.dumps({"refusal": str(error), "type": type(error).__name__, "updates": rows}))
-        return
-    print(json.dumps({"receipt": _receipt(result), "updates": rows}))
+    result = _execute(
+        _registries(), scratch, TrainingRunSpec.model_validate(request["spec"]), request["run_id"],
+        resume=True, checkpoint_source_root=Path(request["checkpoint_root"]),
+        checkpoint_source_pointer=CheckpointLatestPointer.model_validate(request["pointer"]),
+        committed_update_callback=observe,
+    )
+    print(json.dumps({
+        "receipt": _receipt(result), "updates": rows,
+        "start_completed_batches": result.start_completed_batches,
+        "end_completed_batches": result.end_completed_batches,
+    }))
 
 
 def qualify(
@@ -365,6 +364,13 @@ def qualify(
         paused_checkpoint = paused.checkpoint_writes[-1]
         assert paused.end_completed_batches == source_batch + 1
         assert paused.status == "cancelled"
+        paused_manifest = paused_checkpoint.manifest
+        assert paused_manifest.completed_training_batches == source_batch + 1
+        assert paused_manifest.segment_lineage.start_batch == source_batch
+        assert paused_manifest.segment_lineage.segment_batch_count == 1
+        assert paused_manifest.completed_coordinate.schedule_origin_step == source_batch
+        assert paused_manifest.metadata["optimizer_step"] == source_batch + 1
+        assert paused_manifest.metadata["checkpoint_continuation_applied"] is True
         paused_receipt_hash = sha256_file(paused.manifest_path)
         restart_id = row_id + "-restart"
         restart_request = scratch / f"{restart_id}.json"
@@ -379,18 +385,21 @@ def qualify(
         )
         restarted = json.loads(completed.stdout)
         assert sha256_file(paused.manifest_path) == paused_receipt_hash
+        assert restarted["start_completed_batches"] == source_batch + 1
+        assert restarted["end_completed_batches"] == source_batch + successor_batch
+        assert paused_rows + restarted["updates"] == whole_rows
+        restarted_manifest = load_checkpoint_custody_documents(scratch / restart_id).manifest.document
+        assert restarted_manifest.completed_training_batches == source_batch + successor_batch
+        assert restarted_manifest.segment_lineage.start_batch == source_batch
+        assert restarted_manifest.segment_lineage.segment_batch_count == successor_batch
+        assert restarted_manifest.metadata["optimizer_step"] == source_batch + successor_batch
+        assert restarted_manifest.parent_lineage[0].transaction_id == paused_manifest.transaction_id
         equal_restart_slots = []
-        if "refusal" in restarted:
-            assert not restarted["updates"]
-            assert not (scratch / restart_id / "latest.json").exists()
-        else:
-            assert paused_rows + restarted["updates"] == whole_rows
-            restarted_manifest = load_checkpoint_custody_documents(scratch / restart_id).manifest.document
-            for slot in boot_slots:
-                require_checkpoint_semantic_state_equal(
-                    whole.checkpoint_writes[-1].manifest, restarted_manifest, slot,
-                )
-                equal_restart_slots.append(slot)
+        for slot in boot_slots:
+            require_checkpoint_semantic_state_equal(
+                whole.checkpoint_writes[-1].manifest, restarted_manifest, slot,
+            )
+            equal_restart_slots.append(slot)
         reports[name] = {
             "request_sha256": training_spec_sha256(spec.model_dump(mode="json")),
             "prefix_transaction": source.manifest.transaction_id,
@@ -398,6 +407,10 @@ def qualify(
             "initialized_lambda": np.asarray(boot_slots["adaptive_state"].lambda_value).tolist(),
             "whole": whole_receipt, "restart": restarted,
             "pause_completed_batches": paused.end_completed_batches,
+            "pause_segment_lineage": paused_manifest.segment_lineage.model_dump(mode="json"),
+            "restart_segment_lineage": restarted_manifest.segment_lineage.model_dump(mode="json"),
+            "pause_transaction": paused_manifest.transaction_id,
+            "restart_transaction": restarted_manifest.transaction_id,
             "equal_restart_slots": sorted(equal_restart_slots), "updates": whole_rows,
         }
     assert len({report["request_sha256"] for report in reports.values()}) == len(reports)

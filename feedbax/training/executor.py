@@ -26,7 +26,7 @@ from pydantic import ValidationError
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
-from feedbax.contracts.publication import CheckpointSet
+from feedbax.contracts.publication import CheckpointSet, ExactRef
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentBinding
 from feedbax.contracts.checkpoint_initialization import (
     CheckpointInitializationPlan,
@@ -39,6 +39,7 @@ from feedbax.contracts.checkpoint_initialization import (
 )
 from feedbax.contracts.checkpoints import (
     PHASE_BOUNDARY_DECISION_METADATA_KEY,
+    CheckpointContinuationRequest,
     CheckpointForkPlan,
     CheckpointLatestPointer,
     CheckpointSegmentLineage,
@@ -125,6 +126,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointForkTransformRegistry,
     CheckpointWriteResult,
     ResumeSlotTransform,
+    _continuation_was_applied,
     authenticate_published_checkpoint_custody,
     checkpoint_fork_plan_sha256,
     fork_checkpoint_plan,
@@ -503,9 +505,9 @@ class StreamingCheckpointStore:
         phase_program: Any,
         parent_lineage: Sequence[CheckpointLineageRef] = (),
         segment_start_batch: int = 0,
-        segment_batch_count: int | None = None,
         segment_parent_transaction_id: str | None = None,
-        segment_parent_checkpoint_set: CheckpointSet | None = None,
+        segment_parent_ref: ExactRef | None = None,
+        continuation: CheckpointContinuationRequest | None = None,
         resolved_method: ResolvedTrainingMethod[Any],
         slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
         run_event_emitter: RunEventEmitter | None = None,
@@ -520,9 +522,9 @@ class StreamingCheckpointStore:
         self.phase_program = phase_program
         self.parent_lineage = tuple(parent_lineage)
         self.segment_start_batch = segment_start_batch
-        self.segment_batch_count = segment_batch_count
         self.segment_parent_transaction_id = segment_parent_transaction_id
-        self.segment_parent_checkpoint_set = segment_parent_checkpoint_set
+        self.segment_parent_ref = segment_parent_ref
+        self.continuation = continuation
         self.resolved_method = resolved_method
         self.slot_axis_bindings = dict(slot_axis_bindings or {})
         self.run_event_emitter = run_event_emitter
@@ -568,8 +570,8 @@ class StreamingCheckpointStore:
             barrier_spec.artifact_sinks,
             run_id=saved.coordinate.run_id,
         )
-        segment_batch_count = self.segment_batch_count
-        if segment_batch_count is None and self.segment_start_batch > 0:
+        segment_batch_count = None
+        if self.segment_start_batch > 0 or self.continuation is not None:
             cumulative_completed_batches = _terminal_completed_batches(
                 program=self.phase_program,
                 final_slots=saved.slots,
@@ -578,9 +580,12 @@ class StreamingCheckpointStore:
                 slot_axis_bindings=self.slot_axis_bindings,
             )
             segment_batch_count = cumulative_completed_batches - self.segment_start_batch
-            if segment_batch_count < 0:
+            if segment_batch_count < 0 or (
+                self.continuation is not None
+                and cumulative_completed_batches > self.continuation.target_total
+            ):
                 raise TrainingRunExecutorError(
-                    "resumed checkpoint progress precedes its validated segment start: "
+                    "checkpoint progress lies outside its validated segment: "
                     f"completed_batches={cumulative_completed_batches} "
                     f"segment_start_batch={self.segment_start_batch}"
                 )
@@ -592,6 +597,11 @@ class StreamingCheckpointStore:
                 else {}
             ),
         }
+        if self.continuation is not None:
+            checkpoint_metadata["checkpoint_continuation"] = self.continuation.model_dump(
+                mode="json", exclude_none=True
+            )
+            checkpoint_metadata["checkpoint_continuation_applied"] = True
         if saved.boundary_decision is not None:
             checkpoint_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = {
                 "schema_version": 1,
@@ -617,7 +627,7 @@ class StreamingCheckpointStore:
             segment_start_batch=self.segment_start_batch,
             segment_batch_count=segment_batch_count,
             segment_parent_transaction_id=self.segment_parent_transaction_id,
-            segment_parent_checkpoint_set=self.segment_parent_checkpoint_set,
+            segment_parent_ref=self.segment_parent_ref,
             history_availability={"progress": True},
             metadata=checkpoint_metadata,
             content_provider=self.content_provider,
@@ -681,6 +691,7 @@ def execute_training_run_spec(
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
     checkpoint_source_pointer: CheckpointLatestPointer | None = None,
+    checkpoint_history_parent_roots: Mapping[str, Path | str] | None = None,
     checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
     checkpoint_fork_plan: CheckpointForkPlan | None = None,
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
@@ -747,6 +758,8 @@ def execute_training_run_spec(
     checkpoint through that immutable content provider.
     For same-request resume, ``checkpoint_source_pointer`` authenticates one
     specific published transaction without consulting a mutable latest pointer.
+    ``checkpoint_history_parent_roots`` locates ancestor transactions for
+    self-contained history materialization when custody spans multiple roots.
     """
     started_at = (
         time.perf_counter()
@@ -1070,10 +1083,12 @@ def execute_training_run_spec(
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
     legacy_resume_parent: ParentRef | None = None
+    continuation = run_spec.checkpoint_progress.continuation
+    continuation_applied = False
+    resume_completed_batches = 0
     checkpoint_lineage_start = 0
-    segment_batch_count: int | None = None
     segment_parent_transaction_id: str | None = None
-    segment_parent_checkpoint_set: CheckpointSet | None = None
+    segment_parent_ref: ExactRef | None = None
     if resolved_initialization is None and resume:
         loaded = load_latest_checkpoint(
             resume_source_root,
@@ -1081,18 +1096,14 @@ def execute_training_run_spec(
             expected_phase_program=program,
             expected_slots=slots,
             resume_slot_transform=resume_slot_transform,
-            continuation_request=run_spec.checkpoint_progress.continuation,
-            allow_new_lineage_override=(run_spec.checkpoint_progress.continuation is not None),
+            continuation_request=continuation,
+            allow_new_lineage_override=continuation is not None,
             published_pointer=checkpoint_source_pointer,
         )
         legacy_resume_parent = loaded.parent_ref
         resolved_initialization = _ResolvedCheckpointInitialization(
             mode="continue_from",
-            source=ParentRef(
-                kind="TrainingCheckpointTransactionManifest",
-                id=loaded.manifest.transaction_id,
-                role="resume_parent",
-            ),
+            source=loaded.parent_ref.model_copy(update={"role": "resume_parent"}),
             manifest=loaded.manifest,
             slots=dict(loaded.slots),
             source_root=resume_source_root,
@@ -1122,18 +1133,34 @@ def execute_training_run_spec(
             )
         )
         if resolved_initialization.mode == "continue_from":
-            continuation = run_spec.checkpoint_progress.continuation
-            checkpoint_lineage_start = _same_row_resume_start_batch(source_manifest)
-            if (
-                continuation is not None
-                and continuation.source_completed_batches != checkpoint_lineage_start
-            ):
-                raise TrainingRunExecutorError(
-                    "checkpoint continue_from source progress disagrees with the authored "
-                    "continuation policy: "
-                    f"source={checkpoint_lineage_start} "
-                    f"authored={continuation.source_completed_batches}"
-                )
+            resume_completed_batches = _same_row_resume_start_batch(source_manifest)
+            checkpoint_lineage_start = resume_completed_batches
+            if continuation is not None:
+                continuation_applied = _continuation_was_applied(source_manifest, continuation)
+                checkpoint_lineage_start = continuation.source_completed_batches
+                if continuation_applied:
+                    source_segment = source_manifest.segment_lineage
+                    if (
+                        source_segment.start_batch != checkpoint_lineage_start
+                        or resume_completed_batches > continuation.target_total
+                    ):
+                        raise TrainingRunExecutorError(
+                            "applied continuation checkpoint disagrees with the authored "
+                            "segment: "
+                            f"start={source_segment.start_batch} "
+                            f"completed={resume_completed_batches} "
+                            f"authored={checkpoint_lineage_start}..{continuation.target_total}"
+                        )
+                    # BatchHistory covers the authored segment. The separate parent_lineage
+                    # entry above records the exact snapshot used by this attempt.
+                    segment_parent_transaction_id = source_segment.parent_transaction_id
+                    segment_parent_ref = resolved_initialization.checkpoint_set.parent
+                elif checkpoint_lineage_start != resume_completed_batches:
+                    raise TrainingRunExecutorError(
+                        "checkpoint continue_from source progress disagrees with the authored "
+                        "continuation policy: "
+                        f"source={resume_completed_batches} authored={checkpoint_lineage_start}"
+                    )
             loaded_resume_checkpoint = PhaseCheckpoint(
                 barrier=source_manifest.barrier,
                 coordinate=source_manifest.completed_coordinate,
@@ -1143,12 +1170,9 @@ def execute_training_run_spec(
                     source_manifest.metadata
                 ),
             )
-            if continuation is not None:
-                segment_batch_count = continuation.additional_batches
-            if continuation is not None or checkpoint_lineage_start > 0:
+            if not continuation_applied and checkpoint_lineage_start > 0:
                 segment_parent_transaction_id = source_manifest.transaction_id
-        if segment_parent_transaction_id is not None:
-            segment_parent_checkpoint_set = resolved_initialization.checkpoint_set
+                segment_parent_ref = resolved_initialization.checkpoint_set.exact_ref
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -1157,9 +1181,9 @@ def execute_training_run_spec(
         phase_program=program,
         parent_lineage=parent_lineage,
         segment_start_batch=checkpoint_lineage_start,
-        segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
-        segment_parent_checkpoint_set=segment_parent_checkpoint_set,
+        segment_parent_ref=segment_parent_ref,
+        continuation=continuation if loaded_resume_checkpoint is not None else None,
         resolved_method=resolved_method,
         slot_axis_bindings=slot_axis_bindings,
         run_event_emitter=run_event_emitter,
@@ -1202,11 +1226,23 @@ def execute_training_run_spec(
         if loaded_resume_checkpoint is not None
         else slots
     )
+    total_batches = int(run_spec.training_config.n_batches or 0)
+    schedule_lineage = CheckpointSegmentLineage(
+        parent_transaction_id=segment_parent_transaction_id,
+        start_batch=checkpoint_lineage_start,
+        segment_batch_count=(
+            continuation.target_total - checkpoint_lineage_start
+            if loaded_resume_checkpoint is not None and continuation is not None
+            else total_batches
+        ),
+    )
     if loaded_resume_checkpoint is not None:
         executor_context = _bind_restored_schedule_context(
             run_spec=run_spec,
             resolved_method=resolved_method,
             slots=prepared_slots,
+            current_step=resume_completed_batches,
+            lineage=schedule_lineage,
             slot_axis_bindings=slot_axis_bindings,
             kernel_context=executor_context,
             binder=restored_schedule_context_binder,
@@ -1220,7 +1256,6 @@ def execute_training_run_spec(
     except ValueError as exc:
         raise TrainingRunExecutorError(f"kernel preparation preflight failed: {exc}") from exc
     declaration = method_contract.training_diagnostics
-    total_batches = int(run_spec.training_config.n_batches or 0)
     runtime_telemetry: dict[str, Any] = dict(executor.preparation_telemetry)
     cancellation: CancellationDecision | None = None
 
@@ -1263,10 +1298,10 @@ def execute_training_run_spec(
 
         def begin_segment(initial_batch: int) -> None:
             nonlocal segment_start_batch, method_trace, method_observation_buffer
-            if loaded_resume_checkpoint is not None and initial_batch != checkpoint_lineage_start:
+            if loaded_resume_checkpoint is not None and initial_batch != resume_completed_batches:
                 raise TrainingRunExecutorError(
                     "restored batch authority disagrees with checkpoint lineage: "
-                    f"restored={initial_batch} source={checkpoint_lineage_start}"
+                    f"restored={initial_batch} source={resume_completed_batches}"
                 )
             segment_start_batch = initial_batch
             if declaration is None:
@@ -1326,7 +1361,9 @@ def execute_training_run_spec(
             run_id=resolved_run_id,
             resume_checkpoint=loaded_resume_checkpoint,
             extend_terminal_phase=(
-                loaded_resume_checkpoint is not None and segment_batch_count is not None
+                loaded_resume_checkpoint is not None
+                and continuation is not None
+                and not continuation_applied
             ),
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
@@ -1349,15 +1386,7 @@ def execute_training_run_spec(
                 resolved_method=resolved_method,
                 registry=registry,
                 slot_axis_bindings=slot_axis_bindings,
-                schedule_lineage=CheckpointSegmentLineage(
-                    parent_transaction_id=(
-                        segment_parent_transaction_id if checkpoint_lineage_start > 0 else None
-                    ),
-                    start_batch=checkpoint_lineage_start,
-                    segment_batch_count=(
-                        segment_batch_count if segment_batch_count is not None else total_batches
-                    ),
-                ),
+                schedule_lineage=schedule_lineage,
             ),
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
@@ -1375,39 +1404,34 @@ def execute_training_run_spec(
             method_observation_buffer.flush()
             method_observation_buffer.assert_empty()
         checkpoint_writes = checkpoint_store.writes
-        continuation = run_spec.checkpoint_progress.continuation
         if continuation is not None and continuation.self_contained and checkpoint_writes:
             stitched_path = (
                 custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl"
             )
-            if (
-                resolved_initialization is not None
-                and resolved_initialization.source_content_binding is not None
-                and resolved_initialization.content_provider is not None
-            ):
-                with materialize_checkpoint_content(
-                    resolved_initialization.source_content_binding,
-                    resolved_initialization.content_provider,
-                    owner=f"training-history:{resolved_run_id}",
-                ) as parent_root:
-                    materialize_concatenated_checkpoint_histories(
-                        custody_root,
-                        stitched_path,
-                        parent_roots={
-                            lineage.transaction_id: parent_root for lineage in parent_lineage
-                        },
-                    )
-            else:
+            with ExitStack() as history_sources:
                 parent_root = (
                     resolved_initialization.source_root
                     if resolved_initialization is not None
                     else resume_source_root
                 )
+                if (
+                    resolved_initialization is not None
+                    and resolved_initialization.source_content_binding is not None
+                    and resolved_initialization.content_provider is not None
+                ):
+                    parent_root = history_sources.enter_context(
+                        materialize_checkpoint_content(
+                            resolved_initialization.source_content_binding,
+                            resolved_initialization.content_provider,
+                            owner=f"training-history:{resolved_run_id}",
+                        )
+                    )
                 materialize_concatenated_checkpoint_histories(
                     custody_root,
                     stitched_path,
                     parent_roots={
-                        lineage.transaction_id: parent_root for lineage in parent_lineage
+                        **(checkpoint_history_parent_roots or {}),
+                        **{lineage.transaction_id: parent_root for lineage in parent_lineage},
                     },
                 )
         barrier_artifacts = checkpoint_store.barrier_artifacts
@@ -1438,7 +1462,7 @@ def execute_training_run_spec(
         inherited_terminal_checkpoint = (
             InheritedTerminalCheckpoint(checkpoint=legacy_resume_parent)
             if legacy_resume_parent is not None
-            and continuation is None
+            and (continuation is None or continuation_applied)
             and resume_slot_transform is None
             and execution.resumed_terminal
             and status == "completed"
@@ -2352,6 +2376,8 @@ def _bind_restored_schedule_context(
     run_spec: TrainingRunSpec,
     resolved_method: ResolvedTrainingMethod[Any],
     slots: Mapping[str, Any],
+    current_step: int,
+    lineage: CheckpointSegmentLineage,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
     kernel_context: Mapping[str, Any],
     binder: RestoredScheduleContextBinder | None,
@@ -2360,15 +2386,10 @@ def _bind_restored_schedule_context(
     program = resolved_method.program
     if continuation is None:
         return dict(kernel_context)
-    current_step = continuation.source_completed_batches
     projection = project_training_schedules(
         run_spec,
         coordinates=(current_step, current_step + 1, current_step + 2),
-        lineage=CheckpointSegmentLineage(
-            start_batch=current_step,
-            segment_batch_count=continuation.additional_batches or 0,
-            parent_transaction_id="restored" if current_step else None,
-        ),
+        lineage=lineage,
         resolved_method=resolved_method,
     )
     projected_context = {
@@ -2395,8 +2416,8 @@ def _bind_restored_schedule_context(
     )
     if restored_count != current_step:
         raise TrainingRunExecutorError(
-            "restored optimizer count disagrees with continuation source; "
-            f"optimizer_count={restored_count}, source_completed_batches={current_step}"
+            "restored optimizer count disagrees with checkpoint progress; "
+            f"optimizer_count={restored_count}, completed_batches={current_step}"
         )
     if binder is None:
         raise TrainingRunExecutorError(
@@ -2404,11 +2425,7 @@ def _bind_restored_schedule_context(
         )
     window = resolve_schedule_window(
         schedule.origin,
-        lineage=CheckpointSegmentLineage(
-            start_batch=current_step,
-            segment_batch_count=continuation.additional_batches or 0,
-            parent_transaction_id="restored" if current_step else None,
-        ),
+        lineage=lineage,
         duration=schedule.total_steps,
         allow_inert=schedule.allow_inert,
     )
@@ -3803,7 +3820,7 @@ def _structured_replica_value(value: Mapping[str, Any], *, index: int, size: int
 
 
 def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int:
-    """Return the authoritative segment origin for an operational resume."""
+    """Return the authoritative completed progress for an operational resume."""
 
     completed_batches = manifest.completed_training_batches
     if (

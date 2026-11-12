@@ -1,6 +1,6 @@
 # Chained phase qualification
 
-The executable baseline is corrected Feedbax `6e62b55f` with the signed `beae372e` preflight and downstream `50993e39`. The adopted contract is [artifact-version:a0c9074e1076]. This branch changes qualification code and tests. Production checkpoint and Evaluate contracts, runtime names, observer products, and automatic reuse remain gated.
+The phase-correctness candidate starts from signed qualification `1dbff054` and uses downstream `50993e39`. The adopted shared contract is [artifact-version:a0c9074e1076]. The candidate is for review under [issue:2f7807e]. Public M2 checkpoint and Evaluate contracts, observer products, and automatic reuse remain gated.
 
 ## Historical nominal source
 
@@ -31,12 +31,16 @@ uv run --no-sync python scripts/qualify_current_phase_successor.py \
   --prefix-root "$first_run" --scratch "$second_run" --suffix rewarm_3e-3
 ```
 
-## Jobs readiness and restart
+## Successor restart
 
-The real local daemon with controlled worker events kept a completion dependency queued after an interior publication. The bound attempt's success released it once. A checkpoint stop instead made the dependency terminally blocked, and a successful continuation of the predecessor did not rebind it. The daemon edge does not authenticate a receipt and final checkpoint as a joint product. The native scientific execution and the daemon fixture qualify different boundaries.
+The signed baseline records the two successor refusals and the ordinary nominal restart that reproduced all four checkpoint slots from the update-1 pointer. [artifact-version:1d347a93d7e3] [artifact-version:2fb3ef383b3e]
 
-An ordinary nominal restart used the authenticated update-1 pointer in a fresh process. It committed only update 2 and reproduced the uninterrupted model, optimizer, PRNG and counter semantic roots exactly. The source receipt and latest pointer retained their hashes. [artifact-version:1d347a93d7e3] [artifact-version:2fb3ef383b3e]
+Each adaptive successor now stops after committing update 3. Its checkpoint retains schedule origin 2, optimizer count 3, one committed update in the authored segment, and the applied continuation request with target 4. A fresh process resumes the exact stopped checkpoint, commits only update 4, and certifies the same model, optimizer, PRNG, counter, and adaptive-state semantic roots as uninterrupted execution. The complete update observations also match, including sampled indices, loss, applied rate, adaptive value, and PRNG. The stopped receipt retains its hash.
 
-Both adaptive stops committed update 3 and published cancelled receipts. The saved checkpoints use origin 2 and a segment length of 2, although only one successor update committed. They omit the continuation-applied metadata. Both fresh processes refused with `checkpoint continuation source offset mismatch; lineage_total=4 requested=2` before any update or new checkpoint. The Planner also identified later guards that compare resumed progress and optimizer count with the original origin. Preserve all four values independently: origin 2, current progress 3, one committed successor update, and target 4. The chained readiness fence and exact successor restart remain open. [artifact-version:1d347a93d7e3] [issue:1f46470] [issue:de9e2ac]
+A separate history fixture retains the authored segment's complete batch history across a stop and restart. Its resumed checkpoint names the stopped snapshot as its immediate attempt parent and keeps the original prefix as the segment parent. The caller supplies the prefix root when history materialization spans three custody roots. The test also exercises terminal replay with zero updates and a substituted checkpoint-set parent.
 
-The affected planner conservatively selected all tests for the new qualification scripts. Nineteen scoped host, executor and worker checks passed, including mapped resume, declared wrapper construction, and fork custody. The proof and tests leave the production implementation unchanged. [artifact-version:1445368ac3f0]
+## Jobs completion
+
+The local host's opt-in authenticated completion edge follows explicit continuations of its admitted producer. The daemon persists the selected attempt, receipt, and checkpoint together before releasing the dependent. It rechecks the pinned files before delivery. The training worker verifies the joint receipt and checkpoint before publishing completion, and a training consumer verifies the exact binding before executing.
+
+The real PointMass/GRU daemon test stops at update 1, restarts the daemon with the dependent pending, resumes the exact checkpoint through update 2, and pins the successful descendant. A second daemon restart and replacement of the mutable latest pointer leave one dependent delivery bound to the original receipt and checkpoint. Controlled daemon tests exercise unrelated reruns, definitive absence, corruption after binding, and resuming a dependent with its original binding.

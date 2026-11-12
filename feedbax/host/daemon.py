@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from feedbax.host.completion import CompletionFileError, verify_completion_files
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
@@ -191,6 +192,16 @@ class Host:
                     break
 
     def _assign(self, row: sqlite3.Row) -> None:
+        bindings = self.store.completion_bindings(row["id"])
+        try:
+            for binding in bindings:
+                verify_completion_files(binding["completion"])
+        except CompletionFileError as error:
+            with self.store.db:
+                self.store.finished(
+                    row, failure("dependency_corrupt", str(error), outcome="blocked")
+                )
+            return
         launch = json.loads(row["launch"])
         key, profile = self._profile(launch, row["slot"])
         if launch["warm_entrypoint"]:
@@ -231,6 +242,9 @@ class Host:
         # No worker has received this delivery, so those bytes can be overwritten.
         paths["scratch"].mkdir(parents=True, exist_ok=True)
         write_json(paths["input"], launch["payload"])
+        if bindings:
+            paths["completion_bindings"] = paths["directory"] / "completion-bindings.json"
+            write_json(paths["completion_bindings"], {"bindings": bindings})
         with self.store.db:
             self.store.db.execute(
                 """UPDATE jobs SET state='assigned', delivery=?, worker_pid=?, worker_token=?,
@@ -475,6 +489,7 @@ class Host:
         active = self.store.active()
         for row in active:
             self._observe(row, self._paths(row), recovering=recovering)
+        self.store.resolve_completions()
         self.store.settle_blocked()
         for row in self.store.ready():
             self._assign(row)
@@ -563,6 +578,11 @@ class Host:
                 return {"version": VERSION, "pid": os.getpid()}
             case "events":
                 return await self._events(**message)
+            case "admit_with_completion":
+                result = self.store.admit(**message, allow_completion=True)
+                self.wake.set()
+                await self._announce()
+                return result
             case "warm":
                 self.warm(**message)
                 self.wake.set()

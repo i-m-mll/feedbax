@@ -92,6 +92,9 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
             "FEEDBAX_HOST_STDERR": paths["stderr"],
         }
     )
+    os.environ.pop("FEEDBAX_HOST_COMPLETION_BINDINGS", None)
+    if "completion_bindings" in paths:
+        os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"] = paths["completion_bindings"]
     try:
         if import_error is not None:
             error, detail = import_error
