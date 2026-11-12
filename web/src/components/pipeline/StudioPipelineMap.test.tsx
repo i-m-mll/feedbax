@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   studioAccessibleName,
   studioCountOf,
@@ -13,9 +13,20 @@ import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/pl
 import { emptyPipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioPipelineMap, type StudioPipelineMapProps } from './StudioPipelineMap';
-import type { PipelineCardPresentation } from './pipelineMapLayout';
+import { fullMapFits, type PipelineCardPresentation } from './pipelineMapLayout';
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const rate = {
   id: 'rate',
@@ -234,9 +245,12 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   const evalRow = within(drawer.getByRole('button', { name: select(evalStep.label) }));
   const reportRow = within(drawer.getByRole('button', { name: select(report.label) }));
   fireEvent.click(card.getByRole('button', { name: mark('rate 0.003 · seed 1') }));
+  expect(evaluation.getByRole('button', { name: mark('perturbation') }).getAttribute('data-map-focus')).toBe('downstream');
+  expect(view.container.querySelectorAll('[data-map-emphasis="strong"]')).toHaveLength(2);
   expect(evalRow.getByText(studioCountOf(1, 1))).toBeTruthy();
   expect(reportRow.getByText(studioCountOf(1, 1))).toBeTruthy();
   fireEvent.click(card.getByRole('button', { name: mark('rate 0.001 · seed 1') }));
+  expect(view.container.querySelectorAll('[data-map-focus], [data-map-emphasis="strong"]')).toHaveLength(0);
   expect(evalRow.getByText(studioCountOf(0, 1))).toBeTruthy();
   expect(reportRow.getByText(studioCountOf(0, 1))).toBeTruthy();
   view.unmount();
@@ -252,6 +266,14 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   expect(onSelectionChange).toHaveBeenCalledWith({
     selection: { kind: 'steps', stepIds: [report.id] }, focus: null,
   });
+});
+
+it('uses the region at natural scale to decide when full cards fit', () => {
+  const columns = Array.from({ length: 3 }, (_, depth) =>
+    Array.from({ length: 12 }, (_, row) => ({ ...train, id: `${depth}-${row}` })));
+  expect(fullMapFits(columns, 1440, 900, new Map())).toBe(false);
+  expect(fullMapFits(columns.map((column) => column.slice(0, 2)), 1440, 900, new Map())).toBe(true);
+  expect(fullMapFits(columns.map((column) => column.slice(0, 2)), 580, 900, new Map())).toBe(false);
 });
 
 it('uses one creation position on an empty map', () => {

@@ -7,6 +7,7 @@ import { studioCountOf, studioName, studioStep } from '@/components/activity/stu
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
+import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
@@ -142,6 +143,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const connection = useStudioConnection();
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
+  const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -548,9 +550,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       state={windowState} onStateChange={setWindowState} projectName={configuration.project}
       saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
       availableViews={availableViews}
-      commands={commands} focusRequest={focusRequest}
+      commands={commands} mapCommands={canvasViewportCommands(() => mapViewport.current, !!data && plan.steps.length > 0)}
+      focusRequest={focusRequest}
       onBack={selection.back} onForward={selection.forward}
       map={<StudioErrorBoundary region={studioName('pipelineMap')}><StudioPipelineMap {...mapProps}
+        activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!data}
         presentation={presentation} onPresentationChange={changePresentation} /></StudioErrorBoundary>}
       mapDrawer={<StudioPipelineMapDrawer {...mapProps} />}
       compactMap={<StudioPipelineMap {...mapProps} mode="line" />}

@@ -9,7 +9,7 @@ const groups = {
   View: [
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',
     'splitDetails', 'switchSlot', ...projectWindowViews, 'back', 'forward', 'nextRegion', 'previousRegion',
-    'clearFocus', 'activity', 'problems', 'retry',
+    'clearFocus', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
   ],
   Run: ['run', 'stop', 'resume', 'forceStop', 'openRun'],
   Plan: ['newStep', 'newSweep', 'pivot', 'fold'],

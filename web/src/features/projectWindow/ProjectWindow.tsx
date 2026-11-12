@@ -43,6 +43,7 @@ export interface ProjectWindowProps {
   onBack?: () => void;
   onForward?: () => void;
   commands: readonly StudioCommand[];
+  mapCommands?: readonly StudioCommand[];
   focusRequest?: number;
   variant?: ReactNode;
   overlay?: ReactNode;
@@ -105,7 +106,7 @@ function focusRegion(root: HTMLElement | null, region: WindowRegion) {
 
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
-  onBack, onForward, commands, focusRequest, variant, overlay, clock, failure, problems, activity,
+  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, problems, activity,
 }: ProjectWindowProps) {
   const id = useId();
   const ids = {
@@ -240,7 +241,8 @@ export function ProjectWindow({
     setPaletteScope((open) => open ? null : scope);
   });
   const paletteCommands = [
-    ...commands, ...layoutModes.map(({ command }) => command), steps, drawer, inspector, splitCommand, switchCommand,
+    ...commands, ...(fullMapVisible ? mapCommands ?? [] : []),
+    ...layoutModes.map(({ command }) => command), steps, drawer, inspector, splitCommand, switchCommand,
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
@@ -308,7 +310,7 @@ export function ProjectWindow({
       <main ref={panel} className="shell-frame__content studio-window-panel" style={{ gridTemplateRows: panelRows }}>
         <section id={ids.map} className="studio-window-map" aria-label={studioName('pipelineMap')}>
           <div className="studio-window-map__full" hidden={!fullMapVisible}>
-            <div data-studio-focus-region="map" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-auto">{map}</div>
+            <div data-studio-focus-region="map" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-hidden">{map}</div>
             <aside id={ids.mapDrawer} data-studio-focus-region="steps" tabIndex={-1} aria-label={studioName('mapDrawer')} className="studio-window-side"
               hidden={!mapDrawerVisible} style={{ width: fit.mapDrawer.size }}>
               <div className="studio-window-side__contents">{mapDrawer}</div>

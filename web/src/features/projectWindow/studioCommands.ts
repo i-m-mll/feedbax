@@ -39,7 +39,8 @@ const shortcuts = {
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
   'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
-  'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove';
+  'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
+  'fitView' | 'zoomIn' | 'zoomOut';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',

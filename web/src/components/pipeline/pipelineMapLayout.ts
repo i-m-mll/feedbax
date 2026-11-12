@@ -4,7 +4,8 @@ import type {
   PlanSweepView,
   PlanView,
 } from '@/features/pipeline/planView';
-import type { PipelineSelection } from '@/features/pipeline/selection';
+import type { PipelineSelection, RunSetsByStep } from '@/features/pipeline/selection';
+import type { RunAddress } from '@/features/pipeline/planView';
 
 export interface PipelineCardPresentation {
   sweepOrder?: readonly string[];
@@ -16,6 +17,63 @@ interface MapEdge {
   from: string;
   to: string;
   inputId?: string;
+}
+
+export const mapCardWidth = 256;
+export const compactMapCardWidth = 176;
+export const mapColumnGap = 36;
+export const mapRowGap = 12;
+export const mapPadding = 16;
+
+export function fullMapFits(
+  columns: readonly (readonly PlanStepView[])[], width: number, height: number,
+  measured: ReadonlyMap<string, number>,
+) {
+  if (!width || !height) return true;
+  const padding = 2 * mapPadding;
+  const fullWidth = columns.length * mapCardWidth + Math.max(0, columns.length - 1) * mapColumnGap + padding;
+  return fullWidth <= width && columns.every((column) =>
+    column.reduce((sum, step) => sum + (measured.get(step.id) ?? 96), 0) +
+    Math.max(0, column.length - 1) * mapRowGap + padding <= height);
+}
+
+export function mapStepLineage(
+  roots: readonly string[], upstream: ReadonlyMap<string, ReadonlySet<string>>,
+  downstream: ReadonlyMap<string, ReadonlySet<string>>,
+) {
+  const visit = (neighbors: typeof upstream) => {
+    const reached = new Set(roots);
+    const pending = [...roots];
+    for (const step of pending) for (const next of neighbors.get(step) ?? []) {
+      if (reached.has(next)) continue;
+      reached.add(next);
+      pending.push(next);
+    }
+    return reached;
+  };
+  return { upstream: visit(upstream), downstream: visit(downstream) };
+}
+
+export function focusedMapEdgePairs(
+  edges: PlanView['edges'], focus: RunAddress,
+  upstream: RunSetsByStep, downstream: RunSetsByStep,
+) {
+  function contains(steps: RunSetsByStep, run: RunAddress) {
+    return (run.stepId === focus.stepId && run.runId === focus.runId) ||
+      steps.get(run.stepId)?.has(run.runId);
+  }
+  const pairs = new Set<string>();
+  for (const { from, to } of edges) {
+    if ((contains(upstream, from) && contains(upstream, to)) ||
+        (contains(downstream, from) && contains(downstream, to))) {
+      pairs.add(mapEdgePair(from.stepId, to.stepId));
+    }
+  }
+  return pairs;
+}
+
+export function mapEdgePair(from: string, to: string) {
+  return JSON.stringify([from, to]);
 }
 
 export function mapAnchor(stepId: string, direction: 'in' | 'out', inputId?: string): string {

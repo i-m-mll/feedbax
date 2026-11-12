@@ -60,17 +60,37 @@ function MarkButton({
   stepId,
   selected,
   selectionKind,
+  upstream,
+  downstream,
   applySelection,
 }: {
   item: MarkPresentation;
   stepId: string;
   selected: ReadonlySet<string>;
   selectionKind?: PipelineSelection['kind'];
+  upstream?: ReadonlySet<string>;
+  downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
 }) {
   const { mark, label, statuses } = item;
   const runs = mark.kind === 'group' ? mark.runs : [mark.run];
   const selectedCount = runs.reduce((count, run) => count + Number(selected.has(run.id)), 0);
+  let upstreamCount = 0;
+  let downstreamCount = 0;
+  let relatedCount = 0;
+  if (upstream || downstream) for (const { id } of runs) {
+    const before = upstream?.has(id);
+    const after = downstream?.has(id);
+    upstreamCount += Number(!!before);
+    downstreamCount += Number(!!after);
+    relatedCount += Number(!!before || !!after);
+  }
+  const lineage = upstreamCount ? downstreamCount ? 'both' : 'upstream' : downstreamCount ? 'downstream' : undefined;
+  const lineageDescription = [
+    upstreamCount ? studioName('madeFrom') : '',
+    downstreamCount ? studioName('usedBy') : '',
+    relatedCount && mark.kind === 'group' ? studioCountOf(relatedCount, runs.length) : '',
+  ].filter(Boolean).join(' · ');
   const status = mark.kind === 'run'
     ? studioRunStatus(mark.run.status)
     : statuses.map(([state, count]) => `${count} ${studioRunStatus(state)}`).join(' · ');
@@ -86,6 +106,8 @@ function MarkButton({
       type="button"
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
+      aria-description={lineageDescription || undefined}
+      data-map-focus={lineage}
       className={`studio-map-run-mark relative h-3 w-3 shrink-0 rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 ${ring || ''}`}
       {...selectionButton((extend) => {
         if (mark.kind === 'group') applySelection(() => selectSweepGroup(stepId, mark.terms));
@@ -104,6 +126,11 @@ function MarkButton({
           style={{ width: `${100 * selectedCount / runs.length}%` }}
         />
       )}
+      {relatedCount > 0 && <span aria-hidden="true"
+        className={mark.kind === 'group'
+          ? 'absolute left-0 top-0 h-0 border-t-2 border-dotted border-slate-900'
+          : 'absolute -inset-[2px] rounded-[3px] border border-dashed border-slate-900'}
+        style={mark.kind === 'group' ? { width: `${100 * relatedCount / runs.length}%` } : undefined} />}
     </button>
   );
 }
@@ -142,6 +169,8 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   folded,
   selection,
   selected,
+  upstream,
+  downstream,
   applySelection,
 }: {
   step: PlanStepView;
@@ -149,6 +178,8 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   folded: PlanSweepView | undefined;
   selection: PipelineSelection | null;
   selected: ReadonlySet<string>;
+  upstream?: ReadonlySet<string>;
+  downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
 }) {
   const grid = useMemo(() => {
@@ -201,7 +232,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   if (!grid.rowCount) return null;
   const headerRows = grid.columnSweep ? 1 : 0;
   return (
-    <div className="max-h-56 overflow-auto p-1">
+    <div className="nowheel max-h-56 overflow-auto p-1">
       <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount}
         aria-colcount={grid.columnCount + Number(!!grid.rowSweep)} onKeyDown={navigateMarks}
         className="inline-grid items-center gap-1"
@@ -234,7 +265,8 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
                   style={{ gridColumn: cell.column, gridRow: row, maxWidth: 192 }}>
                   {cell.marks.map((item) => (
                     <MarkButton key={item.id} item={item} stepId={step.id} selected={selected}
-                      selectionKind={selection?.kind} applySelection={applySelection} />
+                      selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
+                      applySelection={applySelection} />
                   ))}
                 </div>
               ))}

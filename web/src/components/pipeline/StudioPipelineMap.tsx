@@ -1,4 +1,5 @@
 import { ArrowLeft, ArrowRight, ChevronRight, Plus } from 'lucide-react';
+import { ReactFlowProvider, ViewportPortal, useReactFlow } from '@xyflow/react';
 import {
   memo,
   useCallback,
@@ -8,6 +9,7 @@ import {
   useState,
   type DragEvent,
   type ReactNode,
+  type Ref,
 } from 'react';
 import { studioRunMarkClass } from '@/components/activity/StudioRunStatus';
 import {
@@ -19,6 +21,8 @@ import {
   type StudioRunStatusId,
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
+import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
 import {
   selectionButton,
@@ -37,8 +41,17 @@ import {
 } from './PipelineRunMarks';
 import {
   foldedMapSweep,
+  compactMapCardWidth,
+  focusedMapEdgePairs,
+  fullMapFits,
   layoutPipelineMap,
   mapAnchor,
+  mapCardWidth,
+  mapColumnGap,
+  mapEdgePair,
+  mapPadding,
+  mapRowGap,
+  mapStepLineage,
   orderedMapSweeps,
   type PipelineCardPresentation,
 } from './pipelineMapLayout';
@@ -85,6 +98,9 @@ export interface StudioPipelineMapProps {
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
   problemSteps?: ReadonlySet<string>;
   onProblems?: (stepId: string, opener: HTMLButtonElement) => void;
+  activeStepId?: string | null;
+  viewportRef?: Ref<CanvasViewport>;
+  fitReady?: boolean;
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
@@ -129,6 +145,30 @@ function StepName({ step }: { step: PlanStepView }) {
       <span className="shrink-0 text-xs text-slate-600">{name}</span>
     </span>
   );
+}
+
+function CompactStatus({ id, counts, onProblems, related, total }: {
+  id: string;
+  counts: PlanStepView['statusCounts'];
+  onProblems?: (opener: HTMLButtonElement) => void;
+  related: number;
+  total: number;
+}) {
+  const statuses = (Object.entries(counts) as [StudioRunStatusId, number][]).filter(([, count]) => count > 0);
+  const names = statuses.map(([status, count]) => `${count} ${studioRunStatus(status)}`);
+  if (onProblems && !counts.cannot_run) names.push(studioRunStatus('cannot_run'));
+  return <>
+    <span id={id} className="sr-only">{names.join(' · ')}</span>
+    <div aria-hidden="true" className="relative flex h-1.5 overflow-hidden rounded-sm">
+      {statuses.map(([status, count]) => <span key={status} className={studioRunMarkClass(status)} style={{ flexGrow: count }} />)}
+      {related > 0 && total > 0 && <span className="absolute left-0 top-0 border-t-2 border-dotted border-slate-900"
+        style={{ width: `${100 * related / total}%` }} />}
+    </div>
+    {onProblems && <button type="button" className="text-xs text-slate-700 underline"
+      aria-haspopup="dialog" onClick={(event) => onProblems(event.currentTarget)}>
+      {counts.cannot_run ? `${counts.cannot_run} ` : ''}{studioRunStatus('cannot_run')}
+    </button>}
+  </>;
 }
 
 export function bindSweepFold(
@@ -212,7 +252,7 @@ function StepShape({
               </button>
               {openSweep === sweep.id && (
                 <div className="absolute left-0 top-full z-20 w-max max-w-56 rounded-md border border-slate-200 bg-white p-2 shadow-md">
-                  <ul className="max-h-36 space-y-0.5 overflow-y-auto">
+                  <ul className="nowheel max-h-36 space-y-0.5 overflow-y-auto">
                     {sweep.values.map((value) => (
                       <li key={value.id}>
                         <MapSweepValue
@@ -275,6 +315,10 @@ const StepCard = memo(function StepCard({
   newStep,
   newSweep,
   onProblems,
+  compact,
+  dimmed,
+  upstream,
+  downstream,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -286,22 +330,34 @@ const StepCard = memo(function StepCard({
   newStep?: StudioCommand;
   newSweep?: StudioCommand;
   onProblems?: StudioPipelineMapProps['onProblems'];
+  compact: boolean;
+  dimmed: boolean;
+  upstream?: ReadonlySet<string>;
+  downstream?: ReadonlySet<string>;
 }) {
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
   const folded = foldedMapSweep(step, sweeps, presentation);
   const level = documentLevel(documentScope, step.id);
   const selected = useMemo(() => new Set(
-    (level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
-  ), [step, selection, level]);
+    (compact ? [] : level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
+  ), [step, selection, level, compact]);
   const terms = selection?.kind === 'steps' ? [] : selectionTerms(step, selection);
   const { tint, name: kind } = studioStep(step.kind);
+  const related = (upstream?.size ?? 0) + (downstream?.size ?? 0) -
+    (upstream && downstream ? [...upstream].filter((id) => downstream.has(id)).length : 0);
+  const problem = onProblems && ((opener: HTMLButtonElement) => onProblems(step.id, opener));
   return (
     <article
       data-map-card
+      data-canvas-item
+      data-map-step={step.id}
+      data-map-density={compact ? 'compact' : 'full'}
+      data-map-related={related || undefined}
+      data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
       aria-label={studioAccessibleName(step.kind, step.label)}
-      className={`relative w-64 space-y-2 rounded-lg border-2 bg-white px-3 py-2 text-sm shadow-sm focus-within:z-20 ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
-      style={{ borderColor: tint }}
+      className={`nopan pointer-events-auto relative space-y-2 rounded-lg border-2 bg-white px-3 py-2 text-sm shadow-sm focus-within:z-20 data-[map-dimmed=true]:opacity-60 ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
+      style={{ borderColor: tint, width: compact ? compactMapCardWidth : mapCardWidth }}
     >
       <span id={`map-step-${step.id}-summary`} className="sr-only">
         {[kind, ...sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`)].join(' · ')}
@@ -311,16 +367,21 @@ const StepCard = memo(function StepCard({
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-3 top-1/2" />
         <button
           type="button"
+          data-canvas-focus
           className="w-full rounded px-1 py-1 text-left text-slate-900 hover:bg-slate-100 aria-[current=step]:bg-slate-200"
           aria-label={studioAccessibleName('select', step.label)}
           aria-describedby={`map-step-${step.id}-summary map-step-${step.id}-status`}
+          aria-description={related ? studioCountOf(related, step.runs.length) : undefined}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
           {...selectionButton((extend) => chooseStep(step.id, extend))}
         >
-          <StepName step={step} />
+          {compact ? <span className="flex items-center gap-1"><StepName step={step} />
+            <span className="ml-auto tabular-nums text-xs">{step.runs.length}</span></span> : <StepName step={step} />}
         </button>
       </header>
+      {compact ? <CompactStatus id={`map-step-${step.id}-status`} counts={step.statusCounts}
+        onProblems={problem} related={related} total={step.runs.length} /> : <>
       <StepShape
         step={step}
         sweeps={sweeps}
@@ -331,7 +392,7 @@ const StepCard = memo(function StepCard({
         onPresentationChange={onPresentationChange}
         newSweep={newSweep}
       />
-      <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={onProblems && ((opener) => onProblems(step.id, opener))} />
+      <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={problem} />
       {selection && (
         <p className="flex items-baseline gap-x-1 rounded bg-slate-100 px-1 text-xs font-medium text-slate-800">
           {terms.length > 0 && <span className="min-w-0 truncate">{terms.join(' · ')}</span>}
@@ -344,6 +405,8 @@ const StepCard = memo(function StepCard({
         folded={folded}
         selection={selection}
         selected={selected}
+        upstream={upstream}
+        downstream={downstream}
         applySelection={applySelection}
       />
       {step.inputs.some((input) => input.subset) && (
@@ -366,6 +429,7 @@ const StepCard = memo(function StepCard({
           <Plus aria-hidden="true" className="h-3 w-3" />
         </button>
       )}
+      </>}
     </article>
   );
 });
@@ -376,54 +440,81 @@ function MapDiagram({
   layout,
   children,
   clearFocus,
+  strongEdges,
+  viewportRef,
+  fitReady,
 }: {
   layout: MapLayout;
-  children: ReactNode;
+  children: (compact: boolean) => ReactNode;
   clearFocus: () => void;
+  strongEdges: ReadonlySet<string>;
+  viewportRef?: Ref<CanvasViewport>;
+  fitReady?: boolean;
 }) {
-  const grid = useRef<HTMLDivElement>(null);
-  const [paths, setPaths] = useState<readonly { id: string; d: string }[]>([]);
+  const [grid, setGrid] = useState<HTMLDivElement | null>(null);
+  const { ref, width, height } = useElementSize<HTMLDivElement>();
+  const { getViewport } = useReactFlow();
+  const fullHeights = useRef(new Map<string, number>());
+  const visibleSize = useRef({ width: 0, height: 0 });
+  if (width && height) visibleSize.current = { width, height };
+  const compact = !fullMapFits(
+    layout.columns, visibleSize.current.width, visibleSize.current.height, fullHeights.current,
+  );
+  const [geometry, setGeometry] = useState<{
+    width: number; height: number; compact: boolean;
+    paths: readonly { id: string; d: string }[];
+  }>();
   useLayoutEffect(() => {
-    const element = grid.current;
-    if (!element) return;
+    if (!grid) return;
     const measure = () => {
-      const origin = element.getBoundingClientRect();
+      const origin = grid.getBoundingClientRect();
+      const { zoom } = getViewport();
       const positions = new Map<string, { x: number; y: number }>();
-      for (const anchor of element.querySelectorAll<HTMLElement>('[data-map-anchor]')) {
-        const bounds = anchor.getBoundingClientRect();
-        positions.set(anchor.dataset.mapAnchor!, { x: bounds.left - origin.left, y: bounds.top - origin.top });
+      for (const card of grid.querySelectorAll<HTMLElement>('[data-map-density="full"]')) {
+        if (card.offsetHeight) fullHeights.current.set(card.dataset.mapStep!, card.offsetHeight);
       }
-      setPaths(layout.edges.flatMap(({ id, from, to, inputId }) => {
+      for (const anchor of grid.querySelectorAll<HTMLElement>('[data-map-anchor]')) {
+        const bounds = anchor.getBoundingClientRect();
+        positions.set(anchor.dataset.mapAnchor!, { x: (bounds.left - origin.left) / zoom, y: (bounds.top - origin.top) / zoom });
+      }
+      const paths = layout.edges.flatMap(({ id, from, to, inputId }) => {
         const a = positions.get(mapAnchor(from, 'out'));
-        const b = positions.get(mapAnchor(to, 'in', inputId));
+        const b = positions.get(mapAnchor(to, 'in', inputId)) ?? positions.get(mapAnchor(to, 'in'));
         if (!a || !b) return [];
         const bend = Math.max(16, (b.x - a.x) / 2);
         return [{ id, d: `M ${a.x} ${a.y} C ${a.x + bend} ${a.y}, ${b.x - bend} ${b.y}, ${b.x} ${b.y}` }];
-      }));
+      });
+      setGeometry({ width: grid.offsetWidth, height: grid.offsetHeight, compact, paths });
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    for (const card of element.querySelectorAll('[data-map-card]')) observer.observe(card);
+    observer.observe(grid);
+    for (const card of grid.querySelectorAll('[data-map-card]')) observer.observe(card);
     return () => observer.disconnect();
-  }, [layout.edges]);
+  }, [grid, layout.edges, compact, getViewport]);
+  const bounds = useMemo(() => geometry?.width && geometry.height
+    ? { x: 0, y: 0, width: geometry.width, height: geometry.height } : null,
+  [geometry?.width, geometry?.height]);
   return (
-    <div
-      className="min-w-0 flex-1 overflow-auto"
-      onClick={(event) => { if (event.target === event.currentTarget) clearFocus(); }}
-    >
-      <div
-        ref={grid}
-        className="relative isolate grid w-max min-w-full items-start gap-9 p-4"
-        style={{ gridTemplateColumns: `repeat(${layout.columns.length}, max-content)` }}
-        onClick={(event) => { if (event.target === event.currentTarget) clearFocus(); }}
-      >
-        <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full text-slate-300">
-          {paths.map(({ id, d }) => <path key={id} d={d} stroke="currentColor" strokeWidth={1.5} fill="none" />)}
-        </svg>
-        {children}
-      </div>
+    <div ref={ref} className="min-h-0 min-w-0 flex-1" data-map-canvas>
+      <StudioCanvas contentBounds={bounds} viewportRef={viewportRef} navigateContent minZoom={0.02}
+        fitReady={fitReady !== false && geometry?.compact === compact && !!width && !!height}
+        elementsSelectable={false} nodesFocusable={false} edgesFocusable={false} onPaneClick={clearFocus}>
+        <ViewportPortal>
+          <div ref={setGrid} className="pointer-events-none relative isolate grid w-max items-start"
+            style={{ gridTemplateColumns: `repeat(${layout.columns.length}, max-content)`,
+              columnGap: mapColumnGap, padding: mapPadding }}>
+            <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full">
+              {geometry?.paths.map(({ id, d }) => <path key={id} d={d} stroke="currentColor" fill="none"
+                data-map-edge={id} data-map-emphasis={strongEdges.has(id) ? 'strong' : 'light'}
+                className={strongEdges.has(id) ? 'text-slate-600' : 'text-slate-300'}
+                strokeWidth={strongEdges.has(id) ? 2 : 1.5} />)}
+            </svg>
+            {children(compact)}
+          </div>
+        </ViewportPortal>
+      </StudioCanvas>
     </div>
   );
 }
@@ -569,6 +660,9 @@ export function StudioPipelineMap({
   newSweepCommand,
   problemSteps,
   onProblems,
+  activeStepId,
+  viewportRef,
+  fitReady,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -580,17 +674,33 @@ export function StudioPipelineMap({
     if (current.current.focus) onSelectionChange({ ...current.current, focus: null });
   }, [onSelectionChange]);
   const layout = useMemo(() => layoutPipelineMap(plan), [plan]);
+  const selectedSteps = state.selection?.kind === 'steps' ? state.selection.stepIds
+    : state.selection ? [state.selection.stepId] : [];
+  const primaryStep = activeStepId ?? selectedSteps[0];
   const firstStep = newStepCommand?.();
   const drawDrawer = drawerOpen && mode === 'map';
-  const lineage = useMemo(() => drawDrawer ? indexPlanLineage(plan.edges) : null, [drawDrawer, plan.edges]);
+  const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
+  const focus = state.focus;
+  const upstream = useMemo(() => focus ? lineage.upstream([focus]) : null, [lineage, focus]);
+  const downstream = useMemo(() => focus ? lineage.downstream([focus]) : null, [lineage, focus]);
   const related = useMemo(
-    () => state.focus ? lineage?.related(state.focus) ?? null : null,
-    [lineage, state.focus],
+    () => drawDrawer && focus ? lineage.related(focus) : null,
+    [drawDrawer, lineage, focus],
   );
+  const ancestry = mapStepLineage(selectedSteps, layout.upstream, layout.downstream);
+  const focusPairs = useMemo(
+    () => focus && upstream && downstream ? focusedMapEdgePairs(plan.edges, focus, upstream, downstream) : null,
+    [focus, upstream, downstream, plan.edges],
+  );
+  const strongEdges = new Set(layout.edges.filter(({ from, to }) =>
+    focusPairs ? focusPairs.has(mapEdgePair(from, to)) : !documentScope &&
+      (ancestry.upstream.has(from) && ancestry.upstream.has(to) ||
+        ancestry.downstream.has(from) && ancestry.downstream.has(to)),
+  ).map(({ id }) => id));
   return (
     <section
       aria-label={studioName('pipelineMap')}
-      className="flex min-h-0 min-w-0 overflow-hidden bg-slate-50"
+      className="flex h-full min-h-0 min-w-0 overflow-hidden bg-slate-50"
       onKeyDown={(event) => {
         if (event.key === 'Escape' && state.focus) {
           event.stopPropagation();
@@ -622,9 +732,10 @@ export function StudioPipelineMap({
               onProblems={onProblems}
             />
           )}
-          <MapDiagram layout={layout} clearFocus={clearFocus}>
-            {layout.columns.map((steps, index) => (
-              <div key={index} className="relative flex flex-col gap-3">
+          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}
+            strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady}>
+            {(compact) => layout.columns.map((steps, index) => (
+              <div key={index} data-canvas-column={index} className="relative flex flex-col items-start" style={{ gap: mapRowGap }}>
                 {steps.map((step) => (
                   <StepCard
                     key={step.id}
@@ -634,6 +745,11 @@ export function StudioPipelineMap({
                     applySelection={applySelection}
                     chooseStep={chooseStep}
                     documentScope={documentScope}
+                    compact={compact && step.id !== primaryStep}
+                    dimmed={!documentScope && selectedSteps.length > 0 &&
+                      !ancestry.upstream.has(step.id) && !ancestry.downstream.has(step.id)}
+                    upstream={upstream?.get(step.id)}
+                    downstream={downstream?.get(step.id)}
                     onPresentationChange={onPresentationChange}
                     newStep={newStepCommand?.({ stepId: step.id,
                       selection: state.selection?.kind !== 'steps' && state.selection?.stepId === step.id ? state.selection : null,
@@ -644,7 +760,7 @@ export function StudioPipelineMap({
                 ))}
               </div>
             ))}
-          </MapDiagram>
+          </MapDiagram></ReactFlowProvider>
         </>
       )}
     </section>
