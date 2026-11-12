@@ -98,6 +98,14 @@ function StepName({ step }: { step: PlanStepView }) {
   );
 }
 
+export function bindSweepFold(
+  stepId: string, sweep: PlanSweepView, folded: boolean, presentation: PipelineCardPresentation,
+  save: NonNullable<StudioPipelineMapProps['onPresentationChange']>,
+) {
+  return bindStudioCommand(folded ? 'unfold' : 'fold',
+    () => save(stepId, { ...presentation, foldedSweepId: folded ? null : sweep.id }), { subject: sweep.label });
+}
+
 function FoldSweep({ command }: { command: StudioCommand }) {
   return <button type="button" className={smallButton} {...commandAttributes(command)} onClick={command.invoke}>
     {studioName(command.name)}
@@ -186,9 +194,7 @@ function StepShape({
                   </ul>
                   {onPresentationChange && (
                     <div className="mt-2 flex items-center gap-1 border-t border-slate-100 pt-1">
-                      <FoldSweep command={bindStudioCommand(isFolded ? 'unfold' : 'fold',
-                        () => onPresentationChange(step.id, { ...presentation, foldedSweepId: isFolded ? null : sweep.id }),
-                        { subject: sweep.label })} />
+                      <FoldSweep command={bindSweepFold(step.id, sweep, isFolded, presentation, onPresentationChange)} />
                       <button
                         type="button"
                         className={smallButton}

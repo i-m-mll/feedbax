@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, type KeyboardEvent } from 'react';
 import { studioRunMarkClass } from '@/components/activity/StudioRunStatus';
 import {
   studioAccessibleName,
@@ -108,6 +108,34 @@ function MarkButton({
   );
 }
 
+function navigateMarks(event: KeyboardEvent<HTMLDivElement>) {
+  const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+  if (event.defaultPrevented || !keys.includes(event.key) || !(event.target instanceof HTMLElement)) return;
+  const cell = event.target.closest<HTMLElement>('[aria-colindex]');
+  const row = cell?.closest<HTMLElement>('[aria-rowindex]');
+  if (!cell || !row) return;
+  const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+  const direction = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+  const buttons = [...cell.querySelectorAll<HTMLButtonElement>('button')];
+  const adjacent = horizontal ? buttons[buttons.indexOf(event.target as HTMLButtonElement) + direction] : undefined;
+  const selector = '[aria-colindex]';
+  const column = cell.getAttribute('aria-colindex');
+  let destination = adjacent;
+  if (!destination && horizontal) {
+    const cells = [...row.querySelectorAll<HTMLElement>(selector)];
+    const next = cells[cells.indexOf(cell) + direction];
+    const controls = next && [...next.querySelectorAll<HTMLButtonElement>('button')];
+    destination = direction < 0 ? controls?.at(-1) : controls?.[0];
+  } else if (!horizontal) {
+    const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[aria-rowindex]')];
+    for (let index = rows.indexOf(row) + direction; rows[index] && !destination; index += direction) {
+      destination = rows[index].querySelector<HTMLButtonElement>(`[aria-colindex="${column}"] button`) ?? undefined;
+    }
+  }
+  event.preventDefault();
+  destination?.focus();
+}
+
 export const PipelineRunMarks = memo(function PipelineRunMarks({
   step,
   sweeps,
@@ -156,61 +184,63 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
         return { id, mark, label, statuses: [...counts] };
       }),
     }));
+    const cellsByRow = new Map<number, typeof projectedCells>();
+    for (const cell of projectedCells) {
+      const row = cellsByRow.get(cell.row);
+      if (row) row.push(cell);
+      else cellsByRow.set(cell.row, [cell]);
+    }
+    for (const cells of cellsByRow.values()) cells.sort((a, b) => a.column - b.column);
     const extraColumn = projectedCells.some((cell) => cell.column > columns.size + Number(Boolean(rowSweep)));
     return {
-      rowSweep,
-      columnSweep,
-      cells: projectedCells,
+      rowSweep, columnSweep, cellsByRow,
+      rowCount: Math.max(0, ...cellsByRow.keys()),
       columnCount: Math.max(1, columns.size + Number(extraColumn)),
     };
   }, [step.runs, sweeps, folded]);
-  if (!grid.cells.length) return null;
+  if (!grid.rowCount) return null;
+  const headerRows = grid.columnSweep ? 1 : 0;
   return (
     <div className="max-h-56 overflow-auto p-1">
-      <div
+      <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount}
+        aria-colcount={grid.columnCount + Number(!!grid.rowSweep)} onKeyDown={navigateMarks}
         className="inline-grid items-center gap-1"
-        style={{ gridTemplateColumns: `${grid.rowSweep ? 'max-content ' : ''}repeat(${grid.columnCount}, max-content)` }}
-      >
-        {grid.columnSweep?.values.map((value, index) => (
-          <div key={value.id} className="text-center" style={{ gridRow: 1, gridColumn: index + 2 }}>
-            <MapSweepValue
-              sweep={grid.columnSweep!}
-              value={value}
-              stepId={step.id}
-              selection={selection}
-              applySelection={applySelection}
-            />
-          </div>
-        ))}
-        {grid.rowSweep?.values.map((value, index) => (
-          <div key={value.id} className="text-right" style={{ gridColumn: 1, gridRow: index + (grid.columnSweep ? 2 : 1) }}>
-            <MapSweepValue
-              sweep={grid.rowSweep!}
-              value={value}
-              stepId={step.id}
-              selection={selection}
-              applySelection={applySelection}
-            />
-          </div>
-        ))}
-        {grid.cells.map((cell) => (
-          <div
-            key={cell.key}
-            className="flex flex-wrap items-center justify-center gap-1"
-            style={{ gridColumn: cell.column, gridRow: cell.row, maxWidth: 192 }}
-          >
-            {cell.marks.map((item) => (
-              <MarkButton
-                key={item.id}
-                item={item}
-                stepId={step.id}
-                selected={selected}
-                selectionKind={selection?.kind}
-                applySelection={applySelection}
-              />
+        style={{ gridTemplateColumns: `${grid.rowSweep ? 'max-content ' : ''}repeat(${grid.columnCount}, max-content)` }}>
+        {grid.columnSweep && (
+          <div role="row" aria-rowindex={1} className="contents">
+            {grid.columnSweep.values.map((value, index) => (
+              <div role="columnheader" aria-colindex={index + 2} key={value.id} className="text-center"
+                style={{ gridRow: 1, gridColumn: index + 2 }}>
+                <MapSweepValue sweep={grid.columnSweep!} value={value} stepId={step.id}
+                  selection={selection} applySelection={applySelection} />
+              </div>
             ))}
           </div>
-        ))}
+        )}
+        {Array.from({ length: grid.rowCount - headerRows }, (_, index) => {
+          const row = index + headerRows + 1;
+          const heading = grid.rowSweep?.values[index];
+          return (
+            <div role="row" aria-rowindex={row} key={row} className="contents">
+              {grid.rowSweep && heading && (
+                <div role="rowheader" aria-colindex={1} className="text-right" style={{ gridColumn: 1, gridRow: row }}>
+                  <MapSweepValue sweep={grid.rowSweep} value={heading} stepId={step.id}
+                    selection={selection} applySelection={applySelection} />
+                </div>
+              )}
+              {grid.cellsByRow.get(row)?.map((cell) => (
+                <div role="gridcell" aria-colindex={cell.column} key={cell.key}
+                  className="flex flex-wrap items-center justify-center gap-1"
+                  style={{ gridColumn: cell.column, gridRow: row, maxWidth: 192 }}>
+                  {cell.marks.map((item) => (
+                    <MarkButton key={item.id} item={item} stepId={step.id} selected={selected}
+                      selectionKind={selection?.kind} applySelection={applySelection} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

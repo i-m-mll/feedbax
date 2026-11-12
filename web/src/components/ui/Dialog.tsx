@@ -44,11 +44,13 @@ export function Dialog({
   useEffect(() => {
     if (!closeOnEscape) return undefined;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      if (manageFocus) event.preventDefault();
+      onClose();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [closeOnEscape, onClose]);
+  }, [closeOnEscape, manageFocus, onClose]);
 
   return (
     <div

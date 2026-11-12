@@ -52,13 +52,18 @@ function post(page: Page, path: string) {
 
 test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }) => {
   const [model, task, train, successor] = await fixture('files');
-  const { snapshot } = await seedManagedProject(request, [model, task, train, successor, { ...train, id: 'third' }]);
+  const thirdModel = { ...model, id: 'third-model' };
+  const third = { ...train, id: 'third', step: { ...train.step, base: { inline: {
+    ...train.step.base.inline, graph: { document: thirdModel.id },
+  } } } };
+  const { snapshot } = await seedManagedProject(request, [model, task, train, successor, thirdModel, third]);
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('F6');
   await expect(region(page, 'top')).toBeFocused();
   await page.keyboard.press('F6');
   await expect(region(page, 'map')).toBeFocused();
+  await activate(page, mapStep(page, 'train'));
   await activate(page, mapStep(page, 'successor'));
   await activate(page, mapStep(page, 'third'));
 
@@ -133,6 +138,7 @@ test('the window commands, tab rail and selection history work without a pointer
 
   await page.keyboard.press('Meta+K');
   const dialog = page.getByRole('dialog', { name: 'Command Palette' });
+  await expect(dialog.getByRole('combobox')).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await page.keyboard.press('Escape');
@@ -168,6 +174,10 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(value('0.003')).toHaveAttribute('aria-pressed', 'true');
   await expect(value('0.002')).toHaveAttribute('aria-pressed', 'false');
   await expect(card).toContainText('2 of 3');
+  const marks = card.getByRole('grid', { name: 'Runs' });
+  await tabTo(page, marks.getByRole('rowheader').first().getByRole('button'));
+  await page.keyboard.press('ArrowRight');
+  await expect(marks.getByRole('gridcell').first().getByRole('button')).toBeFocused();
 
   const prefix = post(page, runsPath);
   await page.keyboard.press('Meta+R');
@@ -175,6 +185,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   expect(sourceRun.status(), await sourceRun.text()).toBe(202);
   const sourceKeys = sourceRun.request().postDataJSON().run_keys as StudioSavedTrainRuns['rows'][number]['key'][];
   expect(sourceKeys).toHaveLength(2);
+  const producer = (await sourceRun.json() as StudioJobSubmission).items[0].job_id;
   await expect(card.getByText('2 Done', { exact: true })).toBeVisible({ timeout: 18_000 });
   await expect(card.getByText('1 Not run', { exact: true })).toBeVisible();
 
@@ -228,4 +239,18 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.keyboard.press('Meta+7');
   await expect(results).toBeFocused();
   await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(results.getByRole('img', { name: 'Loss' })).toBeHidden();
+  await page.keyboard.press('Meta+BracketLeft');
+  await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
+
+  const saved = await (await request.get(projectPath)).json() as StudioProjectDocument['snapshot'];
+  const observed = await (await request.get(`${runsPath}?revision=${saved.revision}`)).json() as StudioSavedTrainRuns;
+  const stoppedRow = observed.rows.find(({ key }) => key.step === child && key.row === sourceKeys[0].row);
+  expect(stoppedRow?.attempts.at(-1)).toMatchObject({
+    job_id: job, status: 'stopped', checkpoint_source: { job_id: producer },
+  });
+  console.info('Keyboard Train witness', JSON.stringify({
+    project: saved.project_id, sourceKeys, continuation: stoppedRow?.key, producer, stoppedJob: job,
+  }));
 });

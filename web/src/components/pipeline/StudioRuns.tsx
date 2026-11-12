@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import { studioAccessibleName, studioCountOf, studioName, studioRunStatus } from "@/components/activity/studioVocabulary";
@@ -164,7 +164,6 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
 }
 
 function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, inputs, commands, pivotCommand, pivotActive }: StudioRunsProps) {
-  const reasonId = useId();
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
@@ -182,7 +181,7 @@ function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, 
       <div className="flex flex-wrap items-center gap-2">
         {commands?.map((command) => (
           <button type="button" key={command.id} {...commandAttributes(command)} disabled={!command.enabled}
-            aria-describedby={focused?.reason && !command.enabled ? reasonId : undefined}
+            aria-description={!command.enabled ? focused?.reason : undefined}
             className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50" onClick={command.invoke}>
             {studioName(command.name)}
           </button>
@@ -193,10 +192,6 @@ function RunsContent({ plan, step, state, onSelectionChange, definition, sweep, 
             {studioName(pivotCommand.name)}
           </button>
         )}
-      </div>
-      <div aria-live="polite" className="sr-only">
-        {focused && <span>{focused.label} · {studioRunStatus(focused.status)}</span>}
-        {focused?.reason && <span id={reasonId}>{focused.reason}</span>}
       </div>
       {pivotCommand && pivotActive
         ? <StudioRunPivot step={step} state={state} onSelectionChange={onSelectionChange} rows={step.runs} related={related} />

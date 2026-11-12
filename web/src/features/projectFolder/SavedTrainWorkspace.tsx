@@ -7,10 +7,10 @@ import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
-import { StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
+import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
-import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
+import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
@@ -359,8 +359,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       ...current, [slot]: current[slot] === step.id ? undefined : step.id,
     })));
   }
+  const selectedAxis = state.selection?.kind === 'values' && state.selection.terms.length === 1
+    ? step?.sweeps.find(({ id }) => state.selection?.kind === 'values' && id === state.selection.terms[0].sweepId) : undefined;
+  const cardPresentation = step ? presentation[step.id] ?? {} : {};
+  const folded = step && selectedAxis ? foldedMapSweep(step, orderedMapSweeps(step, cardPresentation), cardPresentation) : undefined;
   const commands = [
     ...runCommands,
+    step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
     focusView === 'runs' && pivotCommand(focusSlot),
     bindStudioCommand('undo', () => moveHistory('undo'), { enabled: !!snapshot.undoName && !busy }),
