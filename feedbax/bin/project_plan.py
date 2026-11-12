@@ -1,4 +1,4 @@
-"""Read-only planning for an authored text project."""
+"""Read-only planning and status for an authored text project."""
 
 import argparse
 import os
@@ -21,6 +21,7 @@ from feedbax.contracts.project_io import (
 from feedbax.contracts.project_plan import (
     ElementKey,
     PlanRequests,
+    ProjectPlan,
     RunKey,
     compile_project,
     diff_plan_requests,
@@ -31,10 +32,10 @@ from feedbax.contracts.project_plan_io import (
     run_key,
     select_plan_requests,
 )
-from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 
 
-def configure_parser(parser: argparse.ArgumentParser) -> None:
+def configure_status_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "project_dir",
         nargs="?",
@@ -45,6 +46,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--variant", action="append", help="Show this variant. Repeat to select more."
     )
+
+
+def configure_parser(parser: argparse.ArgumentParser) -> None:
+    configure_status_parser(parser)
     review = parser.add_mutually_exclusive_group()
     review.add_argument("--out", type=Path, metavar="FILE", help="Write a JSON review Plan.")
     review.add_argument(
@@ -113,36 +118,30 @@ def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
         raise ProjectReadError(path, str(error)) from error
 
 
-def _plan(args: argparse.Namespace) -> int:
+def _read_plan(project_dir: Path) -> tuple[TextProject, ProjectPlan, set[Path]]:
     from feedbax.analysis.builtin_operations import register_builtin_operations
     from feedbax.analysis.operations import OperationRegistry
 
-    root = find_text_project(args.project_dir)
+    root = find_text_project(project_dir)
     text = read_text_project_snapshot(root)
 
     operations = OperationRegistry()
     register_builtin_operations(operations)
     operations.seal()
     external = TextProjectExternalInputs(text)
-    plan = compile_project(
-        text.project, operations=operations,
-        readers=BaseReaders(external=external.read, figure_external=external.read),
-    )
-    current = PlanRequests.from_plan(plan)
-    known_variants = set(plan.variants)
-    variants = tuple(sorted(set(args.variant))) if args.variant else None
-    before = None
-    if args.check is not None:
-        before, saved_variants = _read_baseline(args.check)
-        if (
-            saved_variants is not None
-            and variants is not None
-            and set(variants) - set(saved_variants)
-        ):
-            raise ProjectReadError(args.check, "the saved Plan excludes a requested variant")
-        variants = variants if variants is not None else saved_variants
-        known_variants.update(saved_variants or ())
-        known_variants.update(run_key(key).variant for key in before.entries)
+    readers = BaseReaders(external=external.read, figure_external=external.read)
+    return text, compile_project(text.project, operations=operations, readers=readers), external.paths
+
+
+def _variants(selected: list[str] | None) -> tuple[str, ...] | None:
+    return tuple(sorted(set(selected))) if selected else None
+
+
+def _validate_variants(
+    root: Path,
+    variants: tuple[str, ...] | None,
+    known_variants: set[str],
+) -> None:
     unknown = set(variants or ()) - known_variants
     if unknown:
         candidates = ", ".join(sorted(known_variants)) or "(none)"
@@ -151,7 +150,11 @@ def _plan(args: argparse.Namespace) -> int:
             f"unknown variant {', '.join(sorted(unknown))}. Available variants: {candidates}",
         )
 
-    scoped = select_plan_requests(current, variants)
+
+def _diagnostics(
+    plan: ProjectPlan,
+    variants: tuple[str, ...] | None,
+) -> list[ProjectDiagnostic]:
     problems = [
         problem
         for problem in plan.diagnostics
@@ -166,6 +169,29 @@ def _plan(args: argparse.Namespace) -> int:
             f"{source}{layer}{document} {problem.path} [{problem.code}]: {problem.detail}",
             file=sys.stderr,
         )
+    return problems
+
+
+def _plan(args: argparse.Namespace) -> int:
+    text, plan, external_paths = _read_plan(args.project_dir)
+    current = PlanRequests.from_plan(plan)
+    known_variants = set(plan.variants)
+    variants = _variants(args.variant)
+    before = None
+    if args.check is not None:
+        before, saved_variants = _read_baseline(args.check)
+        if (
+            saved_variants is not None
+            and variants is not None
+            and set(variants) - set(saved_variants)
+        ):
+            raise ProjectReadError(args.check, "the saved Plan excludes a requested variant")
+        variants = variants if variants is not None else saved_variants
+        known_variants.update(saved_variants or ())
+        known_variants.update(run_key(key).variant for key in before.entries)
+    _validate_variants(text.root, variants, known_variants)
+    scoped = select_plan_requests(current, variants)
+    problems = _diagnostics(plan, variants)
     if before is not None:
         status = _check(scoped, select_plan_requests(before, variants))
     else:
@@ -173,7 +199,7 @@ def _plan(args: argparse.Namespace) -> int:
         for key, request in scoped.entries.items():
             print(f"{_address(key)} {request.request_id}")
         if args.out is not None and not problems:
-            destination = _output_path(args.out, text, external.paths)
+            destination = _output_path(args.out, text, external_paths)
             write_bytes_atomic(destination, dump_plan_requests(current, variants))
     return 2 if problems else status
 
@@ -184,3 +210,49 @@ def run(args: argparse.Namespace) -> int:
     except (ProjectReadError, OSError) as error:
         print(f"feedbax plan: {error}", file=sys.stderr)
         return 2
+
+
+def _status_cell(text: str) -> str:
+    return text.replace("\r", r"\r").replace("\n", r"\n").replace("\t", r"\t")
+
+
+def run_status(args: argparse.Namespace) -> int:
+    from feedbax.host import HostClient, HostError
+    from feedbax.jobs import PlanJobReader, evaluation_candidate_configured
+    from feedbax.web.services.project_folder import ProjectFolderInvalid, SettledProjectPlan
+    from feedbax.web.services.project_plan import read_settled_project_plan
+
+    try:
+        text, plan, _ = _read_plan(args.project_dir)
+        variants = _variants(args.variant)
+        _validate_variants(text.root, variants, set(plan.variants))
+        problems = _diagnostics(plan, variants)
+        settled = SettledProjectPlan.from_text(text.root.name, text, plan)
+        view = read_settled_project_plan(
+            settled,
+            PlanJobReader(
+                HostClient(),
+                enable_evaluation_candidate=evaluation_candidate_configured(),
+            ),
+        )
+    except HostError as error:
+        print(f"feedbax status: saved result history is unavailable: {error}", file=sys.stderr)
+        return 2
+    except (ProjectReadError, ProjectFolderInvalid, OSError) as error:
+        print(f"feedbax status: {error}", file=sys.stderr)
+        return 2
+
+    print("ADDRESS\tROW\tSTATE\tREASON")
+    for row in view.status_rows():
+        if variants is None or run_key(row.key).variant in variants:
+            print(
+                "\t".join(
+                    (
+                        _address(row.key),
+                        _status_cell(row.label),
+                        row.status.value,
+                        _status_cell(row.reason or ""),
+                    )
+                )
+            )
+    return 2 if problems else 0

@@ -360,6 +360,9 @@ def build_parser() -> argparse.ArgumentParser:
     project_plan_cli.configure_parser(subparsers.add_parser(
         "plan", prog="feedbax plan", help="Compile an authored text project for review.",
     ))
+    project_plan_cli.configure_status_parser(subparsers.add_parser(
+        "status", prog="feedbax status", help="Show saved project run and element states.",
+    ))
     migration_parser = subparsers.add_parser(
         "migrate-content-store",
         help="Offline conversion of legacy custody into canonical content references.",
@@ -731,6 +734,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "plan":
         return project_plan_cli.run(args)
+    if args.command == "status":
+        return project_plan_cli.run_status(args)
     if args.command == "migrate-content-store":
         if args.packet_v1:
             from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1

@@ -104,6 +104,15 @@ class SettledProjectPlan:
     plan: ProjectPlan
     readers: BaseReaders
 
+    @classmethod
+    def from_text(
+        cls, project_id: str, text: TextProject, plan: ProjectPlan, *, readers: BaseReaders = BaseReaders(),
+    ) -> SettledProjectPlan:
+        return cls(
+            project_id, text.revision, project_semantic_root(text.project),
+            text.configuration, text.store_path, plan, readers,
+        )
+
 
 def _may_read_figure_pin(project: Project) -> bool:
     figures = {
@@ -132,7 +141,6 @@ def _may_read_figure_pin(project: Project) -> bool:
     ) or any(
         isinstance(axis, GeneratedAxis) and affects_figures(axis.path) for axis in sweep.axes.values()
     )
-
 
 def _regular(path: Path) -> os.stat_result:
     info = path.lstat()
@@ -368,17 +376,13 @@ class ProjectFolderService:
         readers = BaseReaders(
             figure_external=TextProjectExternalInputs(text, authority=self.root).read,
         ) if _may_read_figure_pin(text.project) else BaseReaders()
-        return SettledProjectPlan(
-            project_id,
-            text.revision,
-            project_semantic_root(text.project),
-            text.configuration,
-            text.store_path,
+        return SettledProjectPlan.from_text(
+            project_id, text,
             compile_project(
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id),
                 operations=self.operations, readers=readers,
             ),
-            readers,
+            readers=readers,
         )
 
     @contextmanager

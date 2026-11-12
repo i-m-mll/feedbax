@@ -64,8 +64,8 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       id, values, label: row.label, status: evaluation.status, reason: evaluation.reason ?? undefined,
       sizeBytes: evaluation.result?.size_bytes, variant: row.key.variant,
     });
-    else if (!trainIds.has(id) && (row.status || rejected.has(id))) addRun(row.key.step, {
-      id, values, label: row.label, status: row.status ?? 'cannot_run', reason: rejected.get(id), variant: row.key.variant,
+    else if (!trainIds.has(id) && row.status) addRun(row.key.step, {
+      id, values, label: row.label, status: row.status, reason: rejected.get(id), variant: row.key.variant,
     });
   }
   for (const row of saved?.rows ?? []) {
