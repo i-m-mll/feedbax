@@ -23,7 +23,11 @@ def _prepare_studio_gru(key):
     graph = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
     registry = ComponentRegistry()
     _, trainable_filter = _compile_trainability(graph_to_spec(graph, registry), graph, registry)
-    return SimpleNamespace(graph=graph, trainable_filter=trainable_filter)
+    return SimpleNamespace(
+        graph=graph,
+        trainable_filter=trainable_filter,
+        training_spec=SimpleNamespace(batch_size=1),
+    )
 
 
 def test_prepared_gru_reconstruction_reuses_trace_and_retains_weight_updates():

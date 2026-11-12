@@ -201,7 +201,11 @@ def test_nested_parameter_constraints_survive_gradient_updates(entry_point: str)
         )
     else:
         kernel = StudioUpdateKernel(
-            compiled=SimpleNamespace(graph=graph, trainable_filter=eqx.is_inexact_array),
+            compiled=SimpleNamespace(
+                graph=graph,
+                trainable_filter=eqx.is_inexact_array,
+                training_spec=SimpleNamespace(batch_size=1),
+            ),
             optimizer=optimizer,
             rollout_fn=lambda model, _plan, key: predict(model, inputs, key),
             evaluate_loss_fn=lambda _plan, outputs: (squared_error(outputs), {}),

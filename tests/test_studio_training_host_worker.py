@@ -12,19 +12,25 @@ import sys
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
+import optax
 import pytest
 
-from feedbax.contracts.manifest import canonical_manifest_path
+from feedbax.contracts.graph import STUDIO_TASK_TIMELINE_SCHEMA_VERSION
+from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     load_checkpoint_custody_documents,
     require_checkpoint_semantic_state_equal,
 )
+from feedbax.training.optimizers import build_optimizer
 from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
 from feedbax.web.worker import execution
 from web.e2e.studio.fixtures.reaching_project import reaching_project
@@ -50,6 +56,88 @@ def _readout(graph):
     return graph.nodes["readout"].layer.weight
 
 
+def _trial_endpoints(compiled):
+    @eqx.filter_jit
+    def scalar_trial(model, key):
+        rollout = execution.rollout_graph(model, compiled, key=key)
+        return (
+            rollout["trace"]["path:plant.effector.pos"][-1],
+            rollout["task_data"]["reach_target"],
+        )
+
+    return scalar_trial
+
+
+def _reference_trials(compiled, scalar_trial, slots, result):
+    next_key, step_key = jr.split(slots["prng"])
+    np.testing.assert_array_equal(result["prng"], next_key)
+    assert int(result["batch_counter"]) == int(slots["batch_counter"]) + 1
+    keys = [step_key]
+    keys.extend(
+        derive_key(step_key, "studio_training", "trial", index=i)
+        for i in range(1, compiled.training_spec.batch_size)
+    )
+    values = [scalar_trial(slots["model"], key) for key in keys]
+    positions, targets = (
+        np.asarray(field, dtype=np.float64) for field in zip(*values, strict=True)
+    )
+    hold_steps = np.count_nonzero(np.all(targets == 0, axis=-1), axis=1)
+    assert np.all((hold_steps >= 1) & (hold_steps <= 80))
+    assert len(set(hold_steps)) > 1
+    endpoint_losses = np.sum(np.square(positions - targets[:, -1]), axis=1)
+    reference_mean = math.fsum(endpoint_losses) / len(keys)
+    assert result["train_loss"] == pytest.approx(reference_mean, rel=1e-5, abs=1e-8)
+    (term,) = result["loss_terms"].values()
+    assert term == pytest.approx(reference_mean, rel=1e-5, abs=1e-8)
+    return keys, {
+        "trial_keys": [np.asarray(jr.key_data(key)).tolist() for key in keys],
+        "hold_steps": hold_steps.tolist(),
+        "endpoint_positions": positions.tolist(),
+        "endpoint_targets": targets[:, -1].tolist(),
+        "per_trial_endpoint_losses": endpoint_losses.tolist(),
+        "independent_mean": reference_mean,
+        "mean_absolute_error": abs(reference_mean - result["train_loss"]),
+    }
+
+
+def _reference_gradient(compiled, scalar_trial, slots, result, keys, grad_clip):
+    trainable, frozen = eqx.partition(slots["model"], compiled.trainable_filter)
+
+    def endpoint_error(candidate, key):
+        position, target = scalar_trial(eqx.combine(candidate, frozen), key)
+        return jnp.sum(jnp.square(position - target[-1]))
+
+    gradient = eqx.filter_jit(eqx.filter_grad(endpoint_error))
+    trial_grads = [gradient(trainable, key) for key in keys]
+    grads = jax.tree.map(lambda *values: sum(values) / len(keys), *trial_grads)
+    grad_norm = float(optax.global_norm(grads))
+    assert result["grad_norm"] == pytest.approx(grad_norm, rel=1e-4, abs=1e-8)
+
+    optimizer = build_optimizer(
+        compiled.training_spec.optimizer, schedule_origin_step=0, current_step=0,
+        gradient_clip=grad_clip,
+    )
+    updates, opt_state = optimizer.update(grads, slots["optimizer"], trainable)
+    model = apply_parameter_constraints(
+        eqx.combine(eqx.apply_updates(trainable, updates), frozen)
+    )
+    errors = {}
+    for name, expected in (("model", model), ("optimizer", opt_state)):
+        actual, reference = jax.tree.map(
+            lambda value: np.asarray(value) if eqx.is_array(value) else value,
+            (result[name], expected),
+        )
+        assert jax.tree.structure(actual) == jax.tree.structure(reference)
+        differences = []
+        for left, right in zip(jax.tree.leaves(actual), jax.tree.leaves(reference), strict=True):
+            if isinstance(left, np.ndarray):
+                np.testing.assert_allclose(left, right, rtol=1e-4, atol=2e-7)
+                if left.size:
+                    differences.append(float(np.max(np.abs(left - right))))
+        errors[name] = max(differences)
+    return {"grad_norm": grad_norm, "max_absolute_state_error": errors}
+
+
 def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: bool) -> int:
     from feedbax import training_host_worker
     from feedbax.training import executor
@@ -57,15 +145,21 @@ def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: boo
     compile_run = execution.compile_training_run
     update = StudioUpdateKernel.reported_update
     execute = executor.execute_training_run_spec
+    scalar_trial = None
+    pending_evidence = None
 
     def prepare(*args, **kwargs):
+        nonlocal scalar_trial
         compiled = compile_run(*args, **kwargs)
         if distinct_preparation:
             # Change only the resume worker's template before AOT compilation.
             compiled.graph = eqx.tree_at(_readout, compiled.graph, _readout(compiled.graph) + 0.25)
+        if compiled.training_spec.batch_size > 1:
+            scalar_trial = _trial_endpoints(compiled)
         return compiled
 
     def observe(kernel, slots):
+        nonlocal pending_evidence
         compiled = kernel._compiled
         model = slots["model"]
         result = update(kernel, slots)
@@ -84,15 +178,32 @@ def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: boo
                 name: result[name] for name in (*_SCIENTIFIC_METRICS, "step_time_ms")
             },
         }
-        with audit_path.open("a") as stream:
-            stream.write(json.dumps(evidence, allow_nan=False) + "\n")
+        if scalar_trial is not None:
+            keys, reference = _reference_trials(compiled, scalar_trial, slots, result)
+            evidence["trial_reference"] = reference
+            if int(slots["batch_counter"]) == 0 and not stop_after:
+                launch = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
+                grad_clip = launch["spec"]["training_config"]["grad_clip"]
+                evidence["gradient_reference"] = _reference_gradient(
+                    compiled, scalar_trial, slots, result, keys, grad_clip
+                )
+        assert pending_evidence is None
+        pending_evidence = evidence
         return result
 
     def stop_at_commit(*args, **kwargs):
         callback = kwargs["committed_update_callback"]
 
         def observe_commit(coordinate, completed, slots):
+            nonlocal pending_evidence
             callback(coordinate, completed, slots)
+            assert pending_evidence["update"] == completed
+            assert pending_evidence["after"] == {
+                name: _array_digests(slots[name]) for name in _STATE
+            }
+            with audit_path.open("a") as stream:
+                stream.write(json.dumps(pending_evidence, allow_nan=False) + "\n")
+            pending_evidence = None
             if completed == stop_after:
                 Path(os.environ["FEEDBAX_HOST_STOP_FILE"]).touch()
 
@@ -107,9 +218,42 @@ def _observe_worker(audit_path: Path, stop_after: int, distinct_preparation: boo
         return training_host_worker.main([])
 
 
-def _authored_run():
-    project = reaching_project(batches=8)
+def _authored_run(*, batches=8, batch_size=1, sampled_hold=False):
+    project = reaching_project(batches=batches)
     project.graph.nodes["readout"].params["trainable"] = False
+    scenario = project.workspace.scenarios["scenario:train"]
+    scenario.training_spec["batch_size"] = batch_size
+    if sampled_hold:
+        scenario.task_spec["timeline"] = {
+            "schema_version": STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+            "epochs": [
+                {
+                    "id": "hold", "label": "Hold", "index": 0,
+                    "length": {
+                        "mode": "distribution",
+                        "distribution": {
+                            "family": "uniform", "parameters": {"min": 1, "max": 81},
+                        },
+                    },
+                },
+                {
+                    "id": "reach", "label": "Reach", "index": 1,
+                    "length": {"mode": "constant"},
+                },
+            ],
+            "signals": [
+                {
+                    "id": "reach_target", "label": "Reach target", "kind": "signal",
+                    "path": "inputs.effector_target.pos",
+                },
+            ],
+            "epoch_value_specs": [
+                {
+                    "target_id": "reach_target", "epoch_id": "hold",
+                    "value_spec": {"mode": "constant", "value": [0.0, 0.0]},
+                },
+            ],
+        }
     row, = lower_studio_training_runs(
         project.workspace, project.graph, stage_id="stage:train",
         registry_bundle=new_application_registry_bundle(),
@@ -146,7 +290,7 @@ def _launch(root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=
     )
     child = subprocess.run(
         [sys.executable, __file__, str(audit), str(stop_after), str(int(resume is not None))],
-        cwd=source, env=env, capture_output=True, text=True, timeout=20, check=False,
+        cwd=source, env=env, capture_output=True, text=True, timeout=30, check=False,
     )
     events = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
     assert child.returncode == int(fail), (job, child.stdout, child.stderr, events)
@@ -167,6 +311,11 @@ def _launch(root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=
         "TrainingRunManifest", result["receipt"]["manifest_id"], root=root / "runs",
     )
     assert hashlib.sha256(receipt.read_bytes()).hexdigest() == result["receipt"]["manifest_sha256"]
+    manifest = load_manifest(receipt)
+    assert manifest.status == ("cancelled" if stop_after else "completed")
+    assert manifest.completed_batches == checkpoint["completed_updates"]
+    assert manifest.terminal_checkpoint.id == pointer.transaction_id
+    assert manifest.terminal_checkpoint.metadata["manifest_sha256"] == pointer.manifest_sha256
     return checkpoint, custody.manifest, rows, events, receipt
 
 
@@ -257,6 +406,45 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
     rejected = _launch(tmp_path, "old-seed-zero-start", legacy, fail=True)
     assert rejected["error"]["code"] == "invalid_request"
     assert "Create a new Studio request" in rejected["error"]["message"]
+
+
+def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes(tmp_path):
+    row = _authored_run(batches=4, batch_size=3, sampled_hold=True)
+    assert row.spec.training_config.batch_size == 3
+    _, uninterrupted, whole, _, _ = _launch(tmp_path, "batch-whole", row.spec)
+    stopped, paused, prefix, _, receipt = _launch(
+        tmp_path, "batch-paused", row.spec, stop_after=2,
+    )
+    original_receipt = receipt.read_bytes()
+    _, restarted, suffix, _, _ = _launch(tmp_path, "batch-resumed", row.spec, resume=stopped)
+
+    assert [entry["update"] for entry in prefix] == [1, 2]
+    assert [entry["update"] for entry in suffix] == [3, 4]
+    assert len({part[0]["pid"] for part in (whole, prefix, suffix)}) == 3
+    for reference, actual in zip(whole, prefix + suffix, strict=True):
+        for field in ("before", "after", "trial_reference"):
+            assert actual[field] == reference[field]
+        for name in _SCIENTIFIC_METRICS:
+            assert actual["metrics"][name] == reference["metrics"][name]
+    first = whole[0]["trial_reference"]
+    assert len(first["trial_keys"]) == 3
+    assert len({tuple(key) for key in first["trial_keys"]}) == 3
+    assert first["independent_mean"] != pytest.approx(first["per_trial_endpoint_losses"][0])
+    assert first["independent_mean"] != pytest.approx(sum(first["per_trial_endpoint_losses"]))
+    assert "gradient_reference" in whole[0]
+    assert all(entry["prepared_readout"] != entry["input_readout"] for entry in suffix)
+
+    assert stopped["completed_updates"] == paused.completed_training_batches == 2
+    assert restarted.parent_lineage[0].transaction_id == paused.transaction_id
+    assert restarted.completed_training_batches == uninterrupted.completed_training_batches == 4
+    for name in _STATE:
+        require_checkpoint_semantic_state_equal(uninterrupted, restarted, name)
+    assert receipt.read_bytes() == original_receipt
+
+    scalar = _authored_run(batches=4, sampled_hold=True)
+    assert scalar.request_id != row.request_id
+    rejected = _launch(tmp_path, "different-batch-size", scalar.spec, resume=stopped, fail=True)
+    assert rejected["error"]["code"] == "incompatible_checkpoint"
 
 
 if __name__ == "__main__":

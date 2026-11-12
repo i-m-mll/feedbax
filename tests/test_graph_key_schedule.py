@@ -28,12 +28,31 @@ from feedbax.runtime._graph_key_schedule import (
     derive_key,
     keyed_nodes,
     sample_steps,
+    sample_training_trials,
     step_key,
     step_keys,
 )
 from feedbax.runtime.components import Noise
 from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.runtime.iteration import iterate_component
+
+
+@pytest.mark.parametrize("impl", ["threefry2x32", "rbg", "unsafe_rbg"])
+def test_training_trial_sampling_matches_scalar_streams_at_any_batch_size(impl):
+    key = jax.random.key(17, impl=impl)
+
+    def draw(trial_key):
+        return jax.random.bits(trial_key, shape=(4,), dtype=jnp.uint32)
+
+    trials = sample_training_trials(draw, key, 5)
+    expected = jnp.stack([
+        draw(key),
+        *(draw(derive_key(key, "studio_training", "trial", index=i)) for i in range(1, 5)),
+    ])
+    assert jnp.array_equal(trials, expected)
+    assert len({tuple(row) for row in trials.tolist()}) == 5
+    assert jnp.array_equal(sample_training_trials(draw, key, 3), trials[:3])
+    assert jnp.array_equal(sample_training_trials(draw, key, 1), trials[:1])
 
 
 def test_nested_noise_reset_keys_follow_producers() -> None:
