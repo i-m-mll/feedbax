@@ -38,6 +38,11 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
   await expect(card.getByText('1 Out of date')).toBeVisible();
   await expect(drawer.getByText('1 Out of date')).toBeVisible();
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(table.getByText('Done', { exact: true })).toBeVisible();
+  await expect(card.getByText('1 Done')).toBeVisible();
+  await expect(drawer.getByText('1 Done')).toBeVisible();
 });
 
 test('the managed window shares selection and restores the folded slot without editing the folder', async ({ page, request }) => {
@@ -91,7 +96,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const id = 'project-window-scene';
   const path = `/api/projects/${id}`;
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed',
-    join(home, 'state', 'web', 'projects', id), join(home, 'project-window-scene.json'));
+    join(home, 'state', 'web', 'projects', id));
   const initial = await request.get(path);
   expect(initial.ok()).toBe(true);
   let snapshot = await initial.json() as StudioProjectSnapshot;

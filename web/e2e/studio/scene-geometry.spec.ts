@@ -27,7 +27,8 @@ test.use({ locale: 'en-US' });
 
 async function fixture(action: 'seed' | 'read', folder: string, ...documents: string[]) {
   const output = join(folder, '..', '..', 'scene-native.json');
-  await run('uv', ['run', '--no-sync', 'python', '-B', '-m', 'tests.fixtures.scene_geometry', action, folder, output, ...documents],
+  const args = action === 'seed' ? [folder] : [folder, output, ...documents];
+  await run('uv', ['run', '--no-sync', 'python', '-B', '-m', 'tests.fixtures.scene_geometry', action, ...args],
     { cwd: repo, timeout: 15_000 });
   return action === 'read' ? JSON.parse(await readFile(output, 'utf8')) as Record<string, NativeModel> : {};
 }
