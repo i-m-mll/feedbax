@@ -5,6 +5,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.host.completion import CompletionFileError, verify_completion_files
@@ -85,6 +86,12 @@ TERMINAL = "('succeeded','stopped','failed','interrupted','blocked')"
 
 JOB_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
 JSON_COLUMNS = ("data", "phase", "progress", "checkpoint", "outcome")
+
+
+class _CompletionRejection(NamedTuple):
+    candidate_job_id: str
+    stage: Literal["continuation", "completion"]
+    message: str
 
 
 def dump(value) -> str:
@@ -537,84 +544,145 @@ class Store:
                 results.append({"job_id": job_id, "state": state})
         return results
 
-    def _completion_attempt(self, anchor: str) -> sqlite3.Row:
-        attempt = self.get(anchor)
-        assert attempt is not None
-        while can_resume_attempt(attempt["state"], attempt["checkpoint"], attempt["delivery"]):
-            successor = self.db.execute(
-                "SELECT * FROM jobs WHERE continues=? ORDER BY seq LIMIT 1", (attempt["id"],)
-            ).fetchone()
-            if successor is None:
-                break
-            earlier = json.loads(attempt["launch"])["payload"]
-            later = json.loads(successor["launch"])["payload"]
-            checkpoint = (
-                json.loads(attempt["checkpoint"]) if attempt["checkpoint"] is not None else None
-            )
-            if later.get("resume") != checkpoint or {
-                key: value for key, value in earlier.items() if key != "resume"
-            } != {key: value for key, value in later.items() if key != "resume"}:
-                raise CompletionFileError(
-                    "Explicit continuation changed the producer's bound input."
-                )
-            attempt = successor
-        return attempt
-
-    def _completion_candidate(self, anchor: str) -> tuple[dict | None, dict | None]:
-        try:
-            attempt = self._completion_attempt(anchor)
-            if attempt["state"] != "succeeded":
-                if attempt["state"] in LIVE_STATES or can_resume_attempt(
-                    attempt["state"], attempt["checkpoint"], attempt["delivery"]
-                ):
-                    return None, None
-                return None, {
-                    "code": "input_unavailable",
-                    "message": "Producer ended without a resumable completion.",
-                }
-            outcome = json.loads(attempt["outcome"])
-            completion = outcome.get("completion")
-            if completion is None:
-                reported = outcome.get("completion_error")
-                if reported is None:
-                    return None, {
-                        "code": "input_unavailable",
-                        "message": "Producer has no authenticated completion.",
-                    }
-                if (
-                    not isinstance(reported, dict)
-                    or reported.get("code") not in ("input_unavailable", "dependency_corrupt")
-                    or not isinstance(reported.get("message"), str)
-                ):
-                    raise CompletionFileError("Producer reported malformed completion evidence.")
-                return None, reported
-            binding_event = self.db.execute(
-                """SELECT data FROM events WHERE job=? AND kind='binding' ORDER BY cursor DESC LIMIT 1""",
-                (attempt["id"],),
-            ).fetchone()
-            launch = json.loads(attempt["launch"])["payload"]
+    def _completed_product(self, attempt: sqlite3.Row) -> tuple[dict | None, str | None]:
+        """Authenticate a successful attempt's product or report its absence."""
+        outcome = json.loads(attempt["outcome"])
+        completion = outcome.get("completion")
+        if completion is None:
+            reported = outcome.get("completion_error")
+            if reported is None:
+                return None, "Producer has no authenticated completion."
             if (
-                not isinstance(completion, dict)
-                or binding_event is None
-                or not isinstance(completion.get("binding_sha256"), str)
-                or completion.get("binding_sha256")
-                != json.loads(binding_event[0]).get("binding_sha256")
-                or completion.get("producer_job_id") != attempt["id"]
-                or completion.get("project_id") != attempt["project"]
-                or completion.get("request_id") != attempt["request"]
-                or completion.get("manifest_root") != launch.get("manifest_root")
-                or completion.get("receipt") != outcome.get("receipt")
-                or completion.get("checkpoint") != outcome.get("checkpoint")
-                or not completion.get("receipt")
-                or not completion.get("checkpoint")
+                not isinstance(reported, dict)
+                or reported.get("code") not in ("input_unavailable", "dependency_corrupt")
+                or not isinstance(reported.get("message"), str)
             ):
-                raise CompletionFileError(
-                    "Completion does not match its admitted producer and terminal outcome."
+                raise CompletionFileError("Producer reported malformed completion evidence.")
+            if reported["code"] == "dependency_corrupt":
+                raise CompletionFileError(reported["message"])
+            return None, reported["message"]
+        binding_event = self.db.execute(
+            """SELECT data FROM events WHERE job=? AND kind='binding' ORDER BY cursor DESC LIMIT 1""",
+            (attempt["id"],),
+        ).fetchone()
+        launch = json.loads(attempt["launch"])["payload"]
+        if (
+            not isinstance(completion, dict)
+            or binding_event is None
+            or not isinstance(completion.get("binding_sha256"), str)
+            or completion.get("binding_sha256") != json.loads(binding_event[0]).get("binding_sha256")
+            or completion.get("producer_job_id") != attempt["id"]
+            or completion.get("project_id") != attempt["project"]
+            or completion.get("request_id") != attempt["request"]
+            or completion.get("manifest_root") != launch.get("manifest_root")
+            or completion.get("receipt") != outcome.get("receipt")
+            or completion.get("checkpoint") != outcome.get("checkpoint")
+            or not completion.get("receipt")
+            or not completion.get("checkpoint")
+        ):
+            raise CompletionFileError(
+                "Completion does not match its admitted producer and terminal outcome."
+            )
+        verify_completion_files(completion)
+        return completion, None
+
+    def _completion_candidate(
+        self, anchor: str
+    ) -> tuple[dict | None, dict | None, list[_CompletionRejection]]:
+        """Select the first authenticated success in admission order.
+
+        An earlier attempt can still produce another child whenever M1 permits its resume.
+        """
+        def exact_json(value) -> str:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+        attempts = self.db.execute(
+            """WITH RECURSIVE lineage(id) AS (
+                   VALUES (?) UNION ALL
+                   SELECT child.id FROM jobs child JOIN lineage ON child.continues=lineage.id
+               )
+               SELECT jobs.* FROM jobs JOIN lineage USING (id) ORDER BY jobs.seq""",
+            (anchor,),
+        )
+        resume_checkpoints: dict[str, str] = {}
+        pending = False
+        rejections: list[_CompletionRejection] = []
+        missing = None
+        for attempt in attempts:
+            attempt_id = attempt["id"]
+            payload = json.loads(attempt["launch"])["payload"]
+            resume = exact_json(payload.pop("resume", None))
+            if attempt_id == anchor:
+                expected_request = (attempt["project"], attempt["request"])
+                expected_payload = exact_json(payload)
+            else:
+                source_checkpoint = resume_checkpoints.get(attempt["continues"])
+                if source_checkpoint is None:
+                    continue
+                if (
+                    (attempt["project"], attempt["request"]) != expected_request
+                    or resume != source_checkpoint
+                    or exact_json(payload) != expected_payload
+                ):
+                    rejections.append(_CompletionRejection(
+                        attempt_id, "continuation",
+                        "Explicit continuation changed the producer's bound input.",
+                    ))
+                    continue
+
+            state = attempt["state"]
+            if state == "succeeded":
+                try:
+                    completion, message = self._completed_product(attempt)
+                except CompletionFileError as error:
+                    rejections.append(_CompletionRejection(attempt_id, "completion", str(error)))
+                else:
+                    if completion is not None:
+                        return {"dependency_job_id": anchor, "completion": completion}, None, rejections
+                    missing = missing or message
+            elif can_resume_attempt(state, attempt["checkpoint"], attempt["delivery"]):
+                raw = attempt["checkpoint"]
+                resume_checkpoints[attempt_id] = exact_json(
+                    json.loads(raw) if raw is not None else None
                 )
-            verify_completion_files(completion)
-            return {"dependency_job_id": anchor, "completion": completion}, None
-        except CompletionFileError as error:
-            return None, {"code": "dependency_corrupt", "message": str(error)}
+                pending = True
+            elif state in LIVE_STATES:
+                pending = True
+
+        if pending:
+            return None, None, rejections
+        if rejections:
+            return None, {
+                "code": "dependency_corrupt",
+                "message": rejections[0].message,
+            }, rejections
+        return None, {
+            "code": "input_unavailable",
+            "message": missing or "Producer ended without a resumable completion.",
+        }, rejections
+
+    def _record_completion_rejections(
+        self, job: sqlite3.Row, anchor: str, rejections: list[_CompletionRejection]
+    ) -> None:
+        for rejection in rejections:
+            existing = self.db.execute(
+                """SELECT 1 FROM events WHERE job=? AND kind='dependency_rejected'
+                   AND json_extract(data, '$.dependency_job_id')=?
+                   AND json_extract(data, '$.candidate_job_id')=?
+                   AND json_extract(data, '$.stage')=? LIMIT 1""",
+                (job["id"], anchor, rejection.candidate_job_id, rejection.stage),
+            ).fetchone()
+            if existing is None:
+                self.append(
+                    job,
+                    "dependency_rejected",
+                    {
+                        "dependency_job_id": anchor,
+                        "candidate_job_id": rejection.candidate_job_id,
+                        "stage": rejection.stage,
+                        "error": {"code": "dependency_corrupt", "message": rejection.message},
+                    },
+                )
 
     def resolve_completions(self) -> None:
         with self.db:
@@ -631,7 +699,8 @@ class Store:
                 anchor = edge["parent"]
                 if anchor not in candidates:
                     candidates[anchor] = self._completion_candidate(anchor)
-                binding, error = candidates[anchor]
+                binding, error, rejections = candidates[anchor]
+                self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:
                     self.finished(job, {"outcome": "blocked", "error": error})
                 elif binding is not None:
