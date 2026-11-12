@@ -1,7 +1,7 @@
 """Local host requests and wire records."""
 
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 type Json = None | bool | int | float | str | list[Json] | dict[str, Json]
 type JsonObject = dict[str, Json]
@@ -111,3 +111,4 @@ class JobsSnapshot(TypedDict):
     cursor: int
     oldest_cursor: int
     jobs: list[JsonObject]
+    records: NotRequired[dict[str, JsonObject]]

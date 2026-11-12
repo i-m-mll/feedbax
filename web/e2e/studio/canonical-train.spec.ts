@@ -109,3 +109,105 @@ test('Mounted saved Train runs the selected canonical row through Jobs', async (
   expect(jobs.jobs.map(({ job_id }) => job_id)).toEqual([job]);
   console.info('Mounted canonical Train', JSON.stringify({ ...evidence, refused_revision: edited!.revision }));
 });
+
+test('Saved Train compares authenticated receipts after a partial run and stopped edit', async ({ page, request }, info) => {
+  test.setTimeout(50_000);
+  const created = await request.post('/api/projects');
+  expect(created.status()).toBe(201);
+  let { snapshot } = await created.json() as StudioProjectDocument;
+  const id = snapshot.project_id;
+  const projectPath = `/api/projects/${id}`;
+  const path = `${projectPath}/train-runs`;
+  for (const file of await fixture('history-files')) {
+    const response = await request.post(`${projectPath}/files`, { data: { revision: snapshot.revision, file } });
+    expect(response.status(), await response.text()).toBe(201);
+    ({ snapshot } = await response.json() as StudioProjectDocument);
+  }
+  const table = page.getByRole('table', { name: 'Runs' });
+  const step = page.getByRole('combobox', { name: 'Train step' });
+  const runButton = page.getByRole('button', { name: 'Run', exact: true });
+  async function select(name: string) {
+    await step.selectOption(name);
+    await table.getByRole('button').first().click();
+  }
+  async function runSelected(name: string) {
+    await select(name);
+    const admission = submitted(page, path);
+    await runButton.click();
+    const response = await admission;
+    expect(response.status(), await response.text()).toBe(202);
+    const { items } = await response.json() as StudioJobSubmission;
+    expect(items).toEqual([expect.objectContaining({
+      run_key: JSON.stringify(['default', name, 'default']),
+      disposition: 'admitted',
+      job_id: expect.any(String),
+    })]);
+    return items[0].job_id!;
+  }
+  async function rows() {
+    const saved = await request.get(projectPath);
+    expect(saved.ok(), await saved.text()).toBe(true);
+    snapshot = await saved.json() as StudioProjectSnapshot;
+    const response = await request.get(`${path}?revision=${snapshot.revision}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    return (await response.json() as StudioSavedTrainRuns).rows;
+  }
+  async function trainRow() {
+    return (await rows()).find(({ key }) => key.step === 'train')!;
+  }
+  async function editNumber(label: string, value: number) {
+    const field = page.getByRole('spinbutton', { name: `Edit ${label}` });
+    const previous = snapshot.revision;
+    const refreshed = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === 'GET' && url.pathname === path &&
+        url.searchParams.get('revision') !== previous && response.ok();
+    });
+    await field.fill(String(value));
+    await field.press('Enter');
+    const plan = await (await refreshed).json() as StudioSavedTrainRuns;
+    await rows();
+    expect(snapshot.revision).toBe(plan.revision);
+    await expect(field).toHaveValue(String(value));
+    await expect(field).toBeEnabled();
+  }
+
+  await page.goto(`/?project=${encodeURIComponent(id)}`);
+  const firstJob = await runSelected('train');
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  const first = (await trainRow()).result!;
+  expect(first.job_id).toBe(firstJob);
+  await editNumber('Seed', 7);
+  await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
+  await expect(table.getByText(/Definition changed at .*seed/)).toBeVisible();
+  const stale = await trainRow();
+  expect(stale).toMatchObject({ status: 'stale', result: null, previous: first });
+  expect(stale.request_id).not.toBe(first.request_id);
+
+  await runSelected('sibling');
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  expect(await trainRow()).toMatchObject({ status: 'stale', result: null, previous: first, attempts: [] });
+
+  await select('train');
+  await editNumber('N Batches', 10000);
+  const stoppedJob = await runSelected('train');
+  const stop = await request.post('/api/jobs/stop', { data: { job_ids: [stoppedJob], mode: 'force' } });
+  expect(stop.status(), await stop.text()).toBe(202);
+  await expect.poll(async () => (await trainRow()).status).toBe('stopped');
+  expect(await trainRow()).toMatchObject({ result: null, previous: first });
+
+  await editNumber('N Batches', 2);
+  const changedJob = await runSelected('train');
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  const changed = await trainRow();
+  expect(changed.result!.job_id).toBe(changedJob);
+  expect(changed.previous).toEqual(first);
+  await page.reload();
+  await select('train');
+  await page.getByText('Compare receipts', { exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Current result' })).toContainText(changed.result!.receipt.manifest_sha256);
+  await expect(page.getByRole('region', { name: 'Previous result' })).toContainText(first.receipt.manifest_sha256);
+  const evidence = await fixture('observe-history', String(info.config.metadata.home), id, snapshot.revision);
+  expect(evidence).toMatchObject({ current: changed.result, previous: first });
+  console.info('Mounted saved Train history', JSON.stringify(evidence));
+});

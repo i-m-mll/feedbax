@@ -9,6 +9,7 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.host.completion import CompletionFileError, verify_completion_files
+from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 
 SCHEMA = """
@@ -85,6 +86,7 @@ ACTIVE = "('assigned','running','stopping')"
 TERMINAL = "('succeeded','stopped','failed','interrupted','blocked')"
 
 JOB_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
+TRAIN_REQUEST_ID = re.compile(r"train:[0-9a-f]{64}")
 JSON_COLUMNS = ("data", "phase", "progress", "checkpoint", "outcome")
 
 
@@ -320,6 +322,7 @@ class Store:
                 )
             for job in inserted:
                 self._bind_edges(job, aliases)
+            self._advance_authored_train_plan(record, results)
             response = {"id": uuid4().hex, "token": token, "record": record, "items": results}
             self.db.execute(
                 "INSERT INTO submissions VALUES (?,?,?)", (response["id"], token, dump(response))
@@ -329,6 +332,55 @@ class Store:
                 ((response["id"], project) for project in projects),
             )
         return response
+
+    def _advance_authored_train_plan(self, record: dict, results: list[dict]) -> None:
+        plan = record.get("authored_train_plan")
+        if plan is None or not any(item["job_id"] is not None for item in results):
+            return
+        command = record.get("command") or {}
+        if command.get("kind") != "canonical_train":
+            raise HostError("invalid_request", "An authored Train Plan requires canonical admission.")
+        project = require_text(record["project"], "project")
+        root = require_text(command.get("store"), "store")
+        current = plan["requests"]
+        if not isinstance(current, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) and TRAIN_REQUEST_ID.fullmatch(value)
+            for key, value in current.items()
+        ):
+            raise HostError("invalid_request", "Invalid authored Train Plan request map.")
+        for item in results:
+            if item["job_id"] is None:
+                continue
+            job = self.get(item["job_id"])
+            payload = json.loads(job["launch"])["payload"] if job is not None else {}
+            if (
+                job is None
+                or (job["project"], job["request"]) != (project, current.get(item["run_key"]))
+                or json.loads(job["data"]).get("manifest_root") != root
+                or payload.get("canonical_request") is None
+                or payload.get("manifest_root") != root
+            ):
+                raise HostError("invalid_request", "Admitted Train does not match the authored Plan.")
+        key = plan_ref_key(project, root)
+        previous = self.record_get(key)
+        requests = {row["request_id"] for row in previous["rows"].values()} if previous else set()
+        successes = {
+            request_id: {"request_id": request_id, "job_id": job_id}
+            for request_id, job_id in self.db.execute(
+                """SELECT j.request, j.id FROM jobs j
+                   WHERE j.project=? AND j.state='succeeded'
+                   AND j.request IN (SELECT value FROM json_each(?))
+                   AND json_extract(j.data, '$.manifest_root')=?
+                   AND json_extract(j.outcome, '$.completion.request_id')=j.request
+                   AND json_extract(j.outcome, '$.completion.project_id')=j.project
+                   AND json_extract(j.outcome, '$.completion.producer_job_id')=j.id
+                   AND json_extract(j.outcome, '$.completion.manifest_root')=?
+                   ORDER BY j.seq""",
+                (project, dump(sorted(requests)), root, root),
+            )
+        }
+        value = advance_plan(plan["object"], current, previous, successes)
+        self._write_record(key, value)
 
     def _require_admission_current(self, job: dict, checked_through: int | None) -> None:
         if checked_through is None:
@@ -502,8 +554,11 @@ class Store:
             cursor = max(after, self.event_head)
         return {"events": events, "cursor": cursor, "head": self.event_head, "oldest_cursor": 0}
 
-    def jobs_snapshot(self, **filters) -> dict:
-        return {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
+    def jobs_snapshot(self, *, record_keys: list[str] | None = None, **filters) -> dict:
+        snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
+        if record_keys:
+            snapshot["records"] = self.record_get_many(record_keys)
+        return snapshot
 
     def record_get_many(self, keys: list[str]) -> dict:
         return {
@@ -519,10 +574,13 @@ class Store:
 
     def record_put(self, key: str, value: dict) -> None:
         with self.db:
-            self.db.execute(
-                "INSERT INTO records VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, dump(value)),
-            )
+            self._write_record(key, value)
+
+    def _write_record(self, key: str, value: dict) -> None:
+        self.db.execute(
+            "INSERT INTO records VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, dump(value)),
+        )
 
     def mark_satisfied(self, job_id: str, edge: dict) -> None:
         with self.db:

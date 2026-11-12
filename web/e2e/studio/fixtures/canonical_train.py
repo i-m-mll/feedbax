@@ -1,9 +1,11 @@
 """Ordinary folder inputs and read-only custody evidence for the mounted Train test."""
 
+from copy import deepcopy
 import json
 from pathlib import Path
 import sys
 
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import TrainingRequestSpec
@@ -102,12 +104,50 @@ def observe(home: Path, project: str, revision: str, attempt: str):
     }
 
 
+def history_files():
+    model, task, train, _ = authored_files()
+    sibling = deepcopy(train)
+    sibling["id"] = "sibling"
+    sibling["step"]["base"]["inline"]["method_payload"]["payload"]["seed"] = 91
+    return [model, task, train, sibling]
+
+
+def observe_history(home: Path, project: str, revision: str):
+    paths = AppPaths.resolve(instance_root=home)
+    folders = ProjectFolderService(paths.web / "projects")
+    host = HostClient(paths.host)
+    service = ProjectPlanService(folders, JobService(host, new_application_registry_bundle()))
+    view = service.read(project, revision=revision)
+    history = view.history[RunKey("default", "train", "default")]
+    snapshot = host.jobs_snapshot(project=project, start_host=False)
+    jobs = {job["id"]: job for job in snapshot["jobs"]}
+    output = {}
+    for role, result in (("current", history.result), ("previous", history.previous)):
+        assert result is not None
+        job = jobs[result.job_id]
+        completion = job["outcome"]["completion"]
+        verify_bound_training_completion(completion)
+        assert completion["request_id"] == result.request_id
+        assert completion["receipt"] == result.receipt.model_dump(mode="json")
+        output[role] = result.model_dump(mode="json")
+    ref = view.jobs.plan_ref
+    assert ref is not None
+    store = ImmutableArtifactBlobProvider(view.settled.store_path)
+    output["admitted_plan"] = json.loads(store.get_object(ContentObjectRef.model_validate(ref["plan"])))
+    return output
+
+
 if __name__ == "__main__":
     action, *arguments = sys.argv[1:]
     if action == "files" and not arguments:
         print(json.dumps(authored_files()))
+    elif action == "history-files" and not arguments:
+        print(json.dumps(history_files()))
     elif action == "observe":
         home, project, revision, attempt = arguments
         print(json.dumps(observe(Path(home), project, revision, attempt)))
+    elif action == "observe-history":
+        home, project, revision = arguments
+        print(json.dumps(observe_history(Path(home), project, revision)))
     else:
         raise ValueError(f"Unknown canonical Train fixture action {action!r}")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
@@ -13,6 +13,7 @@ from feedbax.contracts.run_composition import FlattenedIntent
 
 if TYPE_CHECKING:
     from feedbax.contracts.migrations import SpecSchemaRegistry
+    from feedbax.contracts.request_identity import DecodedRequest
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,22 @@ def layered_semantic_diff(
     result: list[SemanticDifference] = []
     _diff(left_payload, right_payload, "", left_attr, right_attr, result)
     return result
+
+
+def first_request_change(left: DecodedRequest, right: DecodedRequest) -> SemanticDifference:
+    """Describe the first changed authored field in the two verified definitions."""
+    differences = layered_semantic_diff(
+        left.spec.model_dump(mode="json"), right.spec.model_dump(mode="json"),
+    )
+    if differences:
+        return replace(differences[0], path=f"payload.{differences[0].path}")
+    if left.inputs != right.inputs:
+        return SemanticDifference(
+            "inputs",
+            {role: [member.model_dump(mode="json") for member in group] for role, group in left.inputs.items()},
+            {role: [member.model_dump(mode="json") for member in group] for role, group in right.inputs.items()},
+        )
+    return SemanticDifference("request_id", left.id, right.id)
 
 
 def detect_near_duplicate_lanes(

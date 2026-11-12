@@ -149,6 +149,7 @@ class HostClient:
         job_ids: Sequence[str] = (),
         include_launch: bool = False,
         start_host: bool = True,
+        record_keys: Sequence[str] = (),
     ) -> JobsSnapshot:
         return cast(
             JobsSnapshot,
@@ -160,6 +161,7 @@ class HostClient:
                 job_id=job_id,
                 job_ids=list(job_ids),
                 include_launch=include_launch,
+                **({"record_keys": list(record_keys)} if record_keys else {}),
             ),
         )
 

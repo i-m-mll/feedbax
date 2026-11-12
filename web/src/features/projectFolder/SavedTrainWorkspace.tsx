@@ -22,9 +22,43 @@ function runView(row: SavedRow): PlanRunView {
   const attempt = row.attempts.at(-1);
   return {
     id: rowId(row), label: row.label, variant: row.key.variant, values: {},
-    status: attempt?.status ?? 'not_run', reason: attempt?.reason ?? undefined,
+    status: row.status, reason: row.reason ?? undefined,
     progress: attempt?.progress ?? undefined,
   };
+}
+
+function TrainResults({ row }: { row: SavedRow }) {
+  const results = [
+    ...(row.result ? [{ label: 'Current result', result: row.result }] : []),
+    ...(row.previous ? [{ label: 'Previous result', result: row.previous }] : []),
+  ];
+  if (!results.length) return null;
+  return (
+    <details className="mt-3 rounded border border-slate-200 p-3 text-sm">
+      <summary className="cursor-pointer font-medium">
+        {results.length === 2 ? 'Compare receipts' : results[0].label}
+      </summary>
+      {row.change && (
+        <p className="mt-2 break-all">
+          <code>{row.change.path}</code>{' '}
+          <code>{JSON.stringify(row.change.before)}</code> → <code>{JSON.stringify(row.change.after)}</code>
+        </p>
+      )}
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+        {results.map(({ label, result }) => (
+          <section key={label} aria-label={label} className="min-w-0">
+            <h3 className="font-medium">{label}</h3>
+            <dl className="space-y-1">
+              <div><dt>Request</dt><dd className="break-all"><code>{result.request_id}</code></dd></div>
+              <div><dt>Receipt</dt><dd className="break-all"><code>{result.receipt.manifest_id}</code></dd></div>
+              <div><dt>SHA-256</dt><dd className="break-all"><code>{result.receipt.manifest_sha256}</code></dd></div>
+              {result.progress && <div><dt>Completed updates</dt><dd>{result.progress.completed_updates}</dd></div>}
+            </dl>
+          </section>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 export default function SavedTrainWorkspace({ projectId }: { projectId: string }) {
@@ -114,6 +148,8 @@ function SavedTrainStep({ editor, step, rows, view, revision, ready, reportError
   const [busy, setBusy] = useState(false);
   const submission = useRef<{ intent: string; token: string } | undefined>(undefined);
   const jobs = useStudioJobActions();
+  const selected = selectedRuns(step, selection.selection);
+  const focusedRow = selected.length === 1 ? rows.find((row) => rowId(row) === selected[0].id) : undefined;
 
   async function run(selected: PipelineSelection) {
     if (busy || !ready || !revision) return;
@@ -141,11 +177,14 @@ function SavedTrainStep({ editor, step, rows, view, revision, ready, reportError
   }
 
   return (
-    <StudioRuns
-      plan={view} step={step} state={selection} onSelectionChange={setSelection}
-      region={{ kind: 'result', missing: [] }}
-      definition={<StudioTrainAuthoringForm editor={editor} stepId={step.id} />}
-      commands={[{ name: 'run', enabled: ready && !busy, perform: run }]}
-    />
+    <>
+      <StudioRuns
+        plan={view} step={step} state={selection} onSelectionChange={setSelection}
+        region={{ kind: 'result', missing: [] }}
+        definition={<StudioTrainAuthoringForm editor={editor} stepId={step.id} />}
+        commands={[{ name: 'run', enabled: ready && !busy, perform: run }]}
+      />
+      {ready && focusedRow && <TrainResults key={rowId(focusedRow)} row={focusedRow} />}
+    </>
   );
 }

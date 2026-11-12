@@ -102,11 +102,29 @@ class StudioSavedTrainKey(StrictModel):
     row: str
 
 
+class StudioSavedTrainResult(StrictModel):
+    request_id: str
+    job_id: str
+    receipt: JobReceipt
+    progress: JobProgress | None
+
+
+class StudioSavedTrainChange(StrictModel):
+    path: str
+    before: JsonValue
+    after: JsonValue
+
+
 class StudioSavedTrainRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     request_id: str
     attempts: list[StudioSavedTrainAttempt]
+    status: JobStatus
+    reason: str | None
+    result: StudioSavedTrainResult | None
+    previous: StudioSavedTrainResult | None
+    change: StudioSavedTrainChange | None
 
 
 class StudioSavedTrainRuns(StrictModel):

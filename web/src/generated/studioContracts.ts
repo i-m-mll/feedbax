@@ -126,10 +126,23 @@ export interface StudioSavedTrainAttempt {
   successful_receipt: JobReceipt | null;
 }
 
+export interface StudioSavedTrainChange {
+  path: string;
+  before: JsonValue;
+  after: JsonValue;
+}
+
 export interface StudioSavedTrainKey {
   variant: string;
   step: string;
   row: string;
+}
+
+export interface StudioSavedTrainResult {
+  request_id: string;
+  job_id: string;
+  receipt: JobReceipt;
+  progress: JobProgress | null;
 }
 
 export interface StudioSavedTrainRow {
@@ -137,6 +150,11 @@ export interface StudioSavedTrainRow {
   label: string;
   request_id: string;
   attempts: StudioSavedTrainAttempt[];
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  reason: string | null;
+  result: StudioSavedTrainResult | null;
+  previous: StudioSavedTrainResult | null;
+  change: StudioSavedTrainChange | null;
 }
 
 export interface StudioSavedTrainRunRequest {
@@ -3010,6 +3028,16 @@ export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> =
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainAttempt>;
 
+export const StudioSavedTrainChangeSchema: z.ZodType<StudioSavedTrainChange> = z.lazy(() =>
+  z
+    .object({
+      "path": z.string(),
+      "before": jsonValueSchema,
+      "after": jsonValueSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainChange>;
+
 export const StudioSavedTrainKeySchema: z.ZodType<StudioSavedTrainKey> = z.lazy(() =>
   z
     .object({
@@ -3020,6 +3048,17 @@ export const StudioSavedTrainKeySchema: z.ZodType<StudioSavedTrainKey> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainKey>;
 
+export const StudioSavedTrainResultSchema: z.ZodType<StudioSavedTrainResult> = z.lazy(() =>
+  z
+    .object({
+      "request_id": z.string(),
+      "job_id": z.string(),
+      "receipt": JobReceiptSchema,
+      "progress": JobProgressSchema.nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainResult>;
+
 export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(() =>
   z
     .object({
@@ -3027,6 +3066,11 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
       "label": z.string(),
       "request_id": z.string(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "reason": z.string().nullable(),
+      "result": StudioSavedTrainResultSchema.nullable(),
+      "previous": StudioSavedTrainResultSchema.nullable(),
+      "change": StudioSavedTrainChangeSchema.nullable(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRow>;
@@ -7244,7 +7288,9 @@ export const contractSchemas = {
   StudioJobSubmission: StudioJobSubmissionSchema,
   StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
   StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
+  StudioSavedTrainChange: StudioSavedTrainChangeSchema,
   StudioSavedTrainKey: StudioSavedTrainKeySchema,
+  StudioSavedTrainResult: StudioSavedTrainResultSchema,
   StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
@@ -7342,7 +7388,9 @@ export interface ContractTypeMap {
   StudioJobSubmission: StudioJobSubmission;
   StudioJobSubmissionRequest: StudioJobSubmissionRequest;
   StudioSavedTrainAttempt: StudioSavedTrainAttempt;
+  StudioSavedTrainChange: StudioSavedTrainChange;
   StudioSavedTrainKey: StudioSavedTrainKey;
+  StudioSavedTrainResult: StudioSavedTrainResult;
   StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedTrainRuns: StudioSavedTrainRuns;

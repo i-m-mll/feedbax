@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections.abc import Collection, Mapping, Sequence
@@ -11,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from feedbax._secure_fs import (
@@ -22,7 +21,8 @@ from feedbax._secure_fs import (
     recheck_directory_chain,
 )
 from feedbax.contracts.base import default_manifest_root
-from feedbax.contracts.intent_diff import layered_semantic_diff
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobError,
     JobOutcome,
@@ -55,6 +55,7 @@ from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, HostClient, HostError, Job, Launch
+from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -106,6 +107,7 @@ class PlanJobAttempt:
     progress: JobProgress | None
     reason: str | None
     successful_receipt: JobReceipt | None
+    binding_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,7 @@ class PlanJobAttempts:
 
     cursor: int
     by_request: Mapping[RequestId, tuple[PlanJobAttempt, ...]]
+    plan_ref: AuthoredTrainPlanRef | None = None
 
 
 class JobService:
@@ -236,7 +239,7 @@ class JobService:
     ) -> StudioJobSubmission:
         """Admit selected independent Train rows from a server-issued saved Plan."""
         selected = {
-            json.dumps((key.variant, key.step, key.row), separators=(",", ":")): key
+            plan_run_key(key.variant, key.step, key.row): key
             for key in run_keys
         }
         if not selected or not token:
@@ -300,9 +303,27 @@ class JobService:
                 items.append(self._training_item(
                     project, run.request_id, spec, data, current.store_path, canonical_request=binding
                 ))
-            admitted = self._admit(token, items, {
+            record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
-            })
+            }
+            if runs:
+                requests = {
+                    plan_run_key(key.variant, key.step, key.row): run.request_id
+                    for key, run in after.items()
+                    if run.kind == "train"
+                }
+                plan = store.store_rooted_object(
+                    canonical_json_v2_bytes({
+                        "revision": current.revision,
+                        "semantic_root": current.semantic_root,
+                        "requests": requests,
+                    }),
+                    namespace="studio-train-plan",
+                )
+                record["authored_train_plan"] = {
+                    "object": plan.model_dump(mode="json"), "requests": requests,
+                }
+            admitted = self._admit(token, items, record)
         return self._submission_for_action(
             admitted, project=project, continues=None, command=command
         )
@@ -423,9 +444,15 @@ class JobService:
         self, *, project: str, store: Path, requests: Collection[RequestId]
     ) -> PlanJobAttempts:
         """Read Train attempt facts at the settled store locator from one Host snapshot."""
-        snapshot = self.host.jobs_snapshot(project=project, start_host=False)
-        wanted = frozenset(requests)
         manifest_root = str(store)
+        key = plan_ref_key(project, manifest_root)
+        snapshot = self.host.jobs_snapshot(project=project, start_host=False, record_keys=(key,))
+        plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
+        wanted = set(requests)
+        if plan_ref is not None:
+            for row in plan_ref["rows"].values():
+                wanted.add(row["request_id"])
+                wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
         attempts: dict[RequestId, list[PlanJobAttempt]] = {}
         for job in snapshot["jobs"]:
             request_id = job["request"]
@@ -433,6 +460,17 @@ class JobService:
                 continue
             succeeded = job["state"] == "succeeded"
             receipt = _verified_training_receipt(job, store) if succeeded else None
+            completion = (job.get("outcome") or {}).get("completion") or {}
+            binding_sha256 = (
+                completion.get("binding_sha256")
+                if receipt is not None
+                and completion.get("request_id") == request_id
+                and completion.get("project_id") == project
+                and completion.get("producer_job_id") == job["id"]
+                and completion.get("manifest_root") == manifest_root
+                and completion.get("receipt") == receipt.model_dump(mode="json")
+                else None
+            )
             progress = _job_progress(job)
             status, reason = _job_status(
                 job, progress=progress, receipt_intact=not succeeded or receipt is not None
@@ -440,12 +478,13 @@ class JobService:
             attempts.setdefault(request_id, []).append(
                 PlanJobAttempt(
                     job["id"], status, (job.get("phase") or {}).get("phase"),
-                    progress, reason, receipt,
+                    progress, reason, receipt, binding_sha256,
                 )
             )
         return PlanJobAttempts(
             snapshot["cursor"],
             MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
+            plan_ref,
         )
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:
@@ -661,12 +700,7 @@ class JobService:
 def _changed_train_path(before: ProjectPlan, old: str, after: ProjectPlan, new: str) -> str:
     earlier = decode_request(before.requests[old], before.documents.__getitem__)
     current = decode_request(after.requests[new], after.documents.__getitem__)
-    differences = layered_semantic_diff(
-        earlier.spec.model_dump(mode="json"), current.spec.model_dump(mode="json")
-    )
-    if differences:
-        return f"payload.{differences[0].path}"
-    return "inputs" if earlier.inputs != current.inputs else "request_id"
+    return first_request_change(earlier, current).path
 
 
 def _rejected(run_key: str, reason: str) -> AdmissionItem:
@@ -797,6 +831,17 @@ def _job_status(
     if state == "queued":
         return JobStatus.QUEUED, "Waiting for a training slot."
     return JobStatus(state), reason
+
+
+def saved_train_status(
+    attempts: Sequence[PlanJobAttempt], *, changed_path: str | None
+) -> tuple[JobStatus, str | None]:
+    if attempts:
+        latest = attempts[-1]
+        return latest.status, latest.reason
+    if changed_path is not None:
+        return JobStatus.STALE, f"Definition changed at {changed_path}."
+    return JobStatus.NOT_RUN, None
 
 
 def _project_activity(

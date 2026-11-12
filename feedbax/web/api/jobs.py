@@ -83,6 +83,11 @@ def saved_train_runs(
                         StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
                         for attempt in view.attempts_by_run.get(run.key, ())
                     ],
+                    status=view.history[run.key].status,
+                    reason=view.history[run.key].reason,
+                    result=view.history[run.key].result,
+                    previous=view.history[run.key].previous,
+                    change=view.history[run.key].change,
                 )
                 for run in view.settled.plan.runs
                 if run.kind == "train"
