@@ -70,6 +70,8 @@ function desktopResources(): Plugin {
 
 export default defineConfig({
   cacheDir: process.env.FEEDBAX_VITE_CACHE_DIR,
+  // The standalone folder controller can load before a shell imports it.
+  optimizeDeps: { include: ['immer'] },
   test: {
     // Transform Zod's ESM re-exports in Vitest instead of loading them through Bun's SSR interop.
     server: { deps: { inline: ['zod'] } },

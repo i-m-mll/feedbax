@@ -2188,6 +2188,322 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export type AuthoredFileAddress = {
+  "kind": "document" | "step" | "variant";
+  "id": string;
+};
+
+export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis;
+
+export type AxisGroup = {
+  "axes": Array<string>;
+  "mode": "cross" | "zip";
+};
+
+export type AxisValue = {
+  "patches"?: Record<string, PatchValue | null>;
+  "label"?: string | null;
+  "value"?: JsonValue;
+};
+
+export type BarrierCheckpoint = {
+  "barrier": string;
+};
+
+export type Base = InlineBase | DocumentReference | StepBase | RunBase | ExternalBase;
+
+export type BatchCheckpoint = {
+  "at": number;
+};
+
+export type Best = {
+  "by": string;
+  "k": number;
+  "order"?: "min" | "max";
+  "per"?: Array<string>;
+};
+
+export type BestCheckpoint = {
+  "best_by": string;
+};
+
+export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint;
+
+export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
+
+export type Document = {
+  "schema": string;
+  "payload": JsonValue;
+};
+
+export type DocumentPresentation = {
+  "positions"?: Record<string, PresentationPosition>;
+  "camera"?: PresentationCamera | null;
+};
+
+export type DocumentReference = {
+  "document": string;
+  "pointer"?: Pointer | null;
+};
+
+export type EditPath = string;
+
+export type ExternalBase = {
+  "path": string;
+  "sha256": Sha256;
+  "pointer"?: Pointer | null;
+};
+
+export type GroupCombination = {
+  "groups": Record<string, AxisGroup>;
+};
+
+export type InlineBase = {
+  "inline": Payload;
+};
+
+export type InputAxis = {
+  "input": string;
+};
+
+export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
+
+export type ListedAxis = {
+  "path": PatchPath;
+  "values": Array<JsonValue>;
+};
+
+export type ManualCombination = {
+  "manual": Array<Record<string, string>>;
+};
+
+export type MatrixCompositionDelta = {
+  "layer_id": string;
+  "patches"?: Array<OverridePatch>;
+  "acknowledges_ancestor_paths"?: Array<string>;
+  "schema_id"?: string | null;
+  "schema_version"?: string | null;
+};
+
+export type NamedAxis = {
+  "values": Record<string, AxisValue | null>;
+};
+
+export type NamedSubset = {
+  "subset": string;
+};
+
+export type OmittedReference = {
+  "not_applicable": string;
+};
+
+export type OverridePatch = {
+  "path": string;
+  "value"?: JsonValue;
+  "op"?: "add" | "replace" | "remove";
+};
+
+export type PatchPath = string;
+
+export type PatchValue = SetValue | RemoveValue;
+
+export type Payload = Record<string, JsonValue>;
+
+export type Pointer = string;
+
+export type PresentationCamera = {
+  "x": number;
+  "y": number;
+  "zoom": number;
+};
+
+export type PresentationDocument = {
+  "documents"?: Record<string, DocumentPresentation>;
+  "steps"?: Record<string, StepPresentation>;
+  "visible_groups"?: Array<string>;
+};
+
+export type PresentationPosition = {
+  "x": number;
+  "y": number;
+};
+
+export type Project = {
+  "documents"?: Record<string, Document>;
+  "steps"?: Record<string, Step>;
+  "sweep"?: Sweep | null;
+};
+
+export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
+
+export type RangeAxis = {
+  "path": PatchPath;
+  "range": RangeValues;
+};
+
+export type RangeValues = {
+  "start": number;
+  "stop": number;
+  "count": number;
+  "scale"?: "linear" | "log";
+};
+
+export type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference;
+
+export type RemoveProjectValue = {
+  "op": "remove";
+  "path": EditPath;
+};
+
+export type RemoveValue = {
+  "op": "remove";
+};
+
+export type Row = {
+  "patches"?: Record<string, PatchValue | null>;
+  "label"?: string | null;
+  "value"?: JsonValue;
+  "from"?: string | null;
+};
+
+export type RunBase = {
+  "run": string;
+};
+
+export type RunReference = {
+  "run": string;
+};
+
+export type SampleValues = {
+  "distribution": string;
+  "count": number;
+  "seed": number;
+};
+
+export type SampledAxis = {
+  "path": PatchPath;
+  "sampler": SampleValues;
+  "draws"?: Record<string, JsonValue> | null;
+};
+
+export type SetProjectValue = {
+  "op": "add" | "replace";
+  "path": EditPath;
+  "value": JsonValue;
+};
+
+export type SetValue = {
+  "value": JsonValue;
+  "op"?: "add" | "replace";
+};
+
+export type Sha256 = string;
+
+export type Step = {
+  "kind": StepKind;
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StepBase = {
+  "step": string;
+  "row"?: string | null;
+};
+
+export type StepKind = "train" | "evaluate" | "analyze" | "report";
+
+export type StepNote = {
+  "issue"?: string | null;
+  "reason"?: string | null;
+  "replaces"?: string | null;
+};
+
+export type StepPresentation = {
+  "sweep_order"?: Array<string>;
+  "folded_sweep_id"?: string | null;
+};
+
+export type StepReference = {
+  "step": string;
+  "where"?: SubsetTerms | NamedSubset | null;
+  "row"?: string | null;
+  "variants"?: "all" | Array<string> | null;
+  "checkpoint"?: CheckpointRule | null;
+};
+
+export type StoreSubset = {
+  "axes"?: Record<string, Array<string>>;
+  "rows"?: Array<string>;
+  "best"?: Best | null;
+  "when"?: When | null;
+  "query": ManifestPredicate;
+};
+
+export type StudioAuthoredFileRevision = {
+  "address": AuthoredFileAddress;
+  "revision": Sha256;
+};
+
+export type StudioPresentationWrite = {
+  "revision": Sha256;
+  "presentation": PresentationDocument;
+};
+
+export type StudioProjectPatch = {
+  "revision": Sha256;
+  "address": AuthoredFileAddress;
+  "patches": Array<ProjectValueEdit>;
+};
+
+export type StudioProjectRevision = {
+  "project_id": string;
+  "revision": Sha256;
+  "presentation_revision": Sha256;
+};
+
+export type StudioProjectSnapshot = {
+  "project_id": string;
+  "revision": Sha256;
+  "presentation_revision": Sha256;
+  "project": Project;
+  "semantic_root": Sha256;
+  "presentation": PresentationDocument | null;
+  "presentation_error"?: "unreadable_presentation" | null;
+  "file_revisions": Array<StudioAuthoredFileRevision>;
+};
+
+export type SubsetTerms = {
+  "axes"?: Record<string, Array<string>>;
+  "rows"?: Array<string>;
+  "best"?: Best | null;
+  "when"?: When | null;
+};
+
+export type Sweep = {
+  "axes"?: Record<string, Axis | null>;
+  "rows"?: Record<string, Row | null>;
+  "exceptions"?: Record<string, SweepException | null>;
+  "combination"?: Combination | null;
+  "inherit_rows"?: boolean;
+};
+
+export type SweepException = {
+  "patches"?: Record<string, PatchValue | null>;
+  "where"?: SubsetTerms | null;
+  "exclude"?: boolean;
+};
+
+export type When = {
+  "metric": string;
+  "op": "lt" | "le" | "eq" | "ne" | "ge" | "gt";
+  "value": number;
+};
+
 export const acausalReportDefaults = {
   "AcausalGraphSpec": {
     "schema_id": "feedbax.spec.acausal_graph",
@@ -6015,6 +6331,452 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
+export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<AuthoredFileAddress>;
+
+export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
+  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema])
+) as unknown as z.ZodType<Axis>;
+
+export const AxisGroupSchema: z.ZodType<AxisGroup> = z.lazy(() =>
+  z.object({
+    "axes": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+    "mode": z.union([z.literal("cross"), z.literal("zip")]),
+  }).strict()
+) as unknown as z.ZodType<AxisGroup>;
+
+export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
+  z.object({
+    "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "value": jsonValueSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<AxisValue>;
+
+export const BarrierCheckpointSchema: z.ZodType<BarrierCheckpoint> = z.lazy(() =>
+  z.object({
+    "barrier": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<BarrierCheckpoint>;
+
+export const BaseSchema: z.ZodType<Base> = z.lazy(() =>
+  z.union([InlineBaseSchema, DocumentReferenceSchema, StepBaseSchema, RunBaseSchema, ExternalBaseSchema])
+) as unknown as z.ZodType<Base>;
+
+export const BatchCheckpointSchema: z.ZodType<BatchCheckpoint> = z.lazy(() =>
+  z.object({
+    "at": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<BatchCheckpoint>;
+
+export const BestSchema: z.ZodType<Best> = z.lazy(() =>
+  z.object({
+    "by": z.string().min(1),
+    "k": z.number().int().safe().min(1),
+    "order": z.union([z.literal("min"), z.literal("max")]).optional(),
+    "per": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<Best>;
+
+export const BestCheckpointSchema: z.ZodType<BestCheckpoint> = z.lazy(() =>
+  z.object({
+    "best_by": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<BestCheckpoint>;
+
+export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema])
+) as unknown as z.ZodType<CheckpointRule>;
+
+export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
+  z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
+) as unknown as z.ZodType<Combination>;
+
+export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
+  z.object({
+    "schema": z.string().min(1),
+    "payload": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<Document>;
+
+export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.lazy(() =>
+  z.object({
+    "positions": z.record(z.string(), PresentationPositionSchema).optional(),
+    "camera": z.union([PresentationCameraSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DocumentPresentation>;
+
+export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =>
+  z.object({
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "pointer": z.union([PointerSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DocumentReference>;
+
+export const EditPathSchema: z.ZodType<EditPath> = z.lazy(() =>
+  z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
+) as unknown as z.ZodType<EditPath>;
+
+export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
+  z.object({
+    "path": z.string().min(1),
+    "sha256": Sha256Schema,
+    "pointer": z.union([PointerSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ExternalBase>;
+
+export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
+  z.object({
+    "groups": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), AxisGroupSchema),
+  }).strict()
+) as unknown as z.ZodType<GroupCombination>;
+
+export const InlineBaseSchema: z.ZodType<InlineBase> = z.lazy(() =>
+  z.object({
+    "inline": PayloadSchema,
+  }).strict()
+) as unknown as z.ZodType<InlineBase>;
+
+export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
+  z.object({
+    "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<InputAxis>;
+
+export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
+  z.union([ReferenceSchema, z.array(ReferenceSchema), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), ReferenceSchema)])
+) as unknown as z.ZodType<InputBinding>;
+
+export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
+  z.object({
+    "path": PatchPathSchema,
+    "values": z.array(jsonValueSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<ListedAxis>;
+
+export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =>
+  z.object({
+    "manual": z.array(z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.string().min(1))),
+  }).strict()
+) as unknown as z.ZodType<ManualCombination>;
+
+export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z.lazy(() =>
+  z.object({
+    "layer_id": z.string(),
+    "patches": z.array(OverridePatchSchema).optional(),
+    "acknowledges_ancestor_paths": z.array(z.string()).optional(),
+    "schema_id": z.union([z.string(), z.null()]).optional(),
+    "schema_version": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<MatrixCompositionDelta>;
+
+export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
+  z.object({
+    "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
+  }).strict()
+) as unknown as z.ZodType<NamedAxis>;
+
+export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
+  z.object({
+    "subset": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<NamedSubset>;
+
+export const OmittedReferenceSchema: z.ZodType<OmittedReference> = z.lazy(() =>
+  z.object({
+    "not_applicable": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<OmittedReference>;
+
+export const OverridePatchSchema: z.ZodType<OverridePatch> = z.lazy(() =>
+  z.object({
+    "path": z.string(),
+    "value": jsonValueSchema.optional(),
+    "op": z.union([z.literal("add"), z.literal("replace"), z.literal("remove")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<OverridePatch>;
+
+export const PatchPathSchema: z.ZodType<PatchPath> = z.lazy(() =>
+  z.string().regex(new RegExp("^[^.]+(?:\\.[^.]+)*$"))
+) as unknown as z.ZodType<PatchPath>;
+
+export const PatchValueSchema: z.ZodType<PatchValue> = z.lazy(() =>
+  z.union([SetValueSchema, RemoveValueSchema])
+) as unknown as z.ZodType<PatchValue>;
+
+export const PayloadSchema: z.ZodType<Payload> = z.lazy(() =>
+  z.record(z.string(), jsonValueSchema)
+) as unknown as z.ZodType<Payload>;
+
+export const PointerSchema: z.ZodType<Pointer> = z.lazy(() =>
+  z.string().regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
+) as unknown as z.ZodType<Pointer>;
+
+export const PresentationCameraSchema: z.ZodType<PresentationCamera> = z.lazy(() =>
+  z.object({
+    "x": z.number().finite(),
+    "y": z.number().finite(),
+    "zoom": z.number().finite().gt(0),
+  }).strict()
+) as unknown as z.ZodType<PresentationCamera>;
+
+export const PresentationDocumentSchema: z.ZodType<PresentationDocument> = z.lazy(() =>
+  z.object({
+    "documents": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentPresentationSchema).optional(),
+    "steps": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StepPresentationSchema).optional(),
+    "visible_groups": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<PresentationDocument>;
+
+export const PresentationPositionSchema: z.ZodType<PresentationPosition> = z.lazy(() =>
+  z.object({
+    "x": z.number().finite(),
+    "y": z.number().finite(),
+  }).strict()
+) as unknown as z.ZodType<PresentationPosition>;
+
+export const ProjectSchema: z.ZodType<Project> = z.lazy(() =>
+  z.object({
+    "documents": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentSchema).optional(),
+    "steps": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StepSchema).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Project>;
+
+export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema])
+) as unknown as z.ZodType<ProjectValueEdit>;
+
+export const RangeAxisSchema: z.ZodType<RangeAxis> = z.lazy(() =>
+  z.object({
+    "path": PatchPathSchema,
+    "range": RangeValuesSchema,
+  }).strict()
+) as unknown as z.ZodType<RangeAxis>;
+
+export const RangeValuesSchema: z.ZodType<RangeValues> = z.lazy(() =>
+  z.object({
+    "start": z.number().finite(),
+    "stop": z.number().finite(),
+    "count": z.number().int().safe().min(1),
+    "scale": z.union([z.literal("linear"), z.literal("log")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<RangeValues>;
+
+export const ReferenceSchema: z.ZodType<Reference> = z.lazy(() =>
+  z.union([StepReferenceSchema, RunReferenceSchema, StoreSubsetSchema, NamedSubsetSchema, OmittedReferenceSchema])
+) as unknown as z.ZodType<Reference>;
+
+export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+    "path": EditPathSchema,
+  }).strict()
+) as unknown as z.ZodType<RemoveProjectValue>;
+
+export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+  }).strict()
+) as unknown as z.ZodType<RemoveValue>;
+
+export const RowSchema: z.ZodType<Row> = z.lazy(() =>
+  z.object({
+    "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "value": jsonValueSchema.optional(),
+    "from": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Row>;
+
+export const RunBaseSchema: z.ZodType<RunBase> = z.lazy(() =>
+  z.object({
+    "run": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<RunBase>;
+
+export const RunReferenceSchema: z.ZodType<RunReference> = z.lazy(() =>
+  z.object({
+    "run": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<RunReference>;
+
+export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
+  z.object({
+    "distribution": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "count": z.number().int().safe().min(1),
+    "seed": z.number().int().safe(),
+  }).strict()
+) as unknown as z.ZodType<SampleValues>;
+
+export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
+  z.object({
+    "path": PatchPathSchema,
+    "sampler": SampleValuesSchema,
+    "draws": z.union([z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), jsonValueSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SampledAxis>;
+
+export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
+  z.object({
+    "op": z.union([z.literal("add"), z.literal("replace")]),
+    "path": EditPathSchema,
+    "value": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<SetProjectValue>;
+
+export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
+  z.object({
+    "value": jsonValueSchema,
+    "op": z.union([z.literal("add"), z.literal("replace")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SetValue>;
+
+export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
+  z.string().regex(new RegExp("^[a-f0-9]{64}$"))
+) as unknown as z.ZodType<Sha256>;
+
+export const StepSchema: z.ZodType<Step> = z.lazy(() =>
+  z.object({
+    "kind": StepKindSchema,
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Step>;
+
+export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
+  z.object({
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepBase>;
+
+export const StepKindSchema: z.ZodType<StepKind> = z.lazy(() =>
+  z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("report")])
+) as unknown as z.ZodType<StepKind>;
+
+export const StepNoteSchema: z.ZodType<StepNote> = z.lazy(() =>
+  z.object({
+    "issue": z.union([z.string(), z.null()]).optional(),
+    "reason": z.union([z.string(), z.null()]).optional(),
+    "replaces": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepNote>;
+
+export const StepPresentationSchema: z.ZodType<StepPresentation> = z.lazy(() =>
+  z.object({
+    "sweep_order": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+    "folded_sweep_id": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepPresentation>;
+
+export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
+  z.object({
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "where": z.union([SubsetTermsSchema, NamedSubsetSchema, z.null()]).optional(),
+    "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
+    "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
+    "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepReference>;
+
+export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+    "best": z.union([BestSchema, z.null()]).optional(),
+    "when": z.union([WhenSchema, z.null()]).optional(),
+    "query": ManifestPredicateSchema,
+  }).strict()
+) as unknown as z.ZodType<StoreSubset>;
+
+export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevision> = z.lazy(() =>
+  z.object({
+    "address": AuthoredFileAddressSchema,
+    "revision": Sha256Schema,
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredFileRevision>;
+
+export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "presentation": PresentationDocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioPresentationWrite>;
+
+export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "address": AuthoredFileAddressSchema,
+    "patches": z.array(ProjectValueEditSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectPatch>;
+
+export const StudioProjectRevisionSchema: z.ZodType<StudioProjectRevision> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "revision": Sha256Schema,
+    "presentation_revision": Sha256Schema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectRevision>;
+
+export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "revision": Sha256Schema,
+    "presentation_revision": Sha256Schema,
+    "project": ProjectSchema,
+    "semantic_root": Sha256Schema,
+    "presentation": z.union([PresentationDocumentSchema, z.null()]),
+    "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
+    "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectSnapshot>;
+
+export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+    "best": z.union([BestSchema, z.null()]).optional(),
+    "when": z.union([WhenSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SubsetTerms>;
+
+export const SweepSchema: z.ZodType<Sweep> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisSchema, z.null()])).optional(),
+    "rows": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([RowSchema, z.null()])).optional(),
+    "exceptions": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([SweepExceptionSchema, z.null()])).optional(),
+    "combination": z.union([CombinationSchema, z.null()]).optional(),
+    "inherit_rows": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<Sweep>;
+
+export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
+  z.object({
+    "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "where": z.union([SubsetTermsSchema, z.null()]).optional(),
+    "exclude": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<SweepException>;
+
+export const WhenSchema: z.ZodType<When> = z.lazy(() =>
+  z.object({
+    "metric": z.string().min(1),
+    "op": z.union([z.literal("lt"), z.literal("le"), z.literal("eq"), z.literal("ne"), z.literal("ge"), z.literal("gt")]),
+    "value": z.number().finite(),
+  }).strict()
+) as unknown as z.ZodType<When>;
+
 export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingStoppedEvent | TrainingErrorEvent | TrainingResyncEvent;
 
 export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingStoppedEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
@@ -6042,6 +6804,15 @@ export const contractSchemas = {
   StudioRunPreviewRequest: StudioRunPreviewRequestSchema,
   StudioRunSelection: StudioRunSelectionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
+  AuthoredFileAddress: AuthoredFileAddressSchema,
+  RemoveProjectValue: RemoveProjectValueSchema,
+  SetProjectValue: SetProjectValueSchema,
+  StudioAuthoredFileRevision: StudioAuthoredFileRevisionSchema,
+  StudioPresentationWrite: StudioPresentationWriteSchema,
+  StudioProjectPatch: StudioProjectPatchSchema,
+  StudioProjectRevision: StudioProjectRevisionSchema,
+  StudioProjectSnapshot: StudioProjectSnapshotSchema,
+  ProjectValueEdit: ProjectValueEditSchema,
   GraphListResponse: GraphListResponseSchema,
   GraphCreateResponse: GraphCreateResponseSchema,
   GraphUpdateResponse: GraphUpdateResponseSchema,
@@ -6118,6 +6889,15 @@ export interface ContractTypeMap {
   StudioRunPreviewRequest: StudioRunPreviewRequest;
   StudioRunSelection: StudioRunSelection;
   StudioSubmissionItem: StudioSubmissionItem;
+  AuthoredFileAddress: AuthoredFileAddress;
+  RemoveProjectValue: RemoveProjectValue;
+  SetProjectValue: SetProjectValue;
+  StudioAuthoredFileRevision: StudioAuthoredFileRevision;
+  StudioPresentationWrite: StudioPresentationWrite;
+  StudioProjectPatch: StudioProjectPatch;
+  StudioProjectRevision: StudioProjectRevision;
+  StudioProjectSnapshot: StudioProjectSnapshot;
+  ProjectValueEdit: ProjectValueEdit;
   GraphListResponse: GraphListResponse;
   GraphCreateResponse: GraphCreateResponse;
   GraphUpdateResponse: GraphUpdateResponse;

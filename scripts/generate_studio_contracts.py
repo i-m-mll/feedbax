@@ -307,6 +307,17 @@ from feedbax.web.models.trajectory import (
     TrajectoryData,
     TrajectoryMetadata,
 )
+from feedbax.contracts.studio_project import (
+    AuthoredFileAddress,
+    RemoveProjectValue,
+    SetProjectValue,
+    StudioAuthoredFileRevision,
+    StudioPresentationWrite,
+    StudioProjectPatch,
+    StudioProjectRevision,
+    StudioProjectSnapshot,
+)
+from scripts.studio_json_schema import emit_authored_contracts
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
@@ -336,6 +347,17 @@ JOB_MODELS = (
     StudioRunPreviewRequest,
     StudioRunSelection,
     StudioSubmissionItem,
+)
+
+AUTHORED_CONTRACT_MODELS = (
+    AuthoredFileAddress,
+    RemoveProjectValue,
+    SetProjectValue,
+    StudioAuthoredFileRevision,
+    StudioPresentationWrite,
+    StudioProjectPatch,
+    StudioProjectRevision,
+    StudioProjectSnapshot,
 )
 
 
@@ -648,6 +670,8 @@ function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): b
 
 CONTRACT_MODEL_NAMES = [
     *(model.__name__ for model in JOB_MODELS),
+    *(model.__name__ for model in AUTHORED_CONTRACT_MODELS),
+    "ProjectValueEdit",
     "GraphListResponse",
     "GraphCreateResponse",
     "GraphUpdateResponse",
@@ -1066,6 +1090,7 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
 def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
+    authored_types, authored_schemas = emit_authored_contracts(AUTHORED_CONTRACT_MODELS, MODEL_TYPES)
     acausal_report_defaults = {
         model.__name__: {
             name: field.get_default(call_default_factory=True)
@@ -1106,9 +1131,11 @@ def generate() -> str:
         "z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)]));\n"
         "export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;\n\n"
         f"{interfaces}\n\n"
+        f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
+        f"{authored_schemas}\n\n"
         f"{event_schema}\n\n"
         "export const contractSchemas = {\n"
         f"{contract_entries}\n"

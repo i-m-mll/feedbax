@@ -50,6 +50,7 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
+    AUTHORED_CONTRACT_MODELS,
     CONTRACT_MODEL_NAMES,
     MODEL_TYPES,
     OUTPUT,
@@ -68,6 +69,7 @@ GENERATED_STUDIO_PREFIXES = (
     "/api/graphs",
     "/api/inspection",
     "/api/penzai",
+    "/api/projects",
     "/api/runs",
     "/api/training",
     "/api/trajectories",
@@ -523,7 +525,7 @@ def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:
     app = create_app()
-    generated_model_names = {model.__name__ for model in MODEL_TYPES}
+    generated_model_names = {model.__name__ for model in (*MODEL_TYPES, *AUTHORED_CONTRACT_MODELS)}
     generated_contract_names = set(CONTRACT_MODEL_NAMES)
     missing: list[str] = []
 
@@ -541,7 +543,7 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
             if model_name not in generated_model_names:
                 missing.append(f"{route.path} response_model={model_name}")
             elif (
-                model_name.endswith(("Response", "Envelope", "Info"))
+                (model_name.endswith(("Response", "Envelope", "Info")) or route.path.startswith("/api/projects"))
                 and model_name not in generated_contract_names
             ):
                 missing.append(f"{route.path} contractSchemas missing {model_name}")

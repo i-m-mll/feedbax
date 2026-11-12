@@ -53,14 +53,14 @@ def _project_response(
     return snapshot
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", response_model_exclude_unset=True)
 def read_project(
     project_id: ProjectName, request: Request, response: Response
 ) -> StudioProjectSnapshot:
     return _project_response(response, lambda: request.app.state.project_folders.read(project_id))
 
 
-@router.patch("/{project_id}")
+@router.patch("/{project_id}", response_model_exclude_unset=True)
 def patch_project(
     project_id: ProjectName,
     body: StudioProjectPatch,
@@ -72,7 +72,7 @@ def patch_project(
     )
 
 
-@router.put("/{project_id}/presentation")
+@router.put("/{project_id}/presentation", response_model_exclude_unset=True)
 def put_project_presentation(
     project_id: ProjectName,
     body: StudioPresentationWrite,

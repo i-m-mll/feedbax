@@ -16,10 +16,11 @@ import {
   stopStudioJobs,
 } from '@/api/jobs';
 import type { StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
-import type {
-  StudioJobConnection,
-  StudioJobWorkerCommand,
-  StudioJobWorkerMessage,
+import {
+  STUDIO_JOBS_WORKER_NAME,
+  type StudioJobConnection,
+  type StudioJobWorkerCommand,
+  type StudioJobWorkerMessage,
 } from '@/jobs/studioJobConnection';
 import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
 import { useGraphStore } from '@/stores/graphStore';
@@ -128,7 +129,7 @@ export function StudioJobsProvider({ children }: PropsWithChildren) {
     function open() {
       if (port) return;
       try {
-        port = new JobsWorker({ name: 'feedbax-studio-jobs-v1' }).port;
+        port = new JobsWorker({ name: STUDIO_JOBS_WORKER_NAME }).port;
       } catch {
         setConnection('disconnected');
         return;

@@ -27,8 +27,10 @@ from feedbax.contracts.project_io import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
+    AuthoredFileAddress,
     PresentationDocument,
     SetProjectValue,
+    StudioAuthoredFileRevision,
     StudioPresentationWrite,
     StudioProjectPatch,
     StudioProjectRevision,
@@ -38,6 +40,7 @@ from feedbax.contracts.studio_project import (
 
 _PRESENTATION = "presentation.json"
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
+_KINDS = {family: kind for kind, family in _FAMILIES.items()}
 _FOLDER_ID = TypeAdapter(ProjectName)
 type _FileStamp = tuple[str, int, int, int, int, int]
 type _Resource = Literal["project", "presentation"]
@@ -183,6 +186,14 @@ class ProjectFolderService:
             presentation=presentation,
             presentation_revision=presentation_revision,
             presentation_error=presentation_error,
+            file_revisions=[
+                StudioAuthoredFileRevision(
+                    address=AuthoredFileAddress(kind=_KINDS[path.parent.name], id=path.stem),
+                    revision=digest,
+                )
+                for relative, digest in text.file_revisions.items()
+                if (path := Path(relative)).parent.name in _KINDS
+            ],
         )
 
     def read(self, project_id: str) -> StudioProjectSnapshot:
