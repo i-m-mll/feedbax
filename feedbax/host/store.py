@@ -94,8 +94,18 @@ class _CompletionRejection(NamedTuple):
     message: str
 
 
-def dump(value) -> str:
-    return json.dumps(value, separators=(",", ":"), allow_nan=False)
+def dump(value, *, sort_keys: bool = False) -> str:
+    return json.dumps(value, sort_keys=sort_keys, separators=(",", ":"), allow_nan=False)
+
+
+def _train_binding_conflicts(payload: dict, stored_launch: str, *, live: bool = False) -> bool:
+    stored = json.loads(stored_launch)["payload"]
+    if payload.get("canonical_request") is None and stored.get("canonical_request") is None:
+        return False
+    if live:
+        payload = {key: value for key, value in payload.items() if key != "resume"}
+        stored.pop("resume", None)
+    return dump(payload, sort_keys=True) != dump(stored, sort_keys=True)
 
 
 def require_text(value, field: str) -> str:
@@ -241,6 +251,12 @@ class Store:
                     )
                     continue
                 self._validate_job(job)
+                payload = job["launch"]["payload"]
+                canonical_train = payload.get("canonical_request") is not None
+                if canonical_train and (
+                    payload.get("project_id"), payload.get("request_id")
+                ) != (job["project"], job["request"]):
+                    raise HostError("invalid_request", "Canonical Train launch identity differs from its job.")
                 for edge in job["edges"]:
                     completion = edge.get("authenticated_completion", False)
                     if type(completion) is not bool or (
@@ -250,7 +266,7 @@ class Store:
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
                 live = self.db.execute(
-                    f"SELECT id, continues FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
+                    f"SELECT id, continues, launch FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
                     (job["project"], job["request"]),
                 ).fetchone()
                 if by_id is not None:
@@ -258,8 +274,20 @@ class Store:
                         raise HostError(
                             "job_id_conflict", "Job id already names a different request."
                         )
+                    if _train_binding_conflicts(payload, by_id["launch"]):
+                        raise HostError(
+                            "job_id_conflict", "Job id already names a different Train binding."
+                        )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
+                    if _train_binding_conflicts(payload, live["launch"], live=True):
+                        results.append({
+                            "run_key": run_key,
+                            "job_id": None,
+                            "disposition": "rejected",
+                            "reason": "The live Train request has a different store or execution binding.",
+                        })
+                        continue
                     if job["continues"] is not None and live["continues"] != job["continues"]:
                         raise HostError(
                             "invalid_resume", "Another attempt of this request is already running."
@@ -593,9 +621,6 @@ class Store:
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
         """
-        def exact_json(value) -> str:
-            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
         attempts = self.db.execute(
             """WITH RECURSIVE lineage(id) AS (
                    VALUES (?) UNION ALL
@@ -611,10 +636,10 @@ class Store:
         for attempt in attempts:
             attempt_id = attempt["id"]
             payload = json.loads(attempt["launch"])["payload"]
-            resume = exact_json(payload.pop("resume", None))
+            resume = dump(payload.pop("resume", None), sort_keys=True)
             if attempt_id == anchor:
                 expected_request = (attempt["project"], attempt["request"])
-                expected_payload = exact_json(payload)
+                expected_payload = dump(payload, sort_keys=True)
             else:
                 source_checkpoint = resume_checkpoints.get(attempt["continues"])
                 if source_checkpoint is None:
@@ -622,7 +647,7 @@ class Store:
                 if (
                     (attempt["project"], attempt["request"]) != expected_request
                     or resume != source_checkpoint
-                    or exact_json(payload) != expected_payload
+                    or dump(payload, sort_keys=True) != expected_payload
                 ):
                     rejections.append(_CompletionRejection(
                         attempt_id, "continuation",
@@ -642,8 +667,8 @@ class Store:
                     missing = missing or message
             elif can_resume_attempt(state, attempt["checkpoint"], attempt["delivery"]):
                 raw = attempt["checkpoint"]
-                resume_checkpoints[attempt_id] = exact_json(
-                    json.loads(raw) if raw is not None else None
+                resume_checkpoints[attempt_id] = dump(
+                    json.loads(raw) if raw is not None else None, sort_keys=True
                 )
                 pending = True
             elif state in LIVE_STATES:

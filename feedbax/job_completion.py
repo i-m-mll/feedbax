@@ -12,13 +12,16 @@ from feedbax.contracts.manifest import (
     load_manifest_bytes,
     training_run_manifest_id,
 )
-from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.contracts.studio_training import (
     PublishedTrainingCheckpoint,
     StudioGraphMethodPayload,
-    StudioTrainingJobInput,
 )
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host.completion import CompletionFileError, completion_file
+from feedbax.studio.canonical_train import (
+    BoundStudioTrainingJobInput,
+    verify_training_request_binding,
+)
 from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
     authenticate_checkpoint_custody_ref,
@@ -50,7 +53,7 @@ def _file(root: Path, path: Path, digest: str, size: int) -> dict:
 def verify_training_completion(
     *,
     producer_job_id: str,
-    launch: StudioTrainingJobInput,
+    launch: BoundStudioTrainingJobInput,
     binding_sha256: str,
     receipt: dict,
     checkpoint: PublishedTrainingCheckpoint | None,
@@ -60,14 +63,13 @@ def verify_training_completion(
     if not root.is_absolute() or root != root.resolve():
         raise CompletionFileError("Completion manifest root must be absolute and canonical.")
     try:
-        if launch.request_id != canonical_training_run_spec_sha256(launch.spec):
-            raise CompletionFileError("Training launch does not match its authored request id.")
+        request_files = verify_training_request_binding(launch)
         expected_id = training_run_manifest_id(producer_job_id)
         if receipt.get("manifest_id") != expected_id:
             raise CompletionFileError("Completion receipt id does not identify this attempt.")
         binding_path = training_binding_path(root, producer_job_id)
         binding_raw = _read_exact(root, binding_path, binding_sha256)
-        if StudioTrainingJobInput.model_validate_json(binding_raw) != launch:
+        if BoundStudioTrainingJobInput.model_validate_json(binding_raw) != launch:
             raise CompletionFileError("Completion does not match the producer's admitted input.")
         receipt_path = canonical_manifest_path("TrainingRunManifest", expected_id, root=root)
         raw = _read_exact(root, receipt_path, receipt["manifest_sha256"])
@@ -84,6 +86,11 @@ def verify_training_completion(
             raise CompletionFileError(
                 "Receipt does not certify this attempt at its authored target."
             )
+        if request_files and (
+            manifest.training_spec is None
+            or TrainingRunSpec.model_validate(manifest.training_spec.inline) != launch.spec
+        ):
+            raise CompletionFileError("Receipt does not bind the admitted Train execution payload.")
         terminal = manifest.terminal_checkpoint
         if terminal is None or checkpoint is None:
             raise CompletionUnavailable("Successful producer has no terminal checkpoint.")
@@ -132,6 +139,7 @@ def verify_training_completion(
                 _file(root, receipt_path, receipt["manifest_sha256"], len(raw)),
                 _file(root, transaction_path, pointer.manifest_sha256, size),
             ]
+        files.extend(_file(root, path, ref.sha256, ref.size_bytes) for path, ref in request_files)
         files.extend(
             _file(root, transaction_path.parent / slot.relative_path, slot.sha256, slot.size_bytes)
             for slot in transaction.slots
@@ -159,7 +167,7 @@ def verify_bound_training_completion(completion: dict) -> None:
         producer_job_id = completion["producer_job_id"]
         binding_sha256 = completion["binding_sha256"]
         path = training_binding_path(root, producer_job_id)
-        launch = StudioTrainingJobInput.model_validate_json(_read_exact(root, path, binding_sha256))
+        launch = BoundStudioTrainingJobInput.model_validate_json(_read_exact(root, path, binding_sha256))
         checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
         actual = verify_training_completion(
             producer_job_id=producer_job_id,

@@ -189,7 +189,6 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         STUDIO_GRAPH_METHOD,
         PublishedTrainingCheckpoint,
         StudioGraphMethodPayload,
-        StudioTrainingJobInput,
     )
     from feedbax.host.completion import CompletionFileError
     from feedbax.job_completion import (
@@ -201,6 +200,10 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.orchestration.events import normalize_serialized_metrics
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
+    from feedbax.studio.canonical_train import (
+        BoundStudioTrainingJobInput,
+        verify_training_request_binding,
+    )
     from feedbax.training.checkpoint_custody import CheckpointCustodyError
     from feedbax.training.executor import execute_training_run_spec
     from feedbax.training.invocation import prepare_training_invocation
@@ -209,7 +212,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
 
     events.current_phase = "binding"
-    launch = StudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
+    launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
     if launch.spec.method_ref != STUDIO_GRAPH_METHOD:
         raise ValueError("Studio training jobs require the registered Studio graph method")
     method = StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
@@ -217,6 +220,10 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     if not launch.manifest_root.is_absolute():
         raise ValueError("manifest_root must be absolute")
     manifest_root = launch.manifest_root.resolve()
+    if launch.canonical_request is not None:
+        if launch.manifest_root != manifest_root:
+            raise ValueError("Canonical Train store must be absolute and canonical")
+        verify_training_request_binding(launch)
     checkpoint_root = _attempt_root(manifest_root, job_id)
     binding_path = training_binding_path(manifest_root, job_id)
     if sidecar := os.environ.get("FEEDBAX_HOST_COMPLETION_BINDINGS"):
@@ -231,7 +238,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             raise ValueError("resume source is outside the original attempt's custody")
         if resume.completed_updates != resume.pointer.completed_training_batches:
             raise ValueError("resume coordinate disagrees with its checkpoint pointer")
-        parent_binding = StudioTrainingJobInput.model_validate_json(
+        parent_binding = BoundStudioTrainingJobInput.model_validate_json(
             (parent_root / "binding.json").read_bytes()
         )
         if launch.model_dump(exclude={"resume"}) != parent_binding.model_dump(exclude={"resume"}):
