@@ -2,11 +2,14 @@ import { enablePatches, produceWithPatches, type Patch } from 'immer';
 import type {
   AuthoredFileAddress,
   JsonValue,
+  PresentationDocument,
   ProjectValueEdit,
   StudioProjectSnapshot,
 } from '@/generated/studioContracts';
 
 export type AuthoredProject = StudioProjectSnapshot['project'];
+export type ProjectEditContent = AuthoredProject & { readonly presentation?: PresentationDocument | null };
+export const presentationAddress = { kind: 'presentation', id: 'presentation' } as const;
 type JsonObject = { [key: string]: JsonValue };
 type Container = JsonObject | JsonValue[];
 
@@ -28,6 +31,7 @@ function files(project: JsonObject, kind: AuthoredFileAddress['kind']): JsonObje
     case 'document': return object(project.documents);
     case 'step': return object(project.steps);
     case 'variant': return object(object(project.sweep).rows);
+    case 'presentation': return { [presentationAddress.id]: project.presentation ?? {} };
   }
 }
 
@@ -95,17 +99,59 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolea
   }
 }
 
-function fileEntry(project: AuthoredProject, address: AuthoredFileAddress) {
+function fileEntry(project: ProjectEditContent, address: AuthoredFileAddress) {
   const collection = files(project as unknown as JsonObject, address.kind);
   if (!own(collection, address.id)) throw new Error('The named authored file no longer exists.');
   return object(collection[address.id]);
 }
 
-export function sameAuthoredFile(a: AuthoredProject, b: AuthoredProject, address: AuthoredFileAddress) {
+export function sameAuthoredFile(a: ProjectEditContent, b: ProjectEditContent, address: AuthoredFileAddress) {
   const left = Object.entries(fileEntry(a, address));
   const right = fileEntry(b, address);
   return left.length === Object.keys(right).length && left.every(([key, value]) =>
     own(right, key) && JSON.stringify(value) === JSON.stringify(right[key]));
+}
+
+function sameValue(a: JsonValue | undefined, b: JsonValue | undefined) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function objectOrMissing(value: JsonValue | undefined): value is JsonObject | undefined {
+  return value === undefined || (value !== null && typeof value === 'object' && !Array.isArray(value));
+}
+
+function mergePresentationValue(
+  before: JsonValue | undefined, after: JsonValue | undefined, current: JsonValue | undefined,
+): JsonValue | undefined {
+  if (sameValue(before, after)) return current;
+  if (sameValue(before, current)) return after;
+  if (!objectOrMissing(before) || !objectOrMissing(after) || !objectOrMissing(current)) {
+    throw new Error('A placement changed outside this edit.');
+  }
+  const keys = new Set([...Object.keys(current ?? {}), ...Object.keys(after ?? {}), ...Object.keys(before ?? {})]);
+  const entries = Array.from(keys).flatMap((key): [string, JsonValue][] => {
+    const child = mergePresentationValue(
+      before && own(before, key) ? before[key] : undefined,
+      after && own(after, key) ? after[key] : undefined,
+      current && own(current, key) ? current[key] : undefined,
+    );
+    return child === undefined ? [] : [[key, child]];
+  });
+  return entries.length || after !== undefined ? Object.fromEntries(entries) : undefined;
+}
+
+export function presentationHistoryEdits(
+  before: PresentationDocument, after: PresentationDocument, current: PresentationDocument,
+): ProjectValueEdit[] {
+  const source = current as JsonObject;
+  const merged = object(mergePresentationValue(before as JsonObject, after as JsonObject, source));
+  return [...new Set([...Object.keys(source), ...Object.keys(merged)])].flatMap((key): ProjectValueEdit[] => {
+    if (own(source, key) && own(merged, key) && sameValue(source[key], merged[key])) return [];
+    const path = authoredPointer([key]);
+    return own(merged, key)
+      ? [{ op: own(source, key) ? 'replace' : 'add', path, value: merged[key] }]
+      : [{ op: 'remove', path }];
+  });
 }
 
 function shouldReapply(before: Container, latest: Container, edit: ProjectValueEdit) {
@@ -140,11 +186,11 @@ function shouldReapply(before: Container, latest: Container, edit: ProjectValueE
 }
 
 export function applyAuthoredEdits(
-  project: AuthoredProject,
+  project: ProjectEditContent,
   address: AuthoredFileAddress,
   edits: readonly ProjectValueEdit[],
   checkOrder = false,
-  rebaseFrom?: AuthoredProject,
+  rebaseFrom?: ProjectEditContent,
 ) {
   // These models are authored JSON; use one generic traversal over their file envelope.
   const authored = project as unknown as JsonObject;
@@ -163,11 +209,13 @@ export function applyAuthoredEdits(
   });
   if (!inverse.length) return { project, inverse: [], edits: [] };
   const nextFiles = { ...collection, [address.id]: changed };
-  const updated = address.kind === 'variant'
-    ? { ...authored, sweep: { ...object(authored.sweep), rows: nextFiles } }
-    : { ...authored, [address.kind === 'document' ? 'documents' : 'steps']: nextFiles };
+  const updated = address.kind === 'presentation'
+    ? { ...authored, presentation: changed }
+    : address.kind === 'variant'
+      ? { ...authored, sweep: { ...object(authored.sweep), rows: nextFiles } }
+      : { ...authored, [address.kind === 'document' ? 'documents' : 'steps']: nextFiles };
   return {
-    project: updated as unknown as AuthoredProject,
+    project: updated as unknown as ProjectEditContent,
     edits: reapplied,
     inverse: inverse.map((patch): ProjectValueEdit => patch.op === 'remove'
       ? { op: 'remove', path: authoredPointer(patch.path) }

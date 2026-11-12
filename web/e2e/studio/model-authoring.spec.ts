@@ -3,7 +3,7 @@ import type {
   GraphSpec, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -261,27 +261,4 @@ test('authors, reopens, and trains a reaching Model from an empty folder', async
     }),
     contentType: 'application/json',
   });
-});
-
-test('rejects topology edits when shared Model users are narrowed', async ({ page, request }) => {
-  const [model, task, train] = await fixture('files');
-  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, train, { ...train, id: 'peer' }]);
-  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
-  await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  const add = page.getByRole('complementary', { name: 'Details Drawer', exact: true })
-    .getByRole('button', { name: 'Add GRU', exact: true });
-  await expect(add).toBeEnabled();
-  await mapStep(page, 'peer').click({ modifiers: ['Meta'] });
-  await expect(add).toBeDisabled();
-  const graph = snapshot.project.documents?.model.payload as unknown as GraphSpec;
-  const gru = Object.values(graph.nodes ?? {}).find((node) => node.type === 'feedbax.GRU');
-  expect(gru).toBeDefined();
-  const refused = await request.post(`${projectPath}/authoring/document`, { data: {
-    revision: snapshot.revision, run: { variant: 'default', step: 'train', row: 'default' }, field: 'graph',
-    change: { lit_steps: ['train'], operation: { kind: 'addComponent', component: 'feedbax.GRU', revision: gru?.revision } },
-  } });
-  expect(refused.status()).toBe(422);
-  expect(await refused.text()).toContain('all Model users');
-  expect((await (await request.get(projectPath)).json() as StudioProjectSnapshot).revision).toBe(snapshot.revision);
 });

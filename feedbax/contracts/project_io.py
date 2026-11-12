@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from os import fdopen
 from os.path import lexists
 from pathlib import Path
 import stat
@@ -13,6 +14,14 @@ from typing import Literal
 
 from pydantic import Field, ValidationError
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    close_directory_chain,
+    open_directory_chain,
+    open_existing_file,
+    recheck_directory_chain,
+)
+from feedbax.contracts._authoring_inputs import AuthoringInputs
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project import Document, Payload, Project, Step
@@ -57,6 +66,46 @@ class TextProject:
     @property
     def store_path(self) -> Path:
         return (self.root / self.configuration.store).resolve()
+
+
+class TextProjectExternalInputs:
+    """Read pinned project inputs under the caller's filesystem authority."""
+
+    def __init__(self, text: TextProject, *, authority: Path | None = None) -> None:
+        self.root = text.root
+        self.store = text.store_path
+        self.authority = authority
+        self.paths: set[Path] = set()
+        self.inputs = AuthoringInputs(read=self._read_target)
+
+    @staticmethod
+    def _read_target(target: Path) -> bytes:
+        context = "pinned project input"
+        chain = open_directory_chain(target.parent, create=False, error_factory=OSError, context=context)
+        try:
+            descriptor, _ = open_existing_file(
+                target.name, dir_fd=chain[-1][1],
+                rigor=SecurePathRigor.REGULAR_FILE_IDENTITY, error_factory=OSError, context=context,
+            )
+            with fdopen(descriptor, "rb") as stream:
+                raw = stream.read()
+            recheck_directory_chain(chain, error_factory=OSError, context=context)
+            return raw
+        finally:
+            close_directory_chain(chain)
+
+    def read(self, name: str) -> bytes:
+        source = self.root / name
+        try:
+            target = source.resolve()
+            if self.authority is not None and not target.is_relative_to(self.authority):
+                raise OSError(f"{name}: the external pin is outside the managed projects directory")
+            if target.is_relative_to(self.store):
+                raise OSError(f"{name}: an external pin cannot read the declared Store")
+            self.paths.update((source, target))
+            return self.inputs.read_bytes(source, resolved_path=target)
+        except (ValueError, RuntimeError) as error:
+            raise OSError(str(error)) from error
 
 
 class ProjectReadError(ValueError):

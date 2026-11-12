@@ -16,6 +16,7 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapEdge,
     StudioProjectWindowMapElement,
+    StudioProjectWindowMapFigure,
     StudioProjectWindowMapInput,
     StudioProjectWindowMapProblem,
     StudioProjectWindowMapRow,
@@ -170,6 +171,14 @@ class ProjectPlanRead:
                     ) if isinstance(element.outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                 )
                 for element in plan.elements.values()
+            ],
+            analysis_figures=[
+                StudioProjectWindowMapFigure(
+                    key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
+                    name=name, data=list(figure.data), caption=figure.caption,
+                )
+                for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+                for name, figure in row.figures.items()
             ],
         )
 

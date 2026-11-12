@@ -134,7 +134,6 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     project = _project()
     registry = _operations()
     document = project.documents["velocity-analysis"].payload
-    document["views"]["profile"]["figure"] = project.documents["velocity-figure"].payload
     summary = document["operations"]["summarize"]
     summary["params"].pop("ddof")
     summary["inputs"].clear()
@@ -163,6 +162,19 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
         element="summarize", role="velocity", source={"element": "align", "product": "velocity"},
     ), registry, states)
     assert replacement.patches[0].op == "replace"
+
+    view = document["views"]["profile"]
+    view["inputs"].clear()
+    draft_plan = compile_project(project, operations=registry)
+    draft_row = next(row for row in draft_plan.rows if isinstance(row, PlannedAnalyzeRun))
+    assert draft_row.figures["profile"].data == ("summary",)
+    assert "profile" not in draft_row.elements
+    reviewed = review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
+        element="profile", role="summary", source={"element": "summarize", "product": "summary"},
+    ), registry, states)
+    assert reviewed.patches[0].path == "/payload/views/profile/inputs/summary"
+    assert reviewed.patches[0].op == "add"
+    assert view == {"figure": {"document": "velocity-figure"}, "inputs": {}}
 
 
 def test_element_edit_and_upstream_attribution_leave_independent_requests_equal():
@@ -228,7 +240,7 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
 
     pin_plan = compile_project(
         pinned, operations=operations, source_runs=(base, dark),
-        readers=BaseReaders(external=read_external),
+        readers=BaseReaders(figure_external=read_external),
     )
     assert not pin_plan.diagnostics
     assert pin_plan.requests == initial.requests and pin_plan.documents == initial.documents
@@ -252,6 +264,27 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
     for view in ("profile", "second"):
         source = revised.sources[dark][f"/payload/views/{view}/figure/theme"]
         assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
+
+
+def test_named_figure_pin_does_not_supply_an_external_train_base():
+    project = _project()
+    train = project.steps["train"]
+    raw = json.dumps(train.base.inline).encode()
+    project.documents["train-pin"] = Document.model_validate({
+        "schema": "feedbax.figure_document.v1",
+        "payload": {"path": "train.json", "sha256": sha256_bytes(raw)},
+    })
+    project.steps["external"] = train.model_copy(update={"base": DocumentReference(document="train-pin")})
+    reads = []
+
+    def read_figure(path):
+        reads.append(path)
+        return raw
+
+    plan = compile_project(project, operations=_operations(), readers=BaseReaders(figure_external=read_figure))
+    assert reads == []
+    assert not any(run.key.step == "external" for run in plan.runs)
+    assert any(problem.step == "external" for problem in plan.diagnostics)
 
 
 def test_refuses_named_figure_at_its_authored_field_and_keeps_inline_sibling():

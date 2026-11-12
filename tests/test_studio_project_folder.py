@@ -979,7 +979,8 @@ def test_external_change_while_staging_is_detected_before_replace(study, monkeyp
     assert not list(path.parent.glob(".*.tmp"))
 
 
-def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkeypatch):
+@pytest.mark.parametrize("placement", [False, True])
+def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkeypatch, placement):
     root, client = study
     before = _read(client)
     files = [
@@ -992,27 +993,275 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
             "patches": [{"op": "add", "path": "/note", "value": {"reason": "shared edit"}}],
         },
     ]
+    body = {"revision": before["revision"], "files": files}
+    if placement:
+        files.append({
+            "address": {"kind": "presentation", "id": "presentation"},
+            "patches": [{
+                "op": "add", "path": "/steps",
+                "value": {"fit": {"model_positions": {"model": {"gain": {"x": 1, "y": 2}}}}},
+            }],
+        })
+        before_write = _folder_state(root)
+        conflict = client.patch(_URL, json={**body, "presentation_revision": "0" * 64})
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["resource"] == "presentation"
+        assert _folder_state(root) == before_write
+        body["presentation_revision"] = before["presentation_revision"]
     fail = True
+    interrupt_at = "presentation.json" if placement else "fit.json"
 
     def interrupt(target, data, **kwargs):
         nonlocal fail
-        if target.name == "fit.json" and fail:
+        if target.name == interrupt_at and fail:
             fail = False
             raise OSError("simulated interruption after the first file")
         return write_bytes_atomic(target, data, **kwargs)
 
     monkeypatch.setattr(project_folder, "write_bytes_atomic", interrupt)
-    interrupted = client.patch(_URL, json={"revision": before["revision"], "files": files})
+    interrupted = client.patch(_URL, json=body)
     assert interrupted.status_code == 503
     assert (root / ".studio-patch.json").is_file()
     after = _read(client)
     assert after["revision"] != before["revision"]
     assert _gain(root) == 3
     assert after["project"]["steps"]["fit"]["note"]["reason"] == "shared edit"
+    if placement:
+        assert after["presentation_revision"] != before["presentation_revision"]
+        assert after["presentation"]["steps"]["fit"]["model_positions"]["model"] == {
+            "gain": {"x": 1.0, "y": 2.0},
+        }
     assert not (root / ".studio-patch.json").exists()
-    stale = client.patch(_URL, json={"revision": before["revision"], "files": files})
+    stale = client.patch(_URL, json=body)
     assert stale.status_code == 409
     assert _read(client)["revision"] == after["revision"]
+
+
+def test_model_topology_patches_resolve_only_for_lit_steps(study):
+    root, client = study
+    before = _read(client)
+    direct = client.patch(_URL, json={
+        "revision": before["revision"], "files": [
+            {
+                "address": {"kind": "step", "id": "fit"},
+                "patches": [{"op": "remove", "path": "/sweep"}],
+            }, {
+                "address": {"kind": "document", "id": "model"},
+                "patches": [
+                    {"op": "remove", "path": "/payload/output_ports"},
+                    {"op": "remove", "path": "/payload/output_bindings"},
+                ],
+            },
+        ],
+    })
+    assert direct.status_code == 200, direct.text
+    snapshot = direct.json()
+    step = snapshot["project"]["steps"]["fit"]
+    for id in ("lit", "unlit"):
+        peer = client.post(f"{_URL}/files", json={
+            "revision": snapshot["revision"], "file": {"kind": "step", "id": id, "step": step},
+        })
+        assert peer.status_code == 201, peer.text
+        snapshot = peer.json()["snapshot"]
+    base = compile_project(load_text_project(root).project)
+    shared = (root / "documents/model.json").read_bytes()
+    unlit = (root / "steps/unlit.json").read_bytes()
+    def model_edit(operation, lit):
+        with client:
+            reviewed = client.post(f"{_URL}/authoring/document", json={
+                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+                "run": {"variant": "default", "step": "fit", "row": "default"}, "field": "graph",
+                "change": {"lit_steps": lit, "operation": operation},
+            })
+        assert reviewed.status_code == 200, reviewed.text
+        recipe = reviewed.json()
+        response = client.patch(_URL, json={
+            "revision": recipe["revision"], "presentation_revision": recipe.get("presentation_revision"),
+            "files": recipe["files"],
+        })
+        assert response.status_code == 200, response.text
+        return response.json(), [file["address"]["id"] for file in recipe["files"] if file["address"]["kind"] == "step"]
+
+    for operation in (
+        {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1, "position": {"x": 8, "y": -9}},
+        {"kind": "connectPorts", "wire": {
+            "source_node": "gru", "source_port": "hidden", "target_node": "gru", "target_port": "hidden",
+        }},
+        {"kind": "exposeOutput", "source_node": "gru", "source_port": "hidden"},
+    ):
+        snapshot, changed = model_edit(operation, ["fit", "lit"])
+        assert changed == ["fit", "lit"]
+    assert (root / "documents/model.json").read_bytes() == shared
+    assert (root / "steps/unlit.json").read_bytes() == unlit
+    assert snapshot["presentation"]["steps"] == {
+        id: {"model_positions": {"model": {"gru": {"x": 8.0, "y": -9.0}}}} for id in ("fit", "lit")
+    }
+    keys = [run.key for run in base.runs]
+    scoped = compile_project(load_text_project(root).project, source_runs=keys)
+    assert not scoped.diagnostics
+    originals = {run.key: run.request_id for run in base.runs}
+    for run in scoped.runs:
+        graph = scoped.selected_definitions[run.key].payload["graph"]
+        if run.key.step == "unlit":
+            assert "gru" not in graph["nodes"]
+            assert run.request_id == originals[run.key]
+        else:
+            assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
+            assert sum(wire["source_node"] == "gru" for wire in graph["wires"]) == 1
+            assert run.request_id != originals[run.key]
+            source = scoped.sources[run.key]["/payload/graph/nodes/gru/params/hidden_size"]
+            assert (source.kind, source.name) == ("step", run.key.step)
+    _, changed = model_edit(
+        {"kind": "exposeOutput", "source_node": "gain", "source_port": "output"}, ["fit", "lit", "unlit"],
+    )
+    assert not changed
+    widened = compile_project(load_text_project(root).project, source_runs=keys)
+    assert not widened.diagnostics
+    for key in keys:
+        bindings = widened.selected_definitions[key].payload["graph"]["output_bindings"]
+        assert bindings["output"] == ["gain", "output"]
+        assert ("hidden" in bindings) == (key.step != "unlit")
+
+
+def test_shared_model_edit_supersedes_only_matching_local_topology(study):
+    root, client = study
+    snapshot = _read(client)
+    all_users = ["fit", "lit", "unlit"]
+    local_users = ["fit", "lit"]
+
+    def save(files):
+        response = client.patch(_URL, json={"revision": snapshot["revision"], "files": files})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def recipe(operation, lit=all_users):
+        return client.post(f"{_URL}/authoring/document", json={
+            "revision": snapshot["revision"],
+            "run": {"variant": "default", "step": "fit", "row": "default"},
+            "field": "graph",
+            "change": {"lit_steps": lit, "operation": operation},
+        })
+
+    def edits(operation, lit=all_users):
+        response = recipe(operation, lit)
+        assert response.status_code == 200, response.text
+        return response.json()["files"]
+
+    def wire(source, target):
+        return {"kind": "connectPorts", "wire": {
+            "source_node": source, "source_port": "hidden", "target_node": target, "target_port": "hidden",
+        }}
+
+    def output(node):
+        return {"kind": "exposeOutput", "source_node": node, "source_port": "hidden"}
+
+    def step_edit(step, patches):
+        return {"address": {"kind": "step", "id": step}, "patches": patches}
+
+    def restore_scope(before, after, remove):
+        return [
+            {"address": {"kind": "document", "id": "model"}, "patches": [
+                {"op": "remove", "path": path} for path in remove
+            ]},
+            *(step_edit(step, [{
+                "op": "replace", "path": "/document_overrides",
+                "value": before["project"]["steps"][step]["document_overrides"],
+            }]) for step in local_users if before["project"]["steps"][step] != after["project"]["steps"][step]),
+        ]
+
+    with client:
+        snapshot = save([step_edit("fit", [{"op": "remove", "path": "/sweep"}])])
+        for step in all_users[1:]:
+            created = client.post(f"{_URL}/files", json={
+                "revision": snapshot["revision"],
+                "file": {"kind": "step", "id": step, "step": snapshot["project"]["steps"]["fit"]},
+            })
+            assert created.status_code == 201, created.text
+            snapshot = created.json()["snapshot"]
+        add = {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1}
+        snapshot = save(edits(add))
+        snapshot = save(edits(add))
+        snapshot = save(edits(wire("gru2", "gru2"), ["fit"]))
+        snapshot = save(edits(wire("gru", "gru"), local_users))
+        snapshot = save(edits(output("gru"), local_users))
+        before = snapshot
+        for operation, detail in (
+            (wire("gru2", "gru"), "Input gru.hidden has multiple drivers"),
+            (output("gru2"), "different binding for public output 'hidden'"),
+        ):
+            conflict = recipe(operation)
+            assert conflict.status_code == 422
+            assert detail in conflict.text
+            assert _read(client) == before
+
+        fit = before["project"]["steps"]["fit"]["document_overrides"]
+        different_initializer = [
+            {
+                **edit, "value": {
+                    **edit["value"],
+                    "recurrent_initializer": {**edit["value"]["recurrent_initializer"], "dtype": "float64"},
+                },
+            }
+            if edit["path"] == "/wires/-" and edit["value"]["source_node"] == "gru" else edit
+            for edit in fit["model"]
+        ]
+        for operations, detail in (
+            (different_initializer, "different wire declaration for gru.hidden"),
+            ([*fit["model"], {"op": "replace", "path": "/wires/0/temporality", "value": "recurrent"}],
+             "edits /wires by position"),
+        ):
+            snapshot = save([step_edit("fit", [{
+                "op": "replace", "path": "/document_overrides/model", "value": operations,
+            }])])
+            conflict = recipe(wire("gru", "gru"))
+            assert conflict.status_code == 422
+            assert detail in conflict.text
+            assert _read(client) == snapshot
+            snapshot = save([step_edit("fit", [{
+                "op": "replace", "path": "/document_overrides", "value": fit,
+            }])])
+        assert snapshot == before
+
+        unlit = (root / "steps/unlit.json").read_bytes()
+        wire_files = edits(wire("gru", "gru"))
+        assert [file["address"]["id"] for file in wire_files] == ["model", "fit", "lit"]
+        snapshot = save(wire_files)
+        wired = snapshot
+        output_files = edits(output("gru"))
+        assert [file["address"]["id"] for file in output_files] == ["model", "fit", "lit"]
+        snapshot = save(output_files)
+        promoted = snapshot
+        assert (root / "steps/unlit.json").read_bytes() == unlit
+        assert promoted["project"]["steps"]["lit"]["document_overrides"] == {}
+        assert promoted["project"]["steps"]["fit"]["document_overrides"]["model"] == [
+            edit for edit in fit["model"]
+            if edit["path"] == "/wires" or (
+                edit["path"] == "/wires/-" and edit["value"]["source_node"] == "gru2"
+            )
+        ]
+        keys = [RunKey("default", step, "default") for step in all_users]
+        plan = compile_project(load_text_project(root).project, source_runs=keys)
+        assert not plan.diagnostics
+        for key in keys:
+            graph = plan.selected_definitions[key].payload["graph"]
+            assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
+            assert [edge["source_node"] for edge in graph["wires"]] == (
+                ["gru", "gru2"] if key.step == "fit" else ["gru"]
+            )
+            source = plan.sources[key]["/payload/graph/wires/0/source_node"]
+            assert (source.kind, source.name) == ("document", "model")
+            output_source = plan.sources[key]["/payload/graph/output_bindings/hidden/0"]
+            assert (output_source.kind, output_source.name) == ("document", "model")
+            if key.step == "fit":
+                assert plan.sources[key]["/payload/graph/wires/1/source_node"].name == "fit"
+
+        snapshot = save(restore_scope(wired, promoted, ["/payload/output_bindings/hidden", "/payload/output_ports/1"]))
+        assert snapshot == wired
+        snapshot = save(restore_scope(before, wired, ["/payload/wires/0"]))
+        assert snapshot == before
+        snapshot = save(wire_files)
+        snapshot = save(output_files)
+        assert snapshot == promoted == _read(client)
 
 
 def test_unreadable_presentation_does_not_hide_the_authored_project(study):

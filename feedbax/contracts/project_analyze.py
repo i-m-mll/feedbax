@@ -69,6 +69,7 @@ class _Lowerer:
         self.evaluation = evaluation
         self.operations = operations
         self.elements: dict[str, PlannedElement] = {}
+        self.figures: dict[str, FigureDocument] = {}
         self.encoded: list[EncodedRequest] = []
         self.problems: list[ProjectDiagnostic] = []
 
@@ -256,6 +257,7 @@ class _Lowerer:
                     code=ResolutionCode.INVALID_DOCUMENT if document else ResolutionCode.INVALID_PAYLOAD,
                 )
             return
+        self.figures[name] = figure
         try:
             inputs, schemas = self._inputs(element.inputs, set(figure.data))
         except _ElementIssue as error:
@@ -287,7 +289,9 @@ def lower_analyze(
     source: PlannedInput,
     evaluation: RequestSpec,
     operations: OperationRegistry,
-) -> tuple[dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic]]:
+) -> tuple[
+    dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
+]:
     lower = _Lowerer(key, document_ids, document_pointers, documents, source, evaluation, operations)
     lower.problems.extend(document_problems)
     try:
@@ -302,7 +306,7 @@ def lower_analyze(
                 else None
             )
             lower.problem(".".join(map(str, ("payload", *location))), item["msg"], element)
-        return lower.elements, lower.encoded, lower.problems
+        return lower.elements, lower.encoded, lower.problems, lower.figures
 
     graph = TopologicalSorter()
     for name, element in sorted(document.operations.items()):
@@ -345,4 +349,4 @@ def lower_analyze(
     for name, element in sorted(document.views.items()):
         if name not in refused:
             lower.view(name, element)
-    return lower.elements, lower.encoded, lower.problems
+    return lower.elements, lower.encoded, lower.problems, lower.figures

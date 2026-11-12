@@ -214,6 +214,14 @@ class StudioProjectWindowMapProblem(StrictModel):
     row: str | None
     document: str | None
     element: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioProjectWindowMapFigure(StrictModel):
+    key: StudioSavedTrainKey
+    name: str
+    data: list[str]
+    caption: str | None
 
 
 class StudioProjectWindowMapElement(StrictModel):
@@ -233,6 +241,7 @@ class StudioProjectWindowMap(StrictModel):
     problems: list[StudioProjectWindowMapProblem]
     evaluations: list[StudioSavedEvaluationRow] = Field(default_factory=list)
     analysis_elements: list[StudioProjectWindowMapElement] = Field(default_factory=list, exclude_if=lambda value: not value)
+    analysis_figures: list[StudioProjectWindowMapFigure] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class StudioSavedTrainRuns(StrictModel):

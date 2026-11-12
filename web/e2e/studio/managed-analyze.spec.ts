@@ -145,7 +145,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   await expect(figures.getByText('Not run', { exact: true })).toBeVisible();
   const caption = inspector.getByRole('textbox', { name: 'Caption', exact: true });
   const captioned = await edit(async () => { await caption.fill('Velocity by condition'); await caption.press('Enter'); });
-  expect(graph(captioned).views?.velocity_summary.figure.caption).toBe('Velocity by condition');
+  expect(graph(captioned).views?.velocity_summary.figure).toMatchObject({ caption: 'Velocity by condition' });
   await page.reload();
   await mapStep(page, 'analyze').click();
   await tab(page, 'Figures').click();

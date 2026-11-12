@@ -8,7 +8,7 @@ import { Dialog } from '@/components/ui/Dialog';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import {
-  AnalysisDocumentSchema, type JsonPrimitive, type JsonValue, type OperationElement,
+  AnalysisDocumentSchema, type AnalysisDocument, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioProjectFilePatch,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
@@ -85,8 +85,14 @@ export function useManagedAnalyze({
   const selected = element.selectedId;
   const operation = selected ? operations[selected] : undefined;
   const figure = selected ? figures[selected] : undefined;
+  const resolvedFigures = new Map(projection?.window_map?.analysis_figures
+    ?.filter(({ key }) => savedRunId(key) === id).map((view) => [view.name, view]));
+  function figureDefinition(name: string, source: NonNullable<AnalysisDocument['views']>[string]['figure']) {
+    return resolvedFigures.get(name) ?? ('document' in source ? undefined : source);
+  }
+  const selectedFigure = selected && figure ? figureDefinition(selected, figure.figure) : undefined;
   const definition = operation && definitions.get(operation.operation);
-  const roles = figure?.figure.data ?? Object.keys(definition?.inputs ?? {});
+  const roles = selectedFigure?.data ?? Object.keys(definition?.inputs ?? {});
   const sources: { label: string; source: Source; schemas: string[] }[] = [
     { label: 'states', source: { input: 'states' }, schemas: catalog?.states.schema_ids ?? [] },
     ...Object.entries(operations).flatMap(([name, value]) => Object.entries(definitions.get(value.operation)?.outputs ?? {})
@@ -207,12 +213,13 @@ export function useManagedAnalyze({
           ? file(['operations', selected, 'params', fieldId], edit.value)
           : file(['operations', selected, 'params'], { [fieldId]: edit.value })]));
       }} />}
-    {figure && selected && <label className="grid gap-1">
+    {figure && selected && selectedFigure && <label className="grid gap-1">
       {studioName('caption')}
-      <input className={control} key={saved.revision + selected} defaultValue={figure.figure.caption ?? ''} disabled={!canEdit}
+      <input className={control} key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}
+        defaultValue={selectedFigure.caption ?? ''} disabled={!canEdit || 'document' in figure.figure}
         onBlur={({ currentTarget }) => {
           const caption = currentTarget.value;
-          if (caption !== (figure.figure.caption ?? '')) {
+          if (!('document' in figure.figure) && caption !== (selectedFigure.caption ?? '')) {
             void perform(() => save(studioName('caption'), [file(['views', selected, 'figure', 'caption'], caption)]));
           }
         }}
@@ -230,13 +237,16 @@ export function useManagedAnalyze({
       {connect.label}
     </button>
   </div>;
-  const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => <li key={name}>
-    <button type="button" className={control} aria-pressed={selected === name} onClick={() => element.onSelect(name)}>
-      {name}
-    </button>
-    {view.figure.caption && <span className="px-2">{view.figure.caption}</span>}
-    {planned.has(name) && <span className="px-2">{studioRunStatus(planned.get(name)!)}</span>}
-  </li>)}</ul>;
+  const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
+    const caption = figureDefinition(name, view.figure)?.caption;
+    return <li key={name}>
+      <button type="button" className={control} aria-pressed={selected === name} onClick={() => element.onSelect(name)}>
+        {name}
+      </button>
+      {caption && <span className="px-2">{caption}</span>}
+      {planned.has(name) && <span className="px-2">{studioRunStatus(planned.get(name)!)}</span>}
+    </li>;
+  })}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
   return {
     selectedFigure: figure ? selected : undefined,

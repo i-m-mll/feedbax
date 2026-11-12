@@ -16,7 +16,7 @@ from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
+from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.operation import DatasetPort
@@ -163,6 +163,7 @@ class PlannedAnalyzeRun(PlannedRow):
     elements: Mapping[str, PlannedElement]
     requires: tuple[str, ...]
     states: PlannedInput
+    figures: Mapping[str, FigureDocument]
 
 
 @dataclass(frozen=True)
@@ -1009,7 +1010,7 @@ class _Compiler:
         evaluation = request_identity.decode_request(
             self.requests[producer.request_id], self.documents.__getitem__,
         )
-        elements, encoded, problems = lower_analyze(
+        elements, encoded, problems, figures = lower_analyze(
             key,
             resolved.payload,
             resolved.document_ids,
@@ -1027,7 +1028,7 @@ class _Compiler:
         original = self.rows[key]
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
-            MappingProxyType(elements), template.requires, source,
+            MappingProxyType(elements), template.requires, source, MappingProxyType(figures),
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -1229,9 +1230,14 @@ def compile_project(
     operations: OperationRegistry | None = None,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
-    if readers.external is not None:
-        readers = replace(readers, external=cache(readers.external))
-    if memo is None or any(reader is not None for reader in (readers.run, readers.external, readers.row)):
+    readers = replace(
+        readers,
+        external=cache(readers.external) if readers.external is not None else None,
+        figure_external=cache(readers.figure_external) if readers.figure_external is not None else None,
+    )
+    if memo is None or any(
+        reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)
+    ):
         return _Compiler(project, readers, source_runs, operations=operations).plan()
     authority = _compiler_authority()
     ticket, previous = memo._begin(authority)

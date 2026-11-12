@@ -17,6 +17,7 @@ import { humanizeLabel } from '@/components/values/ValueSpecField';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
+import { graphEdgeId } from '@/features/scenario/entities';
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
@@ -71,7 +72,6 @@ interface DetailInputs {
   readonly namedRun?: StudioSavedTrainKey;
   readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
   readonly problemReveal?: ProblemReveal;
-  readonly saveComponentPosition: (document: string, node: string, position: PresentationPosition) => Promise<unknown>;
 }
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
@@ -389,17 +389,17 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const document = reveal?.problem.document;
   const modelElement = !document || definitions.model?.id === document ? element : undefined;
   const wireTarget = modelElement?.kind === 'wire' ? graph?.wires?.[modelElement.index] : undefined;
-  let modelId: string | undefined;
+  let revealedModelId: string | undefined;
   if (modelElement?.kind === 'component' && graph && Object.prototype.hasOwnProperty.call(graph.nodes ?? {}, modelElement.id)) {
-    modelId = `component:${modelElement.id}`;
+    revealedModelId = `component:${modelElement.id}`;
   } else if (modelElement?.kind === 'wire' && wireTarget &&
       graph?.nodes?.[wireTarget.source_node] && graph.nodes?.[wireTarget.target_node]) {
-    modelId = `wire:${modelElement.index}`;
+    revealedModelId = graphEdgeId(wireTarget);
   }
   const taskId = element?.kind === 'taskParameter' && (!document || definitions.task?.id === document) &&
     task && Object.prototype.hasOwnProperty.call(task.params ?? {}, element.name) ? element.name : undefined;
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
-  const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]), reveal, modelId);
+  const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]), reveal, revealedModelId);
   const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]), reveal, taskId);
   const change = useDefinitionEdit(input, scope);
   function editable(field: DefinitionField, definition: Definition) {
@@ -411,21 +411,25 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const modelItems = useMemo(() => Object.entries(graph?.nodes ?? {}).map(([id, node]) => ({
     id, selectionId: `component:${id}`, label: <>{id}<br />{node.type}</>,
   })), [graph]);
-  const modelConnections = useMemo(() => (graph?.wires ?? []).map((wire, index) => ({
-    id: `wire:${index}`, source: wire.source_node, target: wire.target_node,
+  const modelConnections = useMemo(() => (graph?.wires ?? []).map((wire) => ({
+    id: graphEdgeId(wire), source: wire.source_node, target: wire.target_node,
   })), [graph]);
   const component = components.find(([id]) => modelSelection.selectedId === `component:${id}`);
-  const wire = graph?.wires?.find((_, index) => modelSelection.selectedId === `wire:${index}`);
+  const wire = graph?.wires?.find((item) => modelSelection.selectedId === graphEdgeId(item));
   const registry = useQuery({ queryKey: ['components'], queryFn: fetchComponents, staleTime: 5 * 60 * 1000,
     enabled: activeView === 'model' });
   const model = definitions.model;
-  const positions = model?.id ? saved.presentation?.documents?.[model.id]?.positions : undefined;
+  const modelId = model?.id;
+  const sharedPositions = modelId ? saved.presentation?.documents?.[modelId]?.positions : undefined;
+  const localPositions = modelId && stepId ? saved.presentation?.steps?.[stepId]?.model_positions?.[modelId] : undefined;
+  const positions = useMemo(() => localPositions ? { ...sharedPositions, ...localPositions } : sharedPositions,
+    [sharedPositions, localPositions]);
   const graphScope = input.documentScopes.graph;
   const authorModel = useModelAuthoring({
-    editor, graph, registry: registry.data, documentScope: graphScope, onSelect: modelSelection.onSelect,
-    savePosition: input.saveComponentPosition,
+    editor, graph, registry: registry.data, onSelect: modelSelection.onSelect,
     review: !pending && activeView === 'model' && model?.id && graphScope && input.namedRun && editable('graph', model)
-      ? { revision: saved.revision, document: model.id, run: input.namedRun, litSteps: [...graphScope.lit] }
+      ? { revision: saved.revision, presentationRevision: saved.presentation_revision,
+        document: model.id, run: input.namedRun, litSteps: [...graphScope.lit] }
       : undefined,
   });
   const scene = useSceneDetail(input, model, graph, JSON.stringify([scope, model?.id]), saved.project_id, saved.revision);
@@ -474,8 +478,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
         {registry.error && <p role="alert">{apiErrorMessage(registry.error)}</p>}
         {authorModel.drawer}
         <DetailList name="components" items={components.map(([id]) => ({ id: `component:${id}`, label: id }))} {...modelSelection} />
-        <DetailList name="wires" items={(graph.wires ?? []).map((item, index) => ({
-          id: `wire:${index}`, label: `${endpoint(item.source_node, item.source_port)} → ${endpoint(item.target_node, item.target_port)}`,
+        <DetailList name="wires" items={(graph.wires ?? []).map((item) => ({
+          id: graphEdgeId(item), label: `${endpoint(item.source_node, item.source_port)} → ${endpoint(item.target_node, item.target_port)}`,
         }))} {...modelSelection} />
       </> : null,
       commands: authorModel.commands,

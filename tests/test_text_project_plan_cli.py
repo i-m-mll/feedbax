@@ -6,6 +6,7 @@ from pathlib import Path
 from feedbax.cli import main
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project_io import (
+    STUDIO_WRITE_LOCK_FILENAME,
     ProjectConfiguration,
     StudioProjectFile,
     dump_studio_project,
@@ -14,6 +15,7 @@ from feedbax.contracts.project_io import (
 )
 from feedbax.contracts.project_plan import PlanRequests, compile_project
 from feedbax.contracts.project_plan_io import load_plan_requests
+from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_project_analyze_plan import _operations
 from tests.test_project_report_plan import _report_project
 
@@ -137,7 +139,7 @@ def test_cli_refuses_writes_to_the_project_inputs_or_store(tmp_path, capsys):
     assert not (root / "results").exists()
 
 
-def test_cli_resolves_a_project_relative_figure_pin_without_changing_the_plan(tmp_path, capsys):
+def test_cli_and_managed_plan_share_a_project_relative_figure_pin(tmp_path, capsys):
     root = tmp_path / "reaching"
     project, files = _write_walkthrough(root)
     baseline = tmp_path / "plan.json"
@@ -158,6 +160,11 @@ def test_cli_resolves_a_project_relative_figure_pin_without_changing_the_plan(tm
     assert main(["plan", str(root), "--out", str(shared)]) == 2
     assert "review file overlaps an authored project file" in capsys.readouterr().err
     assert shared.read_bytes() == raw
+    review, _ = load_plan_requests(baseline.read_bytes())
+    folders = ProjectFolderService(tmp_path, operations=_operations())
+    settled = folders.read_plan("reaching", revision=None)
+    assert not settled.plan.diagnostics
+    assert PlanRequests.from_plan(settled.plan) == review
 
     shared.write_bytes(b"{")
     assert main(["plan", str(root), "--check", str(baseline)]) == 2
@@ -165,4 +172,10 @@ def test_cli_resolves_a_project_relative_figure_pin_without_changing_the_plan(tm
     assert "default/analyze/default/align unchanged analyze:" in captured.out
     assert "documents/velocity-figure.json:payload.sha256" in captured.err
     assert f"[bad_external_content]: expected {digest}, got {sha256_bytes(b'{')}" in captured.err
-    assert _files(root) == files
+    refused = folders.read_plan("reaching", revision=settled.revision)
+    problem = next(problem for problem in refused.plan.diagnostics if problem.element == "profile")
+    assert (problem.document, problem.document_path) == ("velocity-figure", "payload.sha256")
+    assert any(key.name == "align" for key in refused.plan.elements)
+    assert not any(key.name == "profile" for key in refused.plan.elements)
+    assert not any(run.kind == "report" for run in refused.plan.runs)
+    assert {name: data for name, data in _files(root).items() if name != STUDIO_WRITE_LOCK_FILENAME} == files

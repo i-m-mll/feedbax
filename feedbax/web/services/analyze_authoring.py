@@ -12,7 +12,8 @@ from feedbax.contracts.operation import (
 )
 from feedbax.contracts.project import DocumentReference, Project
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import PlannedAnalyzeRun, RunKey, compile_project
+from feedbax.contracts.project_resolution import BaseReaders
 from feedbax.contracts.studio_analyze import (
     StudioAnalyzeAuthoring,
     StudioAnalyzeRequest,
@@ -52,6 +53,8 @@ def review_wire(
     wire: StudioAnalyzeWire,
     registry: OperationRegistry,
     states: DatasetPort,
+    *,
+    readers: BaseReaders = BaseReaders(),
 ) -> StudioProjectFilePatch:
     analysis = AnalysisDocument.model_validate(project.documents[document].payload)
     family = "operations" if wire.element in analysis.operations else "views"
@@ -62,29 +65,34 @@ def review_wire(
         if expected is None:
             raise ValueError(f"Unknown operation input {wire.role!r}.")
         require_dataset_port(source, expected)
-    else:
-        view = analysis.views.get(wire.element)
-        if view is None or wire.role not in view.figure.data:
-            raise ValueError(f"Unknown figure input {wire.element}.{wire.role}.")
-        inputs = view.inputs | {wire.role: wire.source}
-        validate_figure_bindings(
-            view.figure,
-            {role: _port(binding, analysis, registry, states) for role, binding in inputs.items()},
-        )
+    elif wire.element not in analysis.views:
+        raise ValueError(f"Unknown figure {wire.element!r}.")
 
     proposal = project.model_copy(deep=True)
     binding = wire.source.model_dump(mode="json")
     bindings = proposal.documents[document].payload[family][wire.element]["inputs"]
     operation = "replace" if wire.role in bindings else "add"
     bindings[wire.role] = binding
-    plan = compile_project(proposal, operations=registry)
-    path = f"payload.{family}.{wire.element}.inputs"
-    for problem in plan.diagnostics:
-        if (problem.variant, problem.step, problem.row) == (
-            key.variant,
-            key.step,
-            key.row,
-        ) and problem.path in {path, f"{path}.{wire.role}"}:
+    plan = compile_project(proposal, operations=registry, readers=readers)
+    problems = [
+        problem for problem in plan.diagnostics
+        if (problem.variant, problem.step, problem.row) == (key.variant, key.step, key.row)
+    ]
+    path = f"payload.{family}.{wire.element}"
+    if family == "views":
+        row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
+        figure = row.figures.get(wire.element) if row is not None else None
+        if figure is None:
+            problem = next((problem for problem in problems if problem.element == wire.element), None)
+            raise ValueError(problem.detail if problem is not None else f"Cannot resolve figure {wire.element!r}.")
+        if wire.role not in figure.data:
+            raise ValueError(f"Unknown figure input {wire.element}.{wire.role}.")
+        inputs = analysis.views[wire.element].inputs | {wire.role: wire.source}
+        validate_figure_bindings(
+            figure, {role: _port(binding, analysis, registry, states) for role, binding in inputs.items()},
+        )
+    for problem in problems:
+        if problem.path in {f"{path}.inputs", f"{path}.inputs.{wire.role}"}:
             raise ValueError(problem.detail)
     return StudioProjectFilePatch(
         address=AuthoredFileAddress(kind="document", id=document),
@@ -168,7 +176,9 @@ def analyze_authoring(
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
         reviewed = (
-            [review_wire(project, key, step.base.document, body.wire, registry, states)]
+            [review_wire(
+                project, key, step.base.document, body.wire, registry, states, readers=view.settled.readers,
+            )]
             if body.wire
             else []
         )

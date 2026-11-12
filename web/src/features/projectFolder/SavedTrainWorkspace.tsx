@@ -261,7 +261,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: selection.variantId, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes, saveComponentPosition: saveElementPosition,
+    namedRun, documentScopes,
   };
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
     problemReveal: focusSlot === 'primary' ? revealed : undefined });

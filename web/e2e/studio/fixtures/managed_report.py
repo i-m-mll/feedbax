@@ -15,11 +15,11 @@ def seed(home: str, project_id: str):
     paths = AppPaths.resolve(instance_root=Path(home))
     root = paths.web / "projects" / project_id
     project = _project()
-    figure = project.documents.pop("velocity-figure").payload
+    figure = project.documents["velocity-figure"].payload
+    figure["caption"] = "Reach-aligned velocity"
     comparison = deepcopy(figure)
     comparison["caption"] = "Velocity comparison"
     views = project.documents["velocity-analysis"].payload["views"]
-    views["profile"]["figure"] = figure
     views["comparison"] = {**views["profile"], "figure": comparison}
     for name, data in dump_text_project(
         project, ProjectConfiguration(project=project_id, store="results"),

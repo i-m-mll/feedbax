@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
 import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot } from '@/generated/studioContracts';
-import { addressKey, applyAuthoredEdits } from './authoredEdits';
+import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
@@ -23,12 +23,17 @@ const initial: StudioProjectSnapshot = {
   } },
 };
 
-function fixture(settleMs = 400) {
-  let current = initial;
+function fixture(settleMs = 400, start = initial) {
+  let current = start;
   let name = 'reach';
   let sequence = 6;
   const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
   const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[]) => {
+    if (address.kind === 'presentation') {
+      const { project } = applyAuthoredEdits({ ...current.project, presentation: current.presentation }, address, edits);
+      current = { ...current, presentation: project.presentation ?? null, presentation_revision: hex(sequence++) };
+      return current;
+    }
     const { project } = applyAuthoredEdits(current.project, address, edits);
     current = {
       ...current,
@@ -42,6 +47,10 @@ function fixture(settleMs = 400) {
   const write = vi.fn<ProjectEditTransport['write']>(async (_id, body) => {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach', 'Changed', { status: 409 });
     const files = 'files' in body ? body.files : [body];
+    if (files.some(({ address }) => address.kind === 'presentation') &&
+        body.presentation_revision !== current.presentation_revision) {
+      throw new ApiRequestError('http', '/api/projects/reach', 'Presentation changed', { status: 409 });
+    }
     for (const { address, patches } of files) external(address, patches);
     return current;
   });
@@ -85,6 +94,36 @@ it('acknowledges every file of a scoped edit after a lost response and undoes it
     { address: task, patches: [value(1)] },
   ]) });
   expect(current().project).toEqual(initial.project);
+  editor.dispose();
+});
+
+it('undoes and redoes placement while preserving a later fold', async () => {
+  const start = { ...initial, presentation: {} };
+  const { editor, write, external, current } = fixture(400, start);
+  const positions = { model: { gru: { x: 8, y: -9 } } };
+  write.mockImplementationOnce(async (_id, body) => {
+    if (!('files' in body)) throw new Error('Expected one combined save');
+    expect(body.presentation_revision).toBe(start.presentation_revision);
+    for (const { address, patches } of body.files) external(address, patches);
+    throw new ApiRequestError('network', '/api/projects/reach', 'Response lost');
+  });
+  editor.editFiles('Add Component', [
+    { address: model, patches: [value(2)] },
+    { address: presentationAddress, patches: [{
+      op: 'add', path: '/steps', value: { fit: { model_positions: positions } },
+    }] },
+  ], { reviewedRevision: start.revision, reviewedPresentationRevision: start.presentation_revision });
+  await editor.flush();
+  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions } } });
+  external(presentationAddress, [{ op: 'add', path: '/steps/fit/folded_sweep_id', value: 'seed' }]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  expect(current().project).toEqual(start.project);
+  expect(current().presentation).toEqual({ steps: { fit: { folded_sweep_id: 'seed' } } });
+  editor.redo();
+  await editor.flush();
+  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions, folded_sweep_id: 'seed' } } });
   editor.dispose();
 });
 

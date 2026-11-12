@@ -19,6 +19,7 @@ from pydantic import TypeAdapter, ValidationError
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import directory_open_flags, rename_no_replace
 from feedbax.contracts.base import StrictModel, sha256_bytes
+from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.project import Project, Sha256, json_pointer_parts
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
@@ -31,6 +32,7 @@ from feedbax.contracts.project_io import (
     STUDIO_WRITE_LOCK_FILENAME,
     TextFileStamp,
     TextProject,
+    TextProjectExternalInputs,
     dump_text_project,
     read_text_project_snapshot,
     project_semantic_root,
@@ -39,8 +41,11 @@ from feedbax.contracts.project_io import (
     text_project_fingerprint,
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
+from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
+    PRESENTATION_ADDRESS,
     AuthoredFileAddress,
     CreateNamedDocument,
     PresentationDocument,
@@ -97,6 +102,36 @@ class SettledProjectPlan:
     configuration: ProjectConfiguration
     store_path: Path
     plan: ProjectPlan
+    readers: BaseReaders
+
+
+def _may_read_figure_pin(project: Project) -> bool:
+    figures = {
+        name: document for name, document in project.documents.items()
+        if document.schema_id == FIGURE_DOCUMENT_SCHEMA
+    }
+    if any(is_figure_document_pin(document.payload) for document in figures.values()):
+        return True
+    if any(figures.keys() & step.document_overrides.keys() for step in project.steps.values()):
+        return True
+    if (sweep := project.sweep) is None:
+        return False
+
+    def affects_figures(path: str) -> bool:
+        family, *parts = path.split(".")
+        return family == "documents" or bool(figures) and family == "steps" and (
+            len(parts) == 1 or parts[1:2] == ["document_overrides"]
+        )
+
+    patches = [
+        *sweep.rows.values(), *sweep.exceptions.values(),
+        *(value for axis in sweep.axes.values() if isinstance(axis, NamedAxis) for value in axis.values.values()),
+    ]
+    return any(
+        affects_figures(path) for value in patches if value is not None for path in value.patches
+    ) or any(
+        isinstance(axis, GeneratedAxis) and affects_figures(axis.path) for axis in sweep.axes.values()
+    )
 
 
 def _regular(path: Path) -> os.stat_result:
@@ -108,15 +143,33 @@ def _regular(path: Path) -> os.stat_result:
 
 class _PendingFile(StrictModel):
     address: AuthoredFileAddress
-    before: Sha256
+    before: Sha256 | None
     data: str
 
     @property
     def relative(self) -> str:
-        return f"{_FAMILIES[self.address.kind]}/{self.address.id}.json"
+        return _relative_file(self.address)
 
 
 _PENDING_FILES = TypeAdapter(list[_PendingFile])
+
+
+def _relative_file(address: AuthoredFileAddress) -> str:
+    if address == PRESENTATION_ADDRESS:
+        return STUDIO_PRESENTATION_FILENAME
+    if address.kind not in _FAMILIES:
+        raise ProjectFolderInvalid("Invalid project file address")
+    return f"{_FAMILIES[address.kind]}/{address.id}.json"
+
+
+def _patch_preimage(path: Path, file: _PendingFile) -> tuple[int, str | None]:
+    try:
+        mode = stat.S_IMODE(_regular(path).st_mode)
+        return mode, sha256_bytes(path.read_bytes())
+    except FileNotFoundError:
+        if file.relative != STUDIO_PRESENTATION_FILENAME or file.before is not None:
+            raise
+        return 0o600, None
 
 
 def _finish_patch(root: Path) -> None:
@@ -134,9 +187,8 @@ def _finish_patch(root: Path) -> None:
         path = root / file.relative
         if not stat.S_ISDIR(path.parent.lstat().st_mode):
             raise ProjectFolderInvalid(f"{path.parent.name} must be a directory")
-        mode = stat.S_IMODE(_regular(path).st_mode)
+        mode, current = _patch_preimage(path, file)
         data = file.data.encode()
-        current = sha256_bytes(path.read_bytes())
         if current == sha256_bytes(data):
             continue
         if current != file.before:
@@ -145,11 +197,10 @@ def _finish_patch(root: Path) -> None:
 
     for file, path, mode, data in replacements:
         def guard() -> None:
-            _regular(path)
-            if sha256_bytes(path.read_bytes()) != file.before:
+            if _patch_preimage(path, file)[1] != file.before:
                 raise ProjectFolderInvalid(f"{file.relative} changed during a Studio edit")
 
-        write_bytes_atomic(path, data, mode=mode, before_publish=guard)
+        write_bytes_atomic(path, data, mode=mode, replace=file.before is not None, before_publish=guard)
     journal.unlink()
     sync_parent_directories(journal)
 
@@ -193,6 +244,13 @@ def _read_presentation(root: Path) -> tuple[bytes | None, str]:
 
 def _encode_presentation(presentation: PresentationDocument) -> bytes:
     return (presentation.model_dump_json(indent=2, exclude_unset=True) + "\n").encode()
+
+
+def _decode_presentation(data: bytes | None) -> PresentationDocument:
+    return (
+        PresentationDocument.model_validate(strict_json_loads(data, ref=STUDIO_PRESENTATION_FILENAME))
+        if data is not None else PresentationDocument()
+    )
 
 
 class ProjectFolderService:
@@ -239,11 +297,7 @@ class ProjectFolderService:
         data, presentation_revision = _read_presentation(text.root)
         presentation_error = None
         try:
-            presentation = (
-                PresentationDocument.model_validate(strict_json_loads(data, ref=STUDIO_PRESENTATION_FILENAME))
-                if data is not None
-                else PresentationDocument()
-            )
+            presentation = _decode_presentation(data)
         except (ValueError, UnicodeError):
             presentation = None
             presentation_error = "unreadable_presentation"
@@ -272,7 +326,9 @@ class ProjectFolderService:
         )
 
     def open(self, project_id: str) -> StudioProjectDocument:
-        return self._document(project_id, self._read_text(project_id))
+        root = self._folder(project_id)
+        with _folder_lock(root, write=False):
+            return self._document(project_id, self._load(root))
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open the managed direct child selected by the native folder picker."""
@@ -290,10 +346,12 @@ class ProjectFolderService:
             return self._load(root)
 
     def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:
-        text = self._read_text(project_id)
-        if revision is not None:
-            _check_revision("project", revision, text.revision)
-        return self._snapshot(project_id, text)
+        root = self._folder(project_id)
+        with _folder_lock(root, write=False):
+            text = self._load(root)
+            if revision is not None:
+                _check_revision("project", revision, text.revision)
+            return self._snapshot(project_id, text)
 
     def read_plan(
         self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = ()
@@ -307,6 +365,9 @@ class ProjectFolderService:
     def _compile(
         self, project_id: str, text: TextProject, source_runs: Iterable[RunKey] = ()
     ) -> SettledProjectPlan:
+        readers = BaseReaders(
+            figure_external=TextProjectExternalInputs(text, authority=self.root).read,
+        ) if _may_read_figure_pin(text.project) else BaseReaders()
         return SettledProjectPlan(
             project_id,
             text.revision,
@@ -315,8 +376,9 @@ class ProjectFolderService:
             text.store_path,
             compile_project(
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id),
-                operations=self.operations,
+                operations=self.operations, readers=readers,
             ),
+            readers,
         )
 
     @contextmanager
@@ -405,12 +467,13 @@ class ProjectFolderService:
             return self._document(project_id, self._load(root))
 
     def revision(self, project_id: str) -> StudioProjectRevision:
-        text = self._read_text(project_id)
-        return StudioProjectRevision(
-            project_id=project_id,
-            revision=text.revision,
-            presentation_revision=_read_presentation(text.root)[1],
-        )
+        root = self._folder(project_id)
+        with _folder_lock(root, write=False):
+            return StudioProjectRevision(
+                project_id=project_id,
+                revision=self._load(root).revision,
+                presentation_revision=_read_presentation(root)[1],
+            )
 
     def patch(self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch) -> StudioProjectSnapshot:
         root = self._folder(project_id)
@@ -421,17 +484,32 @@ class ProjectFolderService:
             original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             addresses = {}
+            presentation_data = None
+            edits_presentation = any(file.address == PRESENTATION_ADDRESS for file in files)
+            if edits_presentation:
+                if body.presentation_revision is None:
+                    raise ProjectFolderInvalid("A presentation edit requires its revision")
+                presentation_data, current = _read_presentation(root)
+                _check_revision("presentation", body.presentation_revision, current)
             try:
+                presentation = (
+                    _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
+                    if edits_presentation else None
+                )
                 for file in files:
-                    family = _FAMILIES[file.address.kind]
-                    relative = f"{family}/{file.address.id}.json"
-                    if relative not in original:
-                        raise ProjectFolderNotFound(file.address.id)
+                    relative = _relative_file(file.address)
                     if relative in addresses:
                         raise ProjectFolderInvalid(f"{relative} is addressed twice")
                     addresses[relative] = file.address
-                    target = payload["sweep"]["rows"] if family == "variants" else payload[family]
-                    entry = target[file.address.id]
+                    if relative == STUDIO_PRESENTATION_FILENAME:
+                        assert presentation is not None
+                        entry = presentation
+                    else:
+                        if relative not in original:
+                            raise ProjectFolderNotFound(file.address.id)
+                        family = _FAMILIES[file.address.kind]
+                        target = payload["sweep"]["rows"] if family == "variants" else payload[family]
+                        entry = target[file.address.id]
                     for patch in file.patches:
                         apply_value_patch_in_place(
                             entry,
@@ -442,14 +520,19 @@ class ProjectFolderService:
                         )
                 project = Project.model_validate(payload)
                 encoded = dump_text_project(project, text.configuration)
+                if presentation is not None:
+                    original[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(_decode_presentation(presentation_data))
+                    encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
             except (ValueError, TypeError, RecursionError) as error:
                 raise ProjectFolderInvalid(str(error)) from error
             changed = [relative for relative in addresses if encoded[relative] != original[relative]]
 
             def guard() -> None:
                 _check_revision("project", text.revision, self._load(root).revision)
+                if edits_presentation:
+                    _check_revision("presentation", body.presentation_revision, _read_presentation(root)[1])
 
-            if len(changed) == 1:
+            if len(changed) == 1 and changed[0] != STUDIO_PRESENTATION_FILENAME:
                 relative = changed[0]
                 path = root / relative
                 write_bytes_atomic(
@@ -461,7 +544,10 @@ class ProjectFolderService:
             elif changed:
                 pending = [
                     _PendingFile(
-                        address=addresses[relative], before=text.file_revisions[relative],
+                        address=addresses[relative],
+                        before=(
+                            sha256_bytes(presentation_data) if presentation_data is not None else None
+                        ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions[relative],
                         data=encoded[relative].decode(),
                     )
                     for relative in changed

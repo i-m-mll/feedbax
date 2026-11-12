@@ -60,6 +60,7 @@ test('authors an ordered managed Report from a planned Analyze figure', async ({
   await page.goto(mounted);
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
+  await expect(figures.getByText('Reach-aligned velocity', { exact: true })).toBeVisible();
   await figures.getByRole('button', { name: 'profile', exact: true }).click();
   await palette('Report');
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');

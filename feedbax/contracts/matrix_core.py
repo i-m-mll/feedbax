@@ -712,6 +712,19 @@ def apply_value_patch_in_place(
     _apply_patch_target(parent, parts[-1], op, value, path, error_context)
 
 
+def ensure_value_collection(
+    root: dict[str, Any], parts: Sequence[str], empty: dict | list, *, path: str,
+) -> None:
+    parent = _resolve_patch_parent(root, parts, path=path, error_context="override")
+    key = parts[-1]
+    if not isinstance(parent, dict):
+        raise ValueError(f"collection path must name an object member: {path!r}")
+    if key not in parent:
+        parent[key] = empty
+    elif not isinstance(parent[key], dict if isinstance(empty, dict) else list):
+        raise ValueError(f"collection at {path!r} has the wrong kind")
+
+
 def _apply_patch_target(
     parent: Any,
     leaf: str,

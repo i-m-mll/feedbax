@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from errno import ENOENT
 from pathlib import Path
@@ -41,10 +42,10 @@ class _InputRead:
     content: bytes | None
 
     @classmethod
-    def observe(cls, target: Path) -> _InputRead:
+    def observe(cls, target: Path, read: Callable[[Path], bytes]) -> _InputRead:
         try:
             _require_file(target, require_file=True)
-            return cls(target, target.read_bytes())
+            return cls(target, read(target))
         except FileNotFoundError:
             return cls(target, None)
 
@@ -52,7 +53,8 @@ class _InputRead:
 class AuthoringInputs:
     """Track exact bytes and resolved targets for the paths an authoring plan reads."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, read: Callable[[Path], bytes] = Path.read_bytes) -> None:
+        self._read = read
         self._reads: dict[Path, _InputRead] = {}
 
     def read_text(
@@ -74,7 +76,7 @@ class AuthoringInputs:
     ) -> bytes:
         path = path.absolute()
         target = path.resolve() if resolved_path is None else resolved_path
-        observed = _InputRead.observe(target)
+        observed = _InputRead.observe(target, self._read)
         previous = self._reads.setdefault(path, observed)
         if observed != previous:
             raise ValueError(f"Evaluation authoring input changed after it was read: {path}")
@@ -88,7 +90,7 @@ class AuthoringInputs:
             try:
                 target = path.resolve()
                 if target == expected.target:
-                    observed = _InputRead.observe(target)
+                    observed = _InputRead.observe(target, self._read)
                     if observed == expected:
                         continue
             except (OSError, RuntimeError) as exc:

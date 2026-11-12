@@ -6,7 +6,6 @@ from pathlib import Path
 import sys
 
 from feedbax._atomic import write_bytes_atomic
-from feedbax.contracts._authoring_inputs import AuthoringInputs
 from feedbax.contracts.project_io import (
     PROJECT_DECLARATION_FILENAME,
     PROJECT_FILE_FAMILIES,
@@ -15,6 +14,7 @@ from feedbax.contracts.project_io import (
     STUDIO_WRITE_LOCK_FILENAME,
     ProjectReadError,
     TextProject,
+    TextProjectExternalInputs,
     find_text_project,
     read_text_project_snapshot,
 )
@@ -123,22 +123,11 @@ def _plan(args: argparse.Namespace) -> int:
     operations = OperationRegistry()
     register_builtin_operations(operations)
     operations.seal()
-    external = AuthoringInputs()
-    external_paths: set[Path] = set()
-    store = text.store_path
-
-    def read_external(name: str) -> bytes:
-        source = root / name
-        try:
-            target = source.resolve()
-            if target.is_relative_to(store):
-                raise OSError(f"{source}: an external pin cannot read the declared Store")
-            external_paths.update((source, target))
-            return external.read_bytes(source, resolved_path=target)
-        except (ValueError, RuntimeError) as error:
-            raise OSError(str(error)) from error
-
-    plan = compile_project(text.project, operations=operations, readers=BaseReaders(external=read_external))
+    external = TextProjectExternalInputs(text)
+    plan = compile_project(
+        text.project, operations=operations,
+        readers=BaseReaders(external=external.read, figure_external=external.read),
+    )
     current = PlanRequests.from_plan(plan)
     known_variants = set(plan.variants)
     variants = tuple(sorted(set(args.variant))) if args.variant else None
@@ -184,7 +173,7 @@ def _plan(args: argparse.Namespace) -> int:
         for key, request in scoped.entries.items():
             print(f"{_address(key)} {request.request_id}")
         if args.out is not None and not problems:
-            destination = _output_path(args.out, text, external_paths)
+            destination = _output_path(args.out, text, external.paths)
             write_bytes_atomic(destination, dump_plan_requests(current, variants))
     return 2 if problems else status
 

@@ -15,6 +15,7 @@ type Operation = StudioModelAuthoringChange['operation'];
 type Mode = Operation['kind'];
 interface Review {
   revision: string;
+  presentationRevision: string;
   document: string;
   run: StudioSavedTrainKey;
   litSteps: readonly string[];
@@ -85,15 +86,13 @@ function PortForm({ mode, graph, commit, busy }: {
 }
 
 export function useModelAuthoring({
-  editor, graph, registry, review, documentScope, onSelect, savePosition,
+  editor, graph, registry, review, onSelect,
 }: {
   editor: ProjectEditController;
   graph: GraphSpec | null;
   registry?: readonly ComponentDefinition[];
   review?: Review;
-  documentScope?: { users: ReadonlySet<string>; lit: ReadonlySet<string> };
   onSelect(id: string): void;
-  savePosition(document: string, node: string, position: PresentationPosition): Promise<unknown>;
 }) {
   const scope = review && JSON.stringify(review);
   const current = useRef(scope);
@@ -109,8 +108,7 @@ export function useModelAuthoring({
     const parsed = StudioModelAddComponentSchema.safeParse({ kind: 'addComponent', component: name, revision });
     return parsed.success ? [parsed.data] : [];
   });
-  const allLit = !!documentScope && documentScope.lit.size === documentScope.users.size;
-  const enabled = !!scope && !!graph && allLit && !busy;
+  const enabled = !!scope && !!graph && !busy;
   const outputs = graph && ports(graph, 'output_ports').length;
   const inputs = graph && ports(graph, 'input_ports').length;
   const open = (mode: Mode, point?: PresentationPosition) => {
@@ -133,16 +131,25 @@ export function useModelAuthoring({
     setIssue(undefined);
     try {
       const { saved } = editor.getSnapshot();
+      const requested = operation.kind === 'addComponent' && point ? { ...operation, position: point } : operation;
       const result = await fetchDocumentAuthoring(saved.project_id, {
         revision: review.revision, run: review.run, field: 'graph',
-        change: { lit_steps: [...review.litSteps], operation },
+        presentation_revision: point ? review.presentationRevision : undefined,
+        change: { lit_steps: [...review.litSteps], operation: requested },
       });
       if (current.current !== scope || result.document !== review.document) throw new ProjectEditConflictError();
-      editor.editFiles(studioName(operation.kind), result.files, { reviewedRevision: result.revision });
+      const dependencies = [
+        { kind: 'document', id: review.document } as const,
+        ...review.litSteps.map((id) => ({ kind: 'step', id } as const)),
+      ].filter(({ kind, id }) => !result.files.some(({ address }) => address.kind === kind && address.id === id));
+      editor.editFiles(studioName(operation.kind), result.files, {
+        reviewedRevision: result.revision,
+        reviewedPresentationRevision: result.presentation_revision ?? undefined,
+        dependencies,
+      });
       if (result.created_component) onSelect(`component:${result.created_component}`);
       setOpened(undefined);
       await editor.flush();
-      if (point && result.created_component) await savePosition(result.document, result.created_component, point);
     } catch (error) {
       setIssue({ document: review.document, message: apiErrorMessage(error) });
     } finally {
@@ -163,7 +170,6 @@ export function useModelAuthoring({
       <ComponentChoices choices={choices} enabled={enabled} choose={(operation) => { void commit(operation); }} />
       {commands.slice(1).map((command) => <button key={command.id} type="button" className={`${control} block`}
         {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>{command.label}</button>)}
-      {documentScope && !allLit && <p className="px-2 text-sm">Topology edits require all Model users to be lit.</p>}
     </section>,
     overlay: dialog && graph && <Dialog ariaLabel={studioName(dialog.mode)} onClose={() => setOpened(undefined)} manageFocus panelClassName={panel}>
       <h2 className="font-medium">{studioName(dialog.mode)}</h2>

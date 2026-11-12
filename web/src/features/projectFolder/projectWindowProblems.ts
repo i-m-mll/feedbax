@@ -8,9 +8,10 @@ type ProblemElement =
   | { kind: 'wire'; index: number }
   | { kind: 'taskParameter'; name: string };
 
-export function problemReason({ path, detail }: StudioProjectWindowMapProblem) {
+export function problemReason({ path, detail, document_path }: StudioProjectWindowMapProblem) {
   const prefix = `${path}: `;
-  return detail.startsWith(prefix) ? detail.slice(prefix.length) : detail;
+  const message = detail.startsWith(prefix) ? detail.slice(prefix.length) : detail;
+  return document_path ? `${document_path} · ${message}` : message;
 }
 
 export function problemTarget(problem: StudioProjectWindowMapProblem) {
