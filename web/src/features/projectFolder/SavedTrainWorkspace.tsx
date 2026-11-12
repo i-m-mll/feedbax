@@ -512,7 +512,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
               {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
             </span>}
-          </>, body: <StudioErrorBoundary region={studioName(view)}>{details[view].body}</StudioErrorBoundary> };
+          </>, body: <StudioErrorBoundary region={studioName(view)}>
+            {view === 'task' && authoring && wholeStep && <StudioTrainAuthoringForm {...authoring} taskBinding />}
+            {details[view].body}
+          </StudioErrorBoundary> };
         }
         if (!step) return { body: null };
         if (view === 'runs') return { body: <StudioErrorBoundary region={studioName('runs')}>

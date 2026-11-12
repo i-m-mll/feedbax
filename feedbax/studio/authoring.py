@@ -31,6 +31,8 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringSource,
     StudioAuthoringSurface,
     StudioAuthoringSweepChange,
+    StudioReachTargetAuthoring,
+    StudioReachTargetEdit,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_training import (
@@ -49,11 +51,13 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingProgramRegistry,
 )
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import TargetStateLossSpec
 from feedbax.plugins.application import TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
 from feedbax.studio.protocol import infer_task_n_steps
+from feedbax.studio.reaching_authoring import REACH_TARGET_ID, reach_target_recipe, reaching_endpoint
 from feedbax.studio.schema import retained_observable_selector
 from feedbax.training.optimizers import optimizer_types
 
@@ -144,17 +148,24 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
 
 
 def _loss_choices(
-    graph: GraphSpec | None, binding: StudioTaskBindingSpec | None
+    graph: GraphSpec | None, binding: StudioTaskBindingSpec | None, endpoint: ValueSchema | None,
 ) -> dict[str, tuple[str, str]]:
     if graph is None or binding is None:
         return {}
-    choices = {}
+    sources: list[tuple[str, str, ValueSchema, str | None]] = []
     for observable in graph.retained_observables or ():
         selector = retained_observable_selector(observable)
         schema = observable.value_schema
         if not selector.startswith("path:") or schema is None or schema.shape is None:
             continue
+        sources.append((selector, observable.label or schema.label, schema, None))
+    if endpoint is not None:
+        sources.append((endpoint.id, endpoint.label, endpoint, REACH_TARGET_ID))
+    choices = {}
+    for selector, label, schema, target_id in sources:
         for target in binding.exposed_data:
+            if target_id is not None and target.id != target_id:
+                continue
             shape = target.expected_shape
             if shape is None or shape[:1] != ["time"] or shape[1:] != schema.shape:
                 continue
@@ -163,7 +174,7 @@ def _loss_choices(
             if schema.frame and target.frame and schema.frame != target.frame:
                 continue
             key = json.dumps([selector, f"task_data:{target.id}"])
-            choices[key] = (observable.label or schema.label, target.label)
+            choices.setdefault(key, (label, target.label))
     return choices
 
 
@@ -187,6 +198,7 @@ class _TrainFields:
         self.project = project
         self.step = step
         self.linked = linked
+        self.direct_unswept = direct and step.sweep is None and not step.document_overrides
         self.registry = registry
         template = compose_step(project, step_id, track_sources=True)
         resolved = (
@@ -307,9 +319,11 @@ class _TrainFields:
                     lambda value, path=path: [self.set(path, value)],
                 )
 
-    def objective(self, graph: GraphSpec | None) -> None:
-        binding = _read(StudioTaskBindingSpec, self.payload.get("task_binding_spec"))
-        choices = _loss_choices(graph, binding)
+    def objective(
+        self, graph: GraphSpec | None, binding: StudioTaskBindingSpec | None,
+        endpoint: ValueSchema | None,
+    ) -> None:
+        choices = _loss_choices(graph, binding, endpoint)
         objective = _read(ObjectiveSlotSpec, self.payload.get("objective"))
         loss = objective.loss if objective is not None and objective.kind == "loss_term" else None
         key = json.dumps([loss.selector, loss.target_selector]) if loss else None
@@ -322,6 +336,13 @@ class _TrainFields:
             and not loss.children
             and key in choices
             and isinstance(_get(self.payload, ("objective", "loss")), dict)
+        )
+        empty_composite = (
+            self.direct_unswept and loss is not None and loss.type in {"Composite", "composite"}
+            and not loss.children and loss == LossTermSpec(
+                type=loss.type, label=loss.label, children=loss.children,
+            )
+            and objective == ObjectiveSlotSpec(loss=loss)
         )
         path = ("objective", "loss", "selector")
 
@@ -359,10 +380,10 @@ class _TrainFields:
             if "objective" in self.payload
             else None,
             _options({key: f"{source} → {target}" for key, (source, target) in choices.items()})
-            if choices and (supported or "objective" not in self.payload)
+            if choices and (supported or empty_composite or "objective" not in self.payload)
             else None,
             write,
-            documents=self.named_documents("graph"),
+            documents=(*self.named_documents("graph"), *self.named_documents("task")),
         )
 
     def training(self, task: TaskSpec | None) -> None:
@@ -519,15 +540,31 @@ def project_train_fields(
     project: Project,
     step_id: str,
     registry: TrainingProgramRegistry,
-    change: StudioAuthoringChange | StudioAuthoringSweepChange | None,
+    change: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | None,
     *,
     components: ComponentRegistry | None = None,
-) -> tuple[list[StudioAuthoringField], list[SetProjectValue], list[str]]:
+) -> tuple[
+    list[StudioAuthoringField], list[SetProjectValue], list[str], StudioReachTargetAuthoring | None,
+]:
     """Project the supported fields and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
     graph = definition.document("graph", GraphSpec, _DOCUMENT_FIELDS["graph"][1])
     task = definition.document("task", TaskSpec, _DOCUMENT_FIELDS["task"][1])
-    definition.objective(graph)
+    binding = _read(StudioTaskBindingSpec, definition.payload.get("task_binding_spec", {}))
+    reach_target, edited_binding = None, None
+    reach_edit = change if isinstance(change, StudioReachTargetEdit) else None
+    if (
+        definition.direct_unswept and task is not None and task.type == "SimpleReaches"
+        and task.timeline is None and graph is not None and components is not None
+        and binding is not None
+    ):
+        reach_target, edited_binding = reach_target_recipe(graph, binding, components, reach_edit)
+    endpoint = (
+        reaching_endpoint(graph, components)
+        if reach_target is not None and reach_target.input is not None
+        and graph is not None and components is not None else None
+    )
+    definition.objective(graph, binding, endpoint)
     definition.training(task)
     if graph is not None and components is not None and not definition.named_documents("graph"):
         definition.inline_component_fields(graph, components)
@@ -550,7 +587,15 @@ def project_train_fields(
 
     patches = []
     documents: set[str] = set()
-    if isinstance(change, StudioAuthoringSweepChange):
+    if reach_edit is not None:
+        if reach_target is None:
+            raise ValueError("This Train has no supported Reach Target binding")
+        if edited_binding is not None:
+            patches = [definition.set(
+                ("task_binding_spec",), edited_binding.model_dump(mode="json", exclude_none=True),
+            )]
+            documents.update((*definition.named_documents("graph"), *definition.named_documents("task")))
+    elif isinstance(change, StudioAuthoringSweepChange):
         sweep = sweeps.get(change.field)
         if sweep is None:
             raise ValueError(f"Field {change.field!r} has no supported sweep edit")
@@ -576,11 +621,9 @@ def project_train_fields(
                 for patch in patches
                 if (ref := _read(DocumentReference, patch.value)) is not None
             )
-    return (
-        [field.view for field in definition.fields.values()],
-        definition.authored_edits(change.field, patches) if change is not None else [],
-        sorted(documents),
-    )
+    if isinstance(change, (StudioAuthoringChange, StudioAuthoringSweepChange)):
+        patches = definition.authored_edits(change.field, patches)
+    return [field.view for field in definition.fields.values()], patches, sorted(documents), reach_target
 
 
 def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:

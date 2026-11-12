@@ -2832,6 +2832,23 @@ export type StudioProjectWindowMapSubset = {
   "document": string | null;
 };
 
+export type StudioReachPosition = {
+  "x": number;
+  "y": number;
+};
+
+export type StudioReachTargetAuthoring = {
+  "inputs": Array<StudioAuthoringOption>;
+  "input": string | null;
+  "position": StudioReachPosition | null;
+};
+
+export type StudioReachTargetEdit = {
+  "kind": "bindReachTarget";
+  "input": string;
+  "position": StudioReachPosition;
+};
+
 export type StudioSetSweepValue = {
   "kind": "setSweepValue";
   "sweep_id": string;
@@ -2888,11 +2905,12 @@ export type StudioTrainAuthoring = {
   "fields": Array<StudioAuthoringField>;
   "patches": Array<ProjectValueEdit>;
   "documents": Array<string>;
+  "reach_target"?: StudioReachTargetAuthoring | null;
 };
 
 export type StudioTrainAuthoringRequest = {
   "revision": Sha256;
-  "change"?: StudioAuthoringChange | StudioAuthoringSweepChange | null;
+  "change"?: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | null;
 };
 
 export type StudioTrainStep = {
@@ -7667,6 +7685,29 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
+export const StudioReachPositionSchema: z.ZodType<StudioReachPosition> = z.lazy(() =>
+  z.object({
+    "x": z.number().finite().min(-3.4028234663852886e+38).max(3.4028234663852886e+38),
+    "y": z.number().finite().min(-3.4028234663852886e+38).max(3.4028234663852886e+38),
+  }).strict()
+) as unknown as z.ZodType<StudioReachPosition>;
+
+export const StudioReachTargetAuthoringSchema: z.ZodType<StudioReachTargetAuthoring> = z.lazy(() =>
+  z.object({
+    "inputs": z.array(StudioAuthoringOptionSchema),
+    "input": z.union([z.string(), z.null()]),
+    "position": z.union([StudioReachPositionSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioReachTargetAuthoring>;
+
+export const StudioReachTargetEditSchema: z.ZodType<StudioReachTargetEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("bindReachTarget"),
+    "input": z.string().min(1),
+    "position": StudioReachPositionSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioReachTargetEdit>;
+
 export const StudioSetSweepValueSchema: z.ZodType<StudioSetSweepValue> = z.lazy(() =>
   z.object({
     "kind": z.literal("setSweepValue"),
@@ -7740,13 +7781,14 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "fields": z.array(StudioAuthoringFieldSchema),
     "patches": z.array(ProjectValueEditSchema),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+    "reach_target": z.union([StudioReachTargetAuthoringSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoring>;
 
 export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRequest> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
-    "change": z.union([StudioAuthoringChangeSchema, StudioAuthoringSweepChangeSchema, z.null()]).optional(),
+    "change": z.union([StudioAuthoringChangeSchema, StudioAuthoringSweepChangeSchema, StudioReachTargetEditSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 

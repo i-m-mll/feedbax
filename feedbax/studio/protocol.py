@@ -38,11 +38,16 @@ __all__ = [
     "infer_task_n_steps",
     "is_bindable_task_data",
     "parse_positive_n_steps",
+    "task_binding_id",
     "task_data_role",
     "task_data_surface",
     "task_data_uses_protocol_path",
     "task_n_steps_values",
 ]
+
+
+def task_binding_id(source_data_id: str, node_id: str, port: str) -> str:
+    return f"task:{source_data_id}->{node_id}:{port}"
 
 
 def _task_params(task_spec: dict[str, Any] | TaskSpec | None) -> dict[str, Any]:

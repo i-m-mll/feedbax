@@ -185,9 +185,29 @@ class StudioAuthoringSweepChange(StrictModel):
     ]
 
 
+ReachCoordinate = Annotated[StrictFloat, Field(ge=-3.4028234663852886e38, le=3.4028234663852886e38)]
+
+
+class StudioReachPosition(StrictModel):
+    x: ReachCoordinate
+    y: ReachCoordinate
+
+
+class StudioReachTargetEdit(StrictModel):
+    kind: Literal["bindReachTarget"]
+    input: NonemptyText
+    position: StudioReachPosition
+
+
+class StudioReachTargetAuthoring(StrictModel):
+    inputs: list[StudioAuthoringOption]
+    input: str | None
+    position: StudioReachPosition | None
+
+
 class StudioTrainAuthoringRequest(StrictModel):
     revision: Sha256
-    change: StudioAuthoringChange | StudioAuthoringSweepChange | None = None
+    change: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | None = None
 
 
 class StudioTrainAuthoring(StrictModel):
@@ -197,3 +217,4 @@ class StudioTrainAuthoring(StrictModel):
     fields: list[StudioAuthoringField]
     patches: list[ProjectValueEdit]
     documents: list[ProjectName]
+    reach_target: StudioReachTargetAuthoring | None = None
