@@ -6,6 +6,7 @@ import {
   type StudioJobEvent,
   type StudioJobSubmissionRequest,
   type StudioRunPreviewRequest,
+  type StudioSavedTrainRunRequest,
 } from '@/generated/studioContracts';
 import type { GraphSpec } from '@/types/graph';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
@@ -47,6 +48,23 @@ export function submitStudioJobs(input: AuthoredSubmission) {
     workspace: semanticWorkspace(input.workspace),
   });
   return readContract('/api/submissions', 'StudioJobSubmission', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+function savedTrainRunsPath(project: string) {
+  return `/api/projects/${encodeURIComponent(project)}/train-runs`;
+}
+
+export function fetchSavedTrainRuns(project: string, revision: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ revision });
+  return readContract(`${savedTrainRunsPath(project)}?${query}`, 'StudioSavedTrainRuns', { signal });
+}
+
+export function runSavedTrain(project: string, input: StudioSavedTrainRunRequest) {
+  const body = parseContract('StudioSavedTrainRunRequest', input);
+  return readContract(savedTrainRunsPath(project), 'StudioJobSubmission', {
     method: 'POST',
     body: JSON.stringify(body),
   });

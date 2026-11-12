@@ -234,6 +234,8 @@ from feedbax.contracts.jobs import (
     StudioPreviewRow,
     StudioRunPreview,
     StudioRunPreviewRequest,
+    StudioSavedTrainRunRequest,
+    StudioSavedTrainRuns,
     StudioRunSelection,
     StudioSubmissionItem,
 )
@@ -355,6 +357,8 @@ JOB_MODELS = (
     StudioJobStopRequest,
     StudioJobSubmission,
     StudioJobSubmissionRequest,
+    StudioSavedTrainRunRequest,
+    StudioSavedTrainRuns,
     StudioLocalSession,
     StudioPreviewIssue,
     StudioPreviewRow,

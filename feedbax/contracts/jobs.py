@@ -88,6 +88,38 @@ class JobReceipt(StrictModel):
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class StudioSavedTrainAttempt(StrictModel):
+    job_id: str
+    status: JobStatus
+    reason: str | None
+    progress: JobProgress | None
+    successful_receipt: JobReceipt | None
+
+
+class StudioSavedTrainKey(StrictModel):
+    variant: str
+    step: str
+    row: str
+
+
+class StudioSavedTrainRow(StrictModel):
+    key: StudioSavedTrainKey
+    label: str
+    request_id: str
+    attempts: list[StudioSavedTrainAttempt]
+
+
+class StudioSavedTrainRuns(StrictModel):
+    revision: str
+    rows: list[StudioSavedTrainRow]
+
+
+class StudioSavedTrainRunRequest(StrictModel):
+    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    run_keys: list[StudioSavedTrainKey] = Field(min_length=1)
+    token: Token
+
+
 class JobOutcome(StrictModel):
     outcome: Literal["succeeded", "stopped", "failed", "interrupted", "blocked"]
     error: JobError | None = None

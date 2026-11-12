@@ -118,6 +118,17 @@ export interface StudioJobSubmissionRequest {
   policy?: "out_of_date" | "all";
 }
 
+export interface StudioSavedTrainRunRequest {
+  revision: string;
+  run_keys: StudioSavedTrainKey[];
+  token: string;
+}
+
+export interface StudioSavedTrainRuns {
+  revision: string;
+  rows: StudioSavedTrainRow[];
+}
+
 export interface StudioLocalSession {
   id?: "local";
   state?: "open";
@@ -2965,6 +2976,25 @@ export const StudioJobSubmissionRequestSchema: z.ZodType<StudioJobSubmissionRequ
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmissionRequest>;
+
+export const StudioSavedTrainRunRequestSchema: z.ZodType<StudioSavedTrainRunRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
+      "token": z.string().min(1).max(128),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainRunRequest>;
+
+export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string(),
+      "rows": z.array(StudioSavedTrainRowSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainRuns>;
 
 export const StudioLocalSessionSchema: z.ZodType<StudioLocalSession> = z.lazy(() =>
   z
@@ -7159,6 +7189,8 @@ export const contractSchemas = {
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
   StudioJobSubmissionRequest: StudioJobSubmissionRequestSchema,
+  StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
+  StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioPreviewIssue: StudioPreviewIssueSchema,
   StudioPreviewRow: StudioPreviewRowSchema,
@@ -7252,6 +7284,8 @@ export interface ContractTypeMap {
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;
   StudioJobSubmissionRequest: StudioJobSubmissionRequest;
+  StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
+  StudioSavedTrainRuns: StudioSavedTrainRuns;
   StudioLocalSession: StudioLocalSession;
   StudioPreviewIssue: StudioPreviewIssue;
   StudioPreviewRow: StudioPreviewRow;

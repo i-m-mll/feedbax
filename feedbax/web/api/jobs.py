@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from time import monotonic
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -24,11 +24,18 @@ from feedbax.contracts.jobs import (
     StudioLocalSession,
     StudioRunPreview,
     StudioRunPreviewRequest,
+    StudioSavedTrainAttempt,
+    StudioSavedTrainKey,
+    StudioSavedTrainRow,
+    StudioSavedTrainRunRequest,
+    StudioSavedTrainRuns,
 )
+from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
-from feedbax.web.api.projects import ProjectRevisionWatch
+from feedbax.web.api.projects import ProjectRevisionWatch, _project_response
 
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -57,6 +64,57 @@ def admit_submission(body: StudioJobSubmissionRequest, request: Request) -> Stud
 @router.post("/submissions/preview")
 def preview_submission(body: StudioRunPreviewRequest, request: Request) -> StudioRunPreview:
     return _jobs(request).preview(body)
+
+
+@router.get("/projects/{project_id}/train-runs")
+def saved_train_runs(
+    project_id: ProjectName, revision: Sha256, request: Request, response: Response,
+) -> StudioSavedTrainRuns:
+    def read() -> StudioSavedTrainRuns:
+        view = request.app.state.project_plan.read(project_id, revision=revision)
+        return StudioSavedTrainRuns(
+            revision=view.settled.revision,
+            rows=[
+                StudioSavedTrainRow(
+                    key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
+                    label=run.label or run.key.row,
+                    request_id=run.request_id,
+                    attempts=[
+                        StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
+                        for attempt in view.attempts_by_run.get(run.key, ())
+                    ],
+                )
+                for run in view.settled.plan.runs
+                if run.kind == "train"
+            ],
+        )
+
+    try:
+        return _project_response(response, read)
+    except HostError as exc:
+        raise _host_error(exc) from exc
+
+
+@router.post("/projects/{project_id}/train-runs", status_code=202)
+def run_saved_train(
+    project_id: ProjectName, body: StudioSavedTrainRunRequest, request: Request, response: Response,
+) -> StudioJobSubmission:
+    folders = request.app.state.project_folders
+
+    def admit() -> StudioJobSubmission:
+        reviewed = folders.read_plan(project_id, revision=body.revision)
+        return _jobs(request).admit_plan(
+            folders, reviewed,
+            run_keys=[RunKey(key.variant, key.step, key.row) for key in body.run_keys],
+            token=body.token,
+        )
+
+    try:
+        return _project_response(response, admit)
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
 
 
 @router.get("/submissions")

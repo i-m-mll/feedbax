@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { toast, Toaster } from 'sonner';
 import { Header } from '@/components/layout/Header';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -21,8 +21,18 @@ import {
 } from '@/stores/layoutStore';
 
 const PROJECT_CHANNEL_NAME = 'feedbax:studio-project-presence';
+const SavedTrainWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
 export default function App() {
+  const projectId = new URLSearchParams(window.location.search).get('project');
+  return projectId ? (
+    <Suspense fallback={<main aria-busy="true" />}>
+      <SavedTrainWorkspace projectId={projectId} />
+    </Suspense>
+  ) : <Workspace />;
+}
+
+function Workspace() {
   useAppShortcuts();
 
   const graphId = useGraphStore((s) => s.graphId);
