@@ -31,7 +31,9 @@ it("keeps the current typed value when turning the field into a sweep, then edit
   const pick = screen.getByRole("button", { name: "Select Learning rate 0.003" });
   expect(pick.getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(pick);
-  expect(choose).toHaveBeenCalledWith("learning-rate", "stable-b");
+  expect(choose).toHaveBeenLastCalledWith("learning-rate", "stable-b", false);
+  fireEvent.click(pick, { shiftKey: true });
+  expect(choose).toHaveBeenLastCalledWith("learning-rate", "stable-b", true);
   const value = screen.getByRole("spinbutton", { name: "Edit Learning rate 0.003" });
   fireEvent.change(value, { target: { value: "0.005125" } });
   fireEvent.blur(value);

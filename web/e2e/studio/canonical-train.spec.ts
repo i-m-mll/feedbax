@@ -224,7 +224,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
   const first = (await trainRow()).result!;
   expect(first.job_id).toBe(firstJob);
-  await editNumber('Seed', 7, '');
+  await editNumber('Seed', 7, '0');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
   await expect(table.getByText(/Definition changed at .*seed/)).toBeVisible();
   const stale = await trainRow();
