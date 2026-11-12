@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { readStudioTrainAuthoring } from '@/api/studioAuthoring';
+import { studioName } from '@/components/activity/studioVocabulary';
 import {
   StudioDefinitionForm,
   StudioDocumentPicker,
@@ -11,7 +12,10 @@ import {
 import { StudioSweepPicker } from '@/components/pipeline/StudioSweepOverview';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
-import type { AuthoredFileAddress, StudioTrainAuthoring, StudioTrainAuthoringRequest } from '@/generated/studioContracts';
+import type {
+  AuthoredFileAddress, StudioReachTargetAuthoring, StudioReachTargetEdit, StudioTrainAuthoring,
+  StudioTrainAuthoringRequest,
+} from '@/generated/studioContracts';
 import { authoredPointer, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 
@@ -26,6 +30,7 @@ interface Props {
   readonly renderAdditionalFields?: (projected: ReadonlySet<string>) => ReactNode;
   readonly view?: 'model' | 'task' | 'objective' | 'training';
   readonly documentPicker?: boolean;
+  readonly taskBinding?: boolean;
   readonly focusFirstField?: boolean;
   readonly onFirstFieldFocused?: () => void;
 }
@@ -46,7 +51,9 @@ function formFields(projection: StudioTrainAuthoring, { view, component, step, s
     return !view || viewPrefixes[view].some((path) => id === path || id.startsWith(`${path}/`));
   }).map(({ id, label, value, source, control, sweep, can_sweep }) => {
     const node = !component && id.startsWith(`${componentPrefix}/`) ? id.split('/')[3].replace(/~1/g, '/').replace(/~0/g, '~') : null;
-    const actions: FieldEdit['kind'][] = control && !sweep && (!selection || selection.kind === 'steps') ? ['set'] : [];
+    const canEdit = !selection || selection.kind === 'steps' &&
+      (!id.startsWith('/objective/') || selection.stepIds.length === 1);
+    const actions: FieldEdit['kind'][] = control && !sweep && canEdit ? ['set'] : [];
     if (can_sweep && (!selection || selection.kind === 'steps')) actions.push('toSweep');
     let projected: StudioDefinitionField['sweep'];
     if (sweep?.kind === 'list') {
@@ -120,8 +127,49 @@ function validateRecipe(
   };
 }
 
+function ReachTargetForm({ target, stepId, disabled, onEdit }: {
+  readonly target: StudioReachTargetAuthoring;
+  readonly stepId: string;
+  readonly disabled: boolean;
+  readonly onEdit: (change: StudioReachTargetEdit) => void;
+}) {
+  const [input, setInput] = useState(target.input ?? '');
+  const [x, setX] = useState(target.position?.x.toString() ?? '');
+  const [y, setY] = useState(target.position?.y.toString() ?? '');
+  const position = { x: Number(x), y: Number(y) };
+  const complete = Boolean(input && x && y && Number.isFinite(position.x) && Number.isFinite(position.y));
+  const changed = input !== target.input || position.x !== target.position?.x || position.y !== target.position?.y;
+  const control = 'rounded-shell-control border border-shell-divider bg-shell-chrome px-2 py-1';
+  return <form onSubmit={(event) => {
+    event.preventDefault();
+    if (!disabled && complete && changed) onEdit({ kind: 'bindReachTarget', input, position });
+  }}>
+    <fieldset disabled={disabled} className="flex flex-wrap items-end gap-3 px-3 py-2 text-sm">
+      <legend className="px-3 font-medium">{studioName('reachTarget')} · {stepId}</legend>
+      <label className="grid gap-1">
+        {studioName('modelInput')}
+        <select className={control} value={input} onChange={(event) => setInput(event.target.value)} required>
+          <option value="" disabled />
+          {target.inputs.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
+      <label className="grid gap-1">
+        {studioName('targetX')}
+        <input className={`${control} w-24`} type="number" step="any" value={x} onChange={(event) => setX(event.target.value)} required />
+      </label>
+      <label className="grid gap-1">
+        {studioName('targetY')}
+        <input className={`${control} w-24`} type="number" step="any" value={y} onChange={(event) => setY(event.target.value)} required />
+      </label>
+      <button type="submit" disabled={!complete || !changed} className={`${control} disabled:opacity-50`}>
+        {studioName('bindTarget')}
+      </button>
+    </fieldset>
+  </form>;
+}
+
 export function StudioTrainAuthoringForm(props: Props) {
-  const { editor, stepId, picker, documentPicker, onChooseSweepValue, renderAdditionalFields, focusFirstField, onFirstFieldFocused } = props;
+  const { editor, stepId, picker, documentPicker, taskBinding, onChooseSweepValue, renderAdditionalFields, focusFirstField, onFirstFieldFocused } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
@@ -163,9 +211,8 @@ export function StudioTrainAuthoringForm(props: Props) {
     return () => request.abort();
   }, [projectId, stepId, revision]);
 
-  async function apply({ fieldId, edit }: StudioFieldCommand) {
+  async function apply(change: StudioTrainAuthoringRequest['change']) {
     const lifetime = active.current;
-    const change = changeRequest(fieldId, edit);
     if (!current || !lifetime || lifetime.signal.aborted || pending || outside ||
         command.current === lifetime || !change) return;
     command.current = lifetime;
@@ -180,11 +227,13 @@ export function StudioTrainAuthoringForm(props: Props) {
       if (latest.saved.revision !== revision || latest.pending || latest.outside) {
         throw new ProjectEditConflictError();
       }
-      const field = recipe.fields.find(({ id }) => id === fieldId);
-      if (!field) throw new Error('The Train edit has no matching field.');
+      const label = 'field' in change
+        ? recipe.fields.find(({ id }) => id === change.field)?.label
+        : studioName('bindTarget');
+      if (!label) throw new Error('The Train edit has no matching field.');
       if (!recipe.patches.length) return;
       const address = { kind: 'step', id: stepId } as const;
-      editor.edit(address, field.label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
+      editor.edit(address, label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
       await editor.flush();
       lifetime.signal.throwIfAborted();
       picker?.();
@@ -197,8 +246,13 @@ export function StudioTrainAuthoringForm(props: Props) {
   }
 
   const error = editError ?? loadError ?? (editorError ? apiErrorMessage(editorError) : null);
+  if (taskBinding) return <>
+    {error && <p role="alert">{error}</p>}
+    {shown?.reach_target && <ReachTargetForm key={shown.revision}
+      target={shown.reach_target} stepId={stepId} disabled={disabled} onEdit={(change) => { void apply(change); }} />}
+  </>;
   const fields = shown ? formFields(shown, picker ? { ...props, component: undefined, selection: undefined } : props) : [];
-  const onEdit = (change: StudioFieldCommand) => { void apply(change); };
+  const onEdit = ({ fieldId, edit }: StudioFieldCommand) => { void apply(changeRequest(fieldId, edit)); };
   if (documentPicker) return <>
     {fields[0] && <fieldset ref={fieldSet} disabled={disabled} className="studio-window-slot__document">
       <StudioDocumentPicker field={fields[0]} selection={selection} onEdit={onEdit} />
@@ -214,7 +268,7 @@ export function StudioTrainAuthoringForm(props: Props) {
           <fieldset ref={fieldSet} disabled={disabled}>
             {picker ? <StudioSweepPicker fields={fields} onChoose={(fieldId) => {
               const value = fields.find(({ id }) => id === fieldId)?.resolved[0]?.value;
-              if (value !== undefined) void apply({ fieldId, selection, edit: { kind: 'toSweep', value } });
+              if (value !== undefined) void apply(changeRequest(fieldId, { kind: 'toSweep', value }));
             }} /> : <StudioDefinitionForm fields={fields} selection={selection} onChooseSweepValue={onChooseSweepValue}
               onEdit={onEdit} />}
           </fieldset>

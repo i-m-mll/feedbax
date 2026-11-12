@@ -11,7 +11,7 @@ export async function readStudioTrainAuthoring(
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/train/${encodeURIComponent(stepId)}`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(body), cache: 'no-store', signal,
+      method: 'POST', body: JSON.stringify(parseContract('StudioTrainAuthoringRequest', body)), cache: 'no-store', signal,
     });
     const projection = parseContract('StudioTrainAuthoring', response);
     if (projection.project_id !== projectId || projection.step_id !== stepId ||

@@ -21,6 +21,7 @@ from feedbax.studio.protocol import (
     PROTOCOL_TASK_DATA_KINDS,
     TASK_DATA_ROLES,
     is_bindable_task_data,
+    task_binding_id,
     task_data_role,
     task_data_surface,
     task_data_uses_protocol_path,
@@ -1447,9 +1448,7 @@ def validate_task_binding_schema(
     binding_targets: set[tuple[str, str]] = set()
     for index, binding in enumerate(task_binding_spec.bindings):
         binding_path = f"{base_path}/bindings/{index}"
-        expected_id = (
-            f"task:{binding.source_data_id}->{binding.target_node_id}:{binding.target_port}"
-        )
+        expected_id = task_binding_id(binding.source_data_id, binding.target_node_id, binding.target_port)
         if binding.id in seen_bindings:
             issues.append(
                 SchemaValidationIssue(

@@ -340,7 +340,7 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
             }}},
         },
     })
-    _, patches, _ = project_train_fields(
+    _, patches, _, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
     )
@@ -368,7 +368,7 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
         )
     assert inline["method_payload"]["payload"]["optimizer"]["params"] == reference
 
-    _, patches, _ = project_train_fields(
+    _, patches, _, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/method_payload/payload/seed", value=7.0),
     )
