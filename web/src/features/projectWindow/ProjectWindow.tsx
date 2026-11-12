@@ -18,7 +18,8 @@ import {
   type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
 import { StudioCommandPalette } from './StudioCommandPalette';
-import { bindStudioCommand, commandAttributes, matchesShortcut, type StudioCommand } from './studioCommands';
+import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
+import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
@@ -263,18 +264,18 @@ export function ProjectWindow({
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
+  useStudioNativeMenu([palette, ...paletteCommands], paletteScope !== null);
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing || event.repeat) return;
       const { palette, paletteCommands, paletteScope } = shortcutCommands.current;
-      const dialog = event.target instanceof Element && event.target.closest('[role="dialog"]');
-      const command = matchesShortcut(event, palette.shortcut) && (!dialog || paletteScope) ? palette
-        : !dialog ? paletteCommands.find((item) => matchesShortcut(event, item.shortcut)) : undefined;
+      const context = studioCommandContext(event.target, paletteScope !== null);
+      const command = matchesShortcut(event, palette.shortcut) ? palette
+        : paletteCommands.find((item) => matchesShortcut(event, item.shortcut));
       if (!command) return;
-      const editable = event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]');
-      if (editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run')) return;
+      if (!commandInContext(command, { ...context, activity: false })) return;
       event.preventDefault();
-      if (command.selectionScoped && event.target instanceof Element && event.target.closest('[data-studio-activity-panel]')) return;
+      if (!commandInContext(command, context) || nativeOwnsShortcut(command, event)) return;
       command.invoke();
     }
     window.addEventListener('keydown', handleKey);

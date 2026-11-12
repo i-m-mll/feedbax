@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-publish-studio-menu"
+description = "Publish commands for the registered Studio project webview."
+commands.allow = ["publish_studio_menu"]

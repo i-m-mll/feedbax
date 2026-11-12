@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 mod native_frame;
 mod service;
+mod studio_menu;
 
 use serde_json::Value;
 use std::{
@@ -8,7 +9,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{MenuItem, PredefinedMenuItem, Submenu},
     webview::NewWindowResponse,
     App, AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -50,12 +51,14 @@ fn show_studio(app: &AppHandle, url: &str, paths: service::Paths) -> tauri::Resu
         let origin = url.origin();
         #[cfg(target_os = "macos")]
         let frame = native_frame::StudioFrame::new(&url)?;
+        let menu_script = studio_menu::attach(app, "studio", &url)?;
         let builder = WebviewWindowBuilder::new(app, "studio", WebviewUrl::External(url))
             .title(TITLE)
             .inner_size(1350., 910.)
             .min_inner_size(820., 560.)
             .devtools(false)
             .data_store_identifier(paths.storage_id)
+            .initialization_script(menu_script)
             .on_navigation(move |url| url.origin() == origin)
             .on_new_window(|_, _| NewWindowResponse::Deny);
         #[cfg(target_os = "macos")]
@@ -65,12 +68,17 @@ fn show_studio(app: &AppHandle, url: &str, paths: service::Paths) -> tauri::Resu
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
                 .on_page_load(move |window, page| {
+                    if page.event() == tauri::webview::PageLoadEvent::Started {
+                        studio_menu::clear(window.app_handle(), window.label(), false);
+                    }
                     if load_frame.matches(page.url()) {
                         load_frame.refresh(&window);
                     }
                 })
         };
-        let window = builder.build()?;
+        let window = builder
+            .build()
+            .inspect_err(|_| studio_menu::clear(app, "studio", true))?;
         #[cfg(target_os = "macos")]
         if let Err(error) = frame.install(&window) {
             window.destroy()?;
@@ -221,20 +229,7 @@ fn setup(app: &mut App) -> tauri::Result<()> {
             &quit,
         ],
     )?;
-    let edit = Submenu::with_items(
-        app,
-        "Edit",
-        true,
-        &[
-            &PredefinedMenuItem::undo(app, None)?,
-            &PredefinedMenuItem::redo(app, None)?,
-            &PredefinedMenuItem::cut(app, None)?,
-            &PredefinedMenuItem::copy(app, None)?,
-            &PredefinedMenuItem::paste(app, None)?,
-            &PredefinedMenuItem::select_all(app, None)?,
-        ],
-    )?;
-    app.set_menu(Menu::with_items(app, &[&studio, &edit])?)?;
+    studio_menu::install(app.handle(), studio)?;
     status_window(app.handle())?;
     connect(app.handle());
     Ok(())
@@ -261,6 +256,16 @@ fn main() {
     }
     let application = tauri::Builder::default()
         .setup(|app| Ok(setup(app)?))
+        .invoke_handler(tauri::generate_handler![studio_menu::publish_studio_menu])
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(_) => {
+                studio_menu::refresh_on_main_thread(window.app_handle())
+            }
+            tauri::WindowEvent::Destroyed => {
+                studio_menu::clear(window.app_handle(), window.label(), true)
+            }
+            _ => {}
+        })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "reconnect" => connect(app),
             "stop" => stop(app, "defer"),
@@ -283,7 +288,11 @@ fn main() {
                 },
                 |_, _, _| Ok(()),
             ),
-            _ => {}
+            id => {
+                if let Err(error) = studio_menu::dispatch(app, id) {
+                    eprintln!("Studio menu command could not be delivered: {error}");
+                }
+            }
         })
         .build(tauri::generate_context!());
     match application {
