@@ -48,6 +48,13 @@ from feedbax.contracts.acausal import (
     SpatialSite,
 )
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.studio_scene import (
+    ScenePlanarLink,
+    ScenePlanarModel,
+    ScenePlanarMuscle,
+    StudioPlanarSceneRequest,
+    StudioPlanarSceneResponse,
+)
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
     RepresentationElementSpec,
@@ -476,6 +483,11 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DomainTheme,
     DomainMeta,
     DomainDiagnostic,
+    ScenePlanarLink,
+    ScenePlanarMuscle,
+    ScenePlanarModel,
+    StudioPlanarSceneRequest,
+    StudioPlanarSceneResponse,
     DomainRegistryPayload,
     DomainCompileReport,
     WorkspaceReplayWarning,
@@ -689,6 +701,8 @@ CONTRACT_MODEL_NAMES = [
     "ComponentRefreshResponse",
     "DomainListResponse",
     "DomainCompileReport",
+    "StudioPlanarSceneRequest",
+    "StudioPlanarSceneResponse",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
     "PenzaiNodeRequest",
@@ -855,6 +869,8 @@ def _apply_zod_constraints(
         name = type(constraint).__name__
         if name == "Strict":
             continue
+        if name == "AllowInfNan" and base is float and not constraint.allow_inf_nan:
+            continue  # The float schema is already finite.
         if name == "Gt":
             schema += f".gt({_literal_value(constraint.gt)})"
         elif name == "Ge":
@@ -869,8 +885,8 @@ def _apply_zod_constraints(
             schema += f".min({constraint.min_length})"
         elif name == "MaxLen":
             schema += f".max({constraint.max_length})"
-        elif name == "_PydanticGeneralMetadata":
-            values = vars(constraint)
+        elif name in ("_PydanticGeneralMetadata", "StringConstraints"):
+            values = {key: value for key, value in vars(constraint).items() if value is not None}
             unsupported = sorted(set(values) - {"pattern"})
             if unsupported:
                 raise ValueError(

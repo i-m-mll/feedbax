@@ -63,9 +63,8 @@ function endpointKey(endpoint: Endpoint): string {
 }
 
 function parseFrameId(frameId: string): Endpoint | null {
-  const [nodeId, port, ...rest] = frameId.split('.');
-  if (!nodeId || !port || rest.length > 0) return null;
-  return [nodeId, port];
+  const split = frameId.lastIndexOf('.');
+  return split > 0 && split < frameId.length - 1 ? [frameId.slice(0, split), frameId.slice(split + 1)] : null;
 }
 
 function sameEndpoint(left: Endpoint, right: Endpoint): boolean {
@@ -381,7 +380,7 @@ export function rebindJointFrame(
           params: { ...(joint.params ?? {}), [`${socket}_frame`]: frameId },
         },
       },
-      connections: replaceConnectionFrame(graph.connections ?? [], jointId, socket, frame),
+      ...(graph.connections?.length ? { connections: replaceConnectionFrame(graph.connections, jointId, socket, frame) } : {}),
     },
   };
 }

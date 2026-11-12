@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
+import { useEffect, useId, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
 import { LocateFixed, ZoomIn, ZoomOut } from 'lucide-react';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
@@ -8,6 +8,7 @@ import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplay
 import { PlanarSceneElement } from './PlanarSceneElement';
 import { WORKSPACE_SVG_HEIGHT, WORKSPACE_SVG_WIDTH, fitScale, includePoint, niceScaleLength, sceneBounds, type ScenePoint } from './planarProjection';
 import { fittedCamera, sceneEntityOverlay, sceneGeometry, zoomScene, type SceneCamera, type SceneDrawing, type SceneOverlay, type SceneView } from './sceneView';
+import type { SceneAttachmentDrag } from './usePlanarSceneAuthoring';
 
 interface SceneSelection {
   selectedId: string | null;
@@ -50,13 +51,20 @@ type SceneDrawingProps = SceneSelection & {
   onCameraChange: (camera: SceneCamera) => void;
   hiddenOverlays: ReadonlySet<SceneOverlay>;
   problemEntityIds?: ReadonlySet<string>;
+  beginAttachment?: (anchor: ResolvedScene['anchors'][number]) => SceneAttachmentDrag | null;
 };
 
 function SceneDrawingCanvas({
-  view, time, camera, onCameraChange, hiddenOverlays, problemEntityIds, selectedId, onSelect,
+  view, time, camera, onCameraChange, hiddenOverlays, problemEntityIds, selectedId, onSelect, beginAttachment,
 }: SceneDrawingProps & { view: SceneDrawing }) {
   const gridId = useId();
+  const canvas = useRef<SVGSVGElement>(null);
   const pan = useRef<{ start: ScenePoint; camera: SceneCamera; ratio: number; moved: boolean } | null>(null);
+  const attachment = useRef<{
+    pointer: number; edit: SceneAttachmentDrag; origin: DOMPoint; inverse: DOMMatrix;
+    scale: number; center: ScenePoint; camera: SceneCamera;
+  } | null>(null);
+  useEffect(() => () => { attachment.current?.edit.cancel(); }, []);
   const scene = sceneGeometry(view, time);
   const track = sceneTrack(view);
   const path = useMemo(() => workspaceReplayPolyline(track), [track]);
@@ -72,11 +80,12 @@ function SceneDrawingCanvas({
     workspaceReplayPolyline(goalTrack).forEach((point) => includePoint(bounds, point));
     return bounds;
   }, [view.scene, path, goalTrack]);
-  const scale = fitScale(bounds) * camera.zoom;
-  const center = [(bounds.min[0] + bounds.max[0]) / 2, (bounds.min[1] + bounds.max[1]) / 2];
+  const scale = attachment.current?.scale ?? fitScale(bounds) * camera.zoom;
+  const center: ScenePoint = attachment.current?.center ?? [(bounds.min[0] + bounds.max[0]) / 2, (bounds.min[1] + bounds.max[1]) / 2];
+  const panOffset = attachment.current?.camera.pan ?? camera.pan;
   const project = ([x, y]: ScenePoint): ScenePoint => [
-    WORKSPACE_SVG_WIDTH / 2 + (x - center[0]) * scale + camera.pan.x,
-    WORKSPACE_SVG_HEIGHT / 2 - (y - center[1]) * scale + camera.pan.y,
+    WORKSPACE_SVG_WIDTH / 2 + (x - center[0]) * scale + panOffset.x,
+    WORKSPACE_SVG_HEIGHT / 2 - (y - center[1]) * scale + panOffset.y,
   ];
   const meters = niceScaleLength(90 / Math.max(scale, 1));
   const entities = new Map(scene.entities.map((entity) => [entity.id, entity]));
@@ -86,10 +95,13 @@ function SceneDrawingCanvas({
     return !overlay || !hiddenOverlays.has(overlay);
   };
   const visibleElements = scene.elements.filter((element) => entityIsVisible(element.entity_id));
+  const diagnosedEntities = new Set(scene.validation.map((issue) => issue.entity_id));
   const marked = new Set<string>();
+  const selectedAnchor = scene.anchors.find((anchor) => anchor.id === selectedId);
+  const selectedEntity = selectedAnchor?.entity_id ?? selectedId;
 
   const beginPan = (event: PointerEvent<SVGSVGElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || attachment.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(rect.width / WORKSPACE_SVG_WIDTH, rect.height / WORKSPACE_SVG_HEIGHT);
     if (!(ratio > 0)) return;
@@ -110,22 +122,74 @@ function SceneDrawingCanvas({
     });
   };
 
+  const startAttachment = (event: PointerEvent<SVGCircleElement>, anchor: ResolvedScene['anchors'][number]) => {
+    if (event.button !== 0 || pan.current || attachment.current) return;
+    const svg = event.currentTarget.ownerSVGElement;
+    const inverse = svg?.getScreenCTM()?.inverse();
+    if (!svg || !inverse) return;
+    const edit = beginAttachment?.(anchor);
+    if (!edit) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const origin = new DOMPoint(event.clientX, event.clientY).matrixTransform(inverse);
+    attachment.current = { pointer: event.pointerId, edit, origin, inverse, scale, center, camera };
+    event.currentTarget.focus();
+    svg.setPointerCapture(event.pointerId);
+    onSelect(anchor.id);
+  };
+
+  const moveAttachment = (event: PointerEvent<SVGSVGElement>) => {
+    const gesture = attachment.current;
+    if (!gesture || event.pointerId !== gesture.pointer) return;
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(gesture.inverse);
+    gesture.edit.move([(point.x - gesture.origin.x) / gesture.scale, (gesture.origin.y - point.y) / gesture.scale]);
+  };
+
+  const finishAttachment = (svg: SVGSVGElement, pointer: number, commit: boolean) => {
+    const gesture = attachment.current;
+    if (!gesture || pointer !== gesture.pointer) return;
+    attachment.current = null;
+    if (svg.hasPointerCapture(pointer)) svg.releasePointerCapture(pointer);
+    if (commit) gesture.edit.commit();
+    else gesture.edit.cancel();
+  };
+
+  useEffect(() => {
+    const gesture = attachment.current;
+    if (canvas.current && gesture && !gesture.edit.isActive()) finishAttachment(canvas.current, gesture.pointer, false);
+  });
+
   return (
     <svg
+      ref={canvas}
       viewBox={`0 0 ${WORKSPACE_SVG_WIDTH} ${WORKSPACE_SVG_HEIGHT}`}
       className="h-full min-h-0 w-full touch-none bg-white"
       role="group"
       aria-label={studioName('scene')}
       onPointerDown={beginPan}
-      onPointerMove={movePan}
+      onPointerMove={(event) => attachment.current ? moveAttachment(event) : movePan(event)}
       onPointerUp={(event) => {
+        if (attachment.current) {
+          moveAttachment(event);
+          finishAttachment(event.currentTarget, event.pointerId, true);
+          return;
+        }
         if (!pan.current) return;
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         if (!pan.current.moved) onSelect(null);
         pan.current = null;
       }}
-      onPointerCancel={() => { pan.current = null; }}
-      onWheel={(event) => onCameraChange(zoomScene(camera, event.deltaY > 0 ? 0.9 : 1.1))}
+      onPointerCancel={(event) => {
+        pan.current = null;
+        finishAttachment(event.currentTarget, event.pointerId, false);
+      }}
+      onLostPointerCapture={(event) => finishAttachment(event.currentTarget, event.pointerId, false)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !attachment.current) return;
+        event.stopPropagation();
+        finishAttachment(event.currentTarget, attachment.current.pointer, false);
+      }}
+      onWheel={(event) => { if (!attachment.current) onCameraChange(zoomScene(camera, event.deltaY > 0 ? 0.9 : 1.1)); }}
     >
       <defs>
         <pattern id={gridId} width="32" height="32" patternUnits="userSpaceOnUse">
@@ -138,13 +202,14 @@ function SceneDrawingCanvas({
           const entity = entities.get(element.entity_id);
           if (!entity) return null;
           const point = elementPosition(element);
-          const mark = point && problemEntityIds?.has(entity.id) && !marked.has(entity.id) ? project(point) : null;
+          const hasProblem = diagnosedEntities.has(entity.id) || problemEntityIds?.has(entity.id);
+          const mark = point && hasProblem && !marked.has(entity.id) ? project(point) : null;
           if (mark) marked.add(entity.id);
           return (
             <g key={element.id}>
               <PlanarSceneElement
                 element={element}
-                active={selectedId === entity.id}
+                active={selectedEntity === entity.id}
                 project={project}
                 scale={scale}
                 interaction={selectionHandlers(entity.id, entity.label, selectedId, onSelect)}
@@ -173,6 +238,20 @@ function SceneDrawingCanvas({
           </g>
         );
       })}
+      {view.kind === 'geometry' && beginAttachment && scene.anchors.map((anchor) => {
+        if (!anchor.position || selectedEntity !== anchor.entity_id || typeof anchor.metadata.point_index !== 'number') return null;
+        const [x, y] = project(anchor.position);
+        return (
+          <circle key={anchor.id} cx={x} cy={y} r={7} fill="#fff" stroke="#0f766e" strokeWidth={2}
+            role="button" tabIndex={0} aria-label={anchor.label} aria-pressed={anchor.id === selectedId}
+            className="cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-violet-700"
+            onPointerDown={(event) => startAttachment(event, anchor)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(anchor.id); }
+            }}
+          />
+        );
+      })}
       <g transform={`translate(28 ${WORKSPACE_SVG_HEIGHT - 32})`} pointerEvents="none" aria-hidden="true">
         <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="#334155" strokeWidth={2} />
         <text y={-9} className="fill-slate-600 text-[11px] font-medium">
@@ -183,6 +262,15 @@ function SceneDrawingCanvas({
   );
 }
 
+function SceneIssues({ issues }: { issues: ResolvedScene['validation'] }) {
+  if (!issues.length) return null;
+  return (
+    <ul role="alert" className="space-y-1 px-2 text-sm text-red-700">
+      {issues.map((issue) => <li key={JSON.stringify([issue.type, issue.entity_id, issue.message])}>{issue.message}</li>)}
+    </ul>
+  );
+}
+
 export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: SceneView }) {
   switch (view.kind) {
     case 'geometry':
@@ -190,7 +278,9 @@ export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: Sc
     case 'replay':
       return (
         <StudioRegionBoundary name="scene">
-          <SceneDrawingCanvas view={view} {...drawing} />
+          {view.kind === 'geometry' && !view.scene.elements.some(({ geometry }) => geometry.kind !== 'none') && view.scene.validation.length
+            ? <SceneIssues issues={view.scene.validation} />
+            : <SceneDrawingCanvas view={view} {...drawing} />}
         </StudioRegionBoundary>
       );
     case 'loading':
@@ -261,6 +351,10 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
   };
 }) {
   const muscleIds = new Set(scene.elements.filter((element) => element.archetype === 'muscle_path').map((element) => element.entity_id));
+  const issuesByEntity = new Map<string, ResolvedScene['validation']>();
+  for (const issue of scene.validation) {
+    if (issue.entity_id) issuesByEntity.set(issue.entity_id, [...(issuesByEntity.get(issue.entity_id) ?? []), issue]);
+  }
   const groups = new Map<DrawerGroup, { id: string; label: string }[]>();
   function add(group: DrawerGroup, item: { id: string; label: string }) {
     const items = groups.get(group);
@@ -300,6 +394,7 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
                     className="w-full rounded px-2 py-1 text-left text-sm text-slate-900 hover:bg-slate-100 aria-pressed:bg-violet-100">
                     {item.label}
                   </button>
+                  <SceneIssues issues={issuesByEntity.get(item.id) ?? []} />
                 </li>
               ))}
             </ul>
@@ -313,6 +408,11 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
 
 const coordinateFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
 
+function inspectorPosition(anchor: ResolvedScene['anchors'][number]) {
+  const { authored_frame: frame, offset } = anchor.metadata;
+  return typeof frame === 'string' && Array.isArray(offset) && offset.every(Number.isFinite) ? offset : anchor.position;
+}
+
 export function SceneElementInspector({ scene, selectedId }: { scene: ResolvedScene; selectedId: string | null }) {
   const entity = scene.entities.find((item) => item.id === selectedId);
   const anchor = scene.anchors.find((item) => item.id === selectedId);
@@ -323,12 +423,15 @@ export function SceneElementInspector({ scene, selectedId }: { scene: ResolvedSc
     <section aria-label={studioName('details')} className="space-y-2">
       <h3 className="font-medium text-slate-900">{selected.label}</h3>
       <dl className="grid gap-2">
-        {anchors.map((item) => item.position && (
-          <div key={item.id} className="flex flex-wrap justify-between gap-2 text-sm">
-            <dt className="text-slate-700">{item.label}</dt>
-            <dd className="tabular-nums">{item.position.map((coordinate) => coordinateFormat.format(coordinate)).join(', ')} {studioUnit('meter')}</dd>
-          </div>
-        ))}
+        {anchors.map((item) => {
+          const position = inspectorPosition(item);
+          return position && (
+            <div key={item.id} className="flex flex-wrap justify-between gap-2 text-sm">
+              <dt className="text-slate-700">{item.label}</dt>
+              <dd className="tabular-nums">{position.map((coordinate) => coordinateFormat.format(coordinate)).join(', ')} {studioUnit('meter')}</dd>
+            </div>
+          );
+        })}
       </dl>
     </section>
   );

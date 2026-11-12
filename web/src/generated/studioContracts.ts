@@ -1110,6 +1110,46 @@ export interface DomainDiagnostic {
   details?: Record<string, unknown>;
 }
 
+export interface ScenePlanarLink {
+  body_id: string;
+  joint_id: string;
+  parent_frame: string;
+  child_frame: string;
+  qpos_index: number;
+  parent_pivot: [number, number];
+  body_pivot: [number, number];
+  reference_angle: number;
+  length: number;
+}
+
+export interface ScenePlanarMuscle {
+  node_id: string;
+  points: RepresentationMusclePathPointSpec[] | null;
+}
+
+export interface ScenePlanarModel {
+  model_identity: string;
+  world_frame: string;
+  links: ScenePlanarLink[];
+  reference_qpos: number[];
+  muscles: ScenePlanarMuscle[];
+}
+
+export interface StudioPlanarSceneRequest {
+  revision: string;
+  document_id: string;
+  node_path: string[];
+}
+
+export interface StudioPlanarSceneResponse {
+  revision: string;
+  document_id: string;
+  node_path: string[];
+  project_id: string;
+  model: ScenePlanarModel | null;
+  diagnostics: DomainDiagnostic[];
+}
+
 export interface DomainRegistryPayload {
   schema_id?: "feedbax.spec.domain";
   schema_version?: "feedbax.spec.domain.v1";
@@ -3014,7 +3054,7 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
     })
     .strict()
     .superRefine((value, ctx) => {
-      if (Object.values(value.params).some(invalidTypedParamEnvelope)) {
+      if (Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "typed component parameter envelopes must satisfy their declared schema",
@@ -3190,7 +3230,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
           message: "Wrap geometry overlays require a planar multibody graph",
         });
       }
-      if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {
+      if (Object.values(value.nodes ?? {}).some((node) => Object.values(node.params ?? {}).some(containsArrayValueEnvelope))) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "AcausalGraphSpec does not support component-param array value schemas",
@@ -4686,6 +4726,66 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<DomainDiagnostic>;
+
+export const ScenePlanarLinkSchema: z.ZodType<ScenePlanarLink> = z.lazy(() =>
+  z
+    .object({
+      "body_id": z.string(),
+      "joint_id": z.string(),
+      "parent_frame": z.string(),
+      "child_frame": z.string(),
+      "qpos_index": z.number().int().safe().gte(0),
+      "parent_pivot": z.tuple([z.number().finite(), z.number().finite()]),
+      "body_pivot": z.tuple([z.number().finite(), z.number().finite()]),
+      "reference_angle": z.number().finite(),
+      "length": z.number().finite().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarLink>;
+
+export const ScenePlanarMuscleSchema: z.ZodType<ScenePlanarMuscle> = z.lazy(() =>
+  z
+    .object({
+      "node_id": z.string(),
+      "points": z.array(RepresentationMusclePathPointSpecSchema).min(2).nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarMuscle>;
+
+export const ScenePlanarModelSchema: z.ZodType<ScenePlanarModel> = z.lazy(() =>
+  z
+    .object({
+      "model_identity": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "world_frame": z.string(),
+      "links": z.array(ScenePlanarLinkSchema).min(1),
+      "reference_qpos": z.array(z.number().finite()).min(1),
+      "muscles": z.array(ScenePlanarMuscleSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarModel>;
+
+export const StudioPlanarSceneRequestSchema: z.ZodType<StudioPlanarSceneRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "node_path": z.array(z.string()).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanarSceneRequest>;
+
+export const StudioPlanarSceneResponseSchema: z.ZodType<StudioPlanarSceneResponse> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "node_path": z.array(z.string()).min(1),
+      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "model": ScenePlanarModelSchema.nullable(),
+      "diagnostics": z.array(DomainDiagnosticSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanarSceneResponse>;
 
 export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.lazy(() =>
   z
@@ -6935,6 +7035,8 @@ export const contractSchemas = {
   ComponentRefreshResponse: ComponentRefreshResponseSchema,
   DomainListResponse: DomainListResponseSchema,
   DomainCompileReport: DomainCompileReportSchema,
+  StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
+  StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
@@ -7023,6 +7125,8 @@ export interface ContractTypeMap {
   ComponentRefreshResponse: ComponentRefreshResponse;
   DomainListResponse: DomainListResponse;
   DomainCompileReport: DomainCompileReport;
+  StudioPlanarSceneRequest: StudioPlanarSceneRequest;
+  StudioPlanarSceneResponse: StudioPlanarSceneResponse;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;

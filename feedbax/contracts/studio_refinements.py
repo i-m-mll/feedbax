@@ -303,7 +303,7 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "acausal-graph.no-array-params",
                 "AcausalGraphSpec does not support component-param array value schemas",
-                "Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))",
+                "Object.values(value.nodes ?? {}).some((node) => Object.values(node.params ?? {}).some(containsArrayValueEnvelope))",
             ),
         ),
         "ContentObjectRef": (
@@ -324,7 +324,7 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "component.typed-param-envelopes",
                 "typed component parameter envelopes must satisfy their declared schema",
-                "Object.values(value.params).some(invalidTypedParamEnvelope)",
+                "Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)",
             ),
         ),
         "AnalysisDataProductRequirement": (
