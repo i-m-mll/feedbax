@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from feedbax.contracts.base import default_manifest_root
 from feedbax.contracts.jobs import (
+    JobError,
     JobOutcome,
     JobProgress,
     JobStatus,
@@ -205,7 +206,8 @@ class JobService:
             snapshot = self.host.jobs_snapshot(project=record["project"])
             history: dict[str, list[dict[str, Any]]] = {}
             for row in snapshot["jobs"]:
-                history.setdefault(row["request"], []).append(row)
+                if _is_studio_job(row):
+                    history.setdefault(row["request"], []).append(row)
             chosen = []
             runs = {key: dict(run) for key, run in record["runs"].items()}
             for item in candidates:
@@ -256,11 +258,15 @@ class JobService:
         ]
 
     def submissions(self, *, project: str | None = None) -> list[StudioJobSubmission]:
-        return [_project_submission(record) for record in self.host.submissions(project=project)]
+        return [
+            _project_submission(submission)
+            for submission in self.host.submissions(project=project)
+            if _is_studio_submission(submission)
+        ]
 
     def submission(self, submission_id: str) -> StudioJobSubmission:
         records = self.host.submissions(id=submission_id)
-        if not records:
+        if not records or not _is_studio_submission(records[0]):
             raise JobNotFound(submission_id)
         return _project_submission(records[0])
 
@@ -275,20 +281,35 @@ class JobService:
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:
         ids = tuple(dict.fromkeys(job_ids))
-        outcomes = self.host.stop(ids, mode)
-        jobs = self._activity_rows(self.host.jobs_snapshot(job_ids=ids)["jobs"])
+        eligible = tuple(
+            row["id"] for row in self.host.jobs_snapshot(job_ids=ids)["jobs"] if _is_studio_job(row)
+        )
+        outcomes = (
+            {result["job_id"]: result for result in self.host.stop(eligible, mode)}
+            if eligible else {}
+        )
+        jobs = (
+            self._activity_rows(self.host.jobs_snapshot(job_ids=eligible)["jobs"])
+            if eligible else {}
+        )
         return [
             StudioJobStopItem(
-                job_id=result["job_id"], job=jobs.get(result["job_id"]), error=result.get("error")
+                job_id=job_id,
+                job=jobs.get(job_id),
+                error=(
+                    outcomes[job_id].get("error")
+                    if job_id in outcomes
+                    else JobError(code="unknown_job", message="Job does not exist.")
+                ),
             )
-            for result in outcomes
+            for job_id in ids
         ]
 
     def resume(self, job_id: str, token: str) -> StudioActivityJob:
         previous = self._retry(token, continues=job_id)
         if previous is None:
             rows = self.host.jobs(job_id=job_id, include_launch=True)
-            if not rows:
+            if not rows or not _is_studio_job(rows[0]):
                 raise JobNotFound(job_id)
             row = rows[0]
             if not _can_resume(row):
@@ -319,7 +340,7 @@ class JobService:
 
     def acknowledge(self, job_id: str) -> StudioActivityJob:
         rows = self.host.jobs(job_id=job_id)
-        if not rows:
+        if not rows or not _is_studio_job(rows[0]):
             raise JobNotFound(job_id)
         if rows[0]["state"] in _LIVE_STATES:
             raise JobConflict("Only a finished run can be acknowledged.")
@@ -335,18 +356,15 @@ class JobService:
         machine: bool,
     ) -> tuple[int, StudioJobEventHistory]:
         page = self.host.events(after=after, projects=() if machine else projects, wait=wait)
+        visible, rows = self._visible_events(page["events"])
         activity_events = {
             event["job_id"]: event["cursor"]
-            for event in page["events"]
+            for event in visible
             if event["kind"] in _ACTIVITY_EVENTS
         }
-        activity = (
-            self._activity_rows(self.host.jobs_snapshot(job_ids=tuple(activity_events))["jobs"])
-            if activity_events
-            else {}
-        )
+        activity = self._activity_rows([rows[job_id] for job_id in activity_events])
         events = []
-        for event in page["events"]:
+        for event in visible:
             job_id = event["job_id"]
             detail = not machine or event["project"] in projects
             snapshot = (
@@ -362,13 +380,28 @@ class JobService:
 
     def event_history(self, *, after: int, project: str, through: int) -> StudioJobEventHistory:
         page = self.host.events(after=after, projects=(project,), wait=0)
+        visible, _ = self._visible_events(
+            [event for event in page["events"] if event["cursor"] <= through]
+        )
         return StudioJobEventHistory(
             cursor=min(through, page["cursor"]),
             oldest_cursor=page["oldest_cursor"],
-            events=[
-                _project_event(event) for event in page["events"] if event["cursor"] <= through
-            ],
+            events=[_project_event(event) for event in visible],
         )
+
+    def _visible_events(
+        self, events: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        visible = [event for event in events if event["kind"] != "dependency_bound"]
+        if not visible:
+            return [], {}
+        ids = tuple(dict.fromkeys(event["job_id"] for event in visible))
+        rows = {
+            row["id"]: row
+            for row in self.host.jobs_snapshot(job_ids=ids)["jobs"]
+            if _is_studio_job(row)
+        }
+        return [event for event in visible if event["job_id"] in rows], rows
 
     def _retry(
         self,
@@ -392,7 +425,7 @@ class JobService:
         continues: str | None,
     ) -> StudioJobSubmission:
         record = response["record"]
-        if record["continues"] != continues or (
+        if not _is_studio_submission(response) or record["continues"] != continues or (
             project is not None and project != record["project"]
         ):
             raise JobConflict("This submission token belongs to another action.")
@@ -428,7 +461,7 @@ class JobService:
         *,
         project: str | None = None,
     ) -> dict[str, StudioActivityJob]:
-        rows = [row for row in rows if "run_key" in row["data"]]
+        rows = [row for row in rows if _is_studio_job(row)]
         if not rows:
             return {}
         seen = self.host.record_get_many(
@@ -436,8 +469,10 @@ class JobService:
         )
         current: dict[tuple[str, str], str] = {}
         for submission in reversed(self.host.submissions(project=project)):
+            if not _is_studio_submission(submission):
+                continue
             record = submission["record"]
-            for run_key, run in record.get("runs", {}).items():
+            for run_key, run in record["runs"].items():
                 current.setdefault((record["project"], run_key), run["request_id"])
         result = {}
         for row in rows:
@@ -458,6 +493,20 @@ def _rejected(run_key: str, reason: str) -> AdmissionItem:
 
 def _can_resume(job: dict[str, Any]) -> bool:
     return can_resume_attempt(job["state"], job.get("checkpoint"), job["delivery"])
+
+
+def _is_studio_job(row: dict[str, Any]) -> bool:
+    return "run_key" in row["data"]
+
+
+def _is_studio_submission(submission: dict[str, Any]) -> bool:
+    record = submission["record"]
+    return (
+        isinstance(record.get("project"), str)
+        and "continues" in record
+        and (record["continues"] is None or isinstance(record["continues"], str))
+        and isinstance(record.get("runs"), dict)
+    )
 
 
 def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
@@ -485,13 +534,20 @@ def _project_event(
     activity: StudioActivityJob | None = None,
     detail: bool = True,
 ) -> StudioJobEvent:
+    kind = event["kind"]
+    data = event["data"] if detail else {}
+    if kind in {"result", "terminal"}:
+        data = {
+            key: value for key, value in data.items()
+            if key not in {"completion", "completion_error"}
+        }
     return StudioJobEvent(
         cursor=event["cursor"],
         job_id=event["job_id"],
         project_id=event["project"],
         request_id=event["request"],
-        kind=event["kind"] if detail else "activity",
-        data=event["data"] if detail else {},
+        kind=kind if detail else "activity",
+        data=data,
         activity=activity,
     )
 

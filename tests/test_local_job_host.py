@@ -1,5 +1,6 @@
 """The Unix-socket client exercises the detached host and real command workers."""
 
+import asyncio
 import json
 import os
 import signal
@@ -416,7 +417,7 @@ with open({str(output)!r}, "a") as stream:
     return run_job("consumer", source, edges=edges, slot="light")
 
 
-def _completion_gate(tmp_path):
+def _completion_gate(tmp_path, *, project="project"):
     release = tmp_path / "open-gate"
     return run_job(
         "gate",
@@ -426,6 +427,7 @@ from pathlib import Path
 while not Path({str(release)!r}).exists():
     time.sleep(0.01)
 """,
+        project=project,
     )
 
 
@@ -521,12 +523,19 @@ def test_authenticated_completion_reports_definitive_dependency_errors(
     assert not (tmp_path / "consumed.jsonl").exists()
 
 
-def test_real_studio_worker_resume_binds_completion_after_daemon_restart(host, tmp_path):
+def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
+    host, tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
     from feedbax.job_completion import verify_bound_training_completion
+    from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.studio.training_requests import lower_studio_training_runs
     from feedbax.training.checkpoint_custody import LATEST_POINTER_NAME
     from feedbax.training_host_worker import main as training_worker
+    from feedbax.web.api import jobs, projects
+    from feedbax.web.services.project_folder import ProjectFolderService
     from web.e2e.studio.fixtures.reaching_project import reaching_project
 
     # Pause only the original attempt at its first committed update so the
@@ -569,30 +578,38 @@ def main(args):
         return run_training(args)
 """)
 
-    document = reaching_project(batches=2)
-    (row,) = lower_studio_training_runs(
-        document.workspace,
-        document.graph,
-        stage_id="stage:train",
-        registry_bundle=new_application_registry_bundle(),
-    )
-    producer = Job(
-        "real-training",
-        "project",
-        row.request_id,
-        Launch(
-            (sys.executable,),
-            cwd=os.getcwd(),
+    service = JobService(host, new_application_registry_bundle())
+    service.manifest_root = tmp_path / "runs"
+    monkeypatch.setattr(
+        service,
+        "_training_worker",
+        replace(
+            service._training_worker,
             env={"JAX_PLATFORMS": "cpu", "PYTHONPATH": str(tmp_path)},
             warm_entrypoint="gated_training:main",
-            payload={
-                "spec": row.spec.model_dump(mode="json"),
-                "manifest_root": str(tmp_path / "runs"),
-                "project_id": "project",
-                "request_id": row.request_id,
-            },
         ),
     )
+    app = FastAPI()
+    app.include_router(jobs.router)
+    app.include_router(projects.router)
+    app.state.job_service = service
+    app.state.project_folders = ProjectFolderService(tmp_path / "projects")
+    client = TestClient(app)
+    created = client.post("/api/projects")
+    assert created.status_code == 201, created.text
+    snapshot = created.json()["snapshot"]
+    project = snapshot["project_id"]
+    document = reaching_project(batches=2)
+    submission = {
+        "token": "ordinary-m1",
+        "project_id": project,
+        "workspace": document.workspace.model_dump(mode="json", exclude_none=True),
+        "graph": document.graph.model_dump(mode="json", exclude_none=True),
+        "selections": [{"stage_id": "stage:train"}],
+    }
+    submitted = client.post("/api/submissions", json=submission)
+    assert submitted.status_code == 202, submitted.text
+    producer = submitted.json()["items"][0]["job_id"]
     consumer = run_job(
         "consumer",
         f"""
@@ -605,38 +622,56 @@ assert len(bindings) == 1
 verify_bound_training_completion(bindings[0]["completion"])
 Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
 """,
-        edges=(Edge(producer.id, authenticated_completion=True), Edge("gate")),
+        project=project,
+        edges=(Edge(producer, authenticated_completion=True), Edge("gate")),
         slot="light",
     )
-    admit(host, "real-completion", producer, consumer, _completion_gate(tmp_path))
-    wait_until(lambda: stop_ready.exists() or job_row(host, producer.id)["outcome"], timeout=20)
-    assert stop_ready.exists(), job_row(host, producer.id)
-    assert host.stop([producer.id], "checkpoint")[0]["state"] == "stopping"
-    wait_until(lambda: job_row(host, producer.id)["outcome"], timeout=20)
-    stopped = job_row(host, producer.id)
+    internal = admit(host, "real-completion", consumer, _completion_gate(tmp_path, project=project))
+    listed = client.get("/api/submissions", params={"project": project})
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == [submitted.json()]
+    assert client.get(f"/api/submissions/{internal['id']}").status_code == 404
+    collision = client.post("/api/submissions", json=submission | {"token": "real-completion"})
+    assert collision.status_code == 409, collision.text
+    hidden_stop = client.post("/api/jobs/stop", json={"job_ids": [consumer.id], "mode": "force"})
+    assert hidden_stop.status_code == 202, hidden_stop.text
+    assert hidden_stop.json()[0]["error"]["code"] == "unknown_job"
+    assert client.post(f"/api/jobs/{consumer.id}/seen").status_code == 404
+    hidden_resume = client.post(
+        f"/api/jobs/{consumer.id}/resume", json={"token": "internal-resume"}
+    )
+    assert hidden_resume.status_code == 404
+    wait_until(lambda: stop_ready.exists() or job_row(host, producer)["outcome"], timeout=20)
+    assert stop_ready.exists(), job_row(host, producer)
+    stopping = client.post("/api/jobs/stop", json={"job_ids": [producer], "mode": "checkpoint"})
+    assert stopping.status_code == 202, stopping.text
+    wait_until(lambda: job_row(host, producer)["outcome"], timeout=20)
+    stopped = job_row(host, producer)
     assert stopped["state"] == "stopped", stopped
     checkpoint = stopped["checkpoint"]
     assert checkpoint["completed_updates"] == 1
     assert job_row(host, consumer.id)["state"] == "queued"
     assert _bound_edge(host) is None
+    cursor = host.jobs_snapshot()["cursor"]
     restart(host)
     assert job_row(host, consumer.id)["state"] == "queued"
 
-    continued = replace(
-        producer,
-        id="real-training-resumed",
-        continues=producer.id,
-        launch=replace(producer.launch, payload=producer.launch.payload | {"resume": checkpoint}),
-    )
-    admit(host, "real-completion-resumed", continued)
-    wait_until(lambda: job_row(host, continued.id)["outcome"], timeout=20)
-    finished = job_row(host, continued.id)
+    resumed = client.post(f"/api/jobs/{producer}/resume", json={"token": "ordinary-m1-resumed"})
+    assert resumed.status_code == 202, resumed.text
+    continuation = resumed.json()
+    continued = continuation["job_id"]
+    assert continuation["continues"] == producer
+    assert continuation["request_id"] == stopped["request"]
+    resumed_launch = host.jobs(job_id=continued, include_launch=True)[0]["launch"]
+    assert resumed_launch["payload"]["resume"] == checkpoint
+    wait_until(lambda: job_row(host, continued)["outcome"], timeout=20)
+    finished = job_row(host, continued)
     assert finished["state"] == "succeeded", finished
     pinned = wait_until(lambda: _bound_edge(host) or job_row(host, consumer.id, "blocked"))
     assert "completion" in pinned, (pinned, finished["outcome"])
     completion = pinned["completion"]
-    assert pinned["dependency_job_id"] == producer.id
-    assert completion["producer_job_id"] == continued.id
+    assert pinned["dependency_job_id"] == producer
+    assert completion["producer_job_id"] == continued
     assert completion["receipt"] == finished["outcome"]["receipt"]
     assert completion["checkpoint"] == finished["outcome"]["checkpoint"]
     assert completion["checkpoint"]["completed_updates"] == 2
@@ -649,8 +684,94 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert terminal["outcome"] == "succeeded", host.events()["events"][-10:]
     assert job_row(host, consumer.id)["delivery"] == 1
     assert json.loads((tmp_path / "verified.json").read_text()) == pinned
-    events = [event for event in host.events()["events"] if event["job_id"] == consumer.id]
-    assert [event["data"] for event in events if event["kind"] == "dependency_bound"] == [pinned]
+    raw = host.events(after=cursor, projects=(project,))
+    assert [event["data"] for event in raw["events"] if event["kind"] == "dependency_bound"] == [
+        pinned
+    ]
+    history = client.get(
+        "/api/events/history", params={"project": project, "after": cursor, "through": raw["head"]}
+    )
+    assert history.status_code == 200, history.text
+    assert history.json()["cursor"] == raw["head"]
+    public = history.json()["events"]
+    assert {event["job_id"] for event in public} == {continued}
+    (published,) = [event["data"] for event in public if event["kind"] == "terminal"]
+    assert published["receipt"] == completion["receipt"]
+    assert published["checkpoint"] == completion["checkpoint"]
+    assert not any(
+        event["kind"] == "dependency_bound"
+        or {"completion", "completion_error"} & event["data"].keys()
+        for event in public
+    ), "Detailed history exposed host-only completion evidence."
+
+    async def observe_folder():
+        from httpx import ASGITransport, AsyncClient
+
+        notices = []
+        replay = []
+        changed = asyncio.Event()
+
+        async def receive():
+            await changed.wait()
+            return {"type": "http.disconnect"}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http:
+
+            async def send(message):
+                if message["type"] != "http.response.body":
+                    return
+                body = message.get("body", b"").decode()
+                if body.startswith("event: project_revision\n"):
+                    assert "id:" not in body
+                    notice = json.loads(body.split("data: ", 1)[1])
+                    notices.append(notice["revision"])
+                    if len(notices) == 1:
+                        edit = await http.post(
+                            f"/api/projects/{project}/files",
+                            json={
+                                "revision": snapshot["revision"],
+                                "file": {
+                                    "kind": "step",
+                                    "id": "train",
+                                    "step": {"kind": "train", "base": {"inline": {}}},
+                                },
+                            },
+                        )
+                        assert edit.status_code == 201, edit.text
+                        assert edit.json()["snapshot"]["revision"] != snapshot["revision"]
+                    else:
+                        changed.set()
+                        await asyncio.Future()
+                elif body.startswith("id: "):
+                    replay.append(body)
+
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "method": "GET",
+                "path": "/api/events",
+                "query_string": f"machine=true&project={project}&folder={project}".encode(),
+                "headers": [(b"last-event-id", str(cursor).encode())],
+                "http_version": "1.1",
+                "scheme": "http",
+                "server": ("testserver", 80),
+            }
+            await asyncio.wait_for(app(scope, receive, send), timeout=5)
+        return notices, replay
+
+    notices, replay = asyncio.run(observe_folder())
+    current = client.get(f"/api/projects/{project}").json()
+    assert notices == [snapshot["revision"], current["revision"]]
+    assert any(f"id: {raw['head']}\nevent: replay_complete\n" in frame for frame in replay)
+    assert not any(
+        '"kind":"dependency_bound"' in frame
+        or '"completion":' in frame
+        or '"completion_error":' in frame
+        for frame in replay
+    )
+    assert any('"kind":"terminal"' in frame and continued in frame for frame in replay)
 
 
 def test_resumed_consumer_inherits_its_pinned_completion(host, tmp_path, completion_worker):
