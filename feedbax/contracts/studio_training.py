@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.checkpoints import CheckpointLatestPointer
+from feedbax.contracts.checkpoints import CheckpointContinuationRequest, CheckpointLatestPointer
 from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
     TrainingRunExecutionCapsule,
@@ -37,6 +37,17 @@ STUDIO_GRAPH_METHOD_PAYLOAD_VERSION = f"{STUDIO_GRAPH_METHOD_PAYLOAD_ID}.v1"
 STUDIO_INDEPENDENT_KEY_SCHEDULE = "independent_v1"
 
 
+class StudioTrainContinuation(StrictModel):
+    """Explicit custody and clock policy for a stateful Studio successor."""
+
+    mode: Literal["continue_from"]
+    progress: CheckpointContinuationRequest
+    optimizer: Literal["preserve", "reset"]
+    schedule: Literal["continue", "restart"]
+    rng: Literal["carry", "reset"]
+    cursor: Literal["carry"]
+
+
 class StudioGraphMethodPayload(StrictModel):
     """Numerical settings for one checkpointable Studio graph training run."""
 
@@ -47,7 +58,7 @@ class StudioGraphMethodPayload(StrictModel):
         default=None, exclude_if=lambda value: value is None
     )
 
-    checkpoint_initialization: Literal["initialize_from"] | None = Field(
+    checkpoint_initialization: Literal["initialize_from"] | StudioTrainContinuation | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
 
@@ -57,12 +68,29 @@ class StudioGraphMethodPayload(StrictModel):
         if not resume and self.key_schedule is None and self.seed == 0:
             raise ValueError("Create a new Studio request to start training with seed 0")
 
-    @field_validator("optimizer")
-    @classmethod
-    def _require_constant_schedule(cls, optimizer: OptimizerSpec) -> OptimizerSpec:
-        if optimizer.lr_schedule is not None:
-            raise ValueError("checkpointable Studio graph training requires a constant learning rate")
-        return optimizer
+    @property
+    def continuation(self) -> StudioTrainContinuation | None:
+        policy = self.checkpoint_initialization
+        return policy if isinstance(policy, StudioTrainContinuation) else None
+
+    @model_validator(mode="after")
+    def _validate_schedule(self) -> StudioGraphMethodPayload:
+        schedule = self.optimizer.lr_schedule
+        policy = self.continuation
+        if policy is None:
+            if schedule is not None and (schedule.kind != "constant" or schedule.origin.kind != "run_start"):
+                raise ValueError("/optimizer/lr_schedule: independent Train requires a run-start constant rate")
+            return self
+        origin = "segment_start" if policy.schedule == "restart" else "run_start"
+        if (schedule is None and origin != "run_start") or (
+            schedule is not None and schedule.origin.kind != origin
+        ):
+            raise ValueError(f"/optimizer/lr_schedule/origin: expected {origin} for {policy.schedule}")
+        if schedule is not None and schedule.kind != "constant" and policy.optimizer != "preserve":
+            raise ValueError("/checkpoint_initialization/optimizer: nonconstant schedule requires preserved count")
+        if policy.progress.target_total != self.target_total:
+            raise ValueError("/checkpoint_initialization/progress: continuation total differs from target_total")
+        return self
 
 
 class PublishedTrainingCheckpoint(StrictModel):

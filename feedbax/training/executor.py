@@ -1095,6 +1095,7 @@ def execute_training_run_spec(
                     run_spec=run_spec,
                     phase_program=program,
                     content_provider=checkpoint_content_provider,
+                    source_content_binding=checkpoint_source_content_binding,
                 )
         slots.update(resolved_initialization.slots)
 
@@ -2713,6 +2714,7 @@ def _resolve_checkpoint_fork_initialization(
     run_spec: TrainingRunSpec,
     phase_program: Any,
     content_provider: ArtifactBlobProvider,
+    source_content_binding: ContentBinding,
 ) -> _ResolvedCheckpointInitialization:
     """Execute one explicit graph-changing fork and prepare its continuation."""
     if len(plan.targets) != 1 or plan.targets[0].target_id != target_id:
@@ -2778,6 +2780,7 @@ def _resolve_checkpoint_fork_initialization(
             source_structure=source_structure,
             target_structure=target_structure,
             target_values=bound_target_slots,
+            rebuild_model=target_id in bindings.semantic_model_writers,
         )
     except CheckpointTransformRefused as exc:
         raise TrainingRunExecutorError(str(exc)) from exc
@@ -2835,6 +2838,7 @@ def _resolve_checkpoint_fork_initialization(
             sha256_bytes(manifest_bytes), len(manifest_bytes)
         ),
     )
+    producer_source = authenticated_source.parent_ref.model_copy(update={"uri": None})
     return _ResolvedCheckpointInitialization(
         mode="continue_from",
         source=source,
@@ -2853,6 +2857,10 @@ def _resolve_checkpoint_fork_initialization(
             "accounting": list(transformed.accounting_records()),
             "optimizer_policy": transformed.optimizer_policy,
             "learning_rate_schedule_policy": transformed.learning_rate_schedule_policy,
+            "producer_source": producer_source.model_dump(mode="json"),
+            "producer_content_binding": source_content_binding.model_dump(mode="json"),
+            "rng_policy": parameters.get("rng_policy", "carry"),
+            "cursor_policy": "carry",
             "fork_transaction_id": forked.manifest.transaction_id,
             "content_binding": forked.content_binding.model_dump(mode="json"),
             "content_root": forked.content_root.model_dump(mode="json"),

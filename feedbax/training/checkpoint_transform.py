@@ -74,8 +74,8 @@ class CheckpointLeafTransfer:
 
     identity: str
     slot: str
-    source_path: str
-    target_path: str
+    source_path: str | None
+    target_path: str | None
     disposition: Literal["copied", "extended", "target_initialized", "deliberately_reset"]
     copied_shape: tuple[int, ...] | None = None
     initialized_axis: int | None = None
@@ -272,6 +272,7 @@ def derive_and_apply_semantic_checkpoint_transform(
     added_axes: Sequence[AddedParameterAxis],
     optimizer_policy: Literal["preserve", "reset"],
     learning_rate_schedule_policy: Literal["continue", "restart"],
+    rng_policy: Literal["carry", "reset"] = "carry",
 ) -> SemanticCheckpointTransformResult:
     """Derive and execute an exhaustive transform from canonical ownership.
 
@@ -288,29 +289,70 @@ def derive_and_apply_semantic_checkpoint_transform(
             CheckpointTransformErrorCode.INVALID_POLICY,
             "learning-rate schedule policy must be explicitly 'continue' or 'restart'",
         )
+    if rng_policy not in {"carry", "reset"}:
+        raise CheckpointTransformRefused(
+            CheckpointTransformErrorCode.INVALID_POLICY, "RNG policy must be carry or reset",
+        )
     source, _ = _semantic_index(source_structure, source_values)
     target, target_flattened = _semantic_index(target_structure, target_values)
-    if set(source) != set(target):
-        missing_target = sorted(set(source) - set(target))
-        missing_source = sorted(set(target) - set(source))
+    reset_roles = ({"optimizer"} if optimizer_policy == "reset" else set()) | (
+        {"prng"} if rng_policy == "reset" else set()
+    )
+    def reset_identities_for(structure, leaves):
+        reset_slots = {slot.slot for slot in structure.slots if slot.role in reset_roles}
+        return {identity for identity, leaf in leaves.items() if leaf.semantic.owner_slot in reset_slots}
+
+    source_reset = reset_identities_for(source_structure, source)
+    target_reset = reset_identities_for(target_structure, target)
+    reset_identities = source_reset | target_reset
+    inconsistent = (source_reset ^ target_reset) & source.keys() & target.keys()
+    if inconsistent:
+        identity = min(inconsistent)
+        leaf = target[identity].semantic
+        raise CheckpointTransformRefused(
+            CheckpointTransformErrorCode.AMBIGUOUS_IDENTITY,
+            f"/slots/{leaf.owner_slot}{leaf.raw_path}: reset leaf changes its declared slot role",
+            identities=(identity,),
+        )
+    source_carried = source.keys() - reset_identities
+    target_carried = target.keys() - reset_identities
+    if source_carried != target_carried:
+        missing_target = sorted(source_carried - target_carried)
+        missing_source = sorted(target_carried - source_carried)
         identities = tuple((*missing_target, *missing_source))
+        unmatched = [source[name].semantic for name in missing_target]
+        unmatched.extend(target[name].semantic for name in missing_source)
+        paths = [f"/slots/{leaf.owner_slot}{leaf.raw_path}" for leaf in unmatched]
         raise CheckpointTransformRefused(
             CheckpointTransformErrorCode.UNKNOWN_IDENTITY,
             "source and target semantic identity sets differ; "
-            f"source_only={missing_target!r} target_only={missing_source!r}",
+            f"source_only={missing_target!r} target_only={missing_source!r} paths={paths!r}",
             identities=identities,
         )
 
     accounting: list[CheckpointLeafTransfer] = []
+    for identity in sorted(reset_identities):
+        old, fresh = source.get(identity), target.get(identity)
+        owner = old if old is not None else fresh
+        assert owner is not None
+        accounting.append(CheckpointLeafTransfer(
+            identity=identity,
+            slot=owner.semantic.owner_slot,
+            source_path=old.semantic.raw_path if old is not None else None,
+            target_path=fresh.semantic.raw_path if fresh is not None else None,
+            disposition="deliberately_reset",
+        ))
     used_rules: set[tuple[str, str, int]] = set()
     used_model_rules: set[tuple[str, str, int]] = set()
-    for identity in sorted(target):
+    for identity in sorted(target_carried):
         source_leaf = source[identity]
         target_leaf = target[identity]
+        slot = target_leaf.semantic.owner_slot
+        path = f"/slots/{slot}{target_leaf.semantic.raw_path}"
         if _owner_projection(source_leaf.semantic) != _owner_projection(target_leaf.semantic):
             raise CheckpointTransformRefused(
                 CheckpointTransformErrorCode.AMBIGUOUS_IDENTITY,
-                f"semantic leaf {identity!r} changes its declared owner",
+                f"{path}: semantic leaf {identity!r} changes its declared owner",
                 identities=(identity,),
             )
         source_dtype = _dtype(source_leaf.value)
@@ -318,24 +360,10 @@ def derive_and_apply_semantic_checkpoint_transform(
         if source_dtype != target_dtype:
             raise CheckpointTransformRefused(
                 CheckpointTransformErrorCode.DTYPE_MISMATCH,
-                f"semantic leaf {identity!r} changes dtype from {source_dtype} to {target_dtype}",
+                f"{path}: semantic leaf {identity!r} changes dtype from {source_dtype} to {target_dtype}",
                 identities=(identity,),
             )
-        slot = target_leaf.semantic.owner_slot
         treedef, target_leaves = target_flattened[slot]
-        if target_leaf.semantic.optimizer_binding is not None and optimizer_policy == "reset":
-            accounting.append(
-                CheckpointLeafTransfer(
-                    identity=identity,
-                    slot=slot,
-                    source_path=source_leaf.semantic.raw_path,
-                    target_path=target_leaf.semantic.raw_path,
-                    disposition="deliberately_reset",
-                    copied_shape=_shape(target_leaf.value),
-                )
-            )
-            continue
-
         rule = _extension_rule(target_leaf.semantic, added_axes)
         if _shape(source_leaf.value) == _shape(target_leaf.value):
             target_leaves[target_leaf.index] = source_leaf.value
@@ -377,7 +405,7 @@ def derive_and_apply_semantic_checkpoint_transform(
         else:
             raise CheckpointTransformRefused(
                 CheckpointTransformErrorCode.UNSUPPORTED_SHAPE_CHANGE,
-                f"semantic leaf {identity!r} changes shape without one declared added axis",
+                f"{path}: semantic leaf {identity!r} changes shape without one declared added axis",
                 identities=(identity,),
             )
         target_flattened[slot] = (treedef, target_leaves)
@@ -396,7 +424,7 @@ def derive_and_apply_semantic_checkpoint_transform(
             "added-axis rules must transform exactly their canonical model owner; "
             f"missing_model_rules={sorted(optimizer_only_rules)!r}",
         )
-    if len(accounting) != len(source) or {item.identity for item in accounting} != set(source):
+    if len(accounting) != len(source.keys() | target.keys()):
         raise CheckpointTransformRefused(
             CheckpointTransformErrorCode.INCOMPLETE_ACCOUNTING,
             "checkpoint transform did not account for every semantic identity",
@@ -469,6 +497,7 @@ def bind_semantic_checkpoint_fork_step(
     source_structure: CheckpointStructure,
     target_structure: CheckpointStructure,
     target_values: Mapping[str, Any],
+    rebuild_model: bool = False,
 ) -> SemanticCheckpointForkRuntime:
     """Decode and register the canonical semantic transform for one fork step."""
     if step.stage != "target_post" or any(
@@ -479,11 +508,12 @@ def bind_semantic_checkpoint_fork_step(
             "semantic fork binding requires one target_post semantic transform step",
         )
     parameters = step.records[0].parameters
-    if set(parameters) != {
+    required = {
         "added_axes",
         "optimizer_policy",
         "learning_rate_schedule_policy",
-    }:
+    }
+    if not required <= parameters.keys() or parameters.keys() - required - {"rng_policy"}:
         raise CheckpointTransformRefused(
             CheckpointTransformErrorCode.INVALID_POLICY,
             "semantic fork parameters must declare added_axes and both explicit policies",
@@ -501,18 +531,25 @@ def bind_semantic_checkpoint_fork_step(
         source_values: Mapping[str, Any], _parameters: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         names = {slot.slot for slot in source_structure.slots}
-        result = derive_and_apply_semantic_checkpoint_transform(
-            source_structure=source_structure,
-            target_structure=target_structure,
-            source_values={name: source_values[name] for name in names},
-            target_values={name: target_values[name] for name in names},
-            added_axes=added_axes,
-            optimizer_policy=parameters["optimizer_policy"],
-            learning_rate_schedule_policy=parameters["learning_rate_schedule_policy"],
-        )
+        try:
+            result = derive_and_apply_semantic_checkpoint_transform(
+                source_structure=source_structure,
+                target_structure=target_structure,
+                source_values={name: source_values[name] for name in names},
+                target_values={name: target_values[name] for name in names},
+                added_axes=added_axes,
+                optimizer_policy=parameters["optimizer_policy"],
+                learning_rate_schedule_policy=parameters["learning_rate_schedule_policy"],
+                rng_policy=parameters.get("rng_policy", "carry"),
+            )
+        except CheckpointTransformRefused as exc:
+            raise CheckpointCompatibilityError(str(exc)) from exc
         results.append(result)
         materialized = dict(source_values)
         for name, value in result.values.items():
+            if rebuild_model and name == "model":
+                materialized[name] = value
+                continue
             source_leaves, source_treedef = jt.flatten(source_values[name])
             target_leaves, target_treedef = jt.flatten(value)
             materialized[name] = (
@@ -523,7 +560,10 @@ def bind_semantic_checkpoint_fork_step(
             )
         return materialized
 
-    from feedbax.training.checkpoint_custody import CheckpointForkTransformRegistration
+    from feedbax.training.checkpoint_custody import (
+        CheckpointCompatibilityError,
+        CheckpointForkTransformRegistration,
+    )
 
     return SemanticCheckpointForkRuntime(
         registration=CheckpointForkTransformRegistration(

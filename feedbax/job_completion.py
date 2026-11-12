@@ -100,9 +100,14 @@ def verify_training_completion(
         if launch.checkpoint_input is not None and launch.resume is None:
             provenance = manifest.provenance.metadata if manifest.provenance is not None else {}
             initialization = provenance.get("checkpoint_initialization")
-            if not isinstance(initialization, dict) or initialization.get("mode") != "initialize_from":
+            mode = "continue_from" if method.continuation is not None else "initialize_from"
+            if not isinstance(initialization, dict) or initialization.get("mode") != mode:
                 raise CompletionFileError("Completion lacks its Train initialization provenance.")
-            source = ParentRef.model_validate(initialization["source"])
+            source_ref = (
+                initialization.get("transformation", {}).get("producer_source")
+                if method.continuation is not None else initialization.get("source")
+            )
+            source = ParentRef.model_validate(source_ref)
             expected = launch.checkpoint_input.checkpoint.pointer
             if (
                 source.id != expected.transaction_id

@@ -835,6 +835,7 @@ class CheckpointForkPlanBindings:
     population_member_ids: Mapping[str, Mapping[str, Sequence[str]]] = dataclass_field(
         default_factory=dict
     )
+    semantic_model_writers: Mapping[str, SemanticModelWriter] = dataclass_field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -3364,12 +3365,8 @@ def write_checkpoint_transaction(
     slot_specs = tuple(barrier.slots)
     _validate_required_slots(slot_specs, slots)
     slot_roles = _slot_roles(run_spec)
-    if train_state_codec == "standard_train" and (
-        run_spec.method_ref != STUDIO_GRAPH_METHOD or semantic_model is None
-        or not STANDARD_TRAIN_SLOTS.items() <= slot_roles.items()
-        or not STANDARD_TRAIN_SLOTS.keys() <= {spec.slot for spec in slot_specs}
-    ):
-        raise CheckpointCompatibilityError("Typed Train state requires the standard Studio checkpoint layout")
+    if train_state_codec == "standard_train":
+        _validate_standard_train_writer(run_spec, barrier, slot_roles, semantic_model)
     manifest_metadata = {"phase": barrier.phase, **dict(metadata or {})}
     if segment_parent_ref is not None:
         manifest_metadata["checkpoint_segment_parent_ref"] = segment_parent_ref.model_dump(
@@ -3411,81 +3408,20 @@ def write_checkpoint_transaction(
         for spec in slot_specs:
             if spec.slot not in slots and not spec.required:
                 continue
-            value = slots[spec.slot]
-            materialized_axes = resolved_axes.get(spec.slot)
-            _validate_slot_axes(
-                spec.slot,
-                value,
-                materialized_axes,
-                error_cls=CheckpointCompatibilityError,
-            )
-            media_type = "application/x-python-pickle"
-            serializer = CHECKPOINT_SLOT_SERIALIZER
-            metadata_for_slot = dict(spec.metadata)
-            if spec.slot == "model" and semantic_model is not None:
-                relative, tree, encoding = semantic_model.publish(tmp_dir, value)
-                blob_sha256, blob_size_bytes = tree.sha256, tree.size_bytes
-                media_type = MODEL_TREE_MEDIA_TYPE
-                serializer = MODEL_TREE_SERIALIZER
-                metadata_for_slot["semantic_model"] = encoding
-            elif train_state_codec == "standard_train" and spec.slot in STANDARD_TRAIN_SLOTS:
-                encoded = encode_standard_train_slot(
-                    spec.slot, value, semantic_abis[spec.slot], completed_updates=completed_batches,
-                )
-                blob_sha256, blob_size_bytes = sha256_bytes(encoded.data), len(encoded.data)
-                relative = Path("blobs", f"{spec.slot}-{blob_sha256}.safetensors")
-                _write_bytes_atomic(tmp_dir / relative, encoded.data)
-                media_type = STANDARD_TRAIN_STATE_MEDIA_TYPE
-                serializer = STANDARD_TRAIN_STATE_CODEC_VERSION
-                metadata_for_slot["array_descriptor_sha256"] = encoded.descriptor_sha256
-            else:
-                blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-                blob_sha256 = sha256_bytes(blob_bytes)
-                blob_size_bytes = len(blob_bytes)
-                relative = Path("blobs", f"{spec.slot}-{blob_sha256}.pkl")
-                _write_bytes_atomic(tmp_dir / relative, blob_bytes)
-                del blob_bytes
-            integrity = _slot_integrity_records(value)
-            structural_abi = integrity.structural_abi_fingerprint
-            if serializer != CHECKPOINT_SLOT_SERIALIZER:
-                structural_abi = structural_abi.model_copy(update={
-                    "environment_provenance": _serializer_versions(serializer),
-                })
-            population = _population_record(
-                spec.slot,
-                value,
-                population_member_ids=population_member_ids or {},
-                population_slots=population_slots,
-            )
-            role = slot_roles.get(spec.slot, "auxiliary")
-            content_digest = _slot_content_digest(
-                slot=spec.slot,
-                role=role,
-                value=value,
-                blob_sha256=blob_sha256,
-                blob_size_bytes=blob_size_bytes,
-                integrity=integrity,
-                materialized_axes=materialized_axes,
-                population=population,
-            )
-            slot_record = CheckpointSlotBlobRef(
-                slot=spec.slot,
-                role=role,
-                required=spec.required,
-                media_type=media_type,
-                relative_path=relative.as_posix(),
-                sha256=blob_sha256,
-                size_bytes=blob_size_bytes,
+            slot_record, content_digest = _write_fresh_slot_blob(
+                spec, slots[spec.slot],
+                transaction_dir=tmp_dir,
                 coordinate=_checkpoint_coordinate(
-                    (slot_coordinates or {}).get(spec.slot, coordinate),
-                    resolved_axes,
+                    (slot_coordinates or {}).get(spec.slot, coordinate), resolved_axes,
                 ),
-                structural_abi_fingerprint=structural_abi,
+                slot_roles=slot_roles,
+                population_slots=population_slots,
+                population_member_ids=population_member_ids or {},
                 semantic_abi=semantic_abis[spec.slot],
-                content_digest=content_digest,
-                materialized_axes=materialized_axes,
-                population=population,
-                metadata=metadata_for_slot,
+                materialized_axes=resolved_axes.get(spec.slot),
+                semantic_model=semantic_model,
+                train_state_codec=train_state_codec,
+                completed_batches=completed_batches,
             )
             slot_records.append(slot_record)
             slot_digests.append(content_digest)
@@ -5050,7 +4986,10 @@ def _prepare_checkpoint_fork_plan(
     digest_classification = classify_checkpoint_fork_plan_derived_digests(plan, bindings)
     _raise_for_fork_digest_classifications(digest_classification.classifications)
 
-    source = _load_latest_checkpoint_transaction(source_root, operation="fork")
+    typed_targets = {target.target_id for target in plan.targets} <= bindings.semantic_model_writers.keys()
+    source = _load_latest_checkpoint_transaction(
+        source_root, operation="typed_fork" if typed_targets else "fork",
+    )
     source_axes = {
         record.slot: record.materialized_axes
         for record in source.manifest.slots
@@ -5285,6 +5224,7 @@ def fork_checkpoint_plan(
             },
             content_provider=content_provider,
             source_content_binding=source_content_binding,
+            semantic_model=bindings.semantic_model_writers.get(prepared.target_id),
         )
         results[prepared.target_id] = result
     return results
@@ -5317,6 +5257,7 @@ def _fork_checkpoint_transaction_from_path(
     fork_provenance_metadata: Mapping[str, Any] | None = None,
     content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
+    semantic_model: SemanticModelWriter | None = None,
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
 
@@ -5337,7 +5278,9 @@ def _fork_checkpoint_transaction_from_path(
     aliases for ``source_slot_transforms`` and ``source_transform_metadata``.
     Callers must not supply both forms.
     """
-    source = _load_latest_checkpoint_transaction(source_root, operation="fork")
+    source = _load_latest_checkpoint_transaction(
+        source_root, operation="typed_fork" if semantic_model is not None else "fork",
+    )
     source_axes = {
         record.slot: record.materialized_axes
         for record in source.manifest.slots
@@ -5479,6 +5422,9 @@ def _fork_checkpoint_transaction_from_path(
         error_cls=CheckpointCompatibilityError,
     )
     _validate_expected_slot_set(barrier, validation_slots)
+    slot_roles = _slot_roles(target_run_spec)
+    if semantic_model is not None:
+        _validate_standard_train_writer(target_run_spec, barrier, slot_roles, semantic_model)
     mapped_source_drops = sorted(
         slot
         for slot, axes in source_axes.items()
@@ -5488,6 +5434,100 @@ def _fork_checkpoint_transaction_from_path(
         raise CheckpointCompatibilityError(
             f"checkpoint fork cannot drop mapped source slots {mapped_source_drops!r}"
         )
+
+    manifest_metadata = dict(source.manifest.metadata)
+    manifest_metadata["phase"] = barrier.phase
+    manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
+    manifest_metadata.update(dict(metadata or {}))
+    if semantic_model is not None:
+        from feedbax.contracts.studio_training import StudioGraphMethodPayload
+        from feedbax.training.studio_executor import standard_train_optimizer_step
+
+        target_method = StudioGraphMethodPayload.model_validate(target_run_spec.method_payload.payload)
+        optimizer_step = standard_train_optimizer_step(target_method, prepared_slots)
+        manifest_metadata["optimizer_step"] = optimizer_step
+        schedule = target_method.optimizer.lr_schedule
+        if (
+            request is not None and schedule is not None and schedule.kind != "constant"
+            and optimizer_step != (
+                request.target_total if continuation_applied else request.source_completed_batches
+            )
+        ):
+            raise CheckpointCompatibilityError(
+                "/slots/optimizer: nonconstant schedule requires a carried count at the batch cursor"
+            )
+    target_binding = run_contract_binding(target_run_spec, phase_program)
+    source_coordinate = source.manifest.completed_coordinate
+    boundary_coordinate_fields = {
+        "phase", "inner_step", "outer_step", "program_step", "schedule_origin_step"
+    }
+    manifest_metadata.pop(PHASE_BOUNDARY_DECISION_METADATA_KEY, None)
+    source_decision = source.manifest.metadata.get(PHASE_BOUNDARY_DECISION_METADATA_KEY)
+    same_boundary = (
+        source.manifest.run_contract_binding.phase_program_sha256
+        == target_binding.phase_program_sha256
+        and source_coordinate.model_dump(include=boundary_coordinate_fields)
+        == coordinate.model_dump(include=boundary_coordinate_fields)
+    )
+    # Pending standard Train continues the same terminal phase. Its target
+    # guard and schedule origin may differ, so preserve only the terminal fact.
+    pending_studio_terminal = (
+        semantic_model is not None and request is not None and not continuation_applied
+        and source_decision == {"schema_version": 1, "next_phase": None}
+        and source_coordinate.model_dump(include=boundary_coordinate_fields - {"schedule_origin_step"})
+        == coordinate.model_dump(include=boundary_coordinate_fields - {"schedule_origin_step"})
+    )
+    if source_decision is not None and resolved_barrier_mapping is None and (
+        same_boundary or pending_studio_terminal
+    ):
+        manifest_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = source_decision
+    if request is not None:
+        manifest_metadata["checkpoint_continuation"] = request.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        manifest_metadata["checkpoint_continuation_applied"] = continuation_applied
+    else:
+        manifest_metadata.pop("checkpoint_continuation_applied", None)
+    segment_parent = None
+    if request is not None and continuation_applied and request.source_completed_batches > 0:
+        segment_parent = load_checkpoint_set(source.root, source.manifest.transaction_id).exact_ref
+        manifest_metadata["checkpoint_segment_parent_ref"] = segment_parent.model_dump(
+            mode="json"
+        )
+    else:
+        manifest_metadata.pop("checkpoint_segment_parent_ref", None)
+    _validate_program_step_units(
+        coordinate,
+        manifest_metadata,
+        context="checkpoint fork target",
+    )
+    completed_batches = _resolve_completed_training_batches(
+        phase_program=phase_program,
+        slots=prepared_slots,
+        # A declared continuation creates a new target horizon.  The source
+        # manifest records the completed source prefix and must never be
+        # reused as the target custody total.  The target's declared
+        # bookkeeping slot remains an equality assertion below.
+        explicit=(
+            request.target_total
+            if request is not None and continuation_applied
+            else request.source_completed_batches
+            if request is not None
+            else None
+        ),
+        metadata=manifest_metadata,
+        default=None if request is not None else source.manifest.completed_training_batches,
+        slot_axis_bindings=target_axes,
+    )
+    _validate_batch_histories(
+        prepared_slots,
+        segment_batch_count=(
+            request.additional_batches
+            if request is not None and continuation_applied
+            else completed_batches
+        ),
+    )
 
     target_root_path = Path(target_root)
     target_root_path.mkdir(parents=True, exist_ok=True)
@@ -5501,7 +5541,6 @@ def _fork_checkpoint_transaction_from_path(
     try:
         blob_dir = tmp_dir / "blobs"
         blob_dir.mkdir()
-        slot_roles = _slot_roles(target_run_spec)
         semantic_abis = derive_checkpoint_semantic_abis(
             {
                 spec.slot: structural_abi_fingerprint(prepared_slots[spec.slot])
@@ -5565,7 +5604,7 @@ def _fork_checkpoint_transaction_from_path(
                 raise CheckpointCompatibilityError(
                     f"target checkpoint slot {spec.slot!r} is missing after transforms"
                 )
-            if spec.slot in transformed_slots:
+            if spec.slot in transformed_slots or semantic_model is not None:
                 source_slot = source_slots_by_name.get(spec.slot)
                 expected_axes = target_axes.get(spec.slot)
                 if source_slot is not None and source_slot.materialized_axes != expected_axes:
@@ -5576,7 +5615,6 @@ def _fork_checkpoint_transaction_from_path(
                 slot_record, content_digest = _write_fresh_slot_blob(
                     spec,
                     prepared_slots[spec.slot],
-                    blob_dir=blob_dir,
                     transaction_dir=tmp_dir,
                     coordinate=coordinate,
                     slot_roles=slot_roles,
@@ -5584,6 +5622,9 @@ def _fork_checkpoint_transaction_from_path(
                     population_member_ids=expected_population_member_ids or {},
                     materialized_axes=expected_axes,
                     semantic_abi=semantic_abis[spec.slot],
+                    semantic_model=semantic_model,
+                    train_state_codec="standard_train" if semantic_model is not None else "legacy",
+                    completed_batches=completed_batches,
                 )
                 provenance = CheckpointForkSlotProvenance(
                     slot=spec.slot,
@@ -5594,9 +5635,9 @@ def _fork_checkpoint_transaction_from_path(
                     ),
                     target_relative_path=slot_record.relative_path,
                     transfer_mode="serialized",
-                    transform=_combine_transform_stages(
-                        spec.slot,
-                        transform_stages[spec.slot],
+                    transform=(
+                        _combine_transform_stages(spec.slot, transform_stages[spec.slot])
+                        if spec.slot in transformed_slots else None
                     ),
                     source_axes=(
                         source_slot.materialized_axes if source_slot is not None else None
@@ -5699,74 +5740,6 @@ def _fork_checkpoint_transaction_from_path(
             slot_records=slot_records,
         )
         transaction_root = _transaction_root_sha256(slot_digests)
-        manifest_metadata = dict(source.manifest.metadata)
-        manifest_metadata["phase"] = barrier.phase
-        manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
-        manifest_metadata.update(dict(metadata or {}))
-        target_binding = run_contract_binding(target_run_spec, phase_program)
-        source_coordinate = source.manifest.completed_coordinate
-        boundary_coordinate_fields = {
-            "phase", "inner_step", "outer_step", "program_step", "schedule_origin_step"
-        }
-        manifest_metadata.pop(PHASE_BOUNDARY_DECISION_METADATA_KEY, None)
-        if (
-            PHASE_BOUNDARY_DECISION_METADATA_KEY in source.manifest.metadata
-            and resolved_barrier_mapping is None
-            and source.manifest.run_contract_binding.phase_program_sha256
-            == target_binding.phase_program_sha256
-            and source_coordinate.model_dump(include=boundary_coordinate_fields)
-            == coordinate.model_dump(include=boundary_coordinate_fields)
-        ):
-            manifest_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = source.manifest.metadata[
-                PHASE_BOUNDARY_DECISION_METADATA_KEY
-            ]
-        if request is not None:
-            manifest_metadata["checkpoint_continuation"] = request.model_dump(
-                mode="json",
-                exclude_none=True,
-            )
-            manifest_metadata["checkpoint_continuation_applied"] = continuation_applied
-        else:
-            manifest_metadata.pop("checkpoint_continuation_applied", None)
-        segment_parent = None
-        if request is not None and continuation_applied and request.source_completed_batches > 0:
-            segment_parent = load_checkpoint_set(source.root, source.manifest.transaction_id).exact_ref
-            manifest_metadata["checkpoint_segment_parent_ref"] = segment_parent.model_dump(
-                mode="json"
-            )
-        else:
-            manifest_metadata.pop("checkpoint_segment_parent_ref", None)
-        _validate_program_step_units(
-            coordinate,
-            manifest_metadata,
-            context="checkpoint fork target",
-        )
-        completed_batches = _resolve_completed_training_batches(
-            phase_program=phase_program,
-            slots=prepared_slots,
-            # A declared continuation creates a new target horizon.  The source
-            # manifest records the completed source prefix and must never be
-            # reused as the target custody total.  The target's declared
-            # bookkeeping slot remains an equality assertion below.
-            explicit=(
-                request.target_total
-                if request is not None and continuation_applied
-                else request.source_completed_batches
-                if request is not None
-                else None
-            ),
-            metadata=manifest_metadata,
-            default=None if request is not None else source.manifest.completed_training_batches,
-            slot_axis_bindings=target_axes,
-        )
-        _validate_batch_histories(
-            prepared_slots,
-            segment_batch_count=(
-                request.additional_batches
-                if request is not None and continuation_applied
-                else completed_batches
-            ),
-        )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
@@ -5935,6 +5908,7 @@ def fork_checkpoint_transaction(
     fork_provenance_metadata: Mapping[str, Any] | None = None,
     content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
+    semantic_model: SemanticModelWriter | None = None,
 ) -> CheckpointForkResult:
     """Fork from a leased canonical projection when content custody is supplied."""
     common = dict(
@@ -5961,6 +5935,7 @@ def fork_checkpoint_transaction(
         fork_provenance_metadata=fork_provenance_metadata,
         content_provider=content_provider,
         source_content_binding=source_content_binding,
+        semantic_model=semantic_model,
     )
     if source_content_binding is None:
         if content_provider is not None and link_strategy is None:
@@ -6029,7 +6004,7 @@ def materialize_checkpoint_content(
 
 
 def _load_latest_checkpoint_transaction(
-    root: str | Path, *, operation: Literal["fork", "history"],
+    root: str | Path, *, operation: Literal["fork", "typed_fork", "history"],
 ) -> _LoadedCheckpointTransaction:
     root_path = Path(root)
     latest = _load_latest_pointer(root_path)
@@ -6426,11 +6401,30 @@ def _resolve_fork_continuation_request(
     return declared
 
 
+def _validate_standard_train_writer(
+    run_spec: TrainingRunSpec,
+    barrier: CheckpointBarrierSpec,
+    slot_roles: Mapping[str, str],
+    writer: SemanticModelWriter | None,
+) -> None:
+    from feedbax.contracts.graph import GraphSpec
+
+    if (
+        run_spec.method_ref != STUDIO_GRAPH_METHOD or writer is None
+        or not STANDARD_TRAIN_SLOTS.items() <= slot_roles.items()
+        or {spec.slot for spec in barrier.slots} != {"model", *STANDARD_TRAIN_SLOTS}
+    ):
+        raise CheckpointCompatibilityError(
+            "/slots: typed Train state requires the standard Studio checkpoint layout"
+        )
+    if run_spec.graph.inline is None or GraphSpec.model_validate(run_spec.graph.inline) != writer.graph:
+        raise CheckpointCompatibilityError("/graph: typed Train writer differs from the bound graph")
+
+
 def _write_fresh_slot_blob(
     spec: CheckpointSlotSpec,
     value: Any,
     *,
-    blob_dir: Path,
     transaction_dir: Path,
     coordinate: ProgressCoordinate,
     slot_roles: Mapping[str, str],
@@ -6438,6 +6432,9 @@ def _write_fresh_slot_blob(
     population_member_ids: Mapping[str, Sequence[str]],
     semantic_abi: CheckpointSemanticAbi,
     materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None,
+    semantic_model: SemanticModelWriter | None = None,
+    train_state_codec: TrainStateCodec = "legacy",
+    completed_batches: int | None = None,
 ) -> tuple[CheckpointSlotBlobRef, SlotContentDigest]:
     _validate_slot_axes(
         spec.slot,
@@ -6445,15 +6442,38 @@ def _write_fresh_slot_blob(
         materialized_axes,
         error_cls=CheckpointCompatibilityError,
     )
-    blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-    blob_sha256 = sha256_bytes(blob_bytes)
-    blob_size_bytes = len(blob_bytes)
-    blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
-    _write_bytes_atomic(blob_path, blob_bytes)
-    # The serialized payload is durable on disk now; release it before hashing
-    # leaves so the two payload-sized buffers never coexist.
-    del blob_bytes
+    media_type = "application/x-python-pickle"
+    serializer = CHECKPOINT_SLOT_SERIALIZER
+    metadata_for_slot = dict(spec.metadata)
+    if spec.slot == "model" and semantic_model is not None:
+        relative, tree, encoding = semantic_model.publish(transaction_dir, value)
+        blob_sha256, blob_size_bytes = tree.sha256, tree.size_bytes
+        media_type = MODEL_TREE_MEDIA_TYPE
+        serializer = MODEL_TREE_SERIALIZER
+        metadata_for_slot["semantic_model"] = encoding
+    elif train_state_codec == "standard_train" and spec.slot in STANDARD_TRAIN_SLOTS:
+        encoded = encode_standard_train_slot(
+            spec.slot, value, semantic_abi, completed_updates=completed_batches,
+        )
+        blob_sha256, blob_size_bytes = sha256_bytes(encoded.data), len(encoded.data)
+        relative = Path("blobs", f"{spec.slot}-{blob_sha256}.safetensors")
+        _write_bytes_atomic(transaction_dir / relative, encoded.data)
+        media_type = STANDARD_TRAIN_STATE_MEDIA_TYPE
+        serializer = STANDARD_TRAIN_STATE_CODEC_VERSION
+        metadata_for_slot["array_descriptor_sha256"] = encoded.descriptor_sha256
+    else:
+        blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        blob_sha256 = sha256_bytes(blob_bytes)
+        blob_size_bytes = len(blob_bytes)
+        relative = Path("blobs", f"{spec.slot}-{blob_sha256}.pkl")
+        _write_bytes_atomic(transaction_dir / relative, blob_bytes)
+        del blob_bytes
     integrity = _slot_integrity_records(value)
+    structural_abi = integrity.structural_abi_fingerprint
+    if serializer != CHECKPOINT_SLOT_SERIALIZER:
+        structural_abi = structural_abi.model_copy(update={
+            "environment_provenance": _serializer_versions(serializer),
+        })
     population = _population_record(
         spec.slot,
         value,
@@ -6475,16 +6495,17 @@ def _write_fresh_slot_blob(
         slot=spec.slot,
         role=role,
         required=spec.required,
-        relative_path=str(blob_path.relative_to(transaction_dir)),
+        media_type=media_type,
+        relative_path=relative.as_posix(),
         sha256=blob_sha256,
         size_bytes=blob_size_bytes,
         coordinate=coordinate,
-        structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+        structural_abi_fingerprint=structural_abi,
         semantic_abi=semantic_abi,
         content_digest=content_digest,
         materialized_axes=materialized_axes,
         population=population,
-        metadata=dict(spec.metadata),
+        metadata=metadata_for_slot,
     )
     return slot_record, content_digest
 

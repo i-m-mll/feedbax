@@ -47,11 +47,27 @@ def studio_training_key(seed: int, stream: str) -> jax.Array:
 def standard_train_optimizer(
     payload: StudioGraphMethodPayload, *, gradient_clip: float | None,
 ) -> optax.GradientTransformationExtraArgs:
-    """Build the registered method's optimizer at its run-start clock."""
+    """Build the optimizer with its authored schedule clock, independent of its count."""
+    policy = payload.continuation
+    origin = (
+        policy.progress.source_completed_batches
+        if policy is not None and policy.schedule == "restart" else 0
+    )
+    count = origin if policy is not None and policy.optimizer == "preserve" else 0
     return build_optimizer(
-        payload.optimizer, schedule_origin_step=0, current_step=0,
+        payload.optimizer, schedule_origin_step=origin, current_step=origin,
+        optimizer_count_at_current_step=count,
         gradient_clip=gradient_clip,
     )
+
+
+def standard_train_optimizer_step(payload: StudioGraphMethodPayload, slots: Mapping[str, Any]) -> int:
+    optimizer_state = slots["optimizer"]
+    if payload.optimizer.lr_schedule is not None:
+        return int(optimizer_state[-1].count)
+    adam = jax.tree.leaves(optimizer_state, is_leaf=lambda node: isinstance(node, optax.ScaleByAdamState))
+    counts = [int(state.count) for state in adam if isinstance(state, optax.ScaleByAdamState)]
+    return counts[0] if counts else int(slots["batch_counter"])
 
 
 def executor_method_contract(*, total_batches: int):
@@ -296,6 +312,15 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
             evaluate_loss_fn=_evaluate_loss,
         )
         trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
+
+        def bind_schedule(_slots, origin, current, count):
+            policy = payload.continuation
+            assert policy is not None
+            authored = policy.progress.source_completed_batches if policy.schedule == "restart" else 0
+            if origin != authored or current != count:
+                raise ValueError("/slots/optimizer: restored schedule clock differs from the prepared clock")
+            return {}
+
         return ExecutionPreparationResult(
             initial_slots={
                 "model": compiled.graph,
@@ -305,6 +330,7 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
             },
             kernel_context={"studio_graph_update": kernel},
             loss_service=_StudioWorkerLossService(compiled),
+            restored_schedule_context_binder=bind_schedule if payload.continuation is not None else None,
         )
 
     def gradient_update(slots: Mapping[str, Any], coordinate: Any, context: Mapping[str, Any]):
@@ -335,6 +361,7 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
             projector=lambda _payload, _coordinates: ScheduleProjection(),
         ),
         optimizer_spec_projector=lambda payload: payload.optimizer,
+        optimizer_step_extractor=standard_train_optimizer_step,
         owner="feedbax.training.studio_executor",
         package="feedbax",
     )
