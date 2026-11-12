@@ -1592,6 +1592,31 @@
         ]
       }
     },
+    "feedbax.contracts.report_document.ReportDocument": {
+      "blocks": {
+        "families": [
+          "feedbax.contracts.report_document.ReportFigure",
+          "feedbax.contracts.report_document.ReportText"
+        ]
+      },
+      "completeness": {
+        "absent": "complete",
+        "values": [
+          "allow_omissions",
+          "complete"
+        ]
+      },
+      "title": {}
+    },
+    "feedbax.contracts.report_document.ReportFigure": {
+      "caption": {
+        "absent": null
+      },
+      "figure": {}
+    },
+    "feedbax.contracts.report_document.ReportText": {
+      "markdown": {}
+    },
     "feedbax.contracts.request_refs.BarrierMember": {
       "kind": {
         "absent": "barrier",
@@ -1754,6 +1779,9 @@
       }
     },
     "feedbax.contracts.request_specs.ReportRequestSpec": {
+      "document": {
+        "absent": null
+      },
       "narrative": {
         "absent": null
       },

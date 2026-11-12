@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
+from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity_guard import IdentityWideInteger
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.training import (
@@ -75,6 +76,15 @@ class RenderRequestSpec(RequestSpec):
 
 
 class ReportRequestSpec(RequestSpec):
-    report_type: Name
+    report_type: Name | None
     params: dict[str, JsonValue] = Field(default_factory=dict)
     narrative: str | None = None
+    document: ReportDocument | None = None
+
+    @model_validator(mode="after")
+    def _require_one_report(self) -> ReportRequestSpec:
+        if (self.report_type is None) == (self.document is None):
+            raise ValueError("Declare one report recipe type or Report document.")
+        if self.document is not None and (self.params or self.narrative is not None):
+            raise ValueError("Report documents cannot carry recipe parameters or narrative.")
+        return self

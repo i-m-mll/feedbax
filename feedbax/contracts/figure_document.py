@@ -12,6 +12,8 @@ from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, Name
 from feedbax.contracts.figure_layout import ComparisonGridParams, FigureView
 from feedbax.contracts.figures import AxisLabels, PanelAxis
 from feedbax.contracts.operation import DatasetPort
+from feedbax.contracts.project_inputs import NonemptyText
+from feedbax.contracts.request_refs import ContentRef
 
 
 class IndexSelection(StrictModel):
@@ -120,6 +122,40 @@ class FigureDocument(StrictModel):
                 raise ValueError(f"Layer {layer.name!r} requires a declared panel and data role.")
             if len(set(layer.group)) != len(layer.group):
                 raise ValueError(f"Layer {layer.name!r} repeats a group coordinate.")
+        return self
+
+
+PLOTLY_FIGURE_ROLE = "figure"
+PLOTLY_MEDIA_TYPE = "application/json"
+
+
+class PlotlyFigurePort(StrictModel):
+    """Plan declaration for an eventual saved Plotly figure product."""
+
+    kind: Literal["plotly_figure"] = "plotly_figure"
+
+
+class FigureLayerOmission(StrictModel):
+    layer: Name
+    reason: NonemptyText
+
+
+class PlotlyFigureProduct(StrictModel):
+    """A saved figure object and the omissions declared by its producer."""
+
+    content: ContentRef
+    omitted_layers: tuple[FigureLayerOmission, ...] = ()
+
+    @model_validator(mode="after")
+    def _check_product(self) -> PlotlyFigureProduct:
+        if (
+            self.content.tree
+            or self.content.size == 0
+            or self.content.media_type != PLOTLY_MEDIA_TYPE
+        ):
+            raise ValueError("A Plotly figure requires a nonempty JSON content object.")
+        if len({item.layer for item in self.omitted_layers}) != len(self.omitted_layers):
+            raise ValueError("Each omitted figure layer requires one reason.")
         return self
 
 

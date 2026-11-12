@@ -2413,7 +2413,7 @@ export type CreateNamedDocument = {
 export type CreateNamedStep = {
   "kind": "step";
   "id": string;
-  "step": StudioTrainStep | StudioAnalyzeStep;
+  "step": StudioTrainStep | StudioAnalyzeStep | StudioReportStep;
 };
 
 export type DataDerivedAxisRange = {
@@ -2693,6 +2693,22 @@ export type RemoveValue = {
   "op": "remove";
 };
 
+export type ReportDocument = {
+  "schema_version"?: "feedbax.report_document.v1";
+  "title": string;
+  "blocks": Array<ReportText | ReportFigure>;
+  "completeness"?: "complete" | "allow_omissions";
+};
+
+export type ReportFigure = {
+  "figure": string;
+  "caption"?: string | null;
+};
+
+export type ReportText = {
+  "markdown": string;
+};
+
 export type Row = {
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
@@ -2773,6 +2789,8 @@ export type StepReference = {
   "row"?: string | null;
   "variants"?: "all" | Array<string> | null;
   "checkpoint"?: CheckpointRule | null;
+  "element"?: string | null;
+  "product"?: string | null;
 };
 
 export type StoreSubset = {
@@ -3013,6 +3031,7 @@ export type StudioProjectWindowMapElement = {
   "kind": "analyze" | "render";
   "request_id": string;
   "status": "not_run";
+  "figure"?: StepReference | null;
 };
 
 export type StudioProjectWindowMapInput = {
@@ -3072,6 +3091,18 @@ export type StudioReachTargetEdit = {
   "kind": "bindReachTarget";
   "input": string;
   "position": StudioReachPosition;
+};
+
+export type StudioReportStep = {
+  "kind": "report";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, Record<string, JsonValue>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
 };
 
 export type StudioSetSweepValue = {
@@ -7337,7 +7368,7 @@ export const CreateNamedStepSchema: z.ZodType<CreateNamedStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("step"),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "step": z.union([StudioTrainStepSchema, StudioAnalyzeStepSchema]),
+    "step": z.union([StudioTrainStepSchema, StudioAnalyzeStepSchema, StudioReportStepSchema]),
   }).strict()
 ) as unknown as z.ZodType<CreateNamedStep>;
 
@@ -7720,6 +7751,28 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
 
+export const ReportDocumentSchema: z.ZodType<ReportDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.report_document.v1").optional(),
+    "title": z.string().min(1),
+    "blocks": z.array(z.union([ReportTextSchema, ReportFigureSchema])).min(1),
+    "completeness": z.union([z.literal("complete"), z.literal("allow_omissions")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ReportDocument>;
+
+export const ReportFigureSchema: z.ZodType<ReportFigure> = z.lazy(() =>
+  z.object({
+    "figure": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "caption": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ReportFigure>;
+
+export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
+  z.object({
+    "markdown": z.string(),
+  }).strict()
+) as unknown as z.ZodType<ReportText>;
+
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
     "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
@@ -7829,6 +7882,8 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
     "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepReference>;
 
@@ -8141,6 +8196,7 @@ export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowM
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
     "request_id": z.string(),
     "status": z.literal("not_run"),
+    "figure": z.union([StepReferenceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapElement>;
 
@@ -8218,6 +8274,20 @@ export const StudioReachTargetEditSchema: z.ZodType<StudioReachTargetEdit> = z.l
     "position": StudioReachPositionSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioReachTargetEdit>;
+
+export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("report"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(DocumentOverridePathSchema, jsonValueSchema)).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioReportStep>;
 
 export const StudioSetSweepValueSchema: z.ZodType<StudioSetSweepValue> = z.lazy(() =>
   z.object({
@@ -8398,6 +8468,7 @@ export const contractSchemas = {
   StudioRunSelection: StudioRunSelectionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
   AnalysisDocument: AnalysisDocumentSchema,
+  ReportDocument: ReportDocumentSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
@@ -8510,6 +8581,7 @@ export interface ContractTypeMap {
   StudioRunSelection: StudioRunSelection;
   StudioSubmissionItem: StudioSubmissionItem;
   AnalysisDocument: AnalysisDocument;
+  ReportDocument: ReportDocument;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringSurface: StudioAuthoringSurface;

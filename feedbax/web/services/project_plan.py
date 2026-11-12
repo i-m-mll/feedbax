@@ -8,6 +8,7 @@ import json
 from types import MappingProxyType
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobStatus,
@@ -83,13 +84,13 @@ class ProjectPlanRead:
                 counts[key.variant, key.step][row.status.value] += 1
         executable = {run.key for run in plan.runs}
         rejected = {(problem.variant, problem.step, problem.row) for problem in plan.diagnostics}
-        analyze_status: dict[RunKey, JobStatus] = {}
+        authoring_status: dict[RunKey, JobStatus] = {}
         for row in plan.rows:
             key = row.key
             invalid = (key.variant, key.step, key.row) in rejected
-            if row.kind == "analyze":
+            if row.kind in {"analyze", "report"}:
                 status = JobStatus.CANNOT_RUN if invalid else JobStatus.NOT_RUN
-                analyze_status[key] = status
+                authoring_status[key] = status
                 counts[key.variant, key.step][status.value] += 1
             elif key not in executable and invalid:
                 counts[key.variant, key.step][JobStatus.CANNOT_RUN.value] += 1
@@ -131,7 +132,7 @@ class ProjectPlanRead:
                 StudioProjectWindowMapRow(
                     key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
                     label=row.label or row.key.row,
-                    status=analyze_status.get(row.key),
+                    status=authoring_status.get(row.key),
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True
@@ -163,6 +164,10 @@ class ProjectPlanRead:
                 StudioProjectWindowMapElement(
                     key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
                     name=element.key.name, kind=element.kind, request_id=element.request_id, status="not_run",
+                    figure=StepReference(
+                        step=element.key.run.step, row=element.key.run.row,
+                        element=element.key.name, product=PLOTLY_FIGURE_ROLE,
+                    ) if isinstance(element.outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                 )
                 for element in plan.elements.values()
             ],

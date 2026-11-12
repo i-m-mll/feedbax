@@ -9,6 +9,7 @@ import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
+import { humanizeLabel } from '@/components/values/ValueSpecField';
 import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import type { PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
@@ -26,7 +27,7 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
 import { createCheckpointTrain } from './createCheckpointTrain';
-import { createAnalyze } from './createAnalyze';
+import { createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
@@ -35,6 +36,7 @@ import { problemReason, problemTarget, type ProblemReveal } from './projectWindo
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { useManagedAnalyze } from './useManagedAnalyze';
+import { useManagedReport } from './useManagedReport';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
 type WindowPanel = { kind: 'activity' } | {
@@ -49,7 +51,7 @@ export interface ProjectWindowCommandScope {
   readonly plan: PlanView;
   readonly projection: StudioSavedTrainRuns | undefined;
   onSelectionChange(selection: PipelineSelectionState): void;
-  selectCreatedStep(stepId: string, view?: 'model' | 'runs' | 'analysis'): void;
+  selectCreatedStep(stepId: string, view?: 'model' | 'runs' | 'analysis' | 'document'): void;
 }
 
 export type ProjectWindowCommands = {
@@ -156,6 +158,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
   const [firstStepRevision, setFirstStepRevision] = useState<string>();
+  const [reportChoices, setReportChoices] = useState<{ revision: string; figures: ReportFigureSource[] }>();
   const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
   const submission = useRef<{ intent: string; token: string }>();
@@ -270,6 +273,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition,
   });
+  const report = useManagedReport({
+    editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
+    wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
+  });
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const selectedJobs = state.selection ? runRows.flatMap((item) => {
     const latest = item.attempts.at(-1);
@@ -342,7 +349,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     const row = data?.window_map?.rows.find(({ key }) =>
       key.step === stepId && key.row === problem.row && key.variant === scope);
     const target = problemTarget(problem);
-    const view = kind === 'analyze' ? 'analysis'
+    const view = kind === 'analyze' ? 'analysis' : kind === 'report' ? 'document'
       : viewsByKind[kind].some((item) => item === target.view) ? target.view : 'runs';
     const runId = row ? savedRunId(row.key) : null;
     selection.select(runId
@@ -405,7 +412,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       selection.select(selectStep(state, id));
       if (view === 'model') setFocusFirstModel(id);
       if (view === 'runs') setFocusCreatedStep(id);
-      if (view === 'analysis') requestSlotFocus((count) => count + 1);
+      if (view === 'analysis' || view === 'document') requestSlotFocus((count) => count + 1);
       setWindowState((current) => showProjectWindowView(current, view));
     },
   };
@@ -419,9 +426,18 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     });
   }
 
+  function chooseReportFigure(revision: string, figure: ReportFigureSource) {
+    setReportChoices(undefined);
+    void perform(async () => {
+      const id = await createReport(editor, revision, figure, humanizeLabel(figure.name));
+      commandScope.selectCreatedStep(id, 'document');
+    });
+  }
+
   function newStepCommand(source?: PipelineMapStepSource, subject?: string) {
     if (!source) {
-      if (step?.kind === 'evaluate' && (state.selection?.kind !== 'steps' || state.selection.stepIds.length === 1)) {
+      if ((step?.kind === 'evaluate' || step?.kind === 'analyze') &&
+          (state.selection?.kind !== 'steps' || state.selection.stepIds.length === 1)) {
         return newStepCommand({
           stepId: step.id,
           selection: state.selection && 'stepId' in state.selection && state.selection.stepId === step.id
@@ -441,6 +457,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         const id = await createAnalyze(editor, saved.revision, evaluation.key);
         commandScope.selectCreatedStep(id, 'analysis');
       }); }, { enabled: ready && !busy, name: 'analyze', subject });
+    }
+    if (sourceStep?.kind === 'analyze' && !saved.project.sweep && variant === 'default') {
+      const rows = new Set((source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs).map(({ id }) => id));
+      const figures = (data?.window_map?.analysis_elements ?? []).filter(isReportFigureSource)
+        .filter(({ key }) => rows.has(savedRunId(key)));
+      if (!figures.length) return undefined;
+      const selected = step?.id === sourceStep.id && namedRun && figures.find(({ key, name }) =>
+        savedRunId(key) === savedRunId(namedRun) && name === analyze.selectedFigure);
+      return bindStudioCommand('newStep', () => {
+        const choice = selected || (figures.length === 1 ? figures[0] : undefined);
+        if (choice) chooseReportFigure(saved.revision, choice);
+        else setReportChoices({ revision: saved.revision, figures });
+      }, { enabled: ready && !busy, name: 'report', subject });
     }
     if (!onNewStep || sourceStep?.kind !== 'train') return undefined;
     const runs = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
@@ -503,6 +532,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     ...runCommands,
     ...(focusedModel?.commands ?? []),
     ...analyze.commands,
+    ...report.commands,
     newStepCommand(),
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
@@ -530,6 +560,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       overlay={<>
         {focusedModel?.overlay}
         {analyze.overlay}
+        {report.overlay}
+        {reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
+          onClose={() => setReportChoices(undefined)}
+          panelClassName="grid w-[min(24rem,90vw)] gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
+          {reportChoices.figures.map((figure) => <button type="button" className={control}
+            key={JSON.stringify([figure.key, figure.name])}
+            onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
+            {figure.name}{figure.key.row !== 'default' && ' · ' + figure.key.row}
+          </button>)}
+        </Dialog>}
         {firstStepRevision && <Dialog ariaLabel={studioName('newStep')} onClose={() => setFirstStepRevision(undefined)} manageFocus
           panelClassName="w-[min(20rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           <button type="button" className={`${control} flex w-full items-center gap-2 text-sm`} data-dialog-autofocus onClick={chooseFirstTrain}>
@@ -594,9 +634,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           </StudioErrorBoundary>) };
         }
         if (!step) return { body: null };
+        if (view === 'document') return { body: withProblem(
+          <StudioErrorBoundary region={studioName('document')}>{report.body ?? noView}</StudioErrorBoundary>,
+        ) };
         if (view === 'runs') return { body: withProblem(<StudioErrorBoundary region={studioName('runs')}>
           <StudioRuns plan={plan} step={step} state={state} onSelectionChange={mapProps.onSelectionChange}
-            region={step.kind === 'train' || step.kind === 'evaluate' && step.runs.length
+            region={step.kind === 'train' || (step.kind === 'evaluate' || step.kind === 'report') && step.runs.length
               ? { kind: 'result', missing: [] } : { kind: 'empty' }}
             definition={authoring && <StudioTrainAuthoringForm {...authoring}
               focusFirstField={ready && focusCreatedStep === step.id && windowState.focusedSlot === slot}

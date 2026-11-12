@@ -115,6 +115,10 @@ class StudioAnalyzeStep(Step):
     kind: Literal["analyze"]
 
 
+class StudioReportStep(Step):
+    kind: Literal["report"]
+
+
 class CreateNamedDocument(StrictModel):
     kind: Literal["document"]
     id: ProjectName
@@ -124,7 +128,9 @@ class CreateNamedDocument(StrictModel):
 class CreateNamedStep(StrictModel):
     kind: Literal["step"]
     id: ProjectName
-    step: Annotated[StudioTrainStep | StudioAnalyzeStep, Field(discriminator="kind")]
+    step: Annotated[
+        StudioTrainStep | StudioAnalyzeStep | StudioReportStep, Field(discriminator="kind")
+    ]
 
 
 type NamedFileCreation = Annotated[

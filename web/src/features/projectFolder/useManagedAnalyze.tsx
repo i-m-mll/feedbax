@@ -239,6 +239,7 @@ export function useManagedAnalyze({
   </li>)}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
   return {
+    selectedFigure: figure ? selected : undefined,
     analysis: {
       body: <div className="flex h-full min-h-0 flex-col">{alert}<div className="min-h-0 flex-1">
         <ManagedDocumentCanvas key={scope} {...element} items={items} connections={connections}

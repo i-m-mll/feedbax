@@ -150,11 +150,15 @@ class StepReference(StrictModel):
     row: RowKey | None = None
     variants: Literal["all"] | list[RowKey] | None = None
     checkpoint: CheckpointRule | None = None
+    element: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
+    product: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _check_row_selector(self) -> StepReference:
         if self.row is not None and self.where is not None:
             raise ValueError("row is the shorthand for a single-row subset")
+        if (self.element is None) != (self.product is None):
+            raise ValueError("element and product must be declared together")
         return self
 
 

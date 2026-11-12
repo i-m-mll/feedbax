@@ -10,7 +10,7 @@ from pydantic import Field, JsonValue
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.graph import GraphSpec, StudioWorkspaceSpec
 from feedbax.contracts.project import StepKind
-from feedbax.contracts.project_inputs import SubsetTerms
+from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 
 
 Token = Annotated[str, Field(min_length=1, max_length=128)]
@@ -222,6 +222,7 @@ class StudioProjectWindowMapElement(StrictModel):
     kind: Literal["analyze", "render"]
     request_id: str
     status: Literal["not_run"]
+    figure: StepReference | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMap(StrictModel):

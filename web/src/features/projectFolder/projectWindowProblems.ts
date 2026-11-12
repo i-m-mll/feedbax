@@ -66,7 +66,7 @@ export function problemTarget(problem: StudioProjectWindowMapProblem) {
 export interface ProblemReveal {
   readonly problem: StudioProjectWindowMapProblem;
   readonly target: {
-    readonly view: 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'runs';
+    readonly view: 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'document' | 'runs';
     readonly label: string;
     readonly element?: ProblemElement;
   };

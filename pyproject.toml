@@ -35,6 +35,7 @@ dependencies = [
     "filelock>=3.16.1",
     "jax>=0.7.2",
     "jaxtyping>=0.2.38",
+    "markdown-it-py>=4.0.0",
     "numpy>=2.2.3",
     "optax>=0.2.4",
     "optimistix>=0.0.10",

@@ -1,0 +1,12 @@
+{
+  "kind": "report",
+  "base": {"document": "velocity-report"},
+  "inputs": {
+    "velocity_summary": {
+      "step": "analyze",
+      "row": "default",
+      "element": "profile",
+      "product": "figure"
+    }
+  }
+}
