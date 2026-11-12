@@ -15,8 +15,10 @@ const occurrence = { document_id: 'single', node_path: ['mechanics'] };
 const overlays = new Set<never>();
 type Inspection = Exclude<PlanarScenePose, { kind: 'recorded' }>;
 
-export async function mountAuthoringProbe(container: HTMLElement, projectId: string) {
-  const session = await openProjectEditor(projectId);
+export async function mountAuthoringProbe(
+  container: HTMLElement, project: string | Awaited<ReturnType<typeof openProjectEditor>>,
+) {
+  const session = typeof project === 'string' ? await openProjectEditor(project) : project;
   const { editor } = session;
   const root = createRoot(container);
   const client = new QueryClient();
@@ -63,7 +65,7 @@ export async function mountAuthoringProbe(container: HTMLElement, projectId: str
       const view = current?.view;
       const scene = view?.kind === 'geometry' ? view.scene : null;
       return {
-        draft, savedRevision: saved.revision, pending, undoName, redoName, scene,
+        draft, savedRevision: saved.revision, semanticRoot: saved.semantic_root, pending, undoName, redoName, scene,
         compiledIdentity: current?.source?.revision === saved.revision ? current.source.model?.model_identity : undefined,
         assembly: graph.ok ? projectMechanicsAssembly(graph.value.graph) : null,
         points: graph.ok ? graph.value.graph.nodes.cross_chain?.params?.path_points : null,

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import sys
+from time import perf_counter
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, ComponentSpec, GraphSpec
@@ -162,16 +163,50 @@ def native_scene_samples(root: Path, document: str):
     return {"revision": saved.revision, "identity": compiled.identity, "samples": samples}
 
 
+def settled_scene_plan(root: Path, revision: str):
+    from feedbax.contracts.project_plan import RunKey
+    from feedbax.web.services.project_folder import ProjectFolderService
+
+    key = RunKey("default", "train", "default")
+    service = ProjectFolderService(root.parent)
+    started = perf_counter()
+    result = service.read_plan(root.name, revision=revision, source_runs=(key,))
+    read_ms = (perf_counter() - started) * 1_000
+    plan = result.plan
+    definition = plan.selected_definitions[key]
+    pointer = "/subgraphs/mechanics/nodes/cross_chain/params/path_points/1/offset/0"
+    source = definition.sources[f"/payload/graph{pointer}"]
+    return {
+        "project_id": result.project_id,
+        "revision": result.revision,
+        "semantic_root": result.semantic_root,
+        "row": [key.variant, key.step, key.row],
+        "rows": len(plan.rows),
+        "runs": len(plan.runs),
+        "diagnostics": sorted(item.path for item in plan.diagnostics),
+        "guide": definition.payload["graph"]["subgraphs"]["mechanics"]["nodes"]["cross_chain"]["params"]["path_points"][1],
+        "source": {"kind": source.kind, "name": source.name, "path": source.path},
+        "read_ms": round(read_ms, 3),
+    }
+
+
 if __name__ == "__main__":
-    action, path, *args = sys.argv[1:]
-    if action == "seed":
+    action, *paths = sys.argv[1:]
+    if action == "authoring-input":
+        graph = _graph(_interior(3))
+        print(json.dumps({"schema": GRAPH_SPEC_SCHEMA_ID, "payload": graph.model_dump(mode="json", exclude_none=True)}))
+    elif action == "seed":
+        [path] = paths
         seed_scene_project(Path(path))
     elif action == "read":
-        output, *documents = args
+        path, output, *documents = paths
         Path(output).write_text(
             json.dumps(
                 {document: native_scene_samples(Path(path), document) for document in documents}
             )
         )
+    elif action == "settled-plan":
+        path, revision = paths
+        print(json.dumps(settled_scene_plan(Path(path), revision)))
     else:
         raise ValueError(f"Unknown Scene fixture action {action!r}")

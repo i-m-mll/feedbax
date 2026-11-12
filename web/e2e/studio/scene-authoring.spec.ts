@@ -1,28 +1,40 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { PlanarOperation } from '../../src/features/domains/planarAuthoring';
+import type { StudioProjectCreateFile } from '../../src/generated/studioContracts';
 import type { mountAuthoringProbe } from './fixtures/sceneAuthoringProbe';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
 const projectId = 'scene-authoring';
+const fixture = ['run', '--no-sync', 'python', '-B', '-m', 'tests.fixtures.scene_geometry'];
 const qpos = [0.43, -0.67, 0.26];
 type Probe = Window & { sceneAuthoring: Awaited<ReturnType<typeof mountAuthoringProbe>> };
 test.use({ locale: 'en-US' });
 
-async function mount(page: Page) {
-  await page.evaluate(async (id) => {
+async function mount(page: Page, project: string | StudioProjectCreateFile['file'][] = projectId) {
+  return page.evaluate(async (input) => {
     const entry = '/e2e/studio/fixtures/sceneAuthoringProbe.tsx';
     const { mountAuthoringProbe } = await import(entry) as { mountAuthoringProbe: typeof mountAuthoringProbe };
+    let target: Parameters<typeof mountAuthoringProbe>[1];
+    if (typeof input === 'string') target = input;
+    else {
+      const commands = '/src/features/projectFolder/openProjectEditor.ts';
+      const { newProjectEditor } = await import(commands) as typeof import('../../src/features/projectFolder/openProjectEditor');
+      const session = await newProjectEditor();
+      for (const file of input) await session.editor.createFile(file);
+      target = session;
+    }
     const container = document.createElement('section');
     container.id = 'scene-authoring';
     document.body.replaceChildren(container);
-    (window as Probe).sceneAuthoring = await mountAuthoringProbe(container, id);
-  }, projectId);
+    (window as Probe).sceneAuthoring = await mountAuthoringProbe(container, target);
+    return typeof target === 'string' ? target : target.editor.getSnapshot().saved.project_id;
+  }, project);
 }
 
 const state = (page: Page) => page.evaluate(() => (window as Probe).sceneAuthoring.state());
@@ -32,6 +44,16 @@ const flush = (page: Page) => page.evaluate(() => (window as Probe).sceneAuthori
 async function guideState(page: Page) {
   const result = await state(page);
   return result.scene?.anchors.find((anchor) => anchor.label === 'forearm.distal guide');
+}
+
+async function moveGuide(page: Page, handle: Locator) {
+  const box = await handle.boundingBox();
+  if (!box) throw new Error('Missing attachment handle');
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 35, y - 22, { steps: 6 });
 }
 
 async function showInspection(page: Page) {
@@ -44,7 +66,6 @@ test('M2 Scene authoring shares fields, drag previews, history and the saved mod
   test.setTimeout(45_000);
   const home = String(info.config.metadata.home);
   const folder = join(home, 'state', 'web', 'projects', projectId);
-  const fixture = ['run', '--no-sync', 'python', '-B', '-m', 'tests.fixtures.scene_geometry'];
   await run('uv', [...fixture, 'seed', folder], { cwd: repo, timeout: 12_000 });
   await page.goto('/');
   await mount(page);
@@ -97,16 +118,7 @@ test('M2 Scene authoring shares fields, drag previews, history and the saved mod
   const beforeGesture = await state(page);
   let prepareCount = 0;
   page.on('request', (request) => { if (request.url().endsWith('/scene/planar')) prepareCount += 1; });
-  async function moveGuide() {
-    const box = await handle.boundingBox();
-    if (!box) throw new Error('Missing attachment handle');
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x + 35, y - 22, { steps: 6 });
-  }
-  await moveGuide();
+  await moveGuide(page, handle);
   const preview = (await guideState(page))!;
   expect(preview.position).not.toEqual(original.position);
   expect(preview.metadata.authored_frame).toBe('forearm.distal');
@@ -117,7 +129,7 @@ test('M2 Scene authoring shares fields, drag previews, history and the saved mod
   expect(await guideState(page)).toMatchObject({ id: original.id, position: original.position });
   expect((await state(page)).undoName).toBe(beforeGesture.undoName);
 
-  await moveGuide();
+  await moveGuide(page, handle);
   const finalOffset = (await guideState(page))!.metadata.offset;
   await page.mouse.up();
   expect((await state(page)).points).toMatchObject([{}, { frame: 'forearm.distal', offset: finalOffset }, {}]);
@@ -148,5 +160,73 @@ test('M2 Scene authoring shares fields, drag previews, history and the saved mod
   const residual = Math.hypot(observed[0] - nativeGuide[0], observed[1] - nativeGuide[1]);
   expect(residual).toBeLessThanOrEqual(1e-9);
   console.log('Scene authoring guide', JSON.stringify({ frame: 'forearm.distal', offset: finalOffset, residual }));
+  await page.evaluate(() => (window as Probe).sceneAuthoring.close());
+});
+
+test('M2 managed New Scene gesture settles to the same reopened Plan field source', async ({ page }, info) => {
+  test.setTimeout(35_000);
+  const { stdout } = await run('uv', [...fixture, 'authoring-input'], { cwd: repo, timeout: 10_000 });
+  await page.goto('/');
+  const id = await mount(page, [
+    { kind: 'document', id: 'single', document: JSON.parse(stdout) },
+    { kind: 'document', id: 'task', document: {
+      schema: 'feedbax.spec.task', payload: { type: 'SimpleReaches', params: { n_steps: 8 } },
+    } },
+    { kind: 'step', id: 'train', step: {
+      kind: 'train', base: { inline: { graph: { document: 'single' }, task: { document: 'task' } } },
+    } },
+  ]);
+  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', id);
+  await expect.poll(async () => (await state(page)).compiledIdentity).toMatch(/^[0-9a-f]{64}$/);
+  const before = await state(page);
+  const priorRead = await run('uv', [...fixture, 'settled-plan', folder, before.savedRevision], {
+    cwd: repo, timeout: 12_000,
+  });
+  const prior = JSON.parse(priorRead.stdout);
+  expect(prior.guide).toEqual({ frame: 'forearm.distal', offset: [0.03, -0.09] });
+  expect(prior.revision).toBe(before.savedRevision);
+
+  const proof = page.locator('#scene-authoring');
+  await proof.getByRole('region', { name: 'Muscles' }).getByRole('button', { name: 'cross_chain' }).click();
+  const handle = proof.getByRole('button', { name: 'forearm.distal guide' });
+  await handle.scrollIntoViewIfNeeded();
+  const original = (await guideState(page))!;
+  await moveGuide(page, handle);
+  const preview = (await guideState(page))!;
+  expect(preview.position).not.toEqual(original.position);
+  expect((await state(page)).draft).toEqual(before.draft);
+  await page.mouse.up();
+  expect((await state(page)).undoName).toBe('Edit attachment');
+  const revision = await flush(page);
+  expect(revision).not.toBe(before.savedRevision);
+  await expect.poll(async () => (await state(page)).compiledIdentity).toMatch(/^[0-9a-f]{64}$/);
+  const saved = await state(page);
+
+  await page.evaluate(() => (window as Probe).sceneAuthoring.close());
+  await page.reload();
+  await mount(page, id);
+  await expect.poll(async () => (await state(page)).compiledIdentity).toBe(saved.compiledIdentity);
+  const reopened = await state(page);
+  expect(reopened.savedRevision).toBe(revision);
+  expect(reopened.draft).toEqual(saved.draft);
+  expect(await guideState(page)).toMatchObject({ id: original.id, metadata: {
+    authored_frame: 'forearm.distal', offset: preview.metadata.offset,
+  } });
+  const { stdout: read } = await run('uv', [...fixture, 'settled-plan', folder, revision], {
+    cwd: repo, timeout: 12_000,
+  });
+  const after = JSON.parse(read);
+  expect(after).toMatchObject({
+    project_id: id, revision, semantic_root: reopened.semanticRoot,
+    row: ['default', 'train', 'default'], rows: 1, runs: 0,
+    diagnostics: ['method_payload', 'method_ref', 'objective', 'training_config'].map((field) => `payload.${field}`),
+    guide: { frame: 'forearm.distal', offset: preview.metadata.offset },
+    source: {
+      kind: 'document', name: 'single',
+      path: '/subgraphs/mechanics/nodes/cross_chain/params/path_points/1/offset/0',
+    },
+  });
+  expect(after.source).toEqual(prior.source);
+  console.log('Settled Scene Plan', JSON.stringify({ before: prior, after }));
   await page.evaluate(() => (window as Probe).sceneAuthoring.close());
 });
