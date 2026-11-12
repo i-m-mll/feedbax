@@ -35,12 +35,23 @@ from feedbax.contracts.training import (
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
 from feedbax.runtime._graph_key_schedule import derive_key, sample_training_trials
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
+from feedbax.training.optimizers import build_optimizer
 from feedbax.training.preparation import ExecutionPreparationRequest, ExecutionPreparationResult
 
 
 def studio_training_key(seed: int, stream: str) -> jax.Array:
     """Derive an independent named stream from the authored seed."""
     return derive_key(jr.PRNGKey(seed), "studio_training", stream)
+
+
+def standard_train_optimizer(
+    payload: StudioGraphMethodPayload, *, gradient_clip: float | None,
+) -> optax.GradientTransformationExtraArgs:
+    """Build the registered method's optimizer at its run-start clock."""
+    return build_optimizer(
+        payload.optimizer, schedule_origin_step=0, current_step=0,
+        gradient_clip=gradient_clip,
+    )
 
 
 def executor_method_contract(*, total_batches: int):
@@ -248,8 +259,6 @@ def studio_graph_method_contract(payload: StudioGraphMethodPayload):
 
 def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingProgram[StudioGraphMethodPayload]:
     """Declare the existing Studio graph update for the checkpointable native executor."""
-    from feedbax.training.optimizers import build_optimizer
-
     def prepare(request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
         from feedbax.web.worker.execution import (
             _StudioWorkerLossService,
@@ -280,10 +289,7 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
             component_registry=component_registry,
             executable_graph=request.executable_graph,
         )
-        optimizer = build_optimizer(
-            payload.optimizer, schedule_origin_step=0, current_step=0,
-            gradient_clip=spec.training_config.grad_clip,
-        )
+        optimizer = standard_train_optimizer(payload, gradient_clip=spec.training_config.grad_clip)
         kernel = StudioUpdateKernel(
             compiled=compiled, optimizer=optimizer,
             rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),

@@ -253,9 +253,11 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         ):
             raise CompletionFileError("Host completion bindings changed after assignment.")
         dependencies = strict_json_loads(raw_dependencies)["bindings"]
-    for dependency in dependencies:
-        verify_bound_training_completion(dependency["completion"])
     checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
+    for dependency in dependencies:
+        verify_bound_training_completion(
+            dependency["completion"], scope="model_only" if checkpoint_ref is not None else "full",
+        )
     if checkpoint_ref is not None:
         if len(dependencies) != 1:
             raise CompletionFileError("Train requires one bound predecessor checkpoint.")
@@ -468,9 +470,10 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             source_root = checkpoint.checkpoint_root
             provider = ImmutableArtifactBlobProvider(manifest_root)
             source, source_content = bind_published_checkpoint_content(
-                source_root, checkpoint.pointer, provider,
+                source_root, checkpoint.pointer, provider, scope="model_only",
             )
             initialization = CheckpointInitializationRequest(mode="initialize_from", source=source)
+        semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
         result = execute_training_run_spec(
             spec,
             run_id=job_id,
@@ -482,7 +485,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             checkpoint_initialization_request=initialization,
             checkpoint_content_provider=provider,
             checkpoint_source_content_binding=source_content,
-            semantic_model=SemanticModelWriter.for_graph(graph, model_assets),
+            semantic_model=semantic_model,
+            train_state_codec="standard_train" if semantic_model is not None else "legacy",
             resume=resume is not None,
             registry=registries.training_programs,
             stop_before_update=stop_before_update,

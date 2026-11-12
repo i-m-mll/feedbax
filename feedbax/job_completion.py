@@ -24,6 +24,7 @@ from feedbax.studio.canonical_train import (
 )
 from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
+    CheckpointReadScope,
     authenticate_checkpoint_custody_ref,
     checkpoint_slot_files,
     validate_checkpoint_run_contract,
@@ -58,6 +59,7 @@ def verify_training_completion(
     binding_sha256: str,
     receipt: dict,
     checkpoint: PublishedTrainingCheckpoint | None,
+    scope: CheckpointReadScope = "full",
 ) -> dict:
     """Authenticate the producer's bound terminal pair without reading a latest pointer."""
     root = launch.manifest_root
@@ -132,7 +134,9 @@ def verify_training_completion(
             raise CompletionFileError(
                 "Receipt, published pointer and authored completion disagree."
             )
-        custody = authenticate_checkpoint_custody_ref(terminal, allowed_root=expected_root)
+        custody = authenticate_checkpoint_custody_ref(
+            terminal, allowed_root=expected_root, scope=scope,
+        )
         transaction = custody.manifest
         if (
             transaction.run_id != pointer.run_id
@@ -177,7 +181,9 @@ def verify_training_completion(
         raise CompletionFileError(str(error)) from error
 
 
-def verify_bound_training_completion(completion: dict) -> None:
+def verify_bound_training_completion(
+    completion: dict, *, scope: CheckpointReadScope = "full",
+) -> None:
     """Recheck a pinned producer binding immediately before a consumer uses it."""
     try:
         root = Path(completion["manifest_root"])
@@ -192,6 +198,7 @@ def verify_bound_training_completion(completion: dict) -> None:
             binding_sha256=binding_sha256,
             receipt=completion["receipt"],
             checkpoint=checkpoint,
+            scope=scope,
         )
         if actual != completion:
             raise CompletionFileError("Rechecked completion differs from its pinned binding.")

@@ -241,15 +241,18 @@ class SemanticModelSlot:
         except (ValueError, KeyError, OSError) as exc:
             raise ModelCheckpointError("/v1/model", str(exc)) from exc
 
+    def template(self) -> Graph:
+        from feedbax.compiler import GraphDocument, compile_graph
+        from feedbax.component_registry import ComponentRegistry
+
+        return compile_graph(
+            GraphDocument(graph=self.graph), ComponentRegistry(),
+            artifact_provider=self.provider,
+        ).graph
+
     def restore(self, template: Graph | None = None) -> Graph:
         if template is None:
-            from feedbax.compiler import GraphDocument, compile_graph
-            from feedbax.component_registry import ComponentRegistry
-
-            template = compile_graph(
-                GraphDocument(graph=self.graph), ComponentRegistry(),
-                artifact_provider=self.provider,
-            ).graph
+            template = self.template()
         try:
             decoded = decode_array_container(
                 _read(self.provider, self.arrays, "/v1/model"),

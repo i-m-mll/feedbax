@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
@@ -28,10 +29,14 @@ from feedbax.studio.canonical_train import (
 )
 from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.training.checkpoint_custody import (
+    CheckpointCustodyError,
+    bind_published_checkpoint_content,
+    materialize_checkpoint_content,
     require_checkpoint_semantic_state_equal,
     resolve_checkpoint_custody_ref,
 )
 from feedbax.training.invocation import prepare_training_invocation
+from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
@@ -375,7 +380,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     preparation = prepare_training_invocation(
         native, registries, run_id="carried-model-control", resume=False,
     )
-    _, parent_slots = _checkpoint(succeeded["outcome"])
+    parent_checkpoint, parent_slots = _checkpoint(succeeded["outcome"])
 
     def readout(model):
         return model.nodes["readout"].layer.weight
@@ -454,17 +459,47 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
         return row and row["edges"][0]["binding"]
 
     assert wait_until(pinned) == child_running["edges"][0]["binding"]
-    pointer = producer["checkpoint"]["pointer"]
-    checkpoint_manifest = (
-        Path(producer["checkpoint"]["checkpoint_root"]) / pointer["manifest_relative_path"]
+    pointer = CheckpointLatestPointer.model_validate(producer["checkpoint"]["pointer"])
+    root = Path(producer["checkpoint"]["checkpoint_root"])
+    transaction = (root / pointer.manifest_relative_path).parent
+    unneeded = {
+        slot.slot: transaction / slot.relative_path
+        for slot in parent_checkpoint.manifest.slots if slot.slot != "model"
+    }
+    assert set(unneeded) == {"optimizer", "prng", "batch_counter"}
+    assert all(
+        slot.media_type == STANDARD_TRAIN_STATE_MEDIA_TYPE
+        for slot in parent_checkpoint.manifest.slots if slot.slot in unneeded
     )
-    moved = checkpoint_manifest.with_suffix(".held")
-    checkpoint_manifest.rename(moved)
+    held = {original: original.with_suffix(".held") for original in unneeded.values()}
+    for original, moved in held.items():
+        original.rename(moved)
     try:
+        verify_bound_training_completion(producer, scope="model_only")
+        with pytest.raises(CompletionFileError):
+            verify_bound_training_completion(producer)
+        content = ImmutableArtifactBlobProvider(reviewed.store_path)
+        _, projection = bind_published_checkpoint_content(
+            root, pointer, content, scope="model_only",
+        )
+        assert projection.root_kind == "checkpoint-model-custody"
+        tree_paths = {file.relative_path for file in content.get_tree(projection.tree).files}
+        assert pointer.manifest_relative_path in tree_paths
+        assert any("/semantic-model/" in path for path in tree_paths)
+        assert all(original.relative_to(root).as_posix() not in tree_paths for original in held)
+        with materialize_checkpoint_content(
+            projection, content, owner="successor-control", scope="model_only",
+        ) as staged:
+            assert (staged / pointer.manifest_relative_path).is_file()
+            assert all(not (staged / original.relative_to(root)).exists() for original in held)
+        with pytest.raises(CheckpointCustodyError, match="full custody"):
+            with materialize_checkpoint_content(projection, content, owner="resume-control"):
+                pytest.fail("Full Resume received a model-only projection")
         release.touch()
         blocked = wait_until(lambda: job_row(host, tampered_item.job_id, "blocked"))
         assert blocked["outcome"]["error"]["code"] == "dependency_corrupt"
         assert blocked["delivery"] == 0
     finally:
-        moved.rename(checkpoint_manifest)
+        for original, moved in held.items():
+            moved.rename(original)
     assert jobs.admit_plan(folders, reviewed, run_keys=(child,), token="tamper") == tampered

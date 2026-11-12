@@ -17,8 +17,10 @@ import jax.tree as jt
 import numpy as np
 
 from feedbax.contracts.checkpoint_initialization import (
+    INITIALIZE_FROM_SOURCE_ROLES,
     CheckpointInitializationPlan,
     CheckpointStructure,
+    checkpoint_leaf_path,
     validate_checkpoint_semantic_abi,
 )
 from feedbax.contracts.checkpoints import (
@@ -114,25 +116,6 @@ class _LocatedLeaf:
     index: int
 
 
-def _key_path_to_text(path: Any) -> str:
-    if not path:
-        return "/"
-    parts: list[str] = []
-    for key in path:
-        name = getattr(key, "name", None)
-        index = getattr(key, "idx", None)
-        mapping_key = getattr(key, "key", None)
-        if name is not None:
-            parts.append(str(name))
-        elif index is not None:
-            parts.append(str(index))
-        elif mapping_key is not None:
-            parts.append(str(mapping_key))
-        else:
-            parts.append(str(key))
-    return "/" + "/".join(parts)
-
-
 def _semantic_index(
     structure: CheckpointStructure,
     values: Mapping[str, Any],
@@ -155,7 +138,7 @@ def _semantic_index(
         path_leaves, treedef = jt.flatten_with_path(values[slot.slot])
         leaves = [leaf for _, leaf in path_leaves]
         by_path = {
-            _key_path_to_text(path): (position, leaf)
+            checkpoint_leaf_path(path): (position, leaf)
             for position, (path, leaf) in enumerate(path_leaves)
         }
         semantic_by_path = {leaf.raw_path: leaf for leaf in slot.semantic_abi.leaves}
@@ -438,6 +421,15 @@ def apply_semantic_checkpoint_initialization(
     target_values: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     """Apply a lowered plan by semantic identity onto the actual target trees."""
+    if plan.mode == "initialize_from":
+        ignored = {
+            slot.slot for slot in source_structure.slots
+            if slot.role not in INITIALIZE_FROM_SOURCE_ROLES
+        }
+        source_structure = source_structure.model_copy(update={
+            "slots": [slot for slot in source_structure.slots if slot.slot not in ignored],
+        })
+        source_values = {name: value for name, value in source_values.items() if name not in ignored}
     source, _ = _semantic_index(source_structure, source_values)
     target, target_flattened = _semantic_index(target_structure, target_values)
     slot_plans = {slot.slot: slot for slot in plan.slots}

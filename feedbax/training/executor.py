@@ -166,6 +166,7 @@ from feedbax.training.manifest_preflight import (
 )
 from feedbax.training.interruption import CancellationDecision
 from feedbax.training.model_checkpoint import SemanticModelWriter
+from feedbax.training.standard_train_checkpoint import TrainStateCodec
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
@@ -516,6 +517,7 @@ class StreamingCheckpointStore:
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
         semantic_model: SemanticModelWriter | None = None,
+        train_state_codec: TrainStateCodec = "legacy",
         resume_checkpoint: PhaseCheckpoint | None = None,
         checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
     ) -> None:
@@ -534,6 +536,7 @@ class StreamingCheckpointStore:
         self.checkpoint_initialization = dict(checkpoint_initialization or {})
         self.content_provider = content_provider
         self.semantic_model = semantic_model
+        self.train_state_codec = train_state_codec
         self._checkpoint_published = checkpoint_published
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -636,6 +639,7 @@ class StreamingCheckpointStore:
             metadata=checkpoint_metadata,
             content_provider=self.content_provider,
             semantic_model=self.semantic_model,
+            train_state_codec=self.train_state_codec,
         )
         self._writes.append(write)
         if self._checkpoint_published is not None:
@@ -704,6 +708,7 @@ def execute_training_run_spec(
     checkpoint_fork_target_id: str | None = None,
     checkpoint_content_provider: ArtifactBlobProvider | None = None,
     semantic_model: SemanticModelWriter | None = None,
+    train_state_codec: TrainStateCodec = "legacy",
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
     loss_service: LossService | None = None,
@@ -1044,12 +1049,16 @@ def execute_training_run_spec(
     if initialization_authorities:
         assert checkpoint_content_provider is not None
         assert checkpoint_source_content_binding is not None
+        initialization = checkpoint_initialization_plan or checkpoint_initialization_request
         with materialize_checkpoint_content(
             checkpoint_source_content_binding,
             checkpoint_content_provider,
             owner=f"training-executor:{resolved_run_id}",
+            scope=(
+                "model_only" if initialization is not None and initialization.mode == "initialize_from"
+                else "full"
+            ),
         ) as canonical_source_root:
-            initialization = checkpoint_initialization_plan or checkpoint_initialization_request
             if initialization is not None:
                 resolved_initialization = _resolve_checkpoint_initialization(
                     initialization,
@@ -1207,6 +1216,7 @@ def execute_training_run_spec(
         ),
         content_provider=checkpoint_content_provider,
         semantic_model=semantic_model,
+        train_state_codec=train_state_codec,
         resume_checkpoint=loaded_resume_checkpoint,
         checkpoint_published=checkpoint_published,
     )
@@ -2549,7 +2559,8 @@ def _resolve_checkpoint_initialization(
     assert expected_profile is not None
     expected_manifest_sha256, expected_manifest_size = expected_profile
 
-    authenticated = authenticate_published_checkpoint_custody(source_root)
+    scope = "model_only" if request.mode == "initialize_from" else "full"
+    authenticated = authenticate_published_checkpoint_custody(source_root, scope=scope)
     if authenticated.manifest.transaction_id != request.source.id:
         raise TrainingRunExecutorError(
             "checkpoint initialization source root resolves a different transaction: "
@@ -2581,6 +2592,7 @@ def _resolve_checkpoint_initialization(
     resolved = resolve_checkpoint_custody_ref(
         authenticated.parent_ref,
         allowed_root=source_root,
+        slot_names=authenticated.slot_names,
     )
     if request.mode == "continue_from":
         continuation = run_spec.checkpoint_progress.continuation

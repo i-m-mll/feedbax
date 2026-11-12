@@ -23,6 +23,7 @@ from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.graph import STUDIO_TASK_TIMELINE_SCHEMA_VERSION
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
@@ -30,11 +31,14 @@ from feedbax.studio.training_requests import lower_studio_training_runs
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     load_checkpoint_custody_documents,
+    materialize_checkpoint_custody_archive,
     open_published_model_slot,
+    produce_checkpoint_custody_archive,
     require_checkpoint_semantic_state_equal,
 )
 from feedbax.training.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.training.optimizers import build_optimizer
+from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
 from feedbax.web.worker import execution
 from web.e2e.studio.fixtures.reaching_project import reaching_project
@@ -143,7 +147,7 @@ def _reference_gradient(compiled, scalar_trial, slots, result, keys, grad_clip):
 
 
 def _observe_worker(
-    audit_path: Path, stop_after: int, distinct_preparation: bool, legacy_writer: bool,
+    audit_path: Path, stop_after: int, distinct_preparation: bool, checkpoint_profile: str,
 ) -> int:
     from feedbax import training_host_worker
     from feedbax.training import checkpoint_custody, executor
@@ -153,12 +157,11 @@ def _observe_worker(
     execute = executor.execute_training_run_spec
     scalar_trial = None
     pending_evidence = None
-    legacy_reads = []
+    slot_reads = {}
     read_blob = checkpoint_custody._read_blob
 
-    def record_legacy_read(slot, path):
-        if slot.media_type == "application/x-python-pickle":
-            legacy_reads.append(slot.slot)
+    def record_slot_read(slot, path):
+        slot_reads[slot.slot] = slot.media_type
         return read_blob(slot, path)
 
     def prepare(*args, **kwargs):
@@ -187,7 +190,9 @@ def _observe_worker(
             "prepared_readout": _array_digests(_readout(compiled.graph)),
             "input_readout": _array_digests(_readout(model)),
             "output_readout": _array_digests(_readout(result["model"])),
-            "legacy_slot_reads": list(legacy_reads),
+            "slot_reads": dict(slot_reads),
+            "cursor_before": int(slots["batch_counter"]),
+            "optimizer_count_before": int(slots["optimizer"][1][0].count),
             "metrics": {
                 name: result[name] for name in (*_SCIENTIFIC_METRICS, "step_time_ms")
             },
@@ -222,7 +227,9 @@ def _observe_worker(
                 Path(os.environ["FEEDBAX_HOST_STOP_FILE"]).touch()
 
         kwargs["committed_update_callback"] = observe_commit
-        if legacy_writer:
+        if checkpoint_profile != "standard_train":
+            kwargs["train_state_codec"] = "legacy"
+        if checkpoint_profile == "legacy":
             kwargs.pop("semantic_model")
         return execute(*args, **kwargs)
 
@@ -230,7 +237,7 @@ def _observe_worker(
         patch.setattr(execution, "compile_training_run", prepare)
         patch.setattr(StudioUpdateKernel, "reported_update", observe)
         patch.setattr(executor, "execute_training_run_spec", stop_at_commit)
-        patch.setattr(checkpoint_custody, "_read_blob", record_legacy_read)
+        patch.setattr(checkpoint_custody, "_read_blob", record_slot_read)
         # Force an immediate first emission and one final partial interval.
         patch.setattr(training_host_worker._Events, "elapsed", lambda _events: 0.1)
         return training_host_worker.main([])
@@ -280,7 +287,8 @@ def _authored_run(*, batches=8, batch_size=1, sampled_hold=False):
 
 
 def _launch(
-    root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=False, legacy_writer=False,
+    root, job, spec, *, stop_after=0, resume=None, source=_SOURCE, fail=False,
+    checkpoint_profile="standard_train",
 ):
     control = root / job
     control.mkdir()
@@ -311,7 +319,7 @@ def _launch(
     child = subprocess.run(
         [
             sys.executable, __file__, str(audit), str(stop_after), str(int(resume is not None)),
-            str(int(legacy_writer)),
+            checkpoint_profile,
         ],
         cwd=source, env=env, capture_output=True, text=True, timeout=30, check=False,
     )
@@ -412,9 +420,14 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
     for updates in (middle, suffix):
         assert all(entry["prepared_readout"] != entry["input_readout"] for entry in updates)
         assert all(
-            set(entry["legacy_slot_reads"]) == {"optimizer", "prng", "batch_counter"}
+            {
+                name: media for name, media in entry["slot_reads"].items() if name != "model"
+            } == dict.fromkeys(("optimizer", "prng", "batch_counter"), STANDARD_TRAIN_STATE_MEDIA_TYPE)
             for entry in updates
         )
+        assert all(entry["cursor_before"] == entry["optimizer_count_before"] == entry["update"] - 1
+                   for entry in updates)
+        assert all("application/x-python-pickle" not in entry["slot_reads"].values() for entry in updates)
 
     assert second_manifest.parent_lineage[0].transaction_id == first_manifest.transaction_id
     assert last_manifest.parent_lineage[0].transaction_id == second_manifest.transaction_id
@@ -428,6 +441,11 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
     assert model_refs[1].sha256 == model_refs[2].sha256
     assert reference.transaction_id != last_manifest.transaction_id
     assert model_refs[1].metadata == model_refs[2].metadata
+    for manifest in (first_manifest, second_manifest, reference, last_manifest):
+        assert all(
+            slot.media_type == STANDARD_TRAIN_STATE_MEDIA_TYPE
+            for slot in manifest.slots if slot.slot != "model"
+        )
 
     model_only = copytree(first["checkpoint_root"], tmp_path / "model-only")
     pointer = CheckpointLatestPointer.model_validate(first["pointer"])
@@ -439,6 +457,20 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
     selected = open_published_model_slot(model_only, pointer)
     assert selected is not None
     assert _array_digests(selected.restore()) == prefix[-1]["after"]["model"]
+    archive_store = ImmutableArtifactBlobProvider(tmp_path / "archive-store")
+    first_root = Path(first["checkpoint_root"])
+    parent_ref = authenticate_published_checkpoint_custody(first_root).parent_ref
+    archive = produce_checkpoint_custody_archive(
+        parent_ref, allowed_root=first_root, artifact_provider=archive_store,
+    )
+    unpacked = materialize_checkpoint_custody_archive(
+        archive_store, archive.artifact_ref, tmp_path / "archived-stop",
+        expected_parent_ref=parent_ref,
+        expected_transaction_root_sha256=pointer.transaction_root_sha256,
+    )
+    assert {
+        name: _array_digests(value) for name, value in unpacked.resolved_transaction.slots.items()
+    } == prefix[-1]["after"]
     assert first_receipt.read_bytes() == first_bytes
     assert second_receipt.read_bytes() == second_bytes
     for events, updates, start in (
@@ -453,22 +485,31 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
     assert rejected["error"]["code"] == "invalid_request"
     assert "Create a new Studio request" in rejected["error"]["message"]
 
-    old, old_manifest, _, _, _ = _launch(
-        tmp_path, "legacy-writer", row.spec, stop_after=6, legacy_writer=True,
-    )
-    assert next(slot for slot in old_manifest.slots if slot.slot == "model").media_type == (
-        "application/x-python-pickle"
-    )
-    _, migrated, after_legacy, _, _ = _launch(
-        tmp_path, "legacy-reader", row.spec, resume=old,
-    )
-    assert set(after_legacy[0]["legacy_slot_reads"]) == set(_STATE)
-    assert after_legacy[0]["after"] == whole[6]["after"]
-    assert next(slot for slot in migrated.slots if slot.slot == "model").media_type == (
-        MODEL_TREE_MEDIA_TYPE
-    )
-    for name in _STATE:
-        require_checkpoint_semantic_state_equal(reference, migrated, name)
+    for profile, legacy_slots in (
+        ("hybrid", {"optimizer", "prng", "batch_counter"}), ("legacy", set(_STATE)),
+    ):
+        old, old_manifest, _, _, _ = _launch(
+            tmp_path, f"{profile}-writer", row.spec, stop_after=6, checkpoint_profile=profile,
+        )
+        assert {
+            slot.slot for slot in old_manifest.slots
+            if slot.media_type == "application/x-python-pickle"
+        } == legacy_slots
+        _, migrated, after_legacy, _, _ = _launch(
+            tmp_path, f"{profile}-reader", row.spec, resume=old,
+        )
+        assert {
+            name for name, media in after_legacy[0]["slot_reads"].items()
+            if media == "application/x-python-pickle"
+        } == legacy_slots
+        assert after_legacy[0]["before"] == whole[6]["before"]
+        assert after_legacy[0]["after"] == whole[6]["after"]
+        assert all(
+            slot.media_type == (MODEL_TREE_MEDIA_TYPE if slot.slot == "model" else STANDARD_TRAIN_STATE_MEDIA_TYPE)
+            for slot in migrated.slots
+        )
+        for name in _STATE:
+            require_checkpoint_semantic_state_equal(reference, migrated, name)
 
 
 def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes(tmp_path):
@@ -512,5 +553,5 @@ def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes
 
 if __name__ == "__main__":
     raise SystemExit(_observe_worker(
-        Path(sys.argv[1]), int(sys.argv[2]), bool(int(sys.argv[3])), bool(int(sys.argv[4])),
+        Path(sys.argv[1]), int(sys.argv[2]), bool(int(sys.argv[3])), sys.argv[4],
     ))
