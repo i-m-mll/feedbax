@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from difflib import unified_diff
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
@@ -175,7 +176,13 @@ def emit_authored_contracts(
             if previous == {"$ref": f"#/$defs/{name}"}:
                 previous = previous_definitions[name]
             if definition != previous:
-                raise ValueError(f"Conflicting Studio JSON Schema definition: {name}")
+                    diff = "\n".join(unified_diff(
+                        json.dumps(previous, indent=2, sort_keys=True).splitlines(),
+                        json.dumps(definition, indent=2, sort_keys=True).splitlines(),
+                        fromfile="registered contract",
+                        tofile="authored contract",
+                    ))
+                    raise ValueError(f"Conflicting Studio JSON Schema definition: {name}\n{diff}")
             continue
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name):
             raise ValueError(f"Invalid Studio contract name: {name}")

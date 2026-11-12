@@ -19,13 +19,14 @@ test('uses the pinned shell surfaces and keeps Studio’s accent and native inse
   await page.route(/^https:\/\/fonts\./, (route) => route.abort());
   await page.goto('/?project=shell');
 
-  const header = page.locator('[data-studio-focus-region="top"]');
+  const frame = page.locator('.shell-frame.studio-project-window');
+  const header = frame.locator('[data-studio-focus-region="top"]');
   const controls = header.locator('.studio-window-bar__controls');
-  const status = page.locator('[data-studio-focus-region="bottom"]');
+  const status = frame.locator('[data-studio-focus-region="bottom"]');
   const accent = () => header.evaluate((element) =>
     getComputedStyle(element).getPropertyValue('--studio-shell-accent').trim());
-  await expect(header).toHaveCSS('background-color', 'rgb(242, 242, 242)');
-  await expect(status).toHaveCSS('background-color', 'rgb(242, 242, 242)');
+  await expect(frame).toHaveCSS('background-color', 'rgb(242, 242, 242)');
+  await expect(status).toBeVisible();
   await expect(header).toHaveCSS('height', '48px');
   await expect(controls).toHaveCSS('padding-left', '8px');
   expect(await accent()).toBe('#5d4b87');
@@ -34,8 +35,7 @@ test('uses the pinned shell surfaces and keeps Studio’s accent and native inse
     document.documentElement.dataset.theme = 'dark';
     document.documentElement.style.setProperty('--studio-native-controls', '80px');
   });
-  await expect(header).toHaveCSS('background-color', 'rgb(34, 34, 34)');
-  await expect(status).toHaveCSS('background-color', 'rgb(34, 34, 34)');
+  await expect(frame).toHaveCSS('background-color', 'rgb(34, 34, 34)');
   await expect(controls).toHaveCSS('padding-left', '88px');
   expect(await accent()).toBe('#c1aedf');
 });

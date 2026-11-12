@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
-import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot } from '@/generated/studioContracts';
+import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
@@ -150,13 +150,29 @@ it('refuses to create a file from a stale reviewed project', async () => {
 
 it('does not widen a selected Train row to an unselected variant', async () => {
   const { editor, create } = fixture();
-  const rows = ['baseline', 'compare'].map((variant) => ({
+  const variants = ['baseline', 'compare'];
+  const rows = variants.map((variant) => ({
     key: { variant, step: 'train', row: 'seed=a' },
     label: 'Replicate A', request_id: variant,
     attempts: [], status: 'not_run' as const,
     reason: null, result: null, previous: null, change: null,
   }));
-  const projection = { revision: initial.revision, rows };
+  const projection: StudioSavedTrainRuns = {
+    revision: initial.revision,
+    rows,
+    window_map: {
+      variants,
+      steps: variants.map((variant) => ({
+        variant, step_id: 'train', kind: 'train', group: null, inputs: [],
+        document_ids: {}, status_counts: { not_run: 1 },
+      })),
+      rows: rows.map(({ key, label, status }) => ({
+        key, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1 } },
+      })),
+      edges: [],
+      problems: [],
+    },
+  };
   const project = { steps: { train: { kind: 'train' as const, base: { inline: {} } } } };
   await expect(createCheckpointTrain(editor, {
     stepId: 'train', selection: { kind: 'rows', stepId: 'train', runIds: [savedRunId(rows[1].key)] },

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -40,6 +40,23 @@ function post(page: Page, path: string) {
   );
 }
 
+async function projectJobs(request: APIRequestContext, project: string) {
+  const response = await request.get('/api/jobs', { params: { project } });
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json() as StudioJobSnapshot).jobs;
+}
+
+async function drainProjects(request: APIRequestContext, projects: string[]) {
+  const pending = new Set(['queued', 'awaiting_authorization', 'blocked', 'starting', 'running', 'stopping', 'collecting']);
+  const activeIds = async () => (await Promise.all(projects.map((project) => projectJobs(request, project))))
+    .flat().filter((job) => pending.has(job.status)).map((job) => job.job_id);
+  const jobIds = await activeIds();
+  if (!jobIds.length) return;
+  const stopped = await request.post('/api/jobs/stop', { data: { job_ids: jobIds, mode: 'force' } });
+  expect(stopped.status(), await stopped.text()).toBe(202);
+  await expect.poll(activeIds, { timeout: 10_000 }).toEqual([]);
+}
+
 test('shares live Jobs across windows and observes the four-slot queue', async ({
   page, context, request, baseURL,
 }, testInfo) => {
@@ -49,11 +66,7 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
   const projectId = snapshot.project_id;
   const observer = await observeJobStreams(baseURL);
-  const jobs = async () => {
-    const response = await request.get(`/api/jobs?project=${projectId}`);
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json() as StudioJobSnapshot).jobs;
-  };
+  const jobs = () => projectJobs(request, projectId);
   const second = await context.newPage();
   try {
     const open = async (window: Page) => {
@@ -180,8 +193,12 @@ raise TimeoutError("No isolated sibling published a checkpoint")
     expect(after.find((job) => job.job_id === first.job_id)?.outcome).toEqual(stopped?.outcome);
     expect(after).toHaveLength(rates.length + 1);
   } finally {
-    await second.close();
-    await observer.close();
+    try {
+      await drainProjects(request, [projectId]);
+    } finally {
+      await second.close();
+      await observer.close();
+    }
   }
 });
 
@@ -242,7 +259,11 @@ test('opens a ninth project window while one stream serves active projects', asy
       await expect(run.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
     }
   } finally {
-    await Promise.all(windows.map((window) => window.close()));
-    await observer.close();
+    try {
+      await drainProjects(request, projects);
+    } finally {
+      await Promise.all(windows.map((window) => window.close()));
+      await observer.close();
+    }
   }
 });

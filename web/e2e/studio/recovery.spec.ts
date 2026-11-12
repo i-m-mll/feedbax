@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import type { StudioJobSnapshot, StudioJobSubmission } from '../../src/generated/studioContracts';
+import type { StudioJobSnapshot, StudioJobSubmission, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -205,8 +205,17 @@ test('reopens the same live run and restores loss after backend and host restart
     await reopened.goto(mounted);
     await mapStep(reopened, 'train').click();
     await reopened.getByRole('tab', { name: 'Runs', exact: true }).click();
-    const row = reopened.getByRole('table', { name: 'Runs', exact: true });
-    await row.getByRole('button', { name: live.label, exact: true }).click();
+    const savedRuns = await request.get(studio.origin + projectPath + '/train-runs', {
+      params: { revision: snapshot.revision },
+    });
+    expect(savedRuns.ok(), await savedRuns.text()).toBe(true);
+    const plan = await savedRuns.json() as StudioSavedTrainRuns;
+    const row = plan.rows.find(({ request_id, attempts }) =>
+      request_id === live.request_id && attempts.some((attempt) => attempt.job_id === jobId),
+    );
+    if (!row) throw new Error('The reopened Plan does not contain the admitted Train attempt');
+    await reopened.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true })
+      .getByRole('button', { name: row.label, exact: true }).click();
     await openResultsSlot(reopened);
     const restored = lossCurve(reopened);
     await expect(restored).toBeVisible();

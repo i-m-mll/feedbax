@@ -21,7 +21,7 @@ import pytest
 
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.graph import STUDIO_TASK_TIMELINE_SCHEMA_VERSION
-from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
+from feedbax.contracts.manifest import canonical_manifest_path, load_manifest, training_run_manifest_id
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
@@ -160,9 +160,9 @@ def _observe_worker(
     slot_reads = {}
     read_blob = checkpoint_custody._read_blob
 
-    def record_slot_read(slot, path):
+    def record_slot_read(slot, path, *, read_bytes=Path.read_bytes):
         slot_reads[slot.slot] = slot.media_type
-        return read_blob(slot, path)
+        return read_blob(slot, path, read_bytes=read_bytes)
 
     def prepare(*args, **kwargs):
         nonlocal scalar_trial
@@ -321,7 +321,15 @@ def _launch(
         cwd=source, env=env, capture_output=True, text=True, timeout=30, check=False,
     )
     events = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
-    assert child.returncode == int(fail), (job, child.stdout, child.stderr, events)
+    if child.returncode != int(fail):
+        receipt_path = canonical_manifest_path("TrainingRunManifest", training_run_manifest_id(job), root=root / "runs")
+        manifest = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+        fields = {key: manifest.get(key) for key in ("id", "job_id", "status")}
+        pytest.fail(
+            f"{job}: worker exited {child.returncode}\n{child.stdout}{child.stderr}\n"
+            f"Terminal event: {events[-1] if events else None}\nManifest: {fields}",
+            pytrace=False,
+        )
     assert events[-1]["kind"] == "result"
     result = events[-1]["data"]
     if fail:

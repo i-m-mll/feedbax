@@ -9,8 +9,9 @@ import {
 } from './fixtures/canonicalTrain';
 
 const evaluationEnabled = process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE === '1';
-const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
-const runButton = (page: Page) => page.getByRole('button', { name: 'Run', exact: true });
+const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
+const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
+const runButton = (page: Page) => primary(page).getByRole('button', { name: 'Run', exact: true });
 
 function responseFor(page: Page, path: string) {
   return page.waitForResponse((response) =>
@@ -20,6 +21,7 @@ function responseFor(page: Page, path: string) {
 
 async function select(page: Page, step: string) {
   await mapStep(page, step).click();
+  await primary(page).focus();
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
 }
 
