@@ -5,7 +5,7 @@ import { Dialog } from '@/components/ui/Dialog';
 import { bindStudioCommand, commandAttributes, type StudioCommand, type StudioCommandId } from '@/features/projectWindow/studioCommands';
 import type { PlanView } from '@/features/pipeline/planView';
 import {
-  ReportDocumentSchema, StepReferenceSchema, type ReportDocument, type StudioProjectFilePatch,
+  ProjectValueEditSchema, ReportDocumentSchema, StepReferenceSchema, type ReportDocument, type StudioProjectFilePatch,
   type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from './createManagedStep';
@@ -64,11 +64,11 @@ export function useManagedReport({
 
   function save(name: string, patches: StudioProjectFilePatch['patches'], nextInputs?: typeof inputs) {
     if (!editable || !stepId || !document) return false;
-    const files: StudioProjectFilePatch[] = [{ address: { kind: 'document', id: document }, patches }];
-    if (nextInputs) files.push({ address: { kind: 'step', id: stepId }, patches: [
-      { op: step?.inputs ? 'replace' : 'add', path: '/inputs', value: nextInputs },
-    ] });
     try {
+      const files: StudioProjectFilePatch[] = [{ address: { kind: 'document', id: document }, patches }];
+      if (nextInputs) files.push({ address: { kind: 'step', id: stepId }, patches: [
+        ProjectValueEditSchema.parse({ op: step?.inputs ? 'replace' : 'add', path: '/inputs', value: nextInputs }),
+      ] });
       editor.editFiles(name, files, { reviewedRevision: saved.revision });
       setError(undefined);
       return true;

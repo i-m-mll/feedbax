@@ -138,10 +138,9 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
         history = studio.history[key]
         assert history.status is state
         assert table["default/train/default"] == ("default", state.value, history.reason or "")
-        assert table["default/baseline/default"][1:] == (
-            studio.evaluations[RunKey("default", "baseline", "default")].status.value,
-            "Evaluate activation is held.",
-        )
+        evaluation = studio.evaluations[RunKey("default", "baseline", "default")]
+        assert evaluation.reason == "/evaluation_type: Evaluate activation is held."
+        assert table["default/baseline/default"][1:] == (evaluation.status.value, evaluation.reason)
         mounted = studio.window_map()
         mounted_rows = {
             f"{item.key.variant}/{item.key.step}/{item.key.row}": item.status
@@ -150,7 +149,7 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
         assert all(table[address][1] == status for address, status in mounted_rows.items())
         counts = {item.step_id: item.status_counts for item in mounted.steps}
         assert counts["train"] == {history.status.value: 1}
-        assert counts["baseline"] == {studio.evaluations[RunKey("default", "baseline", "default")].status.value: 1}
+        assert counts["baseline"] == {evaluation.status.value: 1}
         (profile,) = (item for item in mounted.analysis_elements if item.name == "profile")
         assert table["default/analyze/default/profile"][1] == profile.status == "not_run"
         assert mounted_rows["default/report/default"] == "not_run"
@@ -227,8 +226,11 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     assert analyze.status == table["default/analyze/default"][1]
     (step,) = (step for step in mounted.steps if step.step_id == "analyze")
     assert step.status_counts == {"cannot_run": 1}
-    (problem,) = (problem for problem in mounted.problems if problem.element == "bad")
-    assert (problem.document, problem.document_path) == ("bad-figure", "payload.layers.0.style.band_alpha")
+    assert any(
+        (problem.element, problem.document, problem.document_path)
+        == ("bad", "bad-figure", "payload.layers.0.style.band_alpha")
+        for problem in mounted.problems
+    )
     assert any(element.name == "profile" and element.status == "not_run" for element in mounted.analysis_elements)
 
 

@@ -148,8 +148,10 @@ test('an inline component numeric field authors a step sweep from the inspector'
   const field = page.getByRole('complementary', { name: 'Inspector' }).getByRole('group', { name: 'Mass', exact: true });
   await field.getByRole('button', { name: 'To Sweep Mass', exact: true }).click();
   await field.getByRole('button', { name: 'Add Value Mass' }).click();
-  await expect(field.getByRole('spinbutton')).toHaveCount(2);
-  await enter(field.getByRole('spinbutton').last(), '2');
+  const edits = field.getByRole('button', { name: /^Edit Mass / });
+  await expect(edits).toHaveCount(2);
+  await edits.last().click();
+  await enter(field.getByRole('spinbutton'), '2');
   await expect(field.getByRole('spinbutton', { name: 'Edit Mass 2', exact: true })).toBeEnabled();
   const { plan } = await readPlan(request, projectPath);
   expect(plan.window_map!.rows.map(({ coordinates }) => coordinates.mass.value)).toEqual([1, 2]);
@@ -166,17 +168,20 @@ test('an authored component range reopens as its exact rule and To List keeps ro
     range: { start: 1.000123456789, stop: 2.000987654321, count: 3 },
   } } };
   const { snapshot, projectPath } = await seedManagedProject(request, [task, train]);
-  const { plan: authored } = await readPlan(request, projectPath);
   await page.goto(`/?project=${snapshot.project_id}`);
   await page.reload();
   const field = page.getByRole('group', { name: 'plant · Mass', exact: true });
   await expect(field.getByText('1.000123456789', { exact: true })).toBeVisible();
   await expect(field.getByText('2.000987654321', { exact: true })).toBeVisible();
   await expect(field.getByText('Count', { exact: true })).toBeVisible();
+  const { plan: authored } = await readPlan(request, projectPath);
   await field.getByRole('button', { name: 'To List', exact: true }).click();
-  await expect(field.getByRole('spinbutton')).toHaveCount(3);
-  await expect(field.getByRole('spinbutton').first()).toHaveValue('1.000123456789');
-  await expect(field.getByRole('spinbutton').last()).toHaveValue('2.000987654321');
+  const edits = field.getByRole('button', { name: /^Edit plant · Mass / });
+  await expect(edits).toHaveCount(3);
+  await edits.first().click();
+  await expect(field.getByRole('spinbutton')).toHaveValue('1.000123456789');
+  await edits.last().click();
+  await expect(field.getByRole('spinbutton')).toHaveValue('2.000987654321');
   const { plan: listed } = await readPlan(request, projectPath);
   expect(listed.rows).toEqual(authored.rows);
 });

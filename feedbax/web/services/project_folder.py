@@ -261,6 +261,35 @@ def _decode_presentation(data: bytes | None) -> PresentationDocument:
     )
 
 
+def write_new_project_folder(
+    destination: Path,
+    project: Project,
+    configuration: ProjectConfiguration,
+    presentation: PresentationDocument,
+) -> None:
+    """Publish the ordinary authored folder and presentation in one exclusive rename."""
+    root = destination.parent.resolve(strict=True)
+    files = dump_text_project(project, configuration)
+    files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(presentation)
+    with TemporaryDirectory(prefix=".studio-project-", dir=root) as staged:
+        staging = Path(staged)
+        for relative, data in files.items():
+            write_bytes_atomic(staging / relative, data, replace=False)
+        parent = os.open(root, directory_open_flags(error_factory=OSError))
+        try:
+            rename_no_replace(
+                staging.name,
+                destination.name,
+                source_dir_fd=parent,
+                destination_dir_fd=parent,
+                error_factory=OSError,
+                context="new Studio project",
+            )
+        finally:
+            os.close(parent)
+        sync_parent_directories(root / destination.name)
+
+
 class ProjectFolderService:
     """Own revision guards for project folders under the app-managed root."""
 
@@ -395,26 +424,8 @@ class ProjectFolderService:
     def new(self) -> StudioProjectDocument:
         project_id = f"untitled-{uuid4().hex}"
         configuration = ProjectConfiguration(project=project_id, store="results")
-        files = dump_text_project(Project(), configuration)
-        files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument())
         self.root.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix=".studio-project-", dir=self.root) as staged:
-            staging = Path(staged)
-            for relative, data in files.items():
-                write_bytes_atomic(staging / relative, data, replace=False)
-            parent = os.open(self.root, directory_open_flags(error_factory=OSError))
-            try:
-                rename_no_replace(
-                    staging.name,
-                    project_id,
-                    source_dir_fd=parent,
-                    destination_dir_fd=parent,
-                    error_factory=OSError,
-                    context="new Studio project",
-                )
-            finally:
-                os.close(parent)
-            sync_parent_directories(self.root / project_id)
+        write_new_project_folder(self.root / project_id, Project(), configuration, PresentationDocument())
         return self.open(project_id)
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:

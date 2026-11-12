@@ -8,12 +8,9 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project_io import (
     STUDIO_WRITE_LOCK_FILENAME,
     ProjectConfiguration,
-    StudioProjectFile,
-    dump_studio_project,
     dump_text_project,
-    parse_studio_project,
 )
-from feedbax.contracts.project_plan import PlanRequests, compile_project
+from feedbax.contracts.project_plan import PlanRequests
 from feedbax.contracts.project_plan_io import load_plan_requests
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_project_analyze_plan import _operations
@@ -50,7 +47,7 @@ def test_cli_review_matches_studio_authoring_and_detects_report_drift(
     tmp_path, monkeypatch, capsys
 ):
     root = tmp_path / "reaching"
-    authored, files = _write_walkthrough(root)
+    _, files = _write_walkthrough(root)
     monkeypatch.chdir(root)
     assert main(["plan", "--out", "plan.json"]) == 0
     assert {line.split()[1].split(":")[0] for line in capsys.readouterr().out.splitlines()} == {
@@ -62,13 +59,13 @@ def test_cli_review_matches_studio_authoring_and_detects_report_drift(
     }
     saved = root / "plan.json"
     files["plan.json"] = saved.read_bytes()
+    assert _files(root) == files
     review, scope = load_plan_requests(files["plan.json"])
-    studio = parse_studio_project(
-        dump_studio_project(StudioProjectFile(project=authored, presentation={}))
-    )
-    api = compile_project(studio.project, operations=_operations())
+    folders = ProjectFolderService(tmp_path, operations=_operations())
+    api = folders.read_plan(root.name, revision=None).plan
     assert not api.diagnostics and scope is None
     assert review == PlanRequests.from_plan(api)
+    files[STUDIO_WRITE_LOCK_FILENAME] = b""
     assert _files(root) == files
     assert not (root / "results").exists()
 

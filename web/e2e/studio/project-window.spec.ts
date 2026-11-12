@@ -106,6 +106,8 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await page.getByRole('button', { name: 'Hide Drawer', exact: true }).click();
+  await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
   await page.setViewportSize({ width: 620, height: 860 });
   await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
   const table = page.getByRole('table', { name: 'Runs', exact: true });

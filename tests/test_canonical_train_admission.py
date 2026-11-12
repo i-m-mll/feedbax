@@ -1,6 +1,7 @@
 """The saved Plan admits an exact Train request to the real local daemon and worker."""
 
 import json
+from contextlib import ExitStack
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
@@ -15,19 +16,24 @@ from feedbax.contracts.base import ParentRef
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_identity import EncodedRequest, decode_request
+from feedbax.contracts.request_refs import NamedMember, ProductRef
 from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.contracts.studio_project import StudioProjectCreateFile, StudioProjectPatch
 from feedbax.contracts.training import OptimizerSpec, TrainingRunSpec
 from feedbax.host import Job, Launch
 from feedbax.host.completion import CompletionFileError
-from feedbax.job_completion import verify_bound_training_completion
+from feedbax.job_completion import verify_bound_training_completion, verify_training_model_product
 from feedbax.jobs import JobConflict, JobService
 from feedbax.orchestration.schedule_eval import (
     LEARNING_RATE_SCHEDULE_ID,
     learning_rate_from_build_optimizer,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView, store_request
+from feedbax.persistence.receipt_closure import ReceiptClosure
+from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
@@ -197,6 +203,58 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     binding = reviewed.store_path / "checkpoints" / attempt / "binding.json"
     assert BoundStudioTrainingJobInput.model_validate_json(binding.read_bytes()) == launch
     assert sha256(binding.read_bytes()).hexdigest() == completion["binding_sha256"]
+
+    siblings = {
+        Path(file["path"]).name.split("-", 1)[0]: reviewed.store_path / file["path"]
+        for file in completion["files"]
+        if "/blobs/" in file["path"]
+    }
+    assert set(siblings) == {"optimizer", "prng", "batch_counter"}
+    latest = binding.with_name("latest.json")
+    with ExitStack() as held:
+        for source in (*siblings.values(), latest):
+            temporary = source.with_suffix(".held")
+            source.rename(temporary)
+            held.callback(temporary.rename, source)
+        product, model = verify_training_model_product(completion)
+        with pytest.raises(CompletionFileError, match="checkpoint slot"):
+            verify_bound_training_completion(completion)
+
+    assert product.name == "model" and product.content.tree
+    assert (product.content.sha256, product.content.size) == (
+        model.tree.descriptor.sha256, model.tree.descriptor.size_bytes,
+    )
+    assert product.descriptor == model.encoding.model_dump(mode="json")
+    tree = model.provider.get_tree(model.tree)
+    assert {member.relative_path for member in tree.files} == {"graph.json", "model.safetensors"}
+    source = ImmutableArtifactBlobProvider(tmp_path / "selected-model-source")
+    destination = ImmutableArtifactBlobProvider(tmp_path / "selected-model-destination")
+    sync_store(
+        model.provider, source, StoreClosureRef(roots=(model.tree,)),
+        destination_ref="proof/model-source",
+    )
+    request = store_request(source, EncodedRequest(
+        request_id, encoded, {digest: store.get_object(ref) for digest, ref in refs.items()},
+    ))
+    success = SuccessView(source).publish(request, attempt=attempt, products={"checkpoint": (product,)})
+    selected = StoreClosureRef(roots=(ReceiptRoot(
+        receipt=success.ref,
+        product=ProductRef(request_id=request_id, role="checkpoint", select=NamedMember(member="model")),
+    ),))
+    sync_store(source, destination, selected, destination_ref="proof/selected-model")
+    packet_ref = destination.read_ref("proof/selected-model")
+    assert packet_ref is not None
+    packet = read_store_closure_ref(packet_ref)
+    expected = (
+        success.ref, request.object, *request.documents, model.tree.descriptor,
+        *(member.object for member in tree.files),
+    )
+    transferred = ReceiptClosure(destination).walk(packet)
+    assert {ref.sha256 for ref in transferred} == {ref.sha256 for ref in expected}
+    excluded = {file["sha256"] for file in completion["files"] if "/blobs/" in file["path"]}
+    assert excluded.isdisjoint(path.name for path in destination.root.glob("artifacts/sha256/*/*"))
+    for ref in transferred:
+        destination.verify_object(ref)
 
     execution = launch.spec.worker_execution.model_copy(update={"metadata": {"tampered": True}})
     for altered, error in (

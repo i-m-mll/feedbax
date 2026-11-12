@@ -12,7 +12,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from pydantic import Field
 
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import AcausalGraphSpec
@@ -23,9 +22,14 @@ from feedbax.contracts.artifact_custody import (
     ContentObjectRef,
     ContentTreeRef,
 )
-from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.model_checkpoint import (
+    MODEL_TREE_ARRAY_PATH as _ARRAY,
+    MODEL_TREE_GRAPH_PATH as _GRAPH,
+    MODEL_TREE_MEDIA_TYPE as MODEL_TREE_MEDIA_TYPE,
+    SemanticModelEncoding,
+)
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.persistence.array_container import (
     ArrayContainerError,
@@ -37,6 +41,11 @@ from feedbax.persistence.artifact_custody import (
     content_object_relative_path,
     decode_content_tree_descriptor,
 )
+from feedbax.persistence.model_tree import (
+    ModelTreeLayoutError,
+    model_tree_asset_path,
+    model_tree_assets,
+)
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.model_values import MODEL_OWNERS, SPATIAL_OWNER
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
@@ -46,21 +55,14 @@ if TYPE_CHECKING:
     from feedbax.contracts.checkpoints import CheckpointSlotBlobRef
 
 
-MODEL_TREE_MEDIA_TYPE = "application/vnd.feedbax.semantic-model-tree+json"
 MODEL_TREE_SERIALIZER = "feedbax.semantic-model-tree.v1"
 _MODEL_STORE = Path("semantic-model")
-_GRAPH = "graph.json"
-_ARRAY = "model.safetensors"
 
 
 class ModelCheckpointError(CheckpointCustodyError):
     def __init__(self, path: str, message: str):
         self.path = path
         super().__init__(f"{path}: {message}")
-
-
-def _asset_path(ref: ContentObjectRef) -> str:
-    return f"assets/{ref.sha256}"
 
 
 def _slot_path(ref: ContentObjectRef) -> Path:
@@ -93,10 +95,6 @@ def effective_model_graph(authored: GraphSpec, model: Graph) -> GraphSpec:
         "input_ports": list(model.input_ports),
         "input_bindings": dict(model.input_bindings),
     })
-
-
-class _Encoding(StrictModel):
-    array_descriptor_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -149,11 +147,11 @@ class SemanticModelWriter:
             raw = _read(self.assets, asset, path)
             if store.store_object(raw) != asset:
                 raise ModelCheckpointError(path, "model asset bytes differ from the authored reference")
-            members[_asset_path(asset)] = asset
+            members[model_tree_asset_path(asset)] = asset
         tree, _ = store.publish_rooted_tree(
             members, root_id="checkpoint:model", root_kind="logical-ref",
         )
-        encoding = _Encoding(array_descriptor_sha256=encoded.descriptor_sha256)
+        encoding = SemanticModelEncoding(array_descriptor_sha256=encoded.descriptor_sha256)
         return _slot_path(tree.descriptor), tree.descriptor, encoding.model_dump(mode="json")
 
 
@@ -179,30 +177,28 @@ class SemanticModelSlot:
     provider: ImmutableArtifactBlobProvider
     graph: GraphSpec
     arrays: ContentObjectRef
-    encoding: _Encoding
+    encoding: SemanticModelEncoding
+    tree: ContentTreeRef
 
     @classmethod
     def open(cls, transaction: Path, slot: CheckpointSlotBlobRef) -> SemanticModelSlot:
         provider = ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE)
         try:
-            tree = provider.get_tree(_slot_tree(slot))
-            members = {file.relative_path: file.object for file in tree.files}
+            tree = _slot_tree(slot)
+            members = {file.relative_path: file.object for file in provider.get_tree(tree).files}
             graph = GraphSpec.model_validate_json(_read(provider, members[_GRAPH], "/graph"))
             if SemanticModelWriter.for_graph(graph, provider) is None:
                 raise ModelCheckpointError("/graph", "graph has an undeclared semantic model owner")
-            assets = dict(model_asset_refs(graph))
-            expected = {_GRAPH, _ARRAY, *(_asset_path(asset) for asset in assets.values())}
-            if members.keys() != expected:
-                raise ModelCheckpointError("/v1/model", "model tree members disagree with the effective graph")
-            for path, asset in assets.items():
-                if members[_asset_path(asset)] != asset:
-                    raise ModelCheckpointError(path, "model tree pins a different asset")
+            for path, asset in model_tree_assets(graph, members):
                 _read(provider, asset, path)
-            return cls(provider, graph, members[_ARRAY], _Encoding.model_validate(
-                slot.metadata["semantic_model"]
-            ))
+            return cls(
+                provider, graph, members[_ARRAY],
+                SemanticModelEncoding.model_validate(slot.metadata["semantic_model"]), tree,
+            )
         except ModelCheckpointError:
             raise
+        except ModelTreeLayoutError as exc:
+            raise ModelCheckpointError(exc.path, exc.detail) from exc
         except (ValueError, KeyError, OSError) as exc:
             raise ModelCheckpointError("/v1/model", str(exc)) from exc
 

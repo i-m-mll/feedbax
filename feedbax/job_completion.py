@@ -7,12 +7,14 @@ import os
 from pathlib import Path
 
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.effective_success import Product
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     canonical_manifest_path,
     load_manifest_bytes,
     training_run_manifest_id,
 )
+from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.studio_training import (
     PublishedTrainingCheckpoint,
     StudioGraphMethodPayload,
@@ -21,6 +23,7 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host.checkpoint_selection import verify_dependency_files
 from feedbax.host.completion import CompletionFileError, completion_file
+from feedbax.persistence.array_container import open_array_container
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     verify_training_request_binding,
@@ -32,8 +35,10 @@ from feedbax.training.checkpoint_custody import (
     _checkpoint_latest_parent_ref,
     authenticate_checkpoint_custody_ref,
     checkpoint_slot_files,
+    open_published_model_slot,
     validate_checkpoint_run_contract,
 )
+from feedbax.training.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelSlot
 
 
 class CompletionUnavailable(ValueError):
@@ -65,7 +70,6 @@ def attest_checkpoint_publication(
     write: CheckpointWriteResult,
 ) -> dict:
     """Attest an already published checkpoint's exact file closure for the local Host."""
-    from feedbax.training.model_checkpoint import MODEL_TREE_MEDIA_TYPE
     from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 
     media = {slot.slot: slot.media_type for slot in write.manifest.slots}
@@ -255,6 +259,39 @@ def verify_bound_training_completion(
         raise
     except (ValueError, KeyError, OSError) as error:
         raise CompletionFileError(str(error)) from error
+
+def verify_training_model_product(completion: dict) -> tuple[Product, SemanticModelSlot]:
+    """Project the exact saved Train terminal checkpoint to its model product."""
+    launch = verify_bound_training_completion(completion, scope="model_only")
+    if launch.canonical_request is None:
+        raise CompletionUnavailable("Model product requires a canonical saved Train request.")
+    checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
+    try:
+        model = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
+        if model is None:
+            raise CompletionUnavailable("Terminal checkpoint has no semantic model tree.")
+        with (
+            model.provider.open_owned_object(model.arrays) as path,
+            open_array_container(path, expected_descriptor_sha256=model.encoding.array_descriptor_sha256),
+        ):
+            pass
+    except CompletionUnavailable:
+        raise
+    except (CheckpointCustodyError, ValueError, OSError) as error:
+        raise CompletionFileError(str(error)) from error
+
+    descriptor = model.tree.descriptor
+    return Product(
+        name="model",
+        content=ContentRef(
+            sha256=descriptor.sha256,
+            size=descriptor.size_bytes,
+            media_type=MODEL_TREE_MEDIA_TYPE,
+            tree=True,
+        ),
+        descriptor=model.encoding.model_dump(mode="json"),
+    ), model
+
 
 def read_host_completion_binding() -> dict:
     """Authenticate the single subject edge supplied to this worker delivery."""

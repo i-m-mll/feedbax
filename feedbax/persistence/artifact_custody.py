@@ -8,6 +8,7 @@ import hashlib
 import os
 import re
 import stat
+import sys
 import threading
 import unicodedata
 import uuid
@@ -110,7 +111,7 @@ def _manifest_reference_key(kind: str, manifest_id: str) -> str:
 
 
 @contextmanager
-def _exclusive_store_lock(root: Path) -> Iterator[None]:
+def _exclusive_store_lock(root: Path, *, create: bool = True) -> Iterator[None]:
     lock_key = str(root)
     held = getattr(_store_lock_state, "held", {})
     if lock_key in held:
@@ -120,9 +121,11 @@ def _exclusive_store_lock(root: Path) -> Iterator[None]:
         finally:
             held[lock_key] -= 1
         return
-    root.mkdir(parents=True, exist_ok=True)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".content-store.lock"
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    flags = (os.O_RDWR | os.O_CREAT) if create else os.O_RDONLY
+    descriptor = os.open(lock_path, flags | os.O_NOFOLLOW, 0o600)
     try:
         lock_stat = os.fstat(descriptor)
         path_stat = os.stat(lock_path, follow_symlinks=False)
@@ -355,10 +358,51 @@ def _remove_private_materialization_staging_name(
     os.close(directory_descriptor)
 
 
+def _write_staged_file(parent: int, name: str, *, write_payload: Callable[[int], None]) -> int:
+    descriptor = os.open(
+        name, _file_flags(writable=True) | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent
+    )
+    try:
+        write_payload(descriptor)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _clone_staged_file(parent: int, name: str, *, source: int) -> int:
+    if sys.platform == "darwin":
+        import ctypes
+
+        clone = ctypes.CDLL(None, use_errno=True).fclonefileat
+        clone.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32)
+        clone.restype = ctypes.c_int
+        if clone(source, parent, os.fsencode(name), 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), name)
+        descriptor = os.open(name, _file_flags(writable=True), dir_fd=parent)
+        try:
+            os.fchmod(descriptor, 0o600)
+            os.utime(descriptor, None)
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    request = getattr(fcntl, "FICLONE", None)
+    if sys.platform != "linux" or request is None:
+        raise OSError(errno.ENOTSUP, "Store sync requires a filesystem with file cloning")
+
+    def clone_payload(descriptor: int) -> None:
+        fcntl.ioctl(descriptor, request, source)
+
+    return _write_staged_file(parent, name, write_payload=clone_payload)
+
+
 def _stage_blob(
     destination: Path,
     expected_identity: tuple[str, int],
-    write_payload: Callable[[int], None],
+    create_payload: Callable[[int, str], int],
     *,
     validate: Callable[[Path], None] | None = None,
 ) -> os.stat_result:
@@ -372,13 +416,7 @@ def _stage_blob(
         staging_descriptor = _open_materialization_staging_container(
             parent_descriptor=parent_descriptor
         )
-        temporary_descriptor = os.open(
-            temporary_name,
-            _file_flags(writable=True) | os.O_CREAT | os.O_EXCL,
-            0o600,
-            dir_fd=staging_descriptor,
-        )
-        write_payload(temporary_descriptor)
+        temporary_descriptor = create_payload(staging_descriptor, temporary_name)
         if validate is not None:
             os.lseek(temporary_descriptor, 0, os.SEEK_SET)
             validate(_descriptor_path(temporary_descriptor))
@@ -450,12 +488,8 @@ def _stage_blob_bytes(
 ) -> os.stat_result:
     if identity is None:
         identity = hashlib.sha256(data).hexdigest(), len(data)
-    return _stage_blob(
-        destination,
-        identity,
-        lambda descriptor: _write_file_descriptor(descriptor, data),
-        validate=validate,
-    )
+    writer = partial(_write_staged_file, write_payload=partial(_write_file_descriptor, data=data))
+    return _stage_blob(destination, identity, writer, validate=validate)
 
 
 def _stage_blob_file(
@@ -467,7 +501,8 @@ def _stage_blob_file(
         if _stream_file_descriptor(source_descriptor, target=descriptor) != expected_identity:
             raise ArtifactBlobIntegrityError(f"artifact source changed during store: {destination}")
 
-    return _stage_blob(destination, expected_identity, write_payload)
+    writer = partial(_write_staged_file, write_payload=write_payload)
+    return _stage_blob(destination, expected_identity, writer)
 
 
 def _object_identity(
@@ -718,9 +753,9 @@ class ImmutableArtifactBlobProvider:
         )
         object.__setattr__(self, "root", _canonicalize_trusted_system_aliases(root_path))
 
-    def _exclusive_lock(self) -> AbstractContextManager[None]:
+    def _exclusive_lock(self, *, create: bool = True) -> AbstractContextManager[None]:
         """Return the one store lock shared by references and retention state."""
-        return _exclusive_store_lock(self.root)
+        return _exclusive_store_lock(self.root, create=create)
 
     @property
     def store_id(self) -> str:
@@ -1037,6 +1072,26 @@ class ImmutableArtifactBlobProvider:
         """Verify one pinned object in bounded chunks."""
         digest, size_bytes = _object_identity(object_ref)
         _verify_blob(self._canonical_path(digest), sha256=digest, size_bytes=size_bytes)
+
+    def _clone_object_from(
+        self, source: ImmutableArtifactBlobProvider, object_ref: ContentObjectRef
+    ) -> bool:
+        """Clone into canonical custody, or reuse a verified object, with both Stores locked."""
+        try:
+            self.verify_object(object_ref)
+        except FileNotFoundError:
+            pass
+        else:
+            return False
+
+        digest, size_bytes = _object_identity(object_ref)
+        target = self._canonical_path(digest)
+        self._validate_store_target(target)
+        with _open_blob_for_read(source.object_path(object_ref), size_bytes) as descriptor:
+            _stage_blob(
+                target, (digest, size_bytes), partial(_clone_staged_file, source=descriptor)
+            )
+        return True
 
     def ingest_tree(self, source_root: Path | str) -> ContentTreeRef:
         """Ingest a canonical regular-file tree with identity independent of its role."""

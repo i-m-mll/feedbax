@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 from pydantic import TypeAdapter
 
 from feedbax.bin import project_plan as project_plan_cli
+from feedbax.bin import store as store_cli
 from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
 from feedbax.contracts.checkpoint_initialization import CheckpointInitializationPlan
@@ -363,6 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
     project_plan_cli.configure_status_parser(subparsers.add_parser(
         "status", prog="feedbax status", help="Show saved project run and element states.",
     ))
+    store_cli.configure_parser(subparsers.add_parser(
+        "store", prog="feedbax store", help="Inspect the declared project Store.",
+    ))
     describe_parser = subparsers.add_parser(
         "describe", prog="feedbax describe", help="Show authored schemas and registry declarations.",
     )
@@ -373,6 +377,12 @@ def build_parser() -> argparse.ArgumentParser:
     describe_parser.add_argument(
         "--plugin", action="append", help="Load a plugin module's declarations. May be repeated.",
     )
+    studio_migration = subparsers.add_parser(
+        "migrate-project", prog="feedbax migrate-project",
+        help="Convert a saved Studio workspace into a new project folder.",
+    )
+    studio_migration.add_argument("source", type=Path, help="Saved Studio workspace JSON file.")
+    studio_migration.add_argument("--out", type=Path, help="New folder (default: beside the source).")
     migration_parser = subparsers.add_parser(
         "migrate-content-store",
         help="Offline conversion of legacy custody into canonical content references.",
@@ -746,6 +756,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return project_plan_cli.run(args)
     if args.command == "status":
         return project_plan_cli.run_status(args)
+    if args.command == "store":
+        return store_cli.run(args)
+    if args.command == "migrate-project":
+        from feedbax.bin.migrate_project import migrate_project
+
+        return migrate_project(args.source, args.out)
     if args.command == "migrate-content-store":
         if args.packet_v1:
             from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1

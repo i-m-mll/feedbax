@@ -120,7 +120,8 @@ test(`saved Evaluate is ${enabled ? 'playable in the isolated candidate' : 'held
 
   await chooseStep(page, 'unsupported');
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
-  await expect(plans(page).getByText(/requires a Train checkpoint selected by last/)).toBeVisible();
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(inspector.getByText(/requires a Train checkpoint selected by last/)).toBeVisible();
   await chooseStep(page, 'train');
   const [train] = await submit(page, path);
   expect(train.disposition).toBe('admitted');

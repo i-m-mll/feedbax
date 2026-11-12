@@ -14,7 +14,7 @@ export function problemReason({ path, detail, document_path }: StudioProjectWind
   return document_path ? `${document_path} · ${message}` : message;
 }
 
-export function problemTarget(problem: StudioProjectWindowMapProblem) {
+export function problemTarget(problem: StudioProjectWindowMapProblem): ProblemReveal['target'] {
   const pointer = problem.path.startsWith('/');
   const parts = pointer
     ? problem.path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))

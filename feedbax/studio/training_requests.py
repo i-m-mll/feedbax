@@ -22,7 +22,9 @@ from feedbax.contracts.studio_training import (
 )
 from feedbax.contracts.training import (
     MethodPayloadEnvelope,
+    ObjectiveSlotSpec,
     TaskSpec,
+    TrainingConfig,
     TrainingRunSpec,
     TrainingSpec,
     validate_training_run_spec_semantics,
@@ -218,6 +220,40 @@ def _lower_scenario(
         raise StudioTrainingLoweringError(
             "/task_spec/params/n_steps", "Task requires a rollout length"
         )
+    settings = studio_graph_training_settings(training_spec, training, n_steps)
+    method = registry_bundle.training_programs.resolve_execution(STUDIO_GRAPH_METHOD, settings.method_payload)
+    return TrainingRunSpec(
+        graph={
+            "inline": graph_spec.model_dump(mode="json", exclude_none=True, exclude={"metadata"})
+        },
+        task=task_spec,
+        task_binding_spec=task_binding_spec,
+        training_config=settings.config,
+        objective=settings.objective,
+        method_ref=STUDIO_GRAPH_METHOD,
+        method_payload=settings.method_payload,
+        worker_execution={
+            "method_contract": method.contract,
+            "effective_phase": method.effective_phase,
+        },
+        checkpoint_progress={
+            "checkpoint_interval": settings.config.snapshot_interval,
+            "progress_interval": 1,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class StudioGraphTrainingSettings:
+    config: TrainingConfig
+    objective: ObjectiveSlotSpec
+    method_payload: MethodPayloadEnvelope
+
+
+def studio_graph_training_settings(
+    training_spec: TrainingSpec, training: Mapping[str, Any], n_steps: int | None,
+) -> StudioGraphTrainingSettings:
+    """Translate the saved Studio settings into the shared authored Train fields."""
     checkpoint_interval = training_spec.checkpoint_interval
     if checkpoint_interval is not None and checkpoint_interval <= 0:
         raise StudioTrainingLoweringError(
@@ -249,31 +285,17 @@ def _lower_scenario(
         schema_version=STUDIO_GRAPH_METHOD_PAYLOAD_VERSION,
         payload=payload.model_dump(mode="json", exclude_defaults=True),
     )
-    method = registry_bundle.training_programs.resolve_execution(STUDIO_GRAPH_METHOD, envelope)
-    return TrainingRunSpec(
-        graph={
-            "inline": graph_spec.model_dump(mode="json", exclude_none=True, exclude={"metadata"})
-        },
-        task=task_spec,
-        task_binding_spec=task_binding_spec,
-        training_config={
-            "n_batches": training_spec.n_batches,
-            "batch_size": training_spec.batch_size,
-            "learning_rate": rate,
-            "n_reach_steps": n_steps,
-            "snapshot_interval": checkpoint_interval,
-        },
-        objective={"loss": training_spec.loss},
-        method_ref=STUDIO_GRAPH_METHOD,
-        method_payload=envelope,
-        worker_execution={
-            "method_contract": method.contract,
-            "effective_phase": method.effective_phase,
-        },
-        checkpoint_progress={
-            "checkpoint_interval": checkpoint_interval,
-            "progress_interval": 1,
-        },
+    horizon = {"n_reach_steps": n_steps} if n_steps is not None else {}
+    return StudioGraphTrainingSettings(
+        TrainingConfig(
+            n_batches=training_spec.n_batches,
+            batch_size=training_spec.batch_size,
+            learning_rate=rate,
+            snapshot_interval=checkpoint_interval,
+            **horizon,
+        ),
+        ObjectiveSlotSpec(loss=training_spec.loss),
+        envelope,
     )
 
 

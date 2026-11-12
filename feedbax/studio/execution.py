@@ -44,6 +44,7 @@ from feedbax.analysis.evaluation import (
 from feedbax.analysis.reports import STUDIO_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import execute_analysis_run_spec
+from feedbax.contracts.rollout import STUDIO_DEFAULT_EVALUATION_TYPE
 from feedbax.contracts.base import (
     ArtifactRef,
     EntrypointRef,
@@ -2261,7 +2262,7 @@ def _evaluation_spec_for_condition(
     stage: StudioStageSpec,
 ) -> EvaluationRunSpec:
     return EvaluationRunSpec(
-        evaluation_type="feedbax.studio.default_eval",
+        evaluation_type=STUDIO_DEFAULT_EVALUATION_TYPE,
         training_run_ids=[training_ref.id],
         inputs=[training_ref, checkpoint_ref],
         params={
@@ -2469,7 +2470,7 @@ def _materialize_eval_stage(
         else "recompute"
     )
     spec = EvaluationRunSpec(
-        evaluation_type="feedbax.studio.default_eval",
+        evaluation_type=STUDIO_DEFAULT_EVALUATION_TYPE,
         training_run_ids=[ref.id for ref in input_refs if ref.kind == "TrainingRunManifest"],
         inputs=input_refs,
         params={
