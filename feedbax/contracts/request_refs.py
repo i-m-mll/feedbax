@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, ClassVar, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
 
 RequestKind = Literal["train", "evaluate", "analyze", "render", "report"]
 RequestId = Annotated[
@@ -80,3 +81,16 @@ class InputMember(ReferenceValue):
 
 
 RequestInputs = dict[Name, tuple[InputMember, ...]]
+
+EffectiveBindingId = Annotated[str, StringConstraints(pattern=r"^effective:[0-9a-f]{64}$")]
+
+
+class EffectiveInputMember(ReferenceValue):
+    """The exact input content and semantic descriptor presented to a computation."""
+
+    key: Name
+    content: ContentRef
+    descriptor: JsonValue = None
+
+
+EffectiveInputs = Mapping[Name, tuple[EffectiveInputMember, ...]]
