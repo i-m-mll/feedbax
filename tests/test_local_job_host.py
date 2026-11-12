@@ -148,6 +148,68 @@ while not Path({str(release)!r}).exists():
     wait_until(lambda: job_row(host, blocked.id, "blocked"))
 
 
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_completion_edges_are_bound_to_one_attempt(host, tmp_path, stop_first):
+    """Exercise real daemon scheduling with controlled worker events."""
+    release = tmp_path / "release"
+    deliveries = tmp_path / "deliveries"
+    (tmp_path / "phase_fixture.py").write_text("""
+import json
+import os
+from pathlib import Path
+import time
+
+def main(args):
+    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
+    stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+    release = Path(payload["release"])
+    with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a", buffering=1) as stream:
+        checkpoint = {"completed_updates": 1}
+        print(json.dumps({
+            "kind": "publication", "data": {"key": "checkpoint:1", "checkpoint": checkpoint},
+        }), file=stream)
+        while not release.exists() and not stop.exists():
+            time.sleep(0.01)
+        print(json.dumps({
+            "kind": "result",
+            "data": {"outcome": "stopped", "checkpoint": checkpoint}
+                if stop.exists() else {"outcome": "succeeded"},
+        }), file=stream)
+    return 0
+""")
+    launch = Launch(
+        (sys.executable,), cwd=str(tmp_path), warm_entrypoint="phase_fixture:main",
+        payload={"release": str(release)},
+    )
+    prefix = Job("prefix", "project", "prefix-request", launch)
+    successor = run_job(
+        "successor",
+        f"from pathlib import Path; Path({str(deliveries)!r}).open('a').write('started\\n')",
+        edges=(Edge(prefix.id),), slot="light",
+    )
+    submission = admit(host, "phases", successor, prefix)
+    wait_until(lambda: job_row(host, prefix.id)["checkpoint"] == {"completed_updates": 1})
+    assert job_row(host, successor.id)["state"] == "queued"
+    assert not deliveries.exists()
+    if stop_first:
+        assert host.stop([prefix.id], "checkpoint")[0]["state"] == "stopping"
+        assert wait_until(lambda: job_row(host, prefix.id, "stopped"))["checkpoint"]
+        blocked = wait_until(lambda: job_row(host, successor.id, "blocked"))
+        assert blocked["outcome"]["error"]["code"] == "dependency_ended"
+        continued = Job("continued", prefix.project, prefix.request, launch, continues=prefix.id)
+        admit(host, "continuation", continued)
+        release.touch()
+        wait_until(lambda: job_row(host, continued.id, "succeeded"))
+        assert job_row(host, successor.id)["state"] == "blocked"
+        assert not deliveries.exists()
+    else:
+        release.touch()
+        finished = wait_until(lambda: job_row(host, successor.id, "succeeded"))
+        assert finished["delivery"] == 1
+        assert admit(host, "phases", successor, prefix) == submission
+        assert deliveries.read_text().splitlines() == ["started"]
+
+
 def test_warm_entrypoint_reports_checkpoint_stop_and_typed_error(host, tmp_path):
     module = tmp_path / "worker_fixture.py"
     module.write_text("""

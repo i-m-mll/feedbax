@@ -27,13 +27,11 @@ from feedbax.training.row_lowering import GovernedTrainingRowParent, TrainingRow
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
 
 
-def _authored_rows(downstream: Path, parent_bytes: bytes, source_batch: int) -> dict:
-    from rlrmp2.training.method_payloads import MappedAdaptiveLambdaMethodPayload
+def governed_adaptive_rows(downstream: Path, parent_bytes: bytes):
     from rlrmp2.training.nominal import (
         NOMINAL_BASELINE_PAYLOAD_SCHEMA_ID,
         NOMINAL_BASELINE_PAYLOAD_SCHEMA_VERSION,
     )
-    from rlrmp2.training.programs import mapped_adaptive_lambda_training_program
 
     envelopes = downstream / "specs/experiment"
     mapped = json.loads((envelopes / "mapped-fork-continuation.envelope.json").read_bytes())
@@ -68,6 +66,14 @@ def _authored_rows(downstream: Path, parent_bytes: bytes, source_batch: int) -> 
             )
         ),
     )
+    return parent, mapped, rows
+
+
+def _authored_rows(downstream: Path, parent_bytes: bytes, source_batch: int) -> dict:
+    from rlrmp2.training.method_payloads import MappedAdaptiveLambdaMethodPayload
+    from rlrmp2.training.programs import mapped_adaptive_lambda_training_program
+
+    parent, mapped, rows = governed_adaptive_rows(downstream, parent_bytes)
     registry = TrainingProgramRegistry()
     program = mapped_adaptive_lambda_training_program()
     registry.register_program(program)
