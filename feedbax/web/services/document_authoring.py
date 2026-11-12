@@ -20,6 +20,7 @@ from feedbax.contracts.studio_authoring import (
     StudioModelAddComponent,
     StudioModelAuthoringChange,
     StudioModelConnectPorts,
+    StudioModelExposeOutput,
 )
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS, AuthoredFileAddress, SetProjectValue, StudioProjectFilePatch, StudioProjectSnapshot,
@@ -174,6 +175,13 @@ def _model_files(
         graph = GraphSpec.model_validate(payload)
         if isinstance(change.operation, StudioModelConnectPorts):
             validate_model_connections(graph, binding, components)
+        elif isinstance(change.operation, StudioModelExposeOutput):
+            node_id, port = change.operation.source_node, change.operation.source_port
+            node = graph.nodes.get(node_id)
+            if node is None or port not in node.output_ports:
+                raise ProjectFolderInvalid(f"Public output {port!r} needs the Model port {node_id}.{port}.")
+            if graph.output_ports.count(port) != 1 or graph.output_bindings.get(port) != (node_id, port):
+                raise ProjectFolderInvalid(f"Public output {port!r} has a conflicting declaration.")
 
     files = []
     created = None
@@ -181,13 +189,23 @@ def _model_files(
         model = prepare_model_edit(base, change, components, reserved)
         updated = deepcopy(source.payload)
         apply_document_edits(updated, model.step_edits())
-        for key, (_, _, binding) in resolved.items():
+        prior = {step: project.steps[step].document_overrides.get(document, {}) for step in sorted(lit)}
+        differences = {step: model.supersede(edits, step) for step, edits in prior.items()}
+        operation = change.operation
+        for key, (_, effective, binding) in resolved.items():
+            if isinstance(operation, StudioModelConnectPorts) and operation.wire.source_node == operation.wire.target_node:
+                if prepare_model_edit(effective, change, components, reserved) != model:
+                    raise ProjectFolderInvalid(f"{key.step} requires a different recurrent wire initializer.")
             payload = deepcopy(updated)
-            apply_document_edits(payload, project.steps[key.step].document_overrides.get(document, {}))
+            apply_document_edits(payload, differences[key.step])
             validate(payload, binding)
         files.append(StudioProjectFilePatch(
             address=AuthoredFileAddress(kind="document", id=document), patches=model.document_edits(source.payload),
         ))
+        files.extend(
+            _step_difference(project, step, document, local)
+            for step, local in differences.items() if local != prior[step]
+        )
         created = model.component
     else:
         for key in sorted(resolved, key=lambda item: item.step):

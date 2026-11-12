@@ -9,7 +9,14 @@ from pydantic import JsonValue
 from feedbax.compiler.templates import recurrent_zero_initializer
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
-from feedbax.contracts.project import DocumentEdit, EnsureDocumentCollection, SetProjectValue, json_pointer_parts
+from feedbax.contracts.project import (
+    DocumentEdit,
+    DocumentOverrides,
+    EnsureDocumentCollection,
+    SetProjectValue,
+    document_edit_ops,
+    json_pointer_parts,
+)
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_authoring import (
     StudioModelAddComponent,
@@ -46,6 +53,74 @@ class ModelAdditions:
 
     def step_edits(self) -> list[DocumentEdit]:
         return [*self.collections().values(), *self.entries]
+
+    def supersede(self, previous: DocumentOverrides, step: str) -> DocumentOverrides:
+        """Drop only declarations that the shared edit will now supply."""
+        if self.component is not None or not previous:
+            return previous
+        entries = {entry.path: entry.value for entry in self.entries}
+        collections = self.collections()
+        operations = document_edit_ops(previous)
+        matched: set[str] = set()
+        remaining: list[DocumentEdit] = []
+        for edit in operations:
+            parts = json_pointer_parts(edit.path)
+            collection = collections.get(parts[0])
+            if collection is None or isinstance(edit, EnsureDocumentCollection):
+                remaining.append(edit)
+                continue
+            if collection.collection == "array" and not (
+                parts[1:] == ("-",) and isinstance(edit, SetProjectValue) and edit.op == "add"
+            ):
+                raise ProjectFolderInvalid(f"{step} edits /{parts[0]} by position; a shared edit could move its entries.")
+            if parts == ("output_bindings",):
+                raise ProjectFolderInvalid(f"{step} replaces the output bindings as a collection.")
+
+            overlaps = False
+            if edit.path == "/wires/-":
+                assert isinstance(edit, SetProjectValue)
+                wire = WireSpec.model_validate(edit.value)
+                shared_wire = WireSpec.model_validate(entries[edit.path])
+                overlaps = _wire_address(wire) == _wire_address(shared_wire)
+                if overlaps and wire != shared_wire:
+                    raise ProjectFolderInvalid(
+                        f"{step} has a different wire declaration for {wire.target_node}.{wire.target_port}."
+                    )
+            elif edit.path == "/output_ports/-":
+                assert isinstance(edit, SetProjectValue)
+                overlaps = edit.value == entries[edit.path]
+            else:
+                binding_path = pointer(parts[:2])
+                if binding_path in entries:
+                    if not (
+                        edit.path == binding_path and isinstance(edit, SetProjectValue)
+                        and edit.op == "add" and edit.value == entries[binding_path]
+                    ):
+                        raise ProjectFolderInvalid(f"{step} has a different binding for public output {parts[1]!r}.")
+                    overlaps = True
+
+            if not overlaps:
+                remaining.append(edit)
+            elif edit.path in matched:
+                raise ProjectFolderInvalid(f"{step} declares the same topology more than once.")
+            else:
+                matched.add(edit.path)
+        if not matched:
+            return previous
+        if matched != entries.keys():
+            raise ProjectFolderInvalid(f"{step} has an incomplete local public output declaration.")
+        used_collections = {
+            name for edit in remaining for name in (json_pointer_parts(edit.path)[0],)
+            if edit != collections.get(name)
+        }
+        return [
+            edit for edit in remaining
+            if edit != collections.get(name := json_pointer_parts(edit.path)[0]) or name in used_collections
+        ]
+
+
+def _wire_address(wire: WireSpec) -> tuple[str, str, str, str]:
+    return wire.source_node, wire.source_port, wire.target_node, wire.target_port
 
 
 def _add(collection: str, key: str, value: JsonValue) -> SetProjectValue:

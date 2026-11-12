@@ -1123,6 +1123,147 @@ def test_model_topology_patches_resolve_only_for_lit_steps(study):
         assert ("hidden" in bindings) == (key.step != "unlit")
 
 
+def test_shared_model_edit_supersedes_only_matching_local_topology(study):
+    root, client = study
+    snapshot = _read(client)
+    all_users = ["fit", "lit", "unlit"]
+    local_users = ["fit", "lit"]
+
+    def save(files):
+        response = client.patch(_URL, json={"revision": snapshot["revision"], "files": files})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def recipe(operation, lit=all_users):
+        return client.post(f"{_URL}/authoring/document", json={
+            "revision": snapshot["revision"],
+            "run": {"variant": "default", "step": "fit", "row": "default"},
+            "field": "graph",
+            "change": {"lit_steps": lit, "operation": operation},
+        })
+
+    def edits(operation, lit=all_users):
+        response = recipe(operation, lit)
+        assert response.status_code == 200, response.text
+        return response.json()["files"]
+
+    def wire(source, target):
+        return {"kind": "connectPorts", "wire": {
+            "source_node": source, "source_port": "hidden", "target_node": target, "target_port": "hidden",
+        }}
+
+    def output(node):
+        return {"kind": "exposeOutput", "source_node": node, "source_port": "hidden"}
+
+    def step_edit(step, patches):
+        return {"address": {"kind": "step", "id": step}, "patches": patches}
+
+    def restore_scope(before, after, remove):
+        return [
+            {"address": {"kind": "document", "id": "model"}, "patches": [
+                {"op": "remove", "path": path} for path in remove
+            ]},
+            *(step_edit(step, [{
+                "op": "replace", "path": "/document_overrides",
+                "value": before["project"]["steps"][step]["document_overrides"],
+            }]) for step in local_users if before["project"]["steps"][step] != after["project"]["steps"][step]),
+        ]
+
+    with client:
+        snapshot = save([step_edit("fit", [{"op": "remove", "path": "/sweep"}])])
+        for step in all_users[1:]:
+            created = client.post(f"{_URL}/files", json={
+                "revision": snapshot["revision"],
+                "file": {"kind": "step", "id": step, "step": snapshot["project"]["steps"]["fit"]},
+            })
+            assert created.status_code == 201, created.text
+            snapshot = created.json()["snapshot"]
+        add = {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1}
+        snapshot = save(edits(add))
+        snapshot = save(edits(add))
+        snapshot = save(edits(wire("gru2", "gru2"), ["fit"]))
+        snapshot = save(edits(wire("gru", "gru"), local_users))
+        snapshot = save(edits(output("gru"), local_users))
+        before = snapshot
+        for operation, detail in (
+            (wire("gru2", "gru"), "Input gru.hidden has multiple drivers"),
+            (output("gru2"), "different binding for public output 'hidden'"),
+        ):
+            conflict = recipe(operation)
+            assert conflict.status_code == 422
+            assert detail in conflict.text
+            assert _read(client) == before
+
+        fit = before["project"]["steps"]["fit"]["document_overrides"]
+        different_initializer = [
+            {
+                **edit, "value": {
+                    **edit["value"],
+                    "recurrent_initializer": {**edit["value"]["recurrent_initializer"], "dtype": "float64"},
+                },
+            }
+            if edit["path"] == "/wires/-" and edit["value"]["source_node"] == "gru" else edit
+            for edit in fit["model"]
+        ]
+        for operations, detail in (
+            (different_initializer, "different wire declaration for gru.hidden"),
+            ([*fit["model"], {"op": "replace", "path": "/wires/0/temporality", "value": "recurrent"}],
+             "edits /wires by position"),
+        ):
+            snapshot = save([step_edit("fit", [{
+                "op": "replace", "path": "/document_overrides/model", "value": operations,
+            }])])
+            conflict = recipe(wire("gru", "gru"))
+            assert conflict.status_code == 422
+            assert detail in conflict.text
+            assert _read(client) == snapshot
+            snapshot = save([step_edit("fit", [{
+                "op": "replace", "path": "/document_overrides", "value": fit,
+            }])])
+        assert snapshot == before
+
+        unlit = (root / "steps/unlit.json").read_bytes()
+        wire_files = edits(wire("gru", "gru"))
+        assert [file["address"]["id"] for file in wire_files] == ["model", "fit", "lit"]
+        snapshot = save(wire_files)
+        wired = snapshot
+        output_files = edits(output("gru"))
+        assert [file["address"]["id"] for file in output_files] == ["model", "fit", "lit"]
+        snapshot = save(output_files)
+        promoted = snapshot
+        assert (root / "steps/unlit.json").read_bytes() == unlit
+        assert promoted["project"]["steps"]["lit"]["document_overrides"] == {}
+        assert promoted["project"]["steps"]["fit"]["document_overrides"]["model"] == [
+            edit for edit in fit["model"]
+            if edit["path"] == "/wires" or (
+                edit["path"] == "/wires/-" and edit["value"]["source_node"] == "gru2"
+            )
+        ]
+        keys = [RunKey("default", step, "default") for step in all_users]
+        plan = compile_project(load_text_project(root).project, source_runs=keys)
+        assert not plan.diagnostics
+        for key in keys:
+            graph = plan.selected_definitions[key].payload["graph"]
+            assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
+            assert [edge["source_node"] for edge in graph["wires"]] == (
+                ["gru", "gru2"] if key.step == "fit" else ["gru"]
+            )
+            source = plan.sources[key]["/payload/graph/wires/0/source_node"]
+            assert (source.kind, source.name) == ("document", "model")
+            output_source = plan.sources[key]["/payload/graph/output_bindings/hidden/0"]
+            assert (output_source.kind, output_source.name) == ("document", "model")
+            if key.step == "fit":
+                assert plan.sources[key]["/payload/graph/wires/1/source_node"].name == "fit"
+
+        snapshot = save(restore_scope(wired, promoted, ["/payload/output_bindings/hidden", "/payload/output_ports/1"]))
+        assert snapshot == wired
+        snapshot = save(restore_scope(before, wired, ["/payload/wires/0"]))
+        assert snapshot == before
+        snapshot = save(wire_files)
+        snapshot = save(output_files)
+        assert snapshot == promoted == _read(client)
+
+
 def test_unreadable_presentation_does_not_hide_the_authored_project(study):
     root, client = study
     before = _read(client)
