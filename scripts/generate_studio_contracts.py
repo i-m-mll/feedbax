@@ -437,6 +437,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectPatchBatch,
     StudioProjectFilePatch,
     StudioProjectRename,
+    StudioProjectReplay,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
@@ -515,6 +516,7 @@ AUTHORED_CONTRACT_MODELS = (
     StudioProjectPatchBatch,
     StudioProjectFilePatch,
     StudioProjectRename,
+    StudioProjectReplay,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )

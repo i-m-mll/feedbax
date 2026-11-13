@@ -29,6 +29,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
+    StudioProjectReplay,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
@@ -220,6 +221,15 @@ def patch_project(
 ) -> StudioProjectSnapshot:
     return _project_response(
         response, lambda: request.app.state.project_folders.patch(project_id, body)
+    )
+
+
+@router.post("/{project_id}/history/replay", response_model_exclude_unset=True)
+def replay_project(
+    project_id: ProjectName, body: StudioProjectReplay, request: Request, response: Response,
+) -> StudioProjectSnapshot:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.replay(project_id, body)
     )
 
 
