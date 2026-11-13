@@ -10,7 +10,7 @@ import pytest
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.compiler.model_document import lower_model_document
+from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
@@ -308,6 +308,77 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     (delay,) = [wire.recurrent_initializer for wire in resolved.wires if wire.temporality == "recurrent"]
     assert delay["shape"] == [controller["interior"]["components"]["cell"]["fields"]["hidden_size"]]
     assert delay["units"] == "1"
+
+
+def test_stored_equations_use_the_scalar_solver_and_free_boundary():
+    def leaf(type_, **fields):
+        return {"kind": "leaf", "name": type_, "type": f"feedbax.{type_}", "fields": fields}
+
+    model = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [_port("force", "force", shape=[])],
+            "outputs": [_port("position", "position", shape=[])],
+        },
+        "interior": {
+            "components": {"equations": {
+                "kind": "composite", "name": "Mass and spring",
+                "ports": {
+                    "inputs": [_port("input-force", "Force", shape=[])],
+                    "outputs": [_port("output-position", "Position", shape=[])],
+                    "physical": [{"id": "free", "name": "Free end", "type": "translational"}],
+                },
+                "interior": {
+                    "physical_domain": "translational",
+                    "components": {
+                        "wall": leaf("Ground"), "mass": leaf("Mass", mass=1.0),
+                        "spring": leaf("LinearSpring", stiffness=10.0),
+                        "act": leaf("ActuationInput"), "sense": leaf("SensorOutput"),
+                    },
+                    "connections": {
+                        "wall-flange": {"a": _end("wall", "flange"), "b": _end("spring", "flange_a")},
+                        "spring-flange": {"a": _end("spring", "flange_b"), "b": _end("mass", "flange")},
+                        "act-flange": {"a": _end("act", "flange"), "b": _end("mass", "flange")},
+                        "sense-flange": {"a": _end("sense", "flange"), "b": _end("mass", "flange")},
+                        "free": {"a": {"owner": "boundary", "port": "free"}, "b": _end("mass", "flange")},
+                    },
+                    "wires": {
+                        "drive": _wire({"owner": "inputs", "port": "input-force"}, _end("act", "u")),
+                        "read": _wire(_end("sense", "y"), {"owner": "outputs", "port": "output-position"}),
+                    },
+                },
+            }},
+            "wires": {
+                "force": _wire({"owner": "inputs", "port": "force"}, _end("equations", "input-force")),
+                "position": _wire(_end("equations", "output-position"), {"owner": "outputs", "port": "position"}),
+            },
+        },
+    }
+    registry = ComponentRegistry()
+    lowered = lower_model_document("model", ModelDocument.model_validate(model), registry)
+    assert lowered.graph.subgraphs["equations"].solver.dt == model["step_seconds"]
+    graph = compile_graph(
+        GraphDocument(graph=lowered.graph), registry,
+        input_prototypes={lowered.graph.input_bindings["force"]: jax.ShapeDtypeStruct((), jnp.float32)},
+    ).graph
+    outputs, _ = graph(
+        {"force": jnp.ones(4)}, graph.init_state(key=jax.random.key(1)),
+        key=jax.random.key(1), n_steps=4,
+    )
+    assert outputs["position"][-1] > 0
+    project = _model_project()
+    reaching = project["documents"]["reach-model"]["payload"]["interior"]
+    reaching["components"].update(model["interior"]["components"])
+    reaching["components"]["constant-force"] = leaf("Constant", value=1.0)
+    reaching["wires"]["equations-force"] = _wire(
+        _end("constant-force", "output"), _end("equations", "input-force"),
+    )
+    assert not compile_project(Project.model_validate(project)).diagnostics
+    interior = model["interior"]["components"]["equations"]["interior"]
+    interior["connections"].pop("act-flange")
+    with pytest.raises(ModelCompilationProblem) as exc:
+        lower_model_document("model", ModelDocument.model_validate(model), registry)
+    assert exc.value.address.composites == ("equations",)
 
 
 @pytest.mark.parametrize("grouped", [False, True])

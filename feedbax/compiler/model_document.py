@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, SolverConfigSpec
+from feedbax.contracts.acausal_interface import derive_acausal_interface, is_acausal_type
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
-from feedbax.contracts.model_address import FieldElement, ModelAddress, SignalSource
+from feedbax.contracts.model_address import FieldElement, ModelAddress, PhysicalEnd, SignalSource
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
@@ -101,18 +103,102 @@ class _Lower:
             units = "1"
         return _Signal(shape, component.fields.get("dtype", "float32"), units)
 
+    def equations(
+        self, interior: PhysicalInterior, ports: ModelPorts, path: tuple[str, ...],
+    ) -> AcausalGraphSpec:
+        nodes: dict[str, ComponentSpec] = {}
+        children: dict[str, AcausalGraphSpec] = {}
+        for name, component in interior.components.items():
+            self.remember(path, ("nodes", name), {"kind": "component", "id": name})
+            if component.kind == "composite":
+                if (
+                    not isinstance(component.interior, PhysicalInterior)
+                    or component.interior.physical_domain != interior.physical_domain
+                    or component.substeps != 1
+                    or component.ports.inputs or component.ports.outputs
+                ):
+                    raise self.problem(path, "component", "nested equations require the same physical domain and conserving ports", id=name)
+                children[name] = self.equations(component.interior, component.ports, (*path, name))
+                nodes[name] = ComponentSpec(type="feedbax.AcausalSystem")
+            else:
+                definition = self.components.get(component.type)
+                if definition is None or definition.domain != "feedbax.domain.acausal":
+                    raise self.problem(path, "component", "component is unavailable in equations", id=name)
+                if is_acausal_type(component.type, "BoundaryPort"):
+                    raise self.problem(path, "component", "declare conserving interfaces on the composite port list", id=name)
+                fields = dict(component.fields)
+                nodes[name] = ComponentSpec(type=component.type, revision=component.revision, params=fields)
+            if component.attachments.sources or component.attachments.sinks:
+                raise self.problem(path, "component", "equations port attachments require signal lowering", id=name)
+
+        boundary = {}
+        for index, port in enumerate(ports.physical):
+            name = _generated("physical", port.id)
+            end = {"owner": "boundary", "port": port.id}
+            if port.type != interior.physical_domain or name in nodes:
+                raise self.problem(path, "port", "conserving interface differs from the equations domain", end=end)
+            nodes[name] = ComponentSpec(type="feedbax.BoundaryPort", params={
+                "port_name": port.id, "order": index,
+            })
+            self.remember(path, ("nodes", name), {"kind": "port", "end": end})
+            boundary[port.id] = name
+
+        def endpoint(end: PhysicalEnd, key: str) -> tuple[str, str]:
+            if end.owner == "boundary":
+                if end.port not in boundary:
+                    raise self.problem(path, "physical_connection", "unknown conserving boundary port", id=key)
+                return boundary[end.port], "flange"
+            return end.component, end.port
+
+        connections = []
+        for key, connection in sorted(interior.connections.items()):
+            self.remember(path, ("connections", str(len(connections))), {"kind": "physical_connection", "id": key})
+            try:
+                connections.append(AcausalConnectionSpec.model_validate({
+                    "a": endpoint(connection.a, key), "b": endpoint(connection.b, key),
+                }))
+            except ModelCompilationProblem:
+                raise
+            except ValueError as error:
+                raise self.problem(path, "physical_connection", str(error), id=key) from error
+
+        if interior.attachments.sources or interior.attachments.sinks:
+            raise self.problem(path, "graph", "equations boundary attachments require signal lowering")
+        inputs = {port.id: index for index, port in enumerate(ports.inputs)}
+        outputs = {port.id: index for index, port in enumerate(ports.outputs)}
+        adapters: set[str] = set()
+        routed_ports: set[tuple[str, str]] = set()
+        for key, wire in sorted(interior.wires.items()):
+            source, target = wire.source, wire.target
+            if source.owner == "inputs" and target.owner == "component" and target.port == "u":
+                node_id, port_id, kind, order = target.component, source.port, "ActuationInput", inputs
+            elif target.owner == "outputs" and source.owner == "component" and source.port == "y":
+                node_id, port_id, kind, order = source.component, target.port, "SensorOutput", outputs
+            else:
+                raise self.problem(path, "wire", "equations signals connect boundary ports to solver adapters", id=key)
+            node = nodes.get(node_id)
+            if (
+                wire.attachments or node is None or not is_acausal_type(node.type, kind)
+                or port_id not in order or node_id in adapters or (kind, port_id) in routed_ports
+            ):
+                raise self.problem(path, "wire", "invalid or decorated equations signal adapter route", id=key)
+            adapters.add(node_id)
+            routed_ports.add((kind, port_id))
+            nodes[node_id] = node.model_copy(update={
+                "params": node.params | {"port_name": port_id, "order": order[port_id]},
+            })
+        for name, node in nodes.items():
+            if any(is_acausal_type(node.type, kind) for kind in ("ActuationInput", "SensorOutput")) and name not in adapters:
+                raise self.problem(path, "component", "solver adapter requires a boundary wire", id=name)
+        return AcausalGraphSpec(
+            physical_domain=interior.physical_domain, nodes=nodes, connections=connections,
+            subgraphs=children or None, solver=SolverConfigSpec(solver_type="euler", dt=self.model.step_seconds),
+        )
+
     def graph(
-        self, interior: GraphInterior | PhysicalInterior, ports: ModelPorts, path: tuple[str, ...],
+        self, interior: GraphInterior, ports: ModelPorts, path: tuple[str, ...],
         *, available: frozenset[str] = frozenset(),
     ) -> GraphSpec:
-        if isinstance(interior, PhysicalInterior):
-            if interior.kind == "mechanics" and ports.physical:
-                port = ports.physical[0]
-                raise self.problem(
-                    path, "port", "Mechanics physical interfaces are unavailable for this execution",
-                    end={"owner": "boundary", "port": port.id},
-                )
-            raise self.problem(path, "graph", "this physical interior has no qualified model-document lowering")
         nodes, subgraphs = {}, {}
         input_bindings, output_bindings = {}, {}
         wires = []
@@ -130,15 +216,44 @@ class _Lower:
         for key, component in interior.components.items():
             self.remember(path, ("nodes", key), {"kind": "component", "id": key})
             if component.kind == "composite":
+                scope = (*path, key)
+                if isinstance(component.interior, PhysicalInterior) and component.interior.kind == "mechanics":
+                    if component.ports.physical:
+                        raise self.problem(scope, "port", "Mechanics physical interfaces are unavailable for this execution",
+                                           end={"owner": "boundary", "port": component.ports.physical[0].id})
+                    raise self.problem(scope, "graph", "Mechanics needs a qualified model-document lowering")
                 if component.substeps != 1:
-                    raise self.problem(path, "component", "substeps require qualified mechanics lowering", id=key)
-                child = self.graph(component.interior, component.ports, (*path, key))
+                    raise self.problem(path, "component", "the composite solver supports one step per model step", id=key)
                 if component.attachments.sources or component.attachments.sinks:
                     raise self.problem(path, "component", "composite port attachments need owner lowering", id=key)
+                if isinstance(component.interior, PhysicalInterior):
+                    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+
+                    child = self.equations(component.interior, component.ports, scope)
+                    report = compile_acausal_authoring_report(
+                        child, node_path=list(scope), component_registry=self.components,
+                    )
+                    if issue := next((item for item in report.diagnostics if item.severity == "error"), None):
+                        detail = issue.message
+                        if issue.counts:
+                            detail += " (" + ", ".join(f"{name}={value}" for name, value in issue.counts.items()) + ")"
+                        raise self.problem(scope, "graph", detail)
+                    interface = derive_acausal_interface(child)
+                    for direction, declared, actual in (
+                        ("inputs", component.ports.inputs, interface.input_ports),
+                        ("outputs", component.ports.outputs, interface.output_ports),
+                    ):
+                        for port in declared:
+                            if port.id not in actual:
+                                raise self.problem(scope, "port", "equations port requires a solver adapter route",
+                                                   end={"owner": direction, "port": port.id})
+                    type_id, input_ports, output_ports = "feedbax.AcausalSystem", list(interface.input_ports), list(interface.output_ports)
+                else:
+                    child = self.graph(component.interior, component.ports, scope)
+                    type_id, input_ports, output_ports = "feedbax.Subgraph", child.input_ports, child.output_ports
                 subgraphs[key] = child
                 nodes[key] = ComponentSpec(
-                    type="feedbax.Subgraph", params={},
-                    input_ports=child.input_ports, output_ports=child.output_ports,
+                    type=type_id, params={}, input_ports=input_ports, output_ports=output_ports,
                 )
             else:
                 definition = self.components.get(component.type)
