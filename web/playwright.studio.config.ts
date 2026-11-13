@@ -11,6 +11,10 @@ const ownsHome = process.env.FEEDBAX_STUDIO_TEST_HOME === undefined;
 const home = process.env.FEEDBAX_STUDIO_TEST_HOME ??= join(tmpdir(), `feedbax-studio-test-${randomUUID()}`);
 const preview = process.env.FEEDBAX_STUDIO_E2E_PREVIEW === '1' ? ' --preview' : '';
 const dispose = ownsHome ? ' --remove-test-home' : '';
+const seriesFixture = process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1';
+const launcher = seriesFixture
+  ? 'cd .. && exec uv run --offline --no-sync python -B -m web.e2e.studio.fixtures.evaluate_series_backend'
+  : 'exec ../scripts/dev.sh';
 
 export default defineConfig({
   testDir: './e2e/studio',
@@ -27,7 +31,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `exec ../scripts/dev.sh --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}${dispose}`,
+    command: `${launcher} --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}${dispose}`,
     env: { FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid) },
     url: `${baseURL}/api/provider/health`,
     reuseExistingServer: false,

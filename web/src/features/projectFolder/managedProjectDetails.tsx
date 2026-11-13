@@ -299,7 +299,8 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const jobId = result?.job_id;
   const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
   const [chosenCheckpoint, setCheckpoint] = useState<{ jobId: string; coordinate: number }>();
-  const checkpoint = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : coordinates?.[0];
+  const chosen = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : undefined;
+  const checkpoint = chosen !== undefined && coordinates?.includes(chosen) ? chosen : coordinates?.[0];
   const [chosenTrial, setTrial] = useState<{ jobId: string; trial: string }>();
   const trial = jobId && (chosenTrial?.jobId === jobId ? chosenTrial.trial : evaluation?.trials[0]);
   const replay = useQuery({
@@ -308,13 +309,13 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
       if (!evaluation || !jobId || !trial) throw new Error('Select a saved Evaluate trial.');
       return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint }, signal);
     },
-    enabled: visible && !!trial,
+    enabled: visible && !!trial && (!evaluation?.checkpoint_series || checkpoint !== undefined),
     retry: false,
   });
   const replayDrawing = useMemo(() => replay.data && evaluationScene(replay.data), [replay.data]);
   const view: SceneView = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
-    : replayDrawing ?? { kind: trial ? 'loading' : 'empty' };
+    : replayDrawing ?? { kind: trial && (!evaluation?.checkpoint_series || checkpoint !== undefined) ? 'loading' : 'empty' };
   const timeScope = JSON.stringify([jobId, trial, checkpoint]);
   const [clock, setClock] = useState<{ scope: string; time: number }>();
   const [speed, setSpeed] = useState(1);
@@ -327,16 +328,19 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
       setClock(undefined);
     },
   } : undefined;
+  const chooseCheckpoint = (coordinate: number) => {
+    if (jobId && coordinates?.includes(coordinate)) {
+      setCheckpoint({ jobId, coordinate });
+      setClock(undefined);
+    }
+  };
   const checkpoints = jobId && coordinates && coordinates.length > 1 && checkpoint !== undefined ? {
     choices: coordinates,
     selected: checkpoint,
-    onSelect: (coordinate: number) => {
-      setCheckpoint({ jobId, coordinate });
-      setClock(undefined);
-    },
+    onSelect: chooseCheckpoint,
   } : undefined;
   return {
-    view, time, trials, checkpoints,
+    view, time, trials, checkpoints, chooseCheckpoint,
     clock: visible && view.kind === 'replay' && <SceneClockControls key={timeScope} timeline={sceneTimeline(view)} time={time}
       speed={speed} onSpeedChange={setSpeed} onTimeChange={(value) => setClock({ scope: timeScope, time: value })} />,
   };

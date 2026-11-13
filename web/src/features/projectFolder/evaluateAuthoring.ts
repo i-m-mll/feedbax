@@ -1,12 +1,72 @@
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
-import { StepReferenceSchema, type Step, type StepReference, type StudioSavedTrainRuns, type SubsetTerms } from '@/generated/studioContracts';
+import {
+  BatchCheckpointSchema, StepReferenceSchema, UpdateRuleSchema,
+  type BatchCheckpoint, type CheckpointRule, type Step, type StepReference, type StudioSavedTrainRuns,
+  type SubsetTerms, type UpdateRule,
+} from '@/generated/studioContracts';
 import { trainSourceSubset } from './createCheckpointTrain';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 
 const rollout = 'feedbax.rollout';
 export const checkpointLabel = (update: number) => `Checkpoint at update ${update}`;
+
+export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule;
+
+export function editableCheckpointRule(rule: CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
+  if (rule === 'last') return rule;
+  const point = BatchCheckpointSchema.safeParse(rule);
+  if (point.success) return point.data;
+  const series = UpdateRuleSchema.safeParse(rule);
+  return series.success ? series.data : undefined;
+}
+
+export function formatCheckpointRule(rule: EditableCheckpointRule): string {
+  if (rule === 'last') return rule;
+  if (Array.isArray(rule)) return rule.map(({ at }) => at).join(', ');
+  if ('at' in rule) return `at ${rule.at}`;
+  return [
+    `every ${rule.every}`,
+    rule.from == null ? '' : `from ${rule.from}`,
+    rule.through == null ? '' : `through ${rule.through}`,
+  ].filter(Boolean).join(' ');
+}
+
+export function parseCheckpointRule(text: string): { rule: EditableCheckpointRule } | { reason: string } {
+  const shorthand = text.trim().toLowerCase();
+  if (shorthand === 'last') return { rule: 'last' };
+  const point = /^at\s+(\d+)$/.exec(shorthand);
+  if (point) {
+    const parsed = BatchCheckpointSchema.safeParse({ at: Number(point[1]) });
+    if (parsed.success) return { rule: parsed.data };
+    return { reason: 'Enter a whole update number.' };
+  }
+  const cadence = /^every\s+(\d+)(?:\s+from\s+(\d+))?(?:\s+through\s+(\d+))?$/.exec(shorthand);
+  if (cadence) {
+    const [, every, from, through] = cadence;
+    const rule = {
+      every: Number(every),
+      ...(from !== undefined && { from: Number(from) }),
+      ...(through !== undefined && { through: Number(through) }),
+    };
+    const parsed = UpdateRuleSchema.safeParse(rule);
+    if (!parsed.success) return { reason: 'Use positive whole update numbers.' };
+    if (rule.from !== undefined && rule.through !== undefined && rule.from > rule.through) {
+      return { reason: 'The last update must be at or after the first.' };
+    }
+    return { rule: parsed.data };
+  }
+  if (/^\d+(?:\s*,\s*\d+)*$/.test(shorthand)) {
+    const updates = shorthand.split(',').map(Number);
+    const parsed = UpdateRuleSchema.safeParse(updates.map((at) => ({ at })));
+    if (!parsed.success || new Set(updates).size !== updates.length) {
+      return { reason: 'Enter 1 to 64 distinct positive whole update numbers.' };
+    }
+    return { rule: parsed.data };
+  }
+  return { reason: 'Use “last”, “at 7”, “7, 14, 21”, or “every 7”.' };
+}
 
 export type TrialSet =
   | { kind: 'every_condition' }
@@ -27,7 +87,8 @@ export function exactCheckpoint(step: Step | undefined): number | undefined {
   const subject = StepReferenceSchema.safeParse(step?.inputs?.subject);
   if (!subject.success) return undefined;
   const checkpoint = subject.data.checkpoint;
-  return checkpoint && typeof checkpoint === 'object' && 'at' in checkpoint ? checkpoint.at : undefined;
+  return checkpoint && typeof checkpoint === 'object' && !Array.isArray(checkpoint) && 'at' in checkpoint
+    ? checkpoint.at : undefined;
 }
 
 export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined, members: readonly PlanRunView[]): TrialDomain | undefined {
@@ -56,9 +117,7 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
   const parsed = StepReferenceSchema.safeParse(step.inputs?.subject);
   if (!parsed.success) return undefined;
   const subject = parsed.data;
-  const checkpoint = subject.checkpoint;
-  if (!(checkpoint === 'last' || checkpoint && typeof checkpoint === 'object' && 'at' in checkpoint) ||
-      subject.row != null || subject.variants != null) return undefined;
+  if (editableCheckpointRule(subject.checkpoint) === undefined || subject.row != null || subject.variants != null) return undefined;
   const terms = subject.where ?? {};
   if ('subset' in terms || terms.best || terms.when) return undefined;
   const sweep = step.sweep;

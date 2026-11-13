@@ -125,12 +125,24 @@ export interface StudioSavedEvaluationReplayRequest {
   checkpoint?: number | null;
 }
 
+export interface StudioEvaluationCheckpointGap {
+  update: number;
+  reason: "checkpoint_unavailable";
+}
+
+export interface StudioEvaluationCheckpointSeries {
+  subject: StudioSavedTrainKey;
+  requested: number[];
+}
+
 export interface StudioSavedEvaluationResult {
   job_id: string;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   size_bytes: number;
   checkpoint_sources?: StudioTrainCheckpointSource[] | null;
+  checkpoint_gaps?: StudioEvaluationCheckpointGap[] | null;
+  placement?: "live" | "ordinary" | null;
 }
 
 export interface StudioSavedEvaluationRow {
@@ -141,6 +153,7 @@ export interface StudioSavedEvaluationRow {
   can_run: boolean;
   trials: string[];
   result: StudioSavedEvaluationResult | null;
+  checkpoint_series?: StudioEvaluationCheckpointSeries | null;
 }
 
 export interface StudioSavedTrainAttempt {
@@ -3903,6 +3916,7 @@ export type StudioProjectWindowMapInput = {
   "id": string;
   "source_step_id": string;
   "subset": StudioProjectWindowMapSubset | null;
+  "checkpoint"?: CheckpointRule | null;
 };
 
 export type StudioProjectWindowMapProblem = {
@@ -4561,6 +4575,24 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
 
+export const StudioEvaluationCheckpointGapSchema: z.ZodType<StudioEvaluationCheckpointGap> = z.lazy(() =>
+  z
+    .object({
+      "update": z.number().int().safe().gt(0),
+      "reason": z.literal("checkpoint_unavailable"),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpointGap>;
+
+export const StudioEvaluationCheckpointSeriesSchema: z.ZodType<StudioEvaluationCheckpointSeries> = z.lazy(() =>
+  z
+    .object({
+      "subject": StudioSavedTrainKeySchema,
+      "requested": z.array(z.number().int().safe()),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpointSeries>;
+
 export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationResult> = z.lazy(() =>
   z
     .object({
@@ -4569,6 +4601,8 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "size_bytes": z.number().int().safe().gte(0),
       "checkpoint_sources": z.array(StudioTrainCheckpointSourceSchema).nullable().optional(),
+      "checkpoint_gaps": z.array(StudioEvaluationCheckpointGapSchema).nullable().optional(),
+      "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationResult>;
@@ -4583,6 +4617,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "can_run": z.boolean(),
       "trials": z.array(z.string()),
       "result": StudioSavedEvaluationResultSchema.nullable(),
+      "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationRow>;
@@ -10663,6 +10698,7 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
     "id": z.string(),
     "source_step_id": z.string(),
     "subset": z.union([StudioProjectWindowMapSubsetSchema, z.null()]),
+    "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
@@ -11121,6 +11157,8 @@ export const contractSchemas = {
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
   StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequestSchema,
+  StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGapSchema,
+  StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeriesSchema,
   StudioSavedEvaluationResult: StudioSavedEvaluationResultSchema,
   StudioSavedEvaluationRow: StudioSavedEvaluationRowSchema,
   StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
@@ -11260,6 +11298,8 @@ export interface ContractTypeMap {
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;
   StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequest;
+  StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGap;
+  StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeries;
   StudioSavedEvaluationResult: StudioSavedEvaluationResult;
   StudioSavedEvaluationRow: StudioSavedEvaluationRow;
   StudioSavedTrainAttempt: StudioSavedTrainAttempt;

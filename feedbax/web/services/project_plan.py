@@ -28,6 +28,7 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapRow,
     StudioProjectWindowMapStep,
     StudioProjectWindowMapSubset,
+    StudioEvaluationCheckpointSeries,
     StudioSavedEvaluationReplayRequest,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
@@ -40,7 +41,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project_inputs import InputBinding, StepReference
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.request_refs import BatchSetMember
+from feedbax.contracts.request_refs import BatchSetMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.project_plan import (
     ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey,
 )
@@ -218,6 +219,7 @@ class ProjectPlanRead:
                     yield StudioProjectWindowMapInput(
                         id=input_id,
                         source_step_id=reference.step,
+                        checkpoint=reference.checkpoint if step.kind == "evaluate" and role == "subject" else None,
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.members), total=subset.candidates,
                             document=subset.document,
@@ -425,6 +427,14 @@ def _evaluation_row(
     settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts, reader: PlanJobReader,
 ) -> tuple[StudioSavedEvaluationRow, StudioProjectWindowMapProblem | None]:
     key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
+    series = None
+    if (planned := run.inputs.get("subject")) is not None and isinstance(
+        reference := planned.member.reference, ProductRef,
+    ) and isinstance(reference.select, UpdateSeriesMember):
+        series = StudioEvaluationCheckpointSeries(
+            subject=StudioSavedTrainKey.model_validate(planned.producer, from_attributes=True),
+            requested=list(reference.select.updates),
+        )
     trials = []
     problem = None
     try:
@@ -453,12 +463,14 @@ def _evaluation_row(
             job_id=success.job_id, receipt=success.successful_receipt,
             checkpoint_source=success.checkpoint_source, size_bytes=success.output_size_bytes,
             checkpoint_sources=list(success.checkpoint_sources) or None,
+            checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
+            placement=success.evaluation_placement if series is not None else None,
         )
     status, reason = saved_request_status(attempts, success=success, problem=problem.detail if problem else None)
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
-        can_run=problem is None, trials=trials, result=result,
+        can_run=problem is None, trials=trials, result=result, checkpoint_series=series,
     ), problem
 
 

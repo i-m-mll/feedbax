@@ -231,8 +231,135 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
 }
 
 test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by default'}`, async ({ page, request }, info) => {
+  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal application backend');
   test.setTimeout(60_000);
   await runSavedEvaluation(page, request, info);
+});
+
+test('authors checkpoint rules and replays covered updates from Results', async ({ page, request }, info) => {
+  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
+  test.setTimeout(54_000);
+  const files = JSON.parse(await runProjectFixture(fixture, 'series-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const runsPath = projectPath + '/train-runs';
+  async function plan(revision: string) {
+    const response = await request.get(runsPath, { params: { revision, window_map: true } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  }
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await chooseStep(page, 'train');
+  const [train] = await submit(page, runsPath);
+  expect(train.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 19_000 });
+  const trainRequest = (await plan(snapshot.revision)).rows.find(({ key }) => key.step === 'train')!.request_id;
+  const creating = posted(page, projectPath + '/files');
+  await page.getByRole('article', { name: 'Train train', exact: true })
+    .getByRole('button', { name: 'New Step train', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Evaluate' }).click();
+  const created = await creating;
+  expect(created.status(), await created.text()).toBe(201);
+  const { snapshot: initial } = await created.json() as StudioProjectDocument;
+  const field = page.getByRole('textbox', { name: 'Checkpoints', exact: true });
+  await expect(field).toHaveValue('last');
+  async function saveRule(value: string) {
+    await field.fill(value);
+    const saving = page.waitForResponse((response) =>
+      response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+    await page.getByRole('button', { name: 'Apply checkpoints' }).click();
+    const response = await saving;
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  const cadence = await saveRule('every 2');
+  expect(cadence.project.steps.evaluate.inputs?.subject).toMatchObject({ step: 'train', checkpoint: { every: 2 } });
+  const cadencePlan = await plan(cadence.revision);
+  const [planned] = cadencePlan.window_map!.evaluations!;
+  expect(planned.checkpoint_series?.requested).toEqual([2, 4]);
+  await page.reload();
+  await chooseStep(page, 'evaluate');
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await expect(field).toHaveValue('every 2');
+  await field.fill('2, 2');
+  await expect(page.getByRole('button', { name: 'Apply checkpoints' })).toBeDisabled();
+  const explicit = await saveRule('4, 1, 2');
+  expect(explicit.project.steps.evaluate.inputs?.subject).toMatchObject({
+    step: 'train', checkpoint: [{ at: 4 }, { at: 1 }, { at: 2 }],
+  });
+  const revised = await plan(explicit.revision);
+  const [series] = revised.window_map!.evaluations!;
+  expect(series.request_id).not.toBe(planned.request_id);
+  expect(series.checkpoint_series?.requested).toEqual([4, 1, 2]);
+  expect(revised.rows.find(({ key }) => key.step === 'train')!.request_id).toBe(trainRequest);
+  const [evaluate] = await submit(page, runsPath);
+  expect(evaluate.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  const [completed] = (await plan(explicit.revision)).window_map!.evaluations!;
+  expect(completed.result).toMatchObject({
+    job_id: evaluate.job_id, placement: 'ordinary',
+    checkpoint_sources: [4, 2].map((completed_updates) => ({ job_id: train.job_id, completed_updates })),
+    checkpoint_gaps: [{ update: 1, reason: 'checkpoint_unavailable' }],
+  });
+  await tab(page, 'Results').click();
+  const results = page.getByRole('table', { name: 'Checkpoint results' });
+  await expect(results.getByRole('rowheader')).toHaveText(['4', '1', '2']);
+  await expect(results.getByRole('row').filter({ has: page.getByRole('rowheader', { name: '1', exact: true }) }))
+    .toContainText('Checkpoint unavailable');
+  await expect(page.getByText('From saved checkpoints', { exact: true })).toBeVisible();
+  await captureStudioWindow(page, info, 'checkpoint-results');
+  const replay = posted(page, projectPath + '/evaluate-replay');
+  await results.getByRole('button', { name: 'Replay update 2' }).click();
+  const replayed = await replay;
+  expect(replayed.ok(), await replayed.text()).toBe(true);
+  expect(replayed.request().postDataJSON()).toMatchObject({ checkpoint: 2, job_id: evaluate.job_id });
+  await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
+  await expect(footer(page).getByRole('slider', { name: 'Playback Position' })).toBeVisible();
+  await info.attach('checkpoint-series-lineage', {
+    body: JSON.stringify({ train, planned, series, completed }),
+    contentType: 'application/json',
+  });
+});
+
+test('edits the checkpoint rule in the selected authored variant', async ({ page, request }, info) => {
+  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
+  const project = JSON.parse(await runProjectFixture(fixture, 'seed-series-variants', String(info.config.metadata.home)));
+  const projectPath = `/api/projects/${project}`;
+  const host = await request.get('/api/jobs');
+  expect(host.ok(), await host.text()).toBe(true);
+  const initial = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+  async function plan(revision: string) {
+    const response = await request.get(projectPath + '/train-runs', { params: { revision, window_map: true } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  }
+  const before = await plan(initial.revision);
+  await page.goto(`/?project=${project}`);
+  await chooseStep(page, 'evaluate');
+  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('comparison');
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
+  await expect(field).toHaveValue('last');
+  const saving = page.waitForResponse((response) =>
+    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+  await field.fill('every 2 from 3');
+  await drawer.getByRole('button', { name: 'Apply checkpoints' }).click();
+  const response = await saving;
+  expect(response.ok(), await response.text()).toBe(true);
+  const after = await response.json() as StudioProjectSnapshot;
+  expect(after.project.steps.evaluate.inputs?.subject).toMatchObject({ checkpoint: 'last' });
+  expect(after.project.sweep?.rows?.comparison.patches?.['steps.evaluate.inputs.subject.checkpoint'])
+    .toMatchObject({ value: { every: 2, from: 3 } });
+  const revised = await plan(after.revision);
+  const [base, comparison] = ['base', 'comparison'].map((variant) =>
+    revised.window_map!.evaluations!.find(({ key }) => key.variant === variant)!);
+  expect(base.request_id).toBe(before.window_map!.evaluations!.find(({ key }) => key.variant === 'base')!.request_id);
+  expect(comparison.checkpoint_series?.requested).toEqual([4]);
+  expect(revised.rows.map(({ request_id }) => request_id)).toEqual(before.rows.map(({ request_id }) => request_id));
+  await expect(field).toHaveValue('every 2 from 3');
+  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('base');
+  await expect(field).toHaveValue('last');
 });
 
 test('authors and replays Evaluate from the selected stopped Train checkpoint', async ({ page, request }, info) => {
