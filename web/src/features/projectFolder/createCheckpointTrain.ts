@@ -5,8 +5,7 @@ import type { StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContra
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 
-export async function createCheckpointTrain(
-  editor: ProjectEditController,
+export function trainSourceSubset(
   source: PipelineMapStepSource,
   view: PlanView,
   projection: StudioSavedTrainRuns,
@@ -14,9 +13,10 @@ export async function createCheckpointTrain(
   const { stepId, selection } = source;
   const step = view.steps.find(({ id }) => id === stepId);
   if (step?.kind !== 'train' || !step.runs.length) throw new Error('Choose a runnable Train step.');
+  const members = selection ? selectedRuns(step, selection) : step.runs;
   let where: SubsetTerms | undefined;
   if (selection) {
-    const selected = new Set(selectedRuns(step, selection).map(({ id }) => id));
+    const selected = new Set(members.map(({ id }) => id));
     if (!selected.size) throw new ProjectEditConflictError();
     if (selection.kind === 'values') {
       where = { axes: Object.fromEntries(selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])) };
@@ -29,6 +29,17 @@ export async function createCheckpointTrain(
       where = { rows: [...rows] };
     }
   }
+  return { step, members, where };
+}
+
+export async function createCheckpointTrain(
+  editor: ProjectEditController,
+  source: PipelineMapStepSource,
+  view: PlanView,
+  projection: StudioSavedTrainRuns,
+) {
+  const { step, where } = trainSourceSubset(source, view, projection);
+  const stepId = step.id;
   const name = `${stepId}-continuation`;
   const stepIds = new Set(Object.keys(editor.getSnapshot().saved.project.steps ?? {}));
   const inheritsInitialization = step.inputs.some(({ id }) => id === 'checkpoint');

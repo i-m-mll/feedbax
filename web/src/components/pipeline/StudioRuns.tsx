@@ -163,12 +163,8 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
   );
 }
 
-export function StudioRunDetails({ plan, step, state, onSelectionChange }: RunSelectionProps & { plan: PlanView }) {
-  const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
+export function StudioRunDetails({ step, state }: Pick<RunSelectionProps, "step" | "state">) {
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
-  const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
-  const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
-  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   if (!selected.length) return null;
   const single = selected.length === 1;
   const counts = new Map<PlanRunView["status"], number>();
@@ -188,8 +184,6 @@ export function StudioRunDetails({ plan, step, state, onSelectionChange }: RunSe
     {reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
     </ul>}
-    <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={single}
-      onChoose={(id) => onSelectionChange(selectStep(state, id))} />
   </section>;
 }
 
@@ -219,6 +213,10 @@ export function StudioRunControls({ commands, pivotCommand, pivotActive, reason 
 function RunsContent({ plan, step, state, onSelectionChange, pivotActive }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
+  const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
+  const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
+  const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
+  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const selection = { step, state, onSelectionChange };
   return <div className="flex h-full min-h-0 flex-col">
     {step.sweeps.length > 0 && <div className="flex max-h-28 flex-wrap items-baseline justify-between gap-2 overflow-auto border-b border-shell-divider px-2 py-1 text-xs">
@@ -230,6 +228,10 @@ function RunsContent({ plan, step, state, onSelectionChange, pivotActive }: Stud
         ? <StudioRunPivot {...selection} rows={step.runs} related={related} />
         : <StudioRunTable {...selection} rows={step.runs} related={related} fillSlot />}
     </div>
+    {(upstream.size > 0 || downstream.size > 0) && <div className="max-h-36 shrink-0 overflow-auto px-2 pb-2 text-sm">
+      <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={selected.length === 1}
+        onChoose={(id) => onSelectionChange(selectStep(state, id))} />
+    </div>}
   </div>;
 }
 

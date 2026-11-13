@@ -56,7 +56,8 @@ def saved_train_runs(
     window_map: bool = False,
 ) -> StudioSavedTrainRuns:
     def read() -> StudioSavedTrainRuns:
-        view = request.app.state.project_plan.read(project_id, revision=revision)
+        service = request.app.state.project_plan
+        view = service.read(project_id, revision=revision)
         result = StudioSavedTrainRuns(
             revision=view.settled.revision,
             rows=[
@@ -79,7 +80,7 @@ def saved_train_runs(
             ],
         )
         if window_map:
-            result.window_map = view.window_map()
+            result.window_map = service.window_map(view)
         return result
 
     try:

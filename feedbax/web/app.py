@@ -67,7 +67,7 @@ def create_app(
         )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
-            enable_evaluation_candidate=enable_evaluation_candidate,
+            enable_evaluation_candidate=app.state.enable_evaluation_candidate,
         )
         app.state.project_plan = ProjectPlanService(app.state.project_folders, app.state.job_service)
         if desktop_job_root is None:
@@ -105,6 +105,7 @@ def create_app(
         description="API for Feedbax model construction and training",
         lifespan=_lifespan,
     )
+    app.state.enable_evaluation_candidate = enable_evaluation_candidate
     app.state.project_folders = ProjectFolderService(project_root)
 
     app.add_middleware(

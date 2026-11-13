@@ -916,6 +916,11 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     step_file = root / "steps/train.json"
     assert json.loads(step_file.read_bytes()) == train["step"]
 
+    evaluate = {"kind": "step", "id": "evaluate", "step": {"kind": "evaluate", "base": {"inline": {}}}}
+    held = client.post(url, json={"revision": step_revision["revision"], "file": evaluate})
+    assert held.status_code == 422 and held.json()["detail"] == "Evaluate activation is held."
+    assert not (root / "steps/evaluate.json").exists()
+
     task = {"kind": "document", "id": "task", "document": {
         "schema": "feedbax.spec.task", "payload": {"type": "SimpleReaches", "params": {"n_steps": 100}},
     }}

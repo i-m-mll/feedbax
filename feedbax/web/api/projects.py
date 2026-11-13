@@ -350,6 +350,11 @@ def rename_project(
 def create_project_file(
     project_id: ProjectName, body: StudioProjectCreateFile, request: Request, response: Response
 ) -> StudioProjectDocument:
+    if (
+        body.file.kind == "step" and body.file.step.kind == "evaluate"
+        and not request.app.state.enable_evaluation_candidate
+    ):
+        raise HTTPException(422, detail="Evaluate activation is held.", headers=_NO_STORE)
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)
     )

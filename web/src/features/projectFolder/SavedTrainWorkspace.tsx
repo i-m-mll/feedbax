@@ -21,7 +21,7 @@ import {
   projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
 import type {
-  PresentationDocument, PresentationPosition, StudioActivityJob, StudioProjectWindowMapProblem, StudioSavedTrainRuns,
+  PresentationDocument, PresentationPosition, ProjectValueEdit, StudioActivityJob, StudioProjectWindowMapProblem, StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -31,11 +31,13 @@ import { useModelSelectionStore } from './model/modelSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
+import { createEvaluation, managedTrialDomain, ordinaryEvaluation } from './evaluateAuthoring';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { problemReason, problemTarget, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
+import { StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, TrialTaskPicker, useTrialAuthoring } from './StudioTrialAuthoring';
 import { useManagedAnalyze } from './useManagedAnalyze';
@@ -163,6 +165,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
   const [firstStepRevision, setFirstStepRevision] = useState<string>();
+  const [trainStepChoices, setTrainStepChoices] = useState<{
+    source: PipelineMapStepSource; scope: ProjectWindowCommandScope; revision: string;
+  }>();
   const [reportChoices, setReportChoices] = useState<{ revision: string; figures: ReportFigureSource[] }>();
   const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
@@ -257,7 +262,23 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     ?? (sceneRows.length === 1 ? sceneRows[0] : undefined);
   const runnableTrainRows = runRows.filter(({ status }) => status !== 'cannot_run');
   const runnableRows = state.selection
-    ? [...runnableTrainRows, ...evaluationRows.filter(({ can_run }) => can_run)] : runnableTrainRows;
+    ? [...runnableTrainRows, ...evaluationRows.filter(({ can_run, status }) => can_run &&
+      (status === 'not_run' || status === 'stale' || status === 'failed' ||
+        status === 'stopped' || status === 'interrupted' || status === 'corrupt'))] : runnableTrainRows;
+  const evaluationAuthoring = wholeStep && !saved.project.sweep && authored && ordinaryEvaluation(authored);
+  const evaluationSource = evaluationAuthoring && plan.steps.find(({ id }) => id === evaluationAuthoring.subject.step);
+  const authoredMap = projection.data?.window_map;
+  const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
+    ?.inputs.find(({ id }) => id === 'subject');
+  const subjectSubset = subject?.subset;
+  const subjectIds = subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
+  const evaluationEditor = evaluationSource && evaluationAuthoring && authoredMap?.rows.some(({ key, evaluation_conditions }) =>
+    key.step === evaluationSource.id && key.variant === variant && evaluation_conditions != null)
+    ? {
+      authored: evaluationAuthoring, source: evaluationSource,
+      domain: managedTrialDomain(projection.data, subjectIds ? evaluationSource.runs.filter(({ id }) => subjectIds.has(id))
+        : evaluationAuthoring.subject.where == null ? evaluationSource.runs : []),
+    } : undefined;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
   const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
@@ -491,6 +512,30 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     });
   }
 
+  function chooseTrainSuccessor(kind: 'train' | 'evaluate') {
+    const choice = trainStepChoices;
+    if (!choice || choice.revision !== saved.revision || !ready) return;
+    setTrainStepChoices(undefined);
+    void perform(async () => {
+      if (kind === 'train') await onNewStep?.(choice.source, choice.scope);
+      else if (choice.scope.projection) {
+        const id = await createEvaluation(editor, choice.source, choice.scope.plan, choice.scope.projection);
+        choice.scope.selectCreatedStep(id);
+      }
+    });
+  }
+
+  function editEvaluation(name: string, patch: ProjectValueEdit) {
+    if (!step || !evaluationEditor || !ready) return;
+    const source = evaluationEditor.source.id;
+    void perform(async () => {
+      editor.editFiles(name, [{ address: { kind: 'step', id: step.id }, patches: [patch] }], {
+        reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }],
+      });
+      await editor.flush();
+    });
+  }
+
   function chooseReportFigure(revision: string, figure: ReportFigureSource) {
     setReportChoices(undefined);
     void perform(async () => {
@@ -539,7 +584,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     if (!onNewStep || sourceStep?.kind !== 'train') return undefined;
     const runs = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
     const runnable = runs.some(({ status }) => status !== 'cannot_run');
-    return bindStudioCommand('newStep', () => { void perform(async () => { await onNewStep(source, commandScope); }); },
+    return bindStudioCommand('newStep', () => {
+      if (managedTrialDomain(data, runs)) setTrainStepChoices({ source, scope: commandScope, revision: saved.revision });
+      else void perform(async () => { await onNewStep(source, commandScope); });
+    },
       { enabled: canAuthorContinuation && !busy && runnable, subject });
   }
 
@@ -647,6 +695,17 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             {trainName}
           </button>
         </Dialog>}
+        {trainStepChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('newStep')}
+          onClose={() => setTrainStepChoices(undefined)} manageFocus
+          panelClassName="grid w-[min(20rem,90vw)] gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
+          {(['train', 'evaluate'] as const).map((kind) => {
+            const { Icon, name, tint } = studioStep(kind);
+            return <button key={kind} type="button" className={`${control} flex items-center gap-2 text-sm`}
+              onClick={() => chooseTrainSuccessor(kind)}>
+              <Icon size={16} aria-hidden="true" style={{ color: tint }} />{name}
+            </button>;
+          })}
+        </Dialog>}
         {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)} manageFocus
           panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
           <button type="button" className={`${control} justify-self-end`} data-dialog-autofocus onClick={() => setSweepStep(undefined)}>{studioName('close')}</button>
@@ -747,9 +806,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
                   {subset && <dd className="text-shell-muted">{[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}</dd>}
                 </div>)}</dl>
               </section>}
+              {evaluationEditor && projection.data && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
+                authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
+                source={evaluationEditor.source} projection={projection.data} domain={evaluationEditor.domain}
+                disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
+                onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation} />}
             </div> : undefined,
             inspector: selectedRuns(step, state.selection).length > 0
-              ? <StudioRunDetails plan={plan} {...runSelection} /> : undefined,
+              ? <StudioRunDetails step={step} state={state} /> : undefined,
             body: withProblem(<StudioErrorBoundary region={studioName('runs')}>
               <StudioRuns plan={plan} {...runSelection}
                 region={step.kind === 'train' || step.runs.length > 0

@@ -84,20 +84,6 @@ def walkthrough_files():
     return [*documents, {"kind": "step", "id": "train", "step": project["steps"]["train"]}]
 
 
-def save_walkthrough_conditions(home: str, project_id: str):
-    folders = ProjectFolderService(AppPaths.resolve(instance_root=Path(home)).web / "projects")
-    current = folders.open(project_id)
-    baseline = _evaluation_step()
-    heavy = _evaluation_step(mass=2)
-    steps = {"baseline": baseline, "heavy": heavy}
-    files = dump_text_project(Project.model_validate({"steps": steps}), current.configuration)
-    for name, data in files.items():
-        if name.startswith("steps/"):
-            with (folders.root / project_id / name).open("xb") as stream:
-                stream.write(data)
-    return {"revision": folders.open(project_id).snapshot.revision, "steps": list(steps)}
-
-
 def observe(home: str, project: str, revision: str, trial_index: str):
     paths = AppPaths.resolve(instance_root=Path(home))
     folders = ProjectFolderService(paths.web / "projects")
@@ -173,5 +159,4 @@ if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
         "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
-        "save-walkthrough-conditions": save_walkthrough_conditions,
     }[action](*args)))

@@ -138,6 +138,7 @@ class StudioProjectWindowMapRow(StrictModel):
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapSubset(StrictModel):
@@ -145,6 +146,7 @@ class StudioProjectWindowMapSubset(StrictModel):
     count: int
     total: int
     document: str | None
+    members: list[StudioSavedTrainKey] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapInput(StrictModel):

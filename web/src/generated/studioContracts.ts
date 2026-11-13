@@ -3010,7 +3010,7 @@ export type CreateNamedDocument = {
 export type CreateNamedStep = {
   "kind": "step";
   "id": string;
-  "step": StudioTrainStep | StudioAnalyzeStep | StudioReportStep;
+  "step": StudioTrainStep | StudioEvaluateStep | StudioAnalyzeStep | StudioReportStep;
 };
 
 export type DataDerivedAxisRange = {
@@ -3703,6 +3703,19 @@ export type StudioDocumentAuthoringRequest = {
   "change"?: StudioDocumentAuthoringChange | StudioModelAuthoringChange | null;
 };
 
+export type StudioEvaluateStep = {
+  "kind": "evaluate";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
 export type StudioModelAddComponent = {
   "kind": "addComponent";
   "component": "feedbax.GRU" | "feedbax.Linear" | "feedbax.PointMass";
@@ -3851,6 +3864,7 @@ export type StudioProjectWindowMapRow = {
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
   "status": JobStatus;
   "reason"?: string | null;
+  "evaluation_conditions"?: Array<string> | null;
 };
 
 export type StudioProjectWindowMapStep = {
@@ -3869,6 +3883,7 @@ export type StudioProjectWindowMapSubset = {
   "count": number;
   "total": number;
   "document": string | null;
+  "members"?: Array<StudioSavedTrainKey> | null;
 };
 
 export type StudioReachPosition = {
@@ -9367,7 +9382,7 @@ export const CreateNamedStepSchema: z.ZodType<CreateNamedStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("step"),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "step": z.union([StudioTrainStepSchema, StudioAnalyzeStepSchema, StudioReportStepSchema]),
+    "step": z.union([StudioTrainStepSchema, StudioEvaluateStepSchema, StudioAnalyzeStepSchema, StudioReportStepSchema]),
   }).strict()
 ) as unknown as z.ZodType<CreateNamedStep>;
 
@@ -10301,6 +10316,21 @@ export const StudioDocumentAuthoringRequestSchema: z.ZodType<StudioDocumentAutho
   }).strict()
 ) as unknown as z.ZodType<StudioDocumentAuthoringRequest>;
 
+export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("evaluate"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluateStep>;
+
 export const StudioModelAddComponentSchema: z.ZodType<StudioModelAddComponent> = z.lazy(() =>
   z.object({
     "kind": z.literal("addComponent"),
@@ -10492,6 +10522,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
+    "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
 
@@ -10514,6 +10545,7 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
     "count": z.number().int().safe(),
     "total": z.number().int().safe(),
     "document": z.union([z.string(), z.null()]),
+    "members": z.union([z.array(StudioSavedTrainKeySchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 

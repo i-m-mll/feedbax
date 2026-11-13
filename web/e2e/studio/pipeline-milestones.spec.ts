@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
-  StudioProjectDocument, StudioSavedTrainRuns,
+  StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import {
   appendManagedFiles, authorLearningRateSweep, fixture, mapStep, openResultsSlot,
@@ -140,44 +140,164 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
-test('M2 reopens a project folder and evaluates two conditions on its training result', async ({ page, request }, info) => {
+test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', async ({ page, request }) => {
   test.fixme(!evaluationEnabled, 'M2 public gate · 736786f, dbbfb13, 339d687, 01e4c26, ed09a0a');
-  test.setTimeout(50_000);
+  test.setTimeout(58_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
   const files = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const path = projectPath + '/train-runs';
   const mounted = '/?project=' + snapshot.project_id;
+  const map = page.getByRole('region', { name: 'Pipeline Map', exact: true });
+  const train = map.getByRole('article', { name: 'Train train', exact: true });
+  const evaluated = map.getByRole('article', { name: 'Evaluate evaluate', exact: true });
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const steps = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
+  const readSnapshot = async () => {
+    const response = await request.get(projectPath);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  };
+  const readPlan = async () => {
+    const { revision } = await readSnapshot();
+    const response = await request.get(path, { params: { revision, window_map: 'true' } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  };
+  const run = async (keys: StudioSavedTrainKey[]) => {
+    const posted = responseFor(page, path);
+    await runButton(page).click();
+    const response = await posted;
+    expect(response.status(), await response.text()).toBe(202);
+    expect(response.request().postDataJSON().run_keys).toEqual(keys);
+    const { items } = await response.json() as StudioJobSubmission;
+    expect(items.map(({ disposition }) => disposition)).toEqual(keys.map(() => 'admitted'));
+  };
+
   await page.goto(mounted);
   await select(page, 'train');
-  await admit(page, projectPath);
-  await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
+  await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
+  const sweep = train.getByRole('button', { name: 'Sweep learning-rate', exact: true });
+  await expect(sweep).toHaveText('learning-rate 3');
+  const definition = await readPlan();
+  const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
+  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  const ids = sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value_id);
+  const conditionIds = sourceRows[0].evaluation_conditions!.slice(0, 2);
+  expect(conditionIds).toHaveLength(2);
+  await run(sourceRows.map(({ key }) => key));
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 22_000 });
 
-  await page.goto('about:blank');
-  const { revision, steps } = JSON.parse(await runProjectFixture(
-    evaluation, 'save-walkthrough-conditions', String(info.config.metadata.home), snapshot.project_id,
-  )) as { revision: string; steps: string[] };
-  await page.goto(mounted);
-  for (const step of steps) {
-    await select(page, step);
-    await admit(page, projectPath);
-    await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
-  }
-  const response = await request.get(projectPath + '/train-runs', {
-    params: { revision, window_map: 'true' },
+  await sweep.click();
+  const value = (name: string) => train.getByRole('listitem').getByRole('button', {
+    name: `Select learning-rate ${name}`, exact: true,
   });
-  expect(response.ok(), await response.text()).toBe(true);
-  const plan = await response.json() as StudioSavedTrainRuns;
-  const train = plan.rows[0].result!;
-  const conditions = plan.window_map!.evaluations!;
-  expect(conditions).toHaveLength(2);
-  expect(conditions.map(({ key }) => key.step).sort()).toEqual([...steps].sort());
-  expect(new Set(conditions.map((row) => row.request_id)).size).toBe(2);
-  for (const condition of conditions) {
-    expect(condition.result?.checkpoint_source).toEqual({
-      job_id: train.job_id, request_id: plan.rows[0].request_id, completed_updates: 2,
+  await value('Slow · 0.001').click();
+  await value('Medium · 0.002').click({ modifiers: ['Shift'] });
+  await expect(train).toContainText('2 of 3');
+  const created = responseFor(page, projectPath + '/files');
+  await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  const response = await created;
+  expect(response.status(), await response.text()).toBe(201);
+  const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps.evaluate;
+  expect(authored).toMatchObject({
+    inputs: { subject: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': ids.slice(0, 2) } } } },
+    sweep: { axes: { subject: { input: 'subject' } } },
+  });
+  const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
+  await expect(inputs).toContainText('learning-rate Slow · 0.001, Medium · 0.002 · 2 of 3');
+  const trialSet = drawer.getByRole('group', { name: 'Trial set', exact: true });
+  await expect(trialSet.getByRole('combobox')).toBeFocused();
+  await trialSet.getByRole('combobox').selectOption('conditions');
+  for (const condition of conditionIds) await trialSet.getByRole('checkbox', { name: condition, exact: true }).check();
+  const edited = (path: string) => page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === 'PATCH' && new URL(response.url()).pathname === projectPath &&
+      JSON.stringify(request.postDataJSON()).includes(path);
+  });
+  const trialEdit = edited('/base/inline/params/trial_set');
+  await trialSet.getByRole('button', { name: 'Apply trial set', exact: true }).click();
+  const savedTrials = await trialEdit;
+  expect(savedTrials.ok(), await savedTrials.text()).toBe(true);
+  const step = (await savedTrials.json() as StudioProjectSnapshot).project.steps.evaluate;
+  expect(step.base).toMatchObject({ inline: { params: { trial_set: { kind: 'conditions', ids: conditionIds } } } });
+  expect(step.base).not.toHaveProperty('inline.params.trials');
+
+  const keys = (await readPlan()).window_map!.evaluations!.map(({ key }) => key);
+  expect(keys).toHaveLength(2);
+  await run(keys);
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
+  const before = (await readPlan()).window_map!.evaluations!;
+  await expect(runButton(page)).toBeDisabled();
+
+  await select(page, 'train');
+  const fast = runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button');
+  await fast.click();
+  await expect(primary(page).getByRole('region', { name: 'Used By' })).toHaveCount(0);
+  await expect(steps.getByRole('button', { name: 'Select evaluate', exact: true })).toContainText('0 of 2');
+  const slow = runs(page).getByRole('row').filter({ hasText: 'Slow' }).getByRole('button');
+  await slow.click();
+  await expect(primary(page).getByRole('region', { name: 'Used By' })).toContainText('1 of 2');
+  await expect(steps.getByRole('button', { name: 'Select evaluate', exact: true })).toContainText('1 of 2');
+  await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
+
+  await select(page, 'evaluate');
+  const subset = drawer.getByRole('group', { name: 'Subject subset', exact: true });
+  await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
+  const subsetEdit = edited('/inputs/subject/where');
+  await subset.getByRole('button', { name: 'Apply subject subset', exact: true }).click();
+  const savedSubset = await subsetEdit;
+  expect(savedSubset.ok(), await savedSubset.text()).toBe(true);
+  await expect(inputs).toContainText('3 of 3');
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2);
+  const widened = (await readPlan()).window_map!.evaluations!;
+  expect(widened.slice(0, 2)).toEqual(before);
+  expect(widened).toHaveLength(3);
+  await run([widened[2].key]);
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 16_000 });
+
+  await page.reload();
+  await select(page, 'evaluate');
+  await expect(inputs).toContainText('3 of 3');
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
+  await runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button').click();
+  await expect(primary(page).getByRole('region', { name: 'Made From' })).toContainText('1 of 3');
+  await expect(steps.getByRole('button', { name: 'Select train', exact: true })).toContainText('1 of 3');
+  await page.getByRole('button', { name: 'Show Map', exact: true }).click();
+  await expect(train.locator('[data-map-focus="upstream"]')).toHaveCount(1);
+  const final = await readPlan();
+  const results = final.window_map!.evaluations!;
+  expect(results.slice(0, 2)).toEqual(before);
+  for (const row of results) {
+    const edge = final.window_map!.edges.find(({ to_key }) => JSON.stringify(to_key) === JSON.stringify(row.key));
+    const producer = final.rows.find(({ key }) => JSON.stringify(key) === JSON.stringify(edge?.from_key));
+    expect(producer?.result).toBeDefined();
+    expect(row.trials).toEqual(conditionIds);
+    expect(row.result?.checkpoint_source).toEqual({
+      job_id: producer!.result!.job_id, request_id: producer!.request_id, completed_updates: 2,
     });
-    expect(condition.result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(row.result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
   }
+
+  await page.getByRole('button', { name: 'Show Both', exact: true }).click();
+  await select(page, 'train');
+  await runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button').click();
+  const second = responseFor(page, projectPath + '/files');
+  await primary(page).getByRole('button', { name: 'New Step', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  const secondCreated = await second;
+  expect(secondCreated.status(), await secondCreated.text()).toBe(201);
+  const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
+  expect(withSecond.project.steps['evaluate-2'].inputs?.subject).toMatchObject({ where: { rows: [sourceRows[2].key.row] } });
+  await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
+  await select(page, 'evaluate');
+  await expect(trialSet.getByRole('combobox')).toHaveValue('conditions');
+  await select(page, 'evaluate-2');
+  await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
+  await expect(trialSet.getByRole('button', { name: 'Apply trial set', exact: true })).toBeDisabled();
+  console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
 });
 
 test('renders analysis and a report, then reruns only results affected by an edit', async ({ page }) => {

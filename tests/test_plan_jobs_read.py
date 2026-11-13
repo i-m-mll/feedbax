@@ -150,6 +150,7 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert response == old.json()
     assert set(response) == {"revision", "rows"}
     assert window["variants"] == ["default"]
+    assert all("evaluation_conditions" not in row for row in window["rows"])
     steps = {step["step_id"]: step for step in window["steps"]}
     assert steps["fit"]["document_ids"] == {
         "payload.trial_documents.model": "point-mass",

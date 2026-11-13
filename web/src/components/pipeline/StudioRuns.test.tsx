@@ -50,7 +50,7 @@ function showRuns(step: PlanStepView, run?: (selection: PipelineSelection | null
         pivotCommand={step.sweeps.length > 1 ? bindStudioCommand("pivot", () => setPivot(!pivot)) : undefined}
         pivotActive={pivot} />
       <StudioRuns plan={plan} region={result} pivotActive={pivot} {...selection} />
-      {state.selection?.kind !== "steps" && <StudioRunDetails plan={plan} {...selection} />}
+      {state.selection?.kind !== "steps" && <StudioRunDetails {...selection} />}
     </>;
   }
   return render(<TestRuns />);
@@ -74,7 +74,9 @@ it("preserves the sweep and row handles through the same Run command", () => {
   expect(perform).toHaveBeenLastCalledWith({ kind: "rows", stepId: "train", runIds: ["b", "c"] });
   expect(within(table).queryByText("Learning rate 0.001 → 0.003")).toBeNull();
   expect(screen.getByText("Learning rate 0.001 → 0.003")).toBeDefined();
-  expect(within(screen.getByRole("region", { name: "Used By" })).getByRole("button", { name: "Select Test reach · 1 of 1" })).toBeDefined();
+  const runs = screen.getByRole("region", { name: "Runs" });
+  expect(within(within(runs).getByRole("region", { name: "Used By" }))
+    .getByRole("button", { name: "Select Test reach · 1 of 1" })).toBeDefined();
 });
 
 it("virtualizes an authoritative 1,000-row result and keeps its full accessible count", () => {

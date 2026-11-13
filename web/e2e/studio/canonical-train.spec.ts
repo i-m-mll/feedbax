@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
@@ -336,6 +336,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
 
   const create = submitted(page, filesPath);
   await source.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await chooseTrainSuccessor(page);
   const accepted = await create;
   expect(accepted.status(), await accepted.text()).toBe(201);
   ({ snapshot } = await accepted.json() as StudioProjectDocument);
@@ -348,7 +349,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(child.getByRole('button', { name: `Select ${childId}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(drawer.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Edit Training method' })).toBeFocused();
 
   const carryover = drawer.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
   const carryoverPath = 'method_payload.payload.checkpoint_initialization';
@@ -439,6 +440,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await table.getByRole('row').filter({ hasText: selected[0].label }).getByRole('button').click();
   const explicit = submitted(page, filesPath);
   await runs.getByRole('button', { name: 'New Step', exact: true }).click();
+  await chooseTrainSuccessor(page);
   const rowSaved = await explicit;
   expect(rowSaved.status(), await rowSaved.text()).toBe(201);
   ({ snapshot } = await rowSaved.json() as StudioProjectDocument);
@@ -477,7 +479,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     const selectedRow = table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button');
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
-    await expect(inspector.getByRole('region', { name: 'Made From' })).toContainText('train');
+    await expect(runs.getByRole('region', { name: 'Made From' })).toContainText('train');
     await expect(table.getByRole('progressbar')).toHaveCount(0);
     if (index === 0) {
       await openResultsSlot(page);

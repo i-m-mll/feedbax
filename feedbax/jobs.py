@@ -139,6 +139,10 @@ class PlanJobReader:
         self._enable_evaluation_candidate = enable_evaluation_candidate
         self._evaluation_components = components
 
+    @property
+    def evaluation_candidate_enabled(self) -> bool:
+        return self._enable_evaluation_candidate
+
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
     ) -> tuple[RolloutParameters, ProductRef]:

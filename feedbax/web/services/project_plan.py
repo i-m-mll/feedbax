@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 from types import MappingProxyType
 
+from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
@@ -34,6 +35,8 @@ from feedbax.contracts.request_refs import BatchSetMember
 from feedbax.contracts.project_plan import ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import RequestId
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
@@ -51,6 +54,7 @@ from feedbax.jobs import (
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
 
 
@@ -112,7 +116,7 @@ class ProjectPlanRead:
                 reason = _problem_reasons(row_problems) or "No request could be planned."
                 yield PlanStatusRow(row.key, label, JobStatus.CANNOT_RUN, reason)
 
-    def window_map(self) -> StudioProjectWindowMap:
+    def window_map(self, *, evaluation_tasks: PythonTaskRegistry | None = None) -> StudioProjectWindowMap:
         """Project authored steps and compiler facts from the acknowledged Plan."""
         plan = self.settled.plan
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
@@ -127,6 +131,23 @@ class ProjectPlanRead:
                 else {path: name for path, name in shared.items() if row.document_ids.get(path) == name}
             )
         statuses = {row.key: row for row in self.status_rows()}
+        conditions: dict[RequestId, list[str] | None] = {}
+        if evaluation_tasks is not None:
+            for run in plan.runs:
+                if run.kind != "train" or run.admission_problem is not None or run.request_id in conditions:
+                    continue
+                train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+                documents = (
+                    train.trial_documents
+                    if isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)) else None
+                )
+                conditions[run.request_id] = None
+                if documents is not None:
+                    try:
+                        conditions[run.request_id] = list(evaluation_conditions(documents.task_source, evaluation_tasks))
+                    except ValueError:
+                        # An unresolved Task has no authorable trial domain.
+                        continue
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
             if isinstance(key, RunKey):
@@ -150,6 +171,9 @@ class ProjectPlanRead:
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.members), total=subset.candidates,
                             document=subset.document,
+                            members=[
+                                StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in subset.members
+                            ] if evaluation_tasks is not None and step.kind == "evaluate" and role == "subject" else None,
                         ) if subset is not None else None,
                     )
 
@@ -171,6 +195,7 @@ class ProjectPlanRead:
                     label=row.label or row.key.row,
                     status=statuses[row.key].status,
                     reason=statuses[row.key].reason,
+                    evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True
@@ -257,6 +282,10 @@ class ProjectPlanService:
         """Read one saved revision and its request-scoped attempt evidence."""
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
         return read_settled_project_plan(settled, self.jobs)
+
+    def window_map(self, view: ProjectPlanRead) -> StudioProjectWindowMap:
+        evaluation_tasks = self.jobs.registries.python_tasks if self.jobs.evaluation_candidate_enabled else None
+        return view.window_map(evaluation_tasks=evaluation_tasks)
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,

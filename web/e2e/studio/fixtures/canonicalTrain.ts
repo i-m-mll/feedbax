@@ -48,6 +48,11 @@ export function mapStep(page: Page, stepId: string) {
   return page.locator('[data-map-card]').getByRole('button', { name: `Select ${stepId}`, exact: true });
 }
 
+export async function chooseTrainSuccessor(page: Page) {
+  if (process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE !== '1') return;
+  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+}
+
 export async function captureStudioWindow(page: Page, info: TestInfo, name: string) {
   const path = info.outputPath(`${name}.png`);
   await page.screenshot({ path, animations: 'disabled' });
