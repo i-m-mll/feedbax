@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import ConfigDict, Field, JsonValue
+from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 
 Token = Annotated[str, Field(min_length=1, max_length=128)]
+_DigestPattern = r"^[a-f0-9]{64}$"
 StopMode = Literal["checkpoint", "force"]
 JobAction = Literal["checkpoint", "force", "resume"]
 
@@ -55,7 +56,7 @@ class JobProgress(StrictModel):
 
 class JobReceipt(StrictModel):
     manifest_id: str
-    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_sha256: str = Field(pattern=_DigestPattern)
 
 
 class StudioTrainCheckpointSource(StrictModel):
@@ -119,12 +120,49 @@ class StudioSavedEvaluationRow(StrictModel):
     checkpoint_rule: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-class StudioSavedEvaluationReplayRequest(StrictModel):
-    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+class StudioSavedEvaluationRead(StrictModel):
+    revision: str = Field(pattern=_DigestPattern)
     key: StudioSavedTrainKey
     job_id: str
+
+
+class StudioSavedEvaluationReplayRequest(StudioSavedEvaluationRead):
     trial: str
     checkpoint: int | None = Field(default=None, ge=0)
+
+
+class StudioEvaluationCheckpoint(StudioTrainCheckpointSource):
+    transaction: JobReceipt
+    transaction_root_sha256: str = Field(pattern=_DigestPattern)
+    binding_sha256: str = Field(pattern=_DigestPattern)
+    publication_cursor: int = Field(gt=0)
+
+
+class StudioEvaluationObjectiveTerm(StrictModel):
+    path: str = Field(pattern=r"^/(?:[^~/]|~[01])*$")
+    name: str
+    value: FiniteFloat
+    coverage: int = Field(strict=True, ge=0)
+
+
+class StudioEvaluationObjectivePoint(StrictModel):
+    checkpoint: StudioEvaluationCheckpoint
+    total: FiniteFloat
+    terms: list[StudioEvaluationObjectiveTerm]
+
+
+class StudioEvaluationObjectiveSeries(StrictModel):
+    job_id: str
+    request_id: str
+    receipt: JobReceipt
+    lineage: list[str]
+    condition: str | None = Field(pattern=_DigestPattern)
+    trials: list[str]
+    seed: int
+    objective: str = Field(pattern=_DigestPattern)
+    requested: list[int]
+    points: list[StudioEvaluationObjectivePoint]
+    gaps: list[StudioEvaluationCheckpointGap]
 
 
 class StudioSavedTrainResult(StrictModel):

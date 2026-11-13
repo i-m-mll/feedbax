@@ -166,6 +166,8 @@
     "panelHeight": "Panel Height",
     "model": "Model",
     "objective": "Objective",
+    "coverage": "Coverage",
+    "total": "Total",
     "training": "Training",
     "trainingMethod": "Training Method",
     "analysis": "Analysis",

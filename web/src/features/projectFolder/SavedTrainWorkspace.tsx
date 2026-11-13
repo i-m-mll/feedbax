@@ -1027,7 +1027,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             <button type="button" className={control} {...commandAttributes(stoppedNewStep)}
               disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</button>
           </section>}
-          {attempt && <StudioTrainResults project={saved.project_id} rows={data!.rows} row={row} attempt={attempt} />}
+          {attempt && <StudioTrainResults project={saved.project_id} revision={saved.revision}
+            evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
+            rows={data!.rows} row={row} attempt={attempt} />}
           <TrainReceipts key={savedRunId(row.key)} row={row} />
         </div> };
         return { body: withProblem(noView) };

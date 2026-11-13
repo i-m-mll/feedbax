@@ -3,6 +3,7 @@ import {
   parseContract,
   type ContractName,
   type StudioJobEvent,
+  type StudioSavedEvaluationRead,
   type StudioSavedEvaluationReplayRequest,
   type StudioSavedTrainRunRequest,
 } from '@/generated/studioContracts';
@@ -43,6 +44,13 @@ export function fetchSavedEvaluationReplay(project: string, input: StudioSavedEv
     method: 'POST',
     body: JSON.stringify(body),
     signal,
+  });
+}
+
+export function fetchSavedEvaluationObjective(project: string, input: StudioSavedEvaluationRead, signal?: AbortSignal) {
+  const body = parseContract('StudioSavedEvaluationRead', input);
+  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-objective`, 'StudioEvaluationObjectiveSeries', {
+    method: 'POST', body: JSON.stringify(body), signal,
   });
 }
 

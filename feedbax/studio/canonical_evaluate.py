@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,21 +12,28 @@ from pydantic import ValidationError
 
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.graph import StudioManifestRef, StudioSelectorRef
-from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.jobs import (
+    JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
+    StudioEvaluationObjectivePoint, StudioEvaluationObjectiveSeries, StudioEvaluationObjectiveTerm,
+)
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     load_manifest_bytes,
 )
+from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, ContentRef, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
+    ResolvedRolloutBinding,
     ROLLOUT_TYPE as ROLLOUT_TYPE,
     STATES_SCHEMA as STATES_SCHEMA,
     RolloutParameters as RolloutParameters,
@@ -393,3 +401,97 @@ class EvaluationResult:
                 )
             ),
         )
+
+    def objective_series(self, requested: list[int], *, objective: ObjectiveDocument) -> StudioEvaluationObjectiveSeries:
+        """Read held-out values and their exact checkpoint publications."""
+        manifest = self._manifest()
+        selection = manifest.provenance.metadata.get("checkpoint_selection")
+        if not isinstance(selection, dict) or selection["requested"] != requested:
+            raise ValueError("The result does not cover the saved checkpoint rule.")
+        params = RolloutParameters.model_validate(
+            EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline).params,
+        )
+        objective_hash = sha256(canonical_json_v2_bytes(objective.model_dump(mode="json"))).hexdigest()
+        lineage = selection["lineage"]
+        if not lineage or len(set(lineage)) != len(lineage) or (
+            lineage[0] != selection["anchor"] or lineage[-1] != selection["lineage_tip"]
+        ):
+            raise ValueError("Invalid Evaluate checkpoint lineage.")
+        checkpoints = [_objective_checkpoint(parent) for parent in manifest.provenance.parents]
+        gaps = [StudioEvaluationCheckpointGap.model_validate(gap) for gap in selection.get("gaps", ())]
+        updates = [checkpoint.completed_updates for checkpoint in checkpoints]
+        if (
+            any(checkpoint.job_id not in lineage for checkpoint in checkpoints)
+            or len(updates) + len(gaps) != len(requested)
+            or set(updates) | {gap.update for gap in gaps} != set(requested)
+        ):
+            raise ValueError("Evaluate checkpoint publications and gaps do not cover the saved rule.")
+        condition = None
+        with self.open_states() as dataset:
+            if dataset.data("update").tolist() != updates:
+                raise ValueError("Evaluate dataset updates differ from its checkpoint publications.")
+            points = []
+            if updates:
+                (condition,) = dataset.data("condition").tolist()
+                effective = ResolvedRolloutBinding.model_validate(manifest.metadata["effective_binding"])
+                if (
+                    condition != canonical_sha256(params.model_dump(mode="json")["variation"])
+                    or effective.digest() != manifest.metadata["effective_binding_sha256"]
+                    or effective.objective != objective_hash
+                    or effective.seed != params.seed or effective.trial_policy != params.trial_policy
+                    or dataset.data("trial").tolist() != list(params.trials)
+                    or [member.coordinate for member in effective.members] != updates
+                    or any(member.trials != params.trials for member in effective.members)
+                ):
+                    raise ValueError("Evaluate dataset differs from its resolved scientific inputs.")
+                points = _objective_points(dataset, checkpoints, objective, len(params.trials))
+        return StudioEvaluationObjectiveSeries(
+            job_id=self._job_id, request_id=self._request_id, receipt=self.receipt,
+            lineage=lineage, condition=condition, trials=list(params.trials), seed=params.seed,
+            objective=objective_hash, requested=requested, points=points, gaps=gaps,
+        )
+
+
+def _objective_checkpoint(parent: ParentRef) -> StudioEvaluationCheckpoint:
+    if parent.kind != "TrainingCheckpointTransactionManifest" or parent.role != "checkpoint":
+        raise ValueError("Evaluate provenance has an unexpected checkpoint parent.")
+    meta = parent.metadata
+    return StudioEvaluationCheckpoint(
+        job_id=meta["producer_job_id"], request_id=meta["producer_request_id"],
+        completed_updates=meta["completed_updates"],
+        transaction=JobReceipt(manifest_id=parent.id, manifest_sha256=meta["manifest_sha256"]),
+        transaction_root_sha256=meta["transaction_root_sha256"],
+        binding_sha256=meta["binding_sha256"], publication_cursor=meta["publication_cursor"],
+    )
+
+
+def _objective_points(
+    dataset: Dataset, checkpoints: list[StudioEvaluationCheckpoint], objective: ObjectiveDocument, trials: int,
+) -> list[StudioEvaluationObjectivePoint]:
+    def values(name: str):
+        if dataset.descriptor.variables[name].dims != ("update", "condition"):
+            raise ValueError(f"Unexpected axes for {name}.")
+        return dataset.data(name, (slice(None), 0)).tolist()
+
+    totals = values("objective/total")
+    term_prefix = "objective/terms"
+    coverage_prefix = "objective/coverage"
+    paths = {key.removeprefix(term_prefix) for key in dataset.descriptor.variables if key.startswith(term_prefix + "/")}
+    coverage_paths = {
+        key.removeprefix(coverage_prefix) for key in dataset.descriptor.variables if key.startswith(coverage_prefix + "/")
+    }
+    labels = {pointer((term.id,)): term.name or term.id for term in objective.terms if term.enabled}
+    if paths != coverage_paths or paths != labels.keys():
+        raise ValueError("Evaluate objective terms and coverage differ from the authored Objective.")
+    terms: list[list[StudioEvaluationObjectiveTerm]] = [[] for _ in checkpoints]
+    for path in sorted(paths):
+        for row, value, coverage in zip(terms, values(term_prefix + path), values(coverage_prefix + path), strict=True):
+            if coverage > trials:
+                raise ValueError("Evaluate term coverage exceeds the authored trial count.")
+            row.append(StudioEvaluationObjectiveTerm(
+                path=path, name=labels[path], value=value, coverage=coverage,
+            ))
+    return [
+        StudioEvaluationObjectivePoint(checkpoint=checkpoint, total=total, terms=row)
+        for checkpoint, total, row in zip(checkpoints, totals, terms, strict=True)
+    ]

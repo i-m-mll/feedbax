@@ -1,6 +1,7 @@
 """Saved update rules retain request identity and account for missing checkpoints."""
 
 from copy import deepcopy
+import pytest
 
 from feedbax.contracts.effective_success import EvaluationSubjectValue, success_content_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -10,9 +11,10 @@ from feedbax.persistence.store_sync import sync_store
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
+from feedbax.contracts.jobs import StudioSavedEvaluationRead
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import UpdateSeriesMember
-from feedbax.jobs import JobService
+from feedbax.jobs import JobNotFound, JobService
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
@@ -149,6 +151,26 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
         assert [gap.model_dump() for gap in evaluation.result.checkpoint_gaps] == [
             {"update": update, "reason": "checkpoint_unavailable"} for update in expected if update not in observed
         ]
+        read = StudioSavedEvaluationRead(revision=plan.revision, key=evaluation.key, job_id=evaluation.result.job_id)
+        curve = service.evaluation_objective(project, read)
+        assert curve.requested == expected
+        assert curve.receipt == evaluation.result.receipt
+        assert curve.lineage == [producer.job_id]
+        assert curve.gaps == evaluation.result.checkpoint_gaps
+        assert [point.checkpoint.completed_updates for point in curve.points] == observed
+        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=read.job_id).open_states() as dataset:
+            if observed:
+                assert curve.condition == dataset.data("condition").item()
+                assert curve.trials == dataset.data("trial").tolist()
+                assert [point.total for point in curve.points] == dataset.data("objective/total")[:, 0].tolist()
+                terms = [point.terms[0] for point in curve.points]
+                assert [term.value for term in terms] == dataset.data("objective/terms/effort")[:, 0].tolist()
+                assert [term.coverage for term in terms] == dataset.data("objective/coverage/effort")[:, 0].tolist()
+            else:
+                assert curve.condition is None and not curve.points
+        wrong_row = results["empty" if step == "baseline" else "baseline"].key
+        with pytest.raises(JobNotFound):
+            service.evaluation_objective(project, read.model_copy(update={"key": wrong_row}))
 
     raw["steps"]["empty"]["base"]["inline"]["params"]["seed"] += 1
     _save_project(folders, project, Project.model_validate(raw))
@@ -175,7 +197,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "resumed-series"
-    _save_project(folders, project, Project.model_validate(definition([{"at": 2}, {"at": 5}])))
+    _save_project(folders, project, Project.model_validate(definition([{"at": 2}, {"at": 4}, {"at": 5}])))
     plan = folders.read_plan(project, revision=None)
     rows = {run.kind: run for run in plan.plan.runs}
     host.policy(compute=1)
@@ -190,7 +212,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     assert job_row(host, evaluate.job_id, "queued") is not None
     view = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
     assert view.evaluations[rows["evaluate"].key].reason == (
-        "Waiting for Train checkpoint selection (requested updates 2, 5)."
+        "Waiting for Train checkpoint selection (requested updates 2, 4, 5)."
     )
     resumed = jobs.resume(producer.job_id, "resume")
     (tmp_path / "finish-train").touch()
@@ -200,4 +222,16 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     assert selection["lineage"] == [producer.job_id, resumed.job_id]
     assert selection["closure"]["product"]["producer_job_id"] == resumed.job_id
     assert selection["gaps"] == [{"update": 5, "reason": "checkpoint_unavailable"}]
-    assert [member["producer_job_id"] for member in selection["members"]] == [producer.job_id]
+    assert [member["producer_job_id"] for member in selection["members"]] == [producer.job_id, resumed.job_id]
+    service = ProjectPlanService(folders, jobs)
+    evaluation = service.read(project, revision=plan.revision).evaluations[rows["evaluate"].key]
+    curve = service.evaluation_objective(project, StudioSavedEvaluationRead(
+        revision=plan.revision, key=evaluation.key, job_id=evaluate.job_id,
+    ))
+    assert curve.lineage == selection["lineage"]
+    assert [point.checkpoint.publication_cursor for point in curve.points] == [
+        member["publication_cursor"] for member in selection["members"]
+    ]
+    assert [point.checkpoint.transaction_root_sha256 for point in curve.points] == [
+        member["checkpoint"]["pointer"]["transaction_root_sha256"] for member in selection["members"]
+    ]
