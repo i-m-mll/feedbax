@@ -205,7 +205,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       }
       if (result.clipboard) clipboard = result.clipboard;
       if (choose && result.changed.length) {
-        state.setState({ selection: operation.op === 'delete' || operation.op === 'cut' ? [] : result.changed });
+        const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
+          : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
+        state.setState({ selection });
       }
       return true;
     } catch (error) {

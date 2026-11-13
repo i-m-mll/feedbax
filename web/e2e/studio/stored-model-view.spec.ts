@@ -104,7 +104,7 @@ test('authors and reopens an addressed Model through the project history', async
     await cell.locator('header').click();
     await page.keyboard.press('Meta+G');
   });
-  const groupAddress = group.changed.find(({ element }) => element.kind === 'component');
+  const groupAddress = group.changed.find(({ element }) => element.kind === 'component' && element.id !== component.id);
   if (groupAddress?.element.kind !== 'component') throw new Error('Group did not return a component address');
   await card(groupAddress.element.id).locator('header').dblclick();
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
