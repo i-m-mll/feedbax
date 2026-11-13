@@ -1,13 +1,15 @@
 use crate::{service, window_session};
 use block2::RcBlock;
 use objc2::{
-    define_class, rc::Retained, runtime::NSObject, sel, DefinedClass, MainThreadMarker,
-    MainThreadOnly,
+    define_class,
+    rc::Retained,
+    runtime::{NSObject, NSObjectProtocol, ProtocolObject},
+    sel, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
-    NSMenu, NSMenuItem, NSRunningApplication, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength, NSWorkspace, NSWorkspaceOpenConfiguration,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEvent,
+    NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem, NSRunningApplication, NSStatusBar,
+    NSStatusItem, NSVariableStatusItemLength, NSWorkspace, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{NSPoint, NSRunLoop, NSString, NSTimer, NSURL};
 use objc2_user_notifications::{
@@ -62,12 +64,17 @@ impl Control {
         Self::send(self.0.get(url))
     }
 
-    fn open(&self) -> service::Result<Option<i32>> {
+    fn open(&self, activity: bool) -> service::Result<Option<i32>> {
         #[derive(Deserialize)]
         struct Target {
             pid: Option<i32>,
         }
-        Ok(Self::send::<Target>(self.0.post(format!("{PREFIX}/open")))?.pid)
+        let request = if activity {
+            self.0.post(format!("{PREFIX}/open"))
+        } else {
+            self.0.get(format!("{PREFIX}/window"))
+        };
+        Ok(Self::send::<Target>(request)?.pid)
     }
 
     fn stop(&self, force: bool) -> service::Result<()> {
@@ -157,7 +164,7 @@ struct NotificationCursor {
 }
 
 enum Command {
-    Open,
+    Open { activity: bool },
     Stop { force: bool },
     Quit,
 }
@@ -172,7 +179,7 @@ define_class!(
     impl Actions {
         #[unsafe(method(openActivity:))]
         fn open(&self, _: &NSMenuItem) {
-            self.send(Command::Open);
+            self.send(Command::Open { activity: true });
         }
 
         #[unsafe(method(stopRuns:))]
@@ -183,6 +190,16 @@ define_class!(
         #[unsafe(method(quitService:))]
         fn quit(&self, _: &NSMenuItem) {
             self.send(Command::Quit);
+        }
+    }
+
+    unsafe impl NSObjectProtocol for Actions {}
+
+    unsafe impl NSApplicationDelegate for Actions {
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn applicationShouldHandleReopen_hasVisibleWindows(&self, _: &NSApplication, _: bool) -> bool {
+            self.send(Command::Open { activity: false });
+            false
         }
     }
 );
@@ -197,7 +214,11 @@ impl Actions {
 
 enum Update {
     Snapshot(Snapshot),
-    Open { pid: Option<i32>, activation: File },
+    Open {
+        pid: Option<i32>,
+        activation: File,
+        activity: bool,
+    },
 }
 
 fn save_cursor(
@@ -239,6 +260,7 @@ impl Menu {
         let (sender, commands) = mpsc::channel();
         let actions: Retained<Actions> =
             unsafe { objc2::msg_send![super(main.alloc().set_ivars(sender)), init] };
+        app.setDelegate(Some(ProtocolObject::from_ref(&*actions)));
         for (title, selector, alternate) in [
             ("Activity", sel!(openActivity:), false),
             ("Stop All", sel!(stopRuns:), false),
@@ -401,9 +423,21 @@ impl Menu {
                             }
                         }
                     }
-                    Update::Open { pid, activation } => {
+                    Update::Open {
+                        pid,
+                        activation,
+                        activity,
+                    } => {
                         if let Some(application) = pid
                             .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
+                            .filter(|application| {
+                                application
+                                    .bundleURL()
+                                    .and_then(|url| url.path())
+                                    .is_some_and(|path| {
+                                        Path::new(&path.to_string()) == release.bundle_path()
+                                    })
+                            })
                         {
                             application.activateWithOptions(
                                 objc2_app_kit::NSApplicationActivationOptions::empty(),
@@ -413,7 +447,7 @@ impl Menu {
                             .is_none_or(|start| start.elapsed() > Duration::from_secs(8))
                         {
                             launching.set(Some(Instant::now()));
-                            launch_activity(&release, activation);
+                            launch_gui(&release, activation, activity);
                         }
                     }
                 }
@@ -464,10 +498,14 @@ fn monitor(
     while alive.load(Ordering::Relaxed) {
         let command = commands.recv_timeout(Duration::from_millis(500));
         let operation = match command {
-            Ok(Command::Open) => (|| {
+            Ok(Command::Open { activity }) => (|| {
                 let activation = release.activity_activation(&paths)?;
-                let pid = control.open()?;
-                let _ = updates.send(Update::Open { pid, activation });
+                let pid = control.open(activity)?;
+                let _ = updates.send(Update::Open {
+                    pid,
+                    activation,
+                    activity,
+                });
                 Ok(())
             })(),
             Ok(Command::Stop { force }) => control.stop(force),
@@ -526,7 +564,7 @@ fn request_quit(release: service::Release) -> Receiver<service::Result<Value>> {
     receive
 }
 
-fn launch_activity(release: &service::Release, activation: File) {
+fn launch_gui(release: &service::Release, activation: File, activity: bool) {
     let url = NSURL::fileURLWithPath_isDirectory(
         &NSString::from_str(&release.bundle_path().to_string_lossy()),
         true,
@@ -534,14 +572,16 @@ fn launch_activity(release: &service::Release, activation: File) {
     let configuration = NSWorkspaceOpenConfiguration::configuration();
     configuration.setCreatesNewApplicationInstance(true);
     configuration.setAllowsRunningApplicationSubstitution(false);
-    configuration.setArguments(&objc2_foundation::NSArray::from_retained_slice(&[
-        NSString::from_str("--activity"),
-    ]));
+    if activity {
+        configuration.setArguments(&objc2_foundation::NSArray::from_retained_slice(&[
+            NSString::from_str("--activity"),
+        ]));
+    }
     let activation = Mutex::new(Some(activation));
     let callback = RcBlock::new(move |_, error: *mut objc2_foundation::NSError| {
         drop(activation.lock().unwrap().take());
         if let Some(error) = unsafe { error.as_ref() } {
-            eprintln!("Could not open Studio Activity: {error}");
+            eprintln!("Could not open Studio: {error}");
         }
     });
     NSWorkspace::sharedWorkspace().openApplicationAtURL_configuration_completionHandler(

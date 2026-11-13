@@ -76,6 +76,10 @@ def register_activity(app: FastAPI, release: str) -> None:
         open_until = time.monotonic() + 20
         return {"pid": gui.pid if gui is not None else None}
 
+    @router.get("/window")
+    async def running_gui():
+        return {"pid": gui.pid if gui is not None else None}
+
     @router.post("/window")
     async def window_report(body: _WindowPresence):
         nonlocal gui, last_report
