@@ -105,6 +105,8 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     assert results["check"].verified_objects == 1
     _, problems = call(["check", str(declaration), "--attempt", "absent", "--json"], 2)
     assert "No committed receipt" in problems[0].detail
+    before_damage, problems = call(["check", str(declaration), "--json"], 0, StoreCheckResult)
+    assert not problems
     object_path = declared_store.object_path(payload)
     with writable_store_object(object_path):
         original = object_path.read_bytes()
@@ -112,7 +114,7 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
         try:
             object_path.write_bytes(altered)
             damaged, problems = call(["check", str(declaration), "--json"], 1, StoreCheckResult)
-            assert damaged.verified_objects == 0
+            assert damaged.verified_objects == before_damage.verified_objects - 1
             assert [problem.address for problem in problems] == [payload.object_id]
             assert object_path.read_bytes() == altered
         finally:
