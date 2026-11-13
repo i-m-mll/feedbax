@@ -1,7 +1,6 @@
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable
 from functools import partial
 from struct import pack
-from types import MappingProxyType
 from typing import Any, ClassVar, Optional, TypeVar
 
 import equinox as eqx
@@ -9,9 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
-import plotly.graph_objects as go
 from equinox import field
-from feedbax._vendor.jax_cookbook import LDict
 from jaxtyping import Array, PRNGKeyArray, PyTree, PyTreeDef, Scalar
 from optax import GradientTransformation
 
@@ -25,9 +22,6 @@ from feedbax.analysis.fp_finder import (
     FixedPointFinder,
     fp_adam_optimizer,
 )
-from feedbax.analysis.pca import PCAResults, StatesPCA
-from feedbax.plot.experiments import plot_fp_pcs
-from feedbax.config.tree import ldict_level_to_bottom
 from feedbax.contracts.computation_revision import ANALYSIS_ENGINE_REVISION
 
 T = TypeVar("T")
@@ -35,8 +29,6 @@ T = TypeVar("T")
 __all__ = [
     "FixedPoints",
     "FixedPointsPorts",
-    "PlotInPCSpace",
-    "PlotInPCSpacePorts",
 ]
 
 
@@ -175,65 +167,3 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
 # ----------------------------------------------------------------
 # Plotting classes
 # ----------------------------------------------------------------
-
-
-class PlotInPCSpacePorts(AbstractAnalysisPorts):
-    """Input ports for PlotInPCSpace analysis."""
-
-    pca_results: InputOf[StatesPCA]
-    plot_data: InputOf[Array]
-
-
-class PlotInPCSpace(AbstractAnalysis[PlotInPCSpacePorts]):
-    """Plot data in PCA space."""
-
-    Ports = PlotInPCSpacePorts
-    inputs: PlotInPCSpacePorts = eqx.field(
-        default_factory=PlotInPCSpacePorts, converter=PlotInPCSpacePorts.converter
-    )
-    spread_label: str = eqx.field(kw_only=True)
-    variant: Optional[str] = "full"
-    fig_params: Mapping = MappingProxyType(dict())
-
-    def make_figs(
-        self,
-        data: AnalysisInputData,
-        *,
-        pca_results: PyTree[PCAResults],
-        plot_data: PyTree[Array],
-        colors,
-        **kwargs,
-    ):
-        plot_data = ldict_level_to_bottom(self.spread_label, plot_data)
-
-        def generate_fig(plot_data, pca):
-            fig = go.Figure(
-                layout=dict(
-                    width=800,
-                    height=800,
-                    scene=dict(
-                        xaxis_title="PC 1",
-                        yaxis_title="PC 2",
-                        zaxis_title="PC 3",
-                    ),
-                    legend=dict(
-                        title=self.spread_label,
-                        itemsizing="constant",
-                        y=0.85,
-                    ),
-                )
-            )
-
-            plot_data_pc = pca.batch_transform(plot_data)
-            for value in plot_data:
-                fig = plot_fp_pcs(
-                    plot_data_pc[value],
-                    fig=fig,
-                    label=value,
-                    colors=colors[self.spread_label].dark[value],
-                )
-            return fig
-
-        figs = jt.map(generate_fig, plot_data, pca_results, is_leaf=LDict.is_of(self.spread_label))
-
-        return figs

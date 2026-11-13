@@ -193,19 +193,6 @@ def trim_tails(
     
     Returns:
         PyTree of MaskedArray instances with trimmed data and masks
-    
-    Example:
-        >>> analysis = (
-        ...     Profiles()
-        ...     .after_transform(
-        ...         lambda vars, *, data: get_align_epoch_start(2)(vars, data=data),
-        ...         dependency_names="vars"
-        ...     )
-        ...     .after_transform(
-        ...         partial(trim_tails, tolerance=1.0),
-        ...         dependency_names="vars"
-        ...     )
-        ... )
     """
     # Collect all MaskedArray instances
     masked_arrays = jt.leaves(tree, is_leaf=is_type(MaskedArray))

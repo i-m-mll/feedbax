@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
 import equinox as eqx
@@ -20,7 +20,6 @@ from feedbax.analysis.analysis import (
     get_validation_trial_specs,
 )
 from feedbax.analysis.state_utils import (
-    get_align_epoch_start,
     get_pos_endpoints,
     get_trial_start_positions,
     unsqueezer,
@@ -39,8 +38,6 @@ from feedbax.analysis.types import (
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask
     import plotly.graph_objects as go
-
-    from feedbax.analysis.plot import ScatterPlots
 
 VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
@@ -249,60 +246,6 @@ def add_aligned_position_endpoints(
         figs,
         is_leaf=is_type(go.Figure),
     )
-
-
-def get_aligned_trajectories_node(
-    colorscale_key: Optional[str] = None,
-    pos_endpoints: bool = True,
-    varset: PyTree[VarSpec] = DEFAULT_VARSET,
-    subplot_level: str = VAR_LEVEL_LABEL,
-    align_epoch: Optional[int] = None,
-    pre_transform_fns: Sequence[Callable] = (),
-) -> "ScatterPlots":
-    import feedbax.plot as fbp
-
-    from feedbax.analysis.plot import ScatterPlots
-
-    aligned_var_subplot_titles = get_varset_labels(varset).medium
-    aligned_var_axes_labels = jt.map(
-        lambda label: fbp.AxesLabels(
-            rf"${label}_\parallel$", rf"${label}_\perp$"
-        ),
-        get_varset_labels(varset).short,
-    )
-    node = ScatterPlots(
-        inputs=ScatterPlots.Ports(input=AlignedVars(varset=varset)),
-        colorscale_key=colorscale_key,
-        subplot_level=subplot_level,
-    ).with_fig_params(
-        subplot_titles=aligned_var_subplot_titles,
-        #! TODO: Probably leave the individual labels out; just use master labels
-        axes_labels=aligned_var_axes_labels,
-        # master_axes_labels=AxesLabels2D("Parallel", "Lateral"),
-    )
-    for transform_fn in pre_transform_fns:
-        node = node.after_transform(transform_fn)
-    if align_epoch is not None:
-        node = node._add_prep_op(
-            name="align_epoch_start",
-            dep_name=None,
-            fn=get_align_epoch_start(align_epoch),
-            params=dict(epoch=align_epoch),
-            uses_callback=False,
-        )
-    if colorscale_key is not None:
-        node = node.after_stacking(colorscale_key)
-    if pos_endpoints:
-        import plotly.graph_objects as go
-
-        node = node._add_final_op(
-            op_type="figs",
-            name="add_aligned_position_endpoints",
-            fn=add_aligned_position_endpoints,
-            is_leaf=is_type(go.Figure),
-            uses_callback=False,
-        )
-    return node
 
 
 #! TODO: This should not be limited to `ResponseVar`

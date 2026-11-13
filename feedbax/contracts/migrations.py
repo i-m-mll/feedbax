@@ -290,7 +290,6 @@ from feedbax.contracts.run_composition import (
     EXECUTION_DEPENDENCY_SCHEMA_ID,
     EXECUTION_DEPENDENCY_SCHEMA_VERSION,
 )
-from feedbax.contracts.lineage import LINEAGE_EVENT_SCHEMA_ID, LINEAGE_EVENT_SCHEMA_VERSION
 from feedbax.contracts.parameter_contracts import (
     ANALYSIS_BUNDLE_PARAMS_SCHEMA_ID,
     ANALYSIS_BUNDLE_PARAMS_SCHEMA_VERSION,
@@ -4707,17 +4706,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Typed immutable execution dependencies separate from authored deltas.",
             rejected_old_versions=(f"{EXECUTION_DEPENDENCY_SCHEMA_ID}.v0",),
             required_tests=("tests/test_training_run_composition.py",),
-        ),
-        _family(
-            "TrainingLineageEvent",
-            LINEAGE_EVENT_SCHEMA_ID,
-            LINEAGE_EVENT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.lineage",
-            emitted_by=("feedbax.contracts.lineage.store_lineage_event",),
-            consumed_by=("training lineage replay",),
-            description="Append-only content-pinned execution lineage and graft events.",
-            rejected_old_versions=(f"{LINEAGE_EVENT_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_lineage_graph.py",),
         ),
         _family(
             "EvaluationRunMatrixSpec",

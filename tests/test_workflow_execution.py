@@ -2256,7 +2256,6 @@ def test_an_admitted_receipt_binds_the_digest_admission_read(
 EXECUTION_SURFACE = (
     "analysis/fulfillment.py",
     "analysis/fulfillment_adapters.py",
-    "analysis/fulfillment_checkpoint_init.py",
     "analysis/fulfillment_custody.py",
     "workflow/derivation.py",
     "workflow/execution.py",

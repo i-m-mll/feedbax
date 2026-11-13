@@ -108,14 +108,6 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
             "SELECT kind, status FROM manifests WHERE id = ?",
             (context.manifest_id,),
         ).fetchone()
-        edge_row = conn.execute(
-            """
-            SELECT parent_kind, parent_id, role
-            FROM lineage_edges
-            WHERE child_id = ?
-            """,
-            (context.manifest_id,),
-        ).fetchone()
         artifact_row = conn.execute(
             """
             SELECT role, logical_name, media_type
@@ -126,7 +118,6 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
         ).fetchone()
 
     assert manifest_row == ("AnalysisRunManifest", "completed")
-    assert edge_row == ("EvaluationRunManifest", eval_manifest.id, "evaluation_run")
     assert artifact_row == ("figure", "toy/toy_toy_analysis_0.json", "application/json")
 
 

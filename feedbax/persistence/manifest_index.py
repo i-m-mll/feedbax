@@ -76,6 +76,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
+        # Older releases still write this derived table when sharing the index.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS lineage_edges (
@@ -138,7 +139,6 @@ def index_manifest(
         ),
     )
     conn.execute("DELETE FROM artifacts WHERE manifest_id = ?", (manifest.id,))
-    conn.execute("DELETE FROM lineage_edges WHERE child_id = ?", (manifest.id,))
     conn.executemany(
         """
         INSERT OR REPLACE INTO artifacts (
@@ -147,17 +147,6 @@ def index_manifest(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [_artifact_tuple(manifest.id, artifact) for artifact in manifest.artifacts],
-    )
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO lineage_edges (
-            child_id, parent_kind, parent_id, role
-        ) VALUES (?, ?, ?, ?)
-        """,
-        [
-            (manifest.id, parent.kind, parent.id, parent.role)
-            for parent in manifest.provenance.parents
-        ],
     )
 
 

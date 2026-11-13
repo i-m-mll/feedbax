@@ -480,7 +480,7 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(
                     "from feedbax.orchestration.input_materialization import InputProviderRootBinding",
                     "def unreachable(*args, **kwargs): raise AssertionError('RunPod provider/transport surface reached')",
                     "runpod.SubprocessRunPodTransport = unreachable",
-                    "runpod.urllib.request.urlopen = unreachable",
+                    "runpod.httpx.Client = unreachable",
                     "bundle = RunBundle.model_validate_json(open(sys.argv[1]).read())",
                     "commands = runpod.dry_run_launch_bundle(",
                     "    bundle,",
