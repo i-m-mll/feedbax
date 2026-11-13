@@ -88,6 +88,32 @@ def walkthrough_files(batches: str | None = None):
     return [*documents, {"kind": "step", "id": "train", "step": project["steps"]["train"]}]
 
 
+def series_files():
+    files = walkthrough_files("4")
+    files[-1]["step"]["base"]["inline"]["training_config"]["snapshot_interval"] = 2
+    return files
+
+
+def seed_series_variants(home: str):
+    *documents, train = series_files()
+    evaluation = _evaluation_step()
+    evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    project = Project.model_validate({
+        "documents": {file["id"]: file["document"] for file in documents},
+        "steps": {"train": train["step"], "evaluate": evaluation},
+        "sweep": {"rows": {"base": {}, "comparison": {"from": "base"}}},
+    })
+    project_id = "series-variants"
+    root = AppPaths.resolve(instance_root=Path(home)).web / "projects" / project_id
+    for name, data in dump_text_project(
+        project, ProjectConfiguration(project=project_id, store="results"),
+    ).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return project_id
+
+
 def observe(home: str, project: str, revision: str, trial_index: str):
     paths = AppPaths.resolve(instance_root=Path(home))
     folders = ProjectFolderService(paths.web / "projects")
@@ -163,4 +189,5 @@ if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
         "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
+        "series-files": series_files, "seed-series-variants": seed_series_variants,
     }[action](*args)))

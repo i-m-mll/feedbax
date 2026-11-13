@@ -11,6 +11,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
+from feedbax.contracts.project_inputs import CheckpointRule
 
 
 if TYPE_CHECKING:
@@ -80,12 +81,28 @@ class StudioSavedTrainKey(StrictModel):
     row: str
 
 
+class StudioEvaluationCheckpointGap(StrictModel):
+    update: int = Field(gt=0)
+    reason: Literal["checkpoint_unavailable"]
+
+
+class StudioEvaluationCheckpointSeries(StrictModel):
+    subject: StudioSavedTrainKey
+    requested: list[int]
+
+
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     size_bytes: int = Field(ge=0)
     checkpoint_sources: list[StudioTrainCheckpointSource] | None = Field(default=None, exclude_if=lambda value: value is None)
+    checkpoint_gaps: list[StudioEvaluationCheckpointGap] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    placement: Literal["ordinary", "live"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 class StudioSavedEvaluationRow(StrictModel):
@@ -96,6 +113,9 @@ class StudioSavedEvaluationRow(StrictModel):
     can_run: bool
     trials: list[str]
     result: StudioSavedEvaluationResult | None
+    checkpoint_series: StudioEvaluationCheckpointSeries | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 class StudioSavedEvaluationReplayRequest(StrictModel):
@@ -158,6 +178,7 @@ class StudioProjectWindowMapInput(StrictModel):
     id: str
     source_step_id: str
     subset: StudioProjectWindowMapSubset | None
+    checkpoint: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapStep(StrictModel):

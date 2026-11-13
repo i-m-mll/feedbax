@@ -9,6 +9,7 @@ from feedbax.contracts.request_refs import UpdateSeriesMember
 from feedbax.jobs import JobService
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
@@ -111,6 +112,18 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="evaluation") == submission
     for item in submission.items:
         jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=item.job_id)
+    service = ProjectPlanService(folders, jobs)
+    projected = service.response(service.read(project, revision=plan.revision), include_window_map=True)
+    results = {row.key.step: row for row in projected.window_map.evaluations}
+    for step, expected, observed in (("baseline", [4, 1, 2, 6], [4, 2]), ("empty", [1, 5], [])):
+        evaluation = results[step]
+        assert evaluation.checkpoint_series.requested == expected
+        assert evaluation.checkpoint_series.subject.step == "train"
+        assert evaluation.result.placement == "ordinary"
+        assert [source.completed_updates for source in evaluation.result.checkpoint_sources or []] == observed
+        assert [gap.model_dump() for gap in evaluation.result.checkpoint_gaps] == [
+            {"update": update, "reason": "checkpoint_unavailable"} for update in expected if update not in observed
+        ]
 
     raw["steps"]["empty"]["base"]["inline"]["params"]["seed"] += 1
     _save_project(folders, project, Project.model_validate(raw))
@@ -150,6 +163,10 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     (evaluate,) = jobs.admit_plan(folders, plan, run_keys=(rows["evaluate"].key,), token="evaluate").items
     assert evaluate.disposition == "admitted"
     assert job_row(host, evaluate.job_id, "queued") is not None
+    view = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
+    assert view.evaluations[rows["evaluate"].key].reason == (
+        "Waiting for Train checkpoint selection (requested updates 2, 5)."
+    )
     resumed = jobs.resume(producer.job_id, "resume")
     (tmp_path / "finish-train").touch()
     wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=20)

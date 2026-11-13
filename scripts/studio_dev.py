@@ -127,7 +127,7 @@ def claim_test_home(home: Path, paths: AppPaths, args: argparse.Namespace, scope
     scope.callback(finish_test_home, home, paths.host, lease, remove=args.remove_test_home)
 
 
-def serve(args: argparse.Namespace, scope: ExitStack) -> int:
+def serve(args: argparse.Namespace, scope: ExitStack, backend_app: str) -> int:
     if args.home is None:
         home = Path(scope.enter_context(TemporaryDirectory(prefix="feedbax-studio-"))).resolve()
     else:
@@ -146,7 +146,7 @@ def serve(args: argparse.Namespace, scope: ExitStack) -> int:
     os.environ.pop("VITE_FEEDBAX_E2E", None)
     print(f"Studio data home: {home}", flush=True)
 
-    backend = [sys.executable, "-B", "-m", "uvicorn", "feedbax.web.app:app"]
+    backend = [sys.executable, "-B", "-m", "uvicorn", backend_app]
     vite = ["bun", "--bun", "vite"]
     front = vite
     if args.preview:
@@ -175,7 +175,7 @@ def serve(args: argparse.Namespace, scope: ExitStack) -> int:
     return wait_for_exit(web, args.owner)
 
 
-def main() -> int:
+def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, help="keep Studio data in this directory")
     parser.add_argument("--port", type=int, help="frontend port (default: 3008 or 3009 with --preview)")
@@ -204,7 +204,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, exit_on_signal)
     with ExitStack() as scope:
         try:
-            return serve(args, scope)
+            return serve(args, scope, backend_app)
         finally:
             if args.owner is not None:
                 signal.signal(signal.SIGINT, signal.SIG_IGN)

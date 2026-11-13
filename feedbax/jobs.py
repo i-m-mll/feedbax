@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from feedbax._secure_fs import (
@@ -33,6 +33,7 @@ from feedbax.contracts.jobs import (
     JobStatus,
     StopMode,
     StudioActivityJob,
+    StudioEvaluationCheckpointGap,
     StudioJobEvent,
     StudioJobEventHistory,
     StudioJobSnapshot,
@@ -113,6 +114,8 @@ class PlanJobAttempt:
     output_size_bytes: int | None = None
     checkpoint_sources: tuple[StudioTrainCheckpointSource, ...] = ()
     stopped_checkpoint: int | None = None
+    checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None = None
+    evaluation_placement: Literal["ordinary", "live"] | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,14 @@ class PlanJobAttempts:
     plan_ref: AuthoredTrainPlanRef | None = None
     checkpoint_producers: frozenset[RequestId] = frozenset()
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _VerifiedEvaluation:
+    receipt: JobReceipt
+    size: int
+    checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None
+    placement: Literal["ordinary", "live"]
 
 
 def evaluation_candidate_configured() -> bool:
@@ -213,9 +224,10 @@ class PlanJobReader:
                 continue
             succeeded = job["state"] == "succeeded"
             size = None
+            result = None
             if evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
-                receipt, size = result if result is not None else (None, None)
+                receipt, size = (result.receipt, result.size) if result is not None else (None, None)
             else:
                 receipt = _verified_training_receipt(job, store) if succeeded else None
             completion = (job.get("outcome") or {}).get("completion") or {}
@@ -247,6 +259,8 @@ class PlanJobReader:
                     output_size_bytes=size,
                     checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
                     stopped_checkpoint=stopped_checkpoint,
+                    checkpoint_gaps=result.checkpoint_gaps if result is not None else None,
+                    evaluation_placement=result.placement if result is not None else None,
                 )
             )
         return PlanJobAttempts(
@@ -583,8 +597,7 @@ class JobService(PlanJobReader):
         result = _verified_evaluation_result(job, store)
         if result is None:
             raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
-        receipt, _ = result
-        return EvaluationResult(store, job_id, job["request"], receipt)
+        return EvaluationResult(store, job_id, job["request"], result.receipt)
 
     def _training_item(
         self,
@@ -1068,7 +1081,7 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
     return catalogs
 
 
-def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobReceipt, int] | None:
+def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEvaluation | None:
     from feedbax.studio.canonical_evaluate import (
         evaluation_checkpoint_coordinates, evaluation_subject_provenance, read_evaluation_manifest, states_ref,
     )
@@ -1080,6 +1093,7 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
         if not edge["satisfied"]:
             return None
         binding = edge["binding"]
+        gaps = None
         if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
             selection = binding["checkpoint_selection"]
             members = selection["members"]
@@ -1093,6 +1107,8 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
                 return None
             if "gaps" in selection:
                 members = [*members, selection["closure"]["product"]]
+            if isinstance(subject.select, UpdateSeriesMember):
+                gaps = tuple(StudioEvaluationCheckpointGap.model_validate(gap) for gap in selection.get("gaps", ()))
         else:
             members = [binding["completion"]]
         if any(
@@ -1110,7 +1126,10 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
             or manifest.provenance.metadata != provenance.metadata
         ):
             return None
-        return receipt, states_ref(manifest).content.size
+        return _VerifiedEvaluation(
+            receipt, states_ref(manifest).content.size, gaps,
+            "live" if "live_evaluation_points" in binding else "ordinary",
+        )
     except (OSError, TypeError, ValueError, KeyError):
         return None
 
@@ -1217,10 +1236,16 @@ def _job_status(
     )):
         return JobStatus.STARTING, reason
     if state == "queued":
-        if job["data"].get("placement") == "live" and any(
+        if evaluate and any(
             edge.get("authenticated_completion") and not edge["satisfied"] for edge in job["edges"]
         ):
-            return JobStatus.QUEUED, "Waiting for the bound Train checkpoint series."
+            launch = job.get("launch") or {}
+            selector = ((launch.get("payload") or {}).get("canonical_request") or {}).get("checkpoint")
+            selection = (selector or {}).get("select")
+            if isinstance(selection, dict) and selection.get("kind") == "update_series":
+                updates = ", ".join(map(str, selection["updates"]))
+                return JobStatus.QUEUED, f"Waiting for Train checkpoint selection (requested updates {updates})."
+            return JobStatus.QUEUED, "Waiting for the Train checkpoint."
         return JobStatus.QUEUED, "Waiting for an evaluation slot." if evaluate else "Waiting for a training slot."
     return JobStatus(state), reason
 
