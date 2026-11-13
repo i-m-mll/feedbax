@@ -271,6 +271,9 @@ def test_previous_document_train_bytes_and_mirror_are_preserved(authored):
     previous_payload = managed.model_dump(mode="json") | {
         "graph": None, "task": None, "objective": None,
     }
+    previous_payload["trial_documents"]["model"] = raw["documents"]["reach-model"]["payload"]
+    # Keep the Task ID used by the retained request fixture before the replay fixture changed.
+    previous_payload["trial_documents"]["task"]["id"] = "delayed"
     previous_payload["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] = 0.004
     previous_payload["training_config"]["learning_rate"] = 0.004
     previous = TrainingRequestSpec.model_validate(previous_payload)
@@ -286,6 +289,35 @@ def test_previous_document_train_bytes_and_mirror_are_preserved(authored):
     decoded.spec.training_config.learning_rate = 0.005
     with pytest.raises(ValueError, match="/training_config/learning_rate"):
         lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
+
+
+def test_managed_train_stores_only_scientific_model_names(authored):
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+    from feedbax.contracts.request_identity import request_id
+
+    plan = compile_project(Project.model_validate(document_project(authored)))
+    identity, data = next(iter(plan.requests.items()))
+    stored = json.loads(data)
+    assert stored["schema"] == "feedbax.request.train.documents.v2"
+    model = stored["spec"]["trial_documents"]["model"]
+    assert model["ports"]["inputs"][0]["name"] == "reach_target"
+    wrapper = model["interior"]["components"]["wrapper"]
+    assert "name" not in wrapper
+    assert all("name" not in port for port in wrapper["ports"]["inputs"])
+    assert all("name" not in port for port in wrapper["ports"]["outputs"])
+    decoded = decode_request(data, plan.documents.__getitem__)
+    assert decoded.id == identity
+    restored = decoded.spec.trial_documents.model
+    assert restored.scientific_projection() == authored[1].scientific_projection()
+    assert encode_request(decoded.spec, decoded.inputs).data == data
+    assert identity != request_id("train", stored["spec"], decoded.inputs)
+
+    previous = stored | {"schema": "feedbax.request.train.documents.v1"}
+    with pytest.raises(ValueError, match="Unsupported stored request envelope"):
+        decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
+    wrapper["name"] = "wrapper"
+    with pytest.raises(ValueError, match="did not round-trip"):
+        decode_request(canonical_json_v2_bytes(stored), plan.documents.__getitem__)
 
 
 def document_project(authored, *, evaluation=False):

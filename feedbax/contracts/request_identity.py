@@ -17,6 +17,7 @@ from pydantic_core import to_json
 from feedbax.contracts._request_codec import decode, describe_models, encode
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.model_document import omit_model_display_names, restore_model_display_names
 from feedbax.contracts.request_refs import (
     ContentRef,
     EffectiveBindingId,
@@ -38,7 +39,7 @@ from feedbax.contracts.request_specs import (
 
 _IDENTITY = "feedbax.identity.request.v1"
 _STORAGE_SCHEMA = "feedbax.request.v1"
-_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v1"
+_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v2"
 _EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v1"
 _INPUTS = TypeAdapter(RequestInputs)
 
@@ -196,7 +197,9 @@ def _validated_inputs(inputs: RequestInputs) -> RequestInputs:
     return groups
 
 
-def request_id(kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs) -> RequestId:
+def request_id(
+    kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs, *, storage_schema: str = _STORAGE_SCHEMA,
+) -> RequestId:
     """Hash an already normalized spec projection and the resolved input references."""
     if kind not in REQUEST_KINDS:
         raise ValueError(f"Unknown request kind: {kind!r}")
@@ -220,6 +223,8 @@ def request_id(kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs) -
         for role, members in _validated_inputs(inputs).items()
     }
     preimage = {"identity": _IDENTITY, "kind": kind, "spec": spec, "inputs": references}
+    if storage_schema != _STORAGE_SCHEMA:
+        preimage["schema"] = storage_schema
     return kind + ":" + sha256_bytes(canonical_json_v2_bytes(preimage))
 
 
@@ -248,6 +253,8 @@ def encode_request(
         spec, descriptor.spec_type, fields,
         projected_fields={name: entry.projection for name, entry in reused.items()},
     )
+    if descriptor is DOCUMENT_TRAIN_REQUEST:
+        omit_model_display_names(projection["trial_documents"]["model"])
     documents = {}
     for name in descriptor.documents:
         if name in reused:
@@ -270,7 +277,7 @@ def encode_request(
         },
     }
     return EncodedRequest(
-        id=request_id(kind, projection, inputs),
+        id=request_id(kind, projection, inputs, storage_schema=descriptor.storage_schema),
         data=canonical_json_v2_bytes(envelope),
         documents=documents,
     )
@@ -323,6 +330,11 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         if sha256_bytes(document) != digest:
             raise ValueError(f"Invalid request document bytes for {name}")
         spec_payload[name] = _read_object(document, nullable=kind == "train" and name != "method_payload")
+    if descriptor is DOCUMENT_TRAIN_REQUEST:
+        try:
+            restore_model_display_names(spec_payload["trial_documents"]["model"])
+        except (AttributeError, KeyError, TypeError) as error:
+            raise ValueError("Invalid stored managed Train model projection") from error
     restored = decode(spec_payload, descriptor.spec_type, fields)
     spec = descriptor.spec_type.model_validate_json(json.dumps(restored))
     encoded = encode_request(spec, inputs)
@@ -362,4 +374,6 @@ def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> Ef
             for role, members in inputs.items()
         },
     }
+    if normalized["schema"] != _STORAGE_SCHEMA:
+        preimage["schema"] = normalized["schema"]
     return f"effective:{sha256_bytes(canonical_json_v2_bytes(preimage))}"

@@ -293,8 +293,10 @@ export function ProjectWindow({
       if (command.id === 'addComponent' && !(event.target instanceof Element &&
           event.target.closest('[role="tabpanel"], [data-studio-focus-region="drawer"]'))) return;
       if (!commandInContext(command, { ...context, activity: false })) return;
+      // WebKit must leave the event unhandled for the native menu's key equivalent.
+      if (nativeOwnsShortcut(command, event)) return;
       event.preventDefault();
-      if (!commandInContext(command, context) || nativeOwnsShortcut(command, event)) return;
+      if (!commandInContext(command, context)) return;
       command.invoke();
     }
     window.addEventListener('keydown', handleKey);

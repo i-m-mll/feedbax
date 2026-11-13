@@ -502,6 +502,7 @@ class _LockedProjectFolder:
 @contextmanager
 def _folder_lock(
     location: ProjectFolderLocation, *, write: bool = True, declaration: str | None = None,
+    verify_project: bool = False,
 ) -> Iterator[_LockedProjectFolder]:
     root = location.path
     with _project_directory_chain(root) as chain:
@@ -513,10 +514,10 @@ def _folder_lock(
             recheck_directory_chain(chain, error_factory=ProjectFolderInvalid, context="Project folder")
 
         def check_declaration() -> None:
-            if declaration is not None:
+            if verify_project or declaration is not None:
                 try:
-                    require_text_declaration(root, declaration)
-                except ProjectReadError as error:
+                    read_text_project_declaration(root, directory, expected=declaration)
+                except (OSError, ProjectReadError) as error:
                     raise ProjectFolderInvalid(str(error)) from error
 
         check_declaration()
@@ -733,7 +734,7 @@ class ProjectFolder:
     def _open_folder(
         self, project_id: str, location: ProjectFolderLocation, *, declaration: str | None = None,
     ) -> StudioProjectDocument:
-        with _folder_lock(location, write=False, declaration=declaration) as folder:
+        with _folder_lock(location, write=False, declaration=declaration, verify_project=True) as folder:
             return self._document(project_id, self._load(folder.path, declaration=declaration))
 
     def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:

@@ -65,17 +65,18 @@ def installation(tmp_path, monkeypatch):
     def verify(app):
         return installer.json.loads((app / "verify.json").read_bytes())
 
+    process_guard = installer._require_no_bundle_host
     monkeypatch.setattr(installer, "_launch_services", launch_services)
     monkeypatch.setattr(installer, "_service", command)
     monkeypatch.setattr(installer, "_stage_archive", stage)
     monkeypatch.setattr(installer, "_require_closed_gui", lambda app: None)
     monkeypatch.setattr(installer, "_require_no_bundle_host", lambda app: None)
     monkeypatch.setattr(installer, "verify", verify)
-    return installer, destination, control, unrelated, registrations, service
+    return installer, destination, control, unrelated, registrations, service, process_guard
 
 
 def test_install_replacement_and_uninstall_only_touch_owned_registrations(installation, tmp_path):
-    installer, app, control, unrelated, registrations, service = installation
+    installer, app, control, unrelated, registrations, service, _ = installation
     receipt = tmp_path / "receipt.json"
     for revision in ("first", "second"):
         receipt.write_bytes(installer.json_bytes({
@@ -94,7 +95,7 @@ def test_install_replacement_and_uninstall_only_touch_owned_registrations(instal
 
 
 def test_failed_uninstall_registration_is_recoverable(installation, tmp_path, monkeypatch):
-    installer, app, control, unrelated, registrations, service = installation
+    installer, app, control, unrelated, registrations, service, _ = installation
     receipt = tmp_path / "receipt.json"
     receipt.write_bytes(installer.json_bytes({
         "bundle_id": "same.bundle", "signing": {"team": "same"}, "archive": {},
@@ -122,7 +123,7 @@ def test_failed_uninstall_registration_is_recoverable(installation, tmp_path, mo
 
 
 def test_old_launcher_acknowledgement_cannot_hide_a_live_bundle_host(installation, tmp_path, monkeypatch):
-    installer, app, control, unrelated, registrations, _ = installation
+    installer, app, control, unrelated, registrations, _, process_guard = installation
     receipt = tmp_path / "receipt.json"
     receipt.write_bytes(installer.json_bytes({
         "bundle_id": "same.bundle", "signing": {"team": "same"}, "archive": {},
@@ -130,10 +131,16 @@ def test_old_launcher_acknowledgement_cannot_hide_a_live_bundle_host(installatio
     }))
     installer.install(receipt, receipt, app, "defer")
 
-    def live_host(_app):
-        raise RuntimeError("The retiring Studio release still owns a Host.")
-
-    monkeypatch.setattr(installer, "_require_no_bundle_host", live_host)
+    python = app / "Contents" / "Resources" / "Python Runtime" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (app / "Contents" / "Resources" / "release.json").write_bytes(installer.json_bytes({
+        "resources": {"python": "Resources/Python Runtime/bin/python"},
+    }))
+    monkeypatch.setattr(installer, "_require_no_bundle_host", process_guard)
+    monkeypatch.setattr(installer.subprocess, "check_output", lambda *_args, **_kwargs: (
+        f"/other/python -m feedbax.host --root /other/host\n{python} -m feedbax.host --root /old/host\n"
+    ))
     with pytest.raises(RuntimeError, match="still owns a Host"):
         installer.uninstall(app, "force")
     assert app.exists() and registrations == {app, unrelated}

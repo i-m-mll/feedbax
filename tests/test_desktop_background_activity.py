@@ -45,7 +45,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     release = Path(sys.executable).resolve().parent.parent
     app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "desktop-jobs", desktop_release=release)
     transport, control, browser = _desktop_clients(app)
-    register_activity(app, "fixture")
+    register_activity(app, "fixture", transport.endpoint.generation)
     control.headers["X-Feedbax-Release"] = "fixture"
     server = SimpleNamespace(should_exit=False)
     _register_stop(app, server)
@@ -185,8 +185,8 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
     root = tmp_path / "missing-host"
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(root))
     app = create_app(projects_dir=tmp_path / "projects")
-    _, control, _ = _desktop_clients(app)
-    register_activity(app, "fixture")
+    transport, control, _ = _desktop_clients(app)
+    register_activity(app, "fixture", transport.endpoint.generation)
     control.headers["X-Feedbax-Release"] = "fixture"
     with TestClient(app):
         assert control.get(ACTIVITY).json() == {
@@ -265,3 +265,33 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
         assert done["progress"]["completed_updates"] == 1000
     finally:
         wait_until(lambda: host.retire_runtime(runtime, str(release), "force")["status"] == "absent")
+
+
+def test_document_open_intents_wait_for_gui_and_acknowledge_exact_batches(tmp_path):
+    app = create_app(projects_dir=tmp_path / "projects")
+    transport, control, browser = _desktop_clients(app)
+    generation = transport.endpoint.generation
+    register_activity(app, "fixture", generation)
+    release = {"X-Feedbax-Release": "fixture"}
+    control.headers.update(release)
+    open_documents = f"{ACTIVITY}/open-documents"
+    acknowledge = f"{ACTIVITY}/ack-documents"
+    report = f"{ACTIVITY}/window"
+    declaration = {"sequence": 1, "urls": ["file:///projects/First%20Project/reach.feedbax"]}
+    folder = {"sequence": 2, "urls": ["file:///external/Project/"]}
+    starting = {"pid": 10, "project": None, "ready": False}
+
+    assert browser.post(open_documents, headers=release, json=declaration).status_code == 403
+    assert control.post(open_documents, headers={"X-Feedbax-Release": "other"}, json=declaration).status_code == 409
+    assert control.post(open_documents, json=declaration).json() == {"pid": None}
+    assert control.post(open_documents, json=declaration).json() == {"pid": None}
+    first = control.post(report, json=starting).json()
+    assert first == {"open": None, "documents": {"generation": generation, "batches": [declaration]}}
+    assert control.post(open_documents, json=folder).json() == {"pid": 10}
+    assert control.post(report, json=starting).json()["documents"]["batches"] == [declaration, folder]
+    assert control.post(acknowledge, json={"generation": "old", "through": 2}).status_code == 409
+    assert control.post(acknowledge, json={"generation": generation, "through": 1}).status_code == 200
+    assert control.post(open_documents, json=declaration).json() == {"pid": 10}
+    assert control.post(report, json=starting).json()["documents"]["batches"] == [folder]
+    assert control.post(acknowledge, json={"generation": generation, "through": 2}).status_code == 200
+    assert control.post(report, json=starting).json()["documents"] is None
