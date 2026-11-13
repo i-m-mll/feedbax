@@ -67,6 +67,7 @@ from feedbax.studio.canonical_train import (
 )
 
 if TYPE_CHECKING:
+    from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
     from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
     from feedbax.project_folder import ProjectFolder, SettledProjectPlan
@@ -267,6 +268,7 @@ class JobService(PlanJobReader):
         *,
         bootstrap_modules: tuple[str, ...] = (),
         enable_evaluation_candidate: bool = False,
+        live_validation_qualifications: Sequence[ValidationQualification] = (),
     ) -> None:
         super().__init__(
             host, enable_evaluation_candidate=enable_evaluation_candidate,
@@ -274,6 +276,9 @@ class JobService(PlanJobReader):
         )
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
+        self._live_validation_qualifications = {
+            (entry.train_request, entry.evaluate_request): entry for entry in live_validation_qualifications
+        }
         self._training_worker = Launch(
             argv=(sys.executable,),
             env={
@@ -309,11 +314,10 @@ class JobService(PlanJobReader):
         project = reviewed.project_id
         before = {run.key: run for run in reviewed.plan.runs}
         kinds = {before[key].kind for key in selected.values() if key in before}
-        evaluate = self._enable_evaluation_candidate and kinds == {"evaluate"}
-        if self._enable_evaluation_candidate and {"train", "evaluate"} <= kinds:
-            raise JobConflict("/runs: submit the Train and Evaluate rows in separate actions.")
+        evaluate = self._enable_evaluation_candidate and "evaluate" in kinds
+        train = "train" in kinds
         command = {
-            "kind": "canonical_evaluate" if evaluate else "canonical_train",
+            "kind": "canonical_train" if train or not evaluate else "canonical_evaluate",
             "reviewed_revision": reviewed.revision,
             "semantic_root": reviewed.semantic_root,
             "store": str(reviewed.store_path),
@@ -323,7 +327,7 @@ class JobService(PlanJobReader):
             },
         }
         if checkpoint_catalog:
-            if evaluate:
+            if evaluate and not train:
                 raise JobConflict("/inputs/subject/checkpoint: checkpoint catalogue belongs to Train.")
             checkpoint_catalog = finite_coordinates(checkpoint_catalog)
             command["checkpoint_catalog"] = list(checkpoint_catalog)
@@ -334,7 +338,7 @@ class JobService(PlanJobReader):
         runs = {}
         checkpoints = {}
         names_by_key = {key: name for name, key in selected.items()}
-        freeze_catalogs = self._enable_evaluation_candidate and "train" in kinds
+        freeze_catalogs = self._enable_evaluation_candidate and train
         reviewed_catalogs = _planned_checkpoint_catalogs(reviewed.plan) if freeze_catalogs else {}
         with folders.admission_plan(project) as current:
             if current.store_path != reviewed.store_path:
@@ -361,10 +365,10 @@ class JobService(PlanJobReader):
                         continue
                     data = _plan_run_data(name, run)
                     try:
-                        _, checkpoint = self.evaluation_parameters(current.plan, run)
+                        params, checkpoint = self.evaluation_parameters(current.plan, run)
                         item = self._evaluation_item(
                             project, run.request_id, current.plan.requests[run.request_id], data, store,
-                            checkpoint,
+                            checkpoint, params,
                         )
                     except (ValueError, KeyError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
@@ -444,7 +448,7 @@ class JobService(PlanJobReader):
                         items[name] = _rejected(
                             name,
                             f"cannot_run /inputs/subject: {EVALUATION_SUBJECT_REQUIRED}"
-                            if evaluate else
+                            if job.request.startswith("evaluate:") else
                             "/inputs/checkpoint: select an unambiguous admitted Train predecessor",
                         )
                         runs.pop(name)
@@ -456,7 +460,7 @@ class JobService(PlanJobReader):
                 "project": project, "continues": None, "runs": runs, "command": command,
                 "actor": actor.model_dump(mode="json"),
             }
-            if runs and not evaluate:
+            if train and any(item.job and item.job.request.startswith("train:") for item in items.values()):
                 requests = {
                     plan_run_key(key.variant, key.step, key.row): run.request_id
                     for key, run in after.items()
@@ -527,7 +531,7 @@ class JobService(PlanJobReader):
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
-        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef,
+        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef, params: RolloutParameters,
     ) -> AdmissionItem:
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput,
@@ -549,13 +553,10 @@ class JobService(PlanJobReader):
             warm_entrypoint="feedbax.training.evaluate_worker:main",
             payload=payload.model_dump(mode="json", by_alias=True),
         )
-        if isinstance(checkpoint.select, UpdateSeriesMember):
-            from feedbax.training.validation_placement import place_validation
-
-            placement = place_validation(
-                checkpoint.select.updates, producer_started=False, live_products_supported=False, budget=None,
-            )
-            data = data | {"placement": placement.location}
+        if isinstance(checkpoint.select, UpdateSeriesMember) and not params.variation:
+            qualification = self._live_validation_qualifications.get((checkpoint.request_id, request_id))
+            if qualification is not None:
+                data = data | {"validation_qualification": qualification.model_dump(mode="json")}
         return AdmissionItem(
             run_key=data["run_key"],
             job=Job(
@@ -1074,7 +1075,8 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
             return None
         train, provenance = evaluation_subject_provenance(binding)
         if (
-            manifest.input_training_runs != train
+            ("live_evaluation_points" in binding) != (manifest.metadata.get("placement") == "live")
+            or manifest.input_training_runs != train
             or manifest.provenance.parents != provenance.parents
             or manifest.provenance.metadata != provenance.metadata
         ):
@@ -1186,6 +1188,10 @@ def _job_status(
     )):
         return JobStatus.STARTING, reason
     if state == "queued":
+        if job["data"].get("placement") == "live" and any(
+            edge.get("authenticated_completion") and not edge["satisfied"] for edge in job["edges"]
+        ):
+            return JobStatus.QUEUED, "Waiting for the bound Train checkpoint series."
         return JobStatus.QUEUED, "Waiting for an evaluation slot." if evaluate else "Waiting for a training slot."
     return JobStatus(state), reason
 

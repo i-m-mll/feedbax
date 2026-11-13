@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 from dataclasses import dataclass
 import os
 from collections.abc import Sequence
@@ -14,6 +15,7 @@ from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRo
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.live_evaluate import BoundLiveEvaluationPoint, ScoredEvaluationPoint
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
@@ -27,7 +29,7 @@ from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.dataset import publish_dataset
+from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.studio.canonical_evaluate import (
     ROLLOUT_TYPE,
     STATES_MEDIA_TYPE,
@@ -318,7 +320,7 @@ def _checkpoint_dataset(datasets, *, axis="checkpoint"):
 
     from feedbax.dataset import Dataset, Variable
 
-    descriptors = [dataset.descriptor for dataset in datasets]
+    descriptors = [dataset.descriptor.model_copy(deep=True) for dataset in datasets]
     base = descriptors[0]
     member_graphs = [descriptor.attrs.pop("effective_graph_sha256", None) for descriptor in descriptors]
     if any(descriptor != base for descriptor in descriptors[1:]):
@@ -355,6 +357,68 @@ def _empty_update_dataset(params: RolloutParameters) -> Dataset:
     }, schema_id=params.states_schema)
 
 
+def _series_dataset(members, binding, params, stop, *, update_axis, job_id, store, opened: ExitStack):
+    points = {}
+    if "live_evaluation_points" in binding:
+        pinned = {
+            member["publication_cursor"]: member["checkpoint"]
+            for member in binding["checkpoint_selection"]["members"]
+        }
+        for raw in binding["live_evaluation_points"]:
+            point = BoundLiveEvaluationPoint.model_validate(raw)
+            if (
+                point.evaluation_job_id != job_id
+                or pinned.get(point.publication_cursor) != point.checkpoint.model_dump(mode="json")
+                or point.checkpoint.completed_updates in points
+            ):
+                raise ValueError("Live Evaluate point differs from its settled checkpoint binding.")
+            points[point.checkpoint.completed_updates] = point.result
+
+    datasets, summaries, resolved_members, objectives = [], [], [], set()
+    for checkpoint, source in members:
+        if stop.exists():
+            return None
+        point = points.get(checkpoint.completed_updates)
+        if isinstance(point, ScoredEvaluationPoint):
+            prepared = prepare_rollout(source, checkpoint, params)
+            if point.member != prepared.member or point.objective != prepared.objective:
+                raise ValueError("Live Evaluate point differs from its resolved scientific binding.")
+            store.verify_object(point.states.object_ref)
+            dataset = opened.enter_context(open_stored_dataset(store, point.states))
+            if (
+                point.member.coordinate != checkpoint.completed_updates
+                or point.member.trials != params.trials
+                or dataset.descriptor.schema_id != params.states_schema
+                or dataset.data("update").tolist() != [checkpoint.completed_updates]
+                or dataset.data("trial").tolist() != list(params.trials)
+            ):
+                raise ValueError("Live Evaluate dataset differs from its resolved inputs.")
+            summary = float(dataset.data("objective/total").item())
+            if summary != point.total:
+                raise ValueError("Live Evaluate summary differs from its durable dataset.")
+            member, objective = point.member, point.objective
+        else:
+            result = _rollouts(source, checkpoint, params, stop, update_axis=update_axis)
+            if result is None:
+                return None
+            dataset, summary, member, objective = result
+        datasets.append(dataset)
+        summaries.append(summary)
+        resolved_members.append(member)
+        objectives.add(objective)
+    if stop.exists():
+        return None
+    if len(objectives) > 1:
+        raise CannotRun("/inputs/subject/checkpoint", "selected checkpoints have different Objectives")
+    dataset = _checkpoint_dataset(datasets, axis=update_axis) if datasets else _empty_update_dataset(params)
+    summary = {"objective/total": sum(summaries) / len(summaries)} if summaries else {}
+    effective = ResolvedRolloutBinding(
+        members=tuple(resolved_members), seed=params.seed, trial_policy=params.trial_policy,
+        objective=objectives.pop(),
+    ) if resolved_members else None
+    return dataset, summary, effective
+
+
 def main(argv: Sequence[str]) -> int:
     events = _Events(Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]))
     try:
@@ -375,78 +439,64 @@ def main(argv: Sequence[str]) -> int:
         events.phase("restoring")
         members, binding = _bound_subject(request)
         events.phase("running")
-        datasets, summaries, resolved_members, objectives = [], [], [], set()
         is_series = isinstance(subject.select, UpdateSeriesMember)
-        update_axis = "update" if is_series else "checkpoint"
-        for checkpoint, source in members:
-            result = _rollouts(source, checkpoint, params, stop, update_axis=update_axis)
+        with ExitStack() as opened:
+            result = _series_dataset(
+                members, binding, params, stop, update_axis="update" if is_series else "checkpoint",
+                job_id=job_id, store=store, opened=opened,
+            )
             if result is None or stop.exists():
                 return events.result(_Result("stopped"))
-            dataset, summary, member, objective = result
-            datasets.append(dataset)
-            summaries.append(summary)
-            resolved_members.append(member)
-            objectives.add(objective)
-        dataset = _checkpoint_dataset(datasets, axis=update_axis) if datasets else _empty_update_dataset(params)
-        summary = {"objective/total": sum(summaries) / len(summaries)} if summaries else {}
-        if len(objectives) > 1:
-            raise CannotRun("/inputs/subject/checkpoint", "selected checkpoints have different Objectives")
-        effective = (
-            ResolvedRolloutBinding(
-                members=tuple(resolved_members), seed=params.seed, trial_policy=params.trial_policy,
-                objective=objectives.pop(),
+            dataset, summary, effective = result
+            effective_metadata = {
+                "effective_binding": effective.model_dump(mode="json"),
+                "effective_binding_sha256": effective.digest(),
+            } if effective is not None else {}
+            if is_series:
+                effective_metadata["placement"] = "live" if "live_evaluation_points" in binding else "ordinary"
+            events.phase("finalizing")
+            train, provenance = evaluation_subject_provenance(binding)
+            projection = EvaluationRunSpec(
+                evaluation_type=ROLLOUT_TYPE, training_run_ids=[parent.id for parent in train],
+                inputs=provenance.parents, params=spec.params,
             )
-            if resolved_members else None
-        )
-        effective_metadata = {
-            "effective_binding": effective.model_dump(mode="json"),
-            "effective_binding_sha256": effective.digest(),
-        } if effective is not None else {}
-        if is_series:
-            effective_metadata["placement"] = "ordinary"
-        events.phase("finalizing")
-        train, provenance = evaluation_subject_provenance(binding)
-        projection = EvaluationRunSpec(
-            evaluation_type=ROLLOUT_TYPE, training_run_ids=[parent.id for parent in train],
-            inputs=provenance.parents, params=spec.params,
-        )
-        with store._exclusive_lock():
-            ref = publish_dataset(store, dataset)
-            manifest = EvaluationRunManifest(
-                id=evaluation_manifest_id(job_id),
-                status="completed",
-                evaluation_spec=SpecPayload(
-                    kind="EvaluationRunSpec", inline=projection.model_dump(mode="json"),
-                ),
-                input_training_runs=train,
-                provenance=provenance,
-                artifacts=[
-                    ArtifactRef(
-                        role="states", logical_name="states", sha256=ref.content.sha256,
-                        size_bytes=ref.content.size, media_type=STATES_MEDIA_TYPE,
-                        storage_backend="feedbax-cas",
-                        metadata={"descriptor_sha256": ref.descriptor_sha256},
+            with store._exclusive_lock():
+                ref = publish_dataset(store, dataset)
+                manifest = EvaluationRunManifest(
+                    id=evaluation_manifest_id(job_id),
+                    status="completed",
+                    evaluation_spec=SpecPayload(
+                        kind="EvaluationRunSpec", inline=projection.model_dump(mode="json"),
                     ),
-                ],
-                summary_metrics=summary,
-                metadata={
-                    "request_id": request.request_id,
-                    "canonical_request": request.canonical_request.request.model_dump(mode="json"),
-                    **effective_metadata,
-                },
-            )
-            normalized = normalize_manifest_spec_payloads(manifest)
-            manifest_ref = store.bind_manifest(
-                manifest.kind, manifest.id, normalized.model_dump_json(exclude_none=True).encode(),
-            )
-            store.register_root(ContentRootRecord(
-                root_id=manifest.id,
-                root_kind="run",
-                targets=(
-                    ContentRetentionTarget(ref_kind="manifest", manifest=manifest_ref),
-                    ContentRetentionTarget(ref_kind="object", object=ref.object_ref),
-                ),
-            ))
+                    input_training_runs=train,
+                    provenance=provenance,
+                    artifacts=[
+                        ArtifactRef(
+                            role="states", logical_name="states", sha256=ref.content.sha256,
+                            size_bytes=ref.content.size, media_type=STATES_MEDIA_TYPE,
+                            storage_backend="feedbax-cas",
+                            metadata={"descriptor_sha256": ref.descriptor_sha256},
+                        ),
+                    ],
+                    summary_metrics=summary,
+                    metadata={
+                        "request_id": request.request_id,
+                        "canonical_request": request.canonical_request.request.model_dump(mode="json"),
+                        **effective_metadata,
+                    },
+                )
+                normalized = normalize_manifest_spec_payloads(manifest)
+                manifest_ref = store.bind_manifest(
+                    manifest.kind, manifest.id, normalized.model_dump_json(exclude_none=True).encode(),
+                )
+                store.register_root(ContentRootRecord(
+                    root_id=manifest.id,
+                    root_kind="run",
+                    targets=(
+                        ContentRetentionTarget(ref_kind="manifest", manifest=manifest_ref),
+                        ContentRetentionTarget(ref_kind="object", object=ref.object_ref),
+                    ),
+                ))
         receipt = JobReceipt(manifest_id=manifest.id, manifest_sha256=manifest_ref.object.sha256)
         return events.result(_Result("succeeded", receipt=receipt.model_dump(mode="json")))
     except CannotRun as error:

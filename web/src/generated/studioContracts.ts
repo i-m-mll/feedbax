@@ -59,6 +59,7 @@ export interface StudioActivityJob {
   earlier_definition?: boolean;
   seen?: boolean;
   actor?: StudioSubmissionActor | null;
+  placement?: "live" | "ordinary" | null;
 }
 
 export interface StudioEventReset {
@@ -4452,6 +4453,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "earlier_definition": z.boolean().optional(),
       "seen": z.boolean().optional(),
       "actor": StudioSubmissionActorSchema.nullable().optional(),
+      "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioActivityJob>;

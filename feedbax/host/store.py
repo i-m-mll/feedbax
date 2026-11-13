@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
+from feedbax.host import live_evaluate
 from feedbax.host.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
 )
@@ -137,7 +139,7 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript(SCHEMA)
+        self.db.executescript(SCHEMA + live_evaluate.SCHEMA)
         if "authenticated_completion" not in {
             row["name"] for row in self.db.execute("PRAGMA table_info(edges)")
         }:
@@ -198,6 +200,12 @@ class Store:
                 self.db.execute(
                     "UPDATE jobs SET checkpoint=? WHERE id=?", (dump(data["checkpoint"]), job_id)
                 )
+        elif kind == LIVE_EVALUATE_POINT:
+            self._ingest_evaluation_point(row, data)
+            return
+        elif kind == "live_evaluate_error":
+            self.evaluation_error(row, require_text(data.get("message"), "evaluation error"))
+            return
         elif kind == "terminal":
             outcome = dict(data)
             if row["event_error"] and outcome["outcome"] == "succeeded":
@@ -288,6 +296,7 @@ class Store:
             if previous:
                 return json.loads(previous[0])
             results, aliases, inserted = [], {}, []
+            live_drivers: set[str] = set()
             projects = set(record.get("projects", ()))
             if record.get("project"):
                 projects.add(record["project"])
@@ -310,6 +319,8 @@ class Store:
                     )
                     continue
                 self._validate_job(job)
+                job["data"].pop("placement", None)
+                job["data"].pop("placement_detail", None)
                 payload = job["launch"]["payload"]
                 canonical_request = payload.get("canonical_request")
                 evaluate = job["request"].startswith("evaluate:") and canonical_request is not None
@@ -425,6 +436,10 @@ class Store:
                     job_id, disposition = live["id"], "attached"
                 else:
                     self._require_admission_current(job, item["checked_through"])
+                    placement = None
+                    if evaluate and selected is not None and selected.allows_gaps:
+                        placement = self._place_evaluation(job, source, selected, live_drivers)
+                        job["data"].update(placement=placement["location"], placement_detail=placement)
                     job_id, disposition = job["id"], "admitted"
                     self.db.execute(
                         "INSERT INTO jobs(id, project, request, launch, slot, data) VALUES (?,?,?,?,?,?)",
@@ -438,7 +453,10 @@ class Store:
                         ),
                     )
                     inserted.append(job)
-                    self.append(self.get(job_id), "queued", {})
+                    row = self.get(job_id)
+                    self.append(row, "queued", {})
+                    if placement is not None:
+                        self.append(row, live_evaluate.PLACEMENT_EVENT, placement)
                 aliases[job["id"]] = job_id
                 results.append(
                     {
@@ -480,6 +498,8 @@ class Store:
             if item["job_id"] is None:
                 continue
             job = self.get(item["job_id"])
+            if job is not None and job["request"].startswith("evaluate:"):
+                continue
             payload = json.loads(job["launch"])["payload"] if job is not None else {}
             if (
                 job is None
@@ -935,7 +955,7 @@ class Store:
         return None
 
     def _completion_candidate(
-        self, anchor: str, selection: CheckpointSelection | None = None,
+        self, anchor: str, selection: CheckpointSelection | None = None, *, tip: str | None = None,
     ) -> tuple[dict | None, dict | None, list[_CompletionRejection]]:
         """Select an authenticated final product or exact checkpoint publications.
 
@@ -949,6 +969,17 @@ class Store:
                SELECT jobs.* FROM jobs JOIN lineage USING (id) ORDER BY jobs.seq""",
             (anchor,),
         )
+        pinned_tip = tip
+        if tip is not None:
+            by_id = {attempt["id"]: attempt for attempt in attempts}
+            pinned = []
+            while tip is not None:
+                attempt = by_id[tip]
+                pinned.append(attempt)
+                if tip == anchor:
+                    break
+                tip = attempt["continues"]
+            attempts = reversed(pinned)
         resume_checkpoints: dict[str, str] = {}
         paths: dict[str, tuple[sqlite3.Row, ...]] = {}
         pending = False
@@ -1008,17 +1039,18 @@ class Store:
                         binding["checkpoint_selection"]["gaps"] = [
                             {"update": update, "reason": "checkpoint_unavailable"} for update in absent
                         ]
-                        try:
-                            closure = self._series_closure(attempt, path)
-                        except CompletionFileError as error:
-                            rejections.append(_CompletionRejection(attempt_id, "checkpoint_selection", str(error)))
-                        else:
-                            if closure is not None:
-                                binding["checkpoint_selection"]["closure"] = closure
-                                if attempt["state"] == "succeeded" and completed_series is None:
-                                    completed_series = binding
-                                elif settled_series is None:
-                                    settled_series = binding
+                        if pinned_tip is None or attempt_id == pinned_tip:
+                            try:
+                                closure = self._series_closure(attempt, path)
+                            except CompletionFileError as error:
+                                rejections.append(_CompletionRejection(attempt_id, "checkpoint_selection", str(error)))
+                            else:
+                                if closure is not None:
+                                    binding["checkpoint_selection"]["closure"] = closure
+                                    if attempt["state"] == "succeeded" and completed_series is None:
+                                        completed_series = binding
+                                    elif settled_series is None:
+                                        settled_series = binding
                     missing = f"Producer closed without checkpoint coordinates {absent}."
 
             state = attempt["state"]
@@ -1037,7 +1069,7 @@ class Store:
                 raw = attempt["checkpoint"]
                 boundary = json.loads(raw) if raw is not None else None
                 resume_checkpoints[attempt_id] = dump(boundary, sort_keys=True)
-            if resumable or state in LIVE_STATES:
+            if (pinned_tip is None or attempt_id == pinned_tip) and (resumable or state in LIVE_STATES):
                 # A continuation starts after its recovery coordinate.
                 pending |= (selection is not None and selection.allows_gaps and state in LIVE_STATES)
                 pending |= can_publish and (
@@ -1088,6 +1120,81 @@ class Store:
                     },
                 )
 
+    def _ingest_evaluation_point(self, producer: sqlite3.Row, data: dict) -> None:
+        owner = live_evaluate.assigned_evaluation(self.db, producer, producer["delivery"])
+        if owner is None or owner["state"] != "queued":
+            return
+        if owner["id"] != data.get("evaluation_job_id"):
+            self.evaluation_error(producer, "Live Evaluate point names a different owning attempt.")
+            return
+        try:
+            point, cursor = live_evaluate.authenticate_point(self.db, producer, owner, data)
+            data = point.model_dump(mode="json") | {"publication_cursor": cursor}
+            existing = self.db.execute(
+                """SELECT data FROM events WHERE job=? AND kind=?
+                   AND json_extract(data,'$.publication_cursor')=? LIMIT 1""",
+                (owner["id"], LIVE_EVALUATE_POINT, cursor),
+            ).fetchone()
+            if existing is not None:
+                if json.loads(existing[0]) != data:
+                    raise CompletionFileError("Conflicting live Evaluate points for one checkpoint.")
+                return
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            self.evaluation_error(producer, str(error))
+            return
+        self.append(owner, LIVE_EVALUATE_POINT, data)
+
+    def evaluation_error(self, producer: sqlite3.Row, message: str) -> None:
+        owner = live_evaluate.assigned_evaluation(self.db, producer, producer["delivery"])
+        if owner is not None and owner["state"] == "queued":
+            self.finished(owner, {"outcome": "failed", "error": {
+                "code": "live_evaluation_protocol", "message": message,
+            }})
+
+    def _place_evaluation(self, job: dict, producer: sqlite3.Row, selection: CheckpointSelection, occupied: set[str]) -> dict:
+        from feedbax.training.validation_placement import (
+            ValidationPlacement, ValidationQualification, place_validation, validation_runtime,
+        )
+
+        source = json.loads(producer["launch"])
+        payload = source["payload"]
+        spec = payload.get("spec", {})
+        interval = spec.get("checkpoint_progress", {}).get("checkpoint_interval")
+        method = spec.get("method_payload", {}).get("payload", {})
+        horizon = method.get("target_total")
+        # Live dispatch never changes the Train publication schedule.
+        supported = (
+            source.get("warm_entrypoint") == "feedbax.training_host_worker:main"
+            and producer["continues"] is None
+            and method.get("checkpoint_initialization") is None
+            and type(interval) is int and interval > 0 and type(horizon) is int
+            and all(update <= horizon and (update == horizon or update % interval == 0) for update in selection.coordinates)
+        )
+        qualification = None
+        if raw := job["data"].pop("validation_qualification", None):
+            qualification = ValidationQualification.model_validate(raw)
+            if (
+                qualification.train_request != producer["request"]
+                or qualification.evaluate_request != job["request"]
+            ):
+                raise HostError("invalid_request", "Validation qualification differs from the admitted requests.")
+            if qualification.runtime != validation_runtime(source):
+                qualification = None
+        placement = place_validation(
+            selection.coordinates,
+            producer_started=producer["state"] != "queued" or producer["delivery"] != 0,
+            live_products_supported=supported,
+            budget=qualification.budget if qualification is not None else None,
+        )
+        if placement.location == "live":
+            if producer["id"] in occupied or live_evaluate.choose_evaluation(self.db, producer) is not None:
+                placement = ValidationPlacement(location="ordinary", reason="driver_occupied")
+            else:
+                occupied.add(producer["id"])
+        return placement.model_dump(mode="json", exclude_none=True) | (
+            {"evidence": qualification.evidence} if qualification is not None else {}
+        )
+
     def resolve_completions(self) -> None:
         with self.db:
             rows = self.db.execute(
@@ -1103,14 +1210,31 @@ class Store:
                 anchor = edge["parent"]
                 launch = json.loads(job["launch"])
                 selection = requested_checkpoint_selection(job["request"], launch)
-                key = anchor, selection
+                is_live = json.loads(job["data"]).get("placement") == "live"
+                tip = live_evaluate.pinned_tip(self.db, job["id"]) if is_live else None
+                if is_live and tip is None:
+                    producer = self.get(anchor)
+                    if producer["state"] in TERMINAL_STATES:
+                        self.finished(job, {"outcome": "interrupted", "error": {
+                            "code": "producer_unassigned", "message": "Train ended before live Evaluate was assigned.",
+                        }})
+                    continue
+                if tip is not None and tip["state"] in LIVE_STATES:
+                    continue
+                tip_id = tip["id"] if tip is not None else None
+                key = anchor, selection, tip_id
                 if key not in candidates:
-                    candidates[key] = self._completion_candidate(anchor, selection)
+                    candidates[key] = self._completion_candidate(anchor, selection, tip=tip_id)
                 binding, error, rejections = candidates[key]
                 self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:
-                    self.finished(job, {"outcome": "blocked", "error": error})
+                    outcome = "interrupted" if is_live and error["code"] == "input_unavailable" else "blocked"
+                    self.finished(job, {"outcome": outcome, "error": error})
                 elif binding is not None:
+                    if is_live:
+                        binding = binding | {"live_evaluation_points": live_evaluate.selected_points(
+                            self.db, job["id"], binding["checkpoint_selection"]["members"],
+                        )}
                     self.db.execute(
                         """UPDATE edges SET satisfied=1, binding=?
                            WHERE job=? AND parent=? AND authenticated_completion AND NOT satisfied""",

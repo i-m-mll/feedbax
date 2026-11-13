@@ -1,31 +1,46 @@
 """Choose a placement from measured capacity and the resolved Evaluate workload."""
 
-from dataclasses import dataclass
-from math import isfinite
+from hashlib import sha256
 from typing import Literal
 
+from pydantic import Field
+
 from feedbax.checkpoint_coordinates import finite_coordinates
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.request_refs import Sha256
 
 
-@dataclass(frozen=True)
-class ValidationBudget:
-    durable_point_p95_ms: float
-    steady_update_ms: float
-    max_point_ms: float
-    max_update_fraction: float
-
-    def __post_init__(self) -> None:
-        if any(not isfinite(value) or value <= 0 for value in (
-            self.durable_point_p95_ms, self.steady_update_ms, self.max_point_ms, self.max_update_fraction,
-        )):
-            raise ValueError("Placement needs finite positive timing and budget inputs.")
+class ValidationBudget(StrictModel):
+    durable_point_p95_ms: float = Field(gt=0, allow_inf_nan=False)
+    steady_update_ms: float = Field(gt=0, allow_inf_nan=False)
+    max_point_ms: float = Field(gt=0, allow_inf_nan=False)
+    max_update_fraction: float = Field(gt=0, allow_inf_nan=False)
 
 
-@dataclass(frozen=True)
-class ValidationPlacement:
+class ValidationQualification(StrictModel):
+    """Trusted local measurements tied to the exact runtime and saved workload."""
+
+    train_request: str
+    evaluate_request: str
+    runtime: Sha256
+    evidence: str = Field(min_length=1)
+    budget: ValidationBudget
+
+
+class ValidationPlacement(StrictModel):
     location: Literal["live", "ordinary"]
-    reason: Literal["within_budget", "late", "unqualified", "unmeasured", "over_budget"]
+    reason: Literal["within_budget", "late", "unqualified", "unmeasured", "over_budget", "driver_occupied"]
     predicted_update_fraction: float | None = None
+
+
+def validation_runtime(launch: dict) -> str:
+    """Identify the worker configuration without the request or any delivery sidecar."""
+    profile = {
+        "argv": list(launch["argv"]), "env": launch["env"], "cwd": launch["cwd"],
+        "warm_entrypoint": launch["warm_entrypoint"], "preload": list(launch["preload"]),
+    }
+    return sha256(canonical_json_v2_bytes(profile)).hexdigest()
 
 
 def place_validation(
@@ -38,13 +53,13 @@ def place_validation(
     """Resolve placement for a finite series without changing its requested updates."""
     coordinates = sorted(finite_coordinates(updates))
     if producer_started:
-        return ValidationPlacement("ordinary", "late")
+        return ValidationPlacement(location="ordinary", reason="late")
     if not live_products_supported:
-        return ValidationPlacement("ordinary", "unqualified")
+        return ValidationPlacement(location="ordinary", reason="unqualified")
     if budget is None:
-        return ValidationPlacement("ordinary", "unmeasured")
+        return ValidationPlacement(location="ordinary", reason="unmeasured")
     interval = min(right - left for left, right in zip((0, *coordinates), coordinates))
     fraction = budget.durable_point_p95_ms / (budget.steady_update_ms * interval)
     if budget.durable_point_p95_ms > budget.max_point_ms or fraction > budget.max_update_fraction:
-        return ValidationPlacement("ordinary", "over_budget", fraction)
-    return ValidationPlacement("live", "within_budget", fraction)
+        return ValidationPlacement(location="ordinary", reason="over_budget", predicted_update_fraction=fraction)
+    return ValidationPlacement(location="live", reason="within_budget", predicted_update_fraction=fraction)
