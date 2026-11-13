@@ -1,14 +1,22 @@
 """Use the canonical nested model and Evaluate fixture in the mounted window."""
 
 import json
+from pathlib import Path
+import sys
 
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.desktop.release import AppPaths
 from tests.test_model_document_plan import _model_project
 
 
 if __name__ == "__main__":
-    project = _model_project()
-    print(json.dumps([
-        {"kind": kind, "id": name, kind: value}
-        for kind in ("document", "step")
-        for name, value in project[f"{kind}s"].items()
-    ]))
+    home, project_id = sys.argv[1:]
+    project = Project.model_validate(_model_project())
+    paths = AppPaths.resolve(instance_root=Path(home))
+    root = paths.web / "projects" / project_id
+    for name, data in dump_text_project(project, ProjectConfiguration(project=project_id, store="results")).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    print(json.dumps(project_id))

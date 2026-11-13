@@ -39,6 +39,7 @@ export type ModelEdgeData = {
   waypoints?: readonly ModelPosition[];
   attachments?: readonly { id: string; label: string; mark: string; delay: boolean; select(): void }[];
   self?: number;
+  bundleCount?: number;
 };
 export type ModelEdge = Edge<ModelEdgeData, 'signal' | 'physical'>;
 
@@ -140,10 +141,11 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
   const delayed = data?.attachments?.some((item) => item.delay);
   return <>
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
-      style={{ strokeWidth: data?.selected ? 3 : physical ? 2.4 : 1.3, strokeDasharray: delayed ? '5 3' : undefined }} />
-    {data?.attachments?.length ? <EdgeLabelRenderer>
+      style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3, strokeDasharray: delayed ? '5 3' : undefined }} />
+    {data?.attachments?.length || data?.bundleCount ? <EdgeLabelRenderer>
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
-        {data.attachments.map(({ id, label, mark, select }) =>
+        {data.bundleCount && <span className="rounded border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
+        {data.attachments?.map(({ id, label, mark, select }) =>
           <button key={id} type="button" aria-label={label} title={label}
             onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</button>)}
       </div>
@@ -175,7 +177,7 @@ type Props = {
   onContext(event: ReactMouseEvent, address: ModelAddress, point: ModelPosition): void;
   onConnectStart: OnConnectStart;
   onConnect(source: string, sourceHandle: string | null, target: string, targetHandle: string | null): void;
-  onConnectEnd(point: ModelPosition, valid: boolean): void;
+  onConnectEnd(point: ModelPosition, valid: boolean, empty: boolean): void;
   onLibraryDrop(type: string, point: ModelPosition): void;
 };
 
@@ -239,7 +241,11 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         onPaneClick={onClear} onNodeDragStop={(_, _node, moved) => onMove(moved as ModelCard[])}
         onConnectStart={onConnectStart}
         onConnect={(connection) => onConnect(connection.source, connection.sourceHandle, connection.target, connection.targetHandle)}
-        onConnectEnd={(event, connection) => onConnectEnd(point('changedTouches' in event ? event.changedTouches[0] : event), connection.isValid === true)}>
+        onConnectEnd={(event, connection) => {
+          const pointer = 'changedTouches' in event ? event.changedTouches[0] : event;
+          const target = document.elementFromPoint(pointer.clientX, pointer.clientY);
+          onConnectEnd(point(pointer), connection.isValid === true, !!target?.classList.contains('react-flow__pane'));
+        }}>
         {physical && <Background gap={16} size={1} />}
       </StudioCanvas>
     </div>

@@ -124,6 +124,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const [query, setQuery] = useState('');
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
   const [search, setSearch] = useState<ModelPosition>();
+  const [searchSource, setSearchSource] = useState<Port>();
   const [searchText, setSearchText] = useState('');
   const [locked, setLocked] = useState(false);
   const [rename, setRename] = useState<string>();
@@ -272,21 +273,39 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     setMenu(undefined);
     setPath(path);
   }
-  function openSearch(point = cursor.current ?? positionAt(objects.length)) {
+  function openSearch(point = cursor.current ?? positionAt(objects.length), source?: Port) {
     if (!editTopology) return;
     setSearchText('');
     setSearch(point);
+    setSearchSource(source);
   }
-  function add(definition: ComponentDefinition, point?: ModelPosition) {
-    const position = point ?? positionAt(objects.length);
+  function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
+    const occupied = objects.map(([id], index) => persisted?.[addressKey(at(graph, { kind: 'component', id }))] ?? positionAt(index));
+    let index = 0;
+    let available = positionAt(index);
+    while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
+      available = positionAt(++index);
+    }
+    const position = point ?? available;
+    const source = from && wireEnd(from);
     void apply('Add Component', {
       op: 'add_component', graph, position,
+      ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
+        ? { connect_from: source, connect_to_port: to } : {}),
       component: {
         kind: 'leaf', name: shortName(definition.name), type: definition.identity?.type_id ?? definition.name,
         revision: definition.revision, fields: Object.fromEntries(Object.entries(definition.default_params ?? {})
           .filter(([name]) => name !== 'dt' && name !== 'control_dt')) as Record<string, JsonValue>,
       },
     }).then((ok) => { if (ok) setSearch(undefined); });
+  }
+  function matchesSource(definition: ComponentDefinition, name: string, source: Port) {
+    const target = definition.port_types?.inputs?.[name];
+    if (typeof source.type === 'string' || target?.kind === 'conserving') return false;
+    if (target?.dtype && source.type.base && target.dtype !== source.type.base) return false;
+    const shape = source.type.shape;
+    return !shape || !target?.shape || (shape.length === target.shape.length &&
+      shape.every((axis, index) => typeof axis !== 'number' || axis === target.shape?.[index]));
   }
   function portAt(node: string, handle: string | null) {
     return handle ? portMap.get(node)?.find((port) => portId(port) === handle) : undefined;
@@ -403,6 +422,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)), makeCard(outputCard, 0)];
   const selfLoops = new Map<string, number>();
+  const bundled = new Map<string, ModelEdge>();
   const makeEdge = (id: string, from: Parameters<typeof idFor>[0] & { port: string },
     to: Parameters<typeof idFor>[0] & { port: string }, type: ModelEdge['type']): ModelEdge => {
     const isPhysical = type === 'physical';
@@ -428,11 +448,23 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       },
     };
   };
-  const edges = [
+  const connections = [
     ...wires.map(([id, wire]) => makeEdge(id, wire.source, wire.target, 'signal')),
     ...('connections' in (interior ?? {}) ? Object.entries((interior as { connections?: Record<string, { a: Parameters<typeof makeEdge>[1]; b: Parameters<typeof makeEdge>[2] }> }).connections ?? {})
       .map(([id, connection]) => makeEdge(id, connection.a, connection.b, 'physical')) : []),
   ];
+  const edges = connections.flatMap((edge) => {
+    if (!collapsed?.[graphId] || edge.source === edge.target || edge.source.startsWith('@') || edge.target.startsWith('@')) return [edge];
+    const endpoints = edge.type === 'physical' ? [edge.source, edge.target].sort() : [edge.source, edge.target];
+    const key = JSON.stringify([edge.type, ...endpoints]);
+    const representative = bundled.get(key);
+    if (!representative) {
+      bundled.set(key, edge);
+      return [edge];
+    }
+    if (representative.data) representative.data.bundleCount = (representative.data.bundleCount ?? 1) + 1;
+    return [];
+  });
 
   const element = selection?.element;
   const component = element?.kind === 'component' ? interior?.components?.[element.id] : undefined;
@@ -654,10 +686,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           onClear={clear} onBox={(cards) => state.setState({
             selection: cards.filter((node) => node.data.address.element.kind === 'component').map((node) => node.data.address),
           })} onMove={move} onContext={contextual} onConnectStart={connectStart} onConnect={connect}
-          onConnectEnd={(point, valid) => {
+          onConnectEnd={(point, valid, empty) => {
             connectionReview.current?.abort();
             setVerdict(undefined);
-            if (!valid && !dragSource.current) cursor.current = point;
+            if (!valid && empty && dragSource.current?.direction === 'output') openSearch(point, dragSource.current);
             dragSource.current = undefined;
           }} onLibraryDrop={(type, point) => {
             const definition = registry.get(type);
@@ -682,7 +714,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     overlay: search ? <Dialog ariaLabel="Add Component" onClose={() => setSearch(undefined)} manageFocus panelClassName={panel}>
       <input data-dialog-autofocus aria-label="Components" className="border border-shell-divider px-2 py-1"
         value={searchText} onChange={(event) => setSearchText(event.currentTarget.value)} />
-      <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />
+      {searchSource ? definitions.filter((item) => searchable(item, searchText)).flatMap((item) =>
+        (item.input_ports ?? []).filter((port) => matchesSource(item, port, searchSource)).map((port) =>
+          <button key={JSON.stringify([item.name, port])} type="button" className={button} disabled={!editTopology}
+            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</button>))
+        : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
     </Dialog> : addPort ? <Dialog ariaLabel="Add Port" onClose={() => setAddPort(undefined)} manageFocus panelClassName={panel}>
       <Field label="Name" value="" parse={(raw) => raw.trim() || undefined} commit={(name) => {
         void apply('Add Port', { op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name: String(name), type: {} } }, false)

@@ -409,6 +409,8 @@ export interface AddComponent {
   graph: ModelAddress;
   component: LeafComponent | CompositeComponent;
   position: ModelPosition;
+  connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
+  connect_to_port?: string | null;
 }
 
 export interface DeleteElements {
@@ -4622,6 +4624,8 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
       "position": ModelPositionSchema,
+      "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
+      "connect_to_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<AddComponent>;

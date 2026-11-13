@@ -30,6 +30,8 @@ class AddComponent(StrictModel):
     graph: ModelAddress
     component: LeafComponent | CompositeComponent
     position: ModelPosition
+    connect_from: SignalSource | None = None
+    connect_to_port: ModelElementId | None = None
 
 
 class ModelSelection(StrictModel):

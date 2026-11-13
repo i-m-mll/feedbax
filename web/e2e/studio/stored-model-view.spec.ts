@@ -115,10 +115,14 @@ test('authors and reopens an addressed Model through the project history', async
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
 });
 
-test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request }) => {
+test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request }, info) => {
   test.setTimeout(45_000);
-  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.stored_model'));
-  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const seeded = await seedManagedProject(request, []);
+  const { projectPath } = seeded;
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.snapshot.project_id);
+  const opened = await request.get(`${projectPath}/open`);
+  expect(opened.ok(), await opened.text()).toBe(true);
+  const { snapshot } = await opened.json() as StudioProjectDocument;
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });

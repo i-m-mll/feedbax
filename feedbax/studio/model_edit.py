@@ -408,6 +408,10 @@ class _Edit:
         address = _address(self.name, command.graph.composites, "component", id=key)
         self.positions[address.to_text()] = command.position
         self.changed.append(address)
+        if command.connect_from is not None and command.connect_to_port is not None:
+            self.connect(command.graph, command.connect_from.model_dump(mode="json"), _component(key, command.connect_to_port))
+        elif command.connect_from is not None or command.connect_to_port is not None:
+            raise _Refusal(command.graph, "Choose both ports for the new connection")
 
     def add_port(self, command: edits.AddPort) -> None:
         owner, graph = self.graph(command.graph)
