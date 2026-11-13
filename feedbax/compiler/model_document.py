@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from hashlib import sha256
+from math import isfinite
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, SolverConfigSpec
@@ -294,20 +295,27 @@ class _Lower:
                     length = attachment.delay.value
                     if attachment.delay.unit == "s":
                         length /= self.model.step_seconds
-                    if round(length) != 1 or attachment.initial != 0 or pending_reset is not None:
-                        raise self.problem(path, "attachment", "only a one-step zero-initialized delay is qualified", parent=at, id=attachment.id)
+                    if not isfinite(length):
+                        raise self.problem(path, "attachment", "delay step count is not finite", parent=at, id=attachment.id)
+                    steps = round(length)
+                    if steps < 1 or attachment.delay.unit == "st" and steps != length:
+                        raise self.problem(path, "attachment", "delay must resolve to at least one whole step", parent=at, id=attachment.id)
+                    if type(attachment.initial) not in (int, float) or not -3.4028234663852886e38 <= attachment.initial <= 3.4028234663852886e38:
+                        raise self.problem(path, "attachment", "delay Initial requires a qualified numeric value", parent=at, id=attachment.id)
                     if signal is None or signal.shape is None:
                         raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
                     if signal.dtype != "float32":
                         raise self.problem(path, "attachment", "delay requires a float32 reset", parent=at, id=attachment.id)
-                    pending_reset = ModelDelayCarry(
+                    reset = ModelDelayCarry(
                         shape=signal.shape, dtype=signal.dtype, units=signal.units,
+                        steps=steps, initial=attachment.initial,
                         model_delay_id=attachment.id, model_wire_id=key,
                     ).model_dump(mode="json")
                     relay = _generated("delay", key, attachment.id)
                     add_generated(relay, "feedbax.Input", {}, origin=origin)
-                    emit(source, (relay, "input"), _generated("delay_input", key, attachment.id), origin)
+                    emit(source, (relay, "input"), _generated("delay_input", key, attachment.id), origin, reset=pending_reset)
                     source = (relay, "output")
+                    pending_reset = reset
                     continue
                 if isinstance(attachment, InterventionAttachment):
                     if attachment.window is not None:

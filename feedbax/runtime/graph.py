@@ -23,6 +23,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 from feedbax.contracts.array_values import ArrayValueSpec
 from feedbax.contracts.portable import ComponentOwner
 from feedbax.contracts._causal_inputs import input_driver_conflicts
+from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.runtime._graph import detect_cycles_and_sort
 from feedbax.runtime._graph_key_schedule import (
     derive_key,
@@ -46,6 +47,18 @@ def _nested_cycle_key(node_name: str) -> tuple[str, str]:
 
 def _is_nested_cycle_key(key: tuple[str, str]) -> bool:
     return key[0] == _NESTED_CYCLE_NODE
+
+
+def _cycle_sample(wire: Wire, carry: PyTree) -> PyTree:
+    initializer = wire.recurrent_initializer or {}
+    return carry[0] if "model_delay_id" in initializer and initializer.get("steps", 1) > 1 else carry
+
+
+def _advance_cycle(wire: Wire, carry: PyTree, sample: PyTree) -> PyTree:
+    initializer = wire.recurrent_initializer or {}
+    if "model_delay_id" in initializer and initializer.get("steps", 1) > 1:
+        return jnp.concatenate((carry[1:], jnp.expand_dims(sample, 0)), axis=0)
+    return sample
 
 
 def init_state_from_component(component: "Component") -> State:
@@ -897,6 +910,10 @@ class Graph(GraphNode):
         trace: tuple[GraphTraceRequest, ...] = (),
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
         port_values = {} if cycle_port_values is None else dict(cycle_port_values)
+        if self._scoped_schedule is None and cycle_port_values is not None:
+            for wire in self._cycle_wires:
+                target = (wire.target_node, wire.target_port)
+                port_values[target] = _cycle_sample(wire, cycle_port_values[target])
         trial_scope_sources, initializer_upstream_nodes = (
             (set(), set()) if cycle_port_values is None else self._trial_initializer_dependencies()
         )
@@ -926,7 +943,9 @@ class Graph(GraphNode):
             for wire in self._cycle_wires:
                 source_key = (wire.source_node, wire.source_port)
                 target_key = (wire.target_node, wire.target_port)
-                new_cycle_port_values[target_key] = port_values[source_key]
+                new_cycle_port_values[target_key] = _advance_cycle(
+                    wire, cycle_port_values[target_key], port_values[source_key],
+                )
             for port_key, value in port_values.items():
                 if _is_nested_cycle_key(port_key):
                     new_cycle_port_values[port_key] = value
@@ -984,7 +1003,8 @@ class Graph(GraphNode):
                 outgoing.setdefault(route.source, []).append(route.target)
             else:
                 wire = owners[route.wire.owner].wires[route.wire.index]
-                values[route.target] = previous[route.wire.owner][wire.target_node, wire.target_port]
+                carry = previous[route.wire.owner][wire.target_node, wire.target_port]
+                values[route.target] = _cycle_sample(wire, carry)
 
         for scope in schedule.order:
             node = owners[scope[:-1]].nodes[scope[-1]]
@@ -1013,8 +1033,9 @@ class Graph(GraphNode):
             wire_owner = route.wire.owner
             wire = owners[wire_owner].wires[route.wire.index]
             if route.temporality == "recurrent" and wire_owner:
-                next_carry.setdefault(wire_owner, {})[wire.target_node, wire.target_port] = (
-                    values[route.source]
+                target = (wire.target_node, wire.target_port)
+                next_carry.setdefault(wire_owner, {})[target] = _advance_cycle(
+                    wire, previous[wire_owner][target], values[route.source],
                 )
             if not wire_owner and route.target in values:
                 root_values.setdefault((wire.target_node, wire.target_port), values[route.target])
@@ -1318,6 +1339,10 @@ class Graph(GraphNode):
             if target_key in init_values:
                 continue
             initializer = wire.recurrent_initializer or {}
+            if "model_delay_id" in initializer:
+                delay = ModelDelayCarry.model_validate(initializer)
+                init_values[target_key] = jnp.full(delay.carry_shape, delay.initial, dtype=delay.dtype)
+                continue
             if initializer.get("kind") == "state_output" and (
                 "source_node" in initializer or "source_port" in initializer
             ):

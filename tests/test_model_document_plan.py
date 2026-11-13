@@ -52,14 +52,18 @@ def _port(id_, name, *, shape=None):
     return {"id": id_, "name": name, "type": {"shape": shape}}
 
 
-def test_noncontiguous_group_preserves_rollout_and_gradient():
+@pytest.mark.parametrize(("delay", "initial_value", "expected", "gradient"), [
+    ({"value": 1, "unit": "st"}, 0, [0, 24, 48, 72], [24, 24, 24, 0]),
+    ({"value": 0.02, "unit": "s"}, 5, [120, 120, 24, 48], [24, 24, 0, 0]),
+])
+def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value, expected, gradient):
     scale = {
         "kind": "leaf", "name": "Scale", "type": "feedbax.Scale",
         "fields": {"scale": 2.0, "fixed": True},
     }
     boundary = {"owner": "inputs", "port": "signal"}
     source_wire = _wire(boundary, _end("a", "input"), [
-        {"kind": "delay", "id": "delay", "delay": {"value": 1, "unit": "st"}},
+        {"kind": "delay", "id": "delay", "delay": delay, "initial": initial_value},
         {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 3.0}},
     ])
     model = ModelDocument.model_validate({
@@ -114,10 +118,10 @@ def test_noncontiguous_group_preserves_rollout_and_gradient():
     signal = jnp.arange(1, 5, dtype=jnp.float32)
     for graph in (first.graph, second.graph):
         output, trace = run(graph, signal)
-        np.testing.assert_array_equal(output, [0.0, 24.0, 48.0, 72.0])
+        np.testing.assert_array_equal(output, expected)
         np.testing.assert_array_equal(trace, output)
-        gradient = jax.grad(lambda data: run(graph, data)[0].sum())(signal)
-        np.testing.assert_array_equal(gradient, [24.0, 24.0, 24.0, 0.0])
+        derivative = jax.grad(lambda data: run(graph, data)[0].sum())(signal)
+        np.testing.assert_array_equal(derivative, gradient)
 
     command = ModelEditCommand.model_validate({"operation": {
         "op": "ungroup", "address": grouped.changed[-1].model_dump(mode="json"),
@@ -410,6 +414,10 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     folders = ProjectFolderService(tmp_path / "projects")
     raw = _model_project()
     group = _group_reaching_pipeline(raw, registry.components) if grouped else None
+    if grouped:
+        model = raw["documents"]["reach-model"]["payload"]
+        controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+        controller["interior"]["wires"]["carry"]["attachments"][0]["delay"]["value"] = 3
     project = "nested"
     _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
@@ -442,7 +450,11 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation_job.job_id)
     with result.open_states() as dataset:
         assert dataset.data("/v1/model/state/wrapper/controller/cell/hidden").shape[-2] == 101
-        assert dataset.data("/v1/model/carry/wrapper/controller/carry/carry").shape[-2] == 101
+        carry = dataset.data("/v1/model/carry/wrapper/controller/carry/carry")
+        assert carry.shape[-(3 if grouped else 2)] == 101
+        if grouped:
+            assert carry.shape[-2] == 3
+            np.testing.assert_array_equal(carry[..., 0, :, :], 0)
         assert np.isfinite(dataset.data("objective/total")).all()
         if group is not None:
             assert dataset.data(f"/v1/model/state/{group}/plant/effector~1position").shape[-2] == 101

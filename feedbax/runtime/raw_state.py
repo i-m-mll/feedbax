@@ -30,7 +30,7 @@ class StateLayoutError(ValueError):
 @dataclass(frozen=True)
 class BoundStateValue:
     key: str
-    dimension: str | None
+    dimension: str | tuple[str, ...] | None
     units: str | None
     frame: str | None
     read: Callable[[State, dict | None], jax.Array]
@@ -55,9 +55,11 @@ class RawStateLayout:
                 raise FloatingPointError(f"Nonfinite state samples at {value.key}")
             dims = (*axes, "state_time")
             if value.dimension is not None:
-                dims = (*dims, value.dimension)
-                labels = ["x", "y"] if value.dimension == "xy" else np.arange(samples.shape[-1])
-                coordinates[value.dimension] = Variable(np.asarray(labels), (value.dimension,))
+                extra = (value.dimension,) if isinstance(value.dimension, str) else value.dimension
+                dims = (*dims, *extra)
+                for axis, size in zip(extra, samples.shape[-len(extra):], strict=True):
+                    labels = ["x", "y"] if axis == "xy" else np.arange(size)
+                    coordinates[axis] = Variable(np.asarray(labels), (axis,))
             variables[value.key] = Variable(
                 samples[None, None], dims, units=value.units, frame=value.frame,
             )
@@ -138,7 +140,7 @@ def _carry_reader(
             carry = carry[_nested_cycle_key(parent)]
         value = carry[target]
         if declaration is not None and (
-            value.shape != declaration.shape or value.dtype.name != declaration.dtype
+            value.shape != declaration.carry_shape or value.dtype.name != declaration.dtype
         ):
             raise StateLayoutError(
                 pointer(("inputs", "subject", "graph", *scope, "wires", declaration.model_wire_id)),
@@ -146,6 +148,15 @@ def _carry_reader(
             )
         return value
     return read
+
+
+def _delay_dimensions(delay: ModelDelayCarry, scope: tuple[str, ...]) -> tuple[str, ...] | None:
+    name = "/".join((*scope, delay.model_wire_id, delay.model_delay_id))
+    history = (f"{name}:history",) if delay.steps > 1 else ()
+    signal = (name,) if len(delay.shape) == 1 else tuple(
+        f"{name}:axis{axis}" for axis in range(len(delay.shape))
+    )
+    return (*history, *signal) or None
 
 
 def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> tuple[BoundStateValue, ...]:
@@ -168,8 +179,8 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
                     f"{path}/{wire.authored_id()}", "delay has no qualified raw carry layout",
                 ) from error
             identity = declaration.model_wire_id, declaration.model_delay_id
-            if len(declaration.shape) > 1 or identity in delay_ids or target in expected:
-                raise StateLayoutError(f"{path}/{wire.authored_id()}", "delay carry address or shape is ambiguous")
+            if identity in delay_ids or target in expected:
+                raise StateLayoutError(f"{path}/{wire.authored_id()}", "delay carry address is ambiguous")
             delay_ids.add(identity)
             model_delays[target] = declaration
             expected[target] = wire
@@ -198,7 +209,7 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
     return tuple(
         BoundStateValue(
             semantic_key("model", "carry", scope, delay.model_delay_id, wire=delay.model_wire_id),
-            "/".join((*scope, delay.model_wire_id, delay.model_delay_id)) if delay.shape else None,
+            _delay_dimensions(delay, scope),
             delay.units, None, _carry_reader(target, scope, delay),
         )
         for target, delay in model_delays.items()
