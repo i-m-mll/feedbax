@@ -2,12 +2,13 @@ use block2::RcBlock;
 use objc2::{
     rc::Retained,
     runtime::{AnyObject, NSObjectProtocol, ProtocolObject},
+    MainThreadMarker,
 };
 use objc2_app_kit::{
     NSWindow, NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification,
 };
 use objc2_foundation::{NSError, NSNotification, NSNotificationCenter, NSOperationQueue, NSString};
-use objc2_web_kit::WKWebView;
+use objc2_web_kit::{WKContentWorld, WKWebView};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -37,6 +38,35 @@ thread_local! {
     static OBSERVATIONS: RefCell<BTreeMap<u64, Observations>> = RefCell::new(BTreeMap::new());
 }
 static NEXT_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+pub fn flush_preferences(
+    window: &WebviewWindow,
+    completed: impl Fn(Result<(), String>) + Send + 'static,
+) -> tauri::Result<()> {
+    window.with_webview(move |platform| {
+        let Some(main) = MainThreadMarker::new() else {
+            completed(Err("Window preferences require the main thread.".into()));
+            return;
+        };
+        let webview = unsafe { &*platform.inner().cast::<WKWebView>() };
+        let callback = RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
+            completed(match unsafe { error.as_ref() } {
+                Some(error) => Err(error.localizedDescription().to_string()),
+                None => Ok(()),
+            });
+        });
+        let script = NSString::from_str("await window.__FEEDBAX_FLUSH_WINDOW_PREFERENCES__?.();");
+        unsafe {
+            webview.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                &script,
+                None,
+                None,
+                &WKContentWorld::pageWorld(main),
+                Some(&callback),
+            );
+        }
+    })
+}
 
 struct FrameState {
     origin: String,

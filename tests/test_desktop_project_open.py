@@ -18,6 +18,7 @@ from feedbax.contracts.studio_project import StudioProjectRename
 from feedbax import project_folder
 from feedbax.desktop import transport as desktop_transport
 from feedbax.desktop.control import Endpoint
+from feedbax.desktop.preferences import register_preferences
 from feedbax.jobs import PlanJobAttempts
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
@@ -353,3 +354,72 @@ def test_external_replay_restores_exact_git_bytes(tmp_path):
         assert replay.status_code == 200, replay.text
         assert step.read_bytes() == target
         after = replay.json()
+
+
+def test_restore_revalidates_both_windows_after_a_service_restart(tmp_path):
+    projects = tmp_path / "managed"
+    repo = tmp_path / "outside checkout"
+    _write_train(repo)
+    settings = tmp_path / "studio.json"
+
+    def desktop():
+        app = create_app(projects_dir=projects)
+        register_preferences(app, settings)
+        transport, control, browser = _desktop_clients(app)
+        return control, browser, {"Origin": transport.endpoint.origin}
+
+    def ticket(control, **body):
+        result = control.post("/_desktop/ticket", json=body)
+        assert result.status_code == 200, result.text
+        return result.json()
+
+    def exchange(browser, origin, issued):
+        result = browser.post("/_desktop/exchange", headers={**origin, "X-Feedbax-Ticket": issued["ticket"]})
+        assert result.status_code == 204, result.text
+        assert result.headers["x-feedbax-project"] == issued["project"]["id"]
+
+    first_control, first_browser, first_origin = desktop()
+    opened = [ticket(first_control), ticket(first_control, project_folder=str(repo))]
+    arrangement = {
+        "mode": "details", "primaryView": "model", "secondaryView": "scene",
+        "mapDrawerOpen": False, "detailsDrawerOpen": True, "inspectorOpen": False,
+        "mapHeight": 390, "mapDrawerWidth": 264, "detailsDrawerWidth": 220, "inspectorWidth": 244,
+        "secondaryWidth": 440, "modelPaths": {"primary": {"document": "point-mass", "path": ["nested"]}},
+    }
+    expected = {}
+    for index, issued in enumerate(opened):
+        exchange(first_browser, first_origin, issued)
+        project_id = issued["project"]["id"]
+        route = f"/api/desktop/preferences/windows/{project_id}"
+        expected[project_id] = {**arrangement, "mapHeight": 390 + index * 100}
+        saved = first_browser.put(route, json=expected[project_id], headers=first_origin)
+        assert saved.status_code == 204, saved.text
+        refused = first_browser.put(
+            route, json={**expected[project_id], "project_folder": str(repo)}, headers=first_origin,
+        )
+        assert refused.status_code == 422, refused.text
+
+    control, browser, origin = desktop()
+    external_id = opened[1]["project"]["id"]
+    assert control.post("/_desktop/ticket", json={"project_id": external_id}).status_code == 404
+    for original in opened:
+        folder = original["folder"]
+        request = {"project_folder": folder["path"], "folder_identity": folder["identity"]}
+        restored = ticket(control, **request)
+        assert restored["project"] == original["project"]
+        assert restored["folder"] == folder
+        exchange(browser, origin, restored)
+        project_id = restored["project"]["id"]
+        route = f"/api/desktop/preferences/windows/{project_id}"
+        assert browser.get(route).json() == expected[project_id]
+        assert browser.post("/_desktop/ticket", json=request, headers=origin).status_code == 403
+
+    repo.rename(tmp_path / "moved")
+    _write_train(repo)
+    control, _, _ = desktop()
+    refused = control.post("/_desktop/ticket", json={
+        "project_folder": str(repo), "folder_identity": opened[1]["folder"]["identity"],
+    })
+    assert refused.status_code == 404, refused.text
+    assert not (repo / STUDIO_WRITE_LOCK_FILENAME).exists()
+    assert control.post("/_desktop/ticket", json={"project_id": external_id}).status_code == 404

@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -38,6 +38,7 @@ pub struct Paths {
     pub logs: PathBuf,
     pub control: PathBuf,
     pub projects: PathBuf,
+    pub settings: PathBuf,
     pub storage_id: [u8; 16],
 }
 

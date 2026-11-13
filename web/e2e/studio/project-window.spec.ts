@@ -156,11 +156,9 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   expect(await read(modelPath)).toBe(json(changed));
 });
 
-test('the managed window shares selection and restores the folded slot without editing the folder', async ({ page, request }) => {
+test('the managed window shares selection and retains the folded slot without editing the folder', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('files'));
   const id = snapshot.project_id;
-  const key = `feedbax:studio-window:v1:${id}`;
-  const prefs = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key)!), key);
   await page.goto(`/?project=${encodeURIComponent(id)}`);
   await mapStep(page, 'train').click();
   const primary = page.locator('[data-slot="primary"]');
@@ -179,22 +177,18 @@ test('the managed window shares selection and restores the folded slot without e
   const separator = page.getByRole('separator', { name: 'Slot Width', exact: true });
   await separator.press('ArrowLeft');
   const width = await separator.getAttribute('aria-valuenow');
-  const before = await prefs();
   await page.setViewportSize({ width: 620, height: 850 });
   await expect(separator).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Details Drawer' })).toBeHidden();
-  expect(await prefs()).toEqual(before);
   await page.setViewportSize({ width: 520, height: 850 });
   await expect(separator).toBeHidden();
   await expect(page.locator('.studio-window-slot__strip')).toBeVisible();
-  expect(await prefs()).toEqual(before);
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(separator).toHaveAttribute('aria-valuenow', width!);
 
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   await expect(mapStep(page, 'successor')).toBeHidden();
   await expect(page.locator('.studio-window-map__compact').getByRole('button', { name: 'Select successor' })).toBeVisible();
-  await page.reload();
   await expect(page.getByRole('button', { name: 'Show Details', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
   await expect(separator).toHaveAttribute('aria-valuenow', width!);

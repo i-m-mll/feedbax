@@ -20,7 +20,7 @@ window-shell-geometry = { path = "../../vendor/window-shell/native-geometry", fe
 libc = "0.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSOpenPanel", "NSSavePanel", "NSWindow"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKContentWorld", "WKFrameInfo", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSString", "NSNotification", "NSOperation", "block2"] }
 objc2-service-management = "0.3.2"
 

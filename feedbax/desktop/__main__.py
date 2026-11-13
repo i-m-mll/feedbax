@@ -41,6 +41,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
     from fastapi import HTTPException
     from starlette.staticfiles import StaticFiles
 
+    from feedbax.desktop.preferences import register_preferences
     from feedbax.desktop.transport import DesktopTransport
     from feedbax.orchestration.revision import assert_feedbax_revision_exact
     from feedbax.web.app import create_app
@@ -109,24 +110,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
     async def jobs():
         return app.state.desktop_jobs.snapshot()
 
-    @app.get("/api/desktop/preferences")
-    async def get_preferences():
-        from feedbax.desktop.control import _read_private_json
-
-        try:
-            return _read_private_json(paths.settings / "studio.json")
-        except FileNotFoundError:
-            return {}
-
-    @app.patch("/api/desktop/preferences")
-    async def set_preferences(preferences: dict):
-        from feedbax.desktop.control import write_private_json
-
-        updated = (await get_preferences()) | preferences
-        if len(json.dumps(updated).encode()) > 128 * 1024:
-            raise HTTPException(413, "Studio preferences exceed their storage limit")
-        write_private_json(paths.settings / "studio.json", updated)
-        return updated
+    register_preferences(app, paths.settings / "studio.json")
 
     @app.post(CONTROL_ROUTE + "/stop")
     async def stop(request: dict):
@@ -164,9 +148,14 @@ def main() -> None:
     project = parser.add_mutually_exclusive_group()
     project.add_argument("--project-folder")
     project.add_argument("--project-id")
+    parser.add_argument("--folder-identity", nargs=2, type=int, metavar=("DEVICE", "INODE"))
     args = parser.parse_args()
-    if args.action != "ticket" and (args.project_folder is not None or args.project_id is not None):
+    if args.action != "ticket" and any(
+        value is not None for value in (args.project_folder, args.project_id, args.folder_identity)
+    ):
         parser.error("project selection requires ticket")
+    if args.folder_identity is not None and args.project_folder is None:
+        parser.error("--folder-identity requires --project-folder")
     os.umask(0o077)
     release = Release.load(args.contents)
     if Path(sys.executable).resolve(strict=True) != release.resource("python"):
@@ -187,6 +176,7 @@ def main() -> None:
         print(json.dumps(connect(
             release, paths, seconds=args.wait, action=args.action, disposition=args.disposition,
             project_folder=args.project_folder, project_id=args.project_id,
+            folder_identity=tuple(args.folder_identity) if args.folder_identity is not None else None,
         )))
         return
     os.environ["FEEDBAX_DESKTOP_RELEASE_ROOT"] = str(release.contents)

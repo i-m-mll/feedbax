@@ -737,11 +737,15 @@ class ProjectFolder:
             yield plan
 
     def new(self) -> StudioProjectDocument:
+        return self._new_folder()[0]
+
+    def _new_folder(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
         project_id = f"untitled-{uuid4().hex}"
         configuration = ProjectConfiguration(project=project_id, store="results")
         self.root.mkdir(parents=True, exist_ok=True)
         write_new_project_folder(self.root / project_id, Project(), configuration, PresentationDocument())
-        return self.open(project_id)
+        location = self._folder(project_id)
+        return self._open_folder(project_id, location), location
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
         with self._locked_folder(project_id) as folder:

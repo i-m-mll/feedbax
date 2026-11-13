@@ -73,6 +73,11 @@ class ProjectFolderService(ProjectFolder):
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open a folder selected through the private native control socket."""
+        return self.open_native_folder(folder)[0]
+
+    def open_native_folder(
+        self, folder: Path, expected_identity: tuple[int, int] | None = None,
+    ) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
         if not folder.is_absolute() or ".." in folder.parts:
             raise ProjectFolderInvalid("Choose an absolute Studio project folder.")
         try:
@@ -87,8 +92,13 @@ class ProjectFolderService(ProjectFolder):
             with self._external_projects_lock:
                 if path.name in self._external_projects:
                     raise ProjectFolderInvalid("The selected project conflicts with an external project ID.")
-            return super().open(path.name)
+            location = super()._folder(path.name)
+            if expected_identity is not None and location.identity != expected_identity:
+                raise ProjectFolderNotFound("The saved project folder was replaced")
+            return self._open_folder(path.name, location), location
         grant = ProjectFolderLocation.selected(path)
+        if expected_identity is not None and grant.identity != expected_identity:
+            raise ProjectFolderNotFound("The saved project folder was replaced")
         if not os.access(path, os.R_OK | os.W_OK | os.X_OK):
             raise ProjectFolderInvalid("The selected project folder must be readable and writable.")
         locator = os.fsencode(grant.path) + b"\0" + str(grant.identity).encode("ascii")
@@ -98,7 +108,14 @@ class ProjectFolderService(ProjectFolder):
             if os.path.lexists(self.root / project_id):
                 raise ProjectFolderInvalid("The selected project conflicts with a managed project ID.")
             self._external_projects[project_id] = grant
-        return document
+        return document, grant
+
+    def open_native_id(self, project_id: str) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
+        location = self._folder(project_id)
+        return self._open_folder(project_id, location), location
+
+    def new_native_project(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
+        return self._new_folder()
 
     def _folder(self, project_id: str) -> ProjectFolderLocation:
         with self._external_projects_lock:

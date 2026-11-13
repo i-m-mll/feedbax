@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 
 export const projectWindowViews = [
   'runs', 'model', 'task', 'objective', 'training', 'scene', 'results', 'analysis', 'figures', 'document',
@@ -22,6 +22,12 @@ export interface ProjectWindowState {
   inspectorWidth: number;
   secondaryWidth: number;
   modelPaths?: Partial<Record<ProjectWindowSlot, { document: string; path: string[] }>>;
+}
+
+declare global {
+  interface Window {
+    __FEEDBAX_FLUSH_WINDOW_PREFERENCES__?: (closing?: boolean) => Promise<void>;
+  }
 }
 
 export const defaultProjectWindowState: Readonly<ProjectWindowState> = {
@@ -89,7 +95,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     mode: prefs.mode === 'map' || prefs.mode === 'details' ? prefs.mode : 'both',
     primaryView: isView(prefs.primaryView) ? prefs.primaryView : defaultProjectWindowState.primaryView,
     secondaryView,
-    focusedSlot: secondaryView && prefs.focusedSlot === 'secondary' ? 'secondary' : 'primary',
+    focusedSlot: 'primary',
     mapDrawerOpen: drawer('mapDrawerOpen'),
     detailsDrawerOpen: drawer('detailsDrawerOpen'),
     inspectorOpen: drawer('inspectorOpen'),
@@ -102,39 +108,91 @@ function windowArrangement(value: unknown): ProjectWindowState {
   };
 }
 
-function readArrangement(key: string): ProjectWindowState {
-  try {
-    return windowArrangement(JSON.parse(window.localStorage.getItem(key) ?? 'null'));
-  } catch {
-    return { ...defaultProjectWindowState };
-  }
+function arrangementPayload(state: ProjectWindowState) {
+  const { focusedSlot: _focusedSlot, ...payload } = windowArrangement(state);
+  return JSON.stringify(payload);
 }
 
 export function useProjectWindowState(windowKey: string): [ProjectWindowState, Dispatch<SetStateAction<ProjectWindowState>>] {
-  const key = `feedbax:studio-window:v1:${windowKey}`;
-  const [entry, setEntry] = useState(() => ({ key, state: readArrangement(key) }));
-  const state = entry.key === key ? entry.state : readArrangement(key);
+  const native = !!window.__FEEDBAX_STUDIO_MENU__;
+  const endpoint = `/api/desktop/preferences/windows/${encodeURIComponent(windowKey)}`;
+  const [entry, setEntry] = useState(() => ({ key: windowKey, state: defaultProjectWindowState, edited: false }));
+  const lastSaved = useRef<string>();
+  const desired = useRef<string>();
+  const closing = useRef(false);
+  const saving = useRef(Promise.resolve());
+  const state = entry.key === windowKey ? entry.state : defaultProjectWindowState;
 
   useEffect(() => {
-    if (entry.key !== key) {
-      setEntry({ key, state });
-      return;
-    }
-    try {
-      const arranged = JSON.stringify(windowArrangement(entry.state));
-      if (window.localStorage.getItem(key) !== arranged) window.localStorage.setItem(key, arranged);
-    } catch {
-      // A window can still be rearranged when local storage is unavailable.
-    }
-  }, [entry, key, state]);
+    lastSaved.current = undefined;
+    desired.current = undefined;
+    setEntry((current) => current.key === windowKey
+      ? current
+      : { key: windowKey, state: defaultProjectWindowState, edited: false });
+    if (!native) return;
+    const request = new AbortController();
+    void fetch(endpoint, { signal: request.signal }).then(async (response) => {
+      if (!response.ok) throw new Error(`Studio preferences returned ${response.status}`);
+      const restored = windowArrangement(await response.json());
+      if (request.signal.aborted) return;
+      if (desired.current === undefined) lastSaved.current = arrangementPayload(restored);
+      setEntry((current) => current.key !== windowKey || current.edited
+        ? current
+        : { key: windowKey, state: restored, edited: false });
+    }).catch((error: unknown) => {
+      if (!request.signal.aborted) console.error('Studio window preferences could not be read', error);
+    });
+    return () => request.abort();
+  }, [endpoint, native, windowKey]);
+
+  const flush = useCallback(() => {
+    const operation = saving.current.then(async () => {
+      for (let body = desired.current; body !== undefined && body !== lastSaved.current; body = desired.current) {
+        const response = await fetch(endpoint, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true,
+        });
+        if (!response.ok) throw new Error(`Studio preferences returned ${response.status}`);
+        lastSaved.current = body;
+      }
+    });
+    saving.current = operation.catch(() => {});
+    return operation;
+  }, [endpoint]);
+
+  useEffect(() => {
+    if (!native) return;
+    window.__FEEDBAX_FLUSH_WINDOW_PREFERENCES__ = (close = true) => {
+      closing.current = close;
+      return close ? flush() : Promise.resolve();
+    };
+    const reconnected = () => {
+      void flush().catch((error: unknown) => console.error('Studio window preferences could not be saved', error));
+    };
+    window.addEventListener('studio-native-reconnected', reconnected);
+    return () => {
+      delete window.__FEEDBAX_FLUSH_WINDOW_PREFERENCES__;
+      window.removeEventListener('studio-native-reconnected', reconnected);
+    };
+  }, [flush, native]);
+
+  useLayoutEffect(() => {
+    if (!native || entry.key !== windowKey || !entry.edited) return;
+    const body = arrangementPayload(entry.state);
+    if (body === desired.current || (desired.current === undefined && body === lastSaved.current)) return;
+    desired.current = body;
+    void flush().catch((error: unknown) => console.error('Studio window preferences could not be saved', error));
+  }, [entry, flush, native, windowKey]);
 
   const setState = useCallback<Dispatch<SetStateAction<ProjectWindowState>>>((update) => {
+    if (closing.current) return;
     setEntry((previous) => {
-      const current = previous.key === key ? previous.state : readArrangement(key);
+      const current = previous.key === windowKey ? previous.state : defaultProjectWindowState;
       const next = typeof update === 'function' ? update(current) : update;
-      return next === current && previous.key === key ? previous : { key, state: next };
+      return next === current && previous.key === windowKey
+        ? previous
+        : { key: windowKey, state: next, edited: true };
     });
-  }, [key]);
+  }, [windowKey]);
 
   return [state, setState];
 }

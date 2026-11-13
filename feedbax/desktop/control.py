@@ -19,6 +19,12 @@ CONTROL_ROUTE = "/_desktop"
 _PORT = "port.json"
 
 
+class _ControlRefused(ValueError):
+    def __init__(self, status: int, detail: str) -> None:
+        self.status = status
+        super().__init__(detail)
+
+
 def write_private_json(path: Path, value: object) -> None:
     fd, filename = tempfile.mkstemp(prefix=".write-", dir=path.parent)
     temporary = Path(filename)
@@ -37,7 +43,7 @@ def write_private_json(path: Path, value: object) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _read_private_json(path: Path) -> dict:
+def _read_private_json(path: Path, *, max_bytes: int = 8192) -> dict:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
@@ -45,7 +51,7 @@ def _read_private_json(path: Path) -> dict:
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.getuid()
             or info.st_mode & 0o077
-            or info.st_size > 8192
+            or info.st_size > max_bytes
         ):
             raise PermissionError(f"invalid private desktop service record: {path}")
         value = json.load(stream)
@@ -91,7 +97,7 @@ def call(paths: AppPaths, action: str, *, body: dict | None = None, timeout: flo
         response = connection.getresponse()
         data = json.load(response)
         if response.status >= 400:
-            raise ValueError(data.get("detail", f"local service HTTP {response.status}"))
+            raise _ControlRefused(response.status, data.get("detail", f"local service HTTP {response.status}"))
         return data
     finally:
         connection.close()
@@ -121,6 +127,7 @@ def bind_studio(paths: AppPaths) -> socket.socket:
 def connect(
     release: Release, paths: AppPaths, *, seconds: float, action: str, disposition: str,
     project_folder: str | None = None, project_id: str | None = None,
+    folder_identity: tuple[int, int] | None = None,
 ) -> dict:
     deadline = time.monotonic() + seconds
     while True:
@@ -139,9 +146,18 @@ def connect(
             return {"status": "release_mismatch", "service": health}
         if action == "ticket":
             body = {key: value for key, value in (
-                ("project_folder", project_folder), ("project_id", project_id),
+                ("project_folder", project_folder), ("project_id", project_id), ("folder_identity", folder_identity),
             ) if value is not None}
-            result = call(paths, "ticket", body=body)
+            try:
+                result = call(paths, "ticket", body=body)
+            except _ControlRefused as error:
+                if error.status == 503:
+                    return {"status": "stopping"}
+                if error.status in (404, 422):
+                    return {"status": "project_refused", "detail": str(error)}
+                raise
+            except (FileNotFoundError, ConnectionError, TimeoutError):
+                return {"status": "unavailable"}
             token = result.pop("ticket")
             return {**health, **result, "url": f"{health['origin']}{CONTROL_ROUTE}/connect#{token}"}
         if action == "stop":

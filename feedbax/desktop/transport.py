@@ -51,6 +51,7 @@ _BROWSER_HEADERS = {
 class _TicketRequest(StrictModel):
     project_folder: Path | None = None
     project_id: str | None = None
+    folder_identity: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -83,14 +84,18 @@ class DesktopTransport:
                 raise HTTPException(503, "Studio service is stopping")
             if request.project_folder is not None and request.project_id is not None:
                 raise HTTPException(422, "Select a folder or reconnect to one project.")
+            if request.folder_identity is not None and request.project_folder is None:
+                raise HTTPException(422, "Restoring a project requires its folder.")
             folders = self.app.state.project_folders
             try:
                 if request.project_folder is not None:
-                    document = await run_in_threadpool(folders.open_selected_folder, request.project_folder)
+                    document, location = await run_in_threadpool(
+                        folders.open_native_folder, request.project_folder, request.folder_identity,
+                    )
                 elif request.project_id is not None:
-                    document = await run_in_threadpool(folders.open, request.project_id)
+                    document, location = await run_in_threadpool(folders.open_native_id, request.project_id)
                 else:
-                    document = await run_in_threadpool(folders.new)
+                    document, location = await run_in_threadpool(folders.new_native_project)
             except ProjectFolderNotFound as error:
                 raise HTTPException(404, "The selected Studio project folder is missing.") from error
             except (OSError, ValueError) as error:
@@ -101,6 +106,7 @@ class DesktopTransport:
             return {
                 "ticket": self.issue_ticket(project_id),
                 "project": {"id": project_id, "title": document.configuration.project},
+                "folder": {"path": str(location.path), "identity": location.identity},
             }
 
     async def __call__(self, scope, receive, send) -> None:
