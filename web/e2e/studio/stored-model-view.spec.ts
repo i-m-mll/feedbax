@@ -1,8 +1,24 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+
+async function addIntervention(page: Page, projectPath: string, button: Locator, scope: object) {
+  const committed = page.waitForResponse((response) => response.request().method() === 'PATCH' &&
+    new URL(response.url()).pathname === projectPath, { timeout: 8_000 });
+  // A refused preparation produces no PATCH. Report that refusal first.
+  void committed.catch(() => {});
+  const [prepared] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `${projectPath}/model/evaluate-attachment`, { timeout: 8_000 }),
+    button.click(),
+  ]);
+  expect(prepared.request().postDataJSON().scope).toEqual(scope);
+  expect(prepared.ok(), await prepared.text()).toBe(true);
+  const response = await committed;
+  expect(response.ok(), await response.text()).toBe(true);
+}
 
 test('authors and reopens an addressed Model through the project history', async ({ page, request }) => {
   test.setTimeout(50_000);
@@ -146,19 +162,8 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await model.locator('[data-id="controller"] header').dblclick();
   await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  async function addIntervention(scope: object) {
-    const [prepared, committed] = await Promise.all([
-      page.waitForResponse((response) => response.request().method() === 'POST' &&
-        new URL(response.url()).pathname === `${projectPath}/model/evaluate-attachment`),
-      page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
-      inspector.getByRole('button', { name: 'Add Intervention', exact: true }).click(),
-    ]);
-    expect(prepared.request().postDataJSON().scope).toEqual(scope);
-    expect(committed.ok(), await committed.text()).toBe(true);
-    return committed;
-  }
-  const first = await addIntervention({ kind: 'step' });
-  expect(first.ok(), await first.text()).toBe(true);
+  const add = inspector.getByRole('button', { name: 'Add Intervention', exact: true });
+  await addIntervention(page, projectPath, add, { kind: 'step' });
   await expect(inspector.getByRole('spinbutton', { name: 'Factor', exact: true })).toHaveValue('1');
   const [changed] = await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
@@ -176,13 +181,15 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
   await evaluation.getByRole('button', { name: 'Sweep seed', exact: true }).click();
   await evaluation.getByRole('listitem').getByRole('button', { name: 'Select seed control', exact: true }).click();
+  await evaluation.getByRole('button', { name: 'Sweep seed', exact: true }).click();
   await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  await addIntervention({ kind: 'axis_value', axis: 'seed', value: 'control' });
+  await addIntervention(page, projectPath, add, { kind: 'axis_value', axis: 'seed', value: 'control' });
   await mapStep(page, 'baseline').click();
   await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  await addIntervention({ kind: 'rows', rows: ['seed=comparison'] });
+  await addIntervention(page, projectPath, add, { kind: 'rows', rows: ['seed=comparison'] });
+  await expect(model.getByRole('button', { name: 'Scale', exact: true })).toHaveCount(2);
 });
 
 test('persists an attachment in the selected project variant', async ({ page, request }, info) => {
@@ -198,13 +205,7 @@ test('persists an attachment in the selected project variant', async ({ page, re
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  const [prepared, saved] = await Promise.all([
-    page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `${projectPath}/model/evaluate-attachment`),
-    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
-    page.getByRole('button', { name: 'Add Intervention', exact: true }).click(),
-  ]);
-  expect(prepared.request().postDataJSON().scope).toEqual({ kind: 'variant', variant: 'treated' });
-  expect(saved.ok(), await saved.text()).toBe(true);
+  await addIntervention(page, projectPath, page.getByRole('button', { name: 'Add Intervention', exact: true }),
+    { kind: 'variant', variant: 'treated' });
   await expect(model.getByRole('button', { name: 'Scale', exact: true })).toBeVisible();
 });
