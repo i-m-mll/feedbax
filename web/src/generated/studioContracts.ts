@@ -500,13 +500,17 @@ export interface EvaluateAttachmentEdit {
   file: StudioProjectFilePatch;
 }
 
+export interface EvaluateAttachmentReadRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
+}
+
 export interface EvaluateAttachmentRequest {
   revision: unknown;
   run: StudioSavedTrainKey;
-  owner: ModelAddress;
-  attachment: InterventionAttachment;
-  index: number;
-  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows;
+  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
+  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment;
 }
 
 export interface EvaluateAttachmentRows {
@@ -514,8 +518,38 @@ export interface EvaluateAttachmentRows {
   rows: string[];
 }
 
+export interface EvaluateAttachmentState {
+  revision: unknown;
+  records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
+  effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
+}
+
 export interface EvaluateAttachmentStep {
   kind: "step";
+}
+
+export interface EvaluateAttachmentVariant {
+  kind: "variant";
+  variant: string;
+}
+
+export interface AddModelAttachment {
+  op: "add";
+  owner: ModelAddress;
+  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  after: string | null;
+}
+
+export interface ChangeModelAttachment {
+  address: ModelAddress;
+  op: "change";
+  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  after?: string | null;
+}
+
+export interface RemoveModelAttachment {
+  address: ModelAddress;
+  op: "remove";
 }
 
 export interface PasteComponents {
@@ -3182,6 +3216,7 @@ export type Step = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3251,6 +3286,7 @@ export type StudioAnalyzeStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3569,6 +3605,7 @@ export type StudioReportStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3645,6 +3682,7 @@ export type StudioTrainStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -4708,15 +4746,23 @@ export const EvaluateAttachmentEditSchema: z.ZodType<EvaluateAttachmentEdit> = z
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentEdit>;
 
+export const EvaluateAttachmentReadRequestSchema: z.ZodType<EvaluateAttachmentReadRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentReadRequest>;
+
 export const EvaluateAttachmentRequestSchema: z.ZodType<EvaluateAttachmentRequest> = z.lazy(() =>
   z
     .object({
       "revision": z.unknown(),
       "run": StudioSavedTrainKeySchema,
-      "owner": ModelAddressSchema,
-      "attachment": InterventionAttachmentSchema,
-      "index": z.number().int().safe().gte(0),
-      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]),
+      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
+      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentRequest>;
@@ -4730,6 +4776,16 @@ export const EvaluateAttachmentRowsSchema: z.ZodType<EvaluateAttachmentRows> = z
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentRows>;
 
+export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
+      "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentState>;
+
 export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
   z
     .object({
@@ -4737,6 +4793,76 @@ export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentStep>;
+
+export const EvaluateAttachmentVariantSchema: z.ZodType<EvaluateAttachmentVariant> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("variant"),
+      "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentVariant>;
+
+export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("add"),
+      "owner": ModelAddressSchema,
+      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.owner.element.kind !== "wire" && value.owner.element.kind !== "port") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Expected a wire or port owner",
+        });
+      }
+    })
+) as unknown as z.ZodType<AddModelAttachment>;
+
+export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "op": z.literal("change"),
+      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.address.element.kind !== "attachment") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Expected an attachment address",
+        });
+      }
+      if (value.address.element.kind === "attachment" && value.attachment.id !== value.address.element.id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A replacement must retain the addressed attachment ID",
+        });
+      }
+    })
+) as unknown as z.ZodType<ChangeModelAttachment>;
+
+export const RemoveModelAttachmentSchema: z.ZodType<RemoveModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "op": z.literal("remove"),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.address.element.kind !== "attachment") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Expected an attachment address",
+        });
+      }
+    })
+) as unknown as z.ZodType<RemoveModelAttachment>;
 
 export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
   z
@@ -9091,6 +9217,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9180,6 +9307,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9590,6 +9718,7 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9688,6 +9817,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9819,6 +9949,8 @@ export const contractSchemas = {
   ModelEditRequest: ModelEditRequestSchema,
   ModelEditResponse: ModelEditResponseSchema,
   EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
+  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
+  EvaluateAttachmentState: EvaluateAttachmentStateSchema,
   EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
   AnalysisDocument: AnalysisDocumentSchema,
@@ -9936,6 +10068,8 @@ export interface ContractTypeMap {
   ModelEditRequest: ModelEditRequest;
   ModelEditResponse: ModelEditResponse;
   EvaluateAttachmentRequest: EvaluateAttachmentRequest;
+  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
+  EvaluateAttachmentState: EvaluateAttachmentState;
   EvaluateAttachmentEdit: EvaluateAttachmentEdit;
   ModelUndoRequest: ModelUndoRequest;
   AnalysisDocument: AnalysisDocument;

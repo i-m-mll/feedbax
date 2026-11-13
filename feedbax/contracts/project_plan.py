@@ -20,7 +20,9 @@ from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
@@ -48,6 +50,7 @@ from feedbax.contracts.project_resolution import (
     StepTemplate,
     compose_step,
 )
+from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
@@ -361,6 +364,13 @@ def _work[K, T](
 
 
 @dataclass(frozen=True)
+class _ModelSource:
+    document: str
+    model: dict
+    stamp: str
+
+
+@dataclass(frozen=True)
 class _LoweredRow:
     request: EncodedRequest | None
     diagnostics: tuple[ProjectDiagnostic, ...]
@@ -368,6 +378,7 @@ class _LoweredRow:
     admission_problem: RunProblem | None = None
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
+    model_source: _ModelSource | None = None
 
 
 def _encode_row(
@@ -569,6 +580,7 @@ class _Compiler:
         self.diagnostics: list[ProjectDiagnostic] = []
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
+        self.model_sources: dict[RunKey, _ModelSource] = {}
 
     def expand_variants(self) -> None:
         try:
@@ -599,6 +611,14 @@ class _Compiler:
                     parts = tuple(path.split("."))
                     if len(parts) < 2 or parts[0] not in {"documents", "steps"}:
                         raise ValueError("a variant must patch a named document or step")
+                    if len(parts) >= 4 and parts[0] == "steps" and parts[2] == MODEL_ATTACHMENTS:
+                        step = data["steps"].get(parts[1])
+                        if step is not None and MODEL_ATTACHMENTS not in step:
+                            step[MODEL_ATTACHMENTS] = {}
+                            if origins is not None:
+                                origins = patch_source(origins, OverridePatch(
+                                    path=".".join(parts[:3]), op="add", value={},
+                                ), source_shape({}, None))
                     apply_override_patch_in_place(data, patch)
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
@@ -807,6 +827,9 @@ class _Compiler:
         member = to_json(tuple(
             (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
         ))
+        subject = inputs.get("subject") if kind == "evaluate" else None
+        model_source = self.model_sources.get(subject.producer) if subject is not None else None
+        source_stamp = model_source.stamp if model_source is not None else None
 
         def lower(reader=None, previous=None):
             if definition is None:
@@ -823,12 +846,28 @@ class _Compiler:
                 payload = definition.payload
                 document_ids = definition.document_ids
                 document_uses = definition.document_uses
+            model_payload = payload.get("graph")
+            authored_model = None
+            if kind == "train" and isinstance(model_payload, dict) and "interior" in model_payload:
+                document = document_ids.get("payload.graph", "model")
+                authored_model = _ModelSource(
+                    document, model_payload, sha256_bytes(to_json((document, model_payload))),
+                )
+            has_attachments = kind == "evaluate" and MODEL_ATTACHMENTS in payload
             encoding_stamp = (
-                (kind, sha256_bytes(to_json(payload)), member)
+                (kind, sha256_bytes(to_json((payload, source_stamp) if has_attachments else payload)), member)
                 if basis is not None else None
             )
             if previous is not None and previous.encoding_stamp == encoding_stamp:
-                return replace(previous, document_ids=document_ids, document_uses=document_uses)
+                return replace(
+                    previous, document_ids=document_ids, document_uses=document_uses, model_source=authored_model,
+                )
+            if has_attachments:
+                payload = self.lower_attachments(
+                    key, payload, model_source, subject.member.reference if subject is not None else None,
+                )
+                if isinstance(payload, ProjectDiagnostic):
+                    return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             return replace(
                 _encode_row(
                     key, kind, payload, inputs, encoding_stamp,
@@ -839,6 +878,7 @@ class _Compiler:
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,
+                model_source=authored_model,
             )
 
         if self.previous is None:
@@ -847,9 +887,68 @@ class _Compiler:
             self.previous.rows,
             self.work.rows,
             key,
-            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items()))),
+            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp),
             self.authored_inputs[key.variant],
             lower,
+        )
+
+    def lower_attachments(self, key, payload, model_source, reference):
+        from feedbax.compiler.model_attachment import lower_evaluate_attachments
+        from feedbax.compiler.model_document import ModelCompilationProblem
+        from feedbax.studio.schema import validate_graph_connection_schema
+        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+
+        path = f"payload.{MODEL_ATTACHMENTS}"
+        address = None
+        try:
+            batches = MODEL_ATTACHMENT_BATCHES.validate_python(payload[MODEL_ATTACHMENTS])
+            differences = tuple(item for batch in batches.values() for item in batch)
+            stripped = {name: value for name, value in payload.items() if name != MODEL_ATTACHMENTS}
+            if not differences:
+                return stripped
+            address = differences[0].address
+            if payload.get("evaluation_type") != ROLLOUT_TYPE or model_source is None:
+                raise ValueError("Attachment differences require a rollout Evaluate with an authored Train Model")
+            if not isinstance(reference, ProductRef):
+                raise ValueError("Attachment differences require a planned Train subject")
+            train = request_identity.decode_request(
+                self.requests[reference.request_id], self.documents.__getitem__,
+            ).spec
+            if not isinstance(train, TrainingRequestSpec):
+                raise ValueError("Attachment differences require a Train request")
+            document = model_source.document
+            components = self.components or _builtin_model_registry()
+            binding = train.task_binding_spec or StudioTaskBindingSpec()
+            lowered, derived = lower_evaluate_attachments(
+                document, ModelDocument.model_validate(model_source.model), binding, components, differences,
+            )
+            params = RolloutParameters.model_validate(payload["params"])
+            if not derived:
+                return stripped
+            prior = params.variation
+            if isinstance(prior, dict):
+                prior = tuple(prior[name] for name in sorted(prior))
+            variation = (*prior, *derived)
+            effective = resolve_evaluation_variant(train.graph, train.task, variation)
+            issues = validate_graph_connection_schema(
+                effective.graph, "/graph", train.task_binding_spec, component_registry=components,
+            )
+            if issue := next((issue for issue in issues if issue.severity == "error"), None):
+                issue_path = (issue.location or {}).get("path", "/graph")
+                address = lowered.source_address(issue_path) or address
+                raise ValueError(issue.message)
+            return stripped | {"params": params.model_dump(mode="json", exclude_unset=True) | {
+                "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
+            }}
+        except ModelCompilationProblem as error:
+            address = error.address
+            detail = str(error)
+        except ValueError as error:
+            detail = str(error)
+        return ProjectDiagnostic(
+            ResolutionCode.INVALID_PAYLOAD, path, detail, key.step,
+            row=key.row, variant=key.variant,
+            document=address.document if address is not None else None, model_address=address,
         )
 
     def compile_step(
@@ -1003,6 +1102,8 @@ class _Compiler:
             return None
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
+        if lowered.model_source is not None:
+            self.model_sources[key] = lowered.model_source
         run = PlannedRun(
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,

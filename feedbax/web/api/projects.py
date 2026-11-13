@@ -7,7 +7,8 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentEdit, EvaluateAttachmentRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
+    EvaluateAttachmentEdit, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentState,
+    ModelEditRequest, ModelEditResponse, ModelUndoRequest,
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
@@ -219,6 +220,20 @@ def evaluate_attachment(
         )
     except EvaluateAttachmentRefused as error:
         raise HTTPException(422, detail=error.problem.model_dump(mode="json"), headers=_NO_STORE) from error
+
+
+@router.post("/{project_id}/model/evaluate-attachments", response_model_exclude_unset=True)
+def evaluate_attachments(
+    project_id: ProjectName, body: EvaluateAttachmentReadRequest, request: Request, response: Response,
+) -> EvaluateAttachmentState:
+    from feedbax.web.services.evaluate_attachment import read_evaluate_attachments
+
+    try:
+        return _project_response(
+            response, lambda: read_evaluate_attachments(request.app.state.project_folders, project_id, body),
+        )
+    except (KeyError, ValueError) as error:
+        raise HTTPException(422, detail=str(error), headers=_NO_STORE) from error
 
 
 @router.put("/{project_id}/presentation", response_model_exclude_unset=True)

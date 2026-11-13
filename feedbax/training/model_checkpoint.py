@@ -244,6 +244,17 @@ class SemanticModelSlot:
         retained = frozenset(path for path, _ in graph_leaf_specs(self.graph))
         overrides: Mapping[str, float] = {}
         if target is not None:
+            from feedbax.contracts.model_attachment import is_generated_attachment_node
+
+            destination_leaves = dict(graph_leaf_specs(target.graph))
+            source_leaves = dict(graph_leaf_specs(self.graph))
+            removed = {
+                path for path in retained - destination_leaves.keys()
+                if is_generated_attachment_node(path[-1], source_leaves[path].type)
+                and (owner := MODEL_OWNERS.get(source_leaves[path].type)) is not None
+                and not any(value.kind == "learned" for value in owner.values)
+            }
+            retained -= removed
             destination, destination_declarations = _describe(
                 target.graph, target.template, retained=retained,
             )

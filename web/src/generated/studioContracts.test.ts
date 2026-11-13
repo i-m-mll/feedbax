@@ -1,7 +1,9 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  AddModelAttachmentSchema,
   AdditiveGraphChannelTargetSpecSchema,
   ConstantArrayValueSpecSchema,
+  ChangeModelAttachmentSchema,
   GraphMetadataSchema,
   SemanticAnchorSchema,
   SparseCooArrayValueSpecSchema,
@@ -20,6 +22,19 @@ const tags = {
   schema_id: 'feedbax.spec.component_param.array_value',
   schema_version: 'feedbax.spec.component_param.array_value.v1',
 } as const;
+
+it('validates an attachment owner, source-end anchor, and retained ID', () => {
+  const owner = { document: 'model', composites: ['controller'], element: { kind: 'wire', id: 'feedback' } };
+  const attachment = { kind: 'intervention', id: 'gain', operation: 'Scale', fields: { factor: 0.5 } };
+  const addition = { op: 'add', owner, attachment };
+  expect(AddModelAttachmentSchema.safeParse(addition).success).toBe(false);
+  expect(AddModelAttachmentSchema.safeParse({ ...addition, after: null }).success).toBe(true);
+  const address = { ...owner, element: { kind: 'attachment', id: 'gain', parent: owner.element } };
+  expect(ChangeModelAttachmentSchema.safeParse({ op: 'change', address, attachment }).success).toBe(true);
+  expect(ChangeModelAttachmentSchema.safeParse({
+    op: 'change', address, attachment: { ...attachment, id: 'another-gain' },
+  }).success).toBe(false);
+});
 
 describe('generated component-param array value contracts', () => {
   it('preserves numeric array and scalar union types', () => {

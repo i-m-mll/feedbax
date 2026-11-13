@@ -33,6 +33,22 @@ _INTERIOR_IDS = CrossFieldRefinement(
 
 
 CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
+    "AddModelAttachment": (
+        CrossFieldRefinement(
+            "model-attachment.owner",
+            "Expected a wire or port owner",
+            lambda value: value.owner.element.kind not in {"wire", "port"},
+            'value.owner.element.kind !== "wire" && value.owner.element.kind !== "port"',
+        ),
+    ),
+    "ExistingModelAttachment": (
+        CrossFieldRefinement(
+            "model-attachment.address",
+            "Expected an attachment address",
+            lambda value: value.address.element.kind != "attachment",
+            'value.address.element.kind !== "attachment"',
+        ),
+    ),
     "ModelPorts": (
         CrossFieldRefinement(
             "model-ports.unique-ids",
@@ -296,6 +312,18 @@ _TRAINING_POSITION_REFINEMENT = CrossFieldRefinement(
 )
 CROSS_FIELD_REFINEMENTS.update(
     dict.fromkeys(_TRAINING_POSITION_MODELS, (_TRAINING_POSITION_REFINEMENT,))
+)
+
+
+CROSS_FIELD_REFINEMENTS["RemoveModelAttachment"] = CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"]
+CROSS_FIELD_REFINEMENTS["ChangeModelAttachment"] = (
+    *CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"],
+    CrossFieldRefinement(
+        "model-attachment.retained-id",
+        "A replacement must retain the addressed attachment ID",
+        lambda value: value.address.element.kind == "attachment" and value.attachment.id != value.address.element.id,
+        'value.address.element.kind === "attachment" && value.attachment.id !== value.address.element.id',
+    ),
 )
 
 
@@ -567,6 +595,9 @@ CROSS_FIELD_REFINEMENTS.update(
 
 
 REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
+    "AddModelAttachment": frozenset({"_owner"}),
+    "ChangeModelAttachment": frozenset({"_attachment", "_id"}),
+    "RemoveModelAttachment": frozenset({"_attachment"}),
     "ModelPorts": frozenset({"_unique_ports"}),
     "GraphInterior": frozenset({"_unique_elements"}),
     "PhysicalInterior": frozenset({"_unique_elements"}),

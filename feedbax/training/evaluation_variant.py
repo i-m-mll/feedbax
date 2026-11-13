@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
+from feedbax.contracts.model_attachment import is_generated_attachment_node
 from feedbax.contracts.model_occurrence import graph_leaf_specs
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
@@ -195,6 +196,14 @@ def resolve_evaluation_variant(
                         None, owner.revision,
                     }:
                         raise ValueError(f"added owner {component.type!r} has no qualified declaration")
+                case ["nodes", name], ("remove" | "replace"):
+                    node = current.nodes.get(name)
+                    if node is None or not is_generated_attachment_node(name, node.type):
+                        raise ValueError("Expected a generated Model attachment occurrence")
+                    if patch.op == "replace":
+                        target = ComponentSpec.model_validate(patch.value)
+                        if target.type != node.type or target.revision not in {None, node.revision}:
+                            raise ValueError("An attachment field edit must retain its component type and revision")
                 case ["nodes", name, "params", parameter], ("replace" | "add"):
                     node = current.nodes.get(name)
                     if node is None:

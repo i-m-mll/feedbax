@@ -8,9 +8,10 @@ from pydantic import Field, JsonValue, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
+from feedbax.contracts.model_attachment import ModelAttachmentDifference
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    InterventionAttachment, ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput,
+    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput,
 )
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
@@ -180,16 +181,31 @@ class EvaluateAttachmentRows(StrictModel):
     rows: Annotated[tuple[RowKey, ...], Field(min_length=1)]
 
 
-class EvaluateAttachmentRequest(StrictModel):
+class EvaluateAttachmentVariant(StrictModel):
+    kind: Literal["variant"]
+    variant: ProjectName
+
+
+EvaluateAttachmentScope = Annotated[
+    EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant,
+    Field(discriminator="kind"),
+]
+
+
+class EvaluateAttachmentReadRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
-    owner: ModelAddress
-    attachment: InterventionAttachment
-    index: Annotated[int, Field(strict=True, ge=0)]
-    scope: Annotated[
-        EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows,
-        Field(discriminator="kind"),
-    ]
+    scope: EvaluateAttachmentScope
+
+
+class EvaluateAttachmentRequest(EvaluateAttachmentReadRequest):
+    difference: ModelAttachmentDifference
+
+
+class EvaluateAttachmentState(StrictModel):
+    revision: Sha256
+    records: tuple[ModelAttachmentDifference, ...]
+    effective: tuple[ModelAttachmentDifference, ...]
 
 
 class EvaluateAttachmentEdit(StrictModel):

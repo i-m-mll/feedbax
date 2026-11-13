@@ -15,6 +15,8 @@ from pydantic_core import to_json, to_jsonable_python
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_override_patch_copy
+from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.project import (
     Document,
     DocumentOverrides,
@@ -604,6 +606,30 @@ class _Resolver:
                     source = ValueSource("step", name, pointer(path), step=name)
                     override = source_at(self.variant_sources, ("steps", name, *path))
                     origins = patch_source(origins, patch, source_shape(patch.value, source, override))
+        if step.model_attachments:
+            batches = {name: [item.model_dump(mode="json", exclude_unset=True) for item in records]
+                       for name, records in step.model_attachments.items()}
+            inherited = payload.get(MODEL_ATTACHMENTS, {})
+            if not isinstance(inherited, dict):
+                raise _Problem(
+                    ResolutionCode.INVALID_PAYLOAD, MODEL_ATTACHMENTS,
+                    "Expected named batches of Model attachment differences", step=name,
+                )
+            payload = payload | {MODEL_ATTACHMENTS: inherited | batches}
+            if origins is not None:
+                if MODEL_ATTACHMENTS not in origins:
+                    origins = patch_source(origins, OverridePatch(
+                        path=MODEL_ATTACHMENTS, op="add", value={},
+                    ), source_shape({}, None))
+                for batch, records in batches.items():
+                    source = ValueSource("step", name, pointer((MODEL_ATTACHMENTS, batch)), step=name)
+                    patch = OverridePatch(
+                        path=f"{MODEL_ATTACHMENTS}.{batch}",
+                        op="replace" if batch in inherited else "add", value=records,
+                    )
+                    origins = patch_source(origins, patch, source_shape(
+                        records, source, source_at(self.variant_sources, ("steps", name, MODEL_ATTACHMENTS, batch)),
+                    ))
         try:
             sweep = inherit_sweep(
                 parent.sweep, step.sweep, author=name if self.track_sources else None
@@ -739,6 +765,12 @@ class _Resolver:
             try:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
+                if patch.path.startswith(MODEL_ATTACHMENTS + ".") and MODEL_ATTACHMENTS not in payload:
+                    payload = payload | {MODEL_ATTACHMENTS: {}}
+                    if origins is not None:
+                        origins = patch_source(origins, OverridePatch(
+                            path=MODEL_ATTACHMENTS, op="add", value={},
+                        ), source_shape({}, None))
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
                 payload = apply_override_patch_copy(payload, patch)
