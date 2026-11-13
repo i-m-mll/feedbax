@@ -253,6 +253,42 @@ from feedbax.contracts.selection import (
     TopKByMetricPerGroup,
 )
 from feedbax.contracts.value_schema import ValueSchema
+from feedbax.contracts.model_address import (
+    AttachmentElement,
+    ComponentElement,
+    ComponentPortAddress,
+    ComponentPortEnd,
+    FieldElement,
+    GraphElement,
+    InputBoundaryEnd,
+    ModelAddress,
+    OutputBoundaryEnd,
+    PhysicalBoundaryEnd,
+    PhysicalConnectionElement,
+    PortElement,
+    WireElement,
+)
+from feedbax.contracts.model_document import (
+    CompositeComponent,
+    DelayAttachment,
+    GraphInterior,
+    InputDefault,
+    InterventionAttachment,
+    LeafComponent,
+    ModelDocument,
+    ModelPhysicalConnection,
+    ModelPortAttachments,
+    ModelPorts,
+    ModelTime,
+    ModelWire,
+    ModelWorld,
+    PhysicalInterior,
+    PhysicalPort,
+    ProbeAttachment,
+    SignalInput,
+    SignalOutput,
+    SignalType,
+)
 from feedbax.contracts.workspace_replay import (
     ResolvedWorkspaceReplayScene,
     WorkspaceReplayImportedArtifact,
@@ -407,6 +443,38 @@ AUTHORED_CONTRACT_MODELS = (
 
 MODEL_TYPES: list[type[BaseModel]] = [
     *JOB_MODELS,
+    ComponentPortEnd,
+    ComponentPortAddress,
+    InputBoundaryEnd,
+    OutputBoundaryEnd,
+    PhysicalBoundaryEnd,
+    GraphElement,
+    ComponentElement,
+    WireElement,
+    PhysicalConnectionElement,
+    PortElement,
+    AttachmentElement,
+    FieldElement,
+    ModelAddress,
+    SignalType,
+    ModelTime,
+    InputDefault,
+    DelayAttachment,
+    InterventionAttachment,
+    ProbeAttachment,
+    SignalInput,
+    SignalOutput,
+    PhysicalPort,
+    ModelPorts,
+    ModelPortAttachments,
+    ModelWire,
+    ModelPhysicalConnection,
+    LeafComponent,
+    CompositeComponent,
+    GraphInterior,
+    PhysicalInterior,
+    ModelWorld,
+    ModelDocument,
     SparseCooEntrySpec,
     SparseCooArrayValueSpec,
     ConstantArrayValueSpec,
@@ -717,6 +785,8 @@ function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): b
 
 CONTRACT_MODEL_NAMES = [
     *(model.__name__ for model in JOB_MODELS),
+    "ModelAddress",
+    "ModelDocument",
     *(model.__name__ for model in AUTHORED_CONTRACT_MODELS),
     "ProjectValueEdit",
     "GraphListResponse",
@@ -915,6 +985,12 @@ def _apply_zod_constraints(
             schema += f".max({constraint.max_length})"
         elif name in ("_PydanticGeneralMetadata", "StringConstraints"):
             values = {key: value for key, value in vars(constraint).items() if value is not None}
+            if base is float and values.get("allow_inf_nan") is False:
+                del values["allow_inf_nan"]  # The float schema is already finite.
+            if base is str:
+                for key, operation in (("min_length", "min"), ("max_length", "max")):
+                    if key in values:
+                        schema += f".{operation}({_literal_value(values.pop(key))})"
             unsupported = sorted(set(values) - {"pattern"})
             if unsupported:
                 raise ValueError(
@@ -980,7 +1056,11 @@ def zod_schema(
         return _apply_zod_constraints(schema, annotation, metadata, context=context)
     if origin is dict:
         value = args[1] if len(args) == 2 else Any
-        return f"z.record(z.string(), {zod_schema(value, context=f'{context}.*')})"
+        key = args[0] if args else str
+        return (
+            f"z.record({zod_schema(key, context=f'{context}.key')}, "
+            f"{zod_schema(value, context=f'{context}.*')})"
+        )
     if origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
             schema = f"z.array({zod_schema(args[0], context=f'{context}[]')})"
@@ -1008,9 +1088,6 @@ def zod_schema(
                 context=context,
             )
             return f"{inner}.nullable()"
-        if field is not None and field.discriminator:
-            schemas = ", ".join(zod_schema(arg, context=context) for arg in args)
-            return f"z.discriminatedUnion({_literal_value(field.discriminator)}, [{schemas}])"
         return f"z.union([{', '.join(zod_schema(arg, context=context) for arg in args)}])"
 
     return "z.unknown()"

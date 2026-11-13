@@ -206,6 +206,199 @@ export interface StudioSubmissionItem {
   reason?: string | null;
 }
 
+export interface ComponentPortEnd {
+  owner: "component";
+  component: string;
+  port: string;
+}
+
+export interface ComponentPortAddress {
+  owner: "component";
+  component: string;
+  port: string;
+  direction: "input" | "output" | "physical";
+}
+
+export interface InputBoundaryEnd {
+  owner: "inputs";
+  port: string;
+}
+
+export interface OutputBoundaryEnd {
+  owner: "outputs";
+  port: string;
+}
+
+export interface PhysicalBoundaryEnd {
+  owner: "boundary";
+  port: string;
+}
+
+export interface GraphElement {
+  kind: "graph";
+}
+
+export interface ComponentElement {
+  kind: "component";
+  id: string;
+}
+
+export interface WireElement {
+  kind: "wire";
+  id: string;
+}
+
+export interface PhysicalConnectionElement {
+  kind: "physical_connection";
+  id: string;
+}
+
+export interface PortElement {
+  kind: "port";
+  end: ComponentPortAddress | InputBoundaryEnd | OutputBoundaryEnd | PhysicalBoundaryEnd;
+}
+
+export interface AttachmentElement {
+  kind: "attachment";
+  parent: WireElement | PortElement;
+  id: string;
+}
+
+export interface FieldElement {
+  kind: "field";
+  parent: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement;
+  path: Array<string | number>;
+}
+
+export interface ModelAddress {
+  document: string;
+  composites: string[];
+  element: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
+}
+
+export interface SignalType {
+  base?: string | null;
+  shape?: Array<number | string | null> | null;
+  unit?: string | null;
+}
+
+export interface ModelTime {
+  value: number;
+  unit: "s" | "st";
+}
+
+export interface InputDefault {
+  value: JsonValue;
+}
+
+export interface DelayAttachment {
+  kind: "delay";
+  id: string;
+  delay: ModelTime;
+  initial?: JsonValue;
+}
+
+export interface InterventionAttachment {
+  kind: "intervention";
+  id: string;
+  operation: string;
+  fields?: Record<string, JsonValue>;
+  window?: JsonValue;
+}
+
+export interface ProbeAttachment {
+  kind: "probe";
+  id: string;
+  name: string;
+}
+
+export interface SignalInput {
+  id: string;
+  name: string;
+  type: SignalType;
+  default?: InputDefault | null;
+}
+
+export interface SignalOutput {
+  id: string;
+  name: string;
+  type: SignalType;
+}
+
+export interface PhysicalPort {
+  id: string;
+  name: string;
+  type: "translational" | "rotational" | "frame";
+}
+
+export interface ModelPorts {
+  inputs?: SignalInput[];
+  outputs?: SignalOutput[];
+  physical?: PhysicalPort[];
+}
+
+export interface ModelPortAttachments {
+  sources?: Record<string, Array<InterventionAttachment | ProbeAttachment>>;
+  sinks?: Record<string, ProbeAttachment[]>;
+}
+
+export interface ModelWire {
+  source: ComponentPortEnd | InputBoundaryEnd;
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  attachments?: Array<DelayAttachment | InterventionAttachment | ProbeAttachment>;
+}
+
+export interface ModelPhysicalConnection {
+  a: ComponentPortEnd | PhysicalBoundaryEnd;
+  b: ComponentPortEnd | PhysicalBoundaryEnd;
+}
+
+export interface LeafComponent {
+  kind: "leaf";
+  name: string;
+  type: string;
+  revision?: string | null;
+  fields?: Record<string, JsonValue>;
+  port_counts?: Record<string, number>;
+  attachments?: ModelPortAttachments;
+}
+
+export interface CompositeComponent {
+  kind: "composite";
+  name: string;
+  ports: ModelPorts;
+  interior: GraphInterior | PhysicalInterior;
+  substeps?: number;
+  attachments?: ModelPortAttachments;
+}
+
+export interface GraphInterior {
+  components?: Record<string, LeafComponent | CompositeComponent>;
+  wires?: Record<string, ModelWire>;
+  attachments?: ModelPortAttachments;
+  physical_domain?: null;
+}
+
+export interface PhysicalInterior {
+  components?: Record<string, LeafComponent | CompositeComponent>;
+  wires?: Record<string, ModelWire>;
+  attachments?: ModelPortAttachments;
+  physical_domain: "translational" | "rotational" | "planar_multibody" | "spatial_multibody";
+  connections?: Record<string, ModelPhysicalConnection>;
+}
+
+export interface ModelWorld {
+  gravity: [number, number, number];
+}
+
+export interface ModelDocument {
+  schema_version?: "feedbax.spec.model.v1";
+  step_seconds: number;
+  ports: ModelPorts;
+  interior: GraphInterior;
+  world?: ModelWorld | null;
+}
+
 export interface SparseCooEntrySpec {
   coordinate: number[];
   value: boolean | number | "nan" | "+inf" | "-inf";
@@ -3652,6 +3845,384 @@ export const StudioSubmissionItemSchema: z.ZodType<StudioSubmissionItem> = z.laz
     })
     .strict()
 ) as unknown as z.ZodType<StudioSubmissionItem>;
+
+export const ComponentPortEndSchema: z.ZodType<ComponentPortEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("component"),
+      "component": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentPortEnd>;
+
+export const ComponentPortAddressSchema: z.ZodType<ComponentPortAddress> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("component"),
+      "component": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "direction": z.union([z.literal("input"), z.literal("output"), z.literal("physical")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentPortAddress>;
+
+export const InputBoundaryEndSchema: z.ZodType<InputBoundaryEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("inputs"),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<InputBoundaryEnd>;
+
+export const OutputBoundaryEndSchema: z.ZodType<OutputBoundaryEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("outputs"),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<OutputBoundaryEnd>;
+
+export const PhysicalBoundaryEndSchema: z.ZodType<PhysicalBoundaryEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("boundary"),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<PhysicalBoundaryEnd>;
+
+export const GraphElementSchema: z.ZodType<GraphElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("graph"),
+    })
+    .strict()
+) as unknown as z.ZodType<GraphElement>;
+
+export const ComponentElementSchema: z.ZodType<ComponentElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("component"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentElement>;
+
+export const WireElementSchema: z.ZodType<WireElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("wire"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<WireElement>;
+
+export const PhysicalConnectionElementSchema: z.ZodType<PhysicalConnectionElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("physical_connection"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<PhysicalConnectionElement>;
+
+export const PortElementSchema: z.ZodType<PortElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("port"),
+      "end": z.union([ComponentPortAddressSchema, InputBoundaryEndSchema, OutputBoundaryEndSchema, PhysicalBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<PortElement>;
+
+export const AttachmentElementSchema: z.ZodType<AttachmentElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("attachment"),
+      "parent": z.union([WireElementSchema, PortElementSchema]),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<AttachmentElement>;
+
+export const FieldElementSchema: z.ZodType<FieldElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("field"),
+      "parent": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema]),
+      "path": z.array(z.union([z.string(), z.number().int().safe().gte(0).lte(9007199254740991)])).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldElement>;
+
+export const ModelAddressSchema: z.ZodType<ModelAddress> = z.lazy(() =>
+  z
+    .object({
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
+      "element": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAddress>;
+
+export const SignalTypeSchema: z.ZodType<SignalType> = z.lazy(() =>
+  z
+    .object({
+      "base": z.string().nullable().optional(),
+      "shape": z.array(z.union([z.number().int().safe(), z.string(), z.null()])).nullable().optional(),
+      "unit": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SignalType>;
+
+export const ModelTimeSchema: z.ZodType<ModelTime> = z.lazy(() =>
+  z
+    .object({
+      "value": z.number().finite().gt(0),
+      "unit": z.union([z.literal("s"), z.literal("st")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTime>;
+
+export const InputDefaultSchema: z.ZodType<InputDefault> = z.lazy(() =>
+  z
+    .object({
+      "value": jsonValueSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<InputDefault>;
+
+export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("delay"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "delay": ModelTimeSchema,
+      "initial": jsonValueSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayAttachment>;
+
+export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("intervention"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "operation": z.string(),
+      "fields": z.record(z.string(), jsonValueSchema).optional(),
+      "window": jsonValueSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InterventionAttachment>;
+
+export const ProbeAttachmentSchema: z.ZodType<ProbeAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("probe"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<ProbeAttachment>;
+
+export const SignalInputSchema: z.ZodType<SignalInput> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+      "type": SignalTypeSchema,
+      "default": InputDefaultSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SignalInput>;
+
+export const SignalOutputSchema: z.ZodType<SignalOutput> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<SignalOutput>;
+
+export const PhysicalPortSchema: z.ZodType<PhysicalPort> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+      "type": z.union([z.literal("translational"), z.literal("rotational"), z.literal("frame")]),
+    })
+    .strict()
+) as unknown as z.ZodType<PhysicalPort>;
+
+export const ModelPortsSchema: z.ZodType<ModelPorts> = z.lazy(() =>
+  z
+    .object({
+      "inputs": z.array(SignalInputSchema).optional(),
+      "outputs": z.array(SignalOutputSchema).optional(),
+      "physical": z.array(PhysicalPortSchema).optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((() => {
+              const ports = [...(value.inputs ?? []), ...(value.outputs ?? []), ...(value.physical ?? [])];
+              return new Set(ports.map((port) => port.id)).size !== ports.length;
+            })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "port IDs must be unique within a port list",
+        });
+      }
+      if ([value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some((ports) => new Set(ports.map((port) => port.name)).size !== ports.length)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "port names must be unique in each direction",
+        });
+      }
+    })
+) as unknown as z.ZodType<ModelPorts>;
+
+export const ModelPortAttachmentsSchema: z.ZodType<ModelPortAttachments> = z.lazy(() =>
+  z
+    .object({
+      "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.array(z.union([InterventionAttachmentSchema, ProbeAttachmentSchema]))).optional(),
+      "sinks": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.array(ProbeAttachmentSchema)).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPortAttachments>;
+
+export const ModelWireSchema: z.ZodType<ModelWire> = z.lazy(() =>
+  z
+    .object({
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "attachments": z.array(z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelWire>;
+
+export const ModelPhysicalConnectionSchema: z.ZodType<ModelPhysicalConnection> = z.lazy(() =>
+  z
+    .object({
+      "a": z.union([ComponentPortEndSchema, PhysicalBoundaryEndSchema]),
+      "b": z.union([ComponentPortEndSchema, PhysicalBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPhysicalConnection>;
+
+export const LeafComponentSchema: z.ZodType<LeafComponent> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("leaf"),
+      "name": z.string().min(1),
+      "type": z.string().min(1),
+      "revision": z.string().nullable().optional(),
+      "fields": z.record(z.string(), jsonValueSchema).optional(),
+      "port_counts": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.number().int().safe().gte(0)).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<LeafComponent>;
+
+export const CompositeComponentSchema: z.ZodType<CompositeComponent> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("composite"),
+      "name": z.string().min(1),
+      "ports": ModelPortsSchema,
+      "interior": z.union([GraphInteriorSchema, PhysicalInteriorSchema]),
+      "substeps": z.number().int().safe().gte(1).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.interior.physical_domain == null && (value.ports.physical?.length ?? 0) > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "physical ports require an Equations or Mechanics interior",
+        });
+      }
+    })
+) as unknown as z.ZodType<CompositeComponent>;
+
+export const GraphInteriorSchema: z.ZodType<GraphInterior> = z.lazy(() =>
+  z
+    .object({
+      "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])).optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+      "physical_domain": z.null().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((() => {
+      const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+        .flatMap((elements) => Object.keys(elements ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "element IDs must be unique within an interior",
+        });
+      }
+    })
+) as unknown as z.ZodType<GraphInterior>;
+
+export const PhysicalInteriorSchema: z.ZodType<PhysicalInterior> = z.lazy(() =>
+  z
+    .object({
+      "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])).optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+      "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody"), z.literal("spatial_multibody")]),
+      "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((() => {
+      const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+        .flatMap((elements) => Object.keys(elements ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "element IDs must be unique within an interior",
+        });
+      }
+    })
+) as unknown as z.ZodType<PhysicalInterior>;
+
+export const ModelWorldSchema: z.ZodType<ModelWorld> = z.lazy(() =>
+  z
+    .object({
+      "gravity": z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelWorld>;
+
+export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
+  z
+    .object({
+      "schema_version": z.literal("feedbax.spec.model.v1").optional(),
+      "step_seconds": z.number().finite().gt(0),
+      "ports": ModelPortsSchema,
+      "interior": GraphInteriorSchema,
+      "world": ModelWorldSchema.nullable().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((value.ports.physical?.length ?? 0) > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "the model root has signal ports only",
+        });
+      }
+    })
+) as unknown as z.ZodType<ModelDocument>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -8439,6 +9010,8 @@ export const contractSchemas = {
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
+  ModelAddress: ModelAddressSchema,
+  ModelDocument: ModelDocumentSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   ReportDocument: ReportDocumentSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
@@ -8545,6 +9118,8 @@ export interface ContractTypeMap {
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioSubmissionItem: StudioSubmissionItem;
+  ModelAddress: ModelAddress;
+  ModelDocument: ModelDocument;
   AnalysisDocument: AnalysisDocument;
   ReportDocument: ReportDocument;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;

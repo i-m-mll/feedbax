@@ -17,7 +17,62 @@ class CrossFieldRefinement:
     typescript_invalid: str
 
 
+_INTERIOR_IDS = CrossFieldRefinement(
+    "model-interior.unique-ids",
+    "element IDs must be unique within an interior",
+    lambda value: (
+        len(value.components) + len(value.wires) + len(getattr(value, "connections", {}))
+        != len(value.components.keys() | value.wires.keys() | getattr(value, "connections", {}).keys())
+    ),
+    """(() => {
+      const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+        .flatMap((elements) => Object.keys(elements ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()""",
+)
+
+
 CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
+    "ModelPorts": (
+        CrossFieldRefinement(
+            "model-ports.unique-ids",
+            "port IDs must be unique within a port list",
+            lambda value: len(value.inputs) + len(value.outputs) + len(value.physical)
+            != len({port.id for port in (*value.inputs, *value.outputs, *value.physical)}),
+            """(() => {
+              const ports = [...(value.inputs ?? []), ...(value.outputs ?? []), ...(value.physical ?? [])];
+              return new Set(ports.map((port) => port.id)).size !== ports.length;
+            })()""",
+        ),
+        CrossFieldRefinement(
+            "model-ports.unique-names",
+            "port names must be unique in each direction",
+            lambda value: any(
+                len(ports) != len({port.name for port in ports})
+                for ports in (value.inputs, value.outputs, value.physical)
+            ),
+            "[value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some("
+            "(ports) => new Set(ports.map((port) => port.name)).size !== ports.length)",
+        ),
+    ),
+    "GraphInterior": (_INTERIOR_IDS,),
+    "PhysicalInterior": (_INTERIOR_IDS,),
+    "CompositeComponent": (
+        CrossFieldRefinement(
+            "model-composite.physical-interface",
+            "physical ports require an Equations or Mechanics interior",
+            lambda value: value.interior.physical_domain is None and bool(value.ports.physical),
+            "value.interior.physical_domain == null && (value.ports.physical?.length ?? 0) > 0",
+        ),
+    ),
+    "ModelDocument": (
+        CrossFieldRefinement(
+            "model-root.signal-interface",
+            "the model root has signal ports only",
+            lambda value: bool(value.ports.physical),
+            "(value.ports.physical?.length ?? 0) > 0",
+        ),
+    ),
     "AdditiveGraphChannelTargetSpec": (
         CrossFieldRefinement(
             "additive-target.edge-source",
@@ -512,6 +567,11 @@ CROSS_FIELD_REFINEMENTS.update(
 
 
 REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
+    "ModelPorts": frozenset({"_unique_ports"}),
+    "GraphInterior": frozenset({"_unique_elements"}),
+    "PhysicalInterior": frozenset({"_unique_elements"}),
+    "CompositeComponent": frozenset({"_physical_interface"}),
+    "ModelDocument": frozenset({"_physical_interface"}),
     **dict.fromkeys(_TRAINING_POSITION_MODELS, frozenset({"require_position"})),
     "SparseCooArrayValueSpec": frozenset({"validate_entries"}),
     "ConstantArrayValueSpec": frozenset({"validate_value"}),

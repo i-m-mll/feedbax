@@ -24,7 +24,7 @@ Model reconstruction is a core service available to any request kind that consum
 
 A model element address names the model document, the ordered composite IDs from the root to the containing graph, and the typed element within that graph. The empty composite path names the root graph. A generated contract supplies the same typed record and reversible text form to Python and TypeScript. Project edits, presentation entries and Problems refer to this address. Plan retains the authored source path as separate provenance when a step, sweep, or exception supplies the value. [issue:a1bdcee] [issue:d33518f] [issue:7449df8]
 
-A scientific value address derives its owner from the same occurrence path. Its facet selects a declared value, state, input, output, edge, or carry. Value, state and port facets take one declared symbol. Edge and carry facets take a wire ID under the containing graph occurrence. A carry also takes a declared carry symbol. A task declaration supplies symbols for the facets it exposes.
+A scientific value address derives its owner from the same occurrence path under a logical model or task root. Project filenames locate authored documents and do not enter random keys or checkpoint paths. The scientific facet selects a declared value, state, input, output, edge, or carry. Value, state and port facets take one declared symbol. Edge and carry facets take a wire ID under the containing graph occurrence. A carry also takes a declared carry symbol. A task declaration supplies symbols for the facets it exposes.
 
 | Facet | Identity |
 | --- | --- |
@@ -66,7 +66,7 @@ The same key means the same stream at a compatible sampling operation. A changed
 
 ## 6. One objective term definition
 
-An objective term declares a typed measure expression, a window, a reduction (mean by default), and a weight. One executor compiles the terms into the shared observation plan for Train and Evaluate. The objective measure names its targets. The task supplies signals, variables and epoch bounds through its runtime, including final-state bounds for an in-rollout task. Train and Evaluate compute equal term values on the same model values, observations, trials and masks. Evaluate reports the trained objective's terms. Additional measurements are analyses. [issue:74f00a0] [issue:342d3d3] [issue:b584e17] [issue:a1382d5]
+An objective term declares a typed measure expression, a window, a reduction (mean by default), and a weight. One executor compiles the terms into the shared observation plan for Train and Evaluate. The objective measure names its targets. The task supplies signals, variables and epoch bounds through its runtime, including final-state bounds for an in-rollout task. Train and Evaluate compute equal term values on the same model values, observations, trials and masks. Evaluate resolves the objective from the bound producer's closure and reports its terms. When a term's required observation or target is absent from a compatible variant, its coverage is reported as missing. Additional measurements are analyses. [issue:74f00a0] [issue:342d3d3] [issue:b584e17] [issue:a1382d5]
 
 The M2 gate exercises retained-trajectory terms through the shared path. A later fold can supply an accumulator when the same term definition gives both results and its numerical order or tolerance is declared. `LossTermPlan` and `evaluate_loss_plan` describe the existing witness implementation. The objective definition and executor are owned by [issue:74f00a0]. [issue:e5adc22]
 
