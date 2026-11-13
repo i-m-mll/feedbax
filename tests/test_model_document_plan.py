@@ -11,11 +11,11 @@ import pytest
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
-from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry import ComponentPack, ComponentRegistry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.jobs import JobService
 from feedbax.plugins.application import new_application_registry_bundle
@@ -23,6 +23,7 @@ from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.studio.model_edit import apply_model_edit
 from feedbax.studio.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
+from feedbax.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.training.checkpoint_custody import open_published_model_slot
 from feedbax.training.invocation import prepare_training_invocation
@@ -257,6 +258,27 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     problem = next(item for item in refused.diagnostics if item.model_address is not None)
     assert problem.document == "reach-model"
     assert problem.model_address.element.end.port == "task-input"
+
+
+def test_stored_model_plan_uses_the_supplied_component_registry():
+    class CustomRelay(Input):
+        pass
+
+    raw = _model_project()
+    model = raw["documents"]["reach-model"]["payload"]
+    model["interior"]["components"]["custom"] = {
+        "kind": "leaf", "name": "Custom relay", "type": "test.CustomRelay",
+    }
+    model["interior"]["wires"]["task-wire"]["target"] = _end("custom", "input")
+    model["interior"]["wires"]["custom-wire"] = _wire(_end("custom", "output"), _end("wrapper", "target"))
+    project = Project.model_validate(raw)
+    memo = ProjectPlanMemo()
+    assert compile_project(project, memo=memo).diagnostics
+    registry = ComponentRegistry()
+    registry.ingest(ComponentPack(namespace="test", components=(CustomRelay,)))
+    registry.seal()
+    assert not compile_project(project, memo=memo, components=registry).diagnostics
+    assert compile_project(project, memo=memo).diagnostics
 
 
 def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():

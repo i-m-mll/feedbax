@@ -334,9 +334,13 @@ def write_new_project_folder(
 class ProjectFolderService:
     """Own revision guards for project folders under the app-managed root."""
 
-    def __init__(self, root: Path, *, operations: OperationRegistry | None = None) -> None:
+    def __init__(
+        self, root: Path, *, operations: OperationRegistry | None = None,
+        components: ComponentRegistry | None = None,
+    ) -> None:
         self.root = root.resolve()
         self.operations = operations
+        self.components = components
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
         self._model_undo_key = token_bytes(32)
 
@@ -451,7 +455,7 @@ class ProjectFolderService:
             project_id, text,
             compile_project(
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id),
-                operations=self.operations, readers=readers,
+                operations=self.operations, components=self.components, readers=readers,
             ),
             readers=readers,
         )

@@ -61,6 +61,7 @@ def create_app(
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
         app.state.project_folders = ProjectFolderService(
             project_root, operations=app.state.bootstrap_state.bundle.operations,
+            components=app.state.bootstrap_state.bundle.components,
         )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,

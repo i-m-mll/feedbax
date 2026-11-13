@@ -77,6 +77,16 @@ from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSp
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.component_registry import ComponentRegistry
+
+
+@cache
+def _builtin_model_registry() -> ComponentRegistry:
+    from feedbax.component_registry import ComponentRegistry
+
+    registry = ComponentRegistry()
+    registry.seal()
+    return registry
 
 
 @dataclass(frozen=True)
@@ -369,10 +379,10 @@ def _encode_row(
     document_memo: RequestDocumentMemo | None,
     model_document: str | None = None,
     sources: Mapping[str, ValueSource] | None = None,
+    components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
         from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
-        from feedbax.component_registry import ComponentRegistry
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
 
         def model_problem(detail: str, address: ModelAddress | None) -> _LoweredRow:
@@ -395,7 +405,7 @@ def _encode_row(
         try:
             model = ModelDocument.model_validate(graph)
             binding = StudioTaskBindingSpec.model_validate(payload.get("task_binding_spec") or {})
-            components = ComponentRegistry()
+            components = components or _builtin_model_registry()
             lowered_model = lower_model_document(model_document or "model", model, components, binding)
             derived, binding = lowered_model.graph, lowered_model.task
             issues = validate_graph_connection_schema(
@@ -513,10 +523,12 @@ class ProjectPlanMemo:
                 self._work = work
 
 
-def _compiler_authority() -> tuple[object, ...]:
+def _compiler_authority(
+    components: ComponentRegistry | None, operations: OperationRegistry | None,
+) -> tuple[object, ...]:
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
-        request_identity.request_codec_authority(),
+        request_identity.request_codec_authority(), components, operations,
     )
 
 
@@ -528,11 +540,13 @@ class _Compiler:
         source_runs: Iterable[RunKey],
         previous: _PlanWork | None = None,
         operations: OperationRegistry | None = None,
+        components: ComponentRegistry | None = None,
     ):
         self.project = project
         self.readers = readers
         self.previous = previous
         self.operations = operations
+        self.components = components
         self.work = _PlanWork()
         if previous is not None:
             self.work.inline_origins.update(previous.inline_origins)
@@ -821,6 +835,7 @@ class _Compiler:
                     self.work.request_documents if self.previous is not None else None,
                     document_ids.get("payload.graph"),
                     definition.sources if definition is not None else None,
+                    self.components,
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,
@@ -1284,6 +1299,7 @@ def compile_project(
     source_runs: Iterable[RunKey] = (),
     memo: ProjectPlanMemo | None = None,
     operations: OperationRegistry | None = None,
+    components: ComponentRegistry | None = None,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
     readers = replace(
@@ -1294,12 +1310,12 @@ def compile_project(
     if memo is None or any(
         reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)
     ):
-        return _Compiler(project, readers, source_runs, operations=operations).plan()
-    authority = _compiler_authority()
+        return _Compiler(project, readers, source_runs, operations=operations, components=components).plan()
+    authority = _compiler_authority(components, operations)
     ticket, previous = memo._begin(authority)
-    compiler = _Compiler(project, readers, source_runs, previous, operations)
+    compiler = _Compiler(project, readers, source_runs, previous, operations, components)
     plan = compiler.plan()
-    if authority == _compiler_authority():
+    if authority == _compiler_authority(components, operations):
         memo._publish(ticket, authority, compiler.work)
     return plan
 
