@@ -766,6 +766,7 @@ class _Resolver:
         path = "sweep"
         address = None
         fields = []
+        document_uses = state.document_uses
         try:
             for path, write in row.patches.items():
                 address = None
@@ -778,6 +779,26 @@ class _Resolver:
                     continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
+                trial_path = "trial_documents.python_task"
+                if patch.path.startswith(trial_path + ".params."):
+                    trials = payload.get("trial_documents")
+                    selection = trials.get("python_task") if isinstance(trials, dict) else None
+                    if isinstance(selection, DocumentReference):
+                        documents = _Documents(
+                            self.project, name, self.variant_sources, self.read_document,
+                            self.project.steps[name].document_overrides,
+                        )
+                        resolved = documents.inline(selection, "payload." + trial_path)
+                        if not isinstance(resolved, dict):
+                            raise ValueError("The Python task selection must resolve to an object")
+                        document_uses = document_uses.union(documents.used)
+                        payload = payload | {"trial_documents": trials | {"python_task": resolved}}
+                        if origins is not None:
+                            override = OverridePatch(path=trial_path, op="replace", value={})
+                            origins = patch_source(
+                                origins, override,
+                                documents.source(selection, resolved),
+                            )
                 if patch.path.startswith(MODEL_ATTACHMENTS + ".") and MODEL_ATTACHMENTS not in payload:
                     payload = payload | {MODEL_ATTACHMENTS: {}}
                     if origins is not None:
@@ -820,7 +841,7 @@ class _Resolver:
                 document=address.document if address is not None else None, model_address=address,
             ) from error
         return _StepState(
-            payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=state.document_uses,
+            payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=document_uses,
             root_document=state.root_document,
         )
 
