@@ -418,7 +418,7 @@ from feedbax.contracts.studio_project import (
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.request_specs import TrialDocuments
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from scripts.studio_json_schema import emit_authored_contracts
 
@@ -460,6 +460,7 @@ JOB_MODELS = (
 AUTHORED_CONTRACT_MODELS = (
     AnalysisDocument,
     TaskDocument,
+    PythonTaskSelection,
     ObjectiveDocument,
     TrialDocuments,
     StudioTrialAuthoring,

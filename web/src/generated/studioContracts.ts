@@ -3783,6 +3783,7 @@ export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectTask | null;
+  "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
 };
 
 export type StudioTrialBindingEdit = {
@@ -3825,6 +3826,11 @@ export type StudioTrialReset = {
 export type StudioTrialSelectTask = {
   "kind": "select_task";
   "document": string;
+};
+
+export type StudioTrialStepScope = {
+  "kind": "step";
+  "lit_steps"?: Array<string>;
 };
 
 export type SubsetTerms = {
@@ -10122,6 +10128,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema, StudioTrialSelectTaskSchema]), z.null()]).optional(),
+    "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
 
@@ -10180,6 +10187,13 @@ export const StudioTrialSelectTaskSchema: z.ZodType<StudioTrialSelectTask> = z.l
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialSelectTask>;
+
+export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("step"),
+    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialStepScope>;
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
@@ -10357,6 +10371,7 @@ export const contractSchemas = {
   ModelUndoRequest: ModelUndoRequestSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
+  PythonTaskSelection: PythonTaskSelectionSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
   TrialDocuments: TrialDocumentsSchema,
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
@@ -10481,6 +10496,7 @@ export interface ContractTypeMap {
   ModelUndoRequest: ModelUndoRequest;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
+  PythonTaskSelection: PythonTaskSelection;
   ObjectiveDocument: ObjectiveDocument;
   TrialDocuments: TrialDocuments;
   StudioTrialAuthoring: StudioTrialAuthoring;

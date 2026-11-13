@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -133,6 +133,32 @@ class ProjectRevisionConflict(RuntimeError):
         self.resource = resource
         self.current = current
         super().__init__(f"{resource.capitalize()} changed before this edit.")
+
+
+def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operation: bool = False) -> None:
+    def check_model() -> None:
+        if file.address.kind == "document" and not model_operation and entry.get("schema") == MODEL_DOCUMENT_SCHEMA_ID:
+            raise ProjectFolderInvalid("Model documents are edited through addressed operations")
+
+    check_model()
+    for patch in file.patches:
+        apply_value_patch_in_place(
+            entry, json_pointer_parts(patch.path), patch.op,
+            patch.value if isinstance(patch, SetProjectValue) else None, path=patch.path,
+        )
+    check_model()
+
+
+def _project_file_entry(payload: dict, address: AuthoredFileAddress) -> dict:
+    family = _FAMILIES[address.kind]
+    return (payload["sweep"]["rows"] if family == "variants" else payload[family])[address.id]
+
+
+def preview_authored_files(project: Project, files: Sequence[StudioProjectFilePatch]) -> Project:
+    payload = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    for file in files:
+        _apply_file_edits(_project_file_entry(payload, file.address), file)
+    return Project.model_validate(payload)
 
 
 @dataclass(frozen=True)
@@ -714,24 +740,8 @@ class ProjectFolderService:
                     else:
                         if relative not in original:
                             raise ProjectFolderNotFound(file.address.id)
-                        family = _FAMILIES[file.address.kind]
-                        target = payload["sweep"]["rows"] if family == "variants" else payload[family]
-                        entry = target[file.address.id]
-                        if family == "documents" and not model_operation and entry["schema"] == MODEL_DOCUMENT_SCHEMA_ID:
-                            raise ProjectFolderInvalid("Model documents are edited through addressed operations")
-                    for patch in file.patches:
-                        apply_value_patch_in_place(
-                            entry,
-                            json_pointer_parts(patch.path),
-                            patch.op,
-                            patch.value if isinstance(patch, SetProjectValue) else None,
-                            path=patch.path,
-                        )
-                    if (
-                        file.address.kind == "document" and not model_operation
-                        and entry.get("schema") == MODEL_DOCUMENT_SCHEMA_ID
-                    ):
-                        raise ProjectFolderInvalid("Model documents are edited through addressed operations")
+                        entry = _project_file_entry(payload, file.address)
+                    _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
                 encoded = dump_text_project(project, text.configuration)
                 if presentation is not None:

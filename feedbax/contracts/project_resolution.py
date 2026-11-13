@@ -779,10 +779,15 @@ class _Resolver:
                     continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
-                trial_path = "trial_documents.python_task"
-                if patch.path.startswith(trial_path + ".params."):
+                trial_parts = patch.path.split(".", 2)
+                if (
+                    len(trial_parts) == 3 and trial_parts[0] == "trial_documents"
+                    and trial_parts[1] in {"python_task", "task", "objective"}
+                ):
+                    field = trial_parts[1]
+                    trial_path = f"trial_documents.{field}"
                     trials = payload.get("trial_documents")
-                    selection = trials.get("python_task") if isinstance(trials, dict) else None
+                    selection = trials.get(field) if isinstance(trials, dict) else None
                     if isinstance(selection, DocumentReference):
                         documents = _Documents(
                             self.project, name, self.variant_sources, self.read_document,
@@ -790,9 +795,9 @@ class _Resolver:
                         )
                         resolved = documents.inline(selection, "payload." + trial_path)
                         if not isinstance(resolved, dict):
-                            raise ValueError("The Python task selection must resolve to an object")
+                            raise ValueError("The trial document must resolve to an object")
                         document_uses = document_uses.union(documents.used)
-                        payload = payload | {"trial_documents": trials | {"python_task": resolved}}
+                        payload = payload | {"trial_documents": trials | {field: resolved}}
                         if origins is not None:
                             override = OverridePatch(path=trial_path, op="replace", value={})
                             origins = patch_source(
