@@ -201,10 +201,16 @@ class ModelEditProblem(StrictModel):
     detail: str
 
 
+class TaskSignalSource(StrictModel):
+    owner: Literal["task"]
+    run: StudioSavedTrainKey
+    signal: str
+
+
 class ModelConnectionReviewRequest(StrictModel):
     revision: Sha256
     graph: ModelAddress
-    source: SignalSource
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
 
 
 class ModelConnectionVerdict(StrictModel):

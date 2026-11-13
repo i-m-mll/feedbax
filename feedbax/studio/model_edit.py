@@ -922,6 +922,7 @@ def review_model_connections(
     next_input: Callable[[Record], tuple[str, str, int] | None],
     library: tuple[Record, ...] = (),
     accepts: AcceptComponent = lambda *_: False,
+    task_signal: edits.ModelTaskSignal | None = None,
 ) -> edits.ModelConnectionReview:
     address = review.graph
     edit = ModelEditDraft(
@@ -930,8 +931,10 @@ def review_model_connections(
         lambda *_: False,
     )
     owner, graph = edit.graph(address)
-    source = review.source.model_dump(mode="json")
-    output = edit.port(owner, graph, source, "output")
+    output = (
+        Port(task_signal.type) if task_signal is not None
+        else edit.port(owner, graph, review.source.model_dump(mode="json"), "output")
+    )
     targets = [_card("outputs", port["id"]) for port in owner["ports"]["outputs"]]
     growing = []
     for id_, component in graph["components"].items():

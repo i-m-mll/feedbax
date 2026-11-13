@@ -24,6 +24,7 @@ export type ModelCardData = {
   problem?: string;
   pickPort?: (port: Port) => void;
   canPick?: (port: Port) => boolean;
+  cancelPick?: () => void;
   portReasons?: ReadonlyMap<string, string | null>;
   portProblems?: ReadonlyMap<string, string>;
   onPort(port: Port): void;
@@ -90,12 +91,35 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
           tabIndex={data.collapsed ? -1 : 0}
           aria-disabled={!connectable && !available}
-          aria-label={port.name} className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
+          aria-label={port.name} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
             event.stopPropagation();
             if (available) data.pickPort?.(port);
             else if (!data.canPick) data.onPort(port);
           }} onKeyDown={(event) => {
+            if (data.canPick && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+              event.preventDefault();
+              event.stopPropagation();
+              const canvas = event.currentTarget.closest('.studio-model-surface');
+              const ports = [...(canvas?.querySelectorAll<HTMLElement>('[data-model-port]') ?? [])];
+              const start = ports.indexOf(event.currentTarget);
+              const direction = event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 1;
+              for (let offset = 1; offset < ports.length; offset += 1) {
+                const candidate = ports[(start + direction * offset + ports.length) % ports.length];
+                if (candidate.getAttribute('aria-disabled') === 'false' && candidate.tabIndex >= 0) {
+                  candidate.focus();
+                  break;
+                }
+              }
+              return;
+            }
+            if (data.canPick && event.key === 'Escape') {
+              event.preventDefault();
+              data.cancelPick?.();
+              event.stopPropagation();
+              return;
+            }
             if (event.key !== 'Enter') return;
+            event.preventDefault();
             event.stopPropagation();
             if (available) data.pickPort?.(port);
             else if (!data.canPick && port.direction === 'output') data.keyboardConnect(port);

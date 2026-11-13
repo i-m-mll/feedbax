@@ -675,7 +675,13 @@ export interface ModelUndoRequest {
 export interface ModelConnectionReviewRequest {
   revision: unknown;
   graph: ModelAddress;
-  source: ComponentPortEnd | InputBoundaryEnd;
+  source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
+}
+
+export interface TaskSignalSource {
+  owner: "task";
+  run: StudioSavedTrainKey;
+  signal: string;
 }
 
 export interface ModelConnectionVerdict {
@@ -5472,10 +5478,20 @@ export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReview
     .object({
       "revision": z.unknown(),
       "graph": ModelAddressSchema,
-      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionReviewRequest>;
+
+export const TaskSignalSourceSchema: z.ZodType<TaskSignalSource> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("task"),
+      "run": StudioSavedTrainKeySchema,
+      "signal": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskSignalSource>;
 
 export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z.lazy(() =>
   z

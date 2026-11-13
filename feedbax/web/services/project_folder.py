@@ -640,20 +640,29 @@ class ProjectFolderService:
         self, project_id: str, body: ModelConnectionReviewRequest, components: ComponentRegistry,
     ) -> ModelConnectionReview:
         from feedbax.contracts.model_document import ModelDocument
+        from feedbax.contracts.model_edit import ModelProjectionRequest, TaskSignalSource
         from feedbax.studio.model_edit import review_model_connections
         from feedbax.studio.model_ports import ModelRegistryPorts
+        from feedbax.web.services.model_projection import selected_task_signal
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = _model_edit_source(snapshot, body.graph.document)
         try:
             authority = ModelRegistryPorts(components)
+            task_signal = None
+            if isinstance(body.source, TaskSignalSource):
+                if body.graph.composites:
+                    raise ProjectFolderInvalid("A task signal connects at the Model root")
+                task_signal = selected_task_signal(self, project_id, ModelProjectionRequest(
+                    revision=body.revision, run=body.source.run, document=body.graph.document,
+                ), body.source.signal)
             library = tuple({
                 "kind": "leaf", "type": item.identity.type_id if item.identity else item.name,
                 "revision": item.revision, "fields": {}, "port_counts": {},
             } for item in components.list_all() if not item.is_composite)
             return review_model_connections(
                 ModelDocument.model_validate(payload), body, layout=authority.layout, next_input=authority.next_input,
-                library=library, accepts=authority.accepts,
+                library=library, accepts=authority.accepts, task_signal=task_signal,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error

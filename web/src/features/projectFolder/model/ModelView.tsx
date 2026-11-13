@@ -133,6 +133,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const cursor = useRef<ModelPosition>();
   const dragSource = useRef<Port>();
   const connectionReview = useRef<AbortController>();
+  const keyboardReview = useRef<AbortController>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const requestBusy = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -162,6 +163,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const physical = interior?.physical_domain ?? null;
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
   const projectionBody = projectionRun && model && { run: projectionRun, document: model.id, revision: saved.revision };
+  const projectionRunId = projectionRun && JSON.stringify(projectionRun);
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
@@ -289,6 +291,13 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     selectModel(state, address);
   }, [model?.id, active, problemAddress, state]);
   useEffect(() => () => connectionReview.current?.abort(), [graphId]);
+  useEffect(() => {
+    if (!active) return;
+    return () => {
+      keyboardReview.current?.abort();
+      state.setState({ pick: null });
+    };
+  }, [active, graphId, projectionRunId, saved.revision, state]);
 
   async function apply(name: string, operation: Operation, choose = true) {
     if (!model || !editTopology || requestBusy.current) return false;
@@ -360,17 +369,20 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     setPath(path);
   }
   function keyboardConnect(port: Port) {
-    if (locked || !editTopology || port.direction !== 'output' || port.taskSignal) return;
-    const source = wireEnd(port);
-    if (source.owner !== 'inputs' && source.owner !== 'component') return;
+    if (locked || !editTopology || port.direction !== 'output') return;
+    if (port.taskSignal && !projectionRun) return;
+    const source = port.taskSignal && projectionRun
+      ? { owner: 'task' as const, run: projectionRun, signal: port.taskSignal } : wireEnd(port);
+    if (source.owner !== 'inputs' && source.owner !== 'component' && source.owner !== 'task') return;
     const request = new AbortController();
-    connectionReview.current?.abort();
-    connectionReview.current = request;
+    keyboardReview.current?.abort();
+    keyboardReview.current = request;
     void reviewModelConnections(saved.project_id, { revision: saved.revision, graph, source }, request.signal).then(({ targets }) => {
       if (request.signal.aborted) return;
       const verdicts = new Map(targets.map(({ target, reason }) => [endKey(target), reason]));
       state.setState({ pick: {
         accepts: (address, candidate) => inGraph(address, graph) && candidate.direction === 'input' &&
+          !(port.taskSignal && candidate.growing) &&
           verdicts.get(endKey(wireEnd(candidate))) === null,
         choose: (address) => {
           if (address.element.kind !== 'port') return;
@@ -380,7 +392,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           if (target) connect(idFor(port.end), portId(port), id, portId(target));
         },
       } });
-    }).catch((error) => { if (!request.signal.aborted) setIssue({ reason: apiErrorMessage(error) }); });
+    }).catch((error) => { if (!request.signal.aborted) setIssue({ reason: apiErrorMessage(error) }); })
+      .finally(() => { if (keyboardReview.current === request) keyboardReview.current = undefined; });
   }
   function openSearch(point = cursor.current ?? positionAt(objects.length), source?: Port) {
     if (!editTopology) return;
@@ -531,6 +544,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
         keyboardConnect,
         canPick: pick ? (port) => pick.accepts(at(graph, { kind: 'port', end: port.end }), port) : undefined,
+        cancelPick: pick ? clear : undefined,
         pickPort: pick ? (port) => { pick.choose(at(graph, { kind: 'port', end: port.end })); state.setState({ pick: null }); } : undefined,
         portReasons: verdict && new Map(ports.filter((port) => port.direction === 'input').map((port) =>
           [portId(port), verdict.get(endKey(wireEnd(port)))]).filter((entry): entry is [string, string | null] => entry[1] !== undefined)),
@@ -681,6 +695,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const viewportCommands = canvasViewportCommands(() => viewport.current, !!model);
   const commands = [
     bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
+    ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
+      { enabled: editTopology && !locked })] : []),
     bindStudioCommand('modelSelectAll', () => state.setState({
       selection: objects.map(([id]) => at(graph, { kind: 'component', id })),
     }), { enabled: !!objects.length }),
@@ -791,7 +807,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</button>)}
     </nav>,
     body: model ? <div className="flex h-full min-h-0 flex-col" onKeyDown={(event) => {
-      if (event.key === 'Escape' && state.getState().pick) { event.stopPropagation(); clear(); }
+      if (event.key === 'Escape' && (state.getState().pick || keyboardReview.current && !keyboardReview.current.signal.aborted)) {
+        event.stopPropagation();
+        keyboardReview.current?.abort();
+        clear();
+      }
     }}>
       {(issue || problem || attachments.error || projection.error) && <p className="px-2 text-sm" role="alert">
         {issue?.reason ?? problem?.reason ?? apiErrorMessage(attachments.error ?? projection.error)}
