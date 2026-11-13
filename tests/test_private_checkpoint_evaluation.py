@@ -51,49 +51,46 @@ import json
 import os
 from pathlib import Path
 from time import monotonic, sleep
-from unittest.mock import patch
 from feedbax.training import executor
-from feedbax.training_host_worker import main as train
 
-def main(argv):
+entry = os.environ["FINITE_PROOF_ENTRY"]
+execute = getattr(executor, entry)
+
+def wait(path):
+    deadline = monotonic() + 22
+    while not path.exists():
+        if monotonic() > deadline:
+            raise TimeoutError(f"Jobs did not release {path.name}")
+        sleep(.002)
+
+def wrapped(*args, **kwargs):
     root = Path(os.environ["FINITE_PROOF_ROOT"])
     source = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes())
     stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-    entry = os.environ["FINITE_PROOF_ENTRY"]
-    execute = getattr(executor, entry)
+    commit = kwargs["committed_update_callback"]
+    published = kwargs["checkpoint_published"]
 
-    def wait(path):
-        deadline = monotonic() + 22
-        while not path.exists():
-            if monotonic() > deadline:
-                raise TimeoutError(f"Jobs did not release {path.name}")
-            sleep(.002)
+    def on_commit(coordinate, completed, slots):
+        commit(coordinate, completed, slots)
+        if source.get("resume") is None and completed == int(os.environ["FINITE_STOP_AT"]):
+            (root / "before-stop").touch()
+            wait(stop)
 
-    def wrapped(*args, **kwargs):
-        commit = kwargs["committed_update_callback"]
-        published = kwargs["checkpoint_published"]
+    def on_publish(write):
+        published(write)
+        if source.get("resume") and write.latest_pointer.completed_training_batches == int(os.environ["FINITE_RESUME_AT"]):
+            (root / "resumed-interior").touch()
+            wait(root / "finish-train")
 
-        def on_commit(coordinate, completed, slots):
-            commit(coordinate, completed, slots)
-            if source.get("resume") is None and completed == int(os.environ["FINITE_STOP_AT"]):
-                (root / "before-stop").touch()
-                wait(stop)
+    kwargs.update(committed_update_callback=on_commit, checkpoint_published=on_publish)
+    return execute(*args, **kwargs)
 
-        def on_publish(write):
-            published(write)
-            if source.get("resume") and write.latest_pointer.completed_training_batches == int(os.environ["FINITE_RESUME_AT"]):
-                (root / "resumed-interior").touch()
-                wait(root / "finish-train")
-
-        kwargs.update(committed_update_callback=on_commit, checkpoint_published=on_publish)
-        return execute(*args, **kwargs)
-
-    with patch.object(executor, entry, wrapped):
-        return train(argv)
+setattr(executor, entry, wrapped)
 """)
+    launch = jobs._training_worker
     jobs._training_worker = replace(
-        jobs._training_worker,
-        env=jobs._training_worker.env
+        launch,
+        env=launch.env
         | {
             "JAX_PLATFORMS": "cpu",
             "FINITE_PROOF_ROOT": str(tmp_path),
@@ -102,7 +99,8 @@ def main(argv):
             "FINITE_RESUME_AT": str(resume_at),
             "PYTHONPATH": f"{tmp_path}:{Path.cwd()}",
         },
-        warm_entrypoint="finite_gate:main",
+        # Preserve the canonical entrypoint authorized to publish typed Train results.
+        preload=(*launch.preload, "finite_gate"),
     )
 
 @pytest.mark.skip(reason="Historical retained Host Train qualification at d573319e (a81a8e8); managed Train supplies document checkpoints")
