@@ -67,7 +67,7 @@ class SuccessView:
         self._expected = store.read_ref(INDEX_REF)
         self._index = decode_success_index(self._expected)
 
-    def _decode(self, request: RequestObject) -> DecodedRequest:
+    def read_request(self, request: RequestObject) -> DecodedRequest:
         return read_success_request(request, self.store.get_object)
 
     def _receipt(self, ref: ContentObjectRef) -> Success:
@@ -92,7 +92,7 @@ class SuccessView:
         )
 
     def bind(self, request: RequestObject) -> tuple[EffectiveBindingId, Bindings]:
-        decoded = self._decode(request)
+        decoded = self.read_request(request)
         inputs = {
             role: tuple(
                 self._resolve(
@@ -129,6 +129,13 @@ class SuccessView:
             raise ValueError("Authored index entry points to a different request")
         return result
 
+    def has_attempt(self, attempt: str) -> bool:
+        return attempt in self._index.attempts
+
+    def read_attempt(self, attempt: str) -> PublishedSuccess | None:
+        ref = self._index.attempts.get(attempt)
+        return None if ref is None else self.read_success(ref)
+
     def lookup(self, request: RequestObject) -> PublishedSuccess | None:
         effective, _ = self.bind(request)
         ref = self._index.effective.get(effective)
@@ -142,11 +149,39 @@ class SuccessView:
     def publish(
         self, request: RequestObject, *, attempt: str, products: Products
     ) -> PublishedSuccess:
+        return self._publish(request, attempt, products, bindings=None)
+
+    def publish_bound(
+        self, request: RequestObject, *, attempt: str, products: Products, bindings: Bindings,
+    ) -> PublishedSuccess:
+        """Commit an accepted attempt using its pinned bindings, including on replay."""
+        return self._publish(request, attempt, products, bindings=bindings)
+
+    def _publish(
+        self, request: RequestObject, attempt: str, products: Products, *, bindings: Bindings | None,
+    ) -> PublishedSuccess:
         with self.store._exclusive_lock():
-            effective, inputs = self.bind(request)
+            if existing := self._index.attempts.get(attempt):
+                if bindings is None:
+                    raise ValueError("This attempt already published a success")
+                published = self.read_success(existing)
+                if (published.receipt.request, published.receipt.products, published.receipt.inputs) != (
+                    request, products, bindings,
+                ):
+                    raise ValueError("Published attempt has different request, bindings, or products")
+                return published
+            if bindings is None:
+                effective, inputs = self.bind(request)
+            else:
+                decoded = self.read_request(request)
+                effective = effective_binding_id(decoded, bindings)
+                for role, members in decoded.inputs.items():
+                    for member, bound in zip(members, bindings[role], strict=True):
+                        origin = bound.selection.receipt if bound.selection else None
+                        if self._resolve(member, origin) != bound:
+                            raise ValueError(f"Pinned receipt input differs for {role}.{member.key}")
+                inputs = bindings
             previous = self._index.authored.get(request.id)
-            if attempt in self._index.attempts:
-                raise ValueError("This attempt already published a success")
             if previous is not None and self._receipt(previous).request.id != request.id:
                 raise ValueError("Superseded receipt belongs to a different authored request")
             receipt = Success(
@@ -160,9 +195,10 @@ class SuccessView:
             for members in receipt.products.values():
                 for product in members:
                     verify_success_content(self.store, product)
-            ref = self.store.store_rooted_object(
-                canonical_json_v2_bytes(receipt.model_dump(mode="json")),
-                namespace="proof-effective-receipt",
+            raw = canonical_json_v2_bytes(receipt.model_dump(mode="json"))
+            ref = (
+                self.store.store_rooted_object(raw, namespace="proof-effective-receipt")
+                if bindings is None else self.store.store_object(raw)
             )
             times = dict(self._index.supersession_times)
             if previous is not None:

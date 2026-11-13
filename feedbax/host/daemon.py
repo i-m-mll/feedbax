@@ -23,7 +23,7 @@ from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
 from feedbax.host.protocol import MAX_RPC_BYTES, VERSION, HostError
-from feedbax.host.store import Store
+from feedbax.host.store import Store, TrainPublicationPending
 
 LOG_LINE_LIMIT = 8192
 EVENT_LINE_LIMIT = 2 * 1024 * 1024
@@ -74,6 +74,7 @@ class Host:
         self.profiles: dict[str, dict] = {}
         self.force_started: dict[str, float] = {}
         self.identity_errors: set[str] = set()
+        self.publication_errors: dict[str, str] = {}
         self.power: subprocess.Popen | None = None
         self.last_clock_delta = time.time() - time.monotonic()
 
@@ -324,6 +325,13 @@ class Host:
                                 return True
                         self.store.ingest(row, kind, data)
                         terminal = kind == "terminal"
+                        if terminal:
+                            self.publication_errors.pop(row["id"], None)
+                    except TrainPublicationPending as error:
+                        if self.publication_errors.get(row["id"]) != str(error):
+                            self.publication_errors[row["id"]] = str(error)
+                            self.store.append(row, "log", {"stream": "host", "line": f"Train Store publication pending: {error}"})
+                        return True
                     except (KeyError, TypeError, ValueError) as error:
                         self._event_error(row, str(error))
                 self.store.db.execute(

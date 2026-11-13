@@ -28,6 +28,8 @@ class _Result:
     error: Mapping[str, str] | None = None
     completion: Mapping[str, Any] | None = None
     completion_error: Mapping[str, str] | None = None
+    model_product: Mapping[str, Any] | None = None
+    store_publication_error: Mapping[str, str] | None = None
 
 
 @dataclass
@@ -113,6 +115,10 @@ class _Events:
             data["completion"] = result.completion
         if result.completion_error is not None:
             data["completion_error"] = result.completion_error
+        if result.model_product is not None:
+            data["model_product"] = result.model_product
+        if result.store_publication_error is not None:
+            data["store_publication_error"] = result.store_publication_error
         self.append("result", data, sync=True)
         return int(result.outcome == "failed")
 
@@ -199,6 +205,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         training_binding_path,
         verify_bound_training_completion,
         verify_training_completion,
+        verify_training_model_product,
     )
     from feedbax.orchestration.events import normalize_serialized_metrics
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -540,7 +547,20 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                     "succeeded", receipt=terminal_receipt,
                     completion_error={"code": code, "message": str(error)},
                 )
-            return _Result("succeeded", receipt=terminal_receipt, completion=completion)
+            model_product = None
+            unavailable = None
+            if launch.canonical_request is not None:
+                if semantic_model is None:
+                    unavailable = "The terminal checkpoint has no declared semantic model tree"
+                elif stateful is not None:
+                    unavailable = "Typed publication of stateful checkpoint inputs is unavailable"
+                else:
+                    product, _ = verify_training_model_product(completion)
+                    model_product = product.model_dump(mode="json")
+            return _Result(
+                "succeeded", receipt=terminal_receipt, completion=completion, model_product=model_product,
+                store_publication_error={"code": "input_unavailable", "message": unavailable} if unavailable else None,
+            )
         if result.status == "cancelled" and stop_requested and events.checkpoint is not None:
             return _Result("stopped", receipt=receipt("cancelled"))
         if result.status == "failed" and result.manifest.failure_kind == "nan_guard":
