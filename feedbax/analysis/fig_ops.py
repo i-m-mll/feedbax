@@ -1,7 +1,7 @@
 """Figure and final-operation execution helpers for analyses."""
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -11,8 +11,7 @@ import equinox as eqx
 import jax.tree as jt
 import plotly.graph_objects as go
 from equinox import field
-from feedbax._vendor.jax_cookbook import LDict, is_type
-from jaxtyping import Array, PyTree
+from jaxtyping import PyTree
 
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.utils import deep_merge
@@ -88,62 +87,6 @@ class _AnalysisVmapSpec(eqx.Module):
 
 
 _FinalOpKeyType = Literal["results", "figs"]
-
-
-def _combine_figures(
-    figs_list: list[PyTree[go.Figure]],
-    items_iterated: Iterable,
-) -> PyTree[go.Figure]:
-    """Merge traces from multiple figures into a single one."""
-
-    def combine_figs(*figs):
-        if not figs:
-            return None
-
-        layout = figs[0].layout
-
-        if layout.legend.traceorder == "reversed":
-            layout.legend.traceorder = "grouped+reversed"
-
-        if layout.legend.grouptitlefont.style is None:
-            layout.legend.grouptitlefont.style = "italic"
-
-        traces = [trace for fig in figs for trace in fig.data]
-
-        fig = go.Figure(data=traces, layout=layout)
-        return fig
-
-    return jt.map(
-        combine_figs,
-        *figs_list,
-        is_leaf=is_type(go.Figure),
-    )
-
-
-def _axis_items_fn(axis: int, leaf: Array) -> Iterable:
-    if not isinstance(leaf, Array) or axis >= leaf.ndim:
-        raise ValueError(f"Combine target for axis {axis} is not Array or axis out of bounds.")
-    return range(leaf.shape[axis])
-
-
-def _axis_slice_fn(axis: int, node: Array, idx: int) -> Array:
-    return node[(slice(None),) * axis + (idx,)]
-
-
-def _level_slice_fn(node: LDict, item: Any) -> Any:
-    return node[item]
-
-
-def _level_items_fn(level: str, leaf: LDict) -> Iterable:
-    if not LDict.is_of(level)(leaf):
-        raise TypeError(f"Map target for level '{level}' is not an LDict with that label.")
-    return leaf.keys()
-
-
-def _reconstruct_ldict_aggregator(
-    level: str, figs_list: list[PyTree], items_iterated: Iterable
-) -> LDict:
-    return LDict.of(level)(dict(zip(items_iterated, figs_list)))
 
 
 def _call_fig_params_fn(fn, fp, ctx, **kwargs):

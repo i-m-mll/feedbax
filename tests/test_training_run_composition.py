@@ -5,7 +5,6 @@ import pytest
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.intent_diff import detect_near_duplicate_lanes, layered_semantic_diff
-from feedbax.contracts.lineage import LineageDag, LineageEvent, LineageParentRef
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
     CompositionDelta,
@@ -13,7 +12,6 @@ from feedbax.contracts.run_composition import (
     ExecutionDependencyLayer,
     ForkFromSelectedCheckpoint,
     InlineIntentParent,
-    LineageGraftDependency,
     authored_envelope_hash,
     composed_intent_hash,
     flatten_composition,
@@ -129,21 +127,6 @@ def test_synthetic_six_wave_program_has_real_schema_boundary() -> None:
     assert layered_semantic_diff(flattened["wave-1"], flattened["wave-2"])[0].path == "lr"
     assert detect_near_duplicate_lanes(flattened, max_differences=1)
     assert all(layer.dependencies[0].checkpoint_root_hash == _hash("a") for layer in dependencies.values())
-
-    original = LineageEvent(event_kind="execution", execution_hash=_hash("c"), parents=[LineageParentRef(execution_hash=_hash("d"))])
-    dag = LineageDag([original])
-    correction = LineageEvent(
-        event_kind="graft_correction", execution_hash=_hash("c"),
-        parents=[LineageParentRef(execution_hash=_hash("e"))],
-        original_event_hash=original.content_hash,
-        correction_mode="supersedes_for_interpretation",
-    )
-    correction_hash = dag.append(correction)
-    dependencies["wave-4"] = ExecutionDependencyLayer(dependencies=[
-        *dependencies["wave-4"].dependencies,
-        LineageGraftDependency(lineage_event_hash=correction_hash, interpretation="supersedes_for_interpretation"),
-    ])
-    assert dag.interpreted_parents(_hash("c"))[0].execution_hash == _hash("e")
 
 
 def test_schema_identity_change_without_boundary_fails_closed() -> None:

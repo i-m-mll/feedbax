@@ -304,44 +304,11 @@ def graph_controller(
     )
 
 
-def feedbax_graph_controller(
-    graph: Graph | GraphSpec,
-    *,
-    key: PRNGKeyArray,
-    component_registry: ComponentRegistry | None = None,
-    input_port: str = "input",
-    output_port: str | None = "output",
-    static_inputs: Mapping[str, PyTree] | None = None,
-    input_builder: GraphInputBuilder | None = None,
-    output_selector: GraphOutputSelector | None = None,
-    trace: tuple[GraphTraceRequest, ...] = (),
-    cycle_init: Mapping[tuple[str, str], PyTree] | None = None,
-    key_policy: GraphKeyPolicy = _default_key_policy,
-    dtype: Any = jnp.float64,
-) -> GraphControllerAdapter:
-    """Compatibility alias for :func:`graph_controller`."""
-    return graph_controller(
-        graph,
-        key=key,
-        component_registry=component_registry,
-        input_port=input_port,
-        output_port=output_port,
-        static_inputs=static_inputs,
-        input_builder=input_builder,
-        output_selector=output_selector,
-        trace=trace,
-        cycle_init=cycle_init,
-        key_policy=key_policy,
-        dtype=dtype,
-    )
-
-
 __all__ = [
     "GraphControllerAdapter",
     "GraphControllerStep",
     "GraphInputBuilder",
     "GraphKeyPolicy",
     "GraphOutputSelector",
-    "feedbax_graph_controller",
     "graph_controller",
 ]

@@ -79,11 +79,19 @@ def _bind_dataset(container: ArrayContainerDescriptor, load: TensorLoader) -> Da
 @contextmanager
 def open_dataset(path: str | Path, *, expected_descriptor_sha256: str) -> Iterator[Dataset]:
     """Authenticate each selected tensor from a file before applying any slice."""
+    with _open_dataset(path, descriptor_sha256=expected_descriptor_sha256, verify=True) as dataset:
+        yield dataset
+
+
+@contextmanager
+def _open_dataset(path: str | Path, *, descriptor_sha256: str, verify: bool) -> Iterator[Dataset]:
     with open_array_container(
-        path, expected_descriptor_sha256=expected_descriptor_sha256
+        path, expected_descriptor_sha256=descriptor_sha256
     ) as reader:
 
         def load(name: str, index: Index) -> np.ndarray:
+            if not verify:
+                return np.asarray(reader.read_unverified_slice(name, index))
             array = reader.read_tensor(name)
             return np.asarray(array[index]) if index else array
 
@@ -94,19 +102,18 @@ def open_dataset(path: str | Path, *, expected_descriptor_sha256: str) -> Iterat
 def open_stored_dataset(
     store: ImmutableArtifactBlobProvider,
     ref: DatasetProductRef,
+    *,
+    verify: bool = False,
 ) -> Iterator[Dataset]:
     """Open a dataset bound by authenticated owning metadata in immutable custody.
 
     Header and semantic shape checks happen on open. Numeric reads use the
-    pinned object and the codec's unit-stride slice path. Use the store's
-    verify_object method with ref.object_ref to explicitly scrub the payload.
+    pinned object and the codec's slice path. With verify=True, authenticate
+    each selected whole tensor before slicing. Use the store's verify_object
+    method with ref.object_ref to scrub the entire object.
     """
     with (
         store.open_owned_object(ref.object_ref) as path,
-        open_array_container(path, expected_descriptor_sha256=ref.descriptor_sha256) as reader,
+        _open_dataset(path, descriptor_sha256=ref.descriptor_sha256, verify=verify) as dataset,
     ):
-
-        def load(name: str, index: Index) -> np.ndarray:
-            return np.asarray(reader.read_unverified_slice(name, index))
-
-        yield _bind_dataset(reader.descriptor, load)
+        yield dataset

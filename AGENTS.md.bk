@@ -293,9 +293,6 @@ Both must be running for full functionality.
   share compiled artifacts while sibling checkouts stay separate. Override with
   `FEEDBAX_JAX_COMPILATION_CACHE_DIR` or disable with
   `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1`, matching the test cache.
-- Keep `scripts/deploy/runpod_deploy.sh` and `scripts/deploy/poll_run.sh` as
-  legacy/parity references for debugging and script-refactor work; they are no
-  longer the primary launch or monitoring interface.
 - Treat hand-rolled `runpodctl` calls, custom SSH readiness loops, ad hoc
   rsync/path patching, manual CUDA JAX install steps, direct nohup/sentinel
   launch snippets, and bespoke polling cadence instructions as fallback,

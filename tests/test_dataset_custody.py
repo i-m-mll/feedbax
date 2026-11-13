@@ -115,6 +115,15 @@ def test_stored_reads_use_custody_for_slices_and_scrub_is_explicit(tmp_path, ret
         np.testing.assert_allclose(
             opened.data("mechanics.effector.pos", (1, slice(1, None))), [0.4, 0.8]
         )
+        for index in (
+            (-1, -1),
+            (1, slice(None, None, -1)),
+            (slice(None, None, -1), slice(None, None, -2)),
+            (slice(None), slice(None, None, 2)),
+            (slice(9, 2),),
+        ):
+            name = "mechanics.effector.pos"
+            np.testing.assert_array_equal(opened.data(name, index), retained_dataset.data(name, index))
         np.testing.assert_allclose(opened.data("time_s"), [0.0, 0.1, 0.2])
         assert opened.data("trial").tolist() == ["calibration", "verification"]
         assert opened.data("timing_applicability", (1,)).item() == "inapplicable"

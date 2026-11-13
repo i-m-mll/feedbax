@@ -358,7 +358,6 @@ from feedbax.contracts.run_composition import (
     flatten_repo_composition,
     parse_composition_node,
 )
-from feedbax.contracts.lineage import LineageDag, LineageEvent, store_lineage_event
 from feedbax.contracts.intent_diff import detect_near_duplicate_lanes, layered_semantic_diff
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
@@ -1032,15 +1031,12 @@ __all__ = [
     "CompositionNodeV2",
     "ExecutionDependencyLayer",
     "NamedCompositionLane",
-    "LineageDag",
-    "LineageEvent",
     "authored_envelope_hash",
     "composition_identity_projection",
     "composed_intent_hash",
     "flatten_composition",
     "flatten_repo_composition",
     "parse_composition_node",
-    "store_lineage_event",
     "detect_near_duplicate_lanes",
     "layered_semantic_diff",
     "verify_extraction_product",

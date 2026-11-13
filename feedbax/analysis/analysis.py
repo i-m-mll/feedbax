@@ -21,7 +21,6 @@ from typing import (
 )
 
 import equinox as eqx
-import jax.numpy as jnp
 import jax.tree as jt
 import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
@@ -29,22 +28,19 @@ from equinox import Module, field
 from feedbax._vendor.jax_cookbook import (
     LDict,
     LDictConstructor,
-    MaskedArray,
-    anyf,
     is_none,
     is_type,
     vmap_multi,
 )
 from feedbax._vendor.jax_cookbook._func import wrap_to_accept_var_kwargs
 from feedbax._vendor.jax_cookbook._vmap import AxisSpec, expand_axes_spec
-from jaxtyping import Array, ArrayLike, PyTree
+from jaxtyping import PyTree
 
 from feedbax.config import PATHS, STRINGS
 from feedbax.config.namespace import TreeNamespace
 from feedbax.config.utils import deep_merge
 from feedbax.analysis.support import (
     camel_to_snake,
-    field_names,
     get_dataclass_fields,
     get_name_of_callable,
     get_origin_type,
@@ -53,8 +49,6 @@ from feedbax.analysis.support import (
 from feedbax.config.tree import (
     _align_trees_to_structure,
     ldict_label_only_fn,
-    move_ldict_level_above,
-    subdict,
     tree_level_labels,
 )
 from feedbax.analysis.types import AnalysisInputData
@@ -68,13 +62,7 @@ from feedbax.analysis.fig_ops import (
     _PrepOp,
     _apply_fig_ops,
     _apply_final_ops,
-    _axis_items_fn,
-    _axis_slice_fn,
     _call_fig_params_fn,
-    _combine_figures,
-    _level_items_fn,
-    _level_slice_fn,
-    _reconstruct_ldict_aggregator,
 )
 from feedbax.analysis.inputs import (
     AbstractAnalysisPorts,
@@ -123,7 +111,6 @@ __all__ = [
     "ANALYSIS_RESULT_CACHE_SCHEMA_VERSION",
     "CallWithDeps",
     "Data",
-    "DummyNode",
     "ExpandTo",
     "FigIterCtx",
     "FigureSaveTask",
@@ -487,7 +474,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     ) -> dict[str, PyTree[Any]]:
         """Perform computations with prep-ops, vmap, and result final-ops applied."""
         # Transform inputs prior to performing the analysis
-        # e.g. see `after_stacking` for an example of defining a pre-op
         prepped_kwargs = self._run_prep_ops(data, kwargs)
         prepped_data = eqx.tree_at(lambda d: d.states, data, prepped_kwargs["data.states"])
         del prepped_kwargs["data.states"]
@@ -1024,74 +1010,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         return eqx.tree_at(lambda x: x._estimate_mem_preflight, self, mode)
 
-    def map_compute(
-        self,
-        is_leaf: Callable[[Any], bool],
-        dependency_names: Optional[str | Sequence[str]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis where `compute` is mapped over tree nodes.
-
-        Instead of calling `compute` once with the entire input tree, it will be
-        called multiple times - once for each node identified by `is_leaf`.
-        The results are reassembled into a tree with the same structure.
-
-        Args:
-            is_leaf: Predicate identifying nodes to map over. For example,
-                    `LDict.is_of("condition")` would run compute separately
-                    for each condition.
-            dependency_names: Optional dependencies to map over. If None, maps
-                            over all dependencies.
-
-        Returns:
-            A copy of this analysis with mapped compute execution.
-
-        Example:
-            >>> # Run compute separately for each experimental condition
-            >>> analysis.map_compute(LDict.is_of("condition"))
-        """
-        if self._map_compute_spec is not None:
-            logger.warning(
-                f"Overwriting existing map_compute spec on {self.name}. "
-                f"Previous spec: {self._map_compute_spec}"
-            )
-        return eqx.tree_at(
-            lambda a: a._map_compute_spec,
-            self,
-            (is_leaf, dependency_names),
-            is_leaf=is_none,
-        )
-
-    def map_make_figs(
-        self,
-        is_leaf: Callable[[Any], bool],
-        dependency_names: Optional[str | Sequence[str]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis where `make_figs` is mapped over tree nodes.
-
-        This is a simpler alternative to `map_figs_at_level` that doesn't support
-        context tracking or aggregation - it just maps `make_figs` execution.
-
-        Args:
-            is_leaf: Predicate identifying nodes to map over.
-            dependency_names: Optional dependencies to map over.
-
-        Returns:
-            A copy of this analysis with mapped make_figs execution.
-        """
-        if self._map_make_figs_spec is not None:
-            logger.warning(
-                f"Overwriting existing map_make_figs spec on {self.name}. "
-                f"Previous spec: {self._map_make_figs_spec}"
-            )
-        return eqx.tree_at(
-            lambda a: a._map_make_figs_spec,
-            self,
-            (is_leaf, dependency_names),
-            is_leaf=is_none,
-        )
-
     def with_fig_params(self, **kwargs) -> Self:
         """Returns a copy of this analysis with updated figure parameters.
 
@@ -1102,172 +1020,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             lambda x: x.fig_params,
             self,
             MappingProxyType(deep_merge(self.fig_params, kwargs)),
-        )
-
-    def after_indexing(
-        self,
-        axis: int,
-        idxs: ArrayLike | Callable[[Array], ArrayLike],
-        axis_label: Optional[str] = None,
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that slices its inputs along an axis before proceeding.
-
-        Args:
-            axis: The axis to index along.
-            idxs: The indices to take along the axis. Can be an array-like object or a callable
-                that takes the shape of the array to be indexed and returns array-like indices.
-            axis_label: Optional label for the axis, used to construct the operation label.
-            dependency_name: Optional name of one or more dependencies to transform. If None,
-                transforms all inputs.
-            metadata: Optional metadata containing descriptions and labels.
-        """
-
-        if axis_label is None:
-            label = f"axis{axis}-idx{idxs}"
-        else:
-            label = f"{axis_label}-idx{idxs}"
-
-        dep_str = dependency_name or "dependencies"
-        description = f"Index {dep_str} along axis {axis} with indices {idxs}"
-
-        def index_fn(dep_data, **kwargs):
-            return jtree.take(dep_data, idxs, axis)
-
-        # Build metadata with description and label
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        return self._add_prep_op(
-            name="after_indexing",
-            dep_name=dependency_name,
-            fn=index_fn,
-            params=dict(axis=axis) if callable(idxs) else dict(axis=axis, idxs=idxs),
-            metadata=final_metadata,
-            uses_callback=callable(idxs),
-        )
-
-    def after_map(
-        self,
-        fn: Callable[[Any], Any],
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that maps a function over the input PyTrees.
-        """
-        dep_str = dependency_name or "dependencies"
-        description = f"Map function {get_name_of_callable(fn)} over {dep_str}"
-        label = f"map-{get_name_of_callable(fn)}"
-
-        # Build metadata with description and label
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        def map_fn(dep_data, **kwargs):
-            return jt.map(fn, dep_data, is_leaf=is_leaf)
-
-        return self._add_prep_op(
-            name="map",
-            dep_name=dependency_name,
-            fn=map_fn,
-            metadata=final_metadata,
-            uses_callback=True,
-        )
-
-    def after_transform_states(
-        self,
-        fn: Callable[..., Any],
-        level: Optional[str | Sequence[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """Returns a copy of this analysis that transforms the evaluated states before proceeding."""
-        # Generate description for this specific method
-        if level is None:
-            description = f"Transform states with {get_name_of_callable(fn)}"
-        else:
-            level_str = level if isinstance(level, str) else ",".join(level)
-            description = (
-                f"Transform states at LDict level '{level_str}' with {get_name_of_callable(fn)}"
-            )
-
-        # Build metadata with our description
-        final_metadata = _merge_metadata(
-            metadata,
-            dict(
-                descriptions=[description],
-                labels=[f"transform-states_{get_name_of_callable(fn)}"],
-            ),
-        )
-
-        return self.after_transform(
-            fn=fn,
-            level=level,
-            dependency_names="data.states",
-            metadata=final_metadata,
-        )
-
-    def after_transform_inputs(
-        self,
-        fn: Callable[..., Any],
-        level: Optional[str | Sequence[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """Returns a copy of this analysis that transforms the instance's port inputs before proceeding."""
-        # Generate description for this specific method
-        if level is None:
-            description = f"Transform inputs with {get_name_of_callable(fn)}"
-        else:
-            level_str = level if isinstance(level, str) else ",".join(level)
-            description = (
-                f"Transform inputs at LDict level '{level_str}' with {get_name_of_callable(fn)}"
-            )
-
-        # Build metadata with our description
-        final_metadata = _merge_metadata(
-            metadata,
-            dict(
-                descriptions=[description],
-                labels=[f"transform-inputs_{get_name_of_callable(fn)}"],
-            ),
-        )
-
-        return self.after_transform(
-            fn=fn,
-            level=level,
-            dependency_names=field_names(self.Ports),
-            metadata=final_metadata,
-        )
-
-    def after_transform(
-        self,
-        fn: Callable[..., Any],
-        level: Optional[str | Sequence[str]] = None,
-        dependency_names: Optional[str | Sequence[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that transforms its inputs before proceeding.
-
-        Applies a function to one or more `LDict` levels, or to the entire input PyTree.
-        This is less general than `after_map`.
-
-        Args:
-            fn: The function to transform the inputs with.
-            level: The `LDict` level to apply the transformation to. If None, the transformation is applied to the entire input PyTree.
-            dependency_names: The name(s) of the dependencies to transform.
-            metadata: Optional metadata containing descriptions and labels.
-        """
-
-        return self._after_transform(
-            fn,
-            level,
-            dependency_names,
-            metadata,
-            name="after_transform",
-            params={},
-            uses_callback=True,
         )
 
     def _after_transform(
@@ -1324,283 +1076,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             uses_callback=uses_callback,
         )
 
-    def after_unstacking(
-        self,
-        axis: int,
-        level_label: str,
-        keys: Optional[Sequence[Hashable]] = None,
-        dependency_name: Optional[str] = None,
-        above_level: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that unpacks an array axis into an `LDict` level.
-
-        Args:
-            axis: The array axis to unpack
-            level_label: The label for the new LDict level
-            keys: The keys to use for the LDict entries. If given, must match the length of the axis.
-                By default, uses integer keys starting from zero.
-            dependency_name: Optional name of specific dependency to transform
-            above_level: Optional level to move the new level above
-            metadata: Optional metadata containing descriptions and labels.
-        """
-
-        dep_str = dependency_name or "dependencies"
-        description = f"Unstack {dep_str} axis {axis} into LDict level '{level_label}'"
-        label = f"unstack-axis{axis}-to-{_format_level_str(level_label)}"
-
-        def unpack_axis(data_, **kwargs):
-            def transform_array(arr):
-                nonlocal keys
-                if keys is None:
-                    keys = range(arr.shape[axis])
-                else:
-                    # Check if keys length matches the axis length
-                    if arr.shape[axis] != len(keys):
-                        raise ValueError(
-                            f"Length of keys ({len(keys)}) must match the length of axis {axis} ({arr.shape[axis]})"
-                        )
-
-                # Move the specified axis to position 0
-                arr_moved = jnp.moveaxis(arr, axis, 0)
-
-                # Create an LDict with the specified label
-                return LDict.of(level_label)(
-                    {key: slice_data for key, slice_data in zip(keys, arr_moved)}
-                )
-
-            unstacked = jt.map(
-                transform_array,
-                data_,
-                is_leaf=eqx.is_array,
-            )
-
-            if above_level is not None:
-                unstacked = jt.map(
-                    lambda subtree, above_level=above_level: move_ldict_level_above(
-                        level_label,
-                        above_level,
-                        subtree,
-                    ),
-                    unstacked,
-                    is_leaf=is_type(LDict),
-                )
-
-            return unstacked
-
-        # Build metadata with description and label
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        return self._add_prep_op(
-            name="after_unstacking",
-            dep_name=dependency_name,
-            fn=unpack_axis,
-            params=dict(axis=axis, level_label=level_label, above_level=above_level, keys=keys),
-            metadata=final_metadata,
-            uses_callback=False,
-        )
-
-    def after_stacking(
-        self,
-        level: str,
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that stacks its inputs along an `LDict` PyTree level before proceeding.
-
-        This is useful when we have a PyTree of results with an `LDict` level representing
-        the values across some variable we want to visually compare, and our analysis
-        uses a plotting function that compares across the first axis of input arrays.
-        By stacking first, we collapse the `LDict` level into the first axis so that the
-        plotting function will compare (e.g. colour differently) across the variable.
-
-        Args:
-            level: The label of the `LDict` level in the PyTree to stack by.
-            dependency_name: Optional name of the specific dependency to stack.
-                If None, will stack all dependencies listed in self.inputs.
-
-        Returns:
-            A copy of this analysis with stacking operation and updated parameters
-        """
-
-        # Define the stacking function
-        def stack_dependency(dep_data, **kwargs):
-            # jtree.stack stacks subtrees, so we don't need to move `level` to bottom
-            return jt.map(
-                lambda d: jtree.stack(list(d.values())),
-                dep_data,
-                is_leaf=LDict.is_of(level),
-            )
-
-        #! TODO: Refactor/remove; this is not universal anymore.
-        #! I'm not sure how this would be generalized;
-        #! perhaps subclasses could specify that certain axes (assumed axis=0 in this case)
-        #! are colorscale axes or similar; then when we perform operations such as this,
-        #! we could use `level: str` to modify them respectively.
-        # modified_analysis = eqx.tree_at(
-        #     lambda obj: (obj.colorscale_key, obj.colorscale_axis, obj.fig_params),
-        #     self,
-        #     (
-        #         level,
-        #         0,
-        #         self.fig_params | dict(legend_title=get_label_str(level)),
-        #     ),
-        #     is_leaf=is_none,
-        # )
-
-        description = f"Stack dependency {dependency_name} LDict level '{level}' into axis 0"
-        label = f"stack_{_format_level_str(level)}"
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        return self._add_prep_op(
-            name="after_stacking",
-            dep_name=dependency_name,
-            fn=stack_dependency,
-            params=dict(level=level),
-            metadata=final_metadata,
-            uses_callback=False,
-        )
-
-    def after_rearrange_levels(
-        self,
-        spec: Sequence[jtree.LevelSpec],
-        is_leaf: Callable[[Any], bool] | None = None,  # LDict.is_of('var'),
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that will transpose `LDict` levels of its inputs.
-
-        This is useful when our analysis uses a plotting function that compares across
-        the outer PyTree level, but for whatever reason this level is not already
-        the outer level of our results PyTree.
-        """
-        # Default: treat MaskedArray as a leaf during level rearrangement
-        is_leaf_ = is_type(MaskedArray) if is_leaf is None else anyf(is_leaf, is_type(MaskedArray))
-
-        def transpose_dependency(dep_data, **kwargs):
-            return jtree.rearrange_uniform_tree(dep_data, spec, is_leaf=is_leaf_)
-
-        spec_str = "-".join(
-            str(...) if s is Ellipsis else _format_level_str(s)
-            for s in spec  # type: ignore[call-arg]
-        )
-
-        description = (
-            f"Rearrange PyTree levels of dependency {dependency_name} "
-            f"according to specification: {spec_str}"
-        )
-        label = f"levels-to-{spec_str}"
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        return self._add_prep_op(
-            name="after_rearrange_levels",
-            dep_name=dependency_name,
-            fn=transpose_dependency,
-            params=dict(spec=spec),
-            metadata=final_metadata,
-            uses_callback=is_leaf is not None,
-        )
-
-    def after_level_to_top(
-        self,
-        label: str,
-        is_leaf: Callable[[Any], bool] | None = None,  # LDict.is_of('var'),
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that transposes an `LDict` level to the top of its inputs.
-        """
-
-        return self.after_rearrange_levels(
-            spec=[label, ...],
-            is_leaf=is_leaf,
-            dependency_name=dependency_name,
-            metadata=metadata,
-        )
-
-    def after_level_to_bottom(
-        self,
-        label: str,
-        is_leaf: Callable[[Any], bool] | None = None,  # LDict.is_of('var'),
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that transposes an `LDict` level to the bottom of its inputs.
-        """
-
-        return self.after_rearrange_levels(
-            spec=[..., label],
-            is_leaf=is_leaf,
-            dependency_name=dependency_name,
-            metadata=metadata,
-        )
-
-    def after_subdict_at_level(
-        self,
-        level: str,
-        keys: Optional[Sequence[Hashable]] = None,
-        idxs: Optional[Sequence[int]] = None,
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that keeps certain keys of an `LDict` level before proceeding.
-
-        Either `keys` or `idxs` must be provided, but not both: `keys` specifies the exact keys to keep,
-        whereas `idxs` specifies the indices of the keys to keep in terms of their ordering in the `LDict`.
-        """
-
-        if keys is not None and idxs is not None:
-            raise ValueError("Cannot provide both `keys` and `idxs`.")
-
-        if keys is None and idxs is None:
-            raise ValueError("Must provide either `keys` or `idxs`.")
-
-        label = f"subdict-at-{_format_level_str(level)}_"
-        if keys is not None:
-
-            def _select_fn_keys(d: dict, keys=keys) -> dict:
-                return subdict(d, keys)
-
-            select_fn = _select_fn_keys
-            selection_str = f"keys {','.join(str(k) for k in keys)}"
-            label += ",".join(str(k) for k in keys)
-
-        elif idxs is not None:
-            if not isinstance(idxs, Sequence) or not all(isinstance(i, int) for i in idxs):
-                raise ValueError("`idxs` must be a sequence of integers.")
-
-            def _select_fn_idxs(d: dict, idxs=idxs) -> dict:
-                return subdict(d, [list(d.keys())[i] for i in idxs])
-
-            select_fn = _select_fn_idxs
-            selection_str = f"items with indices {','.join(str(i) for i in idxs)}"
-            label += f"idxs-{','.join(str(i) for i in idxs)}"
-
-        else:
-            raise ValueError("Either `keys` or `idxs` must be provided.")
-
-        # Generate description for this specific method
-        dep_str = dependency_name or "dependencies"
-        description = f"Select {selection_str} at LDict level '{level}' of dependency {dep_str}"
-
-        # Build metadata with our description
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        return self._after_transform(
-            select_fn,
-            level,
-            dependency_name,
-            final_metadata,
-            name="after_subdict_at_level",
-            params=dict(keys=keys, idxs=idxs),
-        )
-
     def after_getitem_at_level(
         self,
         level: str,
@@ -1637,6 +1112,28 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             name="after_getitem_at_level",
             params=dict(key=key),
         )
+
+    #! TODO: Implement this. Note that `axis_fn` isn't implemented at this point.
+    #! Also there is no notion of a vectorized *figure*, so this might as well just
+    #! be a convenience for unstacking the axis and then tree mapping.
+    # def map_figs_by_axis(
+    #     self,
+    #     level: str,
+    #     *,
+    #     axis_fn: Callable[[Any], str],
+    #     metadata: Optional[Dict[str, Any]] = None,
+    # ) -> Self:
+    #     """Map figures by creating new axis labels using axis_fn."""
+    #     description = "DEBUG THIS"
+    #     final_metadata = _merge_metadata(metadata, dict(descriptions=[description]))
+
+    #     return self._append_fig_op(
+    #         name="map_figs_by_axis",
+    #         dep_name=None,
+    #         axis_fn=axis_fn,
+    #         level=level,
+    #         metadata=final_metadata,
+    #     )
 
     def vmap(self, in_axes: Mapping[str, AxisSpec]) -> Self:
         """
@@ -1702,161 +1199,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             is_leaf=is_none,
         )
 
-    def map_figs_at_level(
-        self,
-        level,
-        dependency_name: Optional[str] = None,
-        fig_params_fn: Optional[Callable] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that maps over the input PyTrees, down to a certain `LDict` level.
-
-        This is useful when e.g. the analysis calls a plotting function that expects a two-level PyTree,
-        but we've evaluated a deeper PyTree of states, where the two levels are inner.
-
-        Args:
-            level: str | Sequence[str] | Sequence[tuple[str, Callable]]
-                - str: append a single fig-op that maps by this LDict level.
-                - Sequence[str]: expand into a chain, appending one fig-op per level in order,
-                  reusing `fig_params_fn` for each op.
-                - Sequence[tuple[str, Callable]]: per-level override for `fig_params_fn`.
-            dependency_name: Optional name of specific dependency to map
-            fig_params_fn: Optional function for fig parameter updates
-            metadata: Optional metadata containing descriptions and labels.
-        """
-        if isinstance(level, (list, tuple)):
-            ana = self
-            for spec in level:
-                if isinstance(spec, (list, tuple)) and len(spec) == 2:
-                    lv, fn = spec
-                    ana = ana.map_figs_at_level(lv, dependency_name, fn, metadata)
-                else:
-                    ana = ana.map_figs_at_level(spec, dependency_name, fig_params_fn, metadata)
-            return ana
-
-        dep_str = dependency_name or "dependencies"
-        description = f"Map figures at LDict level '{level}' of dependency {dep_str}"
-        label = f"map_figs_at-{_format_level_str(level)}"
-
-        # Build metadata with description and label
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
-
-        return self._append_fig_op(
-            name="map_figs_at_level",
-            dep_name=dependency_name,
-            is_leaf=LDict.is_of(level),
-            slice_fn=_level_slice_fn,
-            items_fn=partial(_level_items_fn, level),
-            # Use the new aggregator specific to mapping
-            agg_fn=partial(_reconstruct_ldict_aggregator, level),
-            fig_params_fn=fig_params_fn,
-            params=dict(level=level),
-            metadata=final_metadata,
-        )
-
-    #! TODO: Implement this. Note that `axis_fn` isn't implemented at this point.
-    #! Also there is no notion of a vectorized *figure*, so this might as well just
-    #! be a convenience for unstacking the axis and then tree mapping.
-    # def map_figs_by_axis(
-    #     self,
-    #     level: str,
-    #     *,
-    #     axis_fn: Callable[[Any], str],
-    #     metadata: Optional[Dict[str, Any]] = None,
-    # ) -> Self:
-    #     """Map figures by creating new axis labels using axis_fn."""
-    #     description = "DEBUG THIS"
-    #     final_metadata = _merge_metadata(metadata, dict(descriptions=[description]))
-
-    #     return self._append_fig_op(
-    #         name="map_figs_by_axis",
-    #         dep_name=None,
-    #         axis_fn=axis_fn,
-    #         level=level,
-    #         metadata=final_metadata,
-    #     )
-
-    def combine_figs_by_axis(
-        self,
-        axis: int,
-        dependency_name: Optional[str] = None,
-        fig_params_fn: Optional[Callable[[Mapping, FigIterCtx], Mapping]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that will merge individual figures generated by slicing along
-        the specified axis of the arrays in the dependency PyTree(s).
-
-        This is useful when we want to include an additional dimension of comparison in a figure.
-        For example, our plotting function may already compare across the first axis of the input
-        arrays, or the outer level of the input PyTree; but perhaps we also want a secondary
-        comparison across a different axis of the input arrays.
-
-        Args:
-            axis: The axis to slice and combine along
-            dependency_name: Optional name of specific dependency to slice.
-                If None, will slice all dependencies listed in self.inputs.
-        """
-        description = (
-            f"Combine figures by slicing along axis {axis} of dependency {dependency_name}"
-        )
-        final_metadata = _merge_metadata(
-            metadata, dict(descriptions=[description], label=f"combine_by-axis{axis}")
-        )
-
-        return self._append_fig_op(
-            name="combine_figs_by_axis",
-            dep_name=dependency_name,
-            is_leaf=eqx.is_array,
-            slice_fn=partial(_axis_slice_fn, axis),
-            items_fn=partial(_axis_items_fn, axis),
-            fig_params_fn=fig_params_fn,
-            # Use the default aggregator that matches the new signature
-            agg_fn=_combine_figures,
-            params=dict(axis=axis),
-            metadata=final_metadata,
-        )
-
-    def combine_figs_by_level(
-        self,
-        level: str,
-        dependency_name: Optional[str] = None,
-        fig_params_fn: Optional[Callable[[Mapping, FigIterCtx], Mapping]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that will merge individual figures generated by iterating over
-        the keys of an LDict level in the dependency PyTree(s).
-
-        This is useful when we want to include an additional dimension of comparison in a figure.
-        For example, our plotting function may already compare across the first axis of the input
-        arrays, or the outer level of the input PyTree; but perhaps we also want a secondary
-        comparison across a different level of the input PyTree.
-
-        Args:
-            level: The LDict level to iterate over and combine across
-            dependency_name: Optional name of specific dependency to iterate over.
-                If None, will iterate over all dependencies listed in self.inputs.
-        """
-        description = f"Combine figures over LDict level '{level}' of dependency {dependency_name}"
-        final_metadata = _merge_metadata(
-            metadata,
-            dict(descriptions=[description], label=f"combine_by-{_format_level_str(level)}"),
-        )
-
-        return self._append_fig_op(
-            name="combine_figs_by_level",
-            dep_name=dependency_name,
-            is_leaf=LDict.is_of(level),
-            slice_fn=_level_slice_fn,
-            items_fn=partial(_level_items_fn, level),
-            fig_params_fn=fig_params_fn,
-            agg_fn=_combine_figures,
-            params=dict(level=level),
-            metadata=final_metadata,
-        )
-
     def then_transform_result(
         self,
         fn: Callable[..., Any],
@@ -1875,55 +1217,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             op_type="results",
             fn=fn,
             is_leaf=is_leaf,
-            metadata=metadata,
-        )
-
-    def then_transform_figs(
-        self,
-        fn: Callable[..., Any],
-        is_leaf: Optional[Callable[[Any], bool]] = is_type(go.Figure),
-        levels: Optional[Sequence[str | LDictConstructor | type]] = None,
-        invert_levels: bool = False,
-        level_to_tuple_arg: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """Returns a copy of this analysis that transforms its output PyTree of figures
-
-        Args:
-            fn: The function to transform the tree with.
-            is_leaf: Predicate identifying leaves to apply the transformation to. Defaults to
-                apply the transformation separately to each `go.Figure` leaf.
-            levels: Levels to pass as part of the subtree argument to `fn`. For example,
-                if `fn` is `partial(set_single_axis_bounds_equal, 'y')` and `levels=['pert__amp',
-                'train__pert__std']` then all figures that vary in those two variables will
-                have their y-axes set to the same bounds.
-            invert_levels: If `levels` is given, whether to invert the selection of levels.
-            level_to_tuple_arg: (To be deprecated) If given, the effective leaves on which the
-                transformation is applied will be tuples of `is_leaf` leaves, where the tuple
-                structure corresponds to zipping at the `level_to_tuple_arg` LDict level.
-            metadata: Optional metadata.
-        """
-        if is_leaf is None:
-            logger.warning(
-                "is_leaf=None in then_transform_figs may descend inside `go.Figure` nodes"
-            )
-        elif levels is not None:
-            logger.debug("is_leaf is ignored when levels is given in then_transform_figs")
-
-        if invert_levels and levels is None:
-            raise ValueError("invert_levels=True requires levels to be given")
-
-        #! TODO: Remove level_to_tuple_arg
-        if level_to_tuple_arg is not None:
-            logger.warning("level_to_tuple_arg will be deprecated soon; please use levels instead")
-
-        return self._then_transform(
-            op_type="figs",
-            fn=fn,
-            is_leaf=is_leaf,
-            levels=levels,
-            invert_levels=invert_levels,
-            level_to_tuple_arg=level_to_tuple_arg,
             metadata=metadata,
         )
 
@@ -2097,28 +1390,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 ),
             ),
         )
-
-    def _append_fig_op(
-        self,
-        fig_params_fn: Optional[Callable] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> Self:
-        """Append a new figure operation to the chain."""
-        # Log the most specific description if available
-        if metadata and "descriptions" in metadata and metadata["descriptions"]:
-            logger.debug(f"Add fig-op to {self.__class__.__name__}: {metadata['descriptions'][0]}")
-        if fig_params_fn is not None:
-            wrapped_fig_params_fn = wrap_to_accept_var_kwargs(fig_params_fn)
-        else:
-            wrapped_fig_params_fn = None
-        new_op = _FigOp(
-            metadata=metadata or {},
-            fig_params_fn=wrapped_fig_params_fn,
-            callback_token=object() if fig_params_fn is not None else None,
-            **kwargs,
-        )
-        return eqx.tree_at(lambda a: a._fig_ops, self, self._fig_ops + (new_op,))
 
     def _add_final_op(
         self,
@@ -2296,78 +1567,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return prepped_kwargs
 
     #! TEMPORARY
-    def map_compute_to_output(
-        self,
-        output_spec: Optional[Sequence[str | EllipsisType]] = None,
-        *,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-        dependency_names: Optional[str | Sequence[str]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis where `compute` is mapped over aligned tree nodes.
-
-        Automatically aligns input PyTrees to have matching outer structure before mapping.
-        This is useful when dependencies have different LDict structures that need to be
-        reconciled before joint processing.
-
-        Args:
-            output_spec: Optional specification of the desired output LDict structure.
-                - If provided as a sequence of strings, specifies the exact outer levels
-                - Can contain one Ellipsis (...) meaning "other levels here"
-                - If None, structure is inferred from the dependencies
-            is_leaf: Predicate identifying nodes to map over. If not provided and
-                    output_spec is complete, defaults to nodes below the specified levels.
-            dependency_names: Dependencies to align and map over. If None, uses all.
-
-        Returns:
-            A copy with prep ops to align structures and mapping configured.
-
-        Examples:
-            >>> # Explicit output structure
-            >>> analysis.map_compute_to_output(
-            ...     ["response_var", "condition", "trial"],
-            ...     dependency_names=["results", "gains"]
-            ... )
-
-            >>> # Partial structure with ellipsis
-            >>> analysis.map_compute_to_output(
-            ...     ["condition", ..., "trial"],
-            ...     is_leaf=is_type(MyResult),
-            ...     dependency_names=["results", "gains"]
-            ... )
-
-            >>> # Fully inferred structure
-            >>> analysis.map_compute_to_output(
-            ...     is_leaf=is_type(MyResult),
-            ...     dependency_names=["results", "gains"]
-            ... )
-        """
-        return self._map_to_output(
-            "compute",
-            output_spec=output_spec,
-            is_leaf=is_leaf,
-            dependency_names=dependency_names,
-        )
-
-    def map_make_figs_to_output(
-        self,
-        output_spec: Optional[Sequence[str | EllipsisType]] = None,
-        *,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-        dependency_names: Optional[str | Sequence[str]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis where `make_figs` is mapped over aligned tree nodes.
-
-        See `map_compute_to_output` for detailed documentation.
-        """
-        return self._map_to_output(
-            "make_figs",
-            output_spec=output_spec,
-            is_leaf=is_leaf,
-            dependency_names=dependency_names,
-        )
-
     #! TODO: Simplify this. It is overcomplicated and performs needlessly redundant work.
     #! We should only need a single prep-op to align dependencies -- as long as we modify
     #! `_run_prep_ops` so that *all* `dependency_names` dependencies get passed and modified
@@ -2375,68 +1574,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     #! Likewise, the spec alignment might be refactorable with the logic of
     #! `jtree.rearrange_uniform_tree`, especially re: specifying specs that can include non-LDict
     #! level types.
-    def _map_to_output(
-        self,
-        map_type: Literal["compute", "make_figs"],
-        output_spec: Optional[Sequence[str | EllipsisType]] = None,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-        dependency_names: Optional[str | Sequence[str]] = None,
-    ) -> Self:
-        """Common implementation for map_*_to_output methods."""
-
-        # Normalize dependency_names
-        if dependency_names is None:
-            dep_names = list(self.inputs.keys())
-            if not dep_names:
-                raise ValueError(f"No dependencies to map for {self.name}")
-        elif isinstance(dependency_names, str):
-            dep_names = [dependency_names]
-        else:
-            dep_names = list(dependency_names)
-
-        # Include data.states if needed
-        if "data.states" not in dep_names:
-            dep_names.append("data.states")
-
-        # Add alignment prep op based on strategy
-        if output_spec is None:
-            # Fully inferred structure
-            if is_leaf is None:
-                raise ValueError(
-                    "Either output_spec or is_leaf must be provided to determine mapping structure"
-                )
-            modified = self._add_inferred_alignment_prep_op(dep_names, is_leaf, map_type)
-
-        elif Ellipsis in output_spec:
-            # Partial spec with ellipsis
-            if is_leaf is None:
-                raise ValueError("is_leaf required when output_spec contains Ellipsis")
-            modified = self._add_ellipsis_alignment_prep_op(
-                dep_names, list(output_spec), is_leaf, map_type
-            )
-
-        else:
-            # Complete explicit spec
-            output_spec = list(output_spec)
-            if is_leaf is None:
-                # Default: map at nodes not in output_spec
-                def default_is_leaf(x):
-                    if isinstance(x, LDict):
-                        return x.label not in output_spec
-                    return True
-
-                is_leaf = default_is_leaf
-
-            modified = self._add_explicit_alignment_prep_op(dep_names, output_spec, map_type)
-
-        # Configure the mapping
-        if map_type == "compute":
-            modified = modified.map_compute(is_leaf, dependency_names=dep_names)
-        else:
-            modified = modified.map_make_figs(is_leaf, dependency_names=dep_names)
-
-        return modified
-
     def _add_explicit_alignment_prep_op(
         self,
         dep_names: list[str],
@@ -2644,13 +1781,3 @@ class IdentityNode(AbstractAnalysis[SinglePort[Any]]):
 
     def compute(self, data: AnalysisInputData, *, input, **kwargs) -> Any:
         return input
-
-
-class DummyNode(AbstractAnalysis[NoPorts]):
-    """An empty analysis, for debugging."""
-
-    def compute(self, data: AnalysisInputData, **kwargs) -> PyTree[Any]:
-        return None
-
-    def make_figs(self, data: AnalysisInputData, **kwargs) -> PyTree[go.Figure]:
-        return None

@@ -147,7 +147,6 @@ _EXPORTS = {
     "execute_staged_analysis_bundle": ".bundles",
     "existing_file_artifact_group": ".materialization",
     "expand_analysis_bundle": ".bundles",
-    "feedbax_graph_controller": ".controller",
     "finalize_evaluation_compact_product_union": ".evaluation_product_union",
     "flatten_analysis_bundle_delta": "feedbax.contracts.analysis_bundle_composition",
     "flatten_analysis_run_delta": "feedbax.contracts.analysis_composition",

@@ -285,25 +285,36 @@ class ArrayContainerReader:
     def read_unverified_slice(
         self, name: str, selection: int | slice | tuple[int | slice, ...]
     ) -> np.ndarray:
-        """Read unit-stride indices and slices. Payload trust requires external custody."""
+        """Read a selection whose payload trust comes from external custody."""
         record = self.descriptor.tensors[name]
         indices = selection if isinstance(selection, tuple) else (selection,)
         if len(indices) > len(record.shape):
             raise IndexError("too many indices for tensor")
         normalized: list[int | slice] = []
+        reversed_axes: list[int] = []
+        output_axis = 0
         for index, dimension in zip(indices, record.shape):
-            if isinstance(index, slice) and index.step in (None, 1):
-                start, end, _ = index.indices(dimension)
-                normalized.append(slice(start, end))
+            if isinstance(index, slice):
+                positions = range(*index.indices(dimension))
+                if positions:
+                    first, last = positions[0], positions[-1]
+                    step = abs(positions.step) if len(positions) > 1 else 1
+                    normalized.append(slice(min(first, last), max(first, last) + 1, step))
+                else:
+                    normalized.append(slice(0, 0))
+                if positions.step < 0:
+                    reversed_axes.append(output_axis)
+                output_axis += 1
             elif type(index) is int and -dimension <= index < dimension:
                 normalized.append(index % dimension)
             else:
-                raise IndexError("expected an in-bounds integer or a unit-stride slice")
+                raise IndexError("expected an in-bounds integer or a slice")
         try:
             view = self._open_payload().get_slice(name)
             if tuple(view.get_shape()) != record.shape or view.get_dtype() != _DTYPE_CODES[record.dtype]:
                 raise ArrayContainerError(f"unexpected shape or dtype for tensor {name!r}")
-            return view[tuple(normalized)]
+            array = view[tuple(normalized)]
+            return np.flip(array, axis=tuple(reversed_axes)) if reversed_axes else array
         except SafetensorError as exc:
             raise ArrayContainerError(f"cannot slice tensor {name!r}: {exc}") from exc
 

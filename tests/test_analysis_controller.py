@@ -4,7 +4,7 @@ from equinox.nn import StateIndex
 import jax
 import jax.numpy as jnp
 
-from feedbax.analysis import feedbax_graph_controller, graph_controller
+from feedbax.analysis import graph_controller
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.templates import (
     recurrent_graph_input_initializer,
@@ -73,7 +73,7 @@ class _Comparison(Component):
 
 
 @jax.experimental.enable_x64()
-def test_feedbax_graph_controller_uses_native_state_precision_with_flat_coordinates():
+def test_graph_controller_uses_native_state_precision_with_flat_coordinates():
     graph = Graph(
         nodes={"net": _StatefulGain([[1.0, 0.5]])},
         wires=(),
@@ -83,7 +83,7 @@ def test_feedbax_graph_controller_uses_native_state_precision_with_flat_coordina
         output_bindings={"output": ("net", "output")},
     )
 
-    controller = feedbax_graph_controller(graph, key=jax.random.PRNGKey(0), dtype=jnp.float64)
+    controller = graph_controller(graph, key=jax.random.PRNGKey(0), dtype=jnp.float64)
     h0 = controller.initial_state()
 
     assert h0.shape == (1,)
