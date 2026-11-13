@@ -9,16 +9,10 @@ from pydantic import BaseModel, Field
 
 from feedbax.execution.records import invocation_from_document
 from feedbax.orchestration.controller import ControllerProtocolError, OperatorGateError
-from feedbax.orchestration.realization import backend_plan_from_document
 from feedbax.web.orchestration.controller import (
     StudioController,
     StudioRecoveryUnavailable,
     get_studio_controller,
-)
-from feedbax.web.orchestration.startup_script import (
-    DEFAULT_FEEDBAX_REF,
-    DEFAULT_FEEDBAX_REPOSITORY,
-    INSTALL_SPEC_SCHEMA_VERSION,
 )
 from feedbax.web.services.training_service import training_service
 
@@ -33,46 +27,6 @@ async def _studio_controller(request: Request) -> StudioController:
 
 
 _Controller = Annotated[StudioController, Depends(_studio_controller)]
-
-
-class LaunchCostEstimate(BaseModel):
-    currency: Literal["USD"] = "USD"
-    hourly_estimate: float
-    machine_type: str
-    preemptible: bool
-    basis: str
-
-
-class InstallSpecRequest(BaseModel):
-    schema_version: Literal["feedbax.orchestration.install.v1"] = INSTALL_SPEC_SCHEMA_VERSION
-    source: Literal["git"] = "git"
-    repository: Literal["https://github.com/mlll-io/feedbax.git"] = DEFAULT_FEEDBAX_REPOSITORY
-    ref: str = DEFAULT_FEEDBAX_REF
-    extras: tuple[str, ...] = ()
-
-
-class LaunchRequest(BaseModel):
-    invocation: dict[str, Any]
-    backend_plan: dict[str, Any]
-    project: str
-    zone: str
-    machine_type: str = "n1-standard-4"
-    preemptible: bool = True
-    worker_port: int = 8765
-    worker_auth_token: str | None = None
-    tailscale_auth_key: str | None = None
-    install_spec: InstallSpecRequest = Field(default_factory=InstallSpecRequest)
-    reservation_ttl_seconds: int = Field(default=300, ge=30, le=3600)
-
-
-class LaunchResponse(BaseModel):
-    status: Literal["awaiting_authentication"]
-    intent_id: str
-    reservation_id: str
-    expires_at: str
-    instance_name: str
-    cost_estimate: LaunchCostEstimate
-    expected_cost: dict[str, Any]
 
 
 class AuthenticateLaunchRequest(BaseModel):
@@ -118,43 +72,6 @@ class StatusResponse(BaseModel):
 
 class TerminateResponse(BaseModel):
     ok: bool
-
-
-class OrchestrationTarget(BaseModel):
-    id: Literal["local", "gcp", "runpod", "manual"]
-    label: str
-    billable: bool
-    launch_mode: Literal["local", "durable-controller", "execution-plan", "manual-export"]
-    available: bool
-    notes: list[str] = Field(default_factory=list)
-
-
-class OrchestrationTargetsResponse(BaseModel):
-    targets: list[OrchestrationTarget]
-
-
-@router.post("/launch", response_model=LaunchResponse)
-async def reserve_launch(payload: LaunchRequest) -> LaunchResponse:
-    """Create an inert, exact reservation without contacting GCP."""
-    try:
-        invocation_from_document(payload.invocation)
-        plan = backend_plan_from_document(payload.backend_plan)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if plan.expected_cost is None or plan.billable_confirmation_class != (
-        "authenticated-effect-reservation"
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="GCP BackendPlan must carry an authenticated effect reservation cost boundary",
-        )
-    raise HTTPException(
-        status_code=422,
-        detail=(
-            "GCP Studio worker launch is unavailable because this adapter cannot establish "
-            "a verifiable HTTPS worker origin"
-        ),
-    )
 
 
 @router.post(
@@ -326,43 +243,3 @@ async def terminate_instance(
     except (ControllerProtocolError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return TerminateResponse(ok=True)
-
-
-@router.get("/targets", response_model=OrchestrationTargetsResponse)
-async def list_orchestration_targets() -> OrchestrationTargetsResponse:
-    return OrchestrationTargetsResponse(
-        targets=[
-            OrchestrationTarget(
-                id="local",
-                label="Local worker",
-                billable=False,
-                launch_mode="local",
-                available=True,
-                notes=["Uses StageEngine through the durable controller."],
-            ),
-            OrchestrationTarget(
-                id="gcp",
-                label="GCP",
-                billable=True,
-                launch_mode="durable-controller",
-                available=False,
-                notes=["Unavailable until the adapter provides a verifiable HTTPS worker origin."],
-            ),
-            OrchestrationTarget(
-                id="runpod",
-                label="RunPod",
-                billable=True,
-                launch_mode="execution-plan",
-                available=True,
-                notes=["Uses the same reservation-bound controller protocol."],
-            ),
-            OrchestrationTarget(
-                id="manual",
-                label="Manual export",
-                billable=False,
-                launch_mode="manual-export",
-                available=True,
-                notes=["Exports an inert plan without starting compute."],
-            ),
-        ]
-    )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -17,7 +16,6 @@ from fastapi.testclient import TestClient
 from feedbax.orchestration.stages import STAGE_ASSEMBLE
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore, StageState
 from feedbax.web.api import runs as runs_api
-from feedbax.web.api import training as training_api
 from feedbax.web.services.training_service import (
     RunStateCorruptionError,
     TrainingService,
@@ -159,7 +157,7 @@ def test_status_uses_single_bundle_read_during_deletion_race(
 
     monkeypatch.setattr(Path, "read_text", raced_read_text)
 
-    status = asyncio.run(service.get_status("job-visible"))
+    status = service._status_from_state("job-visible")
 
     assert status is not None
     assert status["total_batches"] == 1
@@ -272,26 +270,6 @@ def test_training_run_list_surfaces_sanitized_corruption_failure(
 
     with caplog.at_level(logging.ERROR):
         response = TestClient(app).get("/api/runs/training")
-
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Persisted Studio run state is corrupt"}
-    assert str(run_dir) not in response.text
-    assert str(run_dir / "state.json") in caplog.text
-
-
-def test_training_status_surfaces_sanitized_corruption_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    run_dir = _write_current_run(tmp_path, state_text="{not-json")
-    monkeypatch.setattr(training_api, "training_service", TrainingService())
-    app = FastAPI()
-    app.include_router(training_api.router, prefix="/api/training")
-
-    with caplog.at_level(logging.ERROR):
-        response = TestClient(app).get("/api/training/job-visible")
 
     assert response.status_code == 500
     assert response.json() == {"detail": "Persisted Studio run state is corrupt"}

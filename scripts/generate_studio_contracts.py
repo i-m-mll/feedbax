@@ -189,16 +189,7 @@ from feedbax.contracts.studio_api import (
     GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
-    TrainingStartPayload,
-    TrainingStartResponse,
-    TrainingStatusPayload,
-    TrainingStatusResponse,
     TrainingTrajectoryPayload,
-    TrainingWebSocketEvent,
-    WorkerConnectEnvelope,
-    WorkerConnectResponse,
-    WorkerStatusEnvelope,
-    WorkerStatusResponse,
     BundleMissingRoleRecord,
     BundleStageDryRunOutputRecord,
     BundleStageDryRunRecord,
@@ -371,11 +362,6 @@ from feedbax.contracts.studio_refinements import (
     CROSS_FIELD_REFINEMENTS,
     REGISTERED_CONSTRAINT_VALIDATORS,
 )
-from feedbax.web.api.training import (
-    ProbeResponse,
-    ValidateLossResponse,
-    ValidationErrorResponse,
-)
 from feedbax.web.api.execution import (
     SampledTaskTrial,
     TaskTimelineCue,
@@ -461,7 +447,6 @@ from scripts.studio_json_schema import emit_authored_contracts
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
 
-EVENT_MODELS = get_args(TrainingWebSocketEvent)
 
 JOB_MODELS = (
     JobError,
@@ -819,14 +804,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PenzaiNodeRequest,
     PenzaiInspectorPayload,
     PenzaiInspectorResponse,
-    TrainingStartPayload,
-    TrainingStartResponse,
-    TrainingStatusPayload,
-    TrainingStatusResponse,
-    WorkerConnectResponse,
-    WorkerConnectEnvelope,
-    WorkerStatusResponse,
-    WorkerStatusEnvelope,
     AnalysisClassInfo,
     AnalysisPackageInfo,
     AnalysisPackagesPayload,
@@ -844,10 +821,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AnalysisJobStatusPayload,
     AnalysisJobStatusResponse,
     TrainingTrajectoryPayload,
-    *EVENT_MODELS,
-    ProbeResponse,
-    ValidationErrorResponse,
-    ValidateLossResponse,
     TrainingRunInfo,
     EvalRunInfo,
     CreateEvalRunRequest,
@@ -993,11 +966,7 @@ CONTRACT_MODEL_NAMES = [
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
     "PenzaiNodeRequest",
-    "TrainingStartResponse",
-    "TrainingStatusResponse",
     "SuccessResponse",
-    "WorkerConnectEnvelope",
-    "WorkerStatusEnvelope",
     "AnalysisPackagesResponse",
     "AnalysisBundleDryRunResponse",
     "GenerateAnalysisResponse",
@@ -1022,11 +991,8 @@ CONTRACT_MODEL_NAMES = [
     "InlineTreescopeRequest",
     "TreescopeResponse",
     "InspectionStatusResponse",
-    "ProbeResponse",
-    "ValidateLossResponse",
     "TaskTrialSampleRequest",
     "TaskTrialSampleResponse",
-    "TrainingWebSocketEvent",
 ]
 
 MIGRATION_OR_NORMALIZATION_VALIDATORS = {
@@ -1424,14 +1390,6 @@ def generate() -> str:
             SpatialMusclePath,
         )
     }
-    event_model_names = [model.__name__ for model in EVENT_MODELS]
-    event_type = " | ".join(event_model_names)
-    event_schema = (
-        f"export type TrainingWebSocketEvent = {event_type};\n\n"
-        "export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = "
-        f"z.union([{', '.join(name + 'Schema' for name in event_model_names)}]) "
-        "as unknown as z.ZodType<TrainingWebSocketEvent>;"
-    )
     contract_entries = "\n".join(f"  {name}: {name}Schema," for name in CONTRACT_MODEL_NAMES)
     type_entries = "\n".join(f"  {name}: {name};" for name in CONTRACT_MODEL_NAMES)
     return (
@@ -1450,7 +1408,6 @@ def generate() -> str:
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
         f"{authored_schemas}\n\n"
-        f"{event_schema}\n\n"
         "export const contractSchemas = {\n"
         f"{contract_entries}\n"
         "} as const;\n\n"

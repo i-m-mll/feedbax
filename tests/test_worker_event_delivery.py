@@ -1,4 +1,4 @@
-"""Exercise delivery across the worker HTTP stream and Studio's WebSocket route."""
+"""Exercise worker HTTP event delivery and driver custody."""
 
 from __future__ import annotations
 
@@ -13,18 +13,14 @@ from dataclasses import dataclass, field
 import httpx
 import pytest
 import uvicorn
-from fastapi.testclient import TestClient
 from starlette.types import Message, Receive, Scope, Send
-from starlette.websockets import WebSocketDisconnect
 
 import feedbax.web.worker.app as worker_app
-from feedbax.orchestration.assembly import assemble_run_bundle
 from feedbax.orchestration.events import RunEventReader
+from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
 from feedbax.orchestration.state import RunSetState
-from feedbax.web.app import create_app as create_studio_app
-from feedbax.web.services.training_service import TrainingService
 from feedbax.web.services.worker_driver import WorkerHttpDriver
-from feedbax.web.ws import training as training_ws
+from tests.test_orchestration_core import _bundle, _compiled_row
 
 _TIMEOUT = 5.0
 
@@ -66,37 +62,16 @@ def training_gates(monkeypatch) -> Iterator[_TrainingGates]:
 
 
 @pytest.fixture
-def initial_cursor_stream_closed() -> threading.Event:
-    return threading.Event()
-
-
-@pytest.fixture
-def worker_url(
-    initial_cursor_stream_closed: threading.Event, training_gates: _TrainingGates
-) -> Iterator[str]:
+def worker_url(training_gates: _TrainingGates) -> Iterator[str]:
     app = worker_app.create_app()
 
     async def observe_worker_stream(scope: Scope, receive: Receive, send: Send) -> None:
         async def send_with_slow_subscriber(message: Message) -> None:
             await send(message)
-            if message["type"] == "http.response.body" and message.get("body", b"").startswith(
-                b"data: "
-            ):
+            if message["type"] == "http.response.body" and message.get("body", b"").startswith(b"data: "):
                 await asyncio.to_thread(training_gates.finished.wait, _TIMEOUT)
 
-        try:
-            await app(
-                scope,
-                receive,
-                send_with_slow_subscriber if scope.get("path") == "/jobs/slow/stream" else send,
-            )
-        finally:
-            if (
-                scope["type"] == "http"
-                and scope["path"].endswith("/stream")
-                and scope["query_string"] == b"from_seq=0"
-            ):
-                initial_cursor_stream_closed.set()
+        await app(scope, receive, send_with_slow_subscriber if scope.get("path") == "/jobs/slow/stream" else send)
 
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -133,102 +108,36 @@ def _wait_for_driver_events(reader: RunEventReader, count: int) -> list[tuple[in
     return [(event.seq, event.type) for event in events]
 
 
-def _studio_client() -> TestClient:
-    app = create_studio_app()
-
-    async def with_websocket_deadline(scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "websocket":
-            await app(scope, receive, send)
-            return
-        async with asyncio.timeout(2 * _TIMEOUT):
-            await app(scope, receive, send)
-
-    return TestClient(with_websocket_deadline)
-
-
-def _studio_event(websocket, job_id: str) -> tuple[int, str]:
-    event = websocket.receive_json()
-    assert event["job_id"] == job_id
-    return event["seq"], event["type"]
-
-
-def _assert_studio_closed(websocket) -> None:
-    with pytest.raises(WebSocketDisconnect) as exc:
-        websocket.receive_json()
-    assert exc.value.code == 1000
-
-
-@pytest.fixture
-def studio_service(monkeypatch, tmp_path, worker_url) -> TrainingService:
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
-    monkeypatch.delenv("FEEDBAX_WORKER_URL", raising=False)
-    service = TrainingService()
-    service.connect_remote(worker_url)
-    monkeypatch.setattr(training_ws, "training_service", service)
-    return service
-
-
-def test_driver_and_studio_each_receive_all_events_with_websocket_resume(
-    training_gates, worker_url, studio_service, initial_cursor_stream_closed
-) -> None:
-    request, context, registry = studio_service._build_worker_assembly_request(
-        worker_start={"total_batches": 2}
-    )
-    bundle = assemble_run_bundle(
-        request, run_set_id="2026-07-12-a1b2c3d4", context=context, registry=registry
+def test_driver_retains_worker_events_through_completion(training_gates, worker_url, tmp_path) -> None:
+    row_id = "2026-07-12-a1b2c3d4-studio"
+    payload = StudioTrainingAssemblySpec(total_batches=2).worker_payload()
+    compiled = _compiled_row(row_id).model_copy(update={"payload": payload, "resolved_semantics": payload})
+    bundle = _bundle(
+        tmp_path, run_set_id="2026-07-12-a1b2c3d4", rows=[compiled], driver="worker-http",
     )
     row = bundle.rows[0]
     state = RunSetState(run_set_id=bundle.run_set_id)
     driver = WorkerHttpDriver(base_url=worker_url, request_timeout=2 * _TIMEOUT)
     reader = RunEventReader(bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl")
-    path = f"/ws/training/{row.row_id}"
-    studio_events = [(0, "training_progress"), (1, "training_progress"), (2, "training_complete")]
 
     try:
         assert driver.launch_row(bundle, row, state)["status"] == "running"
         assert _wait_for_driver_events(reader, 1) == [(0, "progress")]
-        with _studio_client() as client:
-            with client.websocket_connect(path) as continuous:
-                assert _studio_event(continuous, row.row_id) == studio_events[0]
-                with client.websocket_connect(f"{path}?from_seq=0") as interrupted:
-                    first = _studio_event(interrupted, row.row_id)
-                    assert first == studio_events[0]
-                    interrupted.close()
-                    assert initial_cursor_stream_closed.wait(_TIMEOUT), (
-                        "Studio did not close the worker subscription after WebSocket disconnect"
-                    )
-                training_gates.next_batch.set()
-                assert _studio_event(continuous, row.row_id) == studio_events[1]
-                assert _wait_for_driver_events(reader, 2) == [(0, "progress"), (1, "progress")]
-
-                with client.websocket_connect(f"{path}?from_seq={first[0] + 1}") as resumed:
-                    assert _studio_event(resumed, row.row_id) == studio_events[1]
-                    assert training_gates.status_completed.wait(_TIMEOUT)
-                    response = httpx.get(f"{worker_url}/jobs/{row.row_id}/status", timeout=_TIMEOUT)
-                    assert response.raise_for_status().json()["status"] == "completed"
-                    assert driver.probe(bundle, row, state).status == "running"
-                    assert [event.seq for event in reader.read_all()] == [0, 1]
-                    training_gates.finish.set()
-                    assert _studio_event(resumed, row.row_id) == studio_events[2]
-                    _assert_studio_closed(resumed)
-                assert _studio_event(continuous, row.row_id) == studio_events[2]
-                _assert_studio_closed(continuous)
-
-            with client.websocket_connect(path) as late:
-                assert [_studio_event(late, row.row_id) for _ in studio_events] == studio_events
-                _assert_studio_closed(late)
-
+        training_gates.next_batch.set()
+        assert _wait_for_driver_events(reader, 2) == [(0, "progress"), (1, "progress")]
+        assert training_gates.status_completed.wait(_TIMEOUT)
+        response = httpx.get(f"{worker_url}/jobs/{row.row_id}/status", timeout=_TIMEOUT)
+        assert response.raise_for_status().json()["status"] == "completed"
+        assert driver.probe(bundle, row, state).status == "running"
+        assert [event.seq for event in reader.read_all()] == [0, 1]
+        training_gates.finish.set()
+        assert _wait_for_driver_events(reader, 3) == [(0, "progress"), (1, "progress"), (2, "complete")]
         deadline = time.monotonic() + _TIMEOUT
         probe = driver.probe(bundle, row, state)
         while probe.status == "running" and time.monotonic() < deadline:
             time.sleep(0.01)
             probe = driver.probe(bundle, row, state)
         assert probe.status == "completed"
-        assert [(event.seq, event.type) for event in reader.read_all()] == [
-            (0, "progress"),
-            (1, "progress"),
-            (2, "complete"),
-        ]
     finally:
         training_gates.next_batch.set()
         training_gates.finish.set()
@@ -236,7 +145,7 @@ def test_driver_and_studio_each_receive_all_events_with_websocket_resume(
 
 
 def test_worker_replays_retained_suffix_and_rejects_expired_explicit_cursor(
-    monkeypatch, training_gates, worker_url, studio_service
+    monkeypatch, training_gates, worker_url
 ) -> None:
     monkeypatch.setattr(worker_app, "_EVENT_BUFFER_MAX", 2)
     training_gates.next_batch.set()
@@ -269,15 +178,6 @@ def test_worker_replays_retained_suffix_and_rejects_expired_explicit_cursor(
                 (1, "progress"),
                 (2, "complete"),
             ]
-
-    with _studio_client() as client:
-        with client.websocket_connect("/ws/training/retained?from_seq=0") as websocket:
-            event = websocket.receive_json()
-            assert event["job_id"] == "retained"
-            assert event["type"] == "training_error"
-            assert event["error"] == "Training worker event cursor expired."
-            _assert_studio_closed(websocket)
-
 
 def test_live_worker_stream_reports_a_gap_when_it_falls_behind_retention(
     monkeypatch, training_gates, worker_url

@@ -2427,57 +2427,6 @@ export interface PenzaiInspectorResponse {
   data: PenzaiInspectorPayload;
 }
 
-export interface TrainingStartPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-}
-
-export interface TrainingStartResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: TrainingStartPayload;
-}
-
-export interface TrainingStatusPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  status: Record<string, unknown>;
-}
-
-export interface TrainingStatusResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: TrainingStatusPayload;
-}
-
-export interface WorkerConnectResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  ok: boolean;
-  url: string;
-}
-
-export interface WorkerConnectEnvelope {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: WorkerConnectResponse;
-}
-
-export interface WorkerStatusResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  mode: "local" | "remote";
-  url?: string | null;
-  connected: boolean;
-}
-
-export interface WorkerStatusEnvelope {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: WorkerStatusResponse;
-}
-
 export interface AnalysisClassInfo {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
@@ -2630,137 +2579,6 @@ export interface TrainingTrajectoryPayload {
   effector?: unknown[] | null;
   target?: unknown | null;
   t?: unknown[] | null;
-}
-
-export interface TrainingProgressEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch?: number | null;
-  program_step?: number | null;
-  type: "training_progress";
-  total_batches: number;
-  loss: number;
-  loss_terms?: Record<string, number>;
-  grad_norm?: number;
-  step_time_ms?: number;
-  metrics?: Record<string, number>;
-  status?: string;
-  execution?: string | null;
-}
-
-export interface TrainingLogEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch?: number | null;
-  program_step?: number | null;
-  type: "training_log";
-  level?: "info" | "warning" | "error";
-  message: string;
-  manifest_path?: string | null;
-  manifest_id?: string | null;
-  execution?: string | null;
-}
-
-export interface TrainingTrajectoryEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch?: number | null;
-  program_step?: number | null;
-  type: "training_trajectory";
-  trajectory: TrainingTrajectoryPayload;
-  execution?: string | null;
-}
-
-export interface TrainingCompleteEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch: number;
-  program_step?: number | null;
-  loss?: number | null;
-  manifest_path?: string | null;
-  manifest_id?: string | null;
-  execution?: string | null;
-  type: "training_complete";
-}
-
-export interface TrainingStoppedEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch: number;
-  program_step?: number | null;
-  loss?: number | null;
-  manifest_path?: string | null;
-  manifest_id?: string | null;
-  execution?: string | null;
-  type: "training_stopped";
-}
-
-export interface TrainingErrorEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  type: "training_error";
-  batch?: number | null;
-  error: string;
-  diagnostics?: DomainDiagnostic[];
-}
-
-export interface TrainingResyncEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  type: "training_resync";
-  expected_worker_seq?: number | null;
-  observed_worker_seq?: number | null;
-  missed_events?: number;
-  reason: "resumed" | "gap";
-  message: string;
-}
-
-export interface ProbeResponse {
-  id: string;
-  label: string;
-  node: string;
-  timing: string;
-  selector: string;
-  description?: string | null;
-}
-
-export interface ValidationErrorResponse {
-  path: string[];
-  field: string;
-  message: string;
-}
-
-export interface ValidateLossResponse {
-  valid: boolean;
-  errors: ValidationErrorResponse[];
 }
 
 export interface TrainingRunInfo {
@@ -8687,89 +8505,6 @@ export const PenzaiInspectorResponseSchema: z.ZodType<PenzaiInspectorResponse> =
     .strict()
 ) as unknown as z.ZodType<PenzaiInspectorResponse>;
 
-export const TrainingStartPayloadSchema: z.ZodType<TrainingStartPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStartPayload>;
-
-export const TrainingStartResponseSchema: z.ZodType<TrainingStartResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": TrainingStartPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStartResponse>;
-
-export const TrainingStatusPayloadSchema: z.ZodType<TrainingStatusPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "status": z.record(z.string(), z.unknown()),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStatusPayload>;
-
-export const TrainingStatusResponseSchema: z.ZodType<TrainingStatusResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": TrainingStatusPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStatusResponse>;
-
-export const WorkerConnectResponseSchema: z.ZodType<WorkerConnectResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "ok": z.boolean(),
-      "url": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerConnectResponse>;
-
-export const WorkerConnectEnvelopeSchema: z.ZodType<WorkerConnectEnvelope> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": WorkerConnectResponseSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerConnectEnvelope>;
-
-export const WorkerStatusResponseSchema: z.ZodType<WorkerStatusResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "mode": z.union([z.literal("local"), z.literal("remote")]),
-      "url": z.string().nullable().optional(),
-      "connected": z.boolean(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerStatusResponse>;
-
-export const WorkerStatusEnvelopeSchema: z.ZodType<WorkerStatusEnvelope> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": WorkerStatusResponseSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerStatusEnvelope>;
-
 export const AnalysisClassInfoSchema: z.ZodType<AnalysisClassInfo> = z.lazy(() =>
   z
     .object({
@@ -8991,201 +8726,6 @@ export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayloa
     })
     .strict()
 ) as unknown as z.ZodType<TrainingTrajectoryPayload>;
-
-export const TrainingProgressEventSchema: z.ZodType<TrainingProgressEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "type": z.literal("training_progress"),
-      "total_batches": z.number().int().safe(),
-      "loss": z.number().finite(),
-      "loss_terms": z.record(z.string(), z.number().finite()).optional(),
-      "grad_norm": z.number().finite().optional(),
-      "step_time_ms": z.number().finite().optional(),
-      "metrics": z.record(z.string(), z.number().finite()).optional(),
-      "status": z.string().optional(),
-      "execution": z.string().nullable().optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.batch == null && value.program_step == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A training event requires a completed batch count or a program step",
-        });
-      }
-    })
-) as unknown as z.ZodType<TrainingProgressEvent>;
-
-export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "type": z.literal("training_log"),
-      "level": z.union([z.literal("info"), z.literal("warning"), z.literal("error")]).optional(),
-      "message": z.string(),
-      "manifest_path": z.string().nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "execution": z.string().nullable().optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.batch == null && value.program_step == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A training event requires a completed batch count or a program step",
-        });
-      }
-    })
-) as unknown as z.ZodType<TrainingLogEvent>;
-
-export const TrainingTrajectoryEventSchema: z.ZodType<TrainingTrajectoryEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "type": z.literal("training_trajectory"),
-      "trajectory": TrainingTrajectoryPayloadSchema,
-      "execution": z.string().nullable().optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.batch == null && value.program_step == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A training event requires a completed batch count or a program step",
-        });
-      }
-    })
-) as unknown as z.ZodType<TrainingTrajectoryEvent>;
-
-export const TrainingCompleteEventSchema: z.ZodType<TrainingCompleteEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "loss": z.number().finite().nullable().optional(),
-      "manifest_path": z.string().nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "execution": z.string().nullable().optional(),
-      "type": z.literal("training_complete"),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingCompleteEvent>;
-
-export const TrainingStoppedEventSchema: z.ZodType<TrainingStoppedEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "loss": z.number().finite().nullable().optional(),
-      "manifest_path": z.string().nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "execution": z.string().nullable().optional(),
-      "type": z.literal("training_stopped"),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStoppedEvent>;
-
-export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "type": z.literal("training_error"),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "error": z.string(),
-      "diagnostics": z.array(DomainDiagnosticSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingErrorEvent>;
-
-export const TrainingResyncEventSchema: z.ZodType<TrainingResyncEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "type": z.literal("training_resync"),
-      "expected_worker_seq": z.number().int().safe().nullable().optional(),
-      "observed_worker_seq": z.number().int().safe().nullable().optional(),
-      "missed_events": z.number().int().safe().optional(),
-      "reason": z.union([z.literal("resumed"), z.literal("gap")]),
-      "message": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingResyncEvent>;
-
-export const ProbeResponseSchema: z.ZodType<ProbeResponse> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "label": z.string(),
-      "node": z.string(),
-      "timing": z.string(),
-      "selector": z.string(),
-      "description": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ProbeResponse>;
-
-export const ValidationErrorResponseSchema: z.ZodType<ValidationErrorResponse> = z.lazy(() =>
-  z
-    .object({
-      "path": z.array(z.string()),
-      "field": z.string(),
-      "message": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<ValidationErrorResponse>;
-
-export const ValidateLossResponseSchema: z.ZodType<ValidateLossResponse> = z.lazy(() =>
-  z
-    .object({
-      "valid": z.boolean(),
-      "errors": z.array(ValidationErrorResponseSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<ValidateLossResponse>;
 
 export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
   z
@@ -11314,10 +10854,6 @@ export const WhenSchema: z.ZodType<When> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<When>;
 
-export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingStoppedEvent | TrainingErrorEvent | TrainingResyncEvent;
-
-export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingStoppedEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
-
 export const contractSchemas = {
   JobError: JobErrorSchema,
   JobOutcome: JobOutcomeSchema,
@@ -11429,11 +10965,7 @@ export const contractSchemas = {
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
-  TrainingStartResponse: TrainingStartResponseSchema,
-  TrainingStatusResponse: TrainingStatusResponseSchema,
   SuccessResponse: SuccessResponseSchema,
-  WorkerConnectEnvelope: WorkerConnectEnvelopeSchema,
-  WorkerStatusEnvelope: WorkerStatusEnvelopeSchema,
   AnalysisPackagesResponse: AnalysisPackagesResponseSchema,
   AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponseSchema,
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
@@ -11458,11 +10990,8 @@ export const contractSchemas = {
   InlineTreescopeRequest: InlineTreescopeRequestSchema,
   TreescopeResponse: TreescopeResponseSchema,
   InspectionStatusResponse: InspectionStatusResponseSchema,
-  ProbeResponse: ProbeResponseSchema,
-  ValidateLossResponse: ValidateLossResponseSchema,
   TaskTrialSampleRequest: TaskTrialSampleRequestSchema,
   TaskTrialSampleResponse: TaskTrialSampleResponseSchema,
-  TrainingWebSocketEvent: TrainingWebSocketEventSchema,
 } as const;
 
 export type ContractName = keyof typeof contractSchemas;
@@ -11577,11 +11106,7 @@ export interface ContractTypeMap {
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;
-  TrainingStartResponse: TrainingStartResponse;
-  TrainingStatusResponse: TrainingStatusResponse;
   SuccessResponse: SuccessResponse;
-  WorkerConnectEnvelope: WorkerConnectEnvelope;
-  WorkerStatusEnvelope: WorkerStatusEnvelope;
   AnalysisPackagesResponse: AnalysisPackagesResponse;
   AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponse;
   GenerateAnalysisResponse: GenerateAnalysisResponse;
@@ -11606,11 +11131,8 @@ export interface ContractTypeMap {
   InlineTreescopeRequest: InlineTreescopeRequest;
   TreescopeResponse: TreescopeResponse;
   InspectionStatusResponse: InspectionStatusResponse;
-  ProbeResponse: ProbeResponse;
-  ValidateLossResponse: ValidateLossResponse;
   TaskTrialSampleRequest: TaskTrialSampleRequest;
   TaskTrialSampleResponse: TaskTrialSampleResponse;
-  TrainingWebSocketEvent: TrainingWebSocketEvent;
 }
 
 function formatPath(path: Array<string | number>): string {

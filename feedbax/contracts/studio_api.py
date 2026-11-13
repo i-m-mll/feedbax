@@ -6,9 +6,9 @@ transport shapes. The frontend derives runtime validators from these models.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, Self
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.domain import (
@@ -25,7 +25,6 @@ from feedbax.contracts.graph import (
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
-from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
 
 
@@ -231,57 +230,6 @@ class PenzaiInspectorResponse(StudioApiModel):
     data: PenzaiInspectorPayload
 
 
-class TrainingStartPayload(StudioApiModel):
-    """Payload returned after starting a training job."""
-
-    job_id: str
-
-
-class TrainingStartResponse(StudioApiModel):
-    """Standard API envelope for ``POST /api/training``."""
-
-    data: TrainingStartPayload
-
-
-class TrainingStatusPayload(StudioApiModel):
-    """Payload for training status polling."""
-
-    status: dict[str, Any]
-
-
-class TrainingStatusResponse(StudioApiModel):
-    """Standard API envelope for training status polling."""
-
-    data: TrainingStatusPayload
-
-
-class WorkerConnectResponse(StudioApiModel):
-    """Payload for connecting Studio to a worker."""
-
-    ok: bool
-    url: str
-
-
-class WorkerConnectEnvelope(StudioApiModel):
-    """Standard API envelope for worker connection responses."""
-
-    data: WorkerConnectResponse
-
-
-class WorkerStatusResponse(StudioApiModel):
-    """Payload describing the current worker connection."""
-
-    mode: Literal["local", "remote"]
-    url: Optional[str] = None
-    connected: bool
-
-
-class WorkerStatusEnvelope(StudioApiModel):
-    """Standard API envelope for worker status responses."""
-
-    data: WorkerStatusResponse
-
-
 class AnalysisClassInfo(StudioApiModel):
     """Describes a single analysis class available in a package."""
 
@@ -421,56 +369,8 @@ class AnalysisJobStatusResponse(StudioApiModel):
     data: AnalysisJobStatusPayload
 
 
-class _TrainingEvent(StudioApiModel):
-    job_id: str
-    seq: int
-    emitted_at_ms: int
-    worker_seq: Optional[int] = None
-
-
-class _TrainingPositionEvent(_TrainingEvent):
-    """Live event with at least one known coordinate."""
-
-    batch: Optional[int] = Field(
-        default=None, ge=0, strict=True, description="Completed training batches."
-    )
-    program_step: Optional[int] = Field(
-        default=None, ge=0, strict=True, description="Phase-program step."
-    )
-
-    @model_validator(mode="after")
-    def require_position(self) -> Self:
-        validate_cross_field_refinements(type(self).__name__, self)
-        return self
-
-
-class TrainingProgressEvent(_TrainingPositionEvent):
-    """Training progress event sent over the Studio WebSocket."""
-
-    type: Literal["training_progress"]
-    total_batches: int
-    loss: float
-    loss_terms: dict[str, float] = Field(default_factory=dict)
-    grad_norm: float = 0.0
-    step_time_ms: float = 0.0
-    metrics: dict[str, float] = Field(default_factory=dict)
-    status: str = "running"
-    execution: Optional[str] = None
-
-
-class TrainingLogEvent(_TrainingPositionEvent):
-    """Training log event sent over the Studio WebSocket."""
-
-    type: Literal["training_log"]
-    level: Literal["info", "warning", "error"] = "info"
-    message: str
-    manifest_path: Optional[str] = None
-    manifest_id: Optional[str] = None
-    execution: Optional[str] = None
-
-
 class TrainingTrajectoryPayload(StudioApiModel):
-    """Trajectory snapshot carried by a training WebSocket event."""
+    """Trajectory snapshot carried by a live Jobs frame."""
 
     schema_id: Literal[TRAINING_TRAJECTORY_SCHEMA_ID] = TRAINING_TRAJECTORY_SCHEMA_ID
     schema_version: Literal[TRAINING_TRAJECTORY_SCHEMA_VERSION] = TRAINING_TRAJECTORY_SCHEMA_VERSION
@@ -484,65 +384,3 @@ class TrainingTrajectoryPayload(StudioApiModel):
     effector: Optional[list[Any]] = None
     target: Optional[Any] = None
     t: Optional[list[Any]] = None
-
-
-class TrainingTrajectoryEvent(_TrainingPositionEvent):
-    """Training trajectory event sent over the Studio WebSocket."""
-
-    type: Literal["training_trajectory"]
-    trajectory: TrainingTrajectoryPayload
-    execution: Optional[str] = None
-
-
-class _TrainingTerminalEvent(_TrainingEvent):
-    batch: int = Field(ge=0, strict=True, description="Completed training batches.")
-    program_step: Optional[int] = Field(
-        default=None, ge=0, strict=True, description="Phase-program step."
-    )
-    loss: Optional[float] = None
-    manifest_path: Optional[str] = None
-    manifest_id: Optional[str] = None
-    execution: Optional[str] = None
-
-
-class TrainingCompleteEvent(_TrainingTerminalEvent):
-    """Training completion event sent over the Studio WebSocket."""
-
-    type: Literal["training_complete"]
-
-
-class TrainingStoppedEvent(_TrainingTerminalEvent):
-    """Training stop event sent over the Studio WebSocket."""
-
-    type: Literal["training_stopped"]
-
-
-class TrainingErrorEvent(_TrainingEvent):
-    """Training error event sent over the Studio WebSocket."""
-
-    type: Literal["training_error"]
-    batch: Optional[int] = Field(default=None, ge=0, strict=True)
-    error: str
-    diagnostics: list[DomainDiagnostic] = Field(default_factory=list)
-
-
-class TrainingResyncEvent(_TrainingEvent):
-    """Training stream reconnect/resync marker sent over the Studio WebSocket."""
-
-    type: Literal["training_resync"]
-    expected_worker_seq: Optional[int] = None
-    observed_worker_seq: Optional[int] = None
-    missed_events: int = 0
-    reason: Literal["resumed", "gap"]
-    message: str
-
-
-TrainingWebSocketEvent = (
-    TrainingProgressEvent
-    | TrainingLogEvent
-    | TrainingTrajectoryEvent
-    | TrainingCompleteEvent
-    | TrainingStoppedEvent
-    | TrainingErrorEvent
-    | TrainingResyncEvent
-)

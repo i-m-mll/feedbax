@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
@@ -18,17 +17,6 @@ from feedbax.runtime._graph_key_schedule import sample_training_trials
 from feedbax.tasks.document import TaskParameters
 
 router = APIRouter()
-
-
-class SimulationRequest(BaseModel):
-    graph: GraphSpec
-    n_steps: int
-    inputs: dict[str, Any] | None = None
-
-
-@router.post("/simulate")
-async def simulate(_: SimulationRequest):
-    raise HTTPException(status_code=501, detail="Simulation not implemented yet")
 
 
 class TaskTrialSampleRequest(BaseModel):

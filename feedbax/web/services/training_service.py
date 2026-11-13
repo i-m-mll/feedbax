@@ -1,95 +1,35 @@
-"""Studio training service — spawns a worker subprocess and relays its SSE stream."""
+"""Studio custody for retained HTTP worker runs."""
 
 from __future__ import annotations
 
-import asyncio
 import fcntl
 import json
 import logging
 import os
-import secrets
-import socket
-import subprocess
-import sys
-import threading
 import time
-from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, NoReturn, Optional, Sequence
+from typing import Any, NoReturn, Optional, Sequence
 
 from feedbax.contracts.base import utc_now
-from feedbax.contracts.studio_api import (
-    STUDIO_API_TRANSPORT_SCHEMA_ID,
-    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
-)
-from feedbax.contracts.spec_storage import store_canonical_json_artifact
-from feedbax.contracts.studio_training import (
-    STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
-    STUDIO_TRAINING_COMPILER_ID,
-    STUDIO_TRAINING_COMPILER_VERSION,
-    StudioTrainingAssemblySpec,
-    register_studio_training_compiler,
-)
-from feedbax.orchestration.assembly import (
-    AssemblyCompilerRegistry,
-    AssemblyContext,
-    CompilerIdentity,
-    RunAssemblyRequest,
-)
-from feedbax.orchestration.bundle import (
-    BudgetPolicy,
-    DeploymentPolicy,
-    EnvironmentDeclaration,
-    LaunchPolicy,
-    RunBundle,
-    SchemaArtifactRef,
-)
-from feedbax.orchestration.revision import resolve_feedbax_revision
-from feedbax.orchestration.conformance import CheckRegistry
-from feedbax.orchestration.drivers.capabilities import (
-    DriverConstructionContext,
-    DriverRegistry,
-)
-from feedbax.orchestration.events import (
-    RUN_EVENT_SCHEMA_ID,
-    RUN_EVENT_TERMINAL_TYPES,
-    RunEvent,
-    RunEventReader,
-    legacy_worker_event_from_run_event,
-)
-from feedbax.orchestration.stages import (
-    STAGE_ASSEMBLE,
-    STAGE_LAUNCH,
-    StageEngine,
-)
+from feedbax.contracts.studio_training import STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID
+from feedbax.orchestration.bundle import RunBundle
+from feedbax.orchestration.events import RunEvent, RunEventReader
+from feedbax.orchestration.stages import STAGE_ASSEMBLE
 from feedbax.orchestration.state import RunSetState, RunSetStateStore
-import feedbax.web.worker.client as worker_client
 from feedbax.web.services.worker_driver import load_worker_execution_payload
+from feedbax.web.worker.identity import require_worker_job_id
 from feedbax.web.worker.transport import (
-    DEFAULT_WORKER_LIMITS,
-    WorkerConsumptionLimits,
     WorkerConfigurationError,
     WorkerEndpoint,
     WorkerResponseError,
+    request_json,
 )
 
 
 logger = logging.getLogger(__name__)
 _OWNER_EXIT = "Studio restarted before the local worker finished"
 _FORCED_STOP = "Studio force-stopped the local worker"
-
-
-# ---------------------------------------------------------------------------
-# Public event type
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class TrainingEvent:
-    """A single event relayed from the worker SSE stream."""
-
-    raw: dict  # parsed JSON from the SSE data: line
 
 
 class RunStateCorruptionError(RuntimeError):
@@ -113,31 +53,6 @@ class _JobRef:
     run_set_id: str
     state_path: Path
     bundle_path: Path
-
-
-# ---------------------------------------------------------------------------
-# Port helper
-# ---------------------------------------------------------------------------
-
-
-def _find_free_port() -> int:
-    """Bind to port 0 to let the OS assign a free ephemeral port, then release it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _worker_stderr_excerpt(process: subprocess.Popen, *, limit: int = 4000) -> str:
-    """Return captured stderr for an exited worker process."""
-    if process.poll() is None or process.stderr is None:
-        return ""
-    try:
-        _stdout, stderr = process.communicate(timeout=0.1)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if not isinstance(stderr, str):
-        stderr = stderr.decode(errors="replace") if stderr else ""
-    return stderr.strip()[-limit:]
 
 
 def _orchestration_parent_root() -> Path:
@@ -170,144 +85,29 @@ def _allowed_worker_origins_from_env() -> tuple[str, ...]:
 
 
 class TrainingService:
-    """Manages the lifecycle of the headless training worker subprocess.
-
-    Supports two operating modes:
-
-    - **Local mode** (default): a worker subprocess is spawned on demand.
-    - **Remote mode**: connects to a pre-existing worker at a given URL.
-      Activated either by setting the ``FEEDBAX_WORKER_URL`` environment
-      variable before construction, or by calling :meth:`connect_remote`.
-    """
+    """Recover, list and stop retained Studio worker runs."""
 
     def __init__(self, *, allowed_remote_origins: Sequence[str] | None = None) -> None:
-        self._port: Optional[int] = None
-        self._process: Optional[subprocess.Popen] = None
         self._endpoint: WorkerEndpoint | None = None
         self._allowed_remote_origins = tuple(
             allowed_remote_origins
             if allowed_remote_origins is not None
             else _allowed_worker_origins_from_env()
         )
-        self._remote: bool = False
-        self._owner_pipe: int | None = None
-        self._lock = asyncio.Lock()
         self._job_refs_by_job: dict[str, _JobRef] = {}
 
-        # Honour the FEEDBAX_WORKER_URL env var: skip subprocess and connect
-        # directly to an external worker.
         env_url = os.environ.get("FEEDBAX_WORKER_URL")
         if env_url:
             self.connect_remote(env_url, os.environ.get("FEEDBAX_WORKER_AUTH_TOKEN"))
 
-    # ------------------------------------------------------------------
-    # Remote mode
-    # ------------------------------------------------------------------
-
     def connect_remote(self, url: str, auth_token: Optional[str] = None) -> None:
-        """Switch to remote worker mode.
-
-        Terminates any running local subprocess and configures the service to
-        forward all requests to the given URL.
-
-        Args:
-            url: Exact worker origin. Non-loopback origins must use HTTPS and
-                appear in the server-configured allowlist.
-            auth_token: Bearer token required for every non-loopback worker.
-        """
+        """Configure the exact worker origin for retained cancellation."""
         endpoint = WorkerEndpoint.create(
             url,
             credential=auth_token,
             allowed_origins=self._allowed_remote_origins,
         )
-        self._terminate_worker()
         self._endpoint = endpoint
-        self._remote = True
-
-    def worker_mode(self) -> str:
-        """Return ``"remote"`` or ``"local"`` depending on current configuration."""
-        return "remote" if self._remote else "local"
-
-    def worker_url(self) -> str | None:
-        """Return the configured credential-free exact origin, if any."""
-        return self._endpoint.origin if self._endpoint is not None else None
-
-    def worker_limits(self) -> WorkerConsumptionLimits:
-        """Return the request policy governing the current or next local worker."""
-        return self._endpoint.limits if self._endpoint is not None else DEFAULT_WORKER_LIMITS
-
-    # ------------------------------------------------------------------
-    # Worker subprocess lifecycle
-    # ------------------------------------------------------------------
-
-    async def _ensure_worker(self) -> WorkerEndpoint:
-        """Lazily start the worker subprocess and wait for it to be healthy.
-
-        In remote mode the URL is already configured — this simply returns it.
-
-        Returns:
-            The validated worker endpoint and request policy.
-
-        Raises:
-            RuntimeError: If the worker does not respond within 5 seconds.
-        """
-        async with self._lock:
-            if self._remote:
-                if self._endpoint is None:
-                    raise RuntimeError("Remote worker URL is not configured")
-                return self._endpoint
-
-            if self._process is not None and self._process.poll() is None:
-                if self._endpoint is None:
-                    raise RuntimeError("Local worker endpoint is not configured")
-                return self._endpoint
-
-            port = _find_free_port()
-            self._port = port
-            desktop = os.environ.get("FEEDBAX_DESKTOP_STATE")
-            command = [sys.executable, "-m", "feedbax.web.worker", "--port", str(port)]
-            origin = f"http://127.0.0.1:{port}"
-            if desktop:
-                token = secrets.token_urlsafe(32)
-                self._endpoint = WorkerEndpoint.create(origin, credential=token)
-                self._process = self._spawn_owned_worker(command, Path(desktop), token)
-            else:
-                self._endpoint = WorkerEndpoint.create(origin)
-                self._process = subprocess.Popen(
-                    command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                )
-
-            try:
-                await worker_client.wait_for_health(self._endpoint, timeout=5.0, interval=0.1)
-            except Exception as exc:
-                stderr = _worker_stderr_excerpt(self._process)
-                self._terminate_worker()
-                detail = f": {stderr}" if stderr else ""
-                raise RuntimeError(f"Worker subprocess failed health check{detail}") from exc
-            return self._endpoint
-
-    def _spawn_owned_worker(self, command: list[str], state: Path, token: str) -> subprocess.Popen:
-        owner, keepalive = os.pipe()
-        try:
-            with (state / "jobs" / "worker.lock").open("a+b") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                process = subprocess.Popen(
-                    [*command, "--owner-fd", str(owner), "--instance-lock-fd", str(lock.fileno())],
-                    env=dict(os.environ, FEEDBAX_WORKER_AUTH_TOKEN=token),
-                    pass_fds=(owner, lock.fileno()),
-                    stdout=subprocess.DEVNULL,
-                    stderr=None,
-                    text=True,
-                )
-        except BaseException:
-            os.close(keepalive)
-            raise
-        finally:
-            os.close(owner)
-        if self._owner_pipe is not None:
-            os.close(self._owner_pipe)
-        self._owner_pipe = keepalive
-        return process
 
     def reconcile_desktop_worker(self, jobs: Path, *, forced: bool = False) -> None:
         """Settle incomplete legacy rows after their inherited worker lock is released."""
@@ -337,111 +137,8 @@ class TrainingService:
                     store.save(state.with_row(ref.job_id, row))
 
     def _terminate_worker(self) -> None:
-        """Terminate the worker subprocess if it is running."""
-        process = self._process
-        self._process = None
+        """Release the configured worker connection."""
         self._endpoint = None
-        self._port = None
-        self._remote = False
-        if self._owner_pipe is not None:
-            os.close(self._owner_pipe)
-            self._owner_pipe = None
-
-        if process is not None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
-            wait = getattr(process, "wait", None)
-            if callable(wait):
-                try:
-                    wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    try:
-                        process.kill()
-                    except OSError:
-                        pass
-                    try:
-                        wait(timeout=2.0)
-                    except subprocess.TimeoutExpired:
-                        pass
-            communicate = getattr(process, "communicate", None)
-            if callable(communicate):
-                try:
-                    communicate(timeout=0.1)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-
-    # ------------------------------------------------------------------
-    # Public interface (mirrors the old TrainingService API)
-    # ------------------------------------------------------------------
-
-    async def start_training(
-        self,
-        total_batches: int,
-        *,
-        conformance_registry: CheckRegistry,
-        driver_registry: DriverRegistry,
-        plugin_provenance: Sequence[Any],
-        training_config: Optional[dict] = None,
-        training_spec: Optional[dict] = None,
-        task_spec: Optional[dict] = None,
-        task_binding_spec: Optional[dict] = None,
-        graph_spec: Optional[dict] = None,
-    ) -> str:
-        """Start a training job on the worker.
-
-        Args:
-            total_batches: Number of training batches.
-            training_config: Optional dict forwarded to the worker as the
-                ``training_config`` key in the ``/start`` request body.
-                Required by the worker for real JAX training.
-            training_spec: Optional spec dict with optimizer/loss settings;
-                forwarded to the worker for spec-driven configuration.
-            task_spec: Optional task spec dict with task parameters;
-                forwarded to the worker.
-
-        Returns:
-            The job ID after the worker has accepted its launch.
-        """
-        endpoint = await self._ensure_worker()
-        body = {
-            "total_batches": total_batches,
-            "training_config": training_config,
-            "training_spec": training_spec,
-            "task_spec": task_spec,
-            "task_binding_spec": task_binding_spec,
-            "graph_spec": graph_spec,
-        }
-        body = {key: value for key, value in body.items() if value is not None}
-        request, context, registry = self._build_worker_assembly_request(worker_start=body)
-        engine = StageEngine.from_request(
-            request,
-            context=context,
-            registry=registry,
-            driver_registry=driver_registry,
-            driver_context=lambda _bundle: DriverConstructionContext(
-                configuration={
-                    "base_url": endpoint.origin,
-                    "allowed_origins": tuple(sorted(endpoint.allowed_origins)),
-                },
-                credentials=(
-                    {"worker_http_token": endpoint.credential}
-                    if endpoint.credential is not None
-                    else {}
-                ),
-            ),
-            conformance_registry=conformance_registry,
-            plugin_provenance=plugin_provenance,
-        )
-        engine.run(stop_after_stage="ASSEMBLE")
-        bundle = engine.bundle
-        if bundle is None:
-            raise RuntimeError("Studio ASSEMBLE completed without producing a RunBundle")
-        job_id = bundle.rows[0].row_id
-        self._remember_job_ref(bundle)
-        await asyncio.to_thread(self._launch_training, engine, bundle.run_set_id)
-        return job_id
 
     async def stop_training(self, job_id: str) -> None:
         """Request a cooperative stop. The worker publishes the actual outcome."""
@@ -451,214 +148,12 @@ class TrainingService:
                 raise ValueError(f"Unknown job {job_id!r}")
             return
         try:
-            await worker_client.stop_job(
-                self._endpoint,
-                job_id,
-            )
+            require_worker_job_id(job_id)
+            await request_json(self._endpoint, "POST", f"/jobs/{job_id}/stop")
         except WorkerResponseError as exc:
             if exc.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
             raise
-
-    async def worker_connected(self) -> bool:
-        """Return whether the configured worker responds to health checks."""
-        if self._endpoint is None:
-            return False
-        try:
-            await worker_client.wait_for_health(
-                self._endpoint,
-                timeout=0.5,
-                interval=0.05,
-            )
-            return True
-        except Exception:
-            return False
-
-    async def get_status(self, job_id: str) -> Optional[dict]:
-        """Return a job's worker status dict, or ``None`` if the job is unknown."""
-        fallback = self._status_from_state(job_id)
-        if fallback is not None:
-            return fallback
-        if self._endpoint is None or (
-            not self._remote and self._process is not None and self._process.poll() is not None
-        ):
-            return None
-        try:
-            status = await worker_client.get_status(
-                self._endpoint,
-                job_id,
-            )
-            return status
-        except Exception:
-            if self._remote:
-                raise
-            return fallback
-
-    def make_error_event(self, job_id: str, error: str) -> TrainingEvent:
-        """Return a schema-versioned WebSocket error event for handler-originated failures."""
-        return TrainingEvent(
-            raw=self._normalize_training_event(
-                job_id,
-                {
-                    "type": "training_error",
-                    "job_id": job_id,
-                    "error": error,
-                    "diagnostics": [
-                        {
-                            "schema_id": "feedbax.diagnostic.domain",
-                            "schema_version": "feedbax.diagnostic.domain.v1",
-                            "severity": "error",
-                            "code": "internal",
-                            "message": error,
-                            "node_ids": [],
-                            "details": {"source": "training_ws"},
-                        }
-                    ],
-                },
-            )
-        )
-
-    def _normalize_training_event(self, job_id: str, event: dict) -> dict:
-        """Add durable Studio protocol fields to a raw worker training event."""
-        if event.get("schema_id") == RUN_EVENT_SCHEMA_ID:
-            normalized = legacy_worker_event_from_run_event(event)
-        else:
-            normalized = dict(event)
-        worker_seq = normalized.pop("seq", None)
-        normalized["schema_id"] = STUDIO_API_TRANSPORT_SCHEMA_ID
-        normalized["schema_version"] = STUDIO_API_TRANSPORT_SCHEMA_VERSION
-        normalized["job_id"] = job_id
-        normalized["seq"] = (
-            int(worker_seq) if worker_seq is not None else self._next_event_seq(job_id)
-        )
-        normalized["emitted_at_ms"] = int(time.time() * 1000)
-        if worker_seq is not None:
-            normalized["worker_seq"] = int(worker_seq)
-        if normalized.get("type") in {"training_complete", "training_stopped"}:
-            normalized.pop("status", None)
-        if normalized.get("type") == "training_error":
-            fallback_batch = (self._status_from_state(job_id) or {}).get("batch", 0)
-            normalized.setdefault("batch", fallback_batch)
-            normalized.setdefault("diagnostics", [])
-        return normalized
-
-    async def stream_progress(
-        self, job_id: str, *, from_seq: int | None = None
-    ) -> AsyncIterator[TrainingEvent]:
-        """Relay the worker SSE stream as :class:`TrainingEvent` objects.
-
-        Args:
-            job_id: The job ID returned by :meth:`start_training`.
-            from_seq: Inclusive worker event sequence to replay from.
-
-        Yields:
-            :class:`TrainingEvent` instances wrapping raw event dicts.
-        """
-        if self._endpoint is None:
-            async with aclosing(self._stream_from_event_log(job_id, from_seq=from_seq)) as events:
-                async for event in events:
-                    yield event
-            return
-        async with aclosing(
-            worker_client.stream_events(self._endpoint, job_id, from_seq=from_seq)
-        ) as events:
-            async for event in events:
-                yield TrainingEvent(raw=self._normalize_training_event(job_id, event))
-
-    async def latest_checkpoint(self, job_id: str) -> Optional[dict]:
-        """Return checkpoint metadata for the given job by querying the worker.
-
-        Proxies to the worker's keyed checkpoint endpoint when a worker URL is
-        configured.
-
-        Args:
-            job_id: The job ID.
-
-        Returns:
-            A dict with checkpoint metadata (keys: ``batch``, ``loss``,
-            ``weights_available``), or ``None`` if the job is unknown.
-        """
-        if self._endpoint is None:
-            status = self._status_from_state(job_id)
-            if status is None:
-                return None
-            return {
-                "batch": status.get("batch", 0),
-                "loss": status.get("last_loss", 0.0),
-                "weights_available": False,
-                "job_id": job_id,
-            }
-        try:
-            data = await worker_client.get_checkpoint(
-                self._endpoint,
-                job_id,
-            )
-            data["job_id"] = job_id
-            return data
-        except Exception:
-            if self._remote:
-                raise
-            status = self._status_from_state(job_id)
-            if status is None:
-                return None
-            return {
-                "batch": status.get("batch", 0),
-                "loss": status.get("last_loss", 0.0),
-                "weights_available": False,
-                "job_id": job_id,
-            }
-
-    async def latest_manifest(self, job_id: str) -> Optional[dict]:
-        """Return the durable training manifest for *job_id* when available."""
-        if self._endpoint is None:
-            return None
-        try:
-            return await worker_client.get_manifest(
-                self._endpoint,
-                job_id,
-            )
-        except Exception:
-            if self._remote:
-                raise
-            return None
-
-    async def download_checkpoint(self, job_id: str, dest_path: str) -> None:
-        """Download the serialized checkpoint from the worker to a local file.
-
-        Args:
-            job_id: The job ID whose checkpoint to download.
-            dest_path: Local filesystem path to write the checkpoint file.
-
-        Raises:
-            ValueError: If *job_id* is unknown to the worker.
-            RuntimeError: If no worker is configured.
-        """
-        if self._endpoint is None:
-            raise RuntimeError("No worker configured")
-        try:
-            await worker_client.download_checkpoint(
-                self._endpoint,
-                job_id,
-                dest_path,
-            )
-        except WorkerResponseError as exc:
-            if exc.status_code == 404:
-                raise ValueError(f"Unknown job {job_id!r}") from exc
-            raise
-
-    def last_loss(self, job_id: str) -> Optional[float]:
-        """Return the last recorded loss for the given job.
-
-        Args:
-            job_id: The job ID.
-
-        Returns:
-            The last loss value, or ``None`` if unknown.
-        """
-        status = self._status_from_state(job_id)
-        if status is None or status.get("last_loss") is None:
-            return None
-        return float(status["last_loss"])
 
     def rebuild_cache_from_state_docs(self) -> None:
         """Rebuild the in-memory job index from persisted orchestration state."""
@@ -731,82 +226,6 @@ class TrainingService:
                 }
             )
         return rows
-
-    def _build_worker_assembly_request(
-        self,
-        *,
-        worker_start: dict[str, Any],
-    ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
-        authored = StudioTrainingAssemblySpec.model_validate(worker_start)
-        custody_root = _orchestration_parent_root() / "custody"
-        artifact = store_canonical_json_artifact(
-            authored,
-            root=custody_root,
-            role="studio_training_assembly",
-            logical_name="studio-training-assembly.json",
-        )
-        authored_ref = SchemaArtifactRef(
-            schema_id=authored.schema_id,
-            schema_version=authored.schema_version,
-            artifact_id=str(artifact.artifact_id),
-            sha256=str(artifact.sha256),
-            uri=artifact.uri,
-        )
-        request = RunAssemblyRequest(
-            authored=authored_ref,
-            compiler=CompilerIdentity(
-                compiler_id=STUDIO_TRAINING_COMPILER_ID,
-                compiler_version=STUDIO_TRAINING_COMPILER_VERSION,
-            ),
-            # Studio authors this request in the same process that will assemble it,
-            # so the running package is itself the authority the gate then verifies.
-            feedbax_revision=resolve_feedbax_revision(),
-            deployment_policy=DeploymentPolicy(
-                driver="worker-http",
-                venue="remote",
-                cloud_authorized=False,
-                review_required=False,
-                review_authorized=False,
-            ),
-            environment=EnvironmentDeclaration(python_version=sys.version.split()[0]),
-            launch_policy=LaunchPolicy(max_parallel_rows=1),
-            budget=BudgetPolicy(max_wall_clock_seconds=24 * 60 * 60),
-            orchestration_root=str(_orchestration_parent_root()),
-            metadata={"source": "studio-training-service"},
-        )
-        registry = AssemblyCompilerRegistry()
-        register_studio_training_compiler(registry)
-        context = AssemblyContext(
-            custody_root=custody_root,
-            repo_root=Path(__file__).resolve().parents[3],
-        )
-        return request, context, registry
-
-    def _launch_training(self, engine: StageEngine, run_set_id: str) -> None:
-        engine.run(stop_after_stage=STAGE_LAUNCH)
-        threading.Thread(
-            target=self._run_stage_engine,
-            args=(engine,),
-            name=f"feedbax-training-stage-engine-{run_set_id}",
-            daemon=True,
-        ).start()
-
-    def _run_stage_engine(self, engine: StageEngine) -> None:
-        try:
-            engine.run(break_stale_lock=True)
-        except Exception:
-            logger.exception("Studio attempt %s failed in StageEngine", engine.run_set_id)
-
-    def _remember_job_ref(self, bundle: RunBundle) -> None:
-        state_path = bundle.run_set_dir / "state.json"
-        bundle_path = bundle.run_set_dir / "bundle.json"
-        for row in bundle.rows:
-            self._job_refs_by_job[row.row_id] = _JobRef(
-                job_id=row.row_id,
-                run_set_id=bundle.run_set_id,
-                state_path=state_path,
-                bundle_path=bundle_path,
-            )
 
     def _job_ref_for(self, job_id: str) -> _JobRef | None:
         ref = self._job_refs_by_job.get(job_id)
@@ -926,26 +345,6 @@ class TrainingService:
             "event_discrepancies": row.event_discrepancies,
         }
 
-    def _next_event_seq(self, job_id: str) -> int:
-        status = self._status_from_state(job_id)
-        if status is None:
-            return 0
-        return int(status.get("event_seq_high_water_mark", -1)) + 1
-
-    async def _stream_from_event_log(
-        self, job_id: str, *, from_seq: int | None = None
-    ) -> AsyncIterator[TrainingEvent]:
-        ref = self._job_ref_for(job_id)
-        if ref is None:
-            return
-        bundle = self._load_bundle(ref)
-        for event in self._read_job_events(bundle, job_id, from_seq=from_seq):
-            yield TrainingEvent(
-                raw=self._normalize_training_event(job_id, event.model_dump(mode="json"))
-            )
-            if event.type in RUN_EVENT_TERMINAL_TYPES:
-                return
-
     def _read_job_events(
         self, bundle: RunBundle, job_id: str, *, from_seq: int | None = None
     ) -> list[RunEvent]:
@@ -960,9 +359,6 @@ class TrainingService:
         if not root.exists():
             return []
         return sorted(root.glob("*/state.json"))
-
-    def __del__(self) -> None:
-        self._terminate_worker()
 
 
 training_service = TrainingService()

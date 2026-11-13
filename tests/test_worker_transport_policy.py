@@ -12,7 +12,6 @@ import feedbax.web.worker.transport as transport
 from feedbax.web.orchestration import gcp
 from feedbax.web.orchestration.startup_script import make_startup_script
 from feedbax.web.services.training_service import TrainingService
-from feedbax.web.worker import client as worker_client
 from feedbax.web.worker.transport import (
     DEFAULT_WORKER_LIMITS,
     SSEConsumptionBudget,
@@ -209,7 +208,7 @@ def test_training_service_remote_config_is_server_allowlisted_and_fail_closed(
     monkeypatch.setattr(transport, "_resolve_addresses", lambda _host, _port: (PUBLIC_ADDRESS,))
     service = TrainingService(allowed_remote_origins=("https://worker.example",))
     service.connect_remote("https://worker.example", "token")
-    assert service.worker_url() == "https://worker.example"
+    assert service._endpoint.origin == "https://worker.example"
 
     with pytest.raises(WorkerConfigurationError, match="allowlist"):
         TrainingService().connect_remote("https://worker.example", "token")
@@ -219,22 +218,6 @@ def test_training_service_remote_config_is_server_allowlisted_and_fail_closed(
     monkeypatch.setenv("FEEDBAX_WORKER_ALLOWED_ORIGINS", "not-json")
     with pytest.raises(WorkerConfigurationError, match="JSON array"):
         TrainingService()
-
-
-def test_checkpoint_download_refuses_oversize_response(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    endpoint = WorkerEndpoint.create("http://127.0.0.1:8765")
-    endpoint = replace(
-        endpoint,
-        limits=replace(DEFAULT_WORKER_LIMITS, checkpoint_bytes=4),
-    )
-    _install_async_client(monkeypatch, _AsyncResponse(chunks=(b"12345",)))
-
-    with pytest.raises(WorkerConsumptionError, match="byte budget"):
-        asyncio.run(worker_client.download_checkpoint(endpoint, "job-a", str(tmp_path / "out")))
-    assert not (tmp_path / "out").exists()
 
 
 def test_gcp_metadata_and_worker_startup_keep_credentials_out_of_argv(

@@ -7,7 +7,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,37 +16,26 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import feedbax.web.api.training as training_api
-import feedbax.web.services.training_service as training_service_module
 import feedbax.web.services.worker_driver as worker_driver_module
 import feedbax.web.worker.app as worker_app
 import feedbax.web.worker.checkpoint as worker_checkpoint
 import feedbax.web.worker.execution as worker_execution
-from feedbax.contracts.studio_api import (
-    STUDIO_API_TRANSPORT_SCHEMA_ID,
-    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
-)
 from feedbax.contracts.studio_training import (
     STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
     StudioTrainingAssemblySpec,
 )
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent, RunEventReader
-from feedbax.orchestration.assembly import assemble_run_bundle
 from feedbax.orchestration.bundle import ROW_ID_RE
-from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.drivers.capabilities import DriverRegistration, DriverRegistry
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 from feedbax.web.services.training_service import RunStateCorruptionError, TrainingService
 from feedbax.web.services.worker_driver import (
     WorkerHttpDriver,
     WorkerStreamTeardownError,
     _worker_start_body,
-    load_worker_execution_payload,
 )
 from feedbax.web.worker.app import WorkerStatus
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.identity import require_worker_job_id
-from feedbax.web.worker.transport import WorkerEndpoint
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
@@ -107,30 +95,6 @@ def test_worker_driver_resolves_registered_typed_execution_payload(tmp_path) -> 
         "job_id": "job-typed",
         "run_set_id": "set-typed",
     }
-
-
-def test_training_service_builds_governed_request_and_compiled_worker_payload(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
-    service = TrainingService()
-    request, context, registry = service._build_worker_assembly_request(
-        worker_start={"total_batches": 5}
-    )
-
-    bundle = assemble_run_bundle(
-        request,
-        run_set_id="2026-07-12-a1b2c3d4",
-        context=context,
-        registry=registry,
-    )
-
-    row = bundle.rows[0]
-    assert row.row_id == "2026-07-12-a1b2c3d4-studio"
-    assert "metadata" not in row.model_dump(mode="json")
-    assert row.launch.metadata == {}
-    assert load_worker_execution_payload(row)["total_batches"] == 5
-    assert row.execution.immutable_inputs == []
 
 
 def _wait_for_worker_status(
@@ -1188,145 +1152,6 @@ def test_worker_evicts_oldest_terminal_jobs(monkeypatch) -> None:
         assert client.get(f"/jobs/{third}/manifest").json()["job_id"] == third
 
 
-@pytest.mark.parametrize("cancelled", [False, True])
-def test_training_service_starts_state_backed_worker_run(
-    monkeypatch, tmp_path, application_registry_bundle, cancelled
-) -> None:
-    starts: list[dict[str, Any]] = []
-
-    class FakeWorkerDriver:
-        realized_capabilities = WorkerHttpDriver.realized_capabilities
-        poll_interval_seconds = WorkerHttpDriver.poll_interval_seconds
-
-        def __init__(self, *, base_url: str, auth_token: str | None = None) -> None:
-            assert base_url == "http://127.0.0.1:8765"
-            assert auth_token is None
-
-        def provision(self, bundle, state) -> Mapping[str, Any]:
-            del state
-            for dirname in ("events", "sentinels", "rows", "collected", "inputs"):
-                (bundle.run_set_dir / dirname).mkdir(parents=True, exist_ok=True)
-            return {"driver": "fake-worker"}
-
-        def realize_env(self, bundle, state) -> str:
-            del bundle, state
-            return "fake-env"
-
-        def stage_inputs(self, bundle, state) -> Mapping[str, Any]:
-            del bundle, state
-            return {}
-
-        def launch_row(self, bundle, row, state) -> Mapping[str, Any]:
-            del state
-            body = load_worker_execution_payload(row)
-            body["job_id"] = row.row_id
-            body["run_set_id"] = bundle.run_set_id
-            starts.append(body)
-            events_dir = bundle.run_set_dir / "events"
-            events_dir.mkdir(parents=True, exist_ok=True)
-            event = RunEvent(
-                run_set_id=bundle.run_set_id,
-                row_id=row.row_id,
-                seq=0,
-                emitted_at_ms=1783430000000,
-                type="complete",
-                payload={
-                    "legacy_type": "training_complete",
-                    "job_id": row.row_id,
-                    "batch": 1 if cancelled else body["total_batches"],
-                    **({"status": "cancelled", "program_step": 8} if cancelled else {}),
-                    "loss": 0.125,
-                },
-            )
-            (events_dir / f"{row.row_id}.events.jsonl").write_text(
-                event.model_dump_json(exclude_none=True) + "\n",
-                encoding="utf-8",
-            )
-            sentinels = bundle.run_set_dir / "sentinels"
-            sentinels.mkdir(parents=True, exist_ok=True)
-            (sentinels / f"{row.row_id}.done").write_text("done\n", encoding="utf-8")
-            return {"row_id": row.row_id}
-
-        def probe(self, bundle, row, state) -> DriverRowProbe:
-            del bundle, row, state
-            return DriverRowProbe(status="completed")
-
-        def stop_row(self, bundle, row, state) -> Mapping[str, Any]:
-            del bundle, state
-            return {"row_id": row.row_id, "status": "stopped"}
-
-        def collect(self, bundle, row, state) -> Mapping[str, str]:
-            del state
-            event_path = bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl"
-            return {event_path.name: str(event_path)}
-
-        def teardown(self, bundle, state) -> Mapping[str, Any]:
-            del bundle, state
-            return {}
-
-    async def run() -> None:
-        monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orch"))
-        envelope = WorkerHttpDriver.capability_envelope
-        driver_registry = DriverRegistry(
-            (
-                DriverRegistration(
-                    name="worker-http",
-                    supported_capabilities=envelope,
-                    resolve_capabilities=lambda _context: envelope.realize("external-service"),
-                    factory=lambda context, _realized: FakeWorkerDriver(
-                        base_url=str(context.configuration["base_url"]),
-                        auth_token=context.credentials.get("worker_http_token"),
-                    ),
-                ),
-            )
-        )
-
-        service = TrainingService()
-        service.connect_remote("http://127.0.0.1:8765")
-
-        job_id = await service.start_training(
-            3,
-            conformance_registry=application_registry_bundle.conformance_checks,
-            driver_registry=driver_registry,
-            plugin_provenance=(),
-        )
-        assert [start["job_id"] for start in starts] == [job_id]
-        deadline = time.monotonic() + 2.0
-        status = None
-        while time.monotonic() < deadline:
-            status = await service.get_status(job_id)
-            if status and status["status"] == ("stopped" if cancelled else "completed"):
-                break
-            await asyncio.sleep(0.01)
-
-        assert status is not None
-        assert status["status"] == ("stopped" if cancelled else "completed")
-        assert status["run_set_id"] == starts[0]["run_set_id"]
-        assert status["last_loss"] == 0.125
-        assert starts == [
-            {
-                "schema_id": "feedbax.spec.studio.training_assembly",
-                "schema_version": "feedbax.spec.studio.training_assembly.v1",
-                "job_id": job_id,
-                "run_set_id": status["run_set_id"],
-                "total_batches": 3,
-                "snapshot_interval": 100,
-            }
-        ]
-        assert service.list_live_training_runs()[0]["id"] == job_id
-        if cancelled:
-            replay_service = TrainingService()
-            [event] = [item async for item in replay_service.stream_progress(job_id, from_seq=0)]
-            assert event.raw["type"] == "training_stopped"
-            assert event.raw["batch"] == 1
-            assert event.raw["program_step"] == 8
-            replay_status = await replay_service.get_status(job_id)
-            assert replay_status is not None
-            assert replay_status["status"] == "stopped"
-
-    asyncio.run(run())
-
-
 def test_training_service_rejects_legacy_v2_terminal_state_without_mutating(
     monkeypatch, tmp_path
 ) -> None:
@@ -1418,34 +1243,6 @@ def test_training_service_rejects_legacy_v2_orphan_state_without_mutating(
     assert store.load().rows["job-orphan"].status == "running"
 
 
-def test_training_service_preserves_worker_seq_in_ws_envelope(monkeypatch) -> None:
-    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
-        assert endpoint.origin == "http://127.0.0.1:8765"
-        yield {
-            "type": "training_progress",
-            "job_id": job_id,
-            "seq": 7,
-            "batch": 12,
-            "total_batches": 20,
-            "loss": 0.25,
-        }
-
-    async def run() -> None:
-        monkeypatch.setattr(
-            training_service_module.worker_client,
-            "stream_events",
-            fake_stream_events,
-        )
-        service = TrainingService()
-        service.connect_remote("http://127.0.0.1:8765")
-        [event] = [event async for event in service.stream_progress("job-ws")]
-        assert event.raw["seq"] == 7
-        assert event.raw["worker_seq"] == 7
-        assert event.raw["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-
-    asyncio.run(run())
-
-
 def test_worker_emit_buffers_run_event_envelopes() -> None:
     job = worker_app._Job(
         job_id="job-events",
@@ -1488,190 +1285,6 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
     assert first["payload"]["program_step"] == 8
     assert second["type"] == "complete"
     assert (first["seq"], second["seq"]) == (0, 1)
-
-
-def test_training_service_unwraps_run_event_worker_stream(monkeypatch) -> None:
-    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
-        assert endpoint.origin == "http://127.0.0.1:8765"
-        yield RunEvent(
-            run_set_id=job_id,
-            row_id=job_id,
-            seq=9,
-            emitted_at_ms=1783430000000,
-            type="progress",
-            payload={
-                "legacy_type": "training_progress",
-                "job_id": job_id,
-                "batch": 2,
-                "total_batches": 5,
-                "loss": 0.25,
-            },
-        ).model_dump(mode="json")
-
-    async def run() -> None:
-        monkeypatch.setattr(
-            training_service_module.worker_client,
-            "stream_events",
-            fake_stream_events,
-        )
-
-        service = TrainingService()
-        service.connect_remote("http://127.0.0.1:8765")
-        [event] = [event async for event in service.stream_progress("job-run-event")]
-
-        assert event.raw["type"] == "training_progress"
-        assert event.raw["worker_seq"] == 9
-        assert event.raw["seq"] == 9
-        assert event.raw["batch"] == 2
-        assert event.raw["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-
-    asyncio.run(run())
-
-
-def test_training_service_preserves_error_diagnostics(monkeypatch) -> None:
-    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
-        assert endpoint.origin == "http://127.0.0.1:8765"
-        yield {
-            "type": "training_error",
-            "job_id": job_id,
-            "seq": 4,
-            "batch": 0,
-            "error": "Invalid graph_spec for graph execution",
-            "diagnostics": [
-                {
-                    "severity": "error",
-                    "code": "graph.missing_subgraph",
-                    "message": "Network node 'network' has no subgraph",
-                    "node_ids": ["network"],
-                }
-            ],
-        }
-
-    async def run() -> None:
-        monkeypatch.setattr(
-            training_service_module.worker_client,
-            "stream_events",
-            fake_stream_events,
-        )
-
-        service = TrainingService()
-        service.connect_remote("http://127.0.0.1:8765")
-        [event] = [event async for event in service.stream_progress("job-diagnostics")]
-
-        assert event.raw["type"] == "training_error"
-        assert event.raw["worker_seq"] == 4
-        assert event.raw["seq"] == 4
-        assert event.raw["diagnostics"][0]["code"] == "graph.missing_subgraph"
-        assert event.raw["diagnostics"][0]["node_ids"] == ["network"]
-
-    asyncio.run(run())
-
-
-def test_training_service_surfaces_reconnect_resync_marker(monkeypatch) -> None:
-    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
-        yield {
-            "type": "training_resync",
-            "job_id": job_id,
-            "expected_worker_seq": 5,
-            "observed_worker_seq": 8,
-            "missed_events": 3,
-            "reason": "gap",
-            "message": "Training stream resumed after reconnect with 3 missed event(s).",
-        }
-
-    async def run() -> None:
-        monkeypatch.setattr(
-            training_service_module.worker_client,
-            "stream_events",
-            fake_stream_events,
-        )
-
-        service = TrainingService()
-        service.connect_remote("http://127.0.0.1:8765")
-        [event] = [event async for event in service.stream_progress("job-gap")]
-
-        assert event.raw == {
-            "type": "training_resync",
-            "job_id": "job-gap",
-            "schema_id": STUDIO_API_TRANSPORT_SCHEMA_ID,
-            "schema_version": STUDIO_API_TRANSPORT_SCHEMA_VERSION,
-            "seq": 0,
-            "emitted_at_ms": event.raw["emitted_at_ms"],
-            "expected_worker_seq": 5,
-            "observed_worker_seq": 8,
-            "missed_events": 3,
-            "reason": "gap",
-            "message": "Training stream resumed after reconnect with 3 missed event(s).",
-        }
-
-    asyncio.run(run())
-
-
-def test_training_api_routes_pass_path_job_id(monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
-
-    class StubTrainingService:
-        async def get_status(self, job_id: str) -> dict:
-            calls.append(("status", job_id))
-            return {"status": "completed", "job_id": job_id}
-
-        async def stop_training(self, job_id: str) -> None:
-            calls.append(("stop", job_id))
-
-    app = FastAPI()
-    app.include_router(training_api.router, prefix="/api/training")
-    monkeypatch.setattr(training_api, "training_service", StubTrainingService())
-
-    client = TestClient(app)
-
-    assert client.get("/api/training/job-a").json()["data"]["status"]["job_id"] == "job-a"
-    delete_payload = client.delete("/api/training/job-b").json()
-    assert delete_payload["data"]["success"] is True
-    assert delete_payload["data"]["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
-    assert delete_payload["data"]["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-    assert calls == [("status", "job-a"), ("stop", "job-b")]
-
-
-def test_ensure_worker_serializes_concurrent_spawns(monkeypatch) -> None:
-    popen_calls: list[list[str]] = []
-    popen_kwargs: list[dict[str, Any]] = []
-
-    class FakeProcess:
-        def poll(self) -> None:
-            return None
-
-        def terminate(self) -> None:
-            return None
-
-        def kill(self) -> None:
-            return None
-
-    def fake_popen(args: list[str], **kwargs: Any) -> FakeProcess:
-        popen_calls.append(args)
-        popen_kwargs.append(kwargs)
-        return FakeProcess()
-
-    async def fake_wait_for_health(*args: Any, **kwargs: Any) -> None:
-        await asyncio.sleep(0)
-
-    async def run() -> tuple[WorkerEndpoint, WorkerEndpoint]:
-        service = TrainingService()
-        return await asyncio.gather(service._ensure_worker(), service._ensure_worker())
-
-    monkeypatch.setattr(training_service_module, "_find_free_port", lambda: 54321)
-    monkeypatch.setattr(training_service_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(
-        training_service_module.worker_client,
-        "wait_for_health",
-        fake_wait_for_health,
-    )
-
-    first_endpoint, second_endpoint = asyncio.run(run())
-
-    assert first_endpoint.origin == "http://127.0.0.1:54321"
-    assert second_endpoint is first_endpoint
-    assert len(popen_calls) == 1
-    assert popen_kwargs[0]["stderr"] is subprocess.PIPE
 
 
 def test_worker_module_help_smoke() -> None:
