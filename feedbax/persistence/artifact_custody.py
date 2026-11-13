@@ -1040,6 +1040,10 @@ class ImmutableArtifactBlobProvider:
 
             if validate is not None:
                 validate(path)
+            # Opening /dev/fd on Darwin shares the staging descriptor's offset.
+            # Each validator must begin at the start of those same staged bytes.
+            if path.parent == Path("/dev/fd"):
+                os.lseek(int(path.name), 0, os.SEEK_SET)
             with open_array_container(path, expected_descriptor_sha256=observation.descriptor_sha256) as reader:
                 reader.verify_tensors()
 
