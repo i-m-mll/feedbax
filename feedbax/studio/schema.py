@@ -402,6 +402,32 @@ def validate_graph_connection_schema(
         allow_incomplete=True,
     )
     graph = resolution.graph
+    issues = _validate_local_connections(
+        resolution, base_path, task_binding_spec, component_registry=component_registry,
+    )
+    issues.extend(_parameter_resolution_issues(resolution, base_path))
+    if needs_signal_schedule(graph):
+        try:
+            resolve_signal_schedule(graph)
+        except SignalScheduleError as error:
+            issues.append(SchemaValidationIssue(
+                type=error.issue_type,
+                message=str(error),
+                location={"path": base_path + error.authored_path.removeprefix("/graph")},
+            ))
+    else:
+        issues.extend(_instant_cycle_issues(graph, base_path))
+    return issues
+
+
+def _validate_local_connections(
+    resolution: GraphParameterResolution,
+    base_path: str,
+    task_binding_spec: StudioTaskBindingSpec | None,
+    *,
+    component_registry: Any,
+) -> list[SchemaValidationIssue]:
+    graph = resolution.graph
     ports = _enumerate_graph_ports(
         graph, component_registry=component_registry, resolution=resolution
     )
@@ -524,18 +550,12 @@ def validate_graph_connection_schema(
         )
 
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
-    issues.extend(_parameter_resolution_issues(resolution, base_path))
-    if needs_signal_schedule(graph):
-        try:
-            resolve_signal_schedule(graph)
-        except SignalScheduleError as error:
-            issues.append(SchemaValidationIssue(
-                type=error.issue_type,
-                message=str(error),
-                location={"path": base_path + error.authored_path.removeprefix("/graph")},
-            ))
-    else:
-        issues.extend(_instant_cycle_issues(graph, base_path))
+    for name, child_resolution in resolution.subgraphs.items():
+        token = name.replace("~", "~0").replace("/", "~1")
+        issues.extend(_validate_local_connections(
+            child_resolution, f"{base_path}/subgraphs/{token}", None,
+            component_registry=component_registry,
+        ))
     return issues
 
 

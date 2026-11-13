@@ -17,15 +17,19 @@ from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, Mode
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.jobs import JobService
+from feedbax.contracts.rollout import RolloutParameters
+from feedbax.host import HostClient
+from feedbax.jobs import JobService, PlanJobReader
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import lower_canonical_train
+from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.studio.model_edit import apply_model_edit
 from feedbax.studio.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.training.checkpoint_custody import open_published_model_slot
+from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.training.invocation import prepare_training_invocation
 from feedbax.training.preparation import ExecutionPreparationResult
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -304,6 +308,53 @@ def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     )
 
 
+def _nested_scale_variation():
+    prefix = "graph.subgraphs.wrapper.subgraphs.controller"
+    return {
+        "scale": {"op": "add", "path": f"{prefix}.nodes.scale", "value": {
+            "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
+            "input_ports": ["input"], "output_ports": ["output"],
+        }},
+        "incoming": {"op": "replace", "path": f"{prefix}.wires.decode.target_node", "value": "scale"},
+        "outgoing": {"op": "add", "path": f"{prefix}.wires.scaled", "value": {
+            "source_node": "scale", "source_port": "output",
+            "target_node": "readout", "target_port": "input",
+        }},
+    }
+
+
+def test_nested_evaluate_variation_uses_scoped_wire_ids():
+    raw = _model_project()
+    plan = compile_project(Project.model_validate(raw))
+    train = next(run for run in plan.runs if run.kind == "train")
+    request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
+    params = RolloutParameters.model_validate({
+        "seed": 1, "trials": ["one"], "trial_policy": "paired", "variation": _nested_scale_variation(),
+    })
+    variant = resolve_evaluation_variant(request.graph, request.task, params.variation)
+    child = variant.graph.subgraphs["wrapper"].subgraphs["controller"]
+    assert next(wire for wire in child.wires if wire.id == "decode").target_node == "scale"
+    assert next(wire for wire in child.wires if wire.id == "scaled").target_node == "readout"
+    index = next(i for i, wire in enumerate(child.wires) if wire.id == "scaled")
+    assert variant.edit_location(
+        f"/graph/subgraphs/wrapper/subgraphs/controller/wires/{index}/target_port",
+    ) == "/params/variation/outgoing"
+    executable = compile_graph(
+        GraphDocument(graph=variant.graph), ComponentRegistry(),
+        input_prototypes=prototypes_from_task_bindings(request.task_binding_spec),
+    )
+    assert executable.graph.nodes["wrapper"].nodes["controller"].nodes["scale"].scale == 0.5
+    params.variation["outgoing"].value["target_port"] = "missing"
+    raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {
+        name: edit.model_dump(mode="json") for name, edit in params.variation.items()
+    }
+    invalid = compile_project(Project.model_validate(raw))
+    evaluate = next(run for run in invalid.runs if run.kind == "evaluate")
+    reader = PlanJobReader(HostClient(), enable_evaluation_candidate=True)
+    with pytest.raises(CannotRun, match="/params/variation/outgoing"):
+        reader.evaluation_parameters(invalid, evaluate)
+
+
 def test_group_keeps_delay_on_a_crossing_gru_output():
     raw = _model_project()
     registry = ComponentRegistry()
@@ -418,6 +469,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
         controller["interior"]["wires"]["carry"]["attachments"][0]["delay"]["value"] = 3
+        raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = _nested_scale_variation()
     project = "nested"
     _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
