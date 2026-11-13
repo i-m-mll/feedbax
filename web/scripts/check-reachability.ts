@@ -53,7 +53,9 @@ const referenced = new Set<ts.Symbol>();
 function visitReferences(node: ts.Node) {
   if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
   if (ts.isIdentifier(node)) {
-    const original = checker.getSymbolAtLocation(node);
+    const original = ts.isShorthandPropertyAssignment(node.parent) && node === node.parent.name
+      ? checker.getShorthandAssignmentValueSymbol(node.parent)
+      : checker.getSymbolAtLocation(node);
     const symbol = original && (original.flags & ts.SymbolFlags.Alias)
       ? checker.getAliasedSymbol(original)
       : original;

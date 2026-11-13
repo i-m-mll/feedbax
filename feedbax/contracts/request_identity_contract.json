@@ -2036,9 +2036,6 @@
           "base": "real"
         }
       },
-      "name": {
-        "absent": null
-      },
       "reduction": {
         "absent": "mean",
         "values": [

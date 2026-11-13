@@ -2,17 +2,19 @@
 
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.expression_values import CallValue, LiteralValue, NameValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.jobs import JobService
 from feedbax.contracts.request_identity import decode_request
-from feedbax.tasks.reaching import REACHING_TASK
+from feedbax.tasks.reaching import REACHING_TASK, ReachingParameters, reaching_document
 from feedbax.web.app import create_app
+from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
@@ -43,12 +45,25 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         app.state.job_service = jobs
         project = "trial-authoring"
         raw = _python_project()
+        raw["documents"]["test-task"] = {
+            "schema": "feedbax.spec.python_task",
+            "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
+        }
+        task = reaching_document(ReachingParameters(n_steps=12)).model_dump(mode="json")
+        task["epochs"][0]["id"] = "probe"
+        task["signals"][0]["cells"][0].update(first_epoch="probe", last_epoch="probe")
+        raw["documents"]["probe-task"] = {"schema": "feedbax.spec.task_document", "payload": task}
+        raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {}
+        raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
+            "control": {"patches": {"params.seed": {"value": 1}}},
+            "test": {"patches": {"params.seed": {"value": 2}}},
+        }}}}
         _save_project(folders, project, Project.model_validate(raw))
         revision = folders.read(project).revision
         run = {"variant": "default", "step": "train", "row": "default"}
 
-        def author(revision, change=None):
-            body = {"run": run, "revision": revision, "change": change}
+        def author(revision, change=None, *, selected=run, scope=None):
+            body = {"run": selected, "revision": revision, "change": change, "scope": scope}
             response = client.post(f"/api/projects/{project}/authoring/trials", json=body)
             assert response.status_code == 200, response.text
             return StudioTrialAuthoring.model_validate(response.json())
@@ -68,7 +83,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert [(signal.id, signal.name) for signal in initial.signals] == [("reach_target", "reach_target")]
         assert [epoch.id for epoch in initial.epochs] == ["move"]
         assert not initial.inputs
-        assert initial.tasks[0].document == "task"
+        assert {choice.document for choice in initial.tasks} == {"probe-task", "task", "test-task"}
         assert any(field.path == "/python_task/params/n_steps" for field in initial.fields)
         edited = author(revision, {"kind": "task", "edits": [
             {"op": "add", "path": "/params/x", "value": 0.22},
@@ -102,7 +117,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert isinstance(output.address, ModelAddress)
         term = {"id": "effort", "name": "Control effort", "measure": CallValue(
             kind="call", function="sqnorm", args=(NameValue(kind="name", reference=output.value.id),)
-        ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json")}
+        ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json"), "epochs": ["move"]}
         revised = author(revision, {"kind": "objective", "edits": [
             {"op": "add", "path": "/terms/-", "value": term},
         ]})
@@ -118,16 +133,36 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert not refused.files
         assert any(problem.code == "unknown_name" for problem in refused.problems)
 
-        plan = folders.read_plan(project, revision=revision)
-        assert not plan.plan.diagnostics, plan.plan.diagnostics
-        projection = client.post(f"/api/projects/{project}/authoring/trials", json={
-            "run": {**run, "step": "baseline"}, "revision": revision,
-        })
-        assert projection.status_code == 200, projection.text
-        evaluated_task = StudioTrialAuthoring.model_validate(projection.json())
+        def ids():
+            return {item.key: item.request_id for item in folders.read_plan(project, revision=revision).plan.runs}
+
+        before = ids()
+        test_run = {**run, "step": "baseline", "row": "seed=test"}
+        control_run = {**test_run, "row": "seed=control"}
+        evaluated_task = author(revision, selected=control_run)
         assert evaluated_task.objective is None
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
+        scope = {"kind": "rows", "rows": ["seed=test"]}
+        incompatible = author(revision, {"kind": "select_task", "document": "probe-task"},
+                              selected=test_run, scope=scope)
+        assert not incompatible.files
+        assert any("move" in problem.reason for problem in incompatible.problems)
+        revision = save(author(revision, {"kind": "select_task", "document": "test-task"},
+                               selected=test_run, scope=scope))
+        chosen = author(revision, selected=test_run)
+        assert chosen.task_document == "test-task"
+        assert chosen.task.params["x"] == 0.31
+        revision = save(author(revision, {"kind": "task", "edits": [
+            {"op": "replace", "path": "/params/x", "value": 0.38},
+        ]}, selected=test_run, scope=scope))
+        assert author(revision, selected=test_run).task.params["x"] == 0.38
+        assert folders.read(project).project.documents["test-task"].payload["params"]["x"] == 0.31
+        after = ids()
+        assert {key for key in before if before[key] != after[key]} == {RunKey("default", "baseline", "seed=test")}
+
+        plan = folders.read_plan(project, revision=revision)
+        assert not plan.plan.diagnostics, plan.plan.diagnostics
         sample = client.post("/api/execution/task-trials/sample", json={
             "model_name": "reach-model", "model": model,
             "python_task": view.task.model_dump(mode="json"),
@@ -136,22 +171,31 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert sample.status_code == 200, sample.text
         np.testing.assert_allclose(sample.json()["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
 
-        def submit(step):
+        def submit(selected, token):
             response = client.post(f"/api/projects/{project}/train-runs", json={
-                "run_keys": [{**run, "step": step}], "revision": revision, "token": step,
+                "run_keys": [selected], "revision": revision, "token": token,
             })
             assert response.status_code == 202, response.text
             item, = response.json()["items"]
             assert item["disposition"] == "admitted", item
             return item["job_id"]
 
-        trained, evaluated = submit("train"), submit("baseline")
+        trained, evaluated = submit(run, "train"), submit(test_run, "baseline")
         for job in (trained, evaluated):
             row = wait_until(lambda: job_row(host, job, "succeeded") or job_row(host, job, "failed"), timeout=24)
             assert row["state"] == "succeeded", row.get("outcome")
         result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated)
         with result.open_states() as dataset:
             assert np.isfinite(dataset.data("objective/total")).all()
+            assert int(dataset.data("objective/coverage/effort").item()) == 1
+            np.testing.assert_allclose(dataset.data("/v1/task/output/reach_target")[..., 0], 0.38)
+
+        revision = save(author(revision, {"kind": "objective", "edits": [
+            {"op": "replace", "path": "/terms/0/name", "value": "Effort"},
+        ]}))
+        assert author(revision).objective.terms[0].name == "Effort"
+        assert ids() == after
+        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated).open_states() as dataset:
             assert int(dataset.data("objective/coverage/effort").item()) == 1
 
 
@@ -172,3 +216,125 @@ def test_python_task_integer_sweep_uses_registered_site():
         for run in plan.runs if run.kind == "train"
     ]
     assert [request.trial_documents.python_task.params["n_steps"] for request in selected] == [11, 13, 15]
+
+
+@pytest.mark.parametrize("kind", ["step", "axis_value", "rows", "variant"])
+def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    selected, other = RunKey("default", "train", "default"), RunKey("default", "other", "default")
+    scope = {"kind": kind}
+    if kind == "step":
+        raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+        scope["lit_steps"] = ["train"]
+        raw["documents"]["objective"]["payload"]["terms"] = [
+            {"id": "base", "measure": {"kind": "literal", "value": 1}, "weight": {"kind": "literal", "value": 1}},
+        ]
+    elif kind == "variant":
+        raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
+        selected, other = RunKey("treated", "train", "default"), RunKey("control", "train", "default")
+        scope["variant"] = "treated"
+    else:
+        raw["steps"]["train"]["sweep"] = {"axes": {"length": {"values": {
+            "short": {"patches": {"trial_documents.python_task.params.n_steps": {"op": "add", "value": 11}}},
+            "long": {"patches": {"trial_documents.python_task.params.n_steps": {"op": "add", "value": 13}}},
+        }}}}
+        selected, other = RunKey("default", "train", "length=short"), RunKey("default", "train", "length=long")
+        scope.update({"axis": "length", "value": "short"} if kind == "axis_value" else {"rows": [selected.row]})
+    folders = ProjectFolderService(tmp_path)
+    project = "scoped-objective"
+    _save_project(folders, project, Project.model_validate(raw))
+    before = folders.read_plan(project, revision=None)
+    previous = {item.key: item.request_id for item in before.plan.runs}
+    assert {selected, other} <= previous.keys(), before.plan.diagnostics
+    body = {
+        "run": {"variant": selected.variant, "step": selected.step, "row": selected.row},
+        "revision": before.revision, "scope": scope,
+        "change": {"kind": "objective", "edits": [
+            {"op": "replace", "path": "/terms/0/weight/value", "value": 2},
+        ] if kind == "step" else [
+            {"op": "add", "path": "/terms/-", "value": {"id": "term", "measure": {"kind": "literal", "value": 1}}},
+        ]},
+    }
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        route = f"/api/projects/{project}"
+        prepared = client.post(f"{route}/authoring/trials", json=body)
+        assert prepared.status_code == 200, prepared.text
+        files = prepared.json()["files"]
+        assert len(files) == 1, prepared.text
+        assert files[0]["address"]["kind"] == ("variant" if kind == "variant" else "step")
+        saved = client.patch(route, json={"revision": before.revision, "files": files})
+        assert saved.status_code == 200, saved.text
+        assert client.patch(route, json={"revision": before.revision, "files": files}).status_code == 409
+        current = folders.read_plan(project, revision=saved.json()["revision"])
+        assert not current.plan.diagnostics
+        request = next(item for item in current.plan.runs if item.key == selected)
+        trained = decode_request(current.plan.requests[request.request_id], current.plan.documents.__getitem__).spec
+        assert [term.id for term in trained.trial_documents.objective.terms] == ["base" if kind == "step" else "term"]
+        assert {item.key for item in current.plan.runs if previous[item.key] != item.request_id} == {selected}
+        if kind == "rows":
+            expression = body | {
+                "revision": saved.json()["revision"],
+                "change": {"kind": "expression", "term": "term", "field": "weight", "text": "2"},
+            }
+            prepared = client.post(f"{route}/authoring/trials", json=expression)
+            assert prepared.status_code == 200, prepared.text
+            files = prepared.json()["files"]
+            assert len(files) == 1, prepared.text
+            applied = client.patch(route, json={"revision": expression["revision"], "files": files})
+            assert applied.status_code == 200, applied.text
+            updated = folders.read_plan(project, revision=applied.json()["revision"]).plan
+            edited = next(item for item in updated.runs if item.key == selected)
+            spec = decode_request(updated.requests[edited.request_id], updated.documents.__getitem__).spec
+            assert spec.trial_documents.objective.terms[0].weight == LiteralValue(value=2)
+            assert next(item for item in updated.runs if item.key == other).request_id == previous[other]
+        if kind == "step":
+            shared = body | {
+                "revision": saved.json()["revision"], "scope": {"kind": "step", "lit_steps": ["train", "other"]},
+                "change": {"kind": "objective", "edits": [
+                    {"op": "replace", "path": "/terms/0/weight/value", "value": 3},
+                ]},
+            }
+            prepared = client.post(f"{route}/authoring/trials", json=shared)
+            assert prepared.status_code == 200, prepared.text
+            shared_files = prepared.json()["files"]
+            assert [file["address"]["kind"] for file in shared_files] == ["document", "step"]
+            proposed = client.patch(route, json={"revision": shared["revision"], "files": shared_files})
+            assert proposed.status_code == 200, proposed.text
+            weights = {}
+            for key in (selected, other):
+                view = client.post(f"{route}/authoring/trials", json={
+                    "revision": proposed.json()["revision"],
+                    "run": {"variant": key.variant, "step": key.step, "row": key.row},
+                })
+                weights[key] = view.json()["objective"]["terms"][0]["weight"]["value"]
+            assert weights == {selected: 3, other: 3}
+
+
+def test_scoped_rename_refuses_a_name_change_in_an_unselected_inheritor(tmp_path):
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+    raw["documents"]["objective"]["payload"]["terms"] = [
+        {"id": "base", "name": "Base", "measure": {"kind": "literal", "value": 1}},
+    ]
+    raw["steps"]["train"]["sweep"] = {"axes": {"length": {"values": {
+        "short": {"patches": {"trial_documents.python_task.params.n_steps": {"op": "add", "value": 11}}},
+        "long": {"patches": {"trial_documents.python_task.params.n_steps": {"op": "add", "value": 13}}},
+    }}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "scoped-name", Project.model_validate(raw))
+    revision = folders.read("scoped-name").revision
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        refused = client.post("/api/projects/scoped-name/authoring/trials", json={
+            "revision": revision, "run": {"variant": "default", "step": "train", "row": "length=short"},
+            "scope": {"kind": "axis_value", "axis": "length", "value": "short"},
+            "change": {"kind": "objective", "edits": [
+                {"op": "replace", "path": "/terms/0/name", "value": "Renamed"},
+            ]},
+        })
+    assert refused.status_code == 422, refused.text
+    assert "outside the selected scope" in refused.json()["detail"]
+    assert folders.read("scoped-name").revision == revision

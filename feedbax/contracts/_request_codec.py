@@ -26,6 +26,7 @@ from feedbax.contracts.graph import (
     GraphSpec,
     RetainedObservableSpec,
 )
+from feedbax.contracts.objective_document import ObjectiveTerm
 from feedbax.contracts.request_identity_guard import IdentityAbsent, IdentityWideInteger
 from feedbax.contracts.request_refs import ReferenceValue
 
@@ -34,7 +35,7 @@ _SAFE_INT = (1 << 53) - 1
 _WIRE_FIELDS = frozenset({"schema_id", "schema_version"})
 _FAMILY = "$family"
 _OPAQUE = "$json"
-_PRESENTATION = {(GraphSpec, "metadata"), (AcausalGraphSpec, "metadata")}
+_PRESENTATION = {(GraphSpec, "metadata"), (AcausalGraphSpec, "metadata"), (ObjectiveTerm, "name")}
 _REQUIRED_STORED = {(RetainedObservableSpec, "id"), (AnalysisInputRequirement, "id")}
 
 

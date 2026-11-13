@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
@@ -17,6 +17,9 @@ from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.training import TaskSpec
 from feedbax.runtime.model_values import MODEL_OWNERS
 from feedbax.studio.canonical_evaluate import CannotRun
+
+
+_MANAGED_TASK = TypeAdapter(TaskDocument | PythonTaskSelection)
 
 
 @dataclass(frozen=True)
@@ -240,7 +243,10 @@ def resolve_evaluation_variant(
         location = _edit_location(tokens, wire_ids, edit_origins) or "/inputs/subject" + pointer(tokens)
         raise CannotRun(location, first["msg"]) from error
     try:
-        replacement = type(task).model_validate(payload["task"])
+        replacement = (
+            TaskSpec.model_validate(payload["task"]) if isinstance(task, TaskSpec)
+            else _MANAGED_TASK.validate_python(payload["task"])
+        )
     except ValidationError as error:
         first = error.errors()[0]
         raise CannotRun(task_path or "/inputs/subject/task", first["msg"]) from error

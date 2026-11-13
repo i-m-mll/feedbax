@@ -8,6 +8,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_edit import EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentVariant
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
@@ -72,11 +73,20 @@ class StudioTrialExpressionEdit(StrictModel):
     text: Annotated[str, Field(max_length=8192)]
 
 
+class StudioTrialStepScope(StrictModel):
+    kind: Literal["step"]
+    lit_steps: list[ProjectName] = Field(default_factory=list)
+
+
 class StudioTrialAuthoringRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
     change: Annotated[
         StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectTask | StudioTrialExpressionEdit,
+        Field(discriminator="kind"),
+    ] | None = None
+    scope: Annotated[
+        StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant,
         Field(discriminator="kind"),
     ] | None = None
 
