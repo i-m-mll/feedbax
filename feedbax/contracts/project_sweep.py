@@ -12,7 +12,7 @@ import math
 import re
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import Field, JsonValue, PrivateAttr, model_validator
+from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -20,9 +20,12 @@ from feedbax.contracts.expression_values import DrawValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
+from feedbax.contracts.request_refs import UpdateCadence, UpdateRule
 from feedbax.contracts.project_inputs import (
+    CheckpointRule,
     NonemptyText,
     ProjectName,
+    StepReference,
     SubsetSelectionError,
     SubsetTerms,
     select_static_rows,
@@ -44,6 +47,19 @@ class RemoveValue(StrictModel):
 type PatchValue = SetValue | RemoveValue
 
 
+type CheckpointRulePath = Literal['{"field":"checkpoint","input":"subject"}']
+CHECKPOINT_RULE_TARGET: CheckpointRulePath = '{"field":"checkpoint","input":"subject"}'
+_CHECKPOINT_RULE = TypeAdapter(CheckpointRule)
+
+
+def checkpoint_rule_write(subject: object, write: PatchValue) -> StepReference:
+    if not isinstance(subject, StepReference):
+        raise ValueError("A checkpoint rule edit requires a Train step reference")
+    if not isinstance(write, SetValue):
+        raise ValueError("A checkpoint rule edit requires a rule")
+    return subject.model_copy(update={"checkpoint": _CHECKPOINT_RULE.validate_python(write.value)})
+
+
 @dataclass(frozen=True)
 class ModelFieldTarget:
     address: ModelAddress
@@ -52,6 +68,8 @@ class ModelFieldTarget:
 
 @lru_cache(maxsize=4096)
 def model_field_target(path: str) -> ModelFieldTarget | None:
+    if path == CHECKPOINT_RULE_TARGET:
+        return None
     step = None
     if path.startswith("steps.") and ".{" in path:
         scope, _, path = path.partition(".{")
@@ -94,6 +112,8 @@ def _paths_overlap(left: str, right: str) -> bool:
 
 
 def sweep_patch(path: str, patch: PatchValue) -> OverridePatch | SetField:
+    if path == CHECKPOINT_RULE_TARGET:
+        raise ValueError("Checkpoint rule writes require a step-level Evaluate subject")
     target = model_field_target(path)
     if target is not None:
         if not isinstance(patch, SetValue):
@@ -182,7 +202,13 @@ class SampledAxis(GeneratedAxis):
     draws: dict[ProjectName, JsonValue] | None = None
 
 
-type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis
+class CheckpointRuleAxis(StrictModel):
+    path: CheckpointRulePath = CHECKPOINT_RULE_TARGET
+    checkpoint_rule: UpdateRule
+    _author: str | None = PrivateAttr(default=None)
+
+
+type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis
 
 
 class ManualCombination(StrictModel):
@@ -297,7 +323,7 @@ def inherit_sweep(
                 else:
                     values[key] = _merge_value(values.get(key), value, author)
             axes[name] = NamedAxis(values=values)
-        elif isinstance(axis, GeneratedAxis) and author is not None:
+        elif isinstance(axis, (GeneratedAxis, CheckpointRuleAxis)) and author is not None:
             generated = axis.model_copy()
             generated._author = author
             axes[name] = generated
@@ -402,6 +428,7 @@ class SweepInputMember:
     key: str
     coordinates: Mapping[str, SweepCoordinate] = field(default_factory=dict)
     label: str | None = None
+    checkpoint_horizon: int | None = None
 
 
 type SweepInputs = Mapping[str, Sequence[SweepInputMember] | None]
@@ -515,6 +542,11 @@ def _axis_size(name: str, axis: Axis, inputs: SweepInputs) -> int:
             return range_values.count
         case SampledAxis():
             return len(_recorded_draws(name, axis))
+        case CheckpointRuleAxis():
+            raise SweepExpansionError(
+                SweepExpansionCode.INVALID_GENERATION, f"sweep.axes.{name}",
+                "checkpoint rule axes require a selected Evaluate subject",
+            )
 
 
 def _zip_dimension(
@@ -1005,6 +1037,7 @@ def expand_sweep(
     max_rows: int = DEFAULT_SWEEP_LIMIT,
     max_axis_values: int = DEFAULT_SWEEP_LIMIT,
     integer_site: IntegerSite | None = None,
+    checkpoint_subject: bool = False,
 ) -> tuple[ExpandedRow, ...]:
     """Expand the declared sweep using recorded draws and known input members.
 
@@ -1012,7 +1045,90 @@ def expand_sweep(
     of zero. Expansion never draws new samples or mutates an authored rule.
     """
     known_inputs = inputs or {}
+    if checkpoint_subject and sweep is not None:
+        resolved = _resolved_sweep(sweep)
+        checkpoints = [(name, axis) for name, axis in resolved.axes.items() if isinstance(axis, CheckpointRuleAxis)]
+        if checkpoints:
+            if len(checkpoints) != 1:
+                raise SweepExpansionError(
+                    SweepExpansionCode.INVALID_GENERATION, "sweep.axes", "an Evaluate step has one checkpoint rule",
+                )
+            (name, axis), = checkpoints
+            return _expand_checkpoint_axis(resolved, name, axis, known_inputs, max_rows, max_axis_values, integer_site)
     return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values, integer_site)
+
+
+def _expand_checkpoint_axis(
+    sweep: Sweep, name: str, axis: CheckpointRuleAxis, inputs: SweepInputs,
+    max_rows: int, max_axis_values: int, integer_site: IntegerSite | None,
+) -> tuple[ExpandedRow, ...]:
+    from feedbax.checkpoint_coordinates import finite_coordinates
+
+    path = f"sweep.axes.{name}"
+    if sweep.combination not in (None, "cross") or any(sweep.rows.values()):
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_COMBINATION, path, "checkpoint rules cross generated rows",
+        )
+    base = sweep.model_copy(update={
+        "axes": {key: value for key, value in sweep.axes.items() if key != name}, "exceptions": {},
+    })
+    rows = _expand_plan(_plan(base, inputs), inputs, max_rows, max_axis_values, integer_site)
+    subjects = {member.key: member for member in inputs.get("subject") or ()}
+    only_subject = next(iter(subjects.values())) if len(subjects) == 1 else None
+    choices = {}
+    rows_and_updates = []
+    count = 0
+    for row in rows:
+        subject = subjects.get(row.input_keys.get("subject")) if "subject" in row.input_keys else only_subject
+        if subject is None:
+            raise SweepExpansionError(
+                SweepExpansionCode.INPUT_CONFLICT, path, "select one Train row or bind the subject axis",
+            )
+        if subject.key not in choices:
+            rule = axis.checkpoint_rule
+            try:
+                if isinstance(rule, UpdateCadence):
+                    if subject.checkpoint_horizon is None:
+                        raise ValueError("an update cadence requires a planned Train definition")
+                    updates = rule.coordinates(subject.checkpoint_horizon)
+                else:
+                    updates = finite_coordinates(tuple(point.at for point in rule))
+            except ValueError as error:
+                raise SweepExpansionError(SweepExpansionCode.INVALID_GENERATION, path, str(error)) from error
+            _check_axis_budget(name, len(updates), max_axis_values)
+            choices[subject.key] = updates
+        updates = choices[subject.key]
+        if name in row.coordinates:
+            raise SweepExpansionError(
+                SweepExpansionCode.COORDINATE_CONFLICT, path, "the subject already carries this axis name",
+            )
+        if axis.path in row.patches:
+            raise SweepExpansionError(
+                SweepExpansionCode.PATCH_CONFLICT, path, "another axis writes the checkpoint rule",
+            )
+        count += len(updates)
+        rows_and_updates.append((row, updates))
+    if count > max_rows:
+        raise SweepExpansionError(
+            SweepExpansionCode.ROW_BUDGET, path, f"{count} rows exceeds the limit of {max_rows}",
+        )
+    result = []
+    for row, updates in rows_and_updates:
+        for update in updates:
+            key = str(update)
+            keys = {**row.axis_value_ids, name: key}
+            authors = dict(row.patch_authors)
+            if axis._author is not None:
+                authors[axis.path] = axis._author
+            result.append(replace(
+                row, id=_generated_row_id(keys), axis_value_ids=keys,
+                label=", ".join(part for part in (row.label, f"{name}={key}") if part),
+                coordinates={**row.coordinates, name: SweepCoordinate(key, key, update)},
+                patches={**row.patches, axis.path: SetValue(value=[{"at": update}])},
+                patch_origins={**row.patch_origins, axis.path: ("sweep_value", name, key)},
+                patch_authors=authors,
+            ))
+    return _apply_exceptions(tuple(result), {key: value for key, value in sweep.exceptions.items() if value is not None})
 
 
 def authored_row(sweep: Sweep | None, row_id: str) -> ExpandedRow | None:

@@ -47,6 +47,8 @@ from feedbax.contracts.project_sources import (
     source_shape,
 )
 from feedbax.contracts.project_sweep import (
+    CHECKPOINT_RULE_TARGET,
+    checkpoint_rule_write,
     ExpandedRow,
     ListedAxis,
     RangeAxis,
@@ -787,6 +789,7 @@ class _Resolver:
         row: ExpandedRow,
     ) -> _StepState:
         payload = state.payload
+        inputs = state.inputs
         origins = state.origins
         documents: dict[str, list[_DocumentRowPatch]] = {}
         path = "sweep"
@@ -796,6 +799,11 @@ class _Resolver:
         try:
             for path, write in row.patches.items():
                 address = None
+                if path == CHECKPOINT_RULE_TARGET:
+                    if self.project.steps[name].kind != "evaluate":
+                        raise ValueError("A checkpoint rule target requires an Evaluate subject")
+                    inputs = {**inputs, "subject": checkpoint_rule_write(inputs.get("subject"), write)}
+                    continue
                 patch = sweep_patch(path, write)
                 if isinstance(patch, SetField):
                     address = patch.address
@@ -881,7 +889,7 @@ class _Resolver:
                 document=address.document if address is not None else None, model_address=address,
             ) from error
         return _StepState(
-            payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=document_uses,
+            payload, inputs=inputs, requires=state.requires, origins=origins, document_uses=document_uses,
             root_document=state.root_document, row_document_patches={
                 document: tuple(patches) for document, patches in documents.items()
             },

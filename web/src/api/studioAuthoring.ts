@@ -1,6 +1,7 @@
 import { asApiRequestError, requestJson } from '@/api/request';
 import {
   parseContract,
+  type StudioCheckpointRuleRequest,
   type StudioTrialAuthoring,
   type StudioTrialAuthoringRequest,
   type StudioTrainAuthoring,
@@ -8,6 +9,20 @@ import {
   type TrainFieldRequest,
   type TrainFieldResponse,
 } from '@/generated/studioContracts';
+
+export async function prepareCheckpointRuleEdit(projectId: string, body: StudioCheckpointRuleRequest, signal: AbortSignal) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/checkpoint-rule`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioCheckpointRuleRequest', body)), cache: 'no-store', signal,
+    });
+    const edit = parseContract('StudioCheckpointRuleEdit', response);
+    if (edit.revision !== body.revision) throw new Error('The checkpoint edit revision changed');
+    return edit;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The checkpoint edit did not match its contract');
+  }
+}
 
 export async function readStudioTrainAuthoring(
   projectId: string, stepId: string, body: StudioTrainAuthoringRequest, signal: AbortSignal,

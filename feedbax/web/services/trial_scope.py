@@ -74,6 +74,24 @@ def variant_file(project, variant, writes):
                       _store_patches(raw.get("patches", {}), writes))
 
 
+def sweep_value_file(address, raw, axis, value, writes):
+    parts = ("sweep", "axes", axis, "values", value)
+    authored = raw["sweep"]["axes"][axis]["values"][value]
+    return file_value(address, raw, (*parts, "patches"), _store_patches(authored.get("patches", {}), writes))
+
+
+def row_exception_file(address, raw, rows, writes, *, name_prefix):
+    sweep = raw.get("sweep") or {}
+    rows = sorted(set(rows))
+    name = name_prefix + sha256(canonical_json_v2_bytes(rows)).hexdigest()
+    exceptions = sweep.get("exceptions", {})
+    prior = exceptions.get(name, {"where": {"rows": rows}})
+    if prior is None or prior.get("where") != {"rows": rows} or prior.get("exclude"):
+        raise ProjectFolderInvalid("The selected row exception has an incompatible definition.")
+    updated = prior | {"patches": _store_patches(prior.get("patches", {}), writes)}
+    return file_value(address, raw, ("sweep",), sweep | {"exceptions": exceptions | {name: updated}})
+
+
 def scoped_file(project, key, scope, writes):
     authored = project.steps[key.step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -90,19 +108,9 @@ def scoped_file(project, key, scope, writes):
         axis = authored.sweep.axes.get(scope.axis) if authored.sweep else None
         if not isinstance(axis, NamedAxis) or axis.values.get(scope.value) is None:
             raise ProjectFolderInvalid("The group needs a named sweep value authored on this step.")
-        parts = ("sweep", "axes", scope.axis, "values", scope.value)
-        value = raw["sweep"]["axes"][scope.axis]["values"][scope.value]
-        return file_value(address, raw, (*parts, "patches"), _store_patches(value.get("patches", {}), writes))
+        return sweep_value_file(address, raw, scope.axis, scope.value, writes)
     if isinstance(scope, EvaluateAttachmentRows):
-        sweep = raw.get("sweep") or {}
-        rows = sorted(set(scope.rows))
-        name = "trial-rows-" + sha256(canonical_json_v2_bytes(rows)).hexdigest()
-        exceptions = sweep.get("exceptions", {})
-        prior = exceptions.get(name, {"where": {"rows": rows}})
-        if prior is None or prior.get("where") != {"rows": rows} or prior.get("exclude"):
-            raise ProjectFolderInvalid("The selected row exception has an incompatible definition.")
-        updated = prior | {"patches": _store_patches(prior.get("patches", {}), writes)}
-        return file_value(address, raw, ("sweep",), sweep | {"exceptions": exceptions | {name: updated}})
+        return row_exception_file(address, raw, scope.rows, writes, name_prefix="trial-rows-")
     if isinstance(authored.base, InlineBase) and not authored.deltas:
         updated = apply_override_patches(authored.base.inline, writes)
         return file_value(address, raw, ("base", "inline"), updated)

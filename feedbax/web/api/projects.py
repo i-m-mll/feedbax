@@ -34,6 +34,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
+from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, TrainFieldRequest, TrainFieldResponse
 from feedbax.web.services.project_folder import (
@@ -145,6 +146,17 @@ def project_train_numeric_fields(
             raise ProjectFolderInvalid(str(error)) from error
 
     return _project_response(response, project_fields)
+
+
+@router.post("/{project_id}/authoring/checkpoint-rule", response_model_exclude_unset=True)
+def edit_checkpoint_rule(
+    project_id: ProjectName, body: StudioCheckpointRuleRequest, request: Request, response: Response,
+) -> StudioCheckpointRuleEdit:
+    from feedbax.web.services.checkpoint_rule import prepare_checkpoint_rule_edit
+
+    return _project_response(response, lambda: prepare_checkpoint_rule_edit(
+        request.app.state.project_folders, project_id, body,
+    ))
 
 
 @router.post("/{project_id}/authoring/document", response_model_exclude_unset=True)

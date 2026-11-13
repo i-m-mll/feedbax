@@ -94,6 +94,19 @@ def series_files():
     return files
 
 
+def scoped_series_files():
+    evaluation = _evaluation_step()
+    evaluation["inputs"]["subject"]["checkpoint"] = {"every": 2}
+    evaluation["sweep"] = {"axes": {
+        "subject": {"input": "subject"},
+        "replicate": {"values": {
+            "left": {"patches": {"params.seed": {"value": 31}}},
+            "right": {"patches": {"params.seed": {"value": 32}}},
+        }},
+    }}
+    return [*series_files(), {"kind": "step", "id": "evaluate", "step": evaluation}]
+
+
 def seed_series_variants(home: str):
     *documents, train = series_files()
     evaluation = _evaluation_step()
@@ -190,4 +203,5 @@ if __name__ == "__main__":
     print(json.dumps({
         "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
+        "scoped-series-files": scoped_series_files,
     }[action](*args)))
