@@ -1,5 +1,6 @@
 import { ApiRequestError, isHttpConflict } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
   AuthoredFileAddress,
   ModelAddress,
@@ -23,6 +24,7 @@ import {
   addressKey, applyAuthoredEdits, presentationAddress, presentationHistoryEdits, sameAuthoredFile,
   type AuthoredProject, type ProjectEditContent,
 } from './authoredEdits';
+import { modelSchema } from './model/modelGraph';
 
 export interface ProjectEditTransport {
   read: (id: string, signal?: AbortSignal) => Promise<StudioProjectDocument>;
@@ -156,7 +158,13 @@ function withoutChangedFiles(
 function authoredFileContent(project: AuthoredProject, { kind, id }: ReplayFile['address']) {
   const files = kind === 'document' ? project.documents : kind === 'step' ? project.steps
     : kind === 'variant' ? project.sweep?.rows : undefined;
-  return files && Object.prototype.hasOwnProperty.call(files, id) ? JSON.stringify(files[id]) : undefined;
+  if (!files || !Object.prototype.hasOwnProperty.call(files, id)) return undefined;
+  const file = files[id];
+  if (kind === 'document' && project.documents?.[id]?.schema === modelSchema) {
+    // Addressed Model Undo uses canonical JSON for its payload preimage.
+    return canonicalJsonV2(file);
+  }
+  return JSON.stringify(file);
 }
 
 function outsideGesture(before: StudioProjectSnapshot, after: StudioProjectSnapshot): OutsideGesture | null {
