@@ -1,7 +1,8 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { captureStudioWindow, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -48,6 +49,108 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
   await expect(card.getByText('1 Done')).toBeVisible();
   await expect(drawer.getByText('1 Done')).toBeVisible();
+});
+
+test('outside saved-folder edits join the mounted Undo history', async ({ page, request }, info) => {
+  test.setTimeout(45_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', snapshot.project_id);
+  const modelPath = join(root, 'documents', 'point-mass.json');
+  const stepPath = join(root, 'steps', 'train.json');
+  const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });
+  const tab = (name: string) => page.getByRole('tab', { name, exact: true });
+  async function saved(method: string, suffix: string, action: () => Promise<void>) {
+    const transaction = page.waitForResponse((response) => response.request().method() === method &&
+      new URL(response.url()).pathname === projectPath + suffix);
+    const [response] = await Promise.all([transaction, action()]);
+    expect(response.ok(), await response.text()).toBe(true);
+    return response;
+  }
+  async function edit(field: Locator, value: string, model = false) {
+    await expect(field).toBeEditable();
+    const response = await saved(model ? 'POST' : 'PATCH', model ? '/model/edit' : '', () => enter(field, value));
+    if (model) expect((await response.json()).result.status).toBe('applied');
+    await expect(field).toHaveValue(value);
+  }
+  async function menu(label: string) {
+    await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+    const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
+    await expect(palette.getByRole('option', { name: label, exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette).toBeHidden();
+  }
+  const read = (path: string) => readFile(path, 'utf8');
+  async function outside(path: string, contents: string) {
+    const temporary = path + '.outside';
+    await writeFile(temporary, contents);
+    await rename(temporary, path);
+  }
+  const json = (data: unknown) => JSON.stringify(data, null, 4) + '\n';
+  const model = panel('Model');
+  const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
+  const batches = panel('Training').getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchSize = panel('Training').getByRole('textbox', { name: 'Batch Size', exact: true });
+  async function history(keys: string, view: string, suffix = '') {
+    await panel(view).focus();
+    const response = await saved(suffix ? 'POST' : 'PATCH', suffix, () => page.keyboard.press(keys));
+    if (suffix === '/model/undo') expect((await response.json()).result.status).toBe('applied');
+    return response.request().postDataJSON();
+  }
+
+  await page.goto('/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
+  await tab('Training').click();
+  await edit(batchSize, '6');
+  await edit(batches, '5');
+  await tab('Model').click();
+  await model.getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  await edit(mass, '2', true);
+
+  const beforeOutside = await read(modelPath);
+  const changed = JSON.parse(beforeOutside);
+  changed.payload.interior.components.plant.fields.mass = 3;
+  await outside(modelPath, json(changed));
+  await expect(mass).toHaveValue('3', { timeout: 2_000 });
+  await menu('Undo Outside Change');
+  await history('Meta+Z', 'Model', '/history/replay');
+  await expect(mass).toHaveValue('2');
+  expect(await read(modelPath)).toBe(beforeOutside);
+
+  await history('Meta+Z', 'Model', '/model/undo');
+  await expect(mass).toHaveValue(/^1(?:\.0)?$/);
+  await tab('Training').click();
+  await history('Meta+Z', 'Training');
+  await expect(batches).toHaveValue('2');
+  await history('Meta+Z', 'Training');
+  await expect(batchSize).toHaveValue('4');
+
+  await history('Meta+Shift+Z', 'Training');
+  await expect(batchSize).toHaveValue('6');
+  await history('Meta+Shift+Z', 'Training');
+  await expect(batches).toHaveValue('5');
+  await tab('Model').click();
+  await history('Meta+Shift+Z', 'Model', '/model/undo');
+  await expect(mass).toHaveValue('2');
+  await menu('Redo Outside Change');
+  await history('Meta+Shift+Z', 'Model', '/history/replay');
+  await expect(mass).toHaveValue('3');
+  expect(await read(modelPath)).toBe(json(changed));
+
+  const step = await read(stepPath);
+  const outsideStep = JSON.parse(step);
+  outsideStep.base.inline.training_config.batch_size = 8;
+  const outsideModel = structuredClone(changed);
+  outsideModel.payload.interior.components.plant.fields.mass = 4;
+  await outside(modelPath, json(outsideModel));
+  await expect(mass).toHaveValue('4', { timeout: 2_000 });
+  await outside(stepPath, json(outsideStep));
+  await tab('Training').click();
+  await expect(batchSize).toHaveValue('8', { timeout: 2_000 });
+  const burst = await history('Meta+Z', 'Training', '/history/replay');
+  expect(burst.files.map(({ address }: { address: { id: string } }) => address.id).sort()).toEqual(['point-mass', 'train']);
+  await expect(batchSize).toHaveValue('6');
+  expect(await read(stepPath)).toBe(step);
+  expect(await read(modelPath)).toBe(json(changed));
 });
 
 test('the managed window shares selection and restores the folded slot without editing the folder', async ({ page, request }) => {

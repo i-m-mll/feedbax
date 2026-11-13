@@ -650,8 +650,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
     windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
-    bindStudioCommand('undo', () => { void moveHistory('undo'); }, { enabled: !!snapshot.undoName && !busy && !snapshot.saving }),
-    bindStudioCommand('redo', () => { void moveHistory('redo'); }, { enabled: !!snapshot.redoName && !busy && !snapshot.saving }),
+    bindStudioCommand('undo', () => { void moveHistory('undo'); }, {
+      enabled: !!snapshot.undoName && !busy && !snapshot.saving && !outside,
+      subject: snapshot.undoName === studioName('outsideChange') ? snapshot.undoName : undefined,
+    }),
+    bindStudioCommand('redo', () => { void moveHistory('redo'); }, {
+      enabled: !!snapshot.redoName && !busy && !snapshot.saving && !outside,
+      subject: snapshot.redoName === studioName('outsideChange') ? snapshot.redoName : undefined,
+    }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
     activity, problemCommand, failure && retryCommand,
   ].filter((command): command is StudioCommand => !!command);

@@ -15,6 +15,7 @@ import {
   type StudioProjectPatch,
   type StudioProjectPatchBatch,
   type StudioProjectRename,
+  type StudioProjectReplay,
 } from '@/generated/studioContracts';
 
 const projectsPath = '/api/projects';
@@ -39,7 +40,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioDocumentAuthoringRequest' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectCreateFile' | ModelRequest>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioDocumentAuthoringRequest' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | ModelRequest>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -76,6 +77,13 @@ export async function patchProjectFolder(id: string, body: StudioProjectPatch | 
   const path = projectPath(id);
   const payload = 'files' in body ? mutationBody('StudioProjectPatchBatch', body, path) : mutationBody('StudioProjectPatch', body, path);
   return readFolder('StudioProjectSnapshot', id, path, { method: 'PATCH', body: payload, signal });
+}
+
+export function replayProjectHistory(id: string, body: StudioProjectReplay, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/history/replay`;
+  return readFolder('StudioProjectSnapshot', id, path, {
+    method: 'POST', body: mutationBody('StudioProjectReplay', body, path), signal,
+  });
 }
 
 export async function fetchDocumentAuthoring(id: string, body: StudioDocumentAuthoringRequest, signal?: AbortSignal) {
