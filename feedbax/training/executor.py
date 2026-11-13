@@ -2747,7 +2747,11 @@ def _resolve_checkpoint_fork_initialization(
             source_structure=source_structure,
             target_structure=target_structure,
             target_values=bound_target_slots,
-            rebuild_model=target_id in bindings.semantic_model_writers,
+            rebuild_slots=(
+                frozenset(record.slot for record in semantic_steps[0].records)
+                & frozenset(("model", "optimizer"))
+                if target_id in bindings.semantic_model_writers else frozenset()
+            ),
         )
     except CheckpointTransformRefused as exc:
         raise TrainingRunExecutorError(str(exc)) from exc

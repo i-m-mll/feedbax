@@ -3,7 +3,6 @@
 from copy import deepcopy
 
 import numpy as np
-import pytest
 
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.contracts.project import Project
@@ -15,7 +14,8 @@ from feedbax.host import HostClient
 from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, CannotRun
+from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA
+from feedbax.studio.schema import validate_graph_connection_schema
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
@@ -127,8 +127,15 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     reader.evaluation_parameters(plan, run)
     (bad,) = (run for run in plan.runs if run.key.step == "invalid")
     params, _ = reader.evaluation_parameters(plan, bad)
-    with pytest.raises(CannotRun, match="/params/variation/bad-port: .*does not exist"):
-        resolve_evaluation_variant(graph, task, params.variation)
+    bad_variant = resolve_evaluation_variant(graph, task, params.variation)
+    issues = validate_graph_connection_schema(
+        bad_variant.graph, "/graph", component_registry=registries.components,
+    )
+    assert any(
+        issue.type == "unknown_target_port"
+        and bad_variant.edit_location(issue.location["path"]) == "/params/variation/bad-port"
+        for issue in issues
+    )
 
 
 def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host, tmp_path, monkeypatch):

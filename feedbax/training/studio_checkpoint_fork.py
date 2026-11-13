@@ -119,9 +119,7 @@ def plan_studio_checkpoint_fork(
             "schedule_origin_step": origin,
         }
     )
-    transformed_slots = ["model"]
-    if policy.optimizer == "reset":
-        transformed_slots.append("optimizer")
+    transformed_slots = ["model", "optimizer"]
     if policy.rng == "reset":
         transformed_slots.append("prng")
     implementation = semantic_checkpoint_transform_implementation_sha256()

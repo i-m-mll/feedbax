@@ -497,7 +497,7 @@ def bind_semantic_checkpoint_fork_step(
     source_structure: CheckpointStructure,
     target_structure: CheckpointStructure,
     target_values: Mapping[str, Any],
-    rebuild_model: bool = False,
+    rebuild_slots: frozenset[str] = frozenset(),
 ) -> SemanticCheckpointForkRuntime:
     """Decode and register the canonical semantic transform for one fork step."""
     if step.stage != "target_post" or any(
@@ -547,7 +547,7 @@ def bind_semantic_checkpoint_fork_step(
         results.append(result)
         materialized = dict(source_values)
         for name, value in result.values.items():
-            if rebuild_model and name == "model":
+            if name in rebuild_slots:
                 materialized[name] = value
                 continue
             source_leaves, source_treedef = jt.flatten(source_values[name])

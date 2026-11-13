@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.dataset import DatasetProductRef
@@ -104,6 +105,7 @@ def main(argv):
         warm_entrypoint="finite_gate:main",
     )
 
+@pytest.mark.skip(reason="Historical retained Host Train qualification at d573319e (a81a8e8); managed Train supplies document checkpoints")
 def test_saved_train_finite_selection_and_private_evaluation(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     jobs = JobService(host, new_application_registry_bundle())

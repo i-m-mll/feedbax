@@ -33,7 +33,7 @@ from feedbax.studio.authoring import authoring_surface, project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from feedbax.web.services import project_folder
-from web.e2e.studio.fixtures.canonical_train import authored_files
+from web.e2e.studio.fixtures.canonical_train import legacy_graph_files
 from web.e2e.studio.fixtures.reaching_project import reaching_project
 
 
@@ -379,7 +379,7 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
-    model, task, train, successor = authored_files()
+    model, task, train, successor = legacy_graph_files()
     carry_path = "method_payload.payload.checkpoint_initialization"
     total_path = "method_payload.payload.target_total"
     train["step"]["sweep"] = {"axes": {"rate": {"values": {

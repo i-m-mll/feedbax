@@ -22,7 +22,7 @@ import optax
 import pytest
 
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
-from feedbax.contracts.graph import STUDIO_TASK_TIMELINE_SCHEMA_VERSION
+from feedbax.contracts.graph import GraphSpec, STUDIO_TASK_TIMELINE_SCHEMA_VERSION
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest, training_run_manifest_id
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
@@ -186,7 +186,8 @@ def _observe_worker(
         config = spec.training_config
         method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
         prepared_model = preparation.initial_slots["model"]
-        paths, trainable_filter = compile_trainability(spec.graph.inline, prepared_model, registries.components)
+        graph = GraphSpec.model_validate(spec.graph.inline)
+        paths, trainable_filter = compile_trainability(graph, prepared_model, registries.components)
         assert paths == ("cell",)
         if distinct_preparation:
             prepared_model = eqx.tree_at(_readout, prepared_model, _readout(prepared_model) + 0.25)

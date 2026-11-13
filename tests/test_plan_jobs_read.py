@@ -116,6 +116,7 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     managed = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     data["documents"] = managed["documents"]
     data["steps"]["fit"] = managed["steps"]["train"]
+    data["steps"]["fit"]["base"]["inline"]["seed"] = 0
     data["steps"]["fit"]["sweep"] = {"axes": {"seed": {"values": {
         "a": {"label": "11", "patches": {"seed": {"value": 11}}},
         "b": {"label": "12", "patches": {"seed": {"value": 12}}},
