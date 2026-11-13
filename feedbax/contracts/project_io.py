@@ -73,18 +73,27 @@ class TextProject:
 class TextProjectExternalInputs:
     """Read pinned project inputs under the caller's filesystem authority."""
 
-    def __init__(self, text: TextProject, *, authority: Path | None = None) -> None:
+    def __init__(
+        self, text: TextProject, *, authority: Path | None = None,
+        authority_identity: tuple[int, int] | None = None,
+    ) -> None:
         self.root = text.root
         self.store = text.store_path
         self.authority = authority
+        self.authority_identity = authority_identity
         self.paths: set[Path] = set()
         self.inputs = AuthoringInputs(read=self._read_target)
 
-    @staticmethod
-    def _read_target(target: Path) -> bytes:
+    def _read_target(self, target: Path) -> bytes:
         context = "pinned project input"
         chain = open_directory_chain(target.parent, create=False, error_factory=OSError, context=context)
         try:
+            if self.authority_identity is not None:
+                for path, _, info in chain:
+                    if path == self.authority and (info.st_dev, info.st_ino) == self.authority_identity:
+                        break
+                else:
+                    raise OSError("The authorized project folder changed")
             descriptor, _ = open_existing_file(
                 target.name, dir_fd=chain[-1][1],
                 rigor=SecurePathRigor.REGULAR_FILE_IDENTITY, error_factory=OSError, context=context,
@@ -101,7 +110,7 @@ class TextProjectExternalInputs:
         try:
             target = source.resolve()
             if self.authority is not None and not target.is_relative_to(self.authority):
-                raise OSError(f"{name}: the external pin is outside the managed projects directory")
+                raise OSError(f"{name}: the external pin is outside the authorized directory")
             if target.is_relative_to(self.store):
                 raise OSError(f"{name}: an external pin cannot read the declared Store")
             self.paths.update((source, target))

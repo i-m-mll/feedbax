@@ -6,8 +6,10 @@ from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
 from copy import deepcopy
 from hmac import compare_digest, digest
+import os
 from pathlib import Path
 from secrets import token_bytes
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
@@ -15,10 +17,13 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_io import TextProject, TextProjectExternalInputs
+from feedbax.contracts.project_resolution import BaseReaders
 from feedbax.contracts.studio_project import StudioProjectDocument, StudioProjectSnapshot
 from feedbax.project_folder import (
     ProjectFileExists as ProjectFileExists,
     ProjectFolder,
+    ProjectFolderLocation,
     ProjectFolderInvalid as ProjectFolderInvalid,
     ProjectFolderNotFound as ProjectFolderNotFound,
     ProjectRevisionConflict as ProjectRevisionConflict,
@@ -63,16 +68,52 @@ class ProjectFolderService(ProjectFolder):
             root, operations=operations, components=components, functions=functions, python_tasks=python_tasks,
         )
         self._model_undo_key = token_bytes(32)
+        self._external_projects: dict[str, ProjectFolderLocation] = {}
+        self._external_projects_lock = Lock()
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
-        """Open the managed direct child selected by the native folder picker."""
+        """Open a folder selected through the private native control socket."""
+        if not folder.is_absolute() or ".." in folder.parts:
+            raise ProjectFolderInvalid("Choose an absolute Studio project folder.")
         try:
-            inside = folder.is_absolute() and folder.parent.resolve(strict=True) == self.root
-        except (OSError, RuntimeError, ValueError):
-            inside = False
-        if not inside:
-            raise ProjectFolderInvalid("Choose a project folder inside the Studio projects directory.")
-        return self.open(folder.name)
+            path = folder.parent.resolve(strict=True) / folder.name
+        except FileNotFoundError as error:
+            raise ProjectFolderNotFound(str(folder)) from error
+        except (OSError, RuntimeError, ValueError) as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        if path == self.root:
+            raise ProjectFolderInvalid("Choose an individual Studio project folder.")
+        if path.parent == self.root:
+            with self._external_projects_lock:
+                if path.name in self._external_projects:
+                    raise ProjectFolderInvalid("The selected project conflicts with an external project ID.")
+            return super().open(path.name)
+        grant = ProjectFolderLocation.selected(path)
+        if not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+            raise ProjectFolderInvalid("The selected project folder must be readable and writable.")
+        locator = os.fsencode(grant.path) + b"\0" + str(grant.identity).encode("ascii")
+        project_id = f"external-{sha256_bytes(locator)}"
+        document = self._open_folder(project_id, grant)
+        with self._external_projects_lock:
+            if os.path.lexists(self.root / project_id):
+                raise ProjectFolderInvalid("The selected project conflicts with a managed project ID.")
+            self._external_projects[project_id] = grant
+        return document
+
+    def _folder(self, project_id: str) -> ProjectFolderLocation:
+        with self._external_projects_lock:
+            grant = self._external_projects.get(project_id)
+        return grant if grant is not None else super()._folder(project_id)
+
+    def _base_readers(self, project_id: str, text: TextProject) -> BaseReaders:
+        with self._external_projects_lock:
+            grant = self._external_projects.get(project_id)
+        if grant is None:
+            return super()._base_readers(project_id, text)
+        read_pin = TextProjectExternalInputs(
+            text, authority=grant.path, authority_identity=grant.identity,
+        ).read
+        return BaseReaders(external=read_pin, figure_external=read_pin)
 
     def review_model_connections(
         self, project_id: str, body: ModelConnectionReviewRequest, components: ComponentRegistry,
