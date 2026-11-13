@@ -59,6 +59,7 @@ from feedbax.contracts.project_sweep import (
     sweep_value_identity_bytes,
 )
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
 
 
@@ -93,6 +94,7 @@ class ProjectDiagnostic:
     variant: str | None = None
     element: str | None = None
     document_path: str | None = None
+    model_address: ModelAddress | None = None
 
 
 @dataclass(frozen=True)

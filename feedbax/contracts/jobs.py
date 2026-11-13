@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 
@@ -178,6 +179,7 @@ class StudioProjectWindowMapProblem(StrictModel):
     document: str | None
     element: str | None = Field(default=None, exclude_if=lambda value: value is None)
     document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    model_address: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapFigure(StrictModel):

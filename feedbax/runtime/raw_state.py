@@ -15,7 +15,7 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
-from feedbax.runtime.graph import Graph, init_state_from_component
+from feedbax.runtime.graph import Graph, _nested_cycle_key, init_state_from_component
 from feedbax.runtime.model_values import MODEL_OWNERS, StateValue
 
 
@@ -69,11 +69,14 @@ def _leaf_reader(index: StateIndex, value: StateValue) -> Callable[[State, dict 
 
 
 def _bind_owner(
-    name: str, graph: Graph, authored: GraphSpec, initial: State, *, selected: frozenset[str] | None,
+    name: str, graph: Graph, authored: GraphSpec, initial: State, *,
+    selected: frozenset[str] | None, scope: tuple[str, ...] = (),
 ) -> tuple[BoundStateValue, ...]:
     component = graph.nodes[name]
     binding = graph.component_bindings[name]
-    path = pointer(("inputs", "subject", "graph", "nodes", name))
+    path = pointer(("inputs", "subject", "graph", *(
+        token for parent in scope for token in ("subgraphs", parent)
+    ), "nodes", name))
     owner = MODEL_OWNERS.get(binding.type_id)
     node = authored.nodes[name]
     if (
@@ -84,8 +87,8 @@ def _bind_owner(
     index = getattr(component, "state_index", None)
     slots = jax.tree.leaves(component, is_leaf=lambda item: isinstance(item, StateIndex))
     indices = [slot for slot in slots if isinstance(slot, StateIndex)]
-    for name in owner.configuration_slots:
-        configured = getattr(component, name, None)
+    for slot_name in owner.configuration_slots:
+        configured = getattr(component, slot_name, None)
         if not any(slot is configured for slot in indices):
             raise StateLayoutError(path, "runtime configuration slots differ from the owner declaration")
         indices = [slot for slot in indices if slot is not configured]
@@ -105,12 +108,12 @@ def _bind_owner(
 
     values = []
     for leaf in declared:
-        key = semantic_key("model", "state", (name,), leaf.symbol)
+        key = semantic_key("model", "state", (*scope, name), leaf.symbol)
         if selected is not None and key not in selected:
             continue
         read = _leaf_reader(index, leaf)
         shape = read(initial, None).shape
-        dimension = f"{name}:{leaf.axis}"
+        dimension = f"{'/'.join((*scope, name))}:{leaf.axis}"
         if leaf.axis == "xy":
             if shape != (2,):
                 raise StateLayoutError(path, f"{leaf.symbol} requires two Cartesian coordinates")
@@ -123,23 +126,40 @@ def _bind_owner(
     return tuple(values)
 
 
-def _carry_reader(target: tuple[str, str]) -> Callable[[State, dict | None], jax.Array]:
+def _carry_reader(target: tuple[str, str], scope: tuple[str, ...]) -> Callable[[State, dict | None], jax.Array]:
     def read(state: State, carry: dict | None) -> jax.Array:
         assert carry is not None
+        for parent in scope:
+            carry = carry[_nested_cycle_key(parent)]
         return carry[target]
     return read
 
 
-def _bind_carries(graph: Graph, authored: GraphSpec) -> tuple[BoundStateValue, ...]:
+def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> tuple[BoundStateValue, ...]:
     """Migrate the unique mounted legacy GRU hidden self-loop to a wire ID."""
     path = "/inputs/subject/graph/wires"
     expected = {}
+    model_delays = {}
     for wire in authored.wires:
         if wire.temporality != "recurrent":
             continue
         node = wire.target_node
         target = (node, wire.target_port)
         initializer = wire.recurrent_initializer or {}
+        if (delay := initializer.get("model_delay_id")) is not None:
+            shape = initializer.get("shape")
+            wire_id = initializer.get("model_wire_id")
+            if (
+                initializer.get("kind") != "zeros" or initializer.get("scope") != "trial"
+                or not isinstance(shape, list) or len(shape) > 1
+                or any(type(size) is not int or size < 0 for size in shape)
+                or not isinstance(wire_id, str) or not isinstance(delay, str)
+                or initializer.get("dtype") not in {"float32"}
+            ):
+                raise StateLayoutError(f"{path}/{wire.authored_id()}", "delay has no qualified raw carry layout")
+            model_delays[target] = (wire_id, delay, shape)
+            expected[target] = wire
+            continue
         if (
             (wire.source_node, wire.source_port) != (node, "hidden")
             or wire.target_port != "hidden"
@@ -163,10 +183,16 @@ def _bind_carries(graph: Graph, authored: GraphSpec) -> tuple[BoundStateValue, .
         raise StateLayoutError(path, "runtime carries differ from the authored declarations")
     return tuple(
         BoundStateValue(
-            semantic_key("model", "carry", (), "hidden", wire=f"{node}:hidden"),
-            f"{node}:unit", "1", None, _carry_reader((node, port)),
+            semantic_key("model", "carry", scope, delay, wire=wire),
+            "/".join((*scope, wire, delay)) if shape else None, "1", None, _carry_reader(target, scope),
         )
-        for node, port in expected
+        for target, (wire, delay, shape) in model_delays.items()
+    ) + tuple(
+        BoundStateValue(
+            semantic_key("model", "carry", scope, "hidden", wire=f"{node}:hidden"),
+            f"{'/'.join((*scope, node))}:unit", "1", None, _carry_reader((node, port), scope),
+        )
+        for node, port in expected if (node, port) not in model_delays
     )
 
 
@@ -174,16 +200,24 @@ def bind_raw_state(
     graph: Graph, authored: GraphSpec, *, selected: frozenset[str] | None = None,
 ) -> RawStateLayout:
     """Require one declaration for each qualified runtime state leaf and carry."""
-    if authored.subgraphs:
-        raise StateLayoutError("/inputs/subject/graph/subgraphs", "nested state owners are unavailable")
-    if graph.nodes.keys() != authored.nodes.keys() or graph.nodes.keys() != graph.component_bindings.keys():
-        raise StateLayoutError("/inputs/subject/graph/nodes", "runtime occurrences differ from declared owners")
     initial = init_state_from_component(graph)
-    values = tuple(
-        value for name in graph.nodes for value in _bind_owner(name, graph, authored, initial, selected=selected)
-    )
-    if selected is None:
-        return RawStateLayout((*values, *_bind_carries(graph, authored)))
-    if selected != {value.key for value in values}:
+
+    def bind(current: Graph, spec: GraphSpec, scope: tuple[str, ...]):
+        if current.nodes.keys() != spec.nodes.keys() or current.nodes.keys() != current.component_bindings.keys():
+            raise StateLayoutError("/inputs/subject/graph/nodes", "runtime occurrences differ from declared owners")
+        for name in current.nodes:
+            child = (spec.subgraphs or {}).get(name)
+            if isinstance(child, GraphSpec):
+                runtime = current.nodes[name]
+                if not isinstance(runtime, Graph):
+                    raise StateLayoutError("/inputs/subject/graph/nodes", "runtime composite is missing")
+                yield from bind(runtime, child, (*scope, name))
+            else:
+                yield from _bind_owner(name, current, spec, initial, selected=selected, scope=scope)
+        if selected is None:
+            yield from _bind_carries(current, spec, scope)
+
+    values = tuple(bind(graph, authored, ()))
+    if selected is not None and selected != {value.key for value in values}:
         raise StateLayoutError("/params/retention", "selected observations are unavailable")
     return RawStateLayout(values)

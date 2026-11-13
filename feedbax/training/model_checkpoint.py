@@ -31,6 +31,7 @@ from feedbax.contracts.model_checkpoint import (
     SemanticModelEncoding,
 )
 from feedbax.contracts.semantic_values import semantic_key
+from feedbax.contracts.model_occurrence import graph_leaf_specs
 from feedbax.persistence.array_container import (
     ArrayContainerError,
     decode_array_container,
@@ -94,6 +95,11 @@ def effective_model_graph(authored: GraphSpec, model: Graph) -> GraphSpec:
         },
         "input_ports": list(model.input_ports),
         "input_bindings": dict(model.input_bindings),
+        "subgraphs": {
+            name: effective_model_graph(interior, model.nodes[name])
+            if isinstance(interior, GraphSpec) else interior
+            for name, interior in (authored.subgraphs or {}).items()
+        } or None,
     })
 
 
@@ -110,11 +116,16 @@ class SemanticModelWriter:
     ) -> SemanticModelWriter | None:
         if not graph.nodes:
             return None
-        for name, node in graph.nodes.items():
+        for path, node in graph_leaf_specs(graph):
+            interior = (graph.subgraphs or {}).get(path[0]) if len(path) == 1 else None
             owner = MODEL_OWNERS.get(node.type)
+            if (
+                owner is not None and owner.fixed_configuration and node.params.get("fixed") is True
+                and node.revision in {None, owner.revision}
+            ):
+                continue
             if owner is None or not owner.checkpointable or node.revision not in {None, owner.revision}:
                 return None
-            interior = (graph.subgraphs or {}).get(name)
             if node.type != SPATIAL_OWNER and interior is None:
                 continue
             if (
@@ -230,7 +241,7 @@ class SemanticModelSlot:
             raise ModelCheckpointError("/v1/model", "missing value declarations")
         _verify_values(expected, declarations, decoded.tensors, actual)
 
-        retained = self.graph.nodes.keys()
+        retained = frozenset(path for path, _ in graph_leaf_specs(self.graph))
         overrides: Mapping[str, float] = {}
         if target is not None:
             destination, destination_declarations = _describe(
@@ -239,37 +250,47 @@ class SemanticModelSlot:
             _verify_values(destination, destination_declarations, decoded.tensors, actual)
             template, overrides = target.template, target.source_overrides
 
-        nodes = dict(template.nodes)
         applied = set()
-        for name in retained:
-            component = nodes[name]
-            binding = template.component_bindings[name]
-            values = MODEL_OWNERS[binding.type_id].values
-            source = {}
-            learned = []
-            for value in values:
-                address = semantic_key("model", "value", (name,), value.symbol)
-                if address not in decoded.tensors:
+
+        def restore_occurrences(current: Graph, scope: tuple[str, ...]) -> Graph:
+            nodes = dict(current.nodes)
+            for name, component in nodes.items():
+                path = (*scope, name)
+                if isinstance(component, Graph):
+                    nodes[name] = restore_occurrences(component, path)
                     continue
-                data = decoded.tensors[address]
-                if value.kind == "source":
-                    if address in overrides:
-                        applied.add(address)
-                    source[value.symbol] = overrides.get(address, float(data))
-                else:
-                    learned.append((value.field, jnp.asarray(data)))
-            if source:
-                component = type(component).from_config(component.configuration_values() | source)
-            if learned:
-                paths, tensors = zip(*learned, strict=True)
-                component = eqx.tree_at(
-                    lambda owner: tuple(attrgetter(path)(owner) for path in paths),
-                    component, tensors,
-                )
-            nodes[name] = component
+                if path not in retained:
+                    continue
+                binding = current.component_bindings[name]
+                source = {}
+                learned = []
+                owner = MODEL_OWNERS[binding.type_id]
+                for value in owner.values if not owner.fixed_configuration else ():
+                    address = semantic_key("model", "value", path, value.symbol)
+                    if address not in decoded.tensors:
+                        continue
+                    data = decoded.tensors[address]
+                    if value.kind == "source":
+                        if address in overrides:
+                            applied.add(address)
+                        source[value.symbol] = overrides.get(address, float(data))
+                    else:
+                        learned.append((value.field, jnp.asarray(data)))
+                if source:
+                    component = type(component).from_config(component.configuration_values() | source)
+                if learned:
+                    paths, tensors = zip(*learned, strict=True)
+                    component = eqx.tree_at(
+                        lambda owner: tuple(attrgetter(path)(owner) for path in paths),
+                        component, tensors,
+                    )
+                nodes[name] = component
+            return eqx.tree_at(lambda graph: graph.nodes, current, nodes)
+
+        restored = restore_occurrences(template, ())
         if unexpected := overrides.keys() - applied:
             raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
-        return eqx.tree_at(lambda graph: graph.nodes, template, nodes).prepare()
+        return restored.prepare()
 
 
 def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
@@ -289,30 +310,56 @@ def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
 
 
 def _describe(
-    graph: GraphSpec, model: Graph, *, retained: Set[str] | None = None,
+    graph: GraphSpec, model: Graph, *, retained: Set[tuple[str, ...]] | None = None,
 ) -> tuple[dict, dict]:
-    if model.nodes.keys() != graph.nodes.keys() or model.component_bindings.keys() != graph.nodes.keys():
-        raise ModelCheckpointError("/v1/model", "effective graph and realized owner occurrences differ")
+    def verify_occurrences(spec: GraphSpec, runtime: Graph, scope: tuple[str, ...]) -> None:
+        if runtime.nodes.keys() != spec.nodes.keys() or runtime.nodes.keys() != runtime.component_bindings.keys():
+            raise ModelCheckpointError(
+                "/v1/model/" + "/".join(scope), "effective graph and realized owner occurrences differ",
+            )
+        for name, interior in (spec.subgraphs or {}).items():
+            if isinstance(interior, GraphSpec):
+                node = runtime.nodes[name]
+                if not isinstance(node, Graph):
+                    raise ModelCheckpointError("/v1/model/" + "/".join((*scope, name)), "composite is missing")
+                verify_occurrences(interior, node, (*scope, name))
+
+    verify_occurrences(graph, model, ())
     arrays, declarations = {}, {}
+    specs = dict(graph_leaf_specs(graph))
     if retained is None:
-        retained = graph.nodes.keys()
-    if missing := retained - graph.nodes.keys():
+        retained = specs.keys()
+    if missing := retained - specs.keys():
+        path = min(missing)
         raise ModelCheckpointError(
-            semantic_key("model", "value", (), min(missing)),
+            semantic_key("model", "value", path[:-1], path[-1]),
             "retained owner has no destination",
         )
-    for name in sorted(retained):
-        component = model.nodes[name]
-        binding = model.component_bindings[name]
-        owner_path = semantic_key("model", "value", (), name)
+    for path in sorted(retained):
+        scope = model
+        for name in path[:-1]:
+            if not isinstance(child := scope.nodes.get(name), Graph):
+                raise ModelCheckpointError("/v1/model", "effective graph and realized owner occurrences differ")
+            scope = child
+        name = path[-1]
+        owner_path = semantic_key("model", "value", path[:-1], name)
+        component = scope.nodes.get(name)
+        binding = scope.component_bindings.get(name)
+        if component is None or binding is None:
+            raise ModelCheckpointError(owner_path, "effective graph and realized owner occurrences differ")
         owner = MODEL_OWNERS.get(binding.type_id)
         if (
-            owner is None or not owner.checkpointable or graph.nodes[name].type != binding.type_id
+            owner is not None and owner.fixed_configuration and binding.revision == owner.revision
+            and specs[path].type == binding.type_id and specs[path].params.get("fixed") is True
+        ):
+            continue
+        if (
+            owner is None or not owner.checkpointable or specs[path].type != binding.type_id
             or binding.revision != owner.revision
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")
         for value in owner.values:
-            path = semantic_key("model", "value", (name,), value.symbol)
+            address = semantic_key("model", "value", path, value.symbol)
             leaf = attrgetter(value.field)(component)
             if leaf is None and value.kind == "learned":
                 continue
@@ -321,9 +368,9 @@ def _describe(
             elif isinstance(leaf, jax.Array) and not leaf.weak_type:
                 representation = "jax-array"
             else:
-                raise ModelCheckpointError(path, "unsupported authoritative value representation")
-            arrays[path] = np.asarray(leaf)
-            declarations[path] = {
+                raise ModelCheckpointError(address, "unsupported authoritative value representation")
+            arrays[address] = np.asarray(leaf)
+            declarations[address] = {
                 "owner_type": binding.type_id,
                 "owner_revision": binding.revision,
                 "value_schema": f"{binding.type_id}/{value.symbol}/v1",

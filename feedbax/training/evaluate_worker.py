@@ -83,6 +83,7 @@ def _rollouts(
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.model_occurrence import graph_leaf_specs
     from feedbax.contracts.rollout import authored_variation
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.contracts.training import TrainingSpec
@@ -125,7 +126,7 @@ def _rollouts(
         and (declaration := MODEL_OWNERS.get(variant.graph.nodes[node].type)) is not None
         and declaration.scene_effector_port == port
     ]
-    if len(effector_owners) != 1 or variant.graph.subgraphs:
+    if len(effector_owners) != 1:
         raise CannotRun(
             "/inputs/subject/graph/output_bindings",
             "requires one declared root effector output and a single-clock graph",
@@ -171,11 +172,16 @@ def _rollouts(
     if root_clock is None:
         raise CannotRun("/inputs/subject/graph/output_bindings", "effector owner lacks a declared clock")
     period = getattr(graph.nodes[owner], root_clock)
-    for name, component in graph.nodes.items():
-        clock = MODEL_OWNERS[executable.resolved.graph.nodes[name].type].clock
+    for scope, node in graph_leaf_specs(executable.resolved.graph):
+        component = graph
+        for name in scope:
+            component = component.nodes[name]
+        clock = MODEL_OWNERS[node.type].clock
         if clock is not None and getattr(component, clock) != period:
             raise CannotRun(
-                json_pointer(("inputs", "subject", "graph", "nodes", name, "params", clock)),
+                json_pointer(("inputs", "subject", "graph", *(
+                    token for parent in scope[:-1] for token in ("subgraphs", parent)
+                ), "nodes", scope[-1], "params", clock)),
                 "declared owner clock differs from the root control period",
             )
     try:

@@ -18,7 +18,9 @@ from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
+from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
+from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
 from feedbax.contracts.project_inputs import (
@@ -364,7 +366,47 @@ def _encode_row(
     inputs: Mapping[str, PlannedInput],
     encoding_stamp: tuple[StepKind, str, bytes] | None,
     document_memo: RequestDocumentMemo | None,
+    model_document: str | None = None,
 ) -> _LoweredRow:
+    if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
+        from feedbax.compiler.model_document import (
+            ModelCompilationProblem, lower_model_document, model_source_address,
+        )
+        from feedbax.component_registry import ComponentRegistry
+        from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
+
+        try:
+            model = ModelDocument.model_validate(graph)
+            binding = StudioTaskBindingSpec.model_validate(payload.get("task_binding_spec") or {})
+            components = ComponentRegistry()
+            derived, binding = lower_model_document(model_document or "model", model, components, binding)
+            issues = validate_graph_connection_schema(
+                derived, "/graph", binding, component_registry=components,
+            )
+            if binding is not None:
+                issues.extend(validate_task_binding_schema(
+                    binding, derived, "/task_binding_spec", component_registry=components,
+                ))
+            if issue := next((item for item in issues if item.severity == "error"), None):
+                source = (issue.location or {}).get("path", "/graph")
+                raise ModelCompilationProblem(
+                    model_source_address(model_document or "model", derived, source), issue.message,
+                )
+            payload = payload | {
+                "graph": derived.model_dump(mode="json"),
+                "task_binding_spec": binding.model_dump(mode="json") if binding else None,
+            }
+        except ModelCompilationProblem as error:
+            return _LoweredRow(None, (ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, "payload.graph", str(error), key.step,
+                document=model_document, row=key.row, variant=key.variant,
+                model_address=error.address,
+            ),), encoding_stamp)
+        except ValueError as error:
+            return _LoweredRow(None, (ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, "payload.graph", str(error), key.step,
+                document=model_document, row=key.row, variant=key.variant,
+            ),), encoding_stamp)
     try:
         if kind == "report":
             document = ReportDocument.model_validate(payload)
@@ -765,6 +807,7 @@ class _Compiler:
                 _encode_row(
                     key, kind, payload, inputs, encoding_stamp,
                     self.work.request_documents if self.previous is not None else None,
+                    document_ids.get("payload.graph"),
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,

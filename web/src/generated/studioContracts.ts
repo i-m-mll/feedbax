@@ -3374,6 +3374,7 @@ export type StudioProjectWindowMapProblem = {
   "document": string | null;
   "element"?: string | null;
   "document_path"?: string | null;
+  "model_address"?: ModelAddress | null;
 };
 
 export type StudioProjectWindowMapRow = {
@@ -9138,6 +9139,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "document": z.union([z.string(), z.null()]),
     "element": z.union([z.string(), z.null()]).optional(),
     "document_path": z.union([z.string(), z.null()]).optional(),
+    "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 

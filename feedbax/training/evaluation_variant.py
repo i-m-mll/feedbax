@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
+from feedbax.contracts.model_occurrence import graph_leaf_specs
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
@@ -48,16 +49,21 @@ def _edit_location(
 
 
 def validate_evaluation_source(graph: GraphSpec) -> None:
-    if graph.subgraphs:
-        raise CannotRun("/inputs/subject/graph/subgraphs", "nested state owners are unavailable")
-    for name, node in graph.nodes.items():
+    for path, node in graph_leaf_specs(graph):
         declaration = MODEL_OWNERS.get(node.type)
+        if (
+            declaration is not None and declaration.fixed_configuration and node.params.get("fixed") is True
+            and node.revision in {None, declaration.revision}
+        ):
+            continue
         if (
             declaration is None or not declaration.checkpointable or declaration.states is None
             or node.revision not in {None, declaration.revision}
         ):
             raise CannotRun(
-                pointer(("inputs", "subject", "graph", "nodes", name)),
+                pointer(("inputs", "subject", "graph", *(
+                    part for owner in path[:-1] for part in ("subgraphs", owner)
+                ), "nodes", path[-1])),
                 f"owner {node.type!r} has no declared raw-state layout for this revision",
             )
 

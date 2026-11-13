@@ -165,8 +165,9 @@ def _diagnostics(
         layer = f" ({problem.layer})" if problem.layer else ""
         authored_path = f":{problem.document_path}" if problem.document_path else ""
         document = f" [documents/{problem.document}.json{authored_path}]" if problem.document else ""
+        address = f" model={problem.model_address.to_text()}" if problem.model_address else ""
         print(
-            f"{source}{layer}{document} {problem.path} [{problem.code}]: {problem.detail}",
+            f"{source}{layer}{document} {problem.path}{address} [{problem.code}]: {problem.detail}",
             file=sys.stderr,
         )
     return problems

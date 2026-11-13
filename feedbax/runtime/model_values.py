@@ -29,6 +29,7 @@ class ModelOwner:
     checkpointable: bool = True
     scene_effector_port: str | None = None
     configuration_slots: tuple[str, ...] = ()
+    fixed_configuration: bool = False
 
 
 def _learned(*values: tuple[str, str]) -> tuple[ModelValue, ...]:
@@ -66,6 +67,9 @@ MODEL_OWNERS = {
     "feedbax.Linear": ModelOwner(
         2, _learned(("kernel", "layer.weight"), ("bias", "layer.bias")), states=(),
     ),
+    "feedbax.Input": ModelOwner(1, (), states=()),
+    "feedbax.Constant": ModelOwner(1, (), states=(), checkpointable=False),
+    "feedbax.Saturation": ModelOwner(1, (), states=()),
     "feedbax.PointMass": ModelOwner(
         1,
         (
@@ -89,7 +93,9 @@ MODEL_OWNERS = {
         states=(StateValue("activation", (), "1", "muscle"),),
         clock="dt",
     ),
-    "feedbax.Scale": ModelOwner(1, _source("scale"), states=(), checkpointable=False),
+    "feedbax.Scale": ModelOwner(
+        1, _source("scale"), states=(), checkpointable=False, fixed_configuration=True,
+    ),
     "feedbax.CurlField": ModelOwner(
         2, (), states=(), checkpointable=False, configuration_slots=("params_index",),
     ),
