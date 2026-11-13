@@ -8,13 +8,14 @@ from feedbax.contracts.effective_success import (
     read_committed_success,
     read_effective_request,
     read_success_object,
+    select_bound_product,
     select_success_product,
 )
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.receipt_content import success_content_objects, tree_objects
+from feedbax.persistence.receipt_content import continuation_objects, success_content_objects, tree_objects
 
 
 class ReceiptClosure:
@@ -50,8 +51,8 @@ class ReceiptClosure:
 
     def walk(self, closure: StoreClosureRef) -> tuple[ContentObjectRef, ...]:
         objects: dict[str, ContentObjectRef] = {}
-        pending: list[tuple[ReceiptRoot, BoundMember | None]] = []
-        visited: set[tuple[str, str | None, str | None]] = set()
+        pending: list[tuple[ReceiptRoot, tuple[DecodedRequest, BoundMember] | None]] = []
+        visited: set[tuple[str, str | None, str | None, bytes | None]] = set()
 
         def add(ref: ContentObjectRef) -> None:
             if objects.setdefault(ref.sha256, ref) != ref:
@@ -67,23 +68,30 @@ class ReceiptClosure:
                     add(ref)
 
         while pending:
-            root, binding = pending.pop()
+            root, consumer = pending.pop()
             receipt = self.receipt_at(root.receipt)
             if root.product is None:
-                key = root.receipt.sha256, None, None
+                key = root.receipt.sha256, None, None, None
                 products = tuple(
                     product for group in receipt.products.values() for product in group
                 )
             else:
-                product = select_success_product(root.product, receipt)
-                if binding is not None and (
-                    binding.selection is None
-                    or product.name != binding.selection.member
-                    or product.content != binding.content
-                    or product.descriptor != binding.descriptor
-                ):
-                    raise ValueError(f"Receipt input provenance differs for {binding.key!r}")
-                key = root.receipt.sha256, root.product.role, product.name
+                if consumer is None:
+                    product = select_success_product(root.product, receipt)
+                    projection = None
+                else:
+                    request, binding = consumer
+                    product, occurrence = select_bound_product(request, root.product, receipt)
+                    if (
+                        binding.selection is None
+                        or product.name != binding.selection.member
+                        or occurrence != binding.selection.occurrence
+                        or product.content != binding.content
+                        or product.descriptor != binding.descriptor
+                    ):
+                        raise ValueError(f"Receipt input provenance differs for {binding.key!r}")
+                    projection = product.model_dump_json().encode()
+                key = root.receipt.sha256, root.product.role, product.name, projection
                 products = (product,)
             if key in visited:
                 continue
@@ -93,6 +101,9 @@ class ReceiptClosure:
                 add(ref)
             for product in products:
                 for ref in success_content_objects(self.store, product):
+                    add(ref)
+            if root.product is None and receipt.continuation is not None:
+                for ref in continuation_objects(receipt.continuation):
                     add(ref)
 
             for role, members in decoded.inputs.items():
@@ -104,7 +115,7 @@ class ReceiptClosure:
                             raise ValueError(f"Missing producer selection for {role}.{bound.key}")
                         if closure.include_ancestry:
                             pending.append(
-                                (ReceiptRoot(receipt=selection.receipt, product=reference), bound)
+                                (ReceiptRoot(receipt=selection.receipt, product=reference), (decoded, bound))
                             )
                     elif selection is not None or bound.descriptor is not None:
                         raise ValueError(f"Unexpected producer evidence for {role}.{bound.key}")

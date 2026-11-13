@@ -36,6 +36,8 @@ STUDIO_GRAPH_METHOD_PAYLOAD_ID = "feedbax.spec.training_method.studio_graph"
 STUDIO_GRAPH_METHOD_PAYLOAD_VERSION = f"{STUDIO_GRAPH_METHOD_PAYLOAD_ID}.v1"
 STUDIO_INDEPENDENT_KEY_SCHEDULE = "independent_v1"
 
+StudioTrainSlot = Literal["model", "optimizer", "prng", "batch_counter"]
+
 
 class StudioTrainContinuation(StrictModel):
     """Explicit custody and clock policy for a stateful Studio successor."""
@@ -46,6 +48,15 @@ class StudioTrainContinuation(StrictModel):
     schedule: Literal["continue", "restart"]
     rng: Literal["carry", "reset"]
     cursor: Literal["carry"]
+
+    @property
+    def source_slots(self) -> frozenset[StudioTrainSlot]:
+        slots: set[StudioTrainSlot] = {"model", "batch_counter"}
+        if self.optimizer == "preserve":
+            slots.add("optimizer")
+        if self.rng == "carry":
+            slots.add("prng")
+        return frozenset(slots)
 
 
 class StudioGraphMethodPayload(StrictModel):

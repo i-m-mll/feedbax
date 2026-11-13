@@ -14,7 +14,8 @@ from feedbax.contracts.artifact_custody import (
     ContentTreeRef,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
+from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
+from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
     ContentRef,
@@ -28,6 +29,8 @@ from feedbax.contracts.request_refs import (
     RequestId,
     Sha256,
 )
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
+from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 
 
 INDEX_REF = "proof/effective-successes-v1"
@@ -51,6 +54,9 @@ type Products = dict[Name, Annotated[tuple[Product, ...], Field(min_length=1)]]
 class Selection(ReferenceValue):
     receipt: ContentObjectRef
     member: Name
+    occurrence: CheckpointOccurrenceRef | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 class BoundMember(EffectiveInputMember):
@@ -70,9 +76,25 @@ class Success(ReferenceValue):
     inputs: Bindings
     products: Products = Field(min_length=1)
     supersedes: ContentObjectRef | None
+    continuation: ContinuationOccurrence | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    recovery: CheckpointOccurrenceRef | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def validate_products(self) -> Success:
+        if self.continuation is not None and (
+            not self.request.id.startswith("train:")
+            or len(self.products.get("checkpoint", ())) != 1
+            or self.products["checkpoint"][0].name != "model"
+            or self.products["checkpoint"][0].content.media_type != MODEL_TREE_MEDIA_TYPE
+            or not self.products["checkpoint"][0].content.tree
+        ):
+            raise ValueError("Continuation evidence requires one Train checkpoint occurrence")
+        if self.recovery is not None and not self.request.id.startswith("train:"):
+            raise ValueError("Only Train successes can record checkpoint recovery")
         for role, members in self.products.items():
             if len({member.name for member in members}) != len(members):
                 raise ValueError(f"Repeated product member in {role!r}")
@@ -201,3 +223,31 @@ def select_success_product(reference: ProductRef, receipt: Success) -> Product:
             raise ValueError(
                 f"Unsupported product selector {selector.kind!r} for {reference.role!r}"
             )
+
+
+def select_bound_product(
+    request: DecodedRequest,
+    reference: ProductRef,
+    receipt: Success,
+) -> tuple[Product, CheckpointOccurrenceRef | None]:
+    """Project the selected occurrence according to the consuming request."""
+    product = select_success_product(reference, receipt)
+    spec = request.spec
+    if (
+        reference.role != "checkpoint"
+        or not isinstance(spec, (TrainingRequestSpec, DocumentTrainingRequestSpec))
+        or spec.method_ref != STUDIO_GRAPH_METHOD
+    ):
+        return product, None
+    if not isinstance(spec.method_payload.payload.get("checkpoint_initialization"), dict):
+        occurrence = receipt.continuation
+        return product, occurrence.provenance if occurrence is not None and product.name == "model" else None
+    policy = StudioGraphMethodPayload.model_validate(spec.method_payload.payload).continuation
+    assert policy is not None
+    occurrence = receipt.continuation
+    if occurrence is None or product.name != "model":
+        raise ValueError("Selected checkpoint has no typed continuation occurrence")
+    if occurrence.clock.completed_batches != policy.progress.source_completed_batches:
+        raise ValueError("Selected checkpoint differs from the authored continuation boundary")
+    encoding = occurrence.project(SemanticModelEncoding.model_validate(product.descriptor), policy)
+    return product.model_copy(update={"descriptor": encoding.model_dump(mode="json")}), occurrence.provenance

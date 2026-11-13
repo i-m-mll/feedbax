@@ -531,12 +531,13 @@ def bind_semantic_checkpoint_fork_step(
         source_values: Mapping[str, Any], _parameters: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         names = {slot.slot for slot in source_structure.slots}
+        target_names = {slot.slot for slot in target_structure.slots}
         try:
             result = derive_and_apply_semantic_checkpoint_transform(
                 source_structure=source_structure,
                 target_structure=target_structure,
                 source_values={name: source_values[name] for name in names},
-                target_values={name: target_values[name] for name in names},
+                target_values={name: target_values[name] for name in target_names},
                 added_axes=added_axes,
                 optimizer_policy=parameters["optimizer_policy"],
                 learning_rate_schedule_policy=parameters["learning_rate_schedule_policy"],
@@ -547,7 +548,7 @@ def bind_semantic_checkpoint_fork_step(
         results.append(result)
         materialized = dict(source_values)
         for name, value in result.values.items():
-            if name in rebuild_slots:
+            if name in rebuild_slots or name not in source_values:
                 materialized[name] = value
                 continue
             source_leaves, source_treedef = jt.flatten(source_values[name])
