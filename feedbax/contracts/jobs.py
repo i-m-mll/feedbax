@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import ConfigDict, Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
@@ -231,6 +231,13 @@ class JobOutcome(StrictModel):
     exit: int | None = None
 
 
+class StudioSubmissionActor(StrictModel):
+    model_config = ConfigDict(frozen=True)
+
+    client: Literal["studio", "cli"]
+    label: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class StudioActivityJob(StrictModel):
     job_id: str
     project_id: str
@@ -251,6 +258,7 @@ class StudioActivityJob(StrictModel):
     outcome: JobOutcome | None = None
     earlier_definition: bool = False
     seen: bool = False
+    actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioLocalSession(StrictModel):
@@ -277,6 +285,7 @@ class StudioJobSubmission(StrictModel):
     token: str
     project_id: str
     items: list[StudioSubmissionItem]
+    actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioJobStopRequest(StrictModel):

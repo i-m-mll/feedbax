@@ -1,14 +1,5 @@
 #!/usr/bin/env python
-"""
-Unified entrypoint.
-
-Usage:
-  run train    [<args>...]     # reports the retired training CLI entrypoint
-  run analysis [<args>...]     # forwards to feedbax.bin.analysis:main()
-
-All arguments after the subcommand are passed through unchanged to the target
-script's own argparse logic, so existing flags continue to work.
-"""
+"""Admit saved project runs or dispatch an explicit legacy subcommand."""
 
 import argparse
 import asyncio
@@ -17,8 +8,10 @@ import os
 import runpy
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from types import ModuleType
 from typing import Optional, Sequence
+from uuid import uuid4
 
 from ._setup import setup
 from feedbax.plugins.bootstrap import BootstrapState
@@ -86,7 +79,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[str, list[str]]:
     return ns.command, ns.rest
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _run_legacy(argv: Sequence[str]) -> int:
     cmd, sub_argv = parse_args(argv)
     bootstrap_state = asyncio.run(compose_application())
     if cmd not in ("analysis", "train"):
@@ -105,6 +98,74 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     # Import and run the chosen script
     return _dispatch(cmd, sub_argv, bootstrap_state)
+
+
+def _run_saved_project(argv: Sequence[str]) -> int:
+    from feedbax.contracts.jobs import StudioSubmissionActor
+    from feedbax.contracts.project_io import ProjectReadError, find_text_project
+    from feedbax.host import HostClient, HostError
+    from feedbax.jobs import JobConflict, JobService, evaluation_candidate_configured
+    from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+
+    parser = argparse.ArgumentParser(
+        prog="feedbax run",
+        description="Submit saved project rows for local admission and print their dispositions.",
+    )
+    parser.add_argument(
+        "project_dir", nargs="?", type=Path, default=Path("."),
+        help="Project directory (default: current directory). Use . before selectors for the current project.",
+    )
+    parser.add_argument("runs", nargs="*", metavar="step[@row]")
+    parser.add_argument(
+        "--label", default=os.environ.get("FEEDBAX_ACTOR_LABEL"),
+        help="Label the submission (default: FEEDBAX_ACTOR_LABEL).",
+    )
+    args = parser.parse_intermixed_args(argv)
+    try:
+        root = find_text_project(args.project_dir)
+        registries = asyncio.run(compose_application()).bundle
+        folders = ProjectFolderService(
+            root.parent, operations=registries.operations, components=registries.components,
+            functions=registries.expression_functions, python_tasks=registries.python_tasks,
+        )
+        reviewed = folders.read_plan(root.name, revision=None)
+        if reviewed.plan.diagnostics:
+            from feedbax.bin.project_plan import _diagnostics
+
+            _diagnostics(reviewed.plan, None)
+            return 2
+        enabled = evaluation_candidate_configured()
+        keys = [run.key for run in reviewed.plan.runs]
+        selected = dict.fromkeys(keys) if not args.runs else {}
+        for selector in args.runs:
+            step, separator, row = selector.partition("@")
+            matches = [
+                key for key in keys
+                if key.step == step and (not separator or key.row == row)
+            ]
+            if not matches:
+                raise JobConflict(f"No runnable saved rows match {selector!r}.")
+            selected.update(dict.fromkeys(matches))
+        jobs = JobService(HostClient(), registries, enable_evaluation_candidate=enabled)
+        submission = jobs.admit_plan(
+            folders, reviewed, run_keys=tuple(selected),
+            token=uuid4().hex, actor=StudioSubmissionActor(client="cli", label=args.label),
+        )
+    except (HostError, JobConflict, OSError, ProjectFolderInvalid, ProjectReadError) as error:
+        print(f"feedbax run: {error}", file=sys.stderr)
+        return 2
+    print(f"Submission {submission.id}")
+    for item in submission.items:
+        detail = item.job_id or item.reason or ""
+        print(f"{item.run_key} {item.disposition} {detail}".rstrip())
+    return int(any(item.disposition == "rejected" for item in submission.items))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in {"train", "analysis"}:
+        return _run_legacy(args)
+    return _run_saved_project(args)
 
 
 if __name__ == "__main__":

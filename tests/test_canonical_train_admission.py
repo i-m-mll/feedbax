@@ -14,6 +14,7 @@ import pytest
 
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
+from feedbax.contracts.jobs import StudioSubmissionActor
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import EncodedRequest, decode_request
@@ -382,7 +383,8 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert source_input.producer == prefix
 
     host.policy(compute=1)
-    submitted = jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token="chain")
+    actor = StudioSubmissionActor(client="cli", label="original chain")
+    submitted = jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token="chain", actor=actor)
     child_item, parent_item = submitted.items
     assert parent_item.disposition == child_item.disposition == "admitted"
     prefix_id, child_id = parent_item.job_id, child_item.job_id
@@ -401,6 +403,9 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     restart(host)
     assert jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token="chain") == submitted
     prefix_resume = jobs.resume(prefix_id, token="resume-prefix")
+    assert prefix_resume.actor == StudioSubmissionActor(client="studio")
+    attempts = {job.job_id: job for job in jobs.jobs(project=project).jobs}
+    assert attempts[prefix_id].actor == actor
     succeeded = wait_until(lambda: job_row(host, prefix_resume.job_id, "succeeded"), timeout=22)
     producer = succeeded["outcome"]["completion"]
     verify_bound_training_completion(producer)

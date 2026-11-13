@@ -33,6 +33,11 @@ export interface JobReceipt {
   manifest_sha256: string;
 }
 
+export interface StudioSubmissionActor {
+  client: "studio" | "cli";
+  label?: string | null;
+}
+
 export interface StudioActivityJob {
   job_id: string;
   project_id: string;
@@ -53,6 +58,7 @@ export interface StudioActivityJob {
   outcome?: JobOutcome | null;
   earlier_definition?: boolean;
   seen?: boolean;
+  actor?: StudioSubmissionActor | null;
 }
 
 export interface StudioEventReset {
@@ -107,6 +113,7 @@ export interface StudioJobSubmission {
   token: string;
   project_id: string;
   items: StudioSubmissionItem[];
+  actor?: StudioSubmissionActor | null;
 }
 
 export interface StudioSavedEvaluationReplayRequest {
@@ -4347,6 +4354,15 @@ export const JobReceiptSchema: z.ZodType<JobReceipt> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<JobReceipt>;
 
+export const StudioSubmissionActorSchema: z.ZodType<StudioSubmissionActor> = z.lazy(() =>
+  z
+    .object({
+      "client": z.union([z.literal("studio"), z.literal("cli")]),
+      "label": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSubmissionActor>;
+
 export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =>
   z
     .object({
@@ -4369,6 +4385,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "outcome": JobOutcomeSchema.nullable().optional(),
       "earlier_definition": z.boolean().optional(),
       "seen": z.boolean().optional(),
+      "actor": StudioSubmissionActorSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioActivityJob>;
@@ -4459,6 +4476,7 @@ export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(
       "token": z.string(),
       "project_id": z.string(),
       "items": z.array(StudioSubmissionItemSchema),
+      "actor": StudioSubmissionActorSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmission>;
@@ -10931,6 +10949,7 @@ export const contractSchemas = {
   JobOutcome: JobOutcomeSchema,
   JobProgress: JobProgressSchema,
   JobReceipt: JobReceiptSchema,
+  StudioSubmissionActor: StudioSubmissionActorSchema,
   StudioActivityJob: StudioActivityJobSchema,
   StudioEventReset: StudioEventResetSchema,
   StudioEventWatermark: StudioEventWatermarkSchema,
@@ -11066,6 +11085,7 @@ export interface ContractTypeMap {
   JobOutcome: JobOutcome;
   JobProgress: JobProgress;
   JobReceipt: JobReceipt;
+  StudioSubmissionActor: StudioSubmissionActor;
   StudioActivityJob: StudioActivityJob;
   StudioEventReset: StudioEventReset;
   StudioEventWatermark: StudioEventWatermark;

@@ -51,7 +51,7 @@ DELEGATED_COMMANDS: tuple[DelegatedCommand, ...] = (
         "run",
         "feedbax.bin.run",
         "main",
-        "Run an experiment package's training or analysis entry point.",
+        "Admit saved project runs.",
     ),
     DelegatedCommand(
         "analysis",
