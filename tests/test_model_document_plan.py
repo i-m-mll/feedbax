@@ -308,10 +308,10 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     owner = {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "rnn"}}
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        def prepare(label, text):
+        def prepare(label, text, row="default", *, files=False):
             snapshot = client.get(url).json()
             body = {"revision": snapshot["revision"], "owner": owner, "lit_steps": ["train"],
-                    "run": {"variant": "default", "step": "train", "row": "default"}}
+                    "run": {"variant": "default", "step": "train", "row": row}}
             response = client.post(url + "/model/fields", json=body)
             assert response.status_code == 200, response.text
             field = next(item for item in response.json()["fields"] if item["label"] == label)
@@ -321,6 +321,10 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
             assert result.status_code == 200, result.text
             recipe = result.json()
             assert not recipe["problems"], recipe
+            if files:
+                changed = client.patch(url, json={"revision": snapshot["revision"], "files": recipe["files"]})
+                assert changed.status_code == 200, changed.text
+                return field, changed.json()
             changed = client.post(url + "/model/edit", json={
                 "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
                 "document": "reach-model", "command": recipe["command"],
@@ -335,6 +339,24 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         field, value = prepare("Hidden size", "8")
         assert field["text"] == "4"
         assert value == 8
+        field, snapshot = prepare("Tau", "linspace(20 ms, 40 ms, 3)", files=True)
+        assert field["text"] == "0.03 s"
+        axis = snapshot["project"]["steps"]["train"]["sweep"]["axes"]["tau"]
+        assert axis["path"].endswith(".tau.value")
+        assert axis["range"] == {"start": 0.02, "stop": 0.04, "count": 3}
+        folders = ProjectFolderService(tmp_path)
+        revision = folders.read("duration").revision
+        keys = tuple(row.key for row in folders.read_plan("duration", revision=revision).plan.rows if row.key.step == "train")
+        definitions = folders.read_plan("duration", revision=revision, source_runs=keys).plan.selected_definitions
+        assert [item.payload["graph"]["interior"]["components"]["rnn"]["fields"]["tau"]
+                for item in definitions.values()] == [
+            {"kind": "literal", "value": value, "unit": "s"} for value in (0.02, 0.03, 0.04)
+        ]
+        _, snapshot = prepare("Hidden size", "sample(choice(8, 12), 4)", keys[0].row, files=True)
+        sampled = snapshot["project"]["steps"]["train"]["sweep"]["axes"]["hidden-size"]
+        assert len(sampled["draws"]) == 4
+        assert all(type(value) is int and value in (8, 12) for value in sampled["draws"].values())
+        assert sampled["sampler"]["distribution"]["family"] == "choice"
 
 
 def _group_reaching_pipeline(raw, registry):

@@ -42,6 +42,11 @@ class NumericField:
     def number(self, node: object, period: float | None) -> int | float:
         if not isinstance(node, LiteralValue) or type(node.value) not in (int, float):
             raise ValueError(f"{self.label} requires a numeric Value in this editor.")
+        if self.duration:
+            duration = self.duration_value(node)
+            if duration.unit != self.unit:
+                raise ValueError(f"{self.label} sweep values must use {self.unit}. Set the field's unit first.")
+            return duration.value
         value = node.value
         if node.unit == "st":
             if period is None:
@@ -53,9 +58,7 @@ class NumericField:
             raise ValueError(f"{self.label} requires a finite representable number.")
         return self.validate(value)
 
-    def value_edit(self, node: object, period: float | None) -> int | float | LiteralValue:
-        if not self.duration:
-            return self.number(node, period)
+    def duration_value(self, node: object) -> LiteralValue:
         if not isinstance(node, LiteralValue) or type(node.value) not in (int, float):
             raise ValueError(f"{self.label} requires a duration.")
         unit = node.unit or self.unit
@@ -102,6 +105,20 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
     if value.count > DEFAULT_SWEEP_LIMIT:
         raise ValueError(f"A sweep can hold at most {DEFAULT_SWEEP_LIMIT} values.")
     draw = value.draw.model_copy(update={"per": "run"})
+    if field.duration:
+        # A kept sample's numeric patches must be in the field's authored unit.
+        # Compile step-valued draws with a unit step to avoid a nominal-period conversion.
+        period = 1.0 if field.unit == "st" else None
+
+        def with_saved_unit(node):
+            if isinstance(node, LiteralValue):
+                literal = field.duration_value(node)
+                if literal.unit != field.unit:
+                    raise ValueError(f"{field.label} sample bounds must use {field.unit}.")
+                return literal
+            raise ValueError(f"{field.label} sample bounds must be literal durations.")
+
+        draw = draw.model_copy(update={"args": tuple(with_saved_unit(arg) for arg in draw.args)})
     compiled = compile_expression(
         draw, field.site.model_copy(update={"structural": False}), functions, field_address=field.key,
         period_seconds=period, root_draw_key=True,
@@ -153,7 +170,7 @@ def project_numeric_field[View: StudioFieldView](
         except ValueError:
             view = view.model_copy(update={"can_list": False})
     return view_type(
-        **address, label=field.label, text=print_field(shown, field.site),
+        **address, label=field.label, text=print_field(shown, field.site), unit=field.unit,
         effective=print_field(field.literal(effective), field.site)
         if type(effective) in (int, float) and effective != field.value else None,
         site=site, sweep=view, selected_value=coordinate.value_id if coordinate else None,
@@ -226,11 +243,6 @@ def _prepare(
         kinds = ", ".join(kind.value.title() for kind in project_site(field.site, functions).kinds)
         return tuple(problem.model_copy(update={"reason": f"{field.label} takes {kinds}. {problem.reason}"}) for problem in parsed)
     value = parsed.value
-    if field.duration:
-        if rows:
-            raise ValueError("Select the Train step to edit this duration.")
-        return field.value_edit(value, period)
-
     def number(item: object) -> int | float:
         return field.number(item, period)
 
@@ -262,10 +274,14 @@ def _prepare(
                 assert member is not None and type(member.value) in (float, int)
                 field.validate(member.value)
             return owner.write_axis(generated)
+        if field.duration and value.draw.family not in {"uniform", "loguniform", "normal", "choice", "truncexp"}:
+            raise ValueError("Choose a draw with scalar duration parameters.")
         seed = edit.seed if edit.seed is not None else previous.sampler.seed if isinstance(previous, SampledAxis) else 0
         return owner.write_axis(_sample_axis(value, field, functions, period, seed, path))
     if covered:
         raise ValueError("Choose Value from the kind menu to keep one sweep member.")
+    if field.duration and not rows:
+        return field.duration_value(value)
     numeric = number(value)
     if not rows:
         return numeric

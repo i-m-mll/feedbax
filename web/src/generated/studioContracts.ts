@@ -756,6 +756,7 @@ export interface StudioFieldView {
   label: string;
   text: string;
   effective?: string | null;
+  unit?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -768,6 +769,7 @@ export interface ModelFieldView {
   label: string;
   text: string;
   effective?: string | null;
+  unit?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -781,6 +783,7 @@ export interface TrainFieldView {
   label: string;
   text: string;
   effective?: string | null;
+  unit?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -5399,6 +5402,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -5415,6 +5419,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -5432,6 +5437,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),

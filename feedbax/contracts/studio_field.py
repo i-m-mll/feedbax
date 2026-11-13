@@ -75,6 +75,7 @@ class StudioFieldView(StrictModel):
     label: str
     text: str
     effective: str | None = None
+    unit: str | None = None
     site: SiteProjection
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None
     selected_value: ProjectName | None = None

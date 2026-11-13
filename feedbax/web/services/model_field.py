@@ -27,10 +27,11 @@ class _Field:
     address: ModelAddress
     numeric: NumericField
     value_only: bool = False
+    magnitude: tuple[str, ...] | None = None
 
     @property
     def path(self) -> tuple[str, ...]:
-        return self.address.stored_path()
+        return self.magnitude if self.magnitude is not None else self.address.stored_path()
 
     def document_edit(self, value: int | float) -> SetProjectValue:
         return SetProjectValue(
@@ -45,13 +46,16 @@ def _address(owner: ModelAddress, *path: str) -> ModelAddress:
     )
 
 
-def _duration(owner: ModelAddress, label: str, path: tuple[str, ...], value: int | float, unit: str) -> _Field:
+def _duration(
+    owner: ModelAddress, label: str, path: tuple[str, ...], value: int | float, unit: str,
+    *, stored: bool = False, literal: bool = False,
+) -> _Field:
     address = _address(owner, *path)
     return _Field(address, NumericField(
         address.stored_path(), label, value,
         Site(expected=ValueType(base=ValueBase.REAL, dimensions=TIME), finest=Level.RUN, structural=True),
-        False, _positive, unit, duration=True,
-    ), value_only=True)
+        stored, _positive, unit, duration=True,
+    ), value_only=not stored, magnitude=(*address.stored_path(), "value") if literal else None)
 
 
 def _positive(value: int | float) -> int | float:
@@ -152,10 +156,10 @@ def _fields(model: ModelDocument, owner: ModelAddress, components: ComponentRegi
         value = component.fields.get(name, defaults.get(name))
         if component.type == "feedbax.VanillaRNN" and name == "tau":
             if type(value) in (int, float):
-                yield _duration(owner, "Tau", ("fields", "tau"), value, "st")
+                yield _duration(owner, "Tau", ("fields", "tau"), value, "st", stored=name in component.fields)
             elif isinstance(value, dict) and value.get("kind") == "literal" and value.get("unit") in ("st", "s"):
                 if type(magnitude := value.get("value")) in (int, float):
-                    yield _duration(owner, "Tau", ("fields", "tau"), magnitude, value["unit"])
+                    yield _duration(owner, "Tau", ("fields", "tau"), magnitude, value["unit"], stored=True, literal=True)
             continue
         if base is None or type(value) not in (int, float):
             continue
@@ -264,6 +268,8 @@ def model_fields(
             if result.unit == "st" and result.value != int(result.value):
                 return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason="Delay in steps must be a whole number.")])
             value = result.model_dump(mode="json", exclude={"kind"})
+        elif result.unit == "st" and field.numeric.unit == "st" and field.magnitude is None and field.numeric.stored:
+            value = result.value
         else:
             value = result.model_dump(mode="json")
     return ModelFieldResponse(command=ModelEditCommand(operation=SetField(op="set_field", address=field.address, value=value)))

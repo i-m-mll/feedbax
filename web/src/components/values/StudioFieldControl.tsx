@@ -35,6 +35,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
   const range = sweep?.kind === 'range' ? sweep.rule : undefined;
+  const rangeUnit = field.unit ?? '';
   const sampler = sweep?.kind === 'sampler' ? sweep.rule : undefined;
   const authored = list ? list.values.map(({ value }) => value).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
@@ -76,7 +77,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
   function updateRange(name: 'start' | 'stop' | 'count' | 'scale', value: string) {
     if (!range) return;
     const next = { ...range, [name]: value };
-    void submit({ kind: 'text', text: `${next.scale === 'log' ? 'geomspace' : 'linspace'}(${next.start}, ${next.stop}, ${next.count})` });
+    void submit({ kind: 'text', text: `${next.scale === 'log' ? 'geomspace' : 'linspace'}(${next.start} ${rangeUnit}, ${next.stop} ${rangeUnit}, ${next.count})` });
   }
 
   return <section className="grid min-w-0 gap-1" aria-label={`${label} field`}>
