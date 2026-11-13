@@ -382,7 +382,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await runs.focus();
   const edit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  await drawer.getByRole('textbox', { name: 'N Batches' }).fill('4');
+  const batches = drawer.getByRole('textbox', { name: 'N Batches', exact: true });
+  await batches.fill('4');
+  await batches.press('Enter');
   await page.getByRole('tabpanel', { name: 'Scene', exact: true }).focus();
   const acknowledged = await edit;
   expect(acknowledged.ok(), await acknowledged.text()).toBe(true);
