@@ -76,7 +76,11 @@ from feedbax.contracts.request_refs import (
     RequestId,
     RequestKind,
 )
-from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import (
+    DocumentTrainingRequestSpec,
+    ReportRequestSpec,
+    TrainingRequestSpec,
+)
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
@@ -428,7 +432,6 @@ def _encode_row(
                 ".".join(("payload.trial_documents", *map(str, problem.path))),
                 problem.reason, key.step, row=key.row, variant=key.variant,
             ) for problem in paired), encoding_stamp)
-        payload = {"graph": None, "task": None, "objective": None} | payload
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
         from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
@@ -496,6 +499,8 @@ def _encode_row(
                     encoding_stamp,
                 )
             spec = ReportRequestSpec(report_type=None, document=document)
+        elif document_train:
+            spec = DocumentTrainingRequestSpec.model_validate(payload)
         else:
             spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         encoded = request_identity.encode_request(
@@ -956,7 +961,7 @@ class _Compiler:
             train = request_identity.decode_request(
                 self.requests[reference.request_id], self.documents.__getitem__,
             ).spec
-            if not isinstance(train, TrainingRequestSpec):
+            if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
                 raise ValueError("Attachment differences require a Train request")
             components = self.components or _builtin_model_registry()
             documents = train.trial_documents
@@ -969,6 +974,7 @@ class _Compiler:
                 base_graph = lower_model_document(document, model, components).graph
                 base_task = documents.task
             else:
+                assert isinstance(train, TrainingRequestSpec)
                 if model_source is None:
                     raise ValueError("Attachment differences need a saved Model document")
                 document = model_source.document
@@ -988,7 +994,8 @@ class _Compiler:
             variation = (*prior, *derived)
             effective = resolve_evaluation_variant(base_graph, base_task, variation)
             issues = validate_graph_connection_schema(
-                effective.graph, "/graph", train.task_binding_spec, component_registry=components,
+                effective.graph, "/graph", train.task_binding_spec if documents is None else None,
+                component_registry=components,
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
                 issue_path = (issue.location or {}).get("path", "/graph")

@@ -13,7 +13,7 @@ from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, Content
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import LastMember, ProductRef
-from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
@@ -23,6 +23,7 @@ from feedbax.contracts.studio_training import (
 )
 from feedbax.contracts.training import (
     RiskAggregationSpec,
+    TrainingConfig,
     TrainingProgramRegistry,
     TrainingRunSpec,
     WorkerExecutionSpec,
@@ -57,9 +58,11 @@ class BoundStudioTrainingJobInput(StudioTrainingJobInput):
 
 def _decode_train(
     request_id: str, data: bytes, read_document: Callable[[str], bytes]
-) -> tuple[TrainingRequestSpec, ProductRef | None]:
+) -> tuple[TrainingRequestSpec | DocumentTrainingRequestSpec, ProductRef | None]:
     decoded = decode_request(data, read_document)
-    if decoded.id != request_id or not isinstance(decoded.spec, TrainingRequestSpec):
+    if decoded.id != request_id or not isinstance(
+        decoded.spec, (TrainingRequestSpec, DocumentTrainingRequestSpec)
+    ):
         raise ValueError("Training launch does not match its canonical Train request.")
     checkpoint = None
     if decoded.inputs:
@@ -88,7 +91,10 @@ def _decode_train(
 
 
 def lower_canonical_train(
-    request: TrainingRequestSpec, execution: TrainingProgramRegistry | WorkerExecutionSpec, *, registries=None,
+    request: TrainingRequestSpec | DocumentTrainingRequestSpec,
+    execution: TrainingProgramRegistry | WorkerExecutionSpec,
+    *,
+    registries=None,
 ) -> TrainingRunSpec:
     """Project one authored request, using registered or already bound worker declarations."""
     if request.method_ref != STUDIO_GRAPH_METHOD:
@@ -129,19 +135,30 @@ def lower_canonical_train(
         payload = payload.model_copy(update={"payload": raw | {"seed": request.seed}})
     method = StudioGraphMethodPayload.model_validate(payload.payload)
     method.require_supported_launch(resume=False)
-    config = request.training_config
+    authored_config = request.training_config
     continuation = method.continuation.progress if method.continuation is not None else None
     batches = continuation.additional_batches if continuation is not None else method.target_total
-    if config.n_batches != batches:
+    if authored_config.n_batches != batches:
         raise ValueError("/training_config/n_batches: does not match the method target")
-    if config.n_reach_steps <= 0 or config.n_reach_steps != paired.execution.task.n_steps:
+    if authored_config.n_reach_steps <= 0 or authored_config.n_reach_steps != paired.execution.task.n_steps:
         raise ValueError("/training_config/n_reach_steps: does not match the authored task horizon")
-    if config.batch_size <= 0 or config.snapshot_interval <= 0:
+    if authored_config.batch_size <= 0 or authored_config.snapshot_interval <= 0:
         raise ValueError("/training_config: batch size and snapshot interval must be positive")
     schedule = method.optimizer.lr_schedule
     rate = schedule.learning_rate_0 if schedule is not None else method.optimizer.params.get("learning_rate")
-    if type(rate) not in (float, int) or not isfinite(rate) or config.learning_rate != rate:
-        raise ValueError("/training_config/learning_rate: does not match the finite method rate")
+    if isinstance(authored_config, TrainingConfig):
+        if type(rate) not in (float, int) or not isfinite(rate) or authored_config.learning_rate != rate:
+            raise ValueError("/training_config/learning_rate: does not match the finite method rate")
+        config = authored_config
+    else:
+        if type(rate) not in (float, int) or not isfinite(rate) or rate <= 0:
+            path = "lr_schedule/learning_rate_0" if schedule is not None else "params/learning_rate"
+            raise ValueError(f"/method_payload/payload/optimizer/{path}: requires a finite positive rate")
+        if schedule is not None and "learning_rate" in method.optimizer.params:
+            raise ValueError(
+                "/method_payload/payload/optimizer/params/learning_rate: the schedule owns the rate"
+            )
+        config = TrainingConfig(**authored_config.model_dump(), learning_rate=rate)
     if isinstance(execution, TrainingProgramRegistry):
         resolved = execution.resolve_execution(request.method_ref, payload)
         contract, phase = resolved.contract, resolved.effective_phase

@@ -1,5 +1,7 @@
 """The document pair uses the native update and fixed validation scorer."""
 
+import json
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -14,8 +16,10 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.contracts.project_plan import PlanRequests, compile_project
+from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.expression_builtins import register_builtins
 from feedbax.expression_registry import FunctionRegistry
@@ -168,10 +172,81 @@ def test_plan_round_trips_the_authored_task_and_objective(authored):
     request_id, data = next(iter(plan.requests.items()))
     decoded = decode_request(data, plan.documents.__getitem__)
     assert decoded.id == request_id
-    assert decoded.spec.graph is decoded.spec.task is decoded.spec.objective is None
+    assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
     assert decoded.spec.trial_documents.task == task
     assert decoded.spec.trial_documents.objective == objective
     assert encode_request(decoded.spec, decoded.inputs).data == data
+
+
+def test_document_learning_rate_sweep_projects_only_after_expansion(authored):
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.studio.canonical_train import lower_canonical_train
+
+    raw = document_project(authored)
+    raw["steps"]["train"]["sweep"] = {"axes": {"rate": {
+        "path": "method_payload.payload.optimizer.params.learning_rate",
+        "range": {"start": 1e-4, "stop": 1e-2, "count": 3, "scale": "log"},
+    }}}
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    assert len(plan.requests) == len(plan.runs) == 3
+    reviewed = PlanRequests.from_plan(plan)
+    restored, _ = load_plan_requests(dump_plan_requests(reviewed, None))
+    assert restored.requests == reviewed.requests
+    assert restored.documents == reviewed.documents
+
+    registry = new_application_registry_bundle()
+    rates = []
+    for run in plan.runs:
+        data = plan.requests[run.request_id]
+        payload = json.loads(data)["spec"]
+        assert "learning_rate" not in payload["training_config"]
+        decoded = decode_request(data, plan.documents.__getitem__)
+        assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
+        optimizer = decoded.spec.method_payload.payload["optimizer"]
+        rate = optimizer["params"]["learning_rate"]
+        assert isinstance(rate, float)
+        assert encode_request(decoded.spec, decoded.inputs).data == data
+        spec = lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
+        assert spec.training_config.learning_rate == rate
+        rates.append(rate)
+    np.testing.assert_allclose(rates, [0.0001, 0.001, 0.01])
+
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["learning_rate"] = 0.004
+    refused = compile_project(Project.model_validate(raw))
+    assert not refused.runs
+    assert any(
+        problem.path == "payload.training_config.learning_rate" for problem in refused.diagnostics
+    )
+
+
+def test_previous_document_train_bytes_and_mirror_are_preserved(authored):
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.studio.canonical_train import lower_canonical_train
+
+    raw = document_project(authored)
+    plan = compile_project(Project.model_validate(raw))
+    data = next(iter(plan.requests.values()))
+    managed = decode_request(data, plan.documents.__getitem__).spec
+    assert isinstance(managed, DocumentTrainingRequestSpec)
+    previous_payload = managed.model_dump(mode="json") | {
+        "graph": None, "task": None, "objective": None,
+    }
+    previous_payload["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] = 0.004
+    previous_payload["training_config"]["learning_rate"] = 0.004
+    previous = TrainingRequestSpec.model_validate(previous_payload)
+    encoded = encode_request(previous, {})
+    assert encoded.id == "train:da9a620135a874b2e33809b91c3d704c527dd1e91db0bcd0575cf19bdeb2a9e6"
+    decoded = decode_request(encoded.data, encoded.documents.__getitem__)
+    assert isinstance(decoded.spec, TrainingRequestSpec)
+    assert encode_request(decoded.spec, decoded.inputs) == encoded
+
+    registry = new_application_registry_bundle()
+    restored = lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
+    assert restored.training_config.learning_rate == 0.004
+    decoded.spec.training_config.learning_rate = 0.005
+    with pytest.raises(ValueError, match="/training_config/learning_rate"):
+        lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
 
 
 def document_project(authored, *, evaluation=False):
@@ -203,8 +278,7 @@ def document_project(authored, *, evaluation=False):
         "objective": {"document": "objective"},
         "input_overrides": {"reach_target": "target_pos"},
     }
-    inline["training_config"]["n_reach_steps"] = 80
-    inline["training_config"]["batch_size"] = 4
+    inline["training_config"] = {"n_batches": 2, "n_reach_steps": 80, "batch_size": 4}
     return raw
 
 
@@ -241,14 +315,20 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     jobs = JobService(host, registry, enable_evaluation_candidate=True)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "document-pair"
-    _save_project(
-        folders, project, Project.model_validate(document_project(authored, evaluation=True))
-    )
+    raw = document_project(authored, evaluation=True)
+    payload = raw["steps"]["train"]["base"]["inline"]["method_payload"]["payload"]
+    rate = 0.003
+    payload["optimizer"]["params"]["learning_rate"] = rate
+    _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
     train = RunKey("default", "train", "default")
     evaluate = RunKey("default", "baseline", "default")
     (train_job,) = jobs.admit_plan(folders, plan, run_keys=(train,), token="paired-train").items
     assert train_job.disposition == "admitted", train_job
+    (accepted,) = host.jobs(job_id=train_job.job_id, include_launch=True)
+    prepared = accepted["launch"]["payload"]["spec"]
+    assert prepared["training_config"]["learning_rate"] == rate
+    assert prepared["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] == rate
     (evaluation_job,) = jobs.admit_plan(
         folders, plan, run_keys=(evaluate,), token="paired-evaluate"
     ).items

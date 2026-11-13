@@ -2203,6 +2203,45 @@
         "absent": {}
       }
     },
+    "feedbax.contracts.request_specs.DocumentTrainingConfig": {
+      "batch_size": {
+        "absent": 128
+      },
+      "grad_clip": {
+        "absent": 1.0
+      },
+      "n_batches": {
+        "absent": 2000
+      },
+      "n_reach_steps": {
+        "absent": 80
+      },
+      "snapshot_interval": {
+        "absent": 100
+      }
+    },
+    "feedbax.contracts.request_specs.DocumentTrainingRequestSpec": {
+      "method_payload": {},
+      "method_ref": {},
+      "numerical_settings": {
+        "absent": {}
+      },
+      "on_nan": {
+        "absent": "raise",
+        "values": [
+          "halt_restore_checkpoint",
+          "raise"
+        ]
+      },
+      "risk_aggregation": {
+        "absent": {}
+      },
+      "seed": {
+        "absent": null
+      },
+      "training_config": {},
+      "trial_documents": {}
+    },
     "feedbax.contracts.request_specs.EvaluationRequestSpec": {
       "evaluation_type": {},
       "numerical_settings": {
