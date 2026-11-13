@@ -40,6 +40,7 @@ class PreparedTrialExecution:
     executable: ExecutableGraph
     execution: TrialExecution
     objective: ObjectiveExecutor | None
+    lowered: LoweredModelDocument
 
 
 _DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase.REAL: jnp.float32}
@@ -274,4 +275,5 @@ def compile_trial_execution(
         executable,
         TrialExecution(compiled_task, interface.reset, pairing.input_bindings, observations),
         scorer,
+        pairing.lowered,
     )

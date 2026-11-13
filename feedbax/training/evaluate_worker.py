@@ -98,7 +98,7 @@ def _rollouts(
     from feedbax.tasks.reaching import is_world_target
     from feedbax.training.checkpoint_custody import open_published_model_slot
     from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
-    from feedbax.training.evaluation_variant import resolve_evaluation_variant
+    from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
     from feedbax.training.studio_executor import studio_training_key
 
     spec = source.spec
@@ -110,6 +110,7 @@ def _rollouts(
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
+    validate_evaluation_source(slot.graph)
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
     variant = resolve_evaluation_variant(slot.graph, documents.task_source, params.variation)
