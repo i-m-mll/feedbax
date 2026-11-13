@@ -19,6 +19,7 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import StudioTaskBindingSpec
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.operation import DatasetPort
@@ -367,19 +368,36 @@ def _encode_row(
     encoding_stamp: tuple[StepKind, str, bytes] | None,
     document_memo: RequestDocumentMemo | None,
     model_document: str | None = None,
+    sources: Mapping[str, ValueSource] | None = None,
 ) -> _LoweredRow:
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
-        from feedbax.compiler.model_document import (
-            ModelCompilationProblem, lower_model_document, model_source_address,
-        )
+        from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
         from feedbax.component_registry import ComponentRegistry
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
+
+        def model_problem(detail: str, address: ModelAddress | None) -> _LoweredRow:
+            path = "payload.graph"
+            origin = None
+            if address is not None:
+                stored = address.stored_path()
+                path += "".join(f".{segment}" for segment in stored)
+                if sources is not None:
+                    for count in range(len(stored), -1, -1):
+                        if origin := sources.get(pointer(("payload", "graph", *stored[:count]))):
+                            break
+            return _LoweredRow(None, (ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, path, detail, key.step,
+                document=model_document, row=key.row, variant=key.variant,
+                model_address=address, document_path=origin.path if origin and origin.kind == "document" else None,
+                layer=f"{origin.kind}:{origin.name}{origin.path}" if origin and origin.kind != "document" else None,
+            ),), encoding_stamp)
 
         try:
             model = ModelDocument.model_validate(graph)
             binding = StudioTaskBindingSpec.model_validate(payload.get("task_binding_spec") or {})
             components = ComponentRegistry()
-            derived, binding = lower_model_document(model_document or "model", model, components, binding)
+            lowered_model = lower_model_document(model_document or "model", model, components, binding)
+            derived, binding = lowered_model.graph, lowered_model.task
             issues = validate_graph_connection_schema(
                 derived, "/graph", binding, component_registry=components,
             )
@@ -389,19 +407,13 @@ def _encode_row(
                 ))
             if issue := next((item for item in issues if item.severity == "error"), None):
                 source = (issue.location or {}).get("path", "/graph")
-                raise ModelCompilationProblem(
-                    model_source_address(model_document or "model", derived, source), issue.message,
-                )
+                return model_problem(issue.message, lowered_model.source_address(source))
             payload = payload | {
                 "graph": derived.model_dump(mode="json"),
                 "task_binding_spec": binding.model_dump(mode="json") if binding else None,
             }
         except ModelCompilationProblem as error:
-            return _LoweredRow(None, (ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, "payload.graph", str(error), key.step,
-                document=model_document, row=key.row, variant=key.variant,
-                model_address=error.address,
-            ),), encoding_stamp)
+            return model_problem(str(error), error.address)
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, "payload.graph", str(error), key.step,
@@ -808,6 +820,7 @@ class _Compiler:
                     key, kind, payload, inputs, encoding_stamp,
                     self.work.request_documents if self.previous is not None else None,
                     document_ids.get("payload.graph"),
+                    definition.sources if definition is not None else None,
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,

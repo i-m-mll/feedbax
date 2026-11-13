@@ -10,8 +10,10 @@ from equinox.nn import State, StateIndex
 import jax
 from jax.tree_util import GetAttrKey
 import numpy as np
+from pydantic import ValidationError
 
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
@@ -126,12 +128,22 @@ def _bind_owner(
     return tuple(values)
 
 
-def _carry_reader(target: tuple[str, str], scope: tuple[str, ...]) -> Callable[[State, dict | None], jax.Array]:
+def _carry_reader(
+    target: tuple[str, str], scope: tuple[str, ...], declaration: ModelDelayCarry | None = None,
+) -> Callable[[State, dict | None], jax.Array]:
     def read(state: State, carry: dict | None) -> jax.Array:
         assert carry is not None
         for parent in scope:
             carry = carry[_nested_cycle_key(parent)]
-        return carry[target]
+        value = carry[target]
+        if declaration is not None and (
+            value.shape != declaration.shape or value.dtype.name != declaration.dtype
+        ):
+            raise StateLayoutError(
+                pointer(("inputs", "subject", "graph", *scope, "wires", declaration.model_wire_id)),
+                "runtime carry differs from the declared delay layout",
+            )
+        return value
     return read
 
 
@@ -140,24 +152,25 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
     path = "/inputs/subject/graph/wires"
     expected = {}
     model_delays = {}
+    delay_ids = set()
     for wire in authored.wires:
         if wire.temporality != "recurrent":
             continue
         node = wire.target_node
         target = (node, wire.target_port)
         initializer = wire.recurrent_initializer or {}
-        if (delay := initializer.get("model_delay_id")) is not None:
-            shape = initializer.get("shape")
-            wire_id = initializer.get("model_wire_id")
-            if (
-                initializer.get("kind") != "zeros" or initializer.get("scope") != "trial"
-                or not isinstance(shape, list) or len(shape) > 1
-                or any(type(size) is not int or size < 0 for size in shape)
-                or not isinstance(wire_id, str) or not isinstance(delay, str)
-                or initializer.get("dtype") not in {"float32"}
-            ):
-                raise StateLayoutError(f"{path}/{wire.authored_id()}", "delay has no qualified raw carry layout")
-            model_delays[target] = (wire_id, delay, shape)
+        if "model_delay_id" in initializer:
+            try:
+                declaration = ModelDelayCarry.model_validate(initializer)
+            except ValidationError as error:
+                raise StateLayoutError(
+                    f"{path}/{wire.authored_id()}", "delay has no qualified raw carry layout",
+                ) from error
+            identity = declaration.model_wire_id, declaration.model_delay_id
+            if len(declaration.shape) > 1 or identity in delay_ids or target in expected:
+                raise StateLayoutError(f"{path}/{wire.authored_id()}", "delay carry address or shape is ambiguous")
+            delay_ids.add(identity)
+            model_delays[target] = declaration
             expected[target] = wire
             continue
         if (
@@ -183,10 +196,11 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         raise StateLayoutError(path, "runtime carries differ from the authored declarations")
     return tuple(
         BoundStateValue(
-            semantic_key("model", "carry", scope, delay, wire=wire),
-            "/".join((*scope, wire, delay)) if shape else None, "1", None, _carry_reader(target, scope),
+            semantic_key("model", "carry", scope, delay.model_delay_id, wire=delay.model_wire_id),
+            "/".join((*scope, delay.model_wire_id, delay.model_delay_id)) if delay.shape else None,
+            "1", None, _carry_reader(target, scope, delay),
         )
-        for target, (wire, delay, shape) in model_delays.items()
+        for target, delay in model_delays.items()
     ) + tuple(
         BoundStateValue(
             semantic_key("model", "carry", scope, "hidden", wire=f"{node}:hidden"),

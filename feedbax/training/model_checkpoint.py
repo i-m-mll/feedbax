@@ -320,8 +320,14 @@ def _describe(
         for name, interior in (spec.subgraphs or {}).items():
             if isinstance(interior, GraphSpec):
                 node = runtime.nodes[name]
+                authored = spec.nodes[name]
+                binding = runtime.component_bindings[name]
                 if not isinstance(node, Graph):
                     raise ModelCheckpointError("/v1/model/" + "/".join((*scope, name)), "composite is missing")
+                if binding.type_id != authored.type or authored.revision not in {None, binding.revision}:
+                    raise ModelCheckpointError(
+                        "/v1/model/" + "/".join((*scope, name)), "composite declaration differs",
+                    )
                 verify_occurrences(interior, node, (*scope, name))
 
     verify_occurrences(graph, model, ())

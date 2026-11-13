@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
-from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_address import FieldElement, ModelAddress
+from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput,
 )
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.model_values import MODEL_OWNERS
 from feedbax.runtime.task_data_roles import task_data_role
 from feedbax.studio.model_ports import ModelRegistryPorts
@@ -36,11 +38,19 @@ class _Lower:
     model: ModelDocument
     components: ComponentRegistry
     ports: ModelRegistryPorts
+    origins: dict[tuple[str, ...], ModelAddress] = field(default_factory=dict)
+
+    def address(self, path, kind, **fields) -> ModelAddress:
+        return ModelAddress.model_validate({
+            "document": self.document, "composites": path, "element": {"kind": kind, **fields},
+        })
 
     def problem(self, path, kind, detail, **fields) -> ModelCompilationProblem:
-        return ModelCompilationProblem(ModelAddress.model_validate({
-            "document": self.document, "composites": path, "element": {"kind": kind, **fields},
-        }), detail)
+        return ModelCompilationProblem(self.address(path, kind, **fields), detail)
+
+    def remember(self, path, derived, element):
+        tokens = tuple(token for parent in path for token in ("subgraphs", parent))
+        self.origins[("graph", *tokens, *derived)] = self.address(path, **element)
 
     def graph(
         self, interior: GraphInterior | PhysicalInterior, ports: ModelPorts, path: tuple[str, ...],
@@ -60,14 +70,16 @@ class _Lower:
         input_sources = {}
         output_names = {port.id: port.id if path else port.name for port in ports.outputs}
 
-        def add_generated(key, type_id, params, inputs=("input",)):
+        def add_generated(key, type_id, params, *, origin, inputs=("input",)):
             if key in interior.components or key in nodes:
                 raise self.problem(path, "component", "component ID collides with a generated occurrence", id=key)
             nodes[key] = ComponentSpec(
                 type=type_id, params=params, input_ports=list(inputs), output_ports=["output"],
             )
+            self.remember(path, ("nodes", key), origin)
 
         for key, component in interior.components.items():
+            self.remember(path, ("nodes", key), {"kind": "component", "id": key})
             if component.kind == "composite":
                 if component.substeps != 1:
                     raise self.problem(path, "component", "substeps require qualified mechanics lowering", id=key)
@@ -99,7 +111,8 @@ class _Lower:
                     output_ports=list(layout.output_ports if layout else definition.output_ports),
                 )
 
-        def emit(source, target, key, *, reset=None):
+        def emit(source, target, key, origin, *, reset=None):
+            self.remember(path, ("wires", str(len(wires))), origin)
             wires.append(WireSpec(
                 id=key, source_node=source[0], source_port=source[1],
                 target_node=target[0], target_port=target[1],
@@ -110,6 +123,7 @@ class _Lower:
         def transform(source, chain, key, at, *, finish=None):
             pending_reset = None
             for attachment in chain:
+                origin = {"kind": "attachment", "parent": at, "id": attachment.id}
                 if isinstance(attachment, ProbeAttachment):
                     raise self.problem(path, "attachment", "probe observation is unavailable in this milestone", parent=at, id=attachment.id)
                 if isinstance(attachment, DelayAttachment):
@@ -121,13 +135,14 @@ class _Lower:
                     shape, dtype = source_type
                     if shape is None:
                         raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
-                    pending_reset = {
-                        "kind": "zeros", "scope": "trial", "shape": shape, "dtype": dtype,
-                        "model_delay_id": attachment.id, "model_wire_id": key,
-                    }
+                    if dtype != "float32":
+                        raise self.problem(path, "attachment", "delay requires a float32 reset", parent=at, id=attachment.id)
+                    pending_reset = ModelDelayCarry(
+                        shape=tuple(shape), dtype=dtype, model_delay_id=attachment.id, model_wire_id=key,
+                    ).model_dump(mode="json")
                     relay = _generated("delay", key, attachment.id)
-                    add_generated(relay, "feedbax.Input", {})
-                    emit(source, (relay, "input"), _generated("delay_input", key, attachment.id))
+                    add_generated(relay, "feedbax.Input", {}, origin=origin)
+                    emit(source, (relay, "input"), _generated("delay_input", key, attachment.id), origin)
                     source = (relay, "output")
                     continue
                 if isinstance(attachment, InterventionAttachment):
@@ -144,27 +159,32 @@ class _Lower:
                         case _:
                             raise self.problem(path, "attachment", "unrecognized intervention or fields", parent=at, id=attachment.id)
                     segment = _generated("attachment", key, attachment.id)
-                    add_generated(segment, type_id, params)
-                    emit(source, (segment, "input"), _generated("segment", key, attachment.id), reset=pending_reset)
+                    add_generated(segment, type_id, params, origin=origin)
+                    emit(source, (segment, "input"), _generated("segment", key, attachment.id), origin, reset=pending_reset)
                     pending_reset = None
                     source = (segment, "output")
             if finish is not None:
-                emit(source, finish, key, reset=pending_reset)
+                origin = (
+                    {"kind": "attachment", "parent": at, "id": pending_reset["model_delay_id"]}
+                    if pending_reset is not None else at
+                )
+                emit(source, finish, key, origin, reset=pending_reset)
             return source, pending_reset
 
         source_type = (None, "float32")
         for port in ports.inputs:
             external = port.id if path else port.name
             relay = _generated("input", port.id)
+            origin = {"kind": "port", "end": {"owner": "inputs", "port": port.id}}
             default = not path and external not in available and port.default is not None
             if default:
-                add_generated(relay, "feedbax.Constant", {"value": port.default.value}, inputs=())
+                add_generated(relay, "feedbax.Constant", {"value": port.default.value}, origin=origin, inputs=())
             else:
-                add_generated(relay, "feedbax.Input", {})
+                add_generated(relay, "feedbax.Input", {}, origin=origin)
                 input_bindings[external] = (relay, "input")
             source, _ = transform(
                 (relay, "output"), interior.attachments.sources.get(port.id, ()), relay,
-                {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
+                origin,
             )
             input_sources[port.id] = source
 
@@ -209,8 +229,8 @@ class _Lower:
                 output, reset = transform(source, wire.attachments, key, at)
                 if reset is not None:
                     relay = _generated("output", b.port)
-                    add_generated(relay, "feedbax.Input", {})
-                    emit(output, (relay, "input"), key, reset=reset)
+                    add_generated(relay, "feedbax.Input", {}, origin=at)
+                    emit(output, (relay, "input"), key, at, reset=reset)
                     output = (relay, "output")
                 output_bindings[external] = output
             else:
@@ -243,6 +263,9 @@ class _Lower:
                     (), "port", f"task signal {port.name!r} does not match the root input type",
                     end={"owner": "inputs", "port": port.id},
                 )
+            self.origins[("task_binding_spec", "bindings", str(len(result)))] = self.address(
+                (), "port", end={"owner": "inputs", "port": port.id},
+            )
             result.append(StudioTaskBinding(
                 id=task_binding_id(item.id, node, port_id), source_data_id=item.id,
                 target_node_id=node, target_port=port_id, role=task_data_role(item),
@@ -262,10 +285,28 @@ class _Lower:
         )
 
 
+@dataclass(frozen=True)
+class LoweredModelDocument:
+    graph: GraphSpec
+    task: StudioTaskBindingSpec | None
+    origins: dict[tuple[str, ...], ModelAddress]
+
+    def source_address(self, path: str) -> ModelAddress | None:
+        parts = json_pointer_parts(path)
+        for stop in range(len(parts), 0, -1):
+            if address := self.origins.get(parts[:stop]):
+                if address.element.kind == "component" and parts[stop:stop + 1] == ("params",):
+                    return address.model_copy(update={"element": FieldElement(
+                        kind="field", parent=address.element, path=("fields", *parts[stop + 1:]),
+                    )})
+                return address
+        return None
+
+
 def lower_model_document(
     document: ProjectName, model: ModelDocument, components: ComponentRegistry,
     task: StudioTaskBindingSpec | None = None,
-) -> tuple[GraphSpec, StudioTaskBindingSpec | None]:
+) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
     lower = _Lower(document, model, components, ModelRegistryPorts(components))
     if model.world is not None:
@@ -273,31 +314,5 @@ def lower_model_document(
                             parent={"kind": "graph"}, path=["world"])
     names = frozenset(item.id for item in task.exposed_data if item.bindable) if task else frozenset()
     graph = lower.graph(model.interior, model.ports, (), available=names)
-    return graph, lower.root_inputs(task, graph) if task is not None else None
-
-
-def model_source_address(document: str, graph: GraphSpec, source_path: str) -> ModelAddress:
-    """Translate a derived compiler path back into the stored model's owner path."""
-    parts = source_path.split("/")[2:]
-    scope = []
-    while len(parts) >= 2 and parts[0] == "subgraphs":
-        owner = parts[1]
-        child = (graph.subgraphs or {}).get(owner)
-        if not isinstance(child, GraphSpec):
-            break
-        scope.append(owner)
-        graph = child
-        parts = parts[2:]
-    element: dict = {"kind": "graph"}
-    if len(parts) >= 2 and parts[0] == "nodes" and not parts[1].startswith("_model_"):
-        element = {"kind": "component", "id": parts[1]}
-        if len(parts) > 2 and parts[2] == "params":
-            element = {"kind": "field", "parent": element, "path": ["fields", *parts[3:]]}
-    elif len(parts) >= 2 and parts[0] == "wires" and parts[1].isdigit():
-        index = int(parts[1])
-        if index < len(graph.wires):
-            wire = graph.wires[index]
-            key = (wire.recurrent_initializer or {}).get("model_wire_id") or wire.id
-            if key and not key.startswith("_model_"):
-                element = {"kind": "wire", "id": key}
-    return ModelAddress.model_validate({"document": document, "composites": scope, "element": element})
+    binding = lower.root_inputs(task, graph) if task is not None else None
+    return LoweredModelDocument(graph, binding, lower.origins)

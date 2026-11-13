@@ -109,6 +109,25 @@ class ModelAddress(StrictModel):
     composites: tuple[ModelElementId, ...]
     element: AddressedElement
 
+    def stored_path(self) -> tuple[str, ...]:
+        """Locate the addressed member in the stored tree when it has a keyed path."""
+        scope = tuple(token for owner in self.composites for token in ("interior", "components", owner))
+
+        def element_path(element: AddressedElement) -> tuple[str, ...]:
+            if isinstance(element, FieldElement):
+                return (*element_path(element.parent), *map(str, element.path))
+            if isinstance(element, ComponentElement):
+                return "interior", "components", element.id
+            if isinstance(element, WireElement):
+                return "interior", "wires", element.id
+            if isinstance(element, PhysicalConnectionElement):
+                return "interior", "connections", element.id
+            if isinstance(element, AttachmentElement):
+                return (*element_path(element.parent), "attachments")
+            return ()
+
+        return (*scope, *element_path(self.element))
+
     def to_text(self) -> str:
         """Encode a presentation key with the shared canonical JSON codec."""
         return canonical_json_v2_bytes(self.model_dump(mode="json")).decode("utf-8")

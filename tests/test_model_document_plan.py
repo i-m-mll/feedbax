@@ -8,8 +8,9 @@ import equinox as eqx
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
@@ -133,6 +134,25 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     problem = next(item for item in refused.diagnostics if item.model_address is not None)
     assert problem.document == "reach-model"
     assert problem.model_address.element.end.port == "task-input"
+
+
+def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
+    raw = _model_project()
+    model = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
+    lowered = lower_model_document("reach-model", model, ComponentRegistry())
+    (root_relay, _) = lowered.graph.input_bindings["reach_target"]
+    port = lowered.source_address(f"/graph/nodes/{root_relay}/input")
+    assert port.element.end.port == "task-input"
+    controller = lowered.graph.subgraphs["wrapper"].subgraphs["controller"]
+    (index,) = (
+        index for index, wire in enumerate(controller.wires)
+        if wire.target_node.startswith("_model_delay_")
+    )
+    address = lowered.source_address(f"/graph/subgraphs/wrapper/subgraphs/controller/wires/{index}")
+    assert address.composites == ("wrapper", "controller")
+    assert (address.element.kind, address.element.id, address.element.parent.id) == (
+        "attachment", "carry", "carry",
+    )
 
 
 def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys):
