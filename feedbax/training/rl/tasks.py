@@ -14,6 +14,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
+from feedbax._interpolation import catmull_rom
+
 
 # Task type constants
 TASK_REACH = 0
@@ -341,7 +343,7 @@ def _track_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
     seg_len = jnp.maximum(seg_end - seg_start, 1)
     local_idx = t_index - seg_start
     t = local_idx / jnp.maximum(seg_len - 1, 1)
-    return _catmull_rom(
+    return catmull_rom(
         points[seg],
         points[seg + 1],
         points[seg + 2],
@@ -655,18 +657,6 @@ def hold_task(
     return TaskSpec(TASK_HOLD, target_pos, target_vel, perturb)
 
 
-def _catmull_rom(p0: Array, p1: Array, p2: Array, p3: Array, t: Array) -> Array:
-    """Catmull-Rom spline interpolation."""
-    t2 = t * t
-    t3 = t2 * t
-    return 0.5 * (
-        (2 * p1)
-        + (-p0 + p2) * t
-        + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
-        + (-p0 + 3 * p1 - 3 * p2 + p3) * t3
-    )
-
-
 def tracking_task(
     timestamps: Float[Array, " T"],
     key: PRNGKeyArray,
@@ -699,7 +689,7 @@ def tracking_task(
         end = (seg + 1) * segment_len if seg < n_segments - 1 else timestamps.shape[0]
         t = jnp.linspace(0.0, 1.0, end - start)
         targets.append(
-            _catmull_rom(
+            catmull_rom(
                 points[seg],
                 points[seg + 1],
                 points[seg + 2],

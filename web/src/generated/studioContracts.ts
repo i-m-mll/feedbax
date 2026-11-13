@@ -2674,6 +2674,13 @@ export type BestCheckpoint = {
   "best_by": string;
 };
 
+export type CallValue = {
+  "kind"?: "call";
+  "function": string;
+  "args"?: Array<Expression>;
+  "kwargs"?: Record<string, Expression>;
+};
+
 export type CheckpointBatches = {
   "batches": Array<number>;
 };
@@ -2713,6 +2720,17 @@ export type DatasetPort = {
   "coordinates"?: Record<string, FieldDescriptor>;
 };
 
+export type Dimensions = {
+  "length"?: number;
+  "mass"?: number;
+  "time"?: number;
+  "current"?: number;
+  "temperature"?: number;
+  "amount"?: number;
+  "luminosity"?: number;
+  "angle"?: number;
+};
+
 export type Document = {
   "schema": string;
   "payload": JsonValue;
@@ -2734,11 +2752,20 @@ export type DocumentReference = {
   "pointer"?: Pointer | null;
 };
 
+export type DrawValue = {
+  "kind"?: "draw";
+  "family": string;
+  "args": Array<Expression>;
+  "per"?: "run" | "trial";
+};
+
 export type EnsureDocumentCollection = {
   "op": "ensure";
   "path": DocumentOverridePath;
   "collection": "object" | "array";
 };
+
+export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
 
 export type ExternalBase = {
   "path": string;
@@ -2753,6 +2780,15 @@ export type FieldDescriptor = {
   "frame"?: string | null;
   "inline_values"?: Array<JsonValue> | null;
 };
+
+export type FieldKind = "value" | "sweep" | "draw" | "formula" | "shape" | "link";
+
+export type FieldTextResult = {
+  "value": FieldValue;
+  "spans": Array<LocatedSpan>;
+};
+
+export type FieldValue = Expression | SweepList | SweepRange | SweepSample;
 
 export type FigureDocument = {
   "schema_version"?: "feedbax.figure_document.v1";
@@ -2807,6 +2843,23 @@ export type FigurePanel = {
   "y_axis"?: PanelAxis | null;
 };
 
+export type FunctionClass = "math" | "shape" | "draw" | "penalty" | "sweep_rule";
+
+export type FunctionInfo = {
+  "id": string;
+  "signature": string;
+  "display_class": FunctionClass;
+  "min_args": number;
+  "max_args": number | null;
+  "keywords"?: Array<string>;
+  "implicit_names"?: Record<string, ValueType>;
+  "level"?: Level;
+  "requires_period"?: boolean;
+  "random"?: boolean;
+  "stateful"?: boolean;
+  "reset"?: StateReset;
+};
+
 export type GroupCombination = {
   "groups": Record<string, AxisGroup>;
 };
@@ -2826,6 +2879,8 @@ export type InputAxis = {
 export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
 
 export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+
+export type Level = 0 | 1 | 2;
 
 export type LineEncodings = {
   "x": Name | VariableBinding;
@@ -2856,6 +2911,17 @@ export type ListedAxis = {
   "values": Array<JsonValue>;
 };
 
+export type LiteralValue = {
+  "kind"?: "literal";
+  "value": Scalar;
+  "unit"?: string | null;
+};
+
+export type LocatedSpan = {
+  "path": NodePath;
+  "span": TextSpan;
+};
+
 export type ManualCombination = {
   "manual": Array<Record<string, string>>;
 };
@@ -2870,6 +2936,11 @@ export type MatrixCompositionDelta = {
 
 export type Name = string;
 
+export type NameValue = {
+  "kind"?: "name";
+  "reference": string;
+};
+
 export type NamedAxis = {
   "values": Record<string, AxisValue | null>;
 };
@@ -2879,6 +2950,8 @@ export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
 export type NamedSubset = {
   "subset": string;
 };
+
+export type NodePath = Array<string | number>;
 
 export type OmittedReference = {
   "not_applicable": string;
@@ -2946,6 +3019,15 @@ export type PresentationPosition = {
   "x": number;
   "y": number;
 };
+
+export type Problem = {
+  "code": ProblemCode;
+  "reason": string;
+  "path"?: Array<string | number>;
+  "span"?: TextSpan | null;
+};
+
+export type ProblemCode = "parse" | "unknown_name" | "duplicate_name" | "unknown_function" | "plugin_missing" | "arity" | "type_mismatch" | "unit_mismatch" | "level_too_fine" | "out_of_scope" | "cycle" | "unbounded_length" | "length_budget" | "missing_limit" | "list_count" | "structure";
 
 export type Project = {
   "documents"?: Record<string, Document>;
@@ -3027,6 +3109,15 @@ export type SampledAxis = {
   "draws"?: Record<string, JsonValue> | null;
 };
 
+export type Scalar = boolean | number;
+
+export type ScopedValue = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "level": Level;
+};
+
 export type SetProjectValue = {
   "op": "add" | "replace";
   "path": DocumentOverridePath;
@@ -3039,6 +3130,21 @@ export type SetValue = {
 };
 
 export type Sha256 = string;
+
+export type Site = {
+  "expected": ValueType;
+  "finest": Level;
+  "names"?: Array<ScopedValue>;
+  "structural"?: boolean;
+};
+
+export type SiteProjection = {
+  "site": Site;
+  "kinds": Array<FieldKind>;
+  "functions": Array<FunctionInfo>;
+};
+
+export type StateReset = "trial" | "epoch";
 
 export type Step = {
   "kind": StepKind;
@@ -3193,7 +3299,7 @@ export type StudioAuthoringOrigin = {
 };
 
 export type StudioAuthoringRegistry = {
-  "entries": Array<ComponentDefinition | OperationDefinition | StudioAuthoringMethod>;
+  "entries": Array<ComponentDefinition | OperationDefinition | StudioAuthoringMethod | FunctionInfo>;
   "origins": Record<string, StudioAuthoringOrigin>;
 };
 
@@ -3534,6 +3640,38 @@ export type SweepException = {
   "patches"?: Record<string, PatchValue | null>;
   "where"?: SubsetTerms | null;
   "exclude"?: boolean;
+};
+
+export type SweepList = {
+  "kind"?: "list";
+  "members": Array<Expression>;
+};
+
+export type SweepRange = {
+  "kind"?: "range";
+  "first": Expression;
+  "last": Expression;
+  "count": number;
+  "spacing": "linear" | "log";
+};
+
+export type SweepSample = {
+  "kind"?: "sample";
+  "draw": DrawValue;
+  "count": number;
+};
+
+export type TextSpan = {
+  "start": number;
+  "end": number;
+};
+
+export type ValueBase = "real" | "integer" | "boolean";
+
+export type ValueType = {
+  "base": ValueBase;
+  "shape"?: Array<number>;
+  "dimensions"?: Dimensions;
 };
 
 export type VariableBinding = {
@@ -8211,6 +8349,15 @@ export const BestCheckpointSchema: z.ZodType<BestCheckpoint> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<BestCheckpoint>;
 
+export const CallValueSchema: z.ZodType<CallValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("call").optional(),
+    "function": z.string(),
+    "args": z.array(ExpressionSchema).optional(),
+    "kwargs": z.record(z.string(), ExpressionSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<CallValue>;
+
 export const CheckpointBatchesSchema: z.ZodType<CheckpointBatches> = z.lazy(() =>
   z.object({
     "batches": z.array(z.number().int().safe().gt(0).max(9007199254740991)).min(1).max(64),
@@ -8266,6 +8413,19 @@ export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DatasetPort>;
 
+export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
+  z.object({
+    "length": z.number().int().safe().optional(),
+    "mass": z.number().int().safe().optional(),
+    "time": z.number().int().safe().optional(),
+    "current": z.number().int().safe().optional(),
+    "temperature": z.number().int().safe().optional(),
+    "amount": z.number().int().safe().optional(),
+    "luminosity": z.number().int().safe().optional(),
+    "angle": z.number().int().safe().optional(),
+  }).strict()
+) as unknown as z.ZodType<Dimensions>;
+
 export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
@@ -8299,6 +8459,15 @@ export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<DocumentReference>;
 
+export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("draw").optional(),
+    "family": z.string(),
+    "args": z.array(ExpressionSchema),
+    "per": z.union([z.literal("run"), z.literal("trial")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DrawValue>;
+
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
   z.object({
     "op": z.literal("ensure"),
@@ -8306,6 +8475,10 @@ export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection>
     "collection": z.union([z.literal("object"), z.literal("array")]),
   }).strict()
 ) as unknown as z.ZodType<EnsureDocumentCollection>;
+
+export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
+) as unknown as z.ZodType<Expression>;
 
 export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
   z.object({
@@ -8324,6 +8497,21 @@ export const FieldDescriptorSchema: z.ZodType<FieldDescriptor> = z.lazy(() =>
     "inline_values": z.union([z.array(jsonValueSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<FieldDescriptor>;
+
+export const FieldKindSchema: z.ZodType<FieldKind> = z.lazy(() =>
+  z.union([z.literal("value"), z.literal("sweep"), z.literal("draw"), z.literal("formula"), z.literal("shape"), z.literal("link")])
+) as unknown as z.ZodType<FieldKind>;
+
+export const FieldTextResultSchema: z.ZodType<FieldTextResult> = z.lazy(() =>
+  z.object({
+    "value": FieldValueSchema,
+    "spans": z.array(LocatedSpanSchema),
+  }).strict()
+) as unknown as z.ZodType<FieldTextResult>;
+
+export const FieldValueSchema: z.ZodType<FieldValue> = z.lazy(() =>
+  z.union([ExpressionSchema, SweepListSchema, SweepRangeSchema, SweepSampleSchema])
+) as unknown as z.ZodType<FieldValue>;
 
 export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
   z.object({
@@ -8388,6 +8576,27 @@ export const FigurePanelSchema: z.ZodType<FigurePanel> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<FigurePanel>;
 
+export const FunctionClassSchema: z.ZodType<FunctionClass> = z.lazy(() =>
+  z.union([z.literal("math"), z.literal("shape"), z.literal("draw"), z.literal("penalty"), z.literal("sweep_rule")])
+) as unknown as z.ZodType<FunctionClass>;
+
+export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "signature": z.string(),
+    "display_class": FunctionClassSchema,
+    "min_args": z.number().int().safe(),
+    "max_args": z.union([z.number().int().safe(), z.null()]),
+    "keywords": z.array(z.string()).optional(),
+    "implicit_names": z.record(z.string(), ValueTypeSchema).optional(),
+    "level": LevelSchema.optional(),
+    "requires_period": z.boolean().optional(),
+    "random": z.boolean().optional(),
+    "stateful": z.boolean().optional(),
+    "reset": StateResetSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<FunctionInfo>;
+
 export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
   z.object({
     "groups": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), AxisGroupSchema),
@@ -8419,6 +8628,10 @@ export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
   z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
+
+export const LevelSchema: z.ZodType<Level> = z.lazy(() =>
+  z.union([z.literal(0), z.literal(1), z.literal(2)])
+) as unknown as z.ZodType<Level>;
 
 export const LineEncodingsSchema: z.ZodType<LineEncodings> = z.lazy(() =>
   z.object({
@@ -8457,6 +8670,21 @@ export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ListedAxis>;
 
+export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("literal").optional(),
+    "value": ScalarSchema,
+    "unit": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<LiteralValue>;
+
+export const LocatedSpanSchema: z.ZodType<LocatedSpan> = z.lazy(() =>
+  z.object({
+    "path": NodePathSchema,
+    "span": TextSpanSchema,
+  }).strict()
+) as unknown as z.ZodType<LocatedSpan>;
+
 export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =>
   z.object({
     "manual": z.array(z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.string().min(1))),
@@ -8477,6 +8705,13 @@ export const NameSchema: z.ZodType<Name> = z.lazy(() =>
   z.string()
 ) as unknown as z.ZodType<Name>;
 
+export const NameValueSchema: z.ZodType<NameValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("name").optional(),
+    "reference": z.string(),
+  }).strict()
+) as unknown as z.ZodType<NameValue>;
+
 export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
   z.object({
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
@@ -8492,6 +8727,10 @@ export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
     "subset": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<NamedSubset>;
+
+export const NodePathSchema: z.ZodType<NodePath> = z.lazy(() =>
+  z.array(z.union([z.string(), z.number().int().safe()]))
+) as unknown as z.ZodType<NodePath>;
 
 export const OmittedReferenceSchema: z.ZodType<OmittedReference> = z.lazy(() =>
   z.object({
@@ -8585,6 +8824,19 @@ export const PresentationPositionSchema: z.ZodType<PresentationPosition> = z.laz
     "y": z.number().finite(),
   }).strict()
 ) as unknown as z.ZodType<PresentationPosition>;
+
+export const ProblemSchema: z.ZodType<Problem> = z.lazy(() =>
+  z.object({
+    "code": ProblemCodeSchema,
+    "reason": z.string(),
+    "path": z.array(z.union([z.string(), z.number().int().safe()])).optional(),
+    "span": z.union([TextSpanSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Problem>;
+
+export const ProblemCodeSchema: z.ZodType<ProblemCode> = z.lazy(() =>
+  z.union([z.literal("parse"), z.literal("unknown_name"), z.literal("duplicate_name"), z.literal("unknown_function"), z.literal("plugin_missing"), z.literal("arity"), z.literal("type_mismatch"), z.literal("unit_mismatch"), z.literal("level_too_fine"), z.literal("out_of_scope"), z.literal("cycle"), z.literal("unbounded_length"), z.literal("length_budget"), z.literal("missing_limit"), z.literal("list_count"), z.literal("structure")])
+) as unknown as z.ZodType<ProblemCode>;
 
 export const ProjectSchema: z.ZodType<Project> = z.lazy(() =>
   z.object({
@@ -8698,6 +8950,19 @@ export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SampledAxis>;
 
+export const ScalarSchema: z.ZodType<Scalar> = z.lazy(() =>
+  z.union([z.boolean(), z.number().int().safe(), z.number().finite()])
+) as unknown as z.ZodType<Scalar>;
+
+export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
+  z.object({
+    "id": z.string().min(1),
+    "name": z.string().min(1),
+    "type": ValueTypeSchema,
+    "level": LevelSchema,
+  }).strict()
+) as unknown as z.ZodType<ScopedValue>;
+
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add"), z.literal("replace")]),
@@ -8716,6 +8981,27 @@ export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
 ) as unknown as z.ZodType<Sha256>;
+
+export const SiteSchema: z.ZodType<Site> = z.lazy(() =>
+  z.object({
+    "expected": ValueTypeSchema,
+    "finest": LevelSchema,
+    "names": z.array(ScopedValueSchema).optional(),
+    "structural": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<Site>;
+
+export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
+  z.object({
+    "site": SiteSchema,
+    "kinds": z.array(FieldKindSchema),
+    "functions": z.array(FunctionInfoSchema),
+  }).strict()
+) as unknown as z.ZodType<SiteProjection>;
+
+export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
+  z.union([z.literal("trial"), z.literal("epoch")])
+) as unknown as z.ZodType<StateReset>;
 
 export const StepSchema: z.ZodType<Step> = z.lazy(() =>
   z.object({
@@ -8915,7 +9201,7 @@ export const StudioAuthoringOriginSchema: z.ZodType<StudioAuthoringOrigin> = z.l
 
 export const StudioAuthoringRegistrySchema: z.ZodType<StudioAuthoringRegistry> = z.lazy(() =>
   z.object({
-    "entries": z.array(z.union([ComponentDefinitionSchema, OperationDefinitionSchema, StudioAuthoringMethodSchema])),
+    "entries": z.array(z.union([ComponentDefinitionSchema, OperationDefinitionSchema, StudioAuthoringMethodSchema, FunctionInfoSchema])),
     "origins": z.record(z.string(), StudioAuthoringOriginSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringRegistry>;
@@ -9355,6 +9641,50 @@ export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SweepException>;
 
+export const SweepListSchema: z.ZodType<SweepList> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("list").optional(),
+    "members": z.array(ExpressionSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<SweepList>;
+
+export const SweepRangeSchema: z.ZodType<SweepRange> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("range").optional(),
+    "first": ExpressionSchema,
+    "last": ExpressionSchema,
+    "count": z.number().int().safe().gt(0),
+    "spacing": z.union([z.literal("linear"), z.literal("log")]),
+  }).strict()
+) as unknown as z.ZodType<SweepRange>;
+
+export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("sample").optional(),
+    "draw": DrawValueSchema,
+    "count": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<SweepSample>;
+
+export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
+  z.object({
+    "start": z.number().int().safe(),
+    "end": z.number().int().safe(),
+  }).strict()
+) as unknown as z.ZodType<TextSpan>;
+
+export const ValueBaseSchema: z.ZodType<ValueBase> = z.lazy(() =>
+  z.union([z.literal("real"), z.literal("integer"), z.literal("boolean")])
+) as unknown as z.ZodType<ValueBase>;
+
+export const ValueTypeSchema: z.ZodType<ValueType> = z.lazy(() =>
+  z.object({
+    "base": ValueBaseSchema,
+    "shape": z.array(z.number().int().safe().gt(0)).optional(),
+    "dimensions": DimensionsSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<ValueType>;
+
 export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
   z.object({
     "variable": NameSchema,
@@ -9408,7 +9738,10 @@ export const contractSchemas = {
   ModelEditResponse: ModelEditResponseSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
   AnalysisDocument: AnalysisDocumentSchema,
+  FieldTextResult: FieldTextResultSchema,
+  Problem: ProblemSchema,
   ReportDocument: ReportDocumentSchema,
+  SiteProjection: SiteProjectionSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
@@ -9519,7 +9852,10 @@ export interface ContractTypeMap {
   ModelEditResponse: ModelEditResponse;
   ModelUndoRequest: ModelUndoRequest;
   AnalysisDocument: AnalysisDocument;
+  FieldTextResult: FieldTextResult;
+  Problem: Problem;
   ReportDocument: ReportDocument;
+  SiteProjection: SiteProjection;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringCatalog: StudioAuthoringCatalog;
