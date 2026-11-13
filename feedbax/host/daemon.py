@@ -16,7 +16,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from feedbax.host.checkpoint_selection import verify_dependency_files
+from feedbax.host import live_evaluate
+from feedbax.host.checkpoint_selection import requested_checkpoint_selection, verify_dependency_files
 from feedbax.host.completion import CompletionFileError
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
@@ -249,7 +250,33 @@ class Host:
             delivery_bindings = {"bindings": bindings}
             completion_bindings_sha256 = hashlib.sha256(encode(delivery_bindings)).hexdigest()
             write_json(paths["completion_bindings"], delivery_bindings)
+        live_evaluate_sha256 = None
+        owner = live_evaluate.choose_evaluation(self.store.db, row) if row["request"].startswith("train:") else None
+        if owner is not None:
+            evaluation_launch = json.loads(owner["launch"])
+            selection = requested_checkpoint_selection(owner["request"], evaluation_launch)
+            assert selection is not None
+            assignment = {
+                "evaluation_job_id": owner["id"],
+                "producer_job_id": row["id"],
+                "producer_delivery": delivery,
+                "launch": evaluation_launch["payload"],
+                "updates": list(selection.coordinates),
+                "stop_file": str(self._paths(owner, delivery=0)["stop_file"]),
+                "placement": json.loads(owner["data"])["placement_detail"],
+            }
+            paths["live_evaluate"] = paths["directory"] / "live-evaluate.json"
+            live_evaluate_sha256 = hashlib.sha256(encode(assignment)).hexdigest()
+            write_json(paths["live_evaluate"], assignment)
         with self.store.db:
+            if owner is not None:
+                self.store.db.execute(
+                    "INSERT INTO live_evaluations VALUES (?, ?, ?)", (owner["id"], row["id"], delivery),
+                )
+                self.store.append(owner, live_evaluate.DELEGATION_EVENT, {
+                    "producer_job_id": row["id"], "producer_delivery": delivery,
+                    "assignment_sha256": live_evaluate_sha256,
+                })
             self.store.db.execute(
                 """UPDATE jobs SET state='assigned', delivery=?, worker_pid=?, worker_token=?,
                    event_offset=0, stdout_offset=0, stderr_offset=0 WHERE id=?""",
@@ -266,6 +293,7 @@ class Host:
                 "paths": {name: str(path) for name, path in paths.items()},
                 "argv": launch["argv"],
                 "completion_bindings_sha256": completion_bindings_sha256,
+                "live_evaluate_sha256": live_evaluate_sha256,
                 "startup_log": str(worker.profile_dir / "startup.log"),
             }
         )
@@ -481,6 +509,15 @@ class Host:
             self.power = None
 
     def _tick(self, *, recovering: bool = False) -> None:
+        for stopped in self.store.db.execute(
+            """SELECT DISTINCT j.* FROM jobs j JOIN live_evaluations d ON j.id=d.evaluation
+               JOIN jobs p ON p.id=d.producer WHERE j.stop_mode IS NOT NULL
+               AND p.state IN ('assigned','running','stopping')"""
+        ):
+            stop = self._paths(stopped, delivery=0)["stop_file"]
+            if not stop.exists():
+                stop.parent.mkdir(parents=True, exist_ok=True)
+                write_json(stop, {"job_id": stopped["id"]})
         for pid, worker in tuple(self.workers.items()):
             if worker.process.poll() is not None:
                 self._close_control(worker)

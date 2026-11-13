@@ -140,6 +140,8 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
                 **{key: selection[key] for key in ("requested", "selector_sha256", "lineage", "lineage_tip")},
             },
         }
+        if "live_evaluation_points" in binding:
+            metadata["live_evaluation_points"] = binding["live_evaluation_points"]
         train = []
         if "gaps" in selection:
             closure = selection["closure"]

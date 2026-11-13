@@ -430,6 +430,15 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             if completed % snapshot_interval == 0:
                 publish_frame()
 
+        evaluate_checkpoint = None
+        if "FEEDBAX_HOST_LIVE_EVALUATE" in os.environ:
+            from feedbax.training.live_evaluate import live_evaluation_callback
+
+            try:
+                evaluate_checkpoint = live_evaluation_callback(launch, events)
+            except (OSError, ValueError) as error:
+                events.append("live_evaluate_error", _error(error, "live_evaluate"), sync=True)
+
         def on_checkpoint(write: CheckpointWriteResult) -> None:
             completed = write.latest_pointer.completed_training_batches
             if completed is None:
@@ -456,6 +465,11 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                     publication["checkpoint_product_error"] = str(exc)
             events.append("publication", publication, sync=True)
             events.checkpoint = checkpoint
+            if evaluate_checkpoint is not None and "checkpoint_product" in publication and latest_model is not None:
+                try:
+                    evaluate_checkpoint(checkpoint, latest_model)
+                except OSError as error:
+                    print(f"Could not publish live Evaluate point: {error}", file=sys.stderr)
 
         def stop_before_update() -> bool:
             nonlocal stop_requested

@@ -132,7 +132,7 @@ def test_same_evaluate_products_inside_driver_and_ordinary_job(host, tmp_path, m
 
 
 def test_placement_respects_readiness_and_full_product_budget():
-    budget = ValidationBudget(4, 10, 10, 0.10)
+    budget = ValidationBudget(durable_point_p95_ms=4, steady_update_ms=10, max_point_ms=10, max_update_fraction=0.10)
 
     def place(updates=(7, 14), **facts):
         return place_validation(updates, **({

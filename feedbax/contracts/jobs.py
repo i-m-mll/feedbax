@@ -294,6 +294,7 @@ class StudioActivityJob(StrictModel):
     earlier_definition: bool = False
     seen: bool = False
     actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
+    placement: Literal["live", "ordinary"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioLocalSession(StrictModel):
