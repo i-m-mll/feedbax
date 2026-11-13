@@ -15,7 +15,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.training import TaskSpec
-from feedbax.runtime.model_values import MODEL_OWNERS
+from feedbax.runtime.model_values import MODEL_OWNERS, SPATIAL_OWNER
 from feedbax.studio.canonical_evaluate import CannotRun
 
 
@@ -85,16 +85,21 @@ def validate_evaluation_source(graph: GraphSpec) -> None:
             and node.revision in {None, declaration.revision}
         ):
             continue
-        if (
+        if node.type == SPATIAL_OWNER:
+            reason = "native or physical owner has no qualified Evaluate realization"
+        elif (
             declaration is None or not declaration.checkpointable or declaration.states is None
             or node.revision not in {None, declaration.revision}
         ):
-            raise CannotRun(
-                pointer(("inputs", "subject", "graph", *(
-                    part for owner in path[:-1] for part in ("subgraphs", owner)
-                ), "nodes", path[-1])),
-                f"owner {node.type!r} has no declared raw-state layout for this revision",
-            )
+            reason = f"owner {node.type!r} has no declared Evaluate layout for this revision"
+        else:
+            continue
+        raise CannotRun(
+            pointer(("inputs", "subject", "graph", *(
+                part for owner in path[:-1] for part in ("subgraphs", owner)
+            ), "nodes", path[-1])),
+            reason,
+        )
 
 
 def _finite_float32(value: object) -> bool:
@@ -216,9 +221,10 @@ def resolve_evaluation_variant(
                         raise ValueError("cannot replace a retained owner with an addition")
                     component = ComponentSpec.model_validate(patch.value)
                     owner = MODEL_OWNERS.get(component.type)
-                    if owner is None or owner.states is None or component.revision not in {
-                        None, owner.revision,
-                    }:
+                    if (
+                        component.type == SPATIAL_OWNER or owner is None or owner.states is None
+                        or component.revision not in {None, owner.revision}
+                    ):
                         raise ValueError(f"added owner {component.type!r} has no qualified declaration")
                 case ["nodes", name], ("remove" | "replace"):
                     node = current.nodes.get(name)
@@ -233,7 +239,10 @@ def resolve_evaluation_variant(
                     if node is None:
                         raise ValueError("parameter patch must name a retained owner")
                     owner = MODEL_OWNERS.get(node.type)
-                    if owner is None or owner.states is None or not owner.checkpointable:
+                    if (
+                        owner is None or owner.states is None or not owner.checkpointable
+                        or node.revision not in {None, owner.revision}
+                    ):
                         raise ValueError(f"retained owner {node.type!r} has no qualified declaration")
                     declared = next((value for value in owner.values if value.symbol == parameter), None)
                     if declared is not None:

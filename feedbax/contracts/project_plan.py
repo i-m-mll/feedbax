@@ -377,6 +377,7 @@ class _ModelSource:
     document: str
     model: ModelDocument
     stamp: str
+    evaluation_problem: ProjectDiagnostic | None = None
 
 
 def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference, ...]]:
@@ -545,6 +546,7 @@ def _encode_row(
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
     python_tasks: PythonTaskRegistry | None = None,
+    model_source: _ModelSource | None = None,
 ) -> _LoweredRow:
     document_train = kind == "train" and payload.get("trial_documents") is not None
     if document_train:
@@ -585,6 +587,18 @@ def _encode_row(
                 ".".join(("payload.trial_documents", *map(str, problem.path))),
                 problem.reason, key.step, row=key.row, variant=key.variant,
             ) for problem in paired), encoding_stamp)
+        from feedbax.studio.canonical_evaluate import CannotRun
+        from feedbax.training.evaluation_variant import validate_evaluation_source
+
+        try:
+            validate_evaluation_source(paired.executable.resolved.graph)
+        except CannotRun as error:
+            address = paired.lowered.source_address(error.path.removeprefix("/inputs/subject"))
+            assert model_source is not None
+            model_source = replace(model_source, evaluation_problem=ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, error.path, error.reason,
+                document=address.document if address is not None else None, model_address=address,
+            ))
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
         from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
@@ -682,7 +696,10 @@ def _encode_row(
             if isinstance(spec, TrainingRequestSpec) and spec.graph is not None and not spec.graph.nodes
             else None
         )
-        return _LoweredRow(encoded, (), encoding_stamp, admission_problem=problem)
+        return _LoweredRow(
+            encoded, (), encoding_stamp, admission_problem=problem,
+            model_source=model_source,
+        )
     return _LoweredRow(
         None,
         tuple(
@@ -1157,6 +1174,7 @@ class _Compiler:
         subject = inputs.get("subject") if kind == "evaluate" else None
         model_source = self.model_sources.get(subject.producer) if subject is not None else None
         source_stamp = model_source.stamp if model_source is not None else None
+        source_problem = model_source.evaluation_problem if model_source is not None else None
 
         def lower(reader=None, previous=None):
             if definition is None:
@@ -1185,6 +1203,11 @@ class _Compiler:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
+            if source_problem is not None and payload.get("evaluation_type") == ROLLOUT_TYPE:
+                return _LoweredRow(
+                    None, (replace(source_problem, step=key.step, row=key.row, variant=key.variant),),
+                    encoding_stamp, document_ids=document_ids, document_uses=document_uses,
+                )
             if kind == "train":
                 payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
             elif has_differences:
@@ -1201,11 +1224,10 @@ class _Compiler:
                     self.work.request_documents if self.previous is not None else None,
                     document_ids.get("payload.graph"),
                     definition.sources if definition is not None else None,
-                    self.components, self.functions, self.python_tasks,
+                    self.components, self.functions, self.python_tasks, model_source=authored_model,
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,
-                model_source=authored_model,
             )
 
         if self.previous is None:
