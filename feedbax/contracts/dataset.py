@@ -18,7 +18,7 @@ from pydantic import (
 
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes, validate_canonical_json_v2
 from feedbax.contracts.request_refs import ContentRef, ReferenceValue, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
@@ -48,7 +48,7 @@ class FieldDescriptor(StrictModel):
     @classmethod
     def _validate_inline_json(cls, value: object) -> object:
         if isinstance(value, (tuple, list)):
-            canonical_json_v2_bytes(list(value))
+            validate_canonical_json_v2(list(value))
         return value
 
     @field_validator("dims")
@@ -74,7 +74,7 @@ class DatasetDescriptor(StrictModel):
     @field_validator("attrs", mode="before")
     @classmethod
     def _validate_attrs_json(cls, value: object) -> object:
-        canonical_json_v2_bytes(value)
+        validate_canonical_json_v2(value)
         return value
 
     @model_validator(mode="after")

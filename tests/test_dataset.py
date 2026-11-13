@@ -7,7 +7,8 @@ from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor
 from feedbax.dataset import Dataset, Variable
 
 
-def test_roundtrip_distinguishes_tensor_fields_from_inline_labels():
+@pytest.mark.parametrize("bind_json", [False, True])
+def test_roundtrip_distinguishes_tensor_fields_from_inline_labels(bind_json):
     timing = np.array(["bounded", "inapplicable"])
     coord = np.empty((2, 2), dtype=object)
     coord[0, 0] = "nominal"
@@ -45,8 +46,9 @@ def test_roundtrip_distinguishes_tensor_fields_from_inline_labels():
         reads.append((name, index))
         return states[index]
 
+    metadata = descriptor.json_value() if bind_json else descriptor
     restored = Dataset.bind(
-        descriptor, tensor_shapes={"mechanics.effector.pos": (2, 2)}, load_tensor=read
+        metadata, tensor_shapes={"mechanics.effector.pos": (2, 2)}, load_tensor=read
     )
     np.testing.assert_array_equal(restored.data("timing_applicability"), timing)
     assert restored.data("timing_applicability").dtype.kind == "U"
@@ -55,7 +57,10 @@ def test_roundtrip_distinguishes_tensor_fields_from_inline_labels():
     assert not reads
 
     restored.data("time")[1, 0]["side"].clear()
-    descriptor.coords.clear()
+    if isinstance(metadata, DatasetDescriptor):
+        metadata.coords.clear()
+    else:
+        metadata["coords"]["time"]["inline_values"][2]["side"].clear()
     assert restored.data("time", (1, 0)).item() == {"side": ["left", "right"]}
     with pytest.raises(ValueError, match="host-only"):
         restored.project("mechanics.effector.pos", coordinates=("time",))

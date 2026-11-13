@@ -149,15 +149,17 @@ class Dataset:
     @classmethod
     def bind(
         cls,
-        descriptor: DatasetDescriptor,
+        descriptor: DatasetDescriptor | JsonValue,
         *,
         tensor_shapes: Mapping[str, Sequence[int]],
         load_tensor: TensorLoader,
     ) -> Dataset:
-        """Bind authenticated tensor headers and defer reads to the supplied loader."""
-        descriptor = DatasetDescriptor.model_validate(descriptor.model_dump(mode="python"))
-        descriptor.validate_tensor_shapes(tensor_shapes)
-        return cls(descriptor, load_tensor)
+        """Validate and snapshot metadata, then bind it to lazy tensor reads."""
+        if isinstance(descriptor, DatasetDescriptor):
+            descriptor = descriptor.model_dump(mode="python")
+        validated = DatasetDescriptor.from_json_value(descriptor)
+        validated.validate_tensor_shapes(tensor_shapes)
+        return cls(validated, load_tensor)
 
     @property
     def descriptor(self) -> DatasetDescriptor:

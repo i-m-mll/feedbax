@@ -14,6 +14,7 @@ from __future__ import annotations
 from enum import StrEnum
 import json
 import math
+import re
 from typing import Any, Literal, TypeAlias, cast
 
 import rfc8785
@@ -24,6 +25,7 @@ CANONICAL_JSON_V2 = "canonical_json_v2"
 CanonicalJsonAlgorithm: TypeAlias = Literal["canonical_json_v1", "canonical_json_v2"]
 
 _MAX_SAFE_INTEGER = 2**53 - 1
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 
 class CanonicalJsonErrorCode(StrEnum):
@@ -65,6 +67,12 @@ def canonical_json_v1_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
+def validate_canonical_json_v2(value: object) -> None:
+    """Require a value in the canonical JSON v2 input domain."""
+
+    _validate_v2_value(value, path="", active_containers=set())
+
+
 def canonical_json_v2_bytes(value: object) -> bytes:
     """Return strict cross-language canonical JSON bytes.
 
@@ -74,7 +82,7 @@ def canonical_json_v2_bytes(value: object) -> bytes:
     contract with :class:`CanonicalJsonError`.
     """
 
-    _validate_v2_value(value, path="", active_containers=set())
+    validate_canonical_json_v2(value)
     try:
         return rfc8785.dumps(cast(Any, value))
     except rfc8785.CanonicalizationError as exc:
@@ -190,7 +198,7 @@ def _validate_container_entry(
 
 
 def _validate_v2_string(value: str, *, path: str) -> None:
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+    if not value.isascii() and _SURROGATE.search(value):
         raise CanonicalJsonError(
             CanonicalJsonErrorCode.LONE_SURROGATE,
             path=path,
@@ -212,4 +220,5 @@ __all__ = [
     "canonical_json_bytes_for_algorithm",
     "canonical_json_v1_bytes",
     "canonical_json_v2_bytes",
+    "validate_canonical_json_v2",
 ]

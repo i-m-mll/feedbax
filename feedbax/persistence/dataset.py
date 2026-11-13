@@ -70,7 +70,7 @@ def _verify_dataset_file(path: Path, *, descriptor_sha256: str) -> None:
 
 def _bind_dataset(container: ArrayContainerDescriptor, load: TensorLoader) -> Dataset:
     return Dataset.bind(
-        DatasetDescriptor.from_json_value(container.metadata),
+        container.metadata,
         tensor_shapes=_tensor_shapes(container),
         load_tensor=load,
     )

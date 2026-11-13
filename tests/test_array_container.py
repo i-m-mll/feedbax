@@ -121,3 +121,27 @@ def test_metadata_only_objects_and_malformed_descriptors(tmp_path: Path) -> None
         encode_array_container({"__metadata__": np.array(1)}, metadata=None)
     with pytest.raises(ArrayContainerError, match="unsupported.*unsafe"):
         encode_array_container({"unsafe": np.array([1], dtype=object)}, metadata=None)
+
+
+@pytest.mark.parametrize(
+    ("raw_metadata", "reason"),
+    [
+        ('{"trial":1,"trial":2}', "duplicate.*trial"),
+        ('{"trial":9007199254740992}', "unsafe_integer"),
+        (r'{"trial":"\ud800"}', "lone_surrogate"),
+        (r'{"trial":"\u00e9"}', "not canonical JSON"),
+    ],
+)
+def test_descriptor_open_rejects_invalid_metadata_even_with_matching_digest(
+    tmp_path: Path, raw_metadata: str, reason: str,
+) -> None:
+    descriptor = (
+        '{"metadata":' + raw_metadata + ',"schema":"feedbax.array_container.v1","tensors":{}}'
+    )
+    path = tmp_path / "metadata.safetensors"
+    path.write_bytes(save({}, metadata={"feedbax": descriptor}))
+    with pytest.raises(ArrayContainerError, match=reason):
+        with open_array_container(
+            path, expected_descriptor_sha256=sha256(descriptor.encode()).hexdigest(),
+        ):
+            pytest.fail("invalid metadata was exposed")
