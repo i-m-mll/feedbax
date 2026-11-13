@@ -16,7 +16,7 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_override_patch_copy
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
+from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project import (
     Document,
     DocumentOverrides,
@@ -57,7 +57,8 @@ from feedbax.contracts.project_sweep import (
     authored_row,
     inherit_sweep,
     merge_named,
-    sweep_patches,
+    model_field_target,
+    sweep_patch,
     sweep_value_identity_bytes,
 )
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
@@ -148,9 +149,10 @@ class _Problem(Exception):
         layer: str | None = None,
         document: str | None = None,
         document_path: str | None = None,
+        model_address: ModelAddress | None = None,
     ):
         self.diagnostic = ProjectDiagnostic(
-            code, path, detail, step, layer, document, document_path=document_path,
+            code, path, detail, step, layer, document, document_path=document_path, model_address=model_address,
         )
         super().__init__(detail)
 
@@ -761,8 +763,19 @@ class _Resolver:
     ) -> _StepState:
         payload = state.payload
         origins = state.origins
-        for patch in sweep_patches(row.patches):
-            try:
+        path = "sweep"
+        address = None
+        fields = []
+        try:
+            for path, write in row.patches.items():
+                address = None
+                patch = sweep_patch(path, write)
+                if isinstance(patch, SetField):
+                    address = patch.address
+                    if model_field_target(path).step is not None:
+                        raise ValueError("A step-scoped Model target belongs in the project sweep")
+                    fields.append((path, patch))
+                    continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
                 if patch.path.startswith(MODEL_ATTACHMENTS + ".") and MODEL_ATTACHMENTS not in payload:
@@ -778,10 +791,34 @@ class _Resolver:
                     author = row.patch_authors.get(patch.path, name)
                     source, override = self.row_source(author, row, patch.path)
                     origins = patch_source(origins, patch, source_shape(patch.value, source, override))
-            except ValueError as error:
-                raise _Problem(
-                    ResolutionCode.INVALID_SWEEP, patch.path, str(error), step=name, layer=row.id
-                ) from error
+            if fields:
+                if not isinstance(payload, dict):
+                    raise ValueError("a root document reference is atomic")
+                batches = payload.get(MODEL_ATTACHMENTS, {})
+                if not isinstance(batches, dict):
+                    raise ValueError("Model differences must be named batches")
+                batch = "row-fields"
+                while batch in batches:
+                    batch += "-"
+                records = [patch.model_dump(mode="json") for _, patch in fields]
+                if origins is not None:
+                    if MODEL_ATTACHMENTS not in payload:
+                        origins = patch_source(origins, OverridePatch(
+                            path=MODEL_ATTACHMENTS, op="add", value={},
+                        ), source_shape({}, None))
+                    sources = []
+                    for path, patch in fields:
+                        author = row.patch_authors.get(path, name)
+                        sources.append(source_shape(patch.model_dump(mode="json"), *self.row_source(author, row, path)))
+                    origins = patch_source(origins, OverridePatch(
+                        path=f"{MODEL_ATTACHMENTS}.{batch}", op="add", value=records,
+                    ), SourceList(None, iter(sources)))
+                payload = payload | {MODEL_ATTACHMENTS: batches | {batch: records}}
+        except ValueError as error:
+            raise _Problem(
+                ResolutionCode.INVALID_SWEEP, path, str(error), step=name, layer=row.id,
+                document=address.document if address is not None else None, model_address=address,
+            ) from error
         return _StepState(
             payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=state.document_uses,
             root_document=state.root_document,

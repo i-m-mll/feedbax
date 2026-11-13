@@ -52,3 +52,14 @@ class PythonTaskRegistry:
 
     def seal(self) -> None:
         self._sealed = True
+
+
+def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskRegistry) -> Site | None:
+    prefix = "trial_documents.python_task.params."
+    if not path.startswith(prefix) or not isinstance(trial_documents, dict):
+        return None
+    selection = trial_documents.get("python_task")
+    if not isinstance(selection, dict) or not isinstance(selection.get("type"), str):
+        return None
+    definition = registry.resolve(selection["type"])
+    return definition.parameter_sites.get(path.removeprefix(prefix)) if definition else None

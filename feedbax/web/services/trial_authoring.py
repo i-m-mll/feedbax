@@ -12,6 +12,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import DocumentReference, RemoveProjectValue, SetProjectValue, json_pointer_parts
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.project_sources import pointer
@@ -136,8 +137,8 @@ def _prepare_edits(change, documents, projection, definition, snapshot, key, bun
     if change is None:
         return [], ()
     step = snapshot.project.steps[key.step]
-    if key.variant != "default" or key.row != "default" or step.sweep is not None:
-        raise ProjectFolderInvalid("This edit needs the step's default row.")
+    if key.variant != "default" or key.row != "default" or step.sweep is not None or step.deltas:
+        raise ProjectFolderInvalid("This edit needs an unswept local step without inherited differences.")
     inline = step.model_dump(mode="json", by_alias=True, exclude_unset=True).get("base", {}).get("inline", {})
     raw = inline.get("trial_documents")
     if not isinstance(raw, dict):
@@ -176,7 +177,10 @@ def _prepare_edits(change, documents, projection, definition, snapshot, key, bun
         name = definition.document_ids.get(f"payload.trial_documents.{field}")
         if name is not None:
             stored = snapshot.project.documents[name].payload
-            reference = DocumentReference.model_validate(raw.get(field))
+            try:
+                reference = DocumentReference.model_validate(raw.get(field))
+            except ValidationError as error:
+                raise ProjectFolderInvalid("Edit this value at its authored source.") from error
             if (
                 reference.document != name or reference.pointer is not None
                 or step.document_overrides.get(name)
@@ -210,7 +214,8 @@ def _prepare_edits(change, documents, projection, definition, snapshot, key, bun
 def _evaluate_documents(plan, key, definition, bundle):
     run = next((row for row in plan.runs if row.key == key), None)
     subject = run.inputs.get("subject") if run else None
-    raw = plan.requests.get(subject.member.reference.request_id) if subject else None
+    reference = subject.member.reference if subject else None
+    raw = plan.requests.get(reference.request_id) if isinstance(reference, ProductRef) else None
     if raw is None:
         raise ProjectFolderInvalid("The selected Evaluate has no planned Train subject.")
     request = decode_request(raw, plan.documents.__getitem__).spec

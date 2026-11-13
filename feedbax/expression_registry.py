@@ -88,6 +88,7 @@ class Function:
     argument_context: ArgumentContext | None = None
     result_dimensions: ResultDimensions | None = None
     bind: Callable[[Function, CallValue], tuple[Function, CallValue] | SignatureError] | None = None
+    positional_names: tuple[str, ...] = ()
 
 
 class FunctionRegistry:
@@ -111,6 +112,11 @@ class FunctionRegistry:
             or (info.max_args is not None and info.max_args < info.min_args)
         ):
             raise ValueError("Invalid expression function declaration.")
+        if entry.positional_names and (
+            len(set(entry.positional_names)) != len(entry.positional_names)
+            or len(entry.positional_names) != info.max_args
+        ):
+            raise ValueError("Invalid positional parameter names.")
         self._entries[info.id] = entry
 
     def resolve(self, key: str) -> Function | None:

@@ -665,13 +665,14 @@ def register_builtins(registry: FunctionRegistry) -> None:
         result_dimensions=_known_result,
         reset=StateReset.TRIAL,
         bind=None,
+        positional_names=(),
     ):
         minimum, maximum = count if isinstance(count, tuple) else (count, count)
         registry.register(
             Function(
                 FunctionInfo(
                     id=name,
-                    signature=f"{name}({signature})",
+                    signature=f"{name}({', '.join(positional_names) if positional_names else signature})",
                     display_class=display_class,
                     min_args=minimum,
                     max_args=maximum,
@@ -689,6 +690,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 argument_context,
                 result_dimensions,
                 bind,
+                positional_names,
             )
         )
 
@@ -914,22 +916,23 @@ def register_builtins(registry: FunctionRegistry) -> None:
             level=Level.STEP,
             argument_context=partial(_operand_context, base=_REAL),
         )
-    for family, signature, count, infer in (
-        ("uniform", "low, high", 2, partial(_elementwise, base=_REAL)),
-        ("loguniform", "low, high", 2, partial(_elementwise, base=_REAL)),
-        ("normal", "mean, sd", 2, partial(_elementwise, base=_REAL)),
-        ("bernoulli", "probability", 1, _bernoulli),
-        ("choice", "values…", (1, None), _choice),
-        ("truncexp", "mean, low, high", 3, partial(_elementwise, base=_REAL)),
-        ("uniform_region", "centre, radius", 2, _region),
+    for family, names, infer in (
+        ("uniform", ("low", "high"), partial(_elementwise, base=_REAL)),
+        ("loguniform", ("low", "high"), partial(_elementwise, base=_REAL)),
+        ("normal", ("mean", "sd"), partial(_elementwise, base=_REAL)),
+        ("bernoulli", ("probability",), _bernoulli),
+        ("choice", (), _choice),
+        ("truncexp", ("mean", "low", "high"), partial(_elementwise, base=_REAL)),
+        ("uniform_region", ("centre", "radius"), _region),
     ):
         add(
             family,
-            signature,
-            count,
+            "values…",
+            len(names) if names else (1, None),
             infer,
             partial(_sample, family),
             display_class=_DRAW,
+            positional_names=names,
             random=True,
             argument_context=(
                 partial(_operand_context, base=_REAL, dimensionless=True)

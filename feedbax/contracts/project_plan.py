@@ -9,24 +9,24 @@ from dataclasses import dataclass, field, replace
 from functools import cache
 from threading import Lock
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from pydantic import ValidationError
 from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.expression_values import Problem
+from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import StudioTaskBindingSpec
-from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_ATTACHMENT_BATCHES
+from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
+from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.operation import DatasetPort
-from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
+from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -60,9 +60,10 @@ from feedbax.contracts.project_sweep import (
     SweepExpansionError,
     SweepInputMember,
     expand_sweep,
-    sweep_patches,
+    model_field_target,
+    sweep_patch,
 )
-from feedbax.contracts.project_sources import ValueSource, patch_source, pointer, source_shape
+from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
@@ -373,8 +374,95 @@ def _work[K, T](
 @dataclass(frozen=True)
 class _ModelSource:
     document: str
-    model: dict
+    model: ModelDocument
     stamp: str
+
+
+def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference, ...]]:
+    if MODEL_ATTACHMENTS not in payload:
+        return payload, ()
+    batches = MODEL_DIFFERENCE_BATCHES.validate_python(payload[MODEL_ATTACHMENTS])
+    return (
+        {name: value for name, value in payload.items() if name != MODEL_ATTACHMENTS},
+        tuple(item for batch in batches.values() for item in batch),
+    )
+
+
+def _with_train_model(payload: Payload, model: ModelDocument) -> Payload:
+    data = model.model_dump(mode="json")
+    managed = payload.get("trial_documents")
+    return payload | (
+        {"trial_documents": managed | {"model": data}} if isinstance(managed, dict) else {"graph": data}
+    )
+
+
+def _model_difference_problem(key: RunKey, address: ModelAddress | None, detail: str) -> ProjectDiagnostic:
+    return ProjectDiagnostic(
+        ResolutionCode.INVALID_PAYLOAD, f"payload.{MODEL_ATTACHMENTS}", detail, key.step,
+        row=key.row, variant=key.variant, document=address.document if address else None, model_address=address,
+    )
+
+
+def _sweep_problem(
+    error: SweepExpansionError, *, step: str | None = None, variant: str | None = None,
+) -> ProjectDiagnostic:
+    address = None
+    if error.target is not None:
+        try:
+            target = model_field_target(error.target)
+            address = target.address if target is not None else None
+        except ValueError:
+            pass  # The sweep diagnostic already reports the malformed target.
+    return ProjectDiagnostic(
+        ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
+        document=address.document if address is not None else None, model_address=address,
+    )
+
+
+def _integer_model_site(
+    document: str, model: ModelDocument, address: ModelAddress, components: ComponentRegistry,
+) -> bool:
+    from feedbax.contracts.model_document import CompositeComponent, LeafComponent
+
+    element = address.element
+    if document != address.document or not isinstance(element, FieldElement) or not isinstance(element.parent, ComponentElement):
+        return False
+    graph = model
+    for name in address.composites:
+        component = graph.interior.components.get(name)
+        if not isinstance(component, CompositeComponent):
+            return False
+        graph = component
+    component = graph.interior.components.get(element.parent.id)
+    path = element.path
+    if isinstance(component, CompositeComponent):
+        return path == ("substeps",)
+    if not isinstance(component, LeafComponent) or len(path) != 2 or path[0] != "fields":
+        return False
+    declaration = components.get(component.type)
+    return declaration is not None and any(
+        parameter.name == path[1] and parameter.type == "int" for parameter in declaration.params.param_schema
+    )
+
+
+def _integer_train_site(path: str, payload: Payload, python_tasks: PythonTaskRegistry | None) -> bool:
+    from feedbax.tasks.reaching import builtin_python_tasks
+    from feedbax.tasks.registry import python_task_parameter_site
+
+    documents = payload.get("trial_documents")
+    site = python_task_parameter_site(path, documents, python_tasks or builtin_python_tasks())
+    if site is not None:
+        return site.expected.base is ValueBase.INTEGER and not site.expected.shape
+    annotation = DocumentTrainingRequestSpec if documents is not None else TrainingRequestSpec
+    for segment in path.split("."):
+        fields = getattr(annotation, "model_fields", {})
+        if segment not in fields:
+            return False
+        annotation = fields[segment].annotation
+        args = get_args(annotation)
+        if len(args) == 2 and type(None) in args:
+            annotation = next(arg for arg in args if arg is not type(None))
+    return annotation is int
 
 
 @dataclass(frozen=True)
@@ -651,12 +739,44 @@ class _Compiler:
         self.model_sources: dict[RunKey, _ModelSource] = {}
 
     def expand_variants(self) -> None:
+        def integer_site(path: str) -> bool:
+            if (target := model_field_target(path)) is not None:
+                from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+
+                address = target.address
+                if target.step is not None:
+                    step = self.project.steps.get(target.step)
+                    if step is None or step.kind != "train":
+                        return False
+                    template = compose_step(self.project, target.step, readers=self.readers)
+                    if isinstance(template, ProjectDiagnostic):
+                        return False
+                    resolved = template.resolve()
+                    if isinstance(resolved, ProjectDiagnostic):
+                        return False
+                    _, source = self.lower_train_model(
+                        RunKey(DEFAULT_SWEEP_ROW, target.step, DEFAULT_SWEEP_ROW),
+                        resolved.payload, resolved.document_ids,
+                    )
+                    return source is not None and _integer_model_site(
+                        source.document, source.model, address, self.components or _builtin_model_registry(),
+                    )
+                entry = self.project.documents.get(address.document)
+                return entry is not None and entry.schema_id == MODEL_DOCUMENT_SCHEMA_ID and _integer_model_site(
+                    address.document, ModelDocument.model_validate(entry.payload), address,
+                    self.components or _builtin_model_registry(),
+                )
+            parts = path.split(".", 4)
+            if len(parts) == 5 and parts[0] == "steps" and parts[2:4] == ["base", "inline"]:
+                step = self.project.steps.get(parts[1])
+                if step is not None and step.kind == "train" and isinstance(step.base, InlineBase):
+                    return _integer_train_site(parts[4], step.base.inline, self.python_tasks)
+            return False
+
         try:
-            variants = expand_sweep(self.project.sweep)
+            variants = expand_sweep(self.project.sweep, integer_site=integer_site)
         except SweepExpansionError as error:
-            self.diagnostics.append(
-                ProjectDiagnostic(ResolutionCode.INVALID_SWEEP, error.path, error.detail)
-            )
+            self.diagnostics.append(_sweep_problem(error))
             return
         self.variant_order = tuple(row.id for row in variants)
         for row in variants:
@@ -668,14 +788,56 @@ class _Compiler:
             data.setdefault("documents", {})
             data.setdefault("steps", {})
             track = any(variant == row.id for variant, _ in self.wanted_sources)
-            patches = sweep_patches(row.patches)
             if track and self.previous is not None:
-                self.variant_stamps[row.id] = sha256_bytes(to_json(patches))
+                self.variant_stamps[row.id] = sha256_bytes(to_json(tuple(row.patches.items())))
             origins = source_shape(data, None) if track else None
             path = "sweep"
+            address = None
             try:
-                for patch in patches:
-                    path = patch.path
+                from feedbax.compiler.model_attachment import resolve_effective_model
+                from feedbax.compiler.model_document import ModelCompilationProblem
+                from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+
+                for path, write in row.patches.items():
+                    address = None
+                    patch = sweep_patch(path, write)
+                    if isinstance(patch, SetField):
+                        address = patch.address
+                        target = model_field_target(path)
+                        if target.step is not None:
+                            step = data["steps"].get(target.step)
+                            if step is None or step["kind"] not in {"train", "evaluate"}:
+                                raise ValueError("The addressed Train or Evaluate step does not exist")
+                            batches = step.setdefault(MODEL_ATTACHMENTS, {})
+                            batch = "variant-fields"
+                            while batch in batches:
+                                batch += "-"
+                            records = [patch.model_dump(mode="json")]
+                            batches[batch] = records
+                            if origins is not None:
+                                step_path = f"steps.{target.step}.{MODEL_ATTACHMENTS}"
+                                if len(batches) == 1:
+                                    origins = patch_source(origins, OverridePatch(
+                                        path=step_path, op="add", value={},
+                                    ), source_shape({}, None))
+                                source = ValueSource("variant", row.id, pointer(("sweep", path)), variant=row.id)
+                                origins = patch_source(origins, OverridePatch(
+                                    path=f"{step_path}.{batch}", op="add", value=records,
+                                ), source_shape(records, source))
+                            continue
+                        entry = data["documents"].get(address.document)
+                        if entry is None or entry["schema"] != MODEL_DOCUMENT_SCHEMA_ID:
+                            raise ValueError("The addressed Model document does not exist")
+                        before = entry["payload"]
+                        entry["payload"] = resolve_effective_model(
+                            address.document, ModelDocument.model_validate(before),
+                            self.components or _builtin_model_registry(), (patch,), functions=self.functions,
+                        ).model_dump(mode="json")
+                        if origins is not None:
+                            source = ValueSource("variant", row.id, pointer(("sweep", path)), variant=row.id)
+                            authored = origins["documents"][address.document]
+                            authored["payload"] = changed_sources(before, entry["payload"], authored["payload"], source)
+                        continue
                     parts = tuple(path.split("."))
                     if len(parts) < 2 or parts[0] not in {"documents", "steps"}:
                         raise ValueError("a variant must patch a named document or step")
@@ -694,9 +856,12 @@ class _Compiler:
                 self.variants[row.id] = Project.model_validate(data)
                 self.variant_sources[row.id] = origins
             except ValueError as error:
+                if isinstance(error, ModelCompilationProblem):
+                    address = error.address
                 self.diagnostics.append(
                     ProjectDiagnostic(
-                        ResolutionCode.INVALID_SWEEP, path, str(error), variant=row.id
+                        ResolutionCode.INVALID_SWEEP, path, str(error), variant=row.id,
+                        document=address.document if address else None, model_address=address,
                     )
                 )
 
@@ -785,14 +950,55 @@ class _Compiler:
             )
             for role, bindings in members.items()
         }
+        kind = self.variants[variant].steps[name].kind
+        subjects = tuple(
+            self.model_sources.get(item.producer) for item, _ in members.get("subject", ())
+        ) if kind == "evaluate" else ()
 
-        def expand(_read_document=None, _previous=None):
-            try:
-                return expand_sweep(composition.sweep, inputs=fanout)
-            except SweepExpansionError as error:
-                return ProjectDiagnostic(
-                    ResolutionCode.INVALID_SWEEP, error.path, error.detail, name, variant=variant
+        def expand(read_document=None, _previous=None):
+            @cache
+            def train_payload():
+                return self.resolve_row(
+                    composition, RunKey(variant, name, DEFAULT_SWEEP_ROW),
+                    ExpandedRow(DEFAULT_SWEEP_ROW, None, {}, {}, {}), read_document,
                 )
+
+            @cache
+            def train_model():
+                resolved = train_payload()
+                if isinstance(resolved, ProjectDiagnostic):
+                    return None
+                _, model = self.lower_train_model(
+                    RunKey(variant, name, DEFAULT_SWEEP_ROW), resolved.payload, resolved.document_ids,
+                )
+                return model
+
+            def integer_site(path: str) -> bool:
+                target = model_field_target(path)
+                if target is None:
+                    if kind != "train":
+                        return False
+                    resolved = train_payload()
+                    return isinstance(resolved, ResolvedStep) and _integer_train_site(
+                        path, resolved.payload, self.python_tasks,
+                    )
+                if target.step is not None:
+                    raise ValueError("A step-scoped Model target belongs in the project sweep")
+                sources = subjects if kind == "evaluate" else (train_model(),) if kind == "train" else ()
+                types = {
+                    _integer_model_site(
+                        source.document, source.model, target.address, self.components or _builtin_model_registry(),
+                    )
+                    for source in sources if source is not None
+                }
+                if len(types) > 1:
+                    raise ValueError("The addressed range has different site types in the selected Train subjects")
+                return True in types
+
+            try:
+                return expand_sweep(composition.sweep, inputs=fanout, integer_site=integer_site)
+            except SweepExpansionError as error:
+                return _sweep_problem(error, step=name, variant=variant)
 
         if self.previous is None:
             return expand()
@@ -802,6 +1008,7 @@ class _Compiler:
             (variant, name),
             (
                 composition,
+                tuple(subject.stamp if subject is not None else None for subject in subjects),
                 to_json(tuple(
                     (role, tuple(
                         (member.key, tuple(member.coordinates.items()), member.label)
@@ -914,28 +1121,24 @@ class _Compiler:
                 payload = definition.payload
                 document_ids = definition.document_ids
                 document_uses = definition.document_uses
-            model_payload = payload.get("graph")
             authored_model = None
-            if kind == "train" and isinstance(model_payload, dict) and "interior" in model_payload:
-                document = document_ids.get("payload.graph", "model")
-                authored_model = _ModelSource(
-                    document, model_payload, sha256_bytes(to_json((document, model_payload))),
-                )
-            has_attachments = kind == "evaluate" and MODEL_ATTACHMENTS in payload
+            has_differences = MODEL_ATTACHMENTS in payload
             encoding_stamp = (
-                (kind, sha256_bytes(to_json((payload, source_stamp) if has_attachments else payload)), member)
+                (kind, sha256_bytes(to_json((payload, document_ids.get("payload.graph"), source_stamp))), member)
                 if basis is not None else None
             )
             if previous is not None and previous.encoding_stamp == encoding_stamp:
                 return replace(
-                    previous, document_ids=document_ids, document_uses=document_uses, model_source=authored_model,
+                    previous, document_ids=document_ids, document_uses=document_uses,
                 )
-            if has_attachments:
-                payload = self.lower_attachments(
+            if kind == "train":
+                payload, authored_model = self.lower_train_model(key, payload, document_ids)
+            elif has_differences:
+                payload = self.lower_evaluate_model(
                     key, payload, model_source, subject.member.reference if subject is not None else None,
                 )
-                if isinstance(payload, ProjectDiagnostic):
-                    return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
+            if isinstance(payload, ProjectDiagnostic):
+                return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             return replace(
                 _encode_row(
                     key, kind, payload, inputs, encoding_stamp,
@@ -960,18 +1163,59 @@ class _Compiler:
             lower,
         )
 
-    def lower_attachments(self, key, payload, model_source, reference):
+    def lower_train_model(
+        self, key: RunKey, payload: Payload, document_ids: Mapping[str, str],
+    ) -> tuple[Payload | ProjectDiagnostic, _ModelSource | None]:
+        from feedbax.compiler.model_attachment import resolve_effective_model
+        from feedbax.compiler.model_document import ModelCompilationProblem
+
+        raw = payload.get("trial_documents")
+        managed = isinstance(raw, dict)
+        model_payload = raw.get("model") if managed else payload.get("graph")
+        document = raw.get("model_name") if managed else document_ids.get("payload.graph", "model")
+        address = None
+        has_differences = MODEL_ATTACHMENTS in payload
+        try:
+            payload, differences = _model_differences(payload)
+            if not isinstance(model_payload, dict) or "interior" not in model_payload:
+                if differences:
+                    address = differences[0].address
+                    raise ValueError("Model differences require an authored Train Model")
+                return payload, None
+            if not isinstance(document, str):
+                if differences:
+                    address = differences[0].address
+                    raise ValueError("Model differences require a named Train Model")
+                return payload, None
+            model = ModelDocument.model_validate(model_payload)
+            if differences:
+                model = resolve_effective_model(
+                    document, model, self.components or _builtin_model_registry(), differences,
+                    functions=self.functions,
+                )
+                payload = _with_train_model(payload, model)
+            return payload, _ModelSource(
+                document, model, sha256_bytes(to_json((document, model.model_dump(mode="json")))),
+            )
+        except ModelCompilationProblem as error:
+            address, detail = error.address, str(error)
+        except ValueError as error:
+            if not has_differences:
+                return payload, None  # The ordinary Train validator reports invalid model documents.
+            detail = str(error)
+        return _model_difference_problem(key, address, detail), None
+
+    def lower_evaluate_model(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
+    ) -> Payload | ProjectDiagnostic:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.studio.schema import validate_graph_connection_schema
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
-        path = f"payload.{MODEL_ATTACHMENTS}"
         address = None
         try:
-            batches = MODEL_ATTACHMENT_BATCHES.validate_python(payload[MODEL_ATTACHMENTS])
-            differences = tuple(item for batch in batches.values() for item in batch)
-            stripped = {name: value for name, value in payload.items() if name != MODEL_ATTACHMENTS}
+            stripped, differences = _model_differences(payload)
             if not differences:
                 return stripped
             address = differences[0].address
@@ -984,27 +1228,20 @@ class _Compiler:
             ).spec
             if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
                 raise ValueError("Attachment differences require a Train request")
+            if model_source is None:
+                raise ValueError("Attachment differences need a saved Model document")
             components = self.components or _builtin_model_registry()
             documents = train.trial_documents
+            document, model = model_source.document, model_source.model
             if documents is not None:
-                from feedbax.compiler.model_document import lower_model_document
-
-                document = documents.model_name
-                model = documents.model
                 binding = None
-                base_graph = lower_model_document(document, model, components).graph
                 base_task = documents.task_source
             else:
                 assert isinstance(train, TrainingRequestSpec)
-                if model_source is None:
-                    raise ValueError("Attachment differences need a saved Model document")
-                document = model_source.document
-                model = ModelDocument.model_validate(model_source.model)
                 binding = train.task_binding_spec or StudioTaskBindingSpec()
-                base_graph = train.graph
                 base_task = train.task
-            lowered, derived = lower_evaluate_attachments(
-                document, model, binding, components, differences,
+            before, lowered, derived = lower_evaluate_attachments(
+                document, model, binding, components, differences, functions=self.functions,
             )
             params = RolloutParameters.model_validate(payload["params"])
             if not derived:
@@ -1013,9 +1250,9 @@ class _Compiler:
             if isinstance(prior, dict):
                 prior = tuple(prior[name] for name in sorted(prior))
             variation = (*prior, *derived)
-            effective = resolve_evaluation_variant(base_graph, base_task, variation)
+            effective = resolve_evaluation_variant(before.graph, base_task, variation)
             issues = validate_graph_connection_schema(
-                effective.graph, "/graph", train.task_binding_spec if documents is None else None,
+                effective.graph, "/graph", binding,
                 component_registry=components,
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
@@ -1030,11 +1267,7 @@ class _Compiler:
             detail = str(error)
         except ValueError as error:
             detail = str(error)
-        return ProjectDiagnostic(
-            ResolutionCode.INVALID_PAYLOAD, path, detail, key.step,
-            row=key.row, variant=key.variant,
-            document=address.document if address is not None else None, model_address=address,
-        )
+        return _model_difference_problem(key, address, detail)
 
     def compile_step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
@@ -1180,6 +1413,10 @@ class _Compiler:
             if row.kind == "report" and problem.document is None else problem
             for problem in lowered.diagnostics
         )
+        if lowered.model_source is not None and (definition := self.selected_definitions.get(key)):
+            self.selected_definitions[key] = replace(
+                definition, payload=_with_train_model(definition.payload, lowered.model_source.model),
+            )
         if (encoded := lowered.request) is None:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,

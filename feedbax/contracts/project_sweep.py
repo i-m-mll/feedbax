@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from fractions import Fraction
+from functools import lru_cache
 from itertools import product
 import math
 import re
@@ -15,6 +17,8 @@ from pydantic import Field, JsonValue, PrivateAttr, model_validator
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.model_address import FieldElement, ModelAddress
+from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.project_inputs import (
     NonemptyText,
     ProjectName,
@@ -22,9 +26,9 @@ from feedbax.contracts.project_inputs import (
     SubsetTerms,
     select_static_rows,
 )
-from feedbax.contracts.run_matrix import _paths_overlap
-
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
+type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:steps\.[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
+type IntegerSite = Callable[[str], bool]
 
 
 class SetValue(StrictModel):
@@ -39,19 +43,81 @@ class RemoveValue(StrictModel):
 type PatchValue = SetValue | RemoveValue
 
 
+@dataclass(frozen=True)
+class ModelFieldTarget:
+    address: ModelAddress
+    step: str | None = None
+
+
+@lru_cache(maxsize=4096)
+def model_field_target(path: str) -> ModelFieldTarget | None:
+    step = None
+    if path.startswith("steps.") and ".{" in path:
+        scope, _, path = path.partition(".{")
+        step = scope.removeprefix("steps.")
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", step):
+            raise ValueError("A scoped Model field target must name one step")
+        path = "{" + path
+    elif not path.startswith("{"):
+        return None
+    address = ModelAddress.from_text(path)
+    if not isinstance(address.element, FieldElement) or any(
+        not isinstance(part, str) for part in address.element.path
+    ):
+        raise ValueError("A Model sweep target must name a field using named parts")
+    return ModelFieldTarget(address, step)
+
+
+def _target_prefix(parent: str, child: str) -> bool:
+    if parent == child:
+        return True
+    try:
+        owner = model_field_target(parent)
+        target = model_field_target(child)
+    except ValueError:
+        return False  # The addressed write reports its own invalid target.
+    if owner is None:
+        return target is None and child.startswith(parent + ".")
+    if target is None or owner.step != target.step:
+        return False
+    owner, target = owner.address, target.address
+    return (
+        owner.document == target.document and owner.composites == target.composites
+        and owner.element.parent == target.element.parent
+        and owner.element.path == target.element.path[:len(owner.element.path)]
+    )
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    return _target_prefix(left, right) or _target_prefix(right, left)
+
+
+def sweep_patch(path: str, patch: PatchValue) -> OverridePatch | SetField:
+    target = model_field_target(path)
+    if target is not None:
+        if not isinstance(patch, SetValue):
+            raise ValueError("A Model field sweep requires a value")
+        return SetField(op="set_field", address=target.address, value=patch.value)
+    if isinstance(patch, SetValue):
+        return OverridePatch(path=path, op=patch.op, value=patch.value)
+    return OverridePatch(path=path, op="remove")
+
+
 def sweep_patches(patches: Mapping[str, PatchValue | None]) -> list[OverridePatch]:
-    """Adapt authored path-keyed patches to the common patch engine."""
-    return [
-        OverridePatch(path=path, op=patch.op, value=patch.value)
-        if isinstance(patch, SetValue)
-        else OverridePatch(path=path, op="remove")
-        for path, patch in patches.items()
-        if patch is not None
-    ]
+    """Convert payload-only patches for callers without a Model resolver."""
+    writes = []
+    for path, value in patches.items():
+        if value is None:
+            continue
+        patch = sweep_patch(path, value)
+        if isinstance(patch, SetField):
+            raise ValueError("Addressed Model patches require a Model resolver")
+        writes.append(patch)
+    return writes
 
 
 class PatchSet(StrictModel):
-    patches: dict[PatchPath, PatchValue | None] = Field(default_factory=dict)
+    patches: dict[SweepTarget, PatchValue | None] = Field(default_factory=dict)
     _patch_authors: dict[str, str] = PrivateAttr(default_factory=dict)
 
 
@@ -79,7 +145,7 @@ class InputAxis(StrictModel):
 
 
 class GeneratedAxis(StrictModel):
-    path: PatchPath
+    path: SweepTarget
     _author: str | None = PrivateAttr(default=None)
 
 
@@ -88,8 +154,8 @@ class ListedAxis(GeneratedAxis):
 
 
 class RangeValues(StrictModel):
-    start: float
-    stop: float
+    start: int | float
+    stop: int | float
     count: int = Field(ge=1)
     scale: Literal["linear", "log"] = "linear"
 
@@ -187,7 +253,7 @@ def _compose_writes(
     for path, write in child.items():
         previous = combined.pop(path, None)
         for descendant in tuple(combined):
-            if descendant.startswith(f"{path}."):
+            if _target_prefix(path, descendant):
                 del combined[descendant]
         if isinstance(previous, SetValue) and previous.op == "add":
             if isinstance(write, RemoveValue):
@@ -313,10 +379,11 @@ class SweepExpansionCode(StrEnum):
 class SweepExpansionError(ValueError):
     """A sweep refusal with a path suitable for an authored diagnostic."""
 
-    def __init__(self, code: SweepExpansionCode, path: str, detail: str):
+    def __init__(self, code: SweepExpansionCode, path: str, detail: str, *, target: str | None = None):
         self.code = code
         self.path = path
         self.detail = detail
+        self.target = target
         super().__init__(f"{path}: {detail}")
 
 
@@ -560,12 +627,13 @@ def count_sweep(
     inputs: SweepInputs | None = None,
     max_rows: int = DEFAULT_SWEEP_LIMIT,
     max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+    integer_site: IntegerSite | None = None,
 ) -> int:
     """Count final rows, using bounded expansion when exceptions select rows."""
     known_inputs = inputs or {}
     plan = _plan(sweep, known_inputs)
     if plan.exceptions:
-        return len(_expand_plan(plan, known_inputs, max_rows, max_axis_values))
+        return len(_expand_plan(plan, known_inputs, max_rows, max_axis_values, integer_site))
     return plan.row_count
 
 
@@ -587,7 +655,7 @@ def _recorded_draws(name: str, axis: SampledAxis) -> Mapping[str, JsonValue]:
 
 
 def _range_values(spec: RangeValues) -> Iterator[float]:
-    start, stop = spec.start, spec.stop
+    start, stop = float(spec.start), float(spec.stop)
     if not math.isfinite(start) or not math.isfinite(stop):
         raise ValueError("range bounds must be finite")
     yield start
@@ -602,6 +670,28 @@ def _range_values(spec: RangeValues) -> Iterator[float]:
             fraction = index / (spec.count - 1)
             yield start * (1 - fraction) + stop * fraction
     yield stop
+
+
+def _integer_range(spec: RangeValues) -> tuple[int, ...]:
+    if spec.scale == "linear":
+        start, stop = Fraction(str(spec.start)), Fraction(str(spec.stop))
+        if spec.count == 1:
+            values = [start]
+        else:
+            stride = (stop - start) / (spec.count - 1)
+            values = [start + index * stride for index in range(spec.count)]
+        nonwhole = [str(value) for value in values if value.denominator != 1]
+        members = tuple(int(value) for value in values)
+    else:
+        values = list(_range_values(spec))
+        members = tuple(round(value) for value in values)
+        nonwhole = [
+            str(value) for value, whole in zip(values, members, strict=True)
+            if not math.isclose(value, whole, rel_tol=1e-9)
+        ]
+    if nonwhole:
+        raise ValueError("Integer range has nonwhole members: " + ", ".join(nonwhole))
+    return members
 
 
 def _generated_key_value(value: JsonValue) -> JsonValue:
@@ -634,8 +724,19 @@ def _generated_choices(
         )
 
 
-def _choices(name: str, axis: Axis, inputs: SweepInputs) -> tuple[_AxisChoice, ...]:
+def _integer_member(value: JsonValue) -> int:
+    if type(value) is int:
+        return value
+    if type(value) is float and value.is_integer():
+        return int(value)
+    raise ValueError(f"Integer sweep has a nonwhole member: {value!r}")
+
+
+def _choices(
+    name: str, axis: Axis, inputs: SweepInputs, integer_site: IntegerSite | None = None,
+) -> tuple[_AxisChoice, ...]:
     path = f"sweep.axes.{name}"
+    target = None
     try:
         match axis:
             case NamedAxis(values=values):
@@ -665,21 +766,30 @@ def _choices(name: str, axis: Axis, inputs: SweepInputs) -> tuple[_AxisChoice, .
                         f"input {role!r} has an empty member key",
                     )
             case ListedAxis(values=listed):
-                choices = tuple(_generated_choices(axis, ((None, value) for value in listed)))
+                target = axis.path
+                values = map(_integer_member, listed) if integer_site and integer_site(target) else listed
+                choices = tuple(_generated_choices(axis, ((None, value) for value in values)))
             case RangeAxis(range=range_values):
+                target = axis.path
+                if integer_site and integer_site(axis.path):
+                    values = _integer_range(range_values)
+                else:
+                    values = _range_values(range_values)
                 choices = tuple(
-                    _generated_choices(
-                        axis, ((None, value) for value in _range_values(range_values))
-                    )
+                    _generated_choices(axis, ((None, value) for value in values))
                 )
             case SampledAxis():
+                target = axis.path
                 draws = _recorded_draws(name, axis)
-                choices = tuple(_generated_choices(axis, iter(draws.items())))
+                values = draws.items()
+                if integer_site and integer_site(target):
+                    values = ((key, _integer_member(value)) for key, value in values)
+                choices = tuple(_generated_choices(axis, iter(values)))
     except SweepExpansionError:
         raise
     except (ValueError, OverflowError, TypeError) as error:
         raise SweepExpansionError(
-            SweepExpansionCode.INVALID_GENERATION, path, str(error)
+            SweepExpansionCode.INVALID_GENERATION, path, str(error), target=target,
         ) from error
     if len({choice.key for choice in choices}) != len(choices):
         raise SweepExpansionError(
@@ -842,11 +952,11 @@ def _check_axis_budget(name: str, size: int, limit: int) -> None:
 
 
 def _planned_choices(
-    plan: _SweepPlan, inputs: SweepInputs, max_axis_values: int
+    plan: _SweepPlan, inputs: SweepInputs, max_axis_values: int, integer_site: IntegerSite | None,
 ) -> dict[str, tuple[_AxisChoice, ...]]:
     for name, size in plan.sizes.items():
         _check_axis_budget(name, size, max_axis_values)
-    return {name: _choices(name, axis, inputs) for name, axis in plan.axes.items()}
+    return {name: _choices(name, axis, inputs, integer_site) for name, axis in plan.axes.items()}
 
 
 def _explicit_rows(rows: Mapping[str, Row]) -> Iterator[ExpandedRow]:
@@ -859,11 +969,11 @@ def _explicit_rows(rows: Mapping[str, Row]) -> Iterator[ExpandedRow]:
 
 
 def _generated_rows(
-    plan: _SweepPlan, inputs: SweepInputs, max_axis_values: int
+    plan: _SweepPlan, inputs: SweepInputs, max_axis_values: int, integer_site: IntegerSite | None = None,
 ) -> Iterator[tuple[dict[str, _AxisChoice], ExpandedRow]]:
     if not plan.generated_count:
         return
-    choices = _planned_choices(plan, inputs, max_axis_values)
+    choices = _planned_choices(plan, inputs, max_axis_values, integer_site)
     ids = set(plan.rows)
     for selection in plan.selections(choices):
         row = _expanded(plan.axes, selection)
@@ -876,13 +986,14 @@ def _generated_rows(
 
 
 def _expand_plan(
-    plan: _SweepPlan, inputs: SweepInputs, max_rows: int, max_axis_values: int
+    plan: _SweepPlan, inputs: SweepInputs, max_rows: int, max_axis_values: int,
+    integer_site: IntegerSite | None = None,
 ) -> tuple[ExpandedRow, ...]:
     _check_row_budget(plan, max_rows)
     rows = list(_explicit_rows(plan.rows))
     if not plan.axes and not plan.rows:
         rows.append(ExpandedRow(DEFAULT_SWEEP_ROW, None, {}, {}, {}))
-    rows.extend(row for _, row in _generated_rows(plan, inputs, max_axis_values))
+    rows.extend(row for _, row in _generated_rows(plan, inputs, max_axis_values, integer_site))
     return _apply_exceptions(tuple(rows), plan.exceptions)
 
 
@@ -892,6 +1003,7 @@ def expand_sweep(
     inputs: SweepInputs | None = None,
     max_rows: int = DEFAULT_SWEEP_LIMIT,
     max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+    integer_site: IntegerSite | None = None,
 ) -> tuple[ExpandedRow, ...]:
     """Expand the declared sweep using recorded draws and known input members.
 
@@ -899,7 +1011,7 @@ def expand_sweep(
     of zero. Expansion never draws new samples or mutates an authored rule.
     """
     known_inputs = inputs or {}
-    return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values)
+    return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values, integer_site)
 
 
 def authored_row(sweep: Sweep | None, row_id: str) -> ExpandedRow | None:
@@ -923,12 +1035,13 @@ def authored_row(sweep: Sweep | None, row_id: str) -> ExpandedRow | None:
 
 
 def axis_to_list(
-    axis: ListedAxis | RangeAxis | SampledAxis, *, max_axis_values: int = DEFAULT_SWEEP_LIMIT
+    axis: ListedAxis | RangeAxis | SampledAxis, *, max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+    integer_site: IntegerSite | None = None,
 ) -> NamedAxis:
     """Materialize an authored rule as an editable, identity-preserving value map."""
     _check_axis_budget("values", _axis_size("values", axis, {}), max_axis_values)
     values = {}
-    for choice in _choices("values", axis, {}):
+    for choice in _choices("values", axis, {}, integer_site):
         value = AxisValue(
             label=choice.coordinate.label,
             value=choice.coordinate.value,
@@ -945,6 +1058,7 @@ def sweep_to_rows(
     inputs: SweepInputs | None = None,
     max_rows: int = DEFAULT_SWEEP_LIMIT,
     max_axis_values: int = DEFAULT_SWEEP_LIMIT,
+    integer_site: IntegerSite | None = None,
 ) -> Sweep:
     """Pin surviving combinations by axis value ID, preserving named patch exceptions."""
     known_inputs = inputs or {}
@@ -953,7 +1067,7 @@ def sweep_to_rows(
     if not plan.axes:
         return sweep
     explicit = tuple(_explicit_rows(plan.rows))
-    generated = tuple(_generated_rows(plan, known_inputs, max_axis_values))
+    generated = tuple(_generated_rows(plan, known_inputs, max_axis_values, integer_site))
     candidates = explicit + tuple(row for _, row in generated)
     survivors = {row.id for row in _apply_exceptions(candidates, plan.exceptions)}
     retained = [(selection, row) for selection, row in generated if row.id in survivors]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -114,7 +115,7 @@ def _copy_endpoint(end: Record, ids: dict[str, str]) -> Record:
     return end | {"component": ids[end["component"]]} if "component" in end else end
 
 
-class _Edit:
+class ModelEditDraft:
     def __init__(self, name: str, state: edits.ModelEditState, ports: LeafPorts, accepts: AcceptComponent):
         self.name = name
         self.document = state.document.model_dump(mode="json")
@@ -357,7 +358,7 @@ class _Edit:
             placement = graph["attachments"]
         return placement[key].get(end["port"], [])
 
-    def set_field(self, address: ModelAddress, value: Any) -> None:
+    def set_field(self, address: ModelAddress, value: Any, *, functions=None, attachment=None) -> None:
         owner, graph = self.context(address)
         field = address.element
         if field.kind != "field":
@@ -368,9 +369,14 @@ class _Edit:
             item = graph["components"].get(parent.id)
             allowed = {"fields"} if item and item["kind"] == "leaf" else {"substeps"}
         elif parent.kind == "attachment":
-            chain = self.attachment_chain(address, parent.parent.model_dump(mode="json"))
-            item = next((entry for entry in chain if entry["id"] == parent.id), None)
+            if attachment is None:
+                chain = self.attachment_chain(address, parent.parent.model_dump(mode="json"))
+                item = next((entry for entry in chain if entry["id"] == parent.id), None)
+            else:
+                item = attachment
             allowed = {"fields", "window", "operation", "initial", "delay", "name"}
+            if item is not None and len(path) > 1 and path[0] == "fields" and path[1] not in item["fields"]:
+                raise _Refusal(address, "the addressed attachment field no longer exists")
         elif parent.kind == "port":
             port_address = _address(self.name, address.composites, "port", end=parent.end.model_dump(mode="json"))
             port_owner, _, direction, port = self.port_owner(port_address)
@@ -379,12 +385,10 @@ class _Edit:
             item, allowed = owner, {"step_seconds", "world"}
         else:
             item, allowed = None, set()
-        if item is None or path[0] not in allowed:
+        if item is None or path[0] not in allowed or path[0] not in item:
             raise _Refusal(address, "field does not exist or is not editable")
         try:
-            for segment in path[:-1]:
-                item = item[segment]
-            item[path[-1]] = value
+            _set_field_value(item, path, value, functions)
         except (KeyError, IndexError, TypeError) as error:
             raise _Refusal(address, "field path does not resolve") from error
         self.changed.append(address)
@@ -716,6 +720,36 @@ class _Edit:
             raise _Refusal(address, "attachment IDs collide on this owner")
 
 
+@cache
+def _builtin_functions():
+    from feedbax.expression_builtins import register_builtins
+    from feedbax.expression_registry import FunctionRegistry
+
+    functions = FunctionRegistry()
+    register_builtins(functions)
+    functions.seal()
+    return functions
+
+
+def _set_field_value(item, path, value, functions):
+    for index, segment in enumerate(path):
+        if isinstance(item, dict) and item.get("kind") == "draw" and "family" in item:
+            function = (functions or _builtin_functions()).resolve(item["family"])
+            if function is None or segment not in function.positional_names:
+                raise KeyError(segment)
+            item, segment = item["args"], function.positional_names.index(segment)
+        if index == len(path) - 1:
+            prior = item[segment] if isinstance(item, list) else item.get(segment)
+            if (
+                isinstance(prior, dict) and prior.get("kind") == "literal"
+                and type(value) in {int, float, bool}
+            ):
+                value = prior | {"value": value}
+            item[segment] = value
+        else:
+            item = item[segment]
+
+
 def apply_model_edit(
     document: str,
     state: edits.ModelEditState,
@@ -723,10 +757,11 @@ def apply_model_edit(
     *,
     ports: LeafPorts,
     accepts: AcceptComponent,
+    functions=None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction."""
     operation = command.operation
-    edit = _Edit(document, state, ports, accepts)
+    edit = ModelEditDraft(document, state, ports, accepts)
     clipboard = None
     primary = _address(document, (), "graph")
     try:
@@ -757,7 +792,7 @@ def apply_model_edit(
             case edits.MovePort(address=primary, index=index):
                 edit.change_port(primary, index=index)
             case edits.SetField(address=primary, value=value):
-                edit.set_field(primary, value)
+                edit.set_field(primary, value, functions=functions)
             case edits.BringSignalIn(destination=primary):
                 edit.bring_in(operation)
             case edits.CopyComponents(selection=selection):

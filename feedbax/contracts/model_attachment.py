@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import AttachmentElement, ModelAddress, ModelElementId
@@ -53,12 +53,23 @@ class RemoveModelAttachment(ExistingModelAttachment):
     op: Literal["remove"]
 
 
+class SetField(StrictModel):
+    op: Literal["set_field"]
+    address: ModelAddress
+    value: JsonValue
+
+
 ModelAttachmentDifference = Annotated[
     AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment, Field(discriminator="op")
+]
+ModelDifference = Annotated[
+    AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField,
+    Field(discriminator="op"),
 ]
 
 MODEL_ATTACHMENTS = "model_attachments"
 MODEL_ATTACHMENT_BATCHES = TypeAdapter(dict[ProjectName, list[ModelAttachmentDifference]])
+MODEL_DIFFERENCE_BATCHES = TypeAdapter(dict[ProjectName, list[ModelDifference]])
 
 
 def is_generated_attachment_node(name: str, type_id: str) -> bool:

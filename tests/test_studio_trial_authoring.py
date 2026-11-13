@@ -7,9 +7,10 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.expression_values import CallValue, LiteralValue, NameValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.jobs import JobService
+from feedbax.contracts.request_identity import decode_request
 from feedbax.tasks.reaching import REACHING_TASK
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
@@ -39,6 +40,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         registry = app.state.bootstrap_state.bundle
         folders = app.state.project_folders
         jobs = JobService(host, registry, enable_evaluation_candidate=True)
+        app.state.job_service = jobs
         project = "trial-authoring"
         raw = _python_project()
         _save_project(folders, project, Project.model_validate(raw))
@@ -66,6 +68,8 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert [(signal.id, signal.name) for signal in initial.signals] == [("reach_target", "reach_target")]
         assert [epoch.id for epoch in initial.epochs] == ["move"]
         assert not initial.inputs
+        assert initial.tasks[0].document == "task"
+        assert any(field.path == "/python_task/params/n_steps" for field in initial.fields)
         edited = author(revision, {"kind": "task", "edits": [
             {"op": "add", "path": "/params/x", "value": 0.22},
             {"op": "add", "path": "/params/n_steps", "value": 12},
@@ -116,17 +120,55 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
 
         plan = folders.read_plan(project, revision=revision)
         assert not plan.plan.diagnostics, plan.plan.diagnostics
-        train = RunKey("default", "train", "default")
-        evaluate = RunKey("default", "baseline", "default")
-        (trained,) = jobs.admit_plan(folders, plan, run_keys=(train,), token="train").items
-        assert trained.disposition == "admitted", trained
-        (evaluated,) = jobs.admit_plan(folders, plan, run_keys=(evaluate,), token="evaluate").items
-        assert evaluated.disposition == "admitted", evaluated
+        projection = client.post(f"/api/projects/{project}/authoring/trials", json={
+            "run": {**run, "step": "baseline"}, "revision": revision,
+        })
+        assert projection.status_code == 200, projection.text
+        evaluated_task = StudioTrialAuthoring.model_validate(projection.json())
+        assert evaluated_task.objective is None
+        assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
+        assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
+        sample = client.post("/api/execution/task-trials/sample", json={
+            "model_name": "reach-model", "model": model,
+            "python_task": view.task.model_dump(mode="json"),
+            "input_overrides": {"reach_input": "reach_target"}, "count": 1,
+        })
+        assert sample.status_code == 200, sample.text
+        np.testing.assert_allclose(sample.json()["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
+
+        def submit(step):
+            response = client.post(f"/api/projects/{project}/train-runs", json={
+                "run_keys": [{**run, "step": step}], "revision": revision, "token": step,
+            })
+            assert response.status_code == 202, response.text
+            item, = response.json()["items"]
+            assert item["disposition"] == "admitted", item
+            return item["job_id"]
+
+        trained, evaluated = submit("train"), submit("baseline")
         for job in (trained, evaluated):
-            row = wait_until(lambda: job_row(host, job.job_id, "succeeded") or job_row(host, job.job_id, "failed"),
-                             timeout=24)
+            row = wait_until(lambda: job_row(host, job, "succeeded") or job_row(host, job, "failed"), timeout=24)
             assert row["state"] == "succeeded", row.get("outcome")
-        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated.job_id)
+        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated)
         with result.open_states() as dataset:
             assert np.isfinite(dataset.data("objective/total")).all()
             assert int(dataset.data("objective/coverage/effort").item()) == 1
+
+
+def test_python_task_integer_sweep_uses_registered_site():
+    raw = _python_project()
+    model = _model_payload()
+    raw["documents"]["reach-model"]["payload"] = model
+    raw["documents"]["task"]["payload"]["params"]["n_steps"] = 11
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["sweep"] = {"axes": {"length": {
+        "path": "trial_documents.python_task.params.n_steps",
+        "range": {"start": 11, "stop": 15, "count": 3},
+    }}}
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    selected = [
+        decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        for run in plan.runs if run.kind == "train"
+    ]
+    assert [request.trial_documents.python_task.params["n_steps"] for request in selected] == [11, 13, 15]

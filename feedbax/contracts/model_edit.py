@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, StringConstraints
+from pydantic import Field, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
-from feedbax.contracts.model_attachment import ModelAttachmentDifference
+from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput,
@@ -75,12 +75,6 @@ class MovePort(StrictModel):
     op: Literal["move_port"]
     address: ModelAddress
     index: Annotated[int, Field(strict=True, ge=0)]
-
-
-class SetField(StrictModel):
-    op: Literal["set_field"]
-    address: ModelAddress
-    value: JsonValue
 
 
 class BringSignalIn(StrictModel):
