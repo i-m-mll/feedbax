@@ -220,7 +220,7 @@ def _status_cell(text: str) -> str:
 def run_status(args: argparse.Namespace) -> int:
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import PlanJobReader, evaluation_candidate_configured
-    from feedbax.web.services.project_folder import ProjectFolderInvalid, SettledProjectPlan
+    from feedbax.project_folder import ProjectFolderInvalid, SettledProjectPlan
     from feedbax.web.services.project_plan import read_settled_project_plan
 
     try:
