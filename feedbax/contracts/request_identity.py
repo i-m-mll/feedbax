@@ -6,15 +6,20 @@ import json
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from enum import Enum
 from functools import cache
 from importlib.resources import files
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 from pydantic_core import to_json
 
-from feedbax.contracts._request_codec import decode, describe_models, encode
+from feedbax.contracts._request_codec import (
+    PinnedFields,
+    decode,
+    describe_models,
+    encode,
+    same_typed_value,
+)
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_document import omit_model_display_names, restore_model_display_names
@@ -91,33 +96,6 @@ class DecodedRequest:
     id: RequestId
 
 
-def _same_document_value(left: Any, right: Any) -> bool:
-    """Compare typed values before projection can erase distinctions such as bool/int."""
-    if type(left) is not type(right):
-        return False
-    if left is None:
-        return True
-    if type(left) in (bool, int, float, str):
-        return left == right
-    if isinstance(left, Enum):
-        return left is right
-    if isinstance(left, BaseModel):
-        return all(
-            _same_document_value(getattr(left, name), getattr(right, name))
-            for name in type(left).model_fields
-        )
-    if type(left) is dict:
-        return left.keys() == right.keys() and all(
-            type(key) is str and _same_document_value(value, right[key])
-            for key, value in left.items()
-        )
-    if type(left) in (list, tuple):
-        return len(left) == len(right) and all(
-            _same_document_value(a, b) for a, b in zip(left, right, strict=True)
-        )
-    return False
-
-
 @dataclass(frozen=True)
 class _FactoredDocument:
     value: Any
@@ -127,10 +105,11 @@ class _FactoredDocument:
 
 
 class RequestDocumentMemo:
-    """Retain the last verified document per field within one caller-verified codec authority."""
+    """Reuse verified documents and pinned defaults under one codec authority."""
 
     def __init__(self) -> None:
         self._entries: dict[tuple[type[RequestSpec], str], _FactoredDocument] = {}
+        self._pins = PinnedFields(_identity_contract()["fields"])
 
     def fork(self) -> RequestDocumentMemo:
         work = RequestDocumentMemo()
@@ -139,7 +118,7 @@ class RequestDocumentMemo:
 
     def lookup(self, spec: RequestSpec, name: str) -> _FactoredDocument | None:
         entry = self._entries.get((type(spec), name))
-        if entry is not None and _same_document_value(getattr(spec, name), entry.value):
+        if entry is not None and same_typed_value(getattr(spec, name), entry.value):
             return entry
         return None
 
@@ -203,7 +182,7 @@ def request_id(
     """Hash an already normalized spec projection and the resolved input references."""
     if kind not in REQUEST_KINDS:
         raise ValueError(f"Unknown request kind: {kind!r}")
-    fields = _identity_contract()["fields"]
+    pins = PinnedFields(_identity_contract()["fields"])
     references = {
         role: [
             {
@@ -215,7 +194,7 @@ def request_id(
                         else {"sha256": member.reference.sha256}
                     )
                     if isinstance(member.reference, ContentRef)
-                    else encode(member.reference, type(member.reference), fields)
+                    else encode(member.reference, type(member.reference), pins)
                 ),
             }
             for member in members
@@ -241,7 +220,11 @@ def encode_request(
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
     kind, descriptor = match
     inputs = _validated_inputs(inputs)
-    fields = _identity_contract()["fields"]
+    pins = (
+        document_memo._pins
+        if document_memo is not None
+        else PinnedFields(_identity_contract()["fields"])
+    )
     reused = {}
     if document_memo is not None:
         reused = {
@@ -250,7 +233,7 @@ def encode_request(
             if (entry := document_memo.lookup(spec, name)) is not None
         }
     projection = encode(
-        spec, descriptor.spec_type, fields,
+        spec, descriptor.spec_type, pins,
         projected_fields={name: entry.projection for name, entry in reused.items()},
     )
     if descriptor is DOCUMENT_TRAIN_REQUEST:
@@ -272,7 +255,7 @@ def encode_request(
         "kind": kind,
         "spec": projection,
         "inputs": {
-            role: [encode(member, InputMember, fields) for member in members]
+            role: [encode(member, InputMember, pins) for member in members]
             for role, members in inputs.items()
         },
     }
