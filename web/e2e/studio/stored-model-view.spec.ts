@@ -5,6 +5,7 @@ import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
 
 test('authors and reopens an addressed Model through the project history', async ({ page, request }) => {
+  test.setTimeout(50_000);
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
@@ -27,7 +28,7 @@ test('authors and reopens an addressed Model through the project history', async
   }
   const card = (id: string) => model.locator(`.react-flow__node[data-id="${id}"]`);
   await page.goto(url);
-  await page.getByRole('button', { name: 'New Step', exact: true }).press('Enter');
+  await page.getByRole('button', { name: 'New Step', exact: true }).click();
   await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
   await mapStep(page, 'train').click();
@@ -68,6 +69,14 @@ test('authors and reopens an addressed Model through the project history', async
     await handle('output', 'hidden').click();
   });
   expect(stored(linked.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
+    initial: { kind: 'name', reference: expect.stringContaining(component.id) },
+  });
+  await model.focus();
+  const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
+  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial: 0 });
+  await model.focus();
+  const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
+  expect(stored(redone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
     initial: { kind: 'name', reference: expect.stringContaining(component.id) },
   });
 

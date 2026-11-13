@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import type { ComponentDefinition, DelayAttachment, InterventionAttachment, JsonValue, ModelAddress, ModelDocument, ModelTime, ParamSchema, ProbeAttachment } from '@/generated/studioContracts';
 import { ModelAddressSchema } from '@/generated/studioContracts';
+import { z } from 'zod';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import { addressKey, type Component, type Port } from './modelGraph';
 
@@ -49,6 +50,15 @@ function duration(raw: string) {
 
 function conversion(delay: ModelTime, step: number) {
   return delay.unit === 's' ? `${Math.round(delay.value / step)} st` : `${Number((delay.value * step).toPrecision(8))} s`;
+}
+
+function linkedAddress(value: string) {
+  try {
+    return ModelAddressSchema.parse(JSON.parse(value));
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) return undefined;
+    throw error;
+  }
 }
 
 function fieldValue(value: JsonValue | undefined, schema: ParamSchema) {
@@ -116,11 +126,8 @@ export function AttachmentFields({ item, step, change, arm, linkLabel }: {
     const initial = item.initial;
     const linked = initial && typeof initial === 'object' && !Array.isArray(initial) &&
       initial.kind === 'name' && typeof initial.reference === 'string' ? initial.reference : null;
-    let label = '';
-    if (linked?.startsWith('{')) {
-      const parsed = ModelAddressSchema.safeParse(JSON.parse(linked));
-      if (parsed.success) label = linkLabel?.(parsed.data) ?? addressKey(parsed.data);
-    } else if (linked) label = linked;
+    const parsed = linked ? linkedAddress(linked) : undefined;
+    const label = parsed ? linkLabel?.(parsed) || addressKey(parsed) : linked;
     return <>
       <Field label="Delay" value={`${item.delay.value} ${item.delay.unit}`} parse={duration}
         suffix={<small>{conversion(item.delay, step)}</small>}
@@ -134,11 +141,11 @@ export function AttachmentFields({ item, step, change, arm, linkLabel }: {
   }
   if (item.kind === 'probe') return <Field label="Name" value={item.name} parse={(raw) => raw.trim() || undefined}
     commit={change && ((value) => change({ ...item, name: String(value) }))} />;
-  const clamp = item.operation === 'clamp';
+  const clamp = item.operation.toLowerCase() === 'clamp';
   const names = clamp ? ['low', 'high'] : ['factor'];
   return <>
     <label className="grid gap-1">Operation
-      <select className={inputClass} value={item.operation} disabled={!change} onChange={(event) => {
+      <select className={inputClass} value={item.operation.toLowerCase()} disabled={!change} onChange={(event) => {
         const operation = event.currentTarget.value;
         change?.({ ...item, operation, fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 } });
       }}>

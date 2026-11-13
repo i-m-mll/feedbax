@@ -76,7 +76,7 @@ function stepCount(item: Attachment, step: number) {
 }
 
 function attachmentName(item: Attachment) {
-  return item.kind === 'probe' ? item.name : item.kind === 'delay' ? 'Delay' : item.operation === 'clamp' ? 'Clamp' : 'Scale';
+  return item.kind === 'probe' ? item.name : item.kind === 'delay' ? 'Delay' : item.operation.toLowerCase() === 'clamp' ? 'Clamp' : 'Scale';
 }
 
 function searchable(definition: ComponentDefinition, query: string) {
@@ -174,8 +174,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   useEffect(() => {
     if (!model || !active || !reveal || reveal.document !== model.id || handledReveal.current === reveal) return;
     handledReveal.current = reveal;
+    if (!state.getState().reveal) return;
+    state.setState({ reveal: null });
     setPath(reveal.composites);
-    selectModel(state, reveal);
   }, [active, model?.id, reveal, setPath, state]);
   useEffect(() => {
     if (model && active && path.length !== currentPath.length) setPath(currentPath);
