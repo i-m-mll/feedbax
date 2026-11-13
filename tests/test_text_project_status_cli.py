@@ -7,6 +7,7 @@ from feedbax.cli import main
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.manifest import TrainingRunManifest, training_run_manifest_id, write_manifest
+from feedbax.contracts.project import InlineBase
 from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.host import HostClient
@@ -109,6 +110,11 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
     managed = managed_train_project()
     project.steps["train"] = managed.steps["train"]
     project.documents.update(managed.documents)
+    baseline = project.steps["baseline"].base
+    assert isinstance(baseline, InlineBase)
+    params = baseline.inline["params"]
+    del params["trials"]
+    params["trial_set"] = {"kind": "every_condition"}
     configuration = read_text_project_snapshot(root).configuration
     for relative, data in dump_text_project(project, configuration).items():
         path = root / relative
