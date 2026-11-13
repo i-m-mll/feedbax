@@ -62,6 +62,8 @@ class TextProject:
     root: Path
     revision: str
     file_revisions: Mapping[str, str]
+    files: Mapping[str, bytes]
+    manifest: TextProjectManifest
 
     @property
     def store_path(self) -> Path:
@@ -192,18 +194,24 @@ def read_text_project_snapshot(root: Path) -> TextProject:
 def load_text_project(root: Path | str) -> TextProject:
     """Read the declared project, with one named document, step or variant per file."""
     root = Path(root).resolve()
-    path, *named_paths = text_project_paths(root)
-    digests: dict[str, str] = {}
-
-    def read[Model: StrictModel](model: type[Model], file: Path) -> Model:
+    files = {}
+    for file in text_project_paths(root):
         try:
-            data = file.read_bytes()
+            files[file.relative_to(root).as_posix()] = file.read_bytes()
         except OSError as error:
             raise ProjectReadError(file, str(error)) from error
-        digests[file.relative_to(root).as_posix()] = sha256_bytes(data)
-        return _parse(model, data, file)
+    return parse_text_project_files(root, files)
 
-    manifest = read(TextProjectManifest, path)
+
+def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProject:
+    """Validate the complete set of files enumerated by the text codec."""
+    path = root / PROJECT_DECLARATION_FILENAME
+    named_paths = [Path(name) for name in sorted(files) if name != PROJECT_DECLARATION_FILENAME]
+
+    def read[Model: StrictModel](model: type[Model], name: str) -> Model:
+        return _parse(model, files[name], root / name)
+
+    manifest = read(TextProjectManifest, PROJECT_DECLARATION_FILENAME)
     variants = manifest.variants
     if len(set(variants)) != len(variants):
         raise ProjectReadError(path, "variant names must be unique")
@@ -220,13 +228,13 @@ def load_text_project(root: Path | str) -> TextProject:
         )
     try:
         project = Project(
-            documents={file.stem: read(Document, file) for file in named_paths if file.parent.name == "documents"},
-            steps={file.stem: read(Step, file) for file in named_paths if file.parent.name == "steps"},
+            documents={file.stem: read(Document, file.as_posix()) for file in named_paths if file.parent.name == "documents"},
+            steps={file.stem: read(Step, file.as_posix()) for file in named_paths if file.parent.name == "steps"},
             sweep=(
                 manifest.sweep.model_copy(
                     update={
                         "rows": {
-                            name: read(Row, root / "variants" / f"{name}.json")
+                            name: read(Row, f"variants/{name}.json")
                             for name in variants
                         }
                     }
@@ -240,10 +248,13 @@ def load_text_project(root: Path | str) -> TextProject:
     configuration = ProjectConfiguration(
         project=manifest.project, store=manifest.store, settings=manifest.settings
     )
+    digests = {name: sha256_bytes(data) for name, data in files.items()}
     revision = sha256_bytes(canonical_json_v2_bytes([
         "feedbax.project-folder.v1", [[name, digest] for name, digest in sorted(digests.items())],
     ]))
-    return TextProject(project, configuration, root, revision, MappingProxyType(digests))
+    return TextProject(
+        project, configuration, root, revision, MappingProxyType(digests), MappingProxyType(dict(files)), manifest,
+    )
 
 
 def parse_studio_project(data: bytes, *, source: str = "Studio project") -> StudioProjectFile:
@@ -302,3 +313,23 @@ def rename_text_project_declaration(data: bytes, name: ProjectName) -> bytes:
     """Change the declared name while preserving the other authored fields and omissions."""
     manifest = _parse(TextProjectManifest, data, PROJECT_DECLARATION_FILENAME)
     return _encode(manifest.model_copy(update={"project": name}))
+
+
+_SWEEP_DECLARATION_FIELDS = {"sweep", "variants"}
+_PROJECT_CONFIGURATION_FIELDS = set(TextProjectManifest.model_fields) - _SWEEP_DECLARATION_FIELDS
+
+
+def authored_declaration_revision(manifest: TextProjectManifest) -> str:
+    return sha256_bytes(_encode(manifest, exclude=_PROJECT_CONFIGURATION_FIELDS))
+
+
+def replay_text_project_declaration(current: TextProjectManifest, data: bytes) -> bytes:
+    """Restore the authored sweep declaration while retaining the current configuration."""
+    target = _parse(TextProjectManifest, data, PROJECT_DECLARATION_FILENAME)
+    current_configuration = _encode(current, exclude=_SWEEP_DECLARATION_FIELDS)
+    if current_configuration == _encode(target, exclude=_SWEEP_DECLARATION_FIELDS):
+        return data
+    return _encode(TextProjectManifest.model_validate({
+        **current.model_dump(exclude_unset=True, include=_PROJECT_CONFIGURATION_FIELDS),
+        **target.model_dump(exclude_unset=True, include=_SWEEP_DECLARATION_FIELDS),
+    }))

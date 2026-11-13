@@ -61,6 +61,13 @@ PRESENTATION_ADDRESS = AuthoredFileAddress(kind="presentation", id="presentation
 class StudioAuthoredFileRevision(StrictModel):
     address: AuthoredFileAddress
     revision: Sha256
+    data: str | None = None
+
+
+class StudioAuthoredDeclaration(StrictModel):
+    revision: Sha256
+    authored_revision: Sha256
+    data: str
 
 
 class StudioProjectSnapshot(StudioProjectRevision):
@@ -69,6 +76,7 @@ class StudioProjectSnapshot(StudioProjectRevision):
     presentation: PresentationDocument | None
     presentation_error: Literal["unreadable_presentation"] | None = None
     file_revisions: list[StudioAuthoredFileRevision]
+    declaration: StudioAuthoredDeclaration | None = None
 
 
 class StudioProjectFilePatch(StrictModel):
@@ -85,6 +93,27 @@ class StudioProjectPatchBatch(StrictModel):
     revision: Sha256
     presentation_revision: Sha256 | None = None
     files: list[StudioProjectFilePatch] = Field(min_length=1)
+
+
+class ReplayFileAddress(StrictModel):
+    kind: Literal["document", "step", "variant"]
+    id: ProjectName
+
+
+class ReplayDeclarationAddress(StrictModel):
+    kind: Literal["declaration"]
+    id: Literal["declaration"]
+
+
+class StudioReplayFile(StrictModel):
+    address: ReplayFileAddress | ReplayDeclarationAddress
+    before: Sha256 | None
+    after: str | None
+
+
+class StudioProjectReplay(StrictModel):
+    revision: Sha256
+    files: list[StudioReplayFile] = Field(min_length=1)
 
 
 class StudioPresentationWrite(StrictModel):

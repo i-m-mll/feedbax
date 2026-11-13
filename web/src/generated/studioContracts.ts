@@ -3417,6 +3417,16 @@ export type RemoveValue = {
   "op": "remove";
 };
 
+export type ReplayDeclarationAddress = {
+  "kind": "declaration";
+  "id": "declaration";
+};
+
+export type ReplayFileAddress = {
+  "kind": "document" | "step" | "variant";
+  "id": string;
+};
+
 export type ReportDocument = {
   "schema_version"?: "feedbax.report_document.v1";
   "title": string;
@@ -3594,6 +3604,12 @@ export type StudioAnalyzeWire = {
   "source": StepDataset | OperationDataset;
 };
 
+export type StudioAuthoredDeclaration = {
+  "revision": Sha256;
+  "authored_revision": Sha256;
+  "data": string;
+};
+
 export type StudioAuthoredDocumentFamily = {
   "schema_id": string | null;
   "payload_schema": Record<string, JsonValue>;
@@ -3602,6 +3618,7 @@ export type StudioAuthoredDocumentFamily = {
 export type StudioAuthoredFileRevision = {
   "address": AuthoredFileAddress;
   "revision": Sha256;
+  "data"?: string | null;
 };
 
 export type StudioAuthoringCatalog = {
@@ -3790,6 +3807,11 @@ export type StudioProjectRename = {
   "name": string;
 };
 
+export type StudioProjectReplay = {
+  "revision": Sha256;
+  "files": Array<StudioReplayFile>;
+};
+
 export type StudioProjectRevision = {
   "project_id": string;
   "revision": Sha256;
@@ -3805,6 +3827,7 @@ export type StudioProjectSnapshot = {
   "presentation": PresentationDocument | null;
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
+  "declaration"?: StudioAuthoredDeclaration | null;
 };
 
 export type StudioProjectWindowMap = {
@@ -3907,6 +3930,12 @@ export type StudioReachTargetEdit = {
   "kind": "bindReachTarget";
   "input": string;
   "position": StudioReachPosition;
+};
+
+export type StudioReplayFile = {
+  "address": ReplayFileAddress | ReplayDeclarationAddress;
+  "before": Sha256 | null;
+  "after": string | null;
 };
 
 export type StudioReportStep = {
@@ -9948,6 +9977,20 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
 
+export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("declaration"),
+    "id": z.literal("declaration"),
+  }).strict()
+) as unknown as z.ZodType<ReplayDeclarationAddress>;
+
+export const ReplayFileAddressSchema: z.ZodType<ReplayFileAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<ReplayFileAddress>;
+
 export const ReportDocumentSchema: z.ZodType<ReportDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.report_document.v1").optional(),
@@ -10183,6 +10226,14 @@ export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeWire>;
 
+export const StudioAuthoredDeclarationSchema: z.ZodType<StudioAuthoredDeclaration> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "authored_revision": Sha256Schema,
+    "data": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredDeclaration>;
+
 export const StudioAuthoredDocumentFamilySchema: z.ZodType<StudioAuthoredDocumentFamily> = z.lazy(() =>
   z.object({
     "schema_id": z.union([z.string(), z.null()]),
@@ -10194,6 +10245,7 @@ export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevis
   z.object({
     "address": AuthoredFileAddressSchema,
     "revision": Sha256Schema,
+    "data": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoredFileRevision>;
 
@@ -10439,6 +10491,13 @@ export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<StudioProjectRename>;
 
+export const StudioProjectReplaySchema: z.ZodType<StudioProjectReplay> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(StudioReplayFileSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectReplay>;
+
 export const StudioProjectRevisionSchema: z.ZodType<StudioProjectRevision> = z.lazy(() =>
   z.object({
     "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -10457,6 +10516,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "presentation": z.union([PresentationDocumentSchema, z.null()]),
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
+    "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
 
@@ -10587,6 +10647,14 @@ export const StudioReachTargetEditSchema: z.ZodType<StudioReachTargetEdit> = z.l
     "position": StudioReachPositionSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioReachTargetEdit>;
+
+export const StudioReplayFileSchema: z.ZodType<StudioReplayFile> = z.lazy(() =>
+  z.object({
+    "address": z.union([ReplayFileAddressSchema, ReplayDeclarationAddressSchema]),
+    "before": z.union([Sha256Schema, z.null()]),
+    "after": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioReplayFile>;
 
 export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   z.object({
@@ -11004,6 +11072,7 @@ export const contractSchemas = {
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
   StudioProjectFilePatch: StudioProjectFilePatchSchema,
   StudioProjectRename: StudioProjectRenameSchema,
+  StudioProjectReplay: StudioProjectReplaySchema,
   StudioProjectRevision: StudioProjectRevisionSchema,
   StudioProjectSnapshot: StudioProjectSnapshotSchema,
   ProjectValueEdit: ProjectValueEditSchema,
@@ -11139,6 +11208,7 @@ export interface ContractTypeMap {
   StudioProjectPatchBatch: StudioProjectPatchBatch;
   StudioProjectFilePatch: StudioProjectFilePatch;
   StudioProjectRename: StudioProjectRename;
+  StudioProjectReplay: StudioProjectReplay;
   StudioProjectRevision: StudioProjectRevision;
   StudioProjectSnapshot: StudioProjectSnapshot;
   ProjectValueEdit: ProjectValueEdit;

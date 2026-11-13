@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from base64 import b64decode, b64encode
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
@@ -17,7 +18,9 @@ from uuid import uuid4
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
-from feedbax._secure_fs import directory_open_flags, rename_no_replace
+from feedbax._secure_fs import (
+    SecurePathRigor, directory_open_flags, open_existing_directory, open_existing_file, rename_no_replace,
+)
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
@@ -38,10 +41,13 @@ from feedbax.contracts.project_io import (
     TextFileStamp,
     TextProject,
     TextProjectExternalInputs,
+    authored_declaration_revision,
     dump_text_project,
+    parse_text_project_files,
     read_text_project_snapshot,
     project_semantic_root,
     rename_text_project_declaration,
+    replay_text_project_declaration,
     text_file_stamp,
     text_project_fingerprint,
 )
@@ -54,9 +60,12 @@ from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
     CreateNamedDocument,
     PresentationDocument,
+    ReplayDeclarationAddress,
+    ReplayFileAddress,
     StudioProjectFilePatch,
     RemoveProjectValue,
     SetProjectValue,
+    StudioAuthoredDeclaration,
     StudioAuthoredFileRevision,
     StudioPresentationWrite,
     StudioProjectDocument,
@@ -64,6 +73,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
+    StudioProjectReplay,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
@@ -267,19 +277,27 @@ def _regular(path: Path) -> os.stat_result:
 
 
 class _PendingFile(StrictModel):
-    address: AuthoredFileAddress
+    address: AuthoredFileAddress | ReplayDeclarationAddress
     before: Sha256 | None
-    data: str
+    data: str | None
+    encoding: Literal["utf8", "base64"] = "utf8"
 
     @property
     def relative(self) -> str:
         return _relative_file(self.address)
 
+    def target(self) -> bytes | None:
+        if self.data is None:
+            return None
+        return b64decode(self.data, validate=True) if self.encoding == "base64" else self.data.encode()
+
 
 _PENDING_FILES = TypeAdapter(list[_PendingFile])
 
 
-def _relative_file(address: AuthoredFileAddress) -> str:
+def _relative_file(address: AuthoredFileAddress | ReplayFileAddress | ReplayDeclarationAddress) -> str:
+    if isinstance(address, ReplayDeclarationAddress):
+        return PROJECT_DECLARATION_FILENAME
     if address == PRESENTATION_ADDRESS:
         return STUDIO_PRESENTATION_FILENAME
     if address.kind not in _FAMILIES:
@@ -287,47 +305,124 @@ def _relative_file(address: AuthoredFileAddress) -> str:
     return f"{_FAMILIES[address.kind]}/{address.id}.json"
 
 
-def _patch_preimage(path: Path, file: _PendingFile) -> tuple[int, str | None]:
+@contextmanager
+def _patch_parent(root_fd: int, relative: Path, *, create: bool = False) -> Iterator[int]:
+    if relative.parent == Path("."):
+        yield root_fd
+        return
+    family = relative.parent.name
+    if create:
+        try:
+            os.mkdir(family, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+    descriptor = open_existing_directory(
+        family, dir_fd=root_fd, error_factory=ProjectFolderInvalid, context=family,
+    )
     try:
-        mode = stat.S_IMODE(_regular(path).st_mode)
-        return mode, sha256_bytes(path.read_bytes())
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _patch_preimage(relative: Path, directory_fd: int) -> tuple[int, str | None]:
+    try:
+        descriptor, info = open_existing_file(
+            relative.name, dir_fd=directory_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+            error_factory=ProjectFolderInvalid, context=relative.as_posix(),
+        )
     except FileNotFoundError:
-        if file.relative != STUDIO_PRESENTATION_FILENAME or file.before is not None:
-            raise
         return 0o600, None
+    with os.fdopen(descriptor, "rb") as stream:
+        return stat.S_IMODE(info.st_mode), sha256_bytes(stream.read())
 
 
 def _finish_patch(root: Path) -> None:
-    journal = root / STUDIO_PATCH_JOURNAL_FILENAME
+    root_fd = open_existing_directory(root, error_factory=ProjectFolderInvalid, context="Project folder")
     try:
-        _regular(journal)
+        _finish_patch_at(root, root_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _finish_patch_at(root: Path, root_fd: int) -> None:
+    try:
+        descriptor, _ = open_existing_file(
+            STUDIO_PATCH_JOURNAL_FILENAME, dir_fd=root_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+            error_factory=ProjectFolderInvalid, context="Studio edit journal",
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            files = _PENDING_FILES.validate_json(stream.read())
+        targets = [(file, Path(file.relative), file.target()) for file in files]
     except FileNotFoundError:
         return
-    try:
-        files = _PENDING_FILES.validate_json(journal.read_bytes())
-    except ValidationError as error:
+    except ValueError as error:
         raise ProjectFolderInvalid("Studio edit journal is invalid") from error
-    replacements = []
-    for file in files:
-        path = root / file.relative
-        if not stat.S_ISDIR(path.parent.lstat().st_mode):
-            raise ProjectFolderInvalid(f"{path.parent.name} must be a directory")
-        mode, current = _patch_preimage(path, file)
-        data = file.data.encode()
-        if current == sha256_bytes(data):
-            continue
-        if current != file.before:
-            raise ProjectFolderInvalid(f"{file.relative} changed during a Studio edit")
-        replacements.append((file, path, mode, data))
+    if not files or len({relative for _, relative, _ in targets}) != len(files):
+        raise ProjectFolderInvalid("Studio edit journal is invalid")
+    for file, relative, data in targets:
+        target = sha256_bytes(data) if data is not None else None
+        try:
+            with _patch_parent(root_fd, relative) as directory_fd:
+                _, current = _patch_preimage(relative, directory_fd)
+        except FileNotFoundError:
+            current = None
+        if current not in (target, file.before):
+            raise ProjectFolderInvalid(f"{relative} changed during a Studio edit")
 
-    for file, path, mode, data in replacements:
-        def guard() -> None:
-            if _patch_preimage(path, file)[1] != file.before:
-                raise ProjectFolderInvalid(f"{file.relative} changed during a Studio edit")
+    for file, relative, data in targets:
+        try:
+            with _patch_parent(root_fd, relative, create=file.before is None and data is not None) as directory_fd:
+                mode, current = _patch_preimage(relative, directory_fd)
+                target = sha256_bytes(data) if data is not None else None
+                if current == target:
+                    os.fsync(directory_fd)
+                    continue
 
-        write_bytes_atomic(path, data, mode=mode, replace=file.before is not None, before_publish=guard)
-    journal.unlink()
-    sync_parent_directories(journal)
+                def guard() -> None:
+                    if _patch_preimage(relative, directory_fd)[1] != file.before:
+                        raise ProjectFolderInvalid(f"{relative} changed during a Studio edit")
+
+                if data is None:
+                    guard()
+                    os.unlink(relative.name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                else:
+                    write_bytes_atomic(
+                        root / relative, data, mode=mode, replace=file.before is not None,
+                        before_publish=guard, directory_fd=directory_fd,
+                    )
+        except FileNotFoundError:
+            if data is not None:
+                raise
+
+    os.fsync(root_fd)
+    os.unlink(STUDIO_PATCH_JOURNAL_FILENAME, dir_fd=root_fd)
+    os.fsync(root_fd)
+
+
+def _publish_patch(root: Path, files: list[_PendingFile], guard: Callable[[], None]) -> None:
+    if not files:
+        return
+    root_fd = open_existing_directory(root, error_factory=ProjectFolderInvalid, context="Project folder")
+    try:
+        file = files[0]
+        if len(files) == 1 and file.before is not None and file.data is not None and file.address != PRESENTATION_ADDRESS:
+            relative = Path(file.relative)
+            with _patch_parent(root_fd, relative) as directory_fd:
+                mode, _ = _patch_preimage(relative, directory_fd)
+                data = file.target()
+                assert data is not None
+                write_bytes_atomic(root / relative, data, mode=mode, before_publish=guard, directory_fd=directory_fd)
+        else:
+            # Readers recover the edit after its journal has been published.
+            write_bytes_atomic(
+                root / STUDIO_PATCH_JOURNAL_FILENAME, _PENDING_FILES.dump_json(files), replace=False,
+                before_publish=guard, directory_fd=root_fd,
+            )
+            _finish_patch_at(root, root_fd)
+    finally:
+        os.close(root_fd)
 
 
 @contextmanager
@@ -490,10 +585,16 @@ class ProjectFolder:
                 StudioAuthoredFileRevision(
                     address=AuthoredFileAddress(kind=_KINDS[path.parent.name], id=path.stem),
                     revision=digest,
+                    data=b64encode(text.files[relative]).decode("ascii"),
                 )
                 for relative, digest in text.file_revisions.items()
                 if (path := Path(relative)).parent.name in _KINDS
             ],
+            declaration=StudioAuthoredDeclaration(
+                revision=text.file_revisions[PROJECT_DECLARATION_FILENAME],
+                authored_revision=authored_declaration_revision(text.manifest),
+                data=b64encode(text.files[PROJECT_DECLARATION_FILENAME]).decode("ascii"),
+            ),
         )
 
     def _document(self, project_id: str, text: TextProject) -> StudioProjectDocument:
@@ -623,6 +724,54 @@ class ProjectFolder:
 
     def patch(self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch) -> StudioProjectSnapshot:
         return self._patch(project_id, body, model_operation=False)
+
+    def replay(self, project_id: str, body: StudioProjectReplay) -> StudioProjectSnapshot:
+        """Apply a window's guarded replay against one acknowledged folder snapshot."""
+        root = self._folder(project_id)
+        with _folder_lock(root):
+            text = self._load(root)
+            check_revision("project", body.revision, text.revision)
+            proposed = dict(text.files)
+            pending = []
+            seen = set()
+            try:
+                for file in body.files:
+                    relative = _relative_file(file.address)
+                    if relative in seen:
+                        raise ProjectFolderInvalid(f"{relative} is addressed twice")
+                    seen.add(relative)
+                    if text.file_revisions.get(relative) != file.before:
+                        raise ProjectRevisionConflict("project", text.revision)
+                    if file.after is None:
+                        if relative == PROJECT_DECLARATION_FILENAME:
+                            raise ProjectFolderInvalid("The project declaration is required")
+                        data = None
+                        proposed.pop(relative, None)
+                    else:
+                        data = b64decode(file.after, validate=True)
+                        if relative == PROJECT_DECLARATION_FILENAME:
+                            data = replay_text_project_declaration(text.manifest, data)
+                        proposed[relative] = data
+                    if data != text.files.get(relative):
+                        pending.append(_PendingFile(
+                            address=file.address.model_dump(), before=file.before,
+                            data=b64encode(data).decode("ascii") if data is not None else None,
+                            encoding="base64",
+                        ))
+                if pending:
+                    validated = parse_text_project_files(root, proposed)
+                    # Validate the encodings the acknowledged snapshot will need before committing.
+                    project_semantic_root(validated.project)
+                    authored_declaration_revision(validated.manifest)
+            except (ValueError, RecursionError) as error:
+                if isinstance(error, ProjectFolderInvalid):
+                    raise
+                raise ProjectFolderInvalid(str(error)) from error
+
+            if pending:
+                _publish_patch(root, pending, lambda: check_revision("project", text.revision, self._load(root).revision))
+                text = self._load(root)
+            return self._snapshot(project_id, text)
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
@@ -755,17 +904,8 @@ class ProjectFolder:
                 if edits_presentation:
                     check_revision("presentation", body.presentation_revision, _read_presentation(root)[1])
 
-            if len(changed) == 1 and changed[0] != STUDIO_PRESENTATION_FILENAME:
-                relative = changed[0]
-                path = root / relative
-                write_bytes_atomic(
-                    path,
-                    encoded[relative],
-                    mode=stat.S_IMODE(_regular(path).st_mode),
-                    before_publish=guard,
-                )
-            elif changed:
-                pending = [
+            if changed:
+                _publish_patch(root, [
                     _PendingFile(
                         address=addresses[relative],
                         before=(
@@ -774,14 +914,7 @@ class ProjectFolder:
                         data=encoded[relative].decode(),
                     )
                     for relative in changed
-                ]
-                # Publishing the journal commits the edit. Readers recover it before opening the folder.
-                write_bytes_atomic(
-                    root / STUDIO_PATCH_JOURNAL_FILENAME, _PENDING_FILES.dump_json(pending), replace=False,
-                    before_publish=guard,
-                )
-                _finish_patch(root)
-            if changed:
+                ], guard)
                 text = self._load(root)
             return self._snapshot(project_id, text)
 

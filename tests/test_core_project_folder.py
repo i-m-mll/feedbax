@@ -223,7 +223,9 @@ def test_named_files_and_patch_batches_have_core_and_http_parity(tmp_path, model
         url = "/api/projects/project"
 
         def compare(method, suffix, body, result, *, envelope=False):
-            response = client.request(method, url + suffix, json=body.model_dump(mode="json", exclude_unset=True))
+            response = client.request(
+                method, url + suffix, json=body.model_dump(mode="json", by_alias=True, exclude_unset=True),
+            )
             assert response.is_success, response.text
             saved = response.json()
             if envelope:

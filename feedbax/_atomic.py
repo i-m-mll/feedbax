@@ -15,6 +15,7 @@ def write_bytes_atomic(
     mode: int = 0o600,
     replace: bool = True,
     before_publish: Callable[[], None] | None = None,
+    directory_fd: int | None = None,
 ) -> None:
     """Publish a document after flushing its unique same-directory staging file.
 
@@ -23,14 +24,25 @@ def write_bytes_atomic(
     caller. Concurrent replacements are last-replacement-wins. With
     ``replace=False``, publication fails if the destination already exists.
 
-    Success confirms file and directory sync, including every namespace ancestor.
-    Unsupported directory sync raises rather than claiming durability. Errors
-    after replacement can leave new bytes visible without confirmed durability.
+    Success confirms file and directory sync. Path-based writes sync every namespace
+    ancestor. Descriptor-relative writes sync the open parent; the caller owns its
+    publication in the containing directory. Unsupported directory sync raises.
+    Errors after replacement can leave new bytes visible without confirmed durability.
     A caller may check a precondition after staging and immediately before publication.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+    if directory_fd is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = path.with_name(temporary_name)
+        destination = path
+        location = {}
+        publication = {}
+    else:
+        staging = Path(temporary_name)
+        destination = Path(path.name)
+        location = {"dir_fd": directory_fd}
+        publication = {"src_dir_fd": directory_fd, "dst_dir_fd": directory_fd}
+    descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, **location)
     try:
         try:
             stream = os.fdopen(descriptor, "wb")
@@ -44,13 +56,19 @@ def write_bytes_atomic(
         if before_publish is not None:
             before_publish()
         if replace:
-            os.replace(staging, path)
+            os.replace(staging, destination, **publication)
         else:
-            os.link(staging, path)
-            staging.unlink()
-        sync_parent_directories(path)
+            os.link(staging, destination, **publication)
+            os.unlink(staging, **location)
+        if directory_fd is None:
+            sync_parent_directories(path)
+        else:
+            os.fsync(directory_fd)
     finally:
-        staging.unlink(missing_ok=True)
+        try:
+            os.unlink(staging, **location)
+        except FileNotFoundError:
+            pass
 
 
 def sync_parent_directories(path: Path) -> None:
