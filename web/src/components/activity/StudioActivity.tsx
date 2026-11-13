@@ -43,6 +43,7 @@ function ActivityRun({
   const { Icon, tint, name } = studioStep('train');
   const live = isLive(job);
   const coordinates = Object.entries(job.coordinates);
+  const actor = job.actor;
 
   const execute = async (command: () => Promise<void>) => {
     setPending(true);
@@ -96,7 +97,7 @@ function ActivityRun({
         </button>
         <StudioRunStatus status={job.status} />
       </div>
-      {coordinates.length > 0 && (
+      {(coordinates.length > 0 || actor) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
           {coordinates.map(([axis, value]) => (
             <div key={axis} className="flex gap-1">
@@ -104,6 +105,14 @@ function ActivityRun({
               <dd className="tabular-nums">{coordinateValue(value)}</dd>
             </div>
           ))}
+          {actor && <div className="flex gap-1">
+            <dt>{studioName('client')}</dt>
+            <dd>{studioName(actor.client)}</dd>
+          </div>}
+          {actor?.label && <div className="flex min-w-0 gap-1">
+            <dt>{studioName('label')}</dt>
+            <dd className="min-w-0 break-words">{actor.label}</dd>
+          </div>}
         </dl>
       )}
       {job.earlier_definition && (

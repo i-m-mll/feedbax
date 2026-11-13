@@ -99,6 +99,45 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
   },
 );
 
+test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request }, info) => {
+  test.setTimeout(45_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const project = snapshot.project_id;
+  const label = 'Batch review';
+  await page.goto('/?project=' + project);
+  await select(page, 'train');
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: project });
+
+  await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
+    'run-saved-cli', String(info.config.metadata.home), project, label);
+  const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
+  await expect(cli.getByText(label, { exact: true })).toBeVisible();
+  await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const studioJob = await admit(page, projectPath);
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const studio = entries.filter({ has: page.getByText('Studio', { exact: true }) });
+  await expect(studio.getByText('Client', { exact: true })).toBeVisible();
+  await expect(studio.getByText('Label', { exact: true })).toHaveCount(0);
+  await expect(cli.getByText(label, { exact: true })).toBeVisible();
+  await expect(studio.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+
+  const response = await request.get('/api/jobs', { params: { project } });
+  expect(response.ok(), await response.text()).toBe(true);
+  const { jobs } = await response.json() as StudioJobSnapshot;
+  expect(jobs).toHaveLength(2);
+  expect(jobs.find(({ job_id }) => job_id === studioJob.job_id)?.actor).toEqual({ client: 'studio' });
+  expect(jobs.find(({ actor }) => actor?.client === 'cli')?.actor).toEqual({ client: 'cli', label });
+  expect(new Set(jobs.map(({ request_id }) => request_id)).size).toBe(1);
+  await info.attach('activity-actors', {
+    body: JSON.stringify(jobs.map(({ job_id, request_id, actor }) => ({ job_id, request_id, actor }))),
+    contentType: 'application/json',
+  });
+});
+
 test('M1 runs only the selected row of a sweep authored in Studio', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '30'));
   await page.goto('/?project=' + snapshot.project_id);
