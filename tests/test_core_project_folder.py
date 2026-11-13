@@ -14,7 +14,6 @@ import pytest
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditRequest
 from feedbax.contracts.expression_values import LiteralValue, ValueBase, ValueType
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.studio_project import (
     PresentationDocument, StudioPresentationWrite, StudioProjectCreateFile, StudioProjectPatch,
@@ -258,4 +257,4 @@ def test_named_files_and_patch_batches_have_core_and_http_parity(tmp_path, model
         snapshot = compare("PUT", "/presentation", body, core.write_presentation("project", body))
         rename = StudioProjectRename(revision=snapshot.revision, name="renamed")
         compare("POST", "/rename", rename, core.rename("project", rename), envelope=True)
-        assert json.loads((direct / "project" / PROJECT_DECLARATION_FILENAME).read_bytes())["project"] == "renamed"
+        assert "project" not in json.loads((direct / "project" / "renamed.feedbax").read_bytes())

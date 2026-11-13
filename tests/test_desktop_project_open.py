@@ -303,17 +303,14 @@ def test_replacement_during_publish_cannot_receive_a_write(tmp_path, monkeypatch
     moved = tmp_path / "moved"
     _write_train(repo)
     snapshot = folders.open_selected_folder(repo).snapshot
-    write = project_folder.write_bytes_atomic
+    rename = project_folder.rename_no_replace
 
-    def replace_at_publish(path, data, *, before_publish, **kwargs):
-        def replace():
-            before_publish()
-            repo.rename(moved)
-            _write_train(repo)
+    def replace_at_publish(source, destination, **kwargs):
+        repo.rename(moved)
+        _write_train(repo)
+        rename(source, destination, **kwargs)
 
-        write(path, data, before_publish=replace, **kwargs)
-
-    monkeypatch.setattr(project_folder, "write_bytes_atomic", replace_at_publish)
+    monkeypatch.setattr(project_folder, "rename_no_replace", replace_at_publish)
     with pytest.raises(project_folder.ProjectFolderInvalid, match="identity changed"):
         folders.rename(snapshot.project_id, StudioProjectRename(name="changed", revision=snapshot.revision))
     assert read_text_project_snapshot(repo).revision == snapshot.revision
@@ -446,3 +443,59 @@ def test_recent_ticket_returns_the_latest_acknowledged_title(tmp_path):
     assert reopened.json()["project"] == {"id": project_id, "title": "renamed"}
     assert reopened.json()["folder"] == location
     assert list(projects.iterdir()) == [projects / project_id]
+
+
+def test_native_declaration_entry_and_rename_preserve_folder_and_plan(tmp_path):
+    projects = tmp_path / "projects"
+    repo = tmp_path / "checkout"
+    _write_train(repo)
+    app = create_app(projects_dir=projects)
+    transport, control, browser = _desktop_clients(app)
+    origin = {"Origin": transport.endpoint.origin}
+    declaration = repo / "same_title.feedbax"
+    path_ticket = {"project_file": str(declaration)}
+    original = control.post("/_desktop/ticket", json=path_ticket)
+    assert original.status_code == 200, original.text
+    issued = original.json()
+    project_id = issued["project"]["id"]
+    assert browser.post(
+        "/_desktop/exchange", headers={**origin, "X-Feedbax-Ticket": issued["ticket"]},
+    ).status_code == 204
+    assert browser.post("/_desktop/ticket", json=path_ticket, headers=origin).status_code == 403
+    folder = control.post("/_desktop/ticket", json={"project_folder": str(repo)}).json()
+    assert folder["project"] == issued["project"] and folder["folder"] == issued["folder"]
+    url = f"/api/projects/{project_id}"
+    snapshot = browser.get(f"{url}/open").json()["snapshot"]
+    request_id = _cli_request_id(repo)
+    original_plan = app.state.project_folders.read_plan(project_id, revision=snapshot["revision"]).plan
+    assert [run.request_id for run in original_plan.runs] == [request_id]
+    raw = declaration.read_bytes()
+    inode = declaration.stat().st_ino
+    rename = {"revision": snapshot["revision"], "name": "Same_title"}
+    saved = browser.post(f"{url}/rename", json=rename, headers=origin)
+    assert saved.status_code == 200, saved.text
+    renamed = repo / "Same_title.feedbax"
+    assert [path.name for path in repo.glob("*.feedbax")] == [renamed.name]
+    assert renamed.stat().st_ino == inode and renamed.read_bytes() == raw
+    assert saved.json()["snapshot"]["semantic_root"] == snapshot["semantic_root"]
+    assert saved.json()["snapshot"]["revision"] != snapshot["revision"]
+    assert browser.post(f"{url}/rename", json=rename, headers=origin).status_code == 409
+    assert control.post("/_desktop/ticket", json=path_ticket).status_code == 422
+    assert _cli_request_id(repo) == request_id
+
+    other = repo / "other.feedbax"
+    other.write_bytes(raw)
+    refused = browser.post(f"{url}/rename", json={
+        "revision": saved.json()["snapshot"]["revision"], "name": "other",
+    }, headers=origin)
+    assert refused.status_code == 422 and "Same_title.feedbax, other.feedbax" in refused.text
+    other.unlink()
+    renamed.rename(other)
+    reopened = browser.get(f"{url}/open").json()
+    assert reopened["configuration"]["project"] == "other"
+    assert reopened["snapshot"]["project_id"] == project_id
+    assert _cli_request_id(repo) == request_id
+    assert app.state.project_folders.read_plan(project_id, revision=None).plan == original_plan
+    assert control.post("/_desktop/ticket", json={"project_file": str(other)}).json()["project"] == {
+        "id": project_id, "title": "other",
+    }

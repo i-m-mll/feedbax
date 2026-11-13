@@ -6,6 +6,16 @@
   <array>
     <dict>
       <key>CFBundleTypeName</key>
+      <string>Feedbax Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array><string>org.feedbax.project</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
       <string>Feedbax Project Folder</string>
       <key>CFBundleTypeRole</key>
       <string>Editor</string>
@@ -13,6 +23,22 @@
       <string>Alternate</string>
       <key>LSItemContentTypes</key>
       <array><string>public.folder</string></array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.feedbax.project</string>
+      <key>UTTypeDescription</key>
+      <string>Feedbax Project</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.json</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>feedbax</string></array>
+      </dict>
     </dict>
   </array>
 </dict>

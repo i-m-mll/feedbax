@@ -58,8 +58,8 @@ def test_project_store_resolves_owned_objects_after_cwd_change_and_move(
 ) -> None:
     project_root = tmp_path / "authored-project"
     project_root.mkdir()
-    (project_root / "feedbax.project.json").write_text(
-        '{"schema_version":"feedbax.project.v1","project":"witness","store":"local/store"}'
+    (project_root / "witness.feedbax").write_text(
+        '{"schema_version":"feedbax.project.v1","store":"local/store"}'
     )
     store = open_project_store(load_text_project(project_root))
     reference = store.store_object(b"retained object")

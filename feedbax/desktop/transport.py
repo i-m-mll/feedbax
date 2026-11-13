@@ -50,6 +50,7 @@ _BROWSER_HEADERS = {
 
 class _TicketRequest(StrictModel):
     project_folder: Path | None = None
+    project_file: Path | None = None
     project_id: str | None = None
     folder_identity: tuple[int, int] | None = None
 
@@ -82,8 +83,8 @@ class DesktopTransport:
         async def ticket(request: _TicketRequest):
             if is_stopping():
                 raise HTTPException(503, "Studio service is stopping")
-            if request.project_folder is not None and request.project_id is not None:
-                raise HTTPException(422, "Select a folder or reconnect to one project.")
+            if sum(value is not None for value in (request.project_folder, request.project_file, request.project_id)) > 1:
+                raise HTTPException(422, "Select a folder, a declaration, or one project to reconnect.")
             if request.folder_identity is not None and request.project_folder is None:
                 raise HTTPException(422, "Restoring a project requires its folder.")
             folders = self.app.state.project_folders
@@ -92,6 +93,8 @@ class DesktopTransport:
                     document, location = await run_in_threadpool(
                         folders.open_native_folder, request.project_folder, request.folder_identity,
                     )
+                elif request.project_file is not None:
+                    document, location = await run_in_threadpool(folders.open_native_document, request.project_file)
                 elif request.project_id is not None:
                     document, location = await run_in_threadpool(folders.open_native_id, request.project_id)
                 else:

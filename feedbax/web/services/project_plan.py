@@ -39,6 +39,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRuns,
 )
 from feedbax.contracts.project_inputs import InputBinding, StepReference
+from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.request_refs import BatchSetMember
 from feedbax.contracts.project_plan import (
     ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey,
@@ -265,7 +266,9 @@ class ProjectPlanRead:
                 for producer, consumer in edge_keys if includes(consumer.variant)
             ],
             problems=[
-                *(StudioProjectWindowMapProblem.from_diagnostic(problem)
+                *(StudioProjectWindowMapProblem.from_diagnostic(
+                    problem, declaration=project_declaration_name(self.settled.configuration.project),
+                )
                   for problem in plan.diagnostics if includes(problem.variant)),
                 *(StudioProjectWindowMapProblem(
                     code="cannot_run", path=problem.path, detail=problem.detail,

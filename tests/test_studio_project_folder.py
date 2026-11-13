@@ -20,7 +20,6 @@ from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
@@ -852,8 +851,8 @@ def test_rename_changes_only_the_declaration_and_checks_authored_revision(study)
     before = load_text_project(root)
     plan = compile_project(before.project)
     assert not plan.diagnostics
-    declaration = root / PROJECT_DECLARATION_FILENAME
-    original_declaration = json.loads(declaration.read_bytes())
+    declaration = root / before.declaration
+    original_declaration = declaration.read_bytes()
     untouched = {
         path: path.read_bytes()
         for path in root.rglob("*")
@@ -868,7 +867,9 @@ def test_rename_changes_only_the_declaration_and_checks_authored_revision(study)
     current = renamed["snapshot"]
     assert current["revision"] != saved["revision"]
     assert current == {**saved, "revision": current["revision"]}
-    assert json.loads(declaration.read_bytes()) == {**original_declaration, "project": "renamed"}
+    assert not declaration.exists()
+    assert (root / "renamed.feedbax").read_bytes() == original_declaration
+    assert "project" not in json.loads(original_declaration)
     assert all(path.read_bytes() == data for path, data in untouched.items())
     after = load_text_project(root)
     assert after.store_path == before.store_path

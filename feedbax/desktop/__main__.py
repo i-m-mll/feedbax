@@ -147,11 +147,12 @@ def main() -> None:
     parser.add_argument("--disposition", choices=("defer", "checkpoint", "force"), default="defer")
     project = parser.add_mutually_exclusive_group()
     project.add_argument("--project-folder")
+    project.add_argument("--project-file")
     project.add_argument("--project-id")
     parser.add_argument("--folder-identity", nargs=2, type=int, metavar=("DEVICE", "INODE"))
     args = parser.parse_args()
     if args.action != "ticket" and any(
-        value is not None for value in (args.project_folder, args.project_id, args.folder_identity)
+        value is not None for value in (args.project_folder, args.project_id, args.project_file, args.folder_identity)
     ):
         parser.error("project selection requires ticket")
     if args.folder_identity is not None and args.project_folder is None:
@@ -176,6 +177,7 @@ def main() -> None:
         print(json.dumps(connect(
             release, paths, seconds=args.wait, action=args.action, disposition=args.disposition,
             project_folder=args.project_folder, project_id=args.project_id,
+            project_file=args.project_file,
             folder_identity=tuple(args.folder_identity) if args.folder_identity is not None else None,
         )))
         return

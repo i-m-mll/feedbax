@@ -87,10 +87,10 @@ class CommandOutput:
         address = getattr(error, "plugin_id", None) or str(path)
         self.error(code, detail or str(error), path=str(path), address=address)
 
-    def diagnostic(self, problem: ProjectDiagnostic) -> None:
+    def diagnostic(self, problem: ProjectDiagnostic, *, declaration: str) -> None:
         from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 
-        projected = StudioProjectWindowMapProblem.from_diagnostic(problem)
+        projected = StudioProjectWindowMapProblem.from_diagnostic(problem, declaration=declaration)
         if self.json:
             print(projected.model_dump_json(exclude_unset=True), file=sys.stderr)
         else:

@@ -192,10 +192,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     layer: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @classmethod
-    def from_diagnostic(cls, diagnostic: ProjectDiagnostic) -> StudioProjectWindowMapProblem:
-        from feedbax.contracts.project_io import PROJECT_DECLARATION_FILENAME
-
-        source = f"steps/{diagnostic.step}.json" if diagnostic.step else PROJECT_DECLARATION_FILENAME
+    def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
+        source = f"steps/{diagnostic.step}.json" if diagnostic.step else declaration
         problem = cls.model_validate(diagnostic, from_attributes=True)
         problem.address = source
         problem.layer = diagnostic.layer

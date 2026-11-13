@@ -126,7 +126,7 @@ def test_cli_refuses_writes_to_the_project_inputs_or_store(tmp_path, capsys):
     root = tmp_path / "reaching"
     _, files = _write_walkthrough(root)
     for path in (
-        root / "feedbax.project.json",
+        root / "other.feedbax",
         root / "steps/plan.json",
         root / "results/plan.json",
     ):
@@ -134,6 +134,33 @@ def test_cli_refuses_writes_to_the_project_inputs_or_store(tmp_path, capsys):
         assert "review file" in capsys.readouterr().err
     assert _files(root) == files
     assert not (root / "results").exists()
+
+
+def test_cli_locates_the_exact_declaration_and_stops_at_ambiguity(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "reaching"
+    _, files = _write_walkthrough(root)
+    declaration, = (root / name for name in files if name.endswith(".feedbax"))
+    child = root / "working"
+    child.mkdir()
+    monkeypatch.chdir(child)
+    assert main(["plan"]) == 0
+    expected = capsys.readouterr().out
+    for selection in (root, declaration):
+        assert main(["plan", str(selection)]) == 0
+        assert capsys.readouterr().out == expected
+    assert main(["plan", str(root / "missing.feedbax")]) == 2
+    assert "not the folder's project declaration" in capsys.readouterr().err
+    for name in ("one.feedbax", "two.feedbax"):
+        (child / name).write_bytes(declaration.read_bytes())
+    assert main(["plan"]) == 2
+    assert "one.feedbax, two.feedbax" in capsys.readouterr().err
+    (child / "two.feedbax").unlink()
+    (child / "one.feedbax").rename(child / "bad name.feedbax")
+    assert main(["plan"]) == 2
+    assert "invalid project name" in capsys.readouterr().err
+    declaration.unlink()
+    assert main(["plan", str(root)]) == 2
+    assert "no *.feedbax" in capsys.readouterr().err
 
 
 def test_cli_and_managed_plan_share_a_project_relative_figure_pin(tmp_path, capsys):

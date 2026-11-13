@@ -25,8 +25,8 @@ from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 def test_authored_store_retains_identity_refs_and_the_same_object_after_move(tmp_path, monkeypatch):
     root = tmp_path / "authored"
     root.mkdir()
-    (root / "feedbax.project.json").write_text(
-        '{"schema_version":"feedbax.project.v1","project":"reaching","store":"local/store"}'
+    (root / "reaching.feedbax").write_text(
+        '{"schema_version":"feedbax.project.v1","store":"local/store"}'
     )
     legacy = ImmutableArtifactBlobProvider(root / "local/store")
     dataset = Dataset.from_arrays(

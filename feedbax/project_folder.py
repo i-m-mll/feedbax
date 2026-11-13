@@ -31,7 +31,6 @@ from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, Sha256, json_pointer_parts
-from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -45,10 +44,11 @@ from feedbax.contracts.project_io import (
     authored_declaration_revision,
     dump_text_project,
     parse_text_project_files,
+    project_declaration_name,
     read_text_project_snapshot,
     project_semantic_root,
-    rename_text_project_declaration,
     replay_text_project_declaration,
+    require_text_declaration,
     text_file_stamp,
     text_project_fingerprint,
 )
@@ -277,14 +277,21 @@ def _regular(path: Path) -> os.stat_result:
     return info
 
 
+class _PendingDeclarationAddress(StrictModel):
+    kind: Literal["declaration"]
+    id: ProjectName
+
+
 class _PendingFile(StrictModel):
-    address: AuthoredFileAddress | ReplayDeclarationAddress
+    address: AuthoredFileAddress | _PendingDeclarationAddress
     before: Sha256 | None
     data: str | None
     encoding: Literal["utf8", "base64"] = "utf8"
 
     @property
     def relative(self) -> str:
+        if isinstance(self.address, _PendingDeclarationAddress):
+            return project_declaration_name(self.address.id)
         return _relative_file(self.address)
 
     def target(self) -> bytes | None:
@@ -296,9 +303,7 @@ class _PendingFile(StrictModel):
 _PENDING_FILES = TypeAdapter(list[_PendingFile])
 
 
-def _relative_file(address: AuthoredFileAddress | ReplayFileAddress | ReplayDeclarationAddress) -> str:
-    if isinstance(address, ReplayDeclarationAddress):
-        return PROJECT_DECLARATION_FILENAME
+def _relative_file(address: AuthoredFileAddress | ReplayFileAddress) -> str:
     if address == PRESENTATION_ADDRESS:
         return STUDIO_PRESENTATION_FILENAME
     if address.kind not in _FAMILIES:
@@ -357,6 +362,12 @@ def _finish_patch_at(root: Path, root_fd: int) -> None:
         raise ProjectFolderInvalid("Studio edit journal is invalid") from error
     if not files or len({relative for _, relative, _ in targets}) != len(files):
         raise ProjectFolderInvalid("Studio edit journal is invalid")
+    for file, relative, _ in targets:
+        if isinstance(file.address, _PendingDeclarationAddress):
+            try:
+                require_text_declaration(root, relative.name)
+            except ProjectReadError as error:
+                raise ProjectFolderInvalid(str(error)) from error
     for file, relative, data in targets:
         target = sha256_bytes(data) if data is not None else None
         try:
@@ -489,7 +500,7 @@ class _LockedProjectFolder:
 
 @contextmanager
 def _folder_lock(
-    location: ProjectFolderLocation, *, write: bool = True,
+    location: ProjectFolderLocation, *, write: bool = True, declaration: str | None = None,
 ) -> Iterator[_LockedProjectFolder]:
     root = location.path
     with _project_directory_chain(root) as chain:
@@ -500,6 +511,14 @@ def _folder_lock(
         def check_folder() -> None:
             recheck_directory_chain(chain, error_factory=ProjectFolderInvalid, context="Project folder")
 
+        def check_declaration() -> None:
+            if declaration is not None:
+                try:
+                    require_text_declaration(root, declaration)
+                except ProjectReadError as error:
+                    raise ProjectFolderInvalid(str(error)) from error
+
+        check_declaration()
         lock = STUDIO_WRITE_LOCK_FILENAME
         descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
         try:
@@ -519,6 +538,7 @@ def _folder_lock(
                 if not write:
                     fcntl.flock(descriptor, fcntl.LOCK_EX)
                     check_folder()
+                check_declaration()
                 _finish_patch_at(root, directory)
             yield _LockedProjectFolder(root, directory, check_folder)
             check_folder()
@@ -604,8 +624,10 @@ class ProjectFolder:
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
+        local_folder: ProjectFolderLocation | None = None,
     ) -> None:
         self.root = root.resolve()
+        self._local_folder = local_folder
         self.operations = operations
         self.components = components
         self.functions = functions
@@ -613,6 +635,10 @@ class ProjectFolder:
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
 
     def _folder(self, project_id: str) -> ProjectFolderLocation:
+        if self._local_folder is not None:
+            if project_id != self._local_folder.path.name:
+                raise ProjectFolderNotFound(project_id)
+            return self._local_folder
         try:
             _FOLDER_ID.validate_python(project_id)
         except ValidationError as error:
@@ -641,9 +667,9 @@ class ProjectFolder:
             except (OSError, ProjectReadError) as error:
                 raise ProjectFolderInvalid(str(error)) from error
 
-    def _load(self, root: Path) -> TextProject:
+    def _load(self, root: Path, *, declaration: str | None = None) -> TextProject:
         try:
-            return read_text_project_snapshot(root)
+            return read_text_project_snapshot(root, declaration=declaration)
         except ProjectReadError as error:
             raise ProjectFolderInvalid(str(error)) from error
 
@@ -673,9 +699,9 @@ class ProjectFolder:
                 if (path := Path(relative)).parent.name in _KINDS
             ],
             declaration=StudioAuthoredDeclaration(
-                revision=text.file_revisions[PROJECT_DECLARATION_FILENAME],
+                revision=text.file_revisions[text.declaration],
                 authored_revision=authored_declaration_revision(text.manifest),
-                data=b64encode(text.files[PROJECT_DECLARATION_FILENAME]).decode("ascii"),
+                data=b64encode(text.files[text.declaration]).decode("ascii"),
             ),
         )
 
@@ -688,9 +714,11 @@ class ProjectFolder:
     def open(self, project_id: str) -> StudioProjectDocument:
         return self._open_folder(project_id, self._folder(project_id))
 
-    def _open_folder(self, project_id: str, location: ProjectFolderLocation) -> StudioProjectDocument:
-        with _folder_lock(location, write=False) as folder:
-            return self._document(project_id, self._load(folder.path))
+    def _open_folder(
+        self, project_id: str, location: ProjectFolderLocation, *, declaration: str | None = None,
+    ) -> StudioProjectDocument:
+        with _folder_lock(location, write=False, declaration=declaration) as folder:
+            return self._document(project_id, self._load(folder.path, declaration=declaration))
 
     def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:
         with self._locked_folder(project_id, write=False) as folder:
@@ -700,11 +728,12 @@ class ProjectFolder:
             return self._snapshot(project_id, text)
 
     def read_plan(
-        self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = ()
+        self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = (),
+        declaration: str | None = None,
     ) -> SettledProjectPlan:
         """Compile the acknowledged folder snapshot without opening the result store."""
-        with self._locked_folder(project_id, write=False) as folder:
-            text = self._load(folder.path)
+        with _folder_lock(self._folder(project_id), write=False, declaration=declaration) as folder:
+            text = self._load(folder.path, declaration=declaration)
         if revision is not None:
             check_revision("project", revision, text.revision)
         return self._compile(project_id, text, source_runs)
@@ -753,16 +782,19 @@ class ProjectFolder:
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
             if body.name != text.configuration.project:
-                declaration = root / PROJECT_DECLARATION_FILENAME
-                mode = stat.S_IMODE(_regular(declaration).st_mode)
                 try:
-                    replacement = rename_text_project_declaration(declaration.read_bytes(), body.name)
-                except ProjectReadError as error:
-                    raise ProjectFolderInvalid(str(error)) from error
-                def guard() -> None:
+                    destination = project_declaration_name(body.name)
                     check_revision("project", text.revision, self._load(root).revision)
-
-                folder.write(declaration, replacement, mode=mode, before_publish=guard)
+                    folder.check()
+                    rename_no_replace(
+                        text.declaration, destination, source_dir_fd=folder.descriptor,
+                        destination_dir_fd=folder.descriptor, error_factory=ProjectFolderInvalid,
+                        context="Rename project declaration",
+                    )
+                except FileExistsError as error:
+                    raise ProjectFileExists(destination) from error
+                os.fsync(folder.descriptor)
+                folder.check()
                 text = self._load(root)
             return self._document(project_id, text)
 
@@ -815,25 +847,27 @@ class ProjectFolder:
             seen = set()
             try:
                 for file in body.files:
-                    relative = _relative_file(file.address)
+                    declaration = isinstance(file.address, ReplayDeclarationAddress)
+                    relative = text.declaration if declaration else _relative_file(file.address)
                     if relative in seen:
                         raise ProjectFolderInvalid(f"{relative} is addressed twice")
                     seen.add(relative)
                     if text.file_revisions.get(relative) != file.before:
                         raise ProjectRevisionConflict("project", text.revision)
                     if file.after is None:
-                        if relative == PROJECT_DECLARATION_FILENAME:
+                        if declaration:
                             raise ProjectFolderInvalid("The project declaration is required")
                         data = None
                         proposed.pop(relative, None)
                     else:
                         data = b64decode(file.after, validate=True)
-                        if relative == PROJECT_DECLARATION_FILENAME:
-                            data = replay_text_project_declaration(text.manifest, data)
+                        if declaration:
+                            data = replay_text_project_declaration(text.manifest, data, declaration=relative)
                         proposed[relative] = data
                     if data != text.files.get(relative):
                         pending.append(_PendingFile(
-                            address=file.address.model_dump(), before=file.before,
+                            address=_PendingDeclarationAddress(kind="declaration", id=text.configuration.project)
+                            if declaration else file.address.model_dump(), before=file.before,
                             data=b64encode(data).decode("ascii") if data is not None else None,
                             encoding="base64",
                         ))

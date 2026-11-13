@@ -151,6 +151,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
+  const [rename, setRename] = useState<{ name: string; revision: string }>();
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState<WindowPanel | null>(null);
   const [focusRequest, requestSlotFocus] = useState(0);
@@ -700,6 +701,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const cardPresentation = step ? presentation[step.id] ?? {} : {};
   const folded = step && selectedAxis ? foldedMapSweep(step, orderedMapSweeps(step, cardPresentation), cardPresentation) : undefined;
   const commands = [
+    bindStudioCommand('rename', () => {
+      void perform(async () => {
+        const revision = await editor.flush();
+        const latest = editor.getSnapshot();
+        if (latest.outside) throw new Error('Resolve the outside change before renaming.');
+        setRename({ name: latest.configuration.project, revision });
+      });
+    }, {
+      enabled: !busy && !outside,
+    }),
     ...runCommands.filter(({ id }) => id !== 'newStep' || focusView !== 'results' || !stoppedNewStep || windowState.mode === 'map'),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep,
     ...(focusedModel?.commands ?? []),
@@ -741,6 +752,29 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         {variants.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>}
       overlay={<>
+        {rename && <Dialog ariaLabel={studioName('rename')} manageFocus
+          onClose={() => { if (!busy) setRename(undefined); }}
+          panelClassName="w-[min(22rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
+          <form className="grid gap-2" onSubmit={(event) => {
+            event.preventDefault();
+            void perform(async () => {
+              await editor.rename(rename.name, rename.revision);
+              setRename(undefined);
+            });
+          }}>
+            <label className="grid gap-1">
+              Name
+              <input data-dialog-autofocus className={control} value={rename.name} disabled={busy} required
+                onChange={(event) => setRename({ ...rename, name: event.target.value })} />
+            </label>
+            {rename.revision !== saved.revision || outside
+              ? <div role="alert">The project changed. Reopen Rename to use the current revision.</div>
+              : commandError && <div role="alert">{commandError}</div>}
+            <button type="submit" className={control} disabled={busy || !!outside || rename.revision !== saved.revision}>
+              {studioName('rename')}
+            </button>
+          </form>
+        </Dialog>}
         {focusedModel?.overlay}
         {analyze.overlay}
         {report.overlay}
