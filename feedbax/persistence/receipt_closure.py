@@ -15,6 +15,7 @@ from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
 from feedbax.persistence.receipt_content import continuation_objects, success_content_objects, tree_objects
 
 
@@ -99,6 +100,9 @@ class ReceiptClosure:
             decoded = self._request_at(root.receipt, receipt)
             for ref in (root.receipt, receipt.request.object, *receipt.request.documents):
                 add(ref)
+            if receipt.evaluation_manifest is not None:
+                for ref in verify_evaluation_success_evidence(self.store, receipt):
+                    add(ref)
             for product in products:
                 for ref in success_content_objects(self.store, product):
                     add(ref)
@@ -110,7 +114,11 @@ class ReceiptClosure:
                 for member, bound in zip(members, receipt.inputs[role], strict=True):
                     reference = member.reference
                     selection = bound.selection
-                    if isinstance(reference, ProductRef):
+                    if bound.evaluation_subject is not None:
+                        if closure.include_ancestry:
+                            for ref in evaluation_subject_objects(self.store, decoded, member, bound):
+                                add(ref)
+                    elif isinstance(reference, ProductRef):
                         if selection is None:
                             raise ValueError(f"Missing producer selection for {role}.{bound.key}")
                         if closure.include_ancestry:

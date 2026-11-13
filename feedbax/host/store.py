@@ -19,7 +19,7 @@ from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 
 
-class TrainPublicationPending(Exception):
+class StorePublicationPending(Exception):
     """The accepted worker terminal event can be retried without recomputing."""
 
 
@@ -219,8 +219,21 @@ class Store:
             if row["stop_mode"] == "force" and "signal" in outcome:
                 outcome["outcome"] = "stopped"
                 outcome.pop("error", None)
-            if outcome["outcome"] == "succeeded" and "model_product" in outcome:
-                outcome = self._publish_train_result(row, outcome)
+            if outcome["outcome"] == "succeeded":
+                try:
+                    if "model_product" in outcome:
+                        outcome = self._publish_train_result(row, outcome)
+                    elif row["request"].startswith("evaluate:") and self._is_canonical_evaluate(row):
+                        outcome = self._publish_evaluate_result(row, outcome)
+                except (ValueError, KeyError, TypeError, OSError) as error:
+                    if isinstance(error, OSError) and error.errno in {
+                        errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EBUSY, errno.EINTR,
+                    }:
+                        raise StorePublicationPending(str(error)) from error
+                    outcome = {
+                        "outcome": "failed", "receipt": outcome.get("receipt"),
+                        "error": {"code": "publication_failed", "message": str(error)},
+                    }
             self.finished(row, outcome)
             return
         self.append(row, kind, data)
@@ -257,16 +270,25 @@ class Store:
             return outcome | {"store_publication_error": {
                 "code": "input_unavailable", "message": str(error),
             }}
-        except (ValueError, KeyError, TypeError, OSError) as error:
-            if isinstance(error, OSError) and error.errno in {
-                errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EBUSY, errno.EINTR,
-            }:
-                raise TrainPublicationPending(str(error)) from error
-            return {
-                "outcome": "failed", "receipt": outcome.get("receipt"),
-                "error": {"code": "publication_failed", "message": str(error)},
-            }
         return outcome | {"store_success": ref}
+
+    def _is_canonical_evaluate(self, row: sqlite3.Row) -> bool:
+        launch = json.loads(row["launch"])
+        return (
+            launch["warm_entrypoint"] == "feedbax.training.evaluate_worker:main"
+            and launch["payload"].get("canonical_request") is not None
+        )
+
+    def _publish_evaluate_result(self, row: sqlite3.Row, outcome: dict) -> dict:
+        from feedbax.host.evaluate_success import publish_evaluate_success
+
+        payload = json.loads(row["launch"])["payload"]
+        (binding,) = self.completion_bindings(row["id"])
+        ref = publish_evaluate_success(
+            attempt=row["id"], request_id=row["request"], project=row["project"],
+            payload=payload, receipt=outcome["receipt"], binding=binding,
+        )
+        return outcome | {"store_success": ref.model_dump(mode="json")}
 
     def _validate_job(self, job: dict) -> None:
         if not JOB_ID.fullmatch(require_text(job.get("id"), "job id")):

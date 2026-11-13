@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -38,9 +39,10 @@ from feedbax.contracts.workspace_replay import (
     WorkspaceReplayTrial,
     WorkspaceReplayTrialIdentity,
 )
-from feedbax.dataset import Dataset
+from feedbax.host.checkpoint_selection import selected_coordinates
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.dataset import open_dataset
+if TYPE_CHECKING:
+    from feedbax.dataset import Dataset
 
 STATES_MEDIA_TYPE = "application/vnd.safetensors"
 
@@ -193,13 +195,18 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
 def read_evaluation_manifest(
     root: Path, job_id: str, request_id: str, receipt: JobReceipt,
 ) -> tuple[EvaluationRunManifest, ProductRef]:
+    store = ImmutableArtifactBlobProvider(root)
+    ref, raw = store.resolve_manifest("EvaluationRunManifest", receipt.manifest_id)
+    return decode_evaluation_manifest(store, raw, ref.object, job_id, request_id, receipt)
+
+
+def decode_evaluation_manifest(
+    store: ImmutableArtifactBlobProvider, raw: bytes, ref: ContentObjectRef,
+    job_id: str, request_id: str, receipt: JobReceipt,
+) -> tuple[EvaluationRunManifest, ProductRef]:
     if receipt.manifest_id != evaluation_manifest_id(job_id):
         raise ValueError("Evaluation receipt names a different attempt.")
-    store = ImmutableArtifactBlobProvider(root)
-    ref, raw = store.resolve_manifest(
-        "EvaluationRunManifest", receipt.manifest_id,
-    )
-    if ref.object.sha256 != receipt.manifest_sha256:
+    if ref.sha256 != receipt.manifest_sha256:
         raise ValueError("Evaluation manifest does not match the Host receipt.")
     manifest = load_manifest_bytes(raw)
     if (
@@ -222,6 +229,51 @@ def read_evaluation_manifest(
     return manifest, subject
 
 
+def verify_evaluation_receipt(
+    root: Path, *, attempt: str, request_id: str, project: str, receipt: JobReceipt, binding: dict,
+    manifest_object: ContentObjectRef | None = None,
+) -> tuple[EvaluationRunManifest, ProductRef]:
+    """Authenticate the worker receipt against the exact Host dependency."""
+    if manifest_object is None:
+        manifest, subject = read_evaluation_manifest(root, attempt, request_id, receipt)
+    else:
+        store = ImmutableArtifactBlobProvider(root)
+        manifest, subject = decode_evaluation_manifest(
+            store, store.get_object(manifest_object), manifest_object, attempt, request_id, receipt,
+        )
+    if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
+        selection = binding["checkpoint_selection"]
+        members = selection["members"]
+        if (
+            list(coordinates) != selection["requested"]
+            or ("gaps" in selection and not isinstance(subject.select, UpdateSeriesMember))
+            or selected_coordinates(selection) != tuple(
+                member["checkpoint"]["completed_updates"] for member in members
+            )
+        ):
+            raise ValueError("Evaluate checkpoint selection differs from its authored coordinates.")
+        if "gaps" in selection:
+            members = [*members, selection["closure"]["product"]]
+    else:
+        members = [binding["completion"]]
+    if any(
+        member["request_id"] != subject.request_id
+        or member["project_id"] != project
+        or member["manifest_root"] != str(root)
+        for member in members
+    ):
+        raise ValueError("Evaluate checkpoint evidence differs from its admitted Train subject.")
+    train, provenance = evaluation_subject_provenance(binding)
+    if (
+        ("live_evaluation_points" in binding) != (manifest.metadata.get("placement") == "live")
+        or manifest.input_training_runs != train
+        or manifest.provenance.parents != provenance.parents
+        or manifest.provenance.metadata != provenance.metadata
+    ):
+        raise ValueError("Evaluate receipt differs from its accepted checkpoint provenance.")
+    return manifest, subject
+
+
 def states_ref(manifest: EvaluationRunManifest) -> DatasetProductRef:
     (artifact,) = (item for item in manifest.artifacts if item.role == "states")
     if artifact.media_type != STATES_MEDIA_TYPE or artifact.storage_backend != "feedbax-cas":
@@ -232,17 +284,39 @@ def states_ref(manifest: EvaluationRunManifest) -> DatasetProductRef:
     )
 
 
+def states_product(manifest: EvaluationRunManifest):
+    """Project the manifest's exact dataset to the shared typed Store product."""
+    from feedbax.contracts.effective_success import Product
+
+    states = states_ref(manifest)
+    return Product(
+        name="states", content=states.content.model_copy(update={"media_type": STATES_MEDIA_TYPE}),
+        descriptor={"descriptor_sha256": states.descriptor_sha256},
+    )
+
+
 class EvaluationResult:
     """Open the dataset through the exact receipt of one successful Jobs attempt."""
 
-    def __init__(self, root: Path, job_id: str, request_id: str, receipt: JobReceipt):
+    def __init__(
+        self, root: Path, job_id: str, request_id: str, receipt: JobReceipt,
+        *, manifest_object: ContentObjectRef | None = None,
+    ):
         self._root = root
         self._job_id = job_id
         self._request_id = request_id
         self.receipt = receipt
+        self._manifest_object = manifest_object
 
     def _manifest(self) -> EvaluationRunManifest:
-        manifest, _ = read_evaluation_manifest(self._root, self._job_id, self._request_id, self.receipt)
+        if self._manifest_object is None:
+            manifest, _ = read_evaluation_manifest(self._root, self._job_id, self._request_id, self.receipt)
+        else:
+            store = ImmutableArtifactBlobProvider(self._root)
+            manifest, _ = decode_evaluation_manifest(
+                store, store.get_object(self._manifest_object), self._manifest_object,
+                self._job_id, self._request_id, self.receipt,
+            )
         return manifest
 
     @property
@@ -251,6 +325,8 @@ class EvaluationResult:
 
     @contextmanager
     def open_states(self) -> Iterator[Dataset]:
+        from feedbax.persistence.dataset import open_dataset
+
         manifest = self._manifest()
         ref = states_ref(manifest)
         spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)

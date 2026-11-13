@@ -37,6 +37,7 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.receipt_content import continuation_objects, verify_success_content
+from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
 
 
 class PublicationConflict(ValueError):
@@ -71,7 +72,7 @@ class SuccessView:
     def read_request(self, request: RequestObject) -> DecodedRequest:
         return read_success_request(request, self.store.get_object)
 
-    def _receipt(self, ref: ContentObjectRef) -> Success:
+    def read_receipt(self, ref: ContentObjectRef) -> Success:
         return read_committed_success(self._index, ref, self.store.get_object)
 
     def resolve(
@@ -83,7 +84,7 @@ class SuccessView:
             return BoundMember(key=member.key, content=reference)
         if origin is None:
             raise ValueError(f"Producer success is unavailable for {member.key!r}")
-        producer = self._receipt(origin)
+        producer = self.read_receipt(origin)
         read_effective_request(producer, self.store.get_object)
         product, occurrence = select_bound_product(request, reference, producer)
         verify_success_content(self.store, product)
@@ -93,6 +94,15 @@ class SuccessView:
             descriptor=product.descriptor,
             selection=Selection(receipt=origin, member=product.name, occurrence=occurrence),
         )
+
+    def _verify_bound(self, decoded: DecodedRequest, member: InputMember, bound: BoundMember) -> None:
+        if bound.evaluation_subject is not None:
+            for ref in evaluation_subject_objects(self.store, decoded, member, bound):
+                self.store.verify_object(ref)
+        else:
+            origin = bound.selection.receipt if bound.selection else None
+            if self.resolve(decoded, member, origin) != bound:
+                raise ValueError(f"Receipt input provenance differs for {member.key!r}")
 
     def bind(self, request: RequestObject) -> tuple[EffectiveBindingId, Bindings]:
         decoded = self.read_request(request)
@@ -111,13 +121,13 @@ class SuccessView:
         return effective_binding_id(decoded, inputs), inputs
 
     def read_success(self, receipt_ref: ContentObjectRef) -> PublishedSuccess:
-        receipt = self._receipt(receipt_ref)
+        receipt = self.read_receipt(receipt_ref)
         decoded = read_effective_request(receipt, self.store.get_object)
         for role, members in decoded.inputs.items():
             for member, bound in zip(members, receipt.inputs[role], strict=True):
-                origin = bound.selection.receipt if bound.selection else None
-                if self.resolve(decoded, member, origin) != bound:
-                    raise ValueError(f"Receipt input provenance differs for {role}.{member.key}")
+                self._verify_bound(decoded, member, bound)
+        if receipt.evaluation_manifest is not None:
+            verify_evaluation_success_evidence(self.store, receipt)
         for products in receipt.products.values():
             for product in products:
                 verify_success_content(self.store, product)
@@ -161,16 +171,19 @@ class SuccessView:
         self, request: RequestObject, *, attempt: str, products: Products, bindings: Bindings,
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
+        evaluation_manifest: ContentObjectRef | None = None,
     ) -> PublishedSuccess:
         """Commit an accepted attempt using its pinned bindings, including on replay."""
         return self._publish(
             request, attempt, products, bindings=bindings, continuation=continuation, recovery=recovery,
+            evaluation_manifest=evaluation_manifest,
         )
 
     def _publish(
         self, request: RequestObject, attempt: str, products: Products, *, bindings: Bindings | None,
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
+        evaluation_manifest: ContentObjectRef | None = None,
     ) -> PublishedSuccess:
         with self.store._exclusive_lock():
             if existing := self._index.attempts.get(attempt):
@@ -179,8 +192,8 @@ class SuccessView:
                 published = self.read_success(existing)
                 if (
                     published.receipt.request, published.receipt.products, published.receipt.inputs,
-                    published.receipt.continuation, published.receipt.recovery,
-                ) != (request, products, bindings, continuation, recovery):
+                    published.receipt.continuation, published.receipt.recovery, published.receipt.evaluation_manifest,
+                ) != (request, products, bindings, continuation, recovery, evaluation_manifest):
                     raise ValueError("Published attempt has different request, bindings, or products")
                 return published
             if bindings is None:
@@ -190,12 +203,10 @@ class SuccessView:
                 effective = effective_binding_id(decoded, bindings)
                 for role, members in decoded.inputs.items():
                     for member, bound in zip(members, bindings[role], strict=True):
-                        origin = bound.selection.receipt if bound.selection else None
-                        if self.resolve(decoded, member, origin) != bound:
-                            raise ValueError(f"Pinned receipt input differs for {role}.{member.key}")
+                        self._verify_bound(decoded, member, bound)
                 inputs = bindings
             previous = self._index.authored.get(request.id)
-            if previous is not None and self._receipt(previous).request.id != request.id:
+            if previous is not None and self.read_receipt(previous).request.id != request.id:
                 raise ValueError("Superseded receipt belongs to a different authored request")
             receipt = Success(
                 request=request,
@@ -206,7 +217,10 @@ class SuccessView:
                 supersedes=previous,
                 continuation=continuation,
                 recovery=recovery,
+                evaluation_manifest=evaluation_manifest,
             )
+            if evaluation_manifest is not None:
+                verify_evaluation_success_evidence(self.store, receipt)
             for members in receipt.products.values():
                 for product in members:
                     verify_success_content(self.store, product)
