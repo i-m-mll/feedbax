@@ -1,11 +1,15 @@
 """Join the acknowledged compiler projection to observed Jobs attempts."""
 
+from __future__ import annotations
+
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
+from itertools import chain
 import json
 from types import MappingProxyType
+from typing import NotRequired, TypedDict
 
 from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -13,6 +17,7 @@ from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePo
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobStatus,
+    StudioPlanRequest,
     StudioProjectWindowMap,
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapEdge,
@@ -26,13 +31,19 @@ from feedbax.contracts.jobs import (
     StudioSavedEvaluationReplayRequest,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
+    StudioSavedTrainAttempt,
     StudioSavedTrainChange,
     StudioSavedTrainKey,
     StudioSavedTrainResult,
+    StudioSavedTrainRow,
+    StudioSavedTrainRuns,
 )
 from feedbax.contracts.project_inputs import InputBinding, StepReference
 from feedbax.contracts.request_refs import BatchSetMember
-from feedbax.contracts.project_plan import ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey
+from feedbax.contracts.project_plan import (
+    ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey,
+)
+from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import RequestId
@@ -116,7 +127,44 @@ class ProjectPlanRead:
                 reason = _problem_reasons(row_problems) or "No request could be planned."
                 yield PlanStatusRow(row.key, label, JobStatus.CANNOT_RUN, reason)
 
-    def window_map(self, *, evaluation_tasks: PythonTaskRegistry | None = None) -> StudioProjectWindowMap:
+    @classmethod
+    def without_history(cls, settled: SettledProjectPlan) -> ProjectPlanRead:
+        jobs = PlanJobAttempts(0, {})
+        return cls(settled, jobs, {}, _train_history(settled, jobs), {}, ())
+
+    def response(
+        self, *, include_window_map: bool, variants: tuple[str, ...] | None = None,
+        evaluation_tasks: PythonTaskRegistry | None = None,
+    ) -> StudioSavedTrainRuns:
+        result = StudioSavedTrainRuns(
+            revision=self.settled.revision,
+            rows=[
+                StudioSavedTrainRow(
+                    key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
+                    label=run.label or run.key.row,
+                    request_id=run.request_id,
+                    attempts=[
+                        StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
+                        for attempt in self.attempts_by_run.get(run.key, ())
+                    ],
+                    status=self.history[run.key].status,
+                    reason=self.history[run.key].reason,
+                    result=self.history[run.key].result,
+                    previous=self.history[run.key].previous,
+                    change=self.history[run.key].change,
+                )
+                for run in self.settled.plan.runs
+                if run.kind == "train" and (variants is None or run.key.variant in variants)
+            ],
+        )
+        if include_window_map:
+            result.window_map = self.window_map(variants=variants, evaluation_tasks=evaluation_tasks)
+        return result
+
+    def window_map(
+        self, *, variants: tuple[str, ...] | None = None,
+        evaluation_tasks: PythonTaskRegistry | None = None,
+    ) -> StudioProjectWindowMap:
         """Project authored steps and compiler facts from the acknowledged Plan."""
         plan = self.settled.plan
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
@@ -131,6 +179,7 @@ class ProjectPlanRead:
                 else {path: name for path, name in shared.items() if row.document_ids.get(path) == name}
             )
         statuses = {row.key: row for row in self.status_rows()}
+        elements = plan.elements.values()
         conditions: dict[RequestId, list[str] | None] = {}
         if evaluation_tasks is not None:
             for run in plan.runs:
@@ -177,8 +226,11 @@ class ProjectPlanRead:
                         ) if subset is not None else None,
                     )
 
+        def includes(variant: str | None) -> bool:
+            return variants is None or variant is None or variant in variants
+
         return StudioProjectWindowMap(
-            variants=list(plan.variants),
+            variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
                 StudioProjectWindowMapStep(
                     variant=variant, step_id=step_id, kind=step.kind, group=step.group,
@@ -187,7 +239,7 @@ class ProjectPlanRead:
                     document_uses=sorted(document_uses[variant, step_id]),
                     status_counts=dict(counts[variant, step_id]),
                 )
-                for (variant, step_id), step in plan.steps.items()
+                for (variant, step_id), step in plan.steps.items() if includes(variant)
             ],
             rows=[
                 StudioProjectWindowMapRow(
@@ -203,26 +255,32 @@ class ProjectPlanRead:
                         for axis, coordinate in row.coordinates.items()
                     },
                 )
-                for row in plan.rows
+                for row in plan.rows if includes(row.key.variant)
             ],
             edges=[
                 StudioProjectWindowMapEdge(
                     from_key=StudioSavedTrainKey.model_validate(producer, from_attributes=True),
                     to_key=StudioSavedTrainKey.model_validate(consumer, from_attributes=True),
                 )
-                for producer, consumer in edge_keys
+                for producer, consumer in edge_keys if includes(consumer.variant)
             ],
             problems=[
-                *(StudioProjectWindowMapProblem.model_validate(problem, from_attributes=True)
-                  for problem in plan.diagnostics),
+                *(StudioProjectWindowMapProblem.from_diagnostic(problem)
+                  for problem in plan.diagnostics if includes(problem.variant)),
                 *(StudioProjectWindowMapProblem(
                     code="cannot_run", path=problem.path, detail=problem.detail,
                     variant=run.key.variant, step=run.key.step, row=run.key.row,
                     document=run.document_ids.get("payload.graph"),
-                ) for run in plan.runs if (problem := run.admission_problem) is not None),
-                *self.evaluation_problems,
+                ) for run in plan.runs
+                  if includes(run.key.variant) and (problem := run.admission_problem) is not None),
+                *(problem for problem in self.evaluation_problems if includes(problem.variant)),
             ],
-            evaluations=list(self.evaluations.values()),
+            requests=[
+                StudioPlanRequest(**plan_request_address(request.key), request_id=request.request_id)
+                for request in chain(plan.runs, elements)
+                if includes(run_key(request.key).variant)
+            ],
+            evaluations=[row for row in self.evaluations.values() if includes(row.key.variant)],
             analysis_elements=[
                 StudioProjectWindowMapElement(
                     key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
@@ -232,17 +290,31 @@ class ProjectPlanRead:
                         element=element.key.name, product=PLOTLY_FIGURE_ROLE,
                     ) if isinstance(element.outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                 )
-                for element in plan.elements.values() if statuses[element.key].status is JobStatus.NOT_RUN
+                for element in elements
+                if includes(element.key.run.variant) and statuses[element.key].status is JobStatus.NOT_RUN
             ],
             analysis_figures=[
                 StudioProjectWindowMapFigure(
                     key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
                     name=name, data=list(figure.data), caption=figure.caption,
                 )
-                for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+                for row in plan.rows if includes(row.key.variant) and isinstance(row, PlannedAnalyzeRun)
                 for name, figure in row.figures.items()
             ],
         )
+
+class PlanRequestAddressFields(TypedDict):
+    key: StudioSavedTrainKey
+    element: NotRequired[str]
+
+
+def plan_request_address(key: RunKey | ElementKey) -> PlanRequestAddressFields:
+    address: PlanRequestAddressFields = {
+        "key": StudioSavedTrainKey.model_validate(run_key(key), from_attributes=True),
+    }
+    if isinstance(key, ElementKey):
+        address["element"] = key.name
+    return address
 
 
 def _step_references(
@@ -283,9 +355,9 @@ class ProjectPlanService:
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
         return read_settled_project_plan(settled, self.jobs)
 
-    def window_map(self, view: ProjectPlanRead) -> StudioProjectWindowMap:
+    def response(self, view: ProjectPlanRead, *, include_window_map: bool) -> StudioSavedTrainRuns:
         evaluation_tasks = self.jobs.registries.python_tasks if self.jobs.evaluation_candidate_enabled else None
-        return view.window_map(evaluation_tasks=evaluation_tasks)
+        return view.response(include_window_map=include_window_map, evaluation_tasks=evaluation_tasks)
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,

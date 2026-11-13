@@ -1,9 +1,11 @@
 """Read-only planning and status for an authored text project."""
 
 import argparse
+from collections.abc import Mapping
 import os
 from pathlib import Path
-import sys
+
+from feedbax.bin.project_commands import CommandOutput
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.project_io import (
@@ -19,6 +21,7 @@ from feedbax.contracts.project_io import (
     read_text_project_snapshot,
 )
 from feedbax.contracts.project_plan import (
+    ElementChange,
     ElementKey,
     PlanRequests,
     ProjectPlan,
@@ -100,15 +103,18 @@ def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Pa
     return destination
 
 
-def _check(current: PlanRequests, before: PlanRequests) -> int:
-    changes = diff_plan_requests(before, current)
+def _write_review(
+    output: CommandOutput,
+    changes: Mapping[RunKey | ElementKey, ElementChange],
+    current: PlanRequests,
+    before: PlanRequests,
+) -> None:
     for key, change in changes.items():
         request = current.entries.get(key) or before.entries[key]
         status = f"changed({change.path})" if change.state == "changed" else change.state
         origin = f" step=steps/{run_key(key).step}.json" if change.path else ""
         upstream = f" upstream={_address(change.upstream)}" if change.upstream else ""
-        print(f"{_address(key)} {status} {request.request_id}{origin}{upstream}")
-    return int(any(change.state != "unchanged" for change in changes.values()))
+        output.write(f"{_address(key)} {status} {request.request_id}{origin}{upstream}")
 
 
 def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
@@ -151,7 +157,8 @@ def _validate_variants(
         )
 
 
-def _diagnostics(
+def write_diagnostics(
+    output: CommandOutput,
     plan: ProjectPlan,
     variants: tuple[str, ...] | None,
 ) -> list[ProjectDiagnostic]:
@@ -161,19 +168,11 @@ def _diagnostics(
         if variants is None or problem.variant is None or problem.variant in variants
     ]
     for problem in problems:
-        source = f"steps/{problem.step}.json" if problem.step else PROJECT_DECLARATION_FILENAME
-        layer = f" ({problem.layer})" if problem.layer else ""
-        authored_path = f":{problem.document_path}" if problem.document_path else ""
-        document = f" [documents/{problem.document}.json{authored_path}]" if problem.document else ""
-        address = f" model={problem.model_address.to_text()}" if problem.model_address else ""
-        print(
-            f"{source}{layer}{document} {problem.path}{address} [{problem.code}]: {problem.detail}",
-            file=sys.stderr,
-        )
+        output.diagnostic(problem)
     return problems
 
 
-def _plan(args: argparse.Namespace) -> int:
+def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
     text, plan, external_paths = _read_plan(args.project_dir)
     current = PlanRequests.from_plan(plan)
     known_variants = set(plan.variants)
@@ -192,24 +191,47 @@ def _plan(args: argparse.Namespace) -> int:
         known_variants.update(run_key(key).variant for key in before.entries)
     _validate_variants(text.root, variants, known_variants)
     scoped = select_plan_requests(current, variants)
-    problems = _diagnostics(plan, variants)
+    problems = write_diagnostics(output, plan, variants)
+    changes: Mapping[RunKey | ElementKey, ElementChange] = {}
     if before is not None:
-        status = _check(scoped, select_plan_requests(before, variants))
-    else:
-        status = 0
+        before = select_plan_requests(before, variants)
+        changes = diff_plan_requests(before, scoped)
+    elif not output.json:
         for key, request in scoped.entries.items():
-            print(f"{_address(key)} {request.request_id}")
-        if args.out is not None and not problems:
-            destination = _output_path(args.out, text, external_paths)
-            write_bytes_atomic(destination, dump_plan_requests(current, variants))
-    return 2 if problems else status
+            output.write(f"{_address(key)} {request.request_id}")
+
+    if args.out is not None and not problems:
+        destination = _output_path(args.out, text, external_paths)
+        write_bytes_atomic(destination, dump_plan_requests(current, variants))
+
+    if output.json:
+        from feedbax.contracts.jobs import StudioPlanReviewEntry
+        from feedbax.web.services.project_folder import SettledProjectPlan
+        from feedbax.web.services.project_plan import ProjectPlanRead, plan_request_address
+
+        view = ProjectPlanRead.without_history(SettledProjectPlan.from_text(text.root.name, text, plan))
+        result = view.response(include_window_map=True, variants=variants)
+        if before is not None:
+            result.review = [
+                StudioPlanReviewEntry(
+                    **plan_request_address(key),
+                    request_id=(scoped.entries.get(key) or before.entries[key]).request_id,
+                    state=change.state, path=change.path,
+                    upstream=plan_request_address(change.upstream) if change.upstream else None,
+                )
+                for key, change in changes.items()
+            ]
+        output.response(result)
+    elif before is not None:
+        _write_review(output, changes, scoped, before)
+    return 2 if problems else int(any(change.state != "unchanged" for change in changes.values()))
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, output: CommandOutput) -> int:
     try:
-        return _plan(args)
+        return _plan(args, output)
     except (ProjectReadError, OSError) as error:
-        print(f"feedbax plan: {error}", file=sys.stderr)
+        output.failure(error, path=args.project_dir)
         return 2
 
 
@@ -217,7 +239,7 @@ def _status_cell(text: str) -> str:
     return text.replace("\r", r"\r").replace("\n", r"\n").replace("\t", r"\t")
 
 
-def run_status(args: argparse.Namespace) -> int:
+def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import PlanJobReader, evaluation_candidate_configured
     from feedbax.web.services.project_folder import ProjectFolderInvalid, SettledProjectPlan
@@ -227,7 +249,7 @@ def run_status(args: argparse.Namespace) -> int:
         text, plan, _ = _read_plan(args.project_dir)
         variants = _variants(args.variant)
         _validate_variants(text.root, variants, set(plan.variants))
-        problems = _diagnostics(plan, variants)
+        problems = write_diagnostics(output, plan, variants)
         settled = SettledProjectPlan.from_text(text.root.name, text, plan)
         view = read_settled_project_plan(
             settled,
@@ -237,16 +259,22 @@ def run_status(args: argparse.Namespace) -> int:
             ),
         )
     except HostError as error:
-        print(f"feedbax status: saved result history is unavailable: {error}", file=sys.stderr)
+        output.failure(
+            error, path=args.project_dir, detail=f"saved result history is unavailable: {error}",
+        )
         return 2
     except (ProjectReadError, ProjectFolderInvalid, OSError) as error:
-        print(f"feedbax status: {error}", file=sys.stderr)
+        output.failure(error, path=args.project_dir)
         return 2
 
-    print("ADDRESS\tROW\tSTATE\tREASON")
+    if output.json:
+        output.response(view.response(include_window_map=True, variants=variants))
+        return 2 if problems else 0
+
+    output.write("ADDRESS\tROW\tSTATE\tREASON")
     for row in view.status_rows():
         if variants is None or run_key(row.key).variant in variants:
-            print(
+            output.write(
                 "\t".join(
                     (
                         _address(row.key),

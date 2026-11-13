@@ -411,6 +411,6 @@ class ComponentDefinition(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_definition(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or "name" not in data:
             return data
         return migrate_component_definition_payload(data)

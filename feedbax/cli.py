@@ -180,6 +180,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         from feedbax.__main__ import main as engine_main
 
         return _normalize_exit(engine_main(args))
+    from feedbax.bin.project_commands import CommandOutput, wants_json
+
+    if wants_json(args):
+        CommandOutput(name, json=True).error(
+            "unknown_command", f"unknown command {name!r}", path=name, address=name,
+        )
+        return EXIT_USAGE
     print(f"feedbax: unknown command {name!r}", file=sys.stderr)
     print(usage(), file=sys.stderr)
     return EXIT_USAGE

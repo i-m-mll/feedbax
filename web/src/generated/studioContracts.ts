@@ -193,6 +193,21 @@ export interface StudioSavedTrainRuns {
   revision: string;
   rows: StudioSavedTrainRow[];
   window_map?: StudioProjectWindowMap | null;
+  review?: StudioPlanReviewEntry[] | null;
+}
+
+export interface StudioPlanRequestAddress {
+  key: StudioSavedTrainKey;
+  element?: string | null;
+}
+
+export interface StudioPlanReviewEntry {
+  key: StudioSavedTrainKey;
+  element?: string | null;
+  request_id: string;
+  state: "unchanged" | "changed" | "added" | "removed";
+  path?: string | null;
+  upstream?: StudioPlanRequestAddress | null;
 }
 
 export interface StudioTrainCheckpointSource {
@@ -3759,6 +3774,12 @@ export type StudioNameSweepValue = {
   "label": string | null;
 };
 
+export type StudioPlanRequest = {
+  "key": StudioSavedTrainKey;
+  "element"?: string | null;
+  "request_id": string;
+};
+
 export type StudioPresentationWrite = {
   "revision": Sha256;
   "presentation": PresentationDocument;
@@ -3820,6 +3841,7 @@ export type StudioProjectWindowMap = {
   "rows": Array<StudioProjectWindowMapRow>;
   "edges": Array<StudioProjectWindowMapEdge>;
   "problems": Array<StudioProjectWindowMapProblem>;
+  "requests"?: Array<StudioPlanRequest>;
   "evaluations"?: Array<StudioSavedEvaluationRow>;
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
@@ -3869,6 +3891,8 @@ export type StudioProjectWindowMapProblem = {
   "element"?: string | null;
   "document_path"?: string | null;
   "model_address"?: ModelAddress | null;
+  "address"?: string | null;
+  "layer"?: string | null;
 };
 
 export type StudioProjectWindowMapRow = {
@@ -4596,9 +4620,32 @@ export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.laz
       "revision": z.string(),
       "rows": z.array(StudioSavedTrainRowSchema),
       "window_map": StudioProjectWindowMapSchema.nullable().optional(),
+      "review": z.array(StudioPlanReviewEntrySchema).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRuns>;
+
+export const StudioPlanRequestAddressSchema: z.ZodType<StudioPlanRequestAddress> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "element": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanRequestAddress>;
+
+export const StudioPlanReviewEntrySchema: z.ZodType<StudioPlanReviewEntry> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "element": z.string().nullable().optional(),
+      "request_id": z.string(),
+      "state": z.union([z.literal("unchanged"), z.literal("changed"), z.literal("added"), z.literal("removed")]),
+      "path": z.string().nullable().optional(),
+      "upstream": StudioPlanRequestAddressSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanReviewEntry>;
 
 export const StudioTrainCheckpointSourceSchema: z.ZodType<StudioTrainCheckpointSource> = z.lazy(() =>
   z
@@ -10405,6 +10452,14 @@ export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioNameSweepValue>;
 
+export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "element": z.union([z.string(), z.null()]).optional(),
+    "request_id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioPlanRequest>;
+
 export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10485,6 +10540,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "rows": z.array(StudioProjectWindowMapRowSchema),
     "edges": z.array(StudioProjectWindowMapEdgeSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema),
+    "requests": z.array(StudioPlanRequestSchema).optional(),
     "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
@@ -10546,6 +10602,8 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "element": z.union([z.string(), z.null()]).optional(),
     "document_path": z.union([z.string(), z.null()]).optional(),
     "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
+    "address": z.union([z.string(), z.null()]).optional(),
+    "layer": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -10970,6 +11028,8 @@ export const contractSchemas = {
   StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
+  StudioPlanRequestAddress: StudioPlanRequestAddressSchema,
+  StudioPlanReviewEntry: StudioPlanReviewEntrySchema,
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
@@ -11106,6 +11166,8 @@ export interface ContractTypeMap {
   StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedTrainRuns: StudioSavedTrainRuns;
+  StudioPlanRequestAddress: StudioPlanRequestAddress;
+  StudioPlanReviewEntry: StudioPlanReviewEntry;
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioSubmissionItem: StudioSubmissionItem;
