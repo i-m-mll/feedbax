@@ -563,7 +563,7 @@ def _encode_row(
     payload: Payload,
     inputs: Mapping[str, PlannedInput],
     encoding_stamp: tuple[StepKind, str, bytes] | None,
-    document_memo: RequestDocumentMemo | None,
+    document_memo: RequestDocumentMemo,
     model_document: str | None = None,
     sources: Mapping[str, ValueSource] | None = None,
     components: ComponentRegistry | None = None,
@@ -1265,7 +1265,7 @@ class _Compiler:
             return replace(
                 _encode_row(
                     key, kind, payload, inputs, encoding_stamp,
-                    self.work.request_documents if self.previous is not None else None,
+                    self.work.request_documents,
                     document_ids.get("payload.graph"),
                     definition.sources if definition is not None else None,
                     self.components, self.functions, self.python_tasks, model_source=authored_model,

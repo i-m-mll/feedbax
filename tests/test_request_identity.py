@@ -147,6 +147,27 @@ def test_author_default_move_keeps_nested_stored_absence():
         TrainingRequestSpec.model_rebuild(force=True)
 
 
+def test_cached_absence_preserves_canonical_number_and_boolean_distinctions():
+    source = next(row for row in _read_corpus() if row["kind"] == "train")
+    spec = TrainingRequestSpec.model_validate(source["spec"]).model_copy(
+        update={"training_config": TrainingConfig()}
+    )
+    memo = RequestDocumentMemo()
+    baseline = encode_request(spec, {}, document_memo=memo)
+
+    def with_clip(value):
+        # A validated model can be changed by model_copy without another validation.
+        config = spec.training_config.model_copy(update={"grad_clip": value})
+        return spec.model_copy(update={"training_config": config})
+
+    assert encode_request(with_clip(1), {}, document_memo=memo) == baseline
+    changed = encode_request(with_clip(True), {}, document_memo=memo)
+    assert changed.id != baseline.id
+    assert json.loads(changed.data)["spec"]["training_config"]["grad_clip"] is True
+    with pytest.raises(ValueError, match="unsafe_integer"):
+        encode_request(with_clip(2**53), {}, document_memo=memo)
+
+
 def test_request_references_and_runtime_settings_are_typed_identity():
     spec = EvaluationRequestSpec(evaluation_type="rollout", params={"gain": 1})
     first = InputMember(

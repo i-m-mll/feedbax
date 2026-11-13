@@ -159,8 +159,54 @@ def _field_annotation(model: type[BaseModel], name: str) -> Any:
     return get_type_hints(model, include_extras=True)[name] if isinstance(annotation, ForwardRef) else annotation
 
 
+def same_typed_value(left: Any, right: Any) -> bool:
+    """Check exact value types before comparing structurally."""
+    if type(left) is not type(right):
+        return False
+    if left is None:
+        return True
+    if type(left) in (bool, int, float, str):
+        return left == right
+    if isinstance(left, Enum):
+        return left is right
+    if isinstance(left, BaseModel):
+        return all(
+            same_typed_value(getattr(left, name), getattr(right, name))
+            for name in type(left).model_fields
+        )
+    if type(left) is dict:
+        return left.keys() == right.keys() and all(
+            type(key) is str and same_typed_value(value, right[key])
+            for key, value in left.items()
+        )
+    if type(left) in (list, tuple):
+        return len(left) == len(right) and all(
+            same_typed_value(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return False
+
+
+class PinnedFields:
+    """Reuse verified absent projections within one codec invocation or compile."""
+
+    def __init__(self, fields: Mapping) -> None:
+        self.fields = fields
+        self._absences: dict[tuple[type[BaseModel], str], tuple[Any, bytes]] = {}
+
+    def is_absent(self, model: type[BaseModel], name: str, pin: Any, projected: Any) -> bool:
+        key = (model, name)
+        cached = self._absences.get(key)
+        if cached is None:
+            absent = _project_absent(model, name, pin, self)
+            cached = self._absences[key] = (absent, canonical_json_v2_bytes(absent))
+        absent, data = cached
+        if same_typed_value(projected, absent):
+            return True
+        return canonical_json_v2_bytes(projected) == data
+
+
 def _encode_field(
-    model: type[BaseModel], name: str, value: Any, pins: Mapping | None, *, explicit: bool = False
+    model: type[BaseModel], name: str, value: Any, pins: PinnedFields | None, *, explicit: bool = False
 ) -> Any:
     if value is not None and _wide_integer(model, name):
         return str(value) if abs(value) > _SAFE_INT else value
@@ -172,7 +218,7 @@ def _encode_field(
 def encode(
     value: Any,
     annotation: Any,
-    pins: Mapping | None = None,
+    pins: PinnedFields | None = None,
     *,
     explicit: bool = False,
     projected_fields: Mapping[str, Any] | None = None,
@@ -181,7 +227,7 @@ def encode(
     annotation = _annotation(annotation)
     if isinstance(value, BaseModel):
         model = type(value)
-        rows = {} if pins is None else pins[_model_key(model)]
+        rows = {} if pins is None else pins.fields[_model_key(model)]
         result = {}
         if _tagged(annotation):
             result[_FAMILY] = _family(model)
@@ -199,8 +245,8 @@ def encode(
                 if projected_fields is not None and name in projected_fields
                 else _encode_field(model, name, item, pins, explicit=explicit)
             )
-            if "absent" in row and canonical_json_v2_bytes(projected) == canonical_json_v2_bytes(
-                _project_absent(model, name, row["absent"], pins)
+            if pins is not None and "absent" in row and pins.is_absent(
+                model, name, row["absent"], projected
             ):
                 continue
             result[name] = projected
@@ -221,11 +267,11 @@ def encode(
     return value
 
 
-def _project_absent(model: type[BaseModel], name: str, value: Any, pins: Mapping) -> Any:
+def _project_absent(model: type[BaseModel], name: str, value: Any, pins: PinnedFields) -> Any:
     annotation = _field_annotation(model, name)
     if not isinstance(value, (dict, list)) or not value and not _model_choices(annotation):
         return value
-    restored = decode(value, annotation, pins)
+    restored = decode(value, annotation, pins.fields)
     validated = TypeAdapter(annotation).validate_json(json.dumps(restored))
     return _encode_field(model, name, validated, pins)
 
