@@ -7,13 +7,16 @@ import { bindStudioCommand } from './studioCommands';
 
 type Snapshot = NonNullable<Parameters<NonNullable<Window['__FEEDBAX_STUDIO_MENU__']>['publish']>[0]>;
 
-function studio(run: () => void, projectName = 'First', withScene = false) {
+function studio(run: () => void, projectName = 'First', withScene = false, rename?: () => void) {
   return <ProjectWindow state={defaultProjectWindowState} onStateChange={() => {}}
     projectName={projectName} availableViews={withScene ? ['runs', 'scene'] : ['runs']}
     renderView={() => ({ body: <input aria-label="Training field" /> })}
     map={<button>Map item</button>} mapDrawer={null} compactMap={<button>Compact item</button>}
     activity={<div data-studio-activity-panel><button>Activity item</button></div>}
-    commands={[bindStudioCommand('run', run), bindStudioCommand('stop', () => {}, { enabled: false })]} />;
+    commands={[
+      bindStudioCommand('run', run), bindStudioCommand('stop', () => {}, { enabled: false }),
+      ...(rename ? [bindStudioCommand('rename', rename)] : []),
+    ]} />;
 }
 
 function setup() {
@@ -103,4 +106,20 @@ it('keeps the web shortcut in a browser without the native host', () => {
   render(studio(run));
   fireEvent.keyDown(document.body, { key: 'r', code: 'KeyR', metaKey: true });
   expect(run).toHaveBeenCalledTimes(1);
+});
+
+it('routes File Rename to the focused project', async () => {
+  setup();
+  const bridge = menu();
+  const rename = vi.fn();
+  const run = vi.fn();
+  const view = render(studio(run, 'First', false, rename));
+  await waitFor(() => expect(bridge.latest()?.sections.find(({ title }) => title === 'File')?.items)
+    .toEqual([{ id: 'rename', label: 'Rename', accelerator: undefined, enabled: true }]));
+  bridge.select('rename', bridge.latest()!.scope);
+  expect(rename).toHaveBeenCalledTimes(1);
+  view.rerender(studio(run));
+  await waitFor(() => expect(item(bridge.latest(), 'rename')?.enabled).toBe(false));
+  bridge.select('rename', bridge.latest()!.scope);
+  expect(rename).toHaveBeenCalledTimes(1);
 });

@@ -17,7 +17,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.project_io import TextProject, TextProjectExternalInputs
+from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
 from feedbax.contracts.project_resolution import BaseReaders
 from feedbax.contracts.studio_project import StudioProjectDocument, StudioProjectSnapshot
 from feedbax.project_folder import (
@@ -78,6 +78,16 @@ class ProjectFolderService(ProjectFolder):
     def open_native_folder(
         self, folder: Path, expected_identity: tuple[int, int] | None = None,
     ) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
+        return self._open_native_location(folder, expected_identity, declaration=None)
+
+    def open_native_document(self, file: Path) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
+        if not file.is_absolute() or ".." in file.parts or not file.name.endswith(PROJECT_DECLARATION_SUFFIX):
+            raise ProjectFolderInvalid("Choose a .feedbax project declaration.")
+        return self._open_native_location(file.parent, None, declaration=file.name)
+
+    def _open_native_location(
+        self, folder: Path, expected_identity: tuple[int, int] | None, *, declaration: str | None,
+    ) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
         if not folder.is_absolute() or ".." in folder.parts:
             raise ProjectFolderInvalid("Choose an absolute Studio project folder.")
         try:
@@ -95,7 +105,7 @@ class ProjectFolderService(ProjectFolder):
             location = super()._folder(path.name)
             if expected_identity is not None and location.identity != expected_identity:
                 raise ProjectFolderNotFound("The saved project folder was replaced")
-            return self._open_folder(path.name, location), location
+            return self._open_folder(path.name, location, declaration=declaration), location
         grant = ProjectFolderLocation.selected(path)
         if expected_identity is not None and grant.identity != expected_identity:
             raise ProjectFolderNotFound("The saved project folder was replaced")
@@ -103,7 +113,7 @@ class ProjectFolderService(ProjectFolder):
             raise ProjectFolderInvalid("The selected project folder must be readable and writable.")
         locator = os.fsencode(grant.path) + b"\0" + str(grant.identity).encode("ascii")
         project_id = f"external-{sha256_bytes(locator)}"
-        document = self._open_folder(project_id, grant)
+        document = self._open_folder(project_id, grant, declaration=declaration)
         with self._external_projects_lock:
             if os.path.lexists(self.root / project_id):
                 raise ProjectFolderInvalid("The selected project conflicts with a managed project ID.")

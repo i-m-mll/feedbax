@@ -32,9 +32,10 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     projects = tmp_path / "projects"
     walkthrough = projects / "reaching"
     _, files = _write_walkthrough(walkthrough)
-    train = projects / "managed"
+    train = projects / "managed checkout"
+    declaration = train / "managed.feedbax"
     for relative, data in dump_text_project(
-        managed_train_project(), ProjectConfiguration(project=train.name, store="results"),
+        managed_train_project(), ProjectConfiguration(project="managed", store="results"),
     ).items():
         path = train / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,8 +54,8 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     baseline = tmp_path / "review.json"
     cases = {
         "plan": (StudioSavedTrainRuns, (str(walkthrough), "--out", str(baseline))),
-        "status": (StudioSavedTrainRuns, (str(walkthrough),)),
-        "run": (StudioJobSubmission, (str(train), "train", "--label", "explicit actor")),
+        "status": (StudioSavedTrainRuns, (str(walkthrough / "reaching.feedbax"),)),
+        "run": (StudioJobSubmission, (str(declaration), "train", "--label", "explicit actor")),
         "describe": (StudioAuthoringCatalog, ()),
     }
     assert cases.keys() == PROJECT_COMMANDS.keys()
@@ -107,6 +108,7 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     submission = results["run"]
     assert submission.actor is not None and submission.actor.client == "cli"
     assert submission.actor.label == "explicit actor"
+    assert submission.project_id == train.name
     assert [item.disposition for item in submission.items] == ["admitted"]
     with TestClient(create_app(projects_dir=projects)) as client:
         response = client.get(

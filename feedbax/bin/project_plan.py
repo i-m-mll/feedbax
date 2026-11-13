@@ -9,7 +9,7 @@ from feedbax.bin.project_commands import CommandOutput
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.project_io import (
-    PROJECT_DECLARATION_FILENAME,
+    PROJECT_DECLARATION_SUFFIX,
     PROJECT_FILE_FAMILIES,
     STUDIO_PATCH_JOURNAL_FILENAME,
     STUDIO_PRESENTATION_FILENAME,
@@ -17,7 +17,7 @@ from feedbax.contracts.project_io import (
     ProjectReadError,
     TextProject,
     TextProjectExternalInputs,
-    find_text_project,
+    locate_text_project,
     read_text_project_snapshot,
 )
 from feedbax.contracts.project_plan import (
@@ -44,7 +44,7 @@ def configure_status_parser(parser: argparse.ArgumentParser) -> None:
         nargs="?",
         type=Path,
         default=Path("."),
-        help="Directory to search upward for feedbax.project.json (default: current directory).",
+        help="Project declaration file or directory to search upward (default: current directory).",
     )
     parser.add_argument(
         "--variant", action="append", help="Show this variant. Repeat to select more."
@@ -77,7 +77,6 @@ def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Pa
         root / name
         for name in (
             *text.file_revisions,
-            PROJECT_DECLARATION_FILENAME,
             STUDIO_PATCH_JOURNAL_FILENAME,
             STUDIO_PRESENTATION_FILENAME,
             STUDIO_WRITE_LOCK_FILENAME,
@@ -91,6 +90,8 @@ def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Pa
     for candidate in (Path(os.path.abspath(path)), destination, resolved):
         if candidate.is_relative_to(store):
             raise ProjectReadError(path, "the review file cannot be written in the declared Store")
+        if candidate.parent == root and candidate.name.endswith(PROJECT_DECLARATION_SUFFIX):
+            raise ProjectReadError(path, "the review file overlaps the project's declaration namespace")
         if any(candidate.is_relative_to(file) for file in owned):
             raise ProjectReadError(path, "the review file overlaps an authored project file")
         for family in families:
@@ -128,8 +129,8 @@ def _read_plan(project_dir: Path) -> tuple[TextProject, ProjectPlan, set[Path]]:
     from feedbax.analysis.builtin_operations import register_builtin_operations
     from feedbax.analysis.operations import OperationRegistry
 
-    root = find_text_project(project_dir)
-    text = read_text_project_snapshot(root)
+    root, declaration = locate_text_project(project_dir)
+    text = read_text_project_snapshot(root, declaration=declaration)
 
     operations = OperationRegistry()
     register_builtin_operations(operations)
@@ -161,6 +162,8 @@ def write_diagnostics(
     output: CommandOutput,
     plan: ProjectPlan,
     variants: tuple[str, ...] | None,
+    *,
+    declaration: str,
 ) -> list[ProjectDiagnostic]:
     problems = [
         problem
@@ -168,7 +171,7 @@ def write_diagnostics(
         if variants is None or problem.variant is None or problem.variant in variants
     ]
     for problem in problems:
-        output.diagnostic(problem)
+        output.diagnostic(problem, declaration=declaration)
     return problems
 
 
@@ -191,7 +194,7 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         known_variants.update(run_key(key).variant for key in before.entries)
     _validate_variants(text.root, variants, known_variants)
     scoped = select_plan_requests(current, variants)
-    problems = write_diagnostics(output, plan, variants)
+    problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
     changes: Mapping[RunKey | ElementKey, ElementChange] = {}
     if before is not None:
         before = select_plan_requests(before, variants)
@@ -249,7 +252,7 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
         text, plan, _ = _read_plan(args.project_dir)
         variants = _variants(args.variant)
         _validate_variants(text.root, variants, set(plan.variants))
-        problems = write_diagnostics(output, plan, variants)
+        problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
         settled = SettledProjectPlan.from_text(text.root.name, text, plan)
         view = read_settled_project_plan(
             settled,

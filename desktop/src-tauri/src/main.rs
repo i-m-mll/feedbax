@@ -71,14 +71,14 @@ enum Entry {
     #[default]
     NewProject,
     Folder(PathBuf),
+    Document(PathBuf),
     Reconnect(String, SavedWindow),
     Restore(String, SavedWindow),
     Recent(RecentProject),
 }
 
 impl Windows {
-    fn queue_folder(&mut self, folder: PathBuf) {
-        let entry = Entry::Folder(folder);
+    fn queue(&mut self, entry: Entry) {
         if !self.pending.contains(&entry) {
             self.pending.push_back(entry);
         }
@@ -130,12 +130,22 @@ impl Windows {
     }
 }
 
-fn opened_folder(url: &Url) -> Option<PathBuf> {
+fn opened_entry(url: &Url) -> Option<Entry> {
     if url.scheme() != "file" || url.has_host() || url.query().is_some() || url.fragment().is_some()
     {
         return None;
     }
-    url.to_file_path().ok()
+    url.to_file_path().ok().map(|path| {
+        if !url.path().ends_with('/')
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "feedbax")
+        {
+            Entry::Document(path)
+        } else {
+            Entry::Folder(path)
+        }
+    })
 }
 
 fn status_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
@@ -471,6 +481,7 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
             let args = match &request {
                 Entry::NewProject => Vec::new(),
                 Entry::Folder(folder) => vec!["--project-folder".into(), path_argument(folder)?],
+                Entry::Document(file) => vec!["--project-file".into(), path_argument(file)?],
                 Entry::Restore(_, saved) | Entry::Reconnect(_, saved) => {
                     folder_arguments(&saved.folder)?
                 }
@@ -509,7 +520,7 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                 show_studio(app, ticket, paths.storage_id, reconnect)?;
                 if matches!(
                     entry,
-                    Entry::NewProject | Entry::Folder(_) | Entry::Recent(_)
+                    Entry::NewProject | Entry::Folder(_) | Entry::Document(_) | Entry::Recent(_)
                 ) {
                     record_recent(app, recent)?;
                 }
@@ -1123,8 +1134,8 @@ fn main() {
             RunEvent::Opened { urls } => {
                 let windows = app.state::<Mutex<Windows>>();
                 let mut state = windows.lock().unwrap();
-                for folder in urls.iter().filter_map(opened_folder) {
-                    state.queue_folder(folder);
+                for entry in urls.iter().filter_map(opened_entry) {
+                    state.queue(entry);
                 }
             }
             RunEvent::Reopen {
@@ -1193,29 +1204,36 @@ mod tests {
     fn finder_queue_precedes_cold_new_and_survives_a_service_pause() {
         let mut state = Windows::default();
         let first =
-            opened_folder(&Url::parse("file:///projects/First%20Project").unwrap()).unwrap();
-        let second = opened_folder(&Url::parse("file:///projects/Second").unwrap()).unwrap();
+            opened_entry(&Url::parse("file:///projects/First%20Project/reach.feedbax").unwrap())
+                .unwrap();
+        assert_eq!(
+            first,
+            Entry::Document("/projects/First Project/reach.feedbax".into())
+        );
+        let second =
+            opened_entry(&Url::parse("file:///projects/Second.feedbax/").unwrap()).unwrap();
+        assert_eq!(second, Entry::Folder("/projects/Second.feedbax/".into()));
         for invalid in [
             "https://example.com/Project",
             "file://remote.example/Project",
             "file:///projects/First?path=other",
         ] {
-            assert!(opened_folder(&Url::parse(invalid).unwrap()).is_none());
+            assert!(opened_entry(&Url::parse(invalid).unwrap()).is_none());
         }
-        state.queue_folder(first.clone());
+        state.queue(first.clone());
         assert!(state.next().is_none());
         state.restore("/settings/windows.json".into(), OpenWindows::new());
         state.ready = true;
-        state.queue_folder(first.clone());
-        state.queue_folder(second.clone());
+        state.queue(first.clone());
+        state.queue(second.clone());
         let first_entry = state.next().unwrap();
-        assert_eq!(first_entry, Entry::Folder(first));
+        assert_eq!(first_entry, first);
         state.pending.push_front(first_entry.clone());
         state.waiting = true;
         assert!(state.next().is_none());
         state.waiting = false;
         assert_eq!(state.next(), Some(first_entry));
-        assert_eq!(state.next(), Some(Entry::Folder(second)));
+        assert_eq!(state.next(), Some(second));
         assert!(state.next().is_none());
     }
 
@@ -1264,7 +1282,7 @@ mod tests {
             folder: second.folder,
             size: Size::DEFAULT,
         };
-        state.queue_folder(first.folder.path.clone());
+        state.queue(Entry::Folder(first.folder.path.clone()));
         state.restore(
             "/settings/windows.json".into(),
             OpenWindows::from([

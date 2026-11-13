@@ -1,5 +1,5 @@
 resources(name="velocity_summary_figure", sources=["analysis/velocity-summary.figure.json"])
-resources(name="shipped_projects", sources=["examples/**/*.json"])
+resources(name="shipped_projects", sources=["examples/**/*.json", "examples/**/*.feedbax"])
 
 python_sources(
     sources=["**/*.py"],

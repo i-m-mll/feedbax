@@ -5,6 +5,7 @@ import {
 } from './studioCommands';
 
 const groups = {
+  File: ['rename'],
   Edit: ['undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput'],
   View: [
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',

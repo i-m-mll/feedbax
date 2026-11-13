@@ -466,12 +466,14 @@ export class ProjectEditController {
     });
   }
 
-  rename(name: StudioProjectRename['name']): Promise<StudioProjectDocument> {
+  rename(name: StudioProjectRename['name'], reviewedRevision?: string): Promise<StudioProjectDocument> {
     return this.authoredCommand(
       () => this.transport.rename(this.saved.project_id, {
         revision: this.saved.revision, name,
       }, this.abort.signal),
       (document) => document.configuration.project === name,
+      undefined,
+      reviewedRevision,
     );
   }
 

@@ -53,6 +53,64 @@ async function outsideWrite(root: string, gain: number) {
   await rename(replacement, path);
 }
 
+test('the focused File Rename command follows the declaration and refuses a stale dialog', async ({ page, request }, info) => {
+  const created = await request.post('/api/projects');
+  expect(created.status(), await created.text()).toBe(201);
+  const { snapshot, configuration } = await created.json();
+  const projectId = snapshot.project_id;
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', projectId);
+  const declaration = join(root, `${configuration.project}.feedbax`);
+  const bytes = await readFile(declaration);
+
+  await page.addInitScript(() => {
+    type Host = NonNullable<Window['__FEEDBAX_STUDIO_MENU__']>;
+    const probe = window as Window & { studioMenuSnapshot?: Parameters<Host['publish']>[0] };
+    const bridge: Host = { publish: async (snapshot) => { probe.studioMenuSnapshot = snapshot; } };
+    Object.defineProperty(window, '__FEEDBAX_STUDIO_MENU__', { value: bridge });
+  });
+  await page.goto(`/?project=${projectId}`);
+
+  async function chooseRename() {
+    await page.waitForFunction(() => {
+      type Host = NonNullable<Window['__FEEDBAX_STUDIO_MENU__']>;
+      const { studioMenuSnapshot: snapshot } = window as Window & {
+        studioMenuSnapshot?: Parameters<Host['publish']>[0];
+      };
+      if (!snapshot?.sections.find(({ title }) => title === 'File')?.items.find(({ id }) => id === 'rename')?.enabled) {
+        return false;
+      }
+      window.dispatchEvent(new CustomEvent('studio-native-command', { detail: { id: 'rename', scope: snapshot.scope } }));
+      return true;
+    });
+    await expect(dialog).toBeVisible();
+  }
+
+  const dialog = page.getByRole('dialog', { name: 'Rename', exact: true });
+  const name = dialog.getByRole('textbox', { name: 'Name' });
+  const submit = dialog.getByRole('button', { name: 'Rename', exact: true });
+  await chooseRename();
+  await expect(name).toHaveValue(configuration.project);
+  await name.fill('stale-draft');
+  const outside = join(root, 'outside.feedbax');
+  await rename(declaration, outside);
+  await expect(submit).toBeDisabled();
+  await expect(dialog.getByRole('alert')).toContainText('The project changed');
+  await expect(name).toHaveValue('stale-draft');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  await chooseRename();
+  await expect(name).toHaveValue('outside');
+  await name.fill('renamed');
+  await submit.click();
+  await expect(dialog).toBeHidden();
+  expect(await readFile(join(root, 'renamed.feedbax'))).toEqual(bytes);
+  await expect(readFile(outside)).rejects.toMatchObject({ code: 'ENOENT' });
+  await page.reload();
+  await chooseRename();
+  await expect(name).toHaveValue('renamed');
+});
+
 test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', async ({ page }, info) => {
   const projectId = 'controller-reach';
   const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', projectId);
@@ -130,8 +188,8 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
   expect(blank.renamed.snapshot).toMatchObject({
     project_id: blank.original.project_id, file_revisions: [], semantic_root: blank.original.semantic_root,
   });
-  expect(JSON.parse(await readFile(join(projects, blank.original.project_id, 'feedbax.project.json'), 'utf8')))
-    .toMatchObject({ project: 'blank-name' });
+  expect(JSON.parse(await readFile(join(projects, blank.original.project_id, 'blank-name.feedbax'), 'utf8')))
+    .not.toHaveProperty('project');
   expect(JSON.parse(await readFile(join(projects, blank.original.project_id, 'presentation.json'), 'utf8'))).toEqual({});
 
   await open(page, projectId);

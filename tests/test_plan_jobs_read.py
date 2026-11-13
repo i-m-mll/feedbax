@@ -94,8 +94,8 @@ def test_plan_join_does_not_start_an_absent_host(tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     projects = tmp_path / "projects"
     (projects / "empty").mkdir(parents=True)
-    (projects / "empty" / "feedbax.project.json").write_text(
-        '{"schema_version":"feedbax.project.v1","project":"empty","store":"results"}'
+    (projects / "empty" / "empty.feedbax").write_text(
+        '{"schema_version":"feedbax.project.v1","store":"results"}'
     )
     with TestClient(create_app(projects_dir=projects)) as client:
         snapshot = client.get("/api/projects/empty").json()
@@ -254,6 +254,13 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             host.admit("slot-gate", [AdmissionItem(gate.id, gate)], record={})
             _until(lambda: host.jobs(job_id=gate.id)[0]["state"] == "running")
 
+            renamed = client.post("/api/projects/reach/rename", json={"revision": revision, "name": "renamed"})
+            assert renamed.status_code == 200, renamed.text
+            revision = renamed.json()["snapshot"]["revision"]
+            renamed_plan = read()
+            assert renamed_plan.settled.project_id == before.settled.project_id == "reach"
+            assert renamed_plan.settled.store_path == before.settled.store_path
+            assert renamed_plan.settled.plan == before.settled.plan
             admission = service.jobs.admit_plan(
                 service.folders, before.settled, run_keys=(same,), token="canonical-train"
             )
@@ -263,7 +270,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
 
             def current_attempt():
                 view = read()
-                assert view.settled == before.settled
+                assert view.settled == renamed_plan.settled
                 assert set(view.attempts_by_run) == {original, same}
                 assert view.attempts_by_run[original] == view.attempts_by_run[same]
                 attempt, = view.jobs.by_request[request_id]

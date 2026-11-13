@@ -104,7 +104,7 @@ def _run_legacy(argv: Sequence[str]) -> int:
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "project_dir", nargs="?", type=Path, default=Path("."),
-        help="Project directory (default: current directory). Use . before selectors for the current project.",
+        help="Project declaration file or directory. Use . before selectors for the current project.",
     )
     parser.add_argument("runs", nargs="*", metavar="step[@row]")
     parser.add_argument(
@@ -116,22 +116,25 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.bin.project_plan import write_diagnostics
     from feedbax.contracts.jobs import StudioSubmissionActor
-    from feedbax.contracts.project_io import ProjectReadError, find_text_project
+    from feedbax.contracts.project_io import ProjectReadError, locate_text_project, project_declaration_name
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import JobConflict, JobService, evaluation_candidate_configured
     from feedbax.plugins.bootstrap import BootstrapError
-    from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+    from feedbax.project_folder import ProjectFolder, ProjectFolderInvalid, ProjectFolderLocation
 
     try:
-        root = find_text_project(args.project_dir)
+        root, declaration = locate_text_project(args.project_dir)
         registries = asyncio.run(compose_application()).bundle
-        folders = ProjectFolderService(
+        folders = ProjectFolder(
             root.parent, operations=registries.operations, components=registries.components,
             functions=registries.expression_functions, python_tasks=registries.python_tasks,
+            local_folder=ProjectFolderLocation.selected(root),
         )
-        reviewed = folders.read_plan(root.name, revision=None)
+        reviewed = folders.read_plan(root.name, revision=None, declaration=declaration)
         if reviewed.plan.diagnostics:
-            write_diagnostics(output, reviewed.plan, None)
+            write_diagnostics(output, reviewed.plan, None, declaration=project_declaration_name(
+                reviewed.configuration.project,
+            ))
             return 2
         enabled = evaluation_candidate_configured()
         keys = [run.key for run in reviewed.plan.runs]

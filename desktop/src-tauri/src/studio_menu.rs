@@ -24,6 +24,7 @@ pub struct Snapshot {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum Group {
+    File,
     Edit,
     View,
     Run,
@@ -33,6 +34,7 @@ enum Group {
 impl Group {
     fn title(self) -> &'static str {
         match self {
+            Self::File => "File",
             Self::Edit => "Edit",
             Self::View => "View",
             Self::Run => "Run",
@@ -210,12 +212,28 @@ fn build_menu(
                 .iter()
                 .find(|section| matches!(section.title, Group::Edit))
         });
-    let menu = Menu::with_items(app, &[service, file, &edit_menu(app, menu_number, edit)?])?;
+    let file_commands = snapshot.and_then(|snapshot| {
+        snapshot
+            .sections
+            .iter()
+            .find(|section| matches!(section.title, Group::File))
+    });
+    let file_menu = Submenu::new(app, Group::File.title(), true)?;
+    for item in file.items()? {
+        file_menu.append(&item)?;
+    }
+    if let Some(commands) = file_commands {
+        append_commands(app, &file_menu, menu_number, commands)?;
+    }
+    let menu = Menu::with_items(
+        app,
+        &[service, &file_menu, &edit_menu(app, menu_number, edit)?],
+    )?;
     if let Some(snapshot) = snapshot {
         for section in snapshot
             .sections
             .iter()
-            .filter(|section| !matches!(section.title, Group::Edit))
+            .filter(|section| !matches!(section.title, Group::Edit | Group::File))
         {
             let submenu = Submenu::new(app, section.title.title(), true)?;
             append_commands(app, &submenu, menu_number, section)?;

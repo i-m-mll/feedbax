@@ -10,7 +10,6 @@ import pytest
 from feedbax import project_folder
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_io import STUDIO_PATCH_JOURNAL_FILENAME, load_text_project
 from feedbax.contracts.studio_project import StudioProjectReplay
 from feedbax.host import HostError
@@ -24,7 +23,8 @@ MODEL = ("document", "model")
 DECLARATION = ("declaration", "declaration")
 STEP = ("step", "fit")
 VARIANTS = [("variant", name) for name in ("10", "2")]
-MANIFEST = {"schema_version": "feedbax.project.v1", "project": "study", "store": "results"}
+DECLARATION_FILE = "study.feedbax"
+MANIFEST = {"schema_version": "feedbax.project.v1", "store": "results"}
 
 
 def _write(root, relative, value, *, encoding="utf-8"):
@@ -45,7 +45,7 @@ def _model(seconds):
 @pytest.fixture
 def study(tmp_path):
     root = tmp_path / "study"
-    _write(root, PROJECT_DECLARATION_FILENAME, MANIFEST)
+    _write(root, DECLARATION_FILE, MANIFEST)
     _write(root, "documents/model.json", _model(0.01))
     _write(root, "documents/notes.json", {"schema": "notes", "payload": "café"})
     _write(root, "presentation.json", {})
@@ -168,10 +168,12 @@ def test_replay_recovers_variant_creation_and_removal_and_retains_configuration(
     })
     _write(root, "variants/10.json", {"label": "ten"})
     _write(root, "variants/2.json", {"label": "two"})
-    _write(root, PROJECT_DECLARATION_FILENAME, {**MANIFEST, "sweep": {}, "variants": ["10", "2"]})
+    _write(root, DECLARATION_FILE, {**MANIFEST, "sweep": {}, "variants": ["10", "2"]})
     outside = _snapshot(client)
-    renamed = {**MANIFEST, "project": "renamed", "store": "other", "settings": {"foo": "bar"}}
-    _write(root, PROJECT_DECLARATION_FILENAME, {**renamed, "sweep": {}, "variants": ["10", "2"]})
+    renamed = {**MANIFEST, "store": "other", "settings": {"foo": "bar"}}
+    renamed_file = "renamed.feedbax"
+    (root / DECLARATION_FILE).rename(root / renamed_file)
+    _write(root, renamed_file, {**renamed, "sweep": {}, "variants": ["10", "2"]})
     current = _snapshot(client)
     assert current["declaration"]["authored_revision"] == outside["declaration"]["authored_revision"]
     assert current["declaration"]["revision"] != outside["declaration"]["revision"]
@@ -184,7 +186,7 @@ def test_replay_recovers_variant_creation_and_removal_and_retains_configuration(
 
     def interrupt_declaration(path, data, **kwargs):
         nonlocal interrupt
-        if path.name == PROJECT_DECLARATION_FILENAME and interrupt:
+        if path.name == renamed_file and interrupt:
             interrupt = False
             raise OSError("interrupted before declaration publication")
         return writer(path, data, **kwargs)
@@ -195,9 +197,13 @@ def test_replay_recovers_variant_creation_and_removal_and_retains_configuration(
     response = client.post(REPLAY, json=_replay_body(current, before, *addresses))
     assert response.status_code == 503
     assert journal.is_file() and not (root / "variants/10.json").exists()
+    (root / renamed_file).rename(root / "outside.feedbax")
+    assert client.get(f"{URL}/open").status_code == 422
+    assert journal.is_file()
+    (root / "outside.feedbax").rename(root / renamed_file)
     removed = _snapshot(client)
     assert not journal.exists()
-    assert json.loads((root / PROJECT_DECLARATION_FILENAME).read_bytes()) == renamed
+    assert json.loads((root / renamed_file).read_bytes()) == renamed
     assert removed["declaration"]["authored_revision"] == before["declaration"]["authored_revision"]
     assert not (root / "steps/fit.json").exists()
 
@@ -210,7 +216,7 @@ def test_replay_recovers_variant_creation_and_removal_and_retains_configuration(
     restored = _snapshot(client)
     assert not journal.exists()
     assert restored["declaration"]["authored_revision"] == outside["declaration"]["authored_revision"]
-    assert json.loads((root / PROJECT_DECLARATION_FILENAME).read_bytes()) == {
+    assert json.loads((root / renamed_file).read_bytes()) == {
         **renamed, "sweep": {}, "variants": ["10", "2"],
     }
     assert list(load_text_project(root).project.sweep.rows) == ["10", "2"]
