@@ -1715,6 +1715,7 @@ class Graph(GraphNode):
     # ========== Graph Surgery API ==========
 
     def add_node(self, name: str, component: Component) -> "Graph":
+        self._check_topology_edit()
         if name in self.nodes:
             raise ValueError(f"Node '{name}' already exists")
         return eqx.tree_at(
@@ -1727,6 +1728,7 @@ class Graph(GraphNode):
         """Remove a local node, its incident wires, bindings, and parameter constraints."""
         from feedbax.runtime.parameter_constraints import normalize_parameter_constraints
 
+        self._check_topology_edit()
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' does not exist")
 
@@ -1757,6 +1759,7 @@ class Graph(GraphNode):
         return graph
 
     def _with_wires(self, wires: tuple[Wire, ...]) -> "Graph":
+        self._check_topology_edit()
         graph = eqx.tree_at(lambda g: g.wires, self, wires)
         graph._validate_graph()
         return graph
@@ -1765,12 +1768,17 @@ class Graph(GraphNode):
         return self._with_wires(self.wires + (wire,))
 
     def remove_wire(self, wire: Wire) -> "Graph":
+        self._check_topology_edit()
         new_wires = tuple(w for w in self.wires if w != wire)
         return eqx.tree_at(
             lambda g: g.wires,
             self,
             new_wires,
         )
+
+    def _check_topology_edit(self) -> None:
+        if self._scoped_schedule is not None:
+            raise ValueError("Edit the authored graph and recompile its interleaved schedule")
 
     def insert_between(
         self,

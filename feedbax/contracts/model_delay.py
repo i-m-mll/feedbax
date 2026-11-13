@@ -13,5 +13,6 @@ class ModelDelayCarry(StrictModel):
     scope: Literal["trial"] = "trial"
     shape: tuple[Annotated[int, Field(strict=True, ge=0)], ...]
     dtype: Literal["float32"] = "float32"
+    units: str | None = Field(default=None, exclude_if=lambda value: value is None)
     model_delay_id: ModelElementId
     model_wire_id: ModelElementId

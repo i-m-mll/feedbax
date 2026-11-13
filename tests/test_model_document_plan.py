@@ -278,6 +278,38 @@ def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     )
 
 
+def test_group_keeps_delay_on_a_crossing_gru_output():
+    raw = _model_project()
+    registry = ComponentRegistry()
+    payload = raw["documents"]["reach-model"]["payload"]
+    controller = payload["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    controller["interior"]["wires"]["decode"]["attachments"] = [
+        {"kind": "delay", "id": "feedback", "delay": {"value": 1, "unit": "st"}},
+    ]
+    state = ModelEditState(document=ModelDocument.model_validate(payload))
+    ports = ModelRegistryPorts(registry)
+    command = ModelEditCommand.model_validate({"operation": {
+        "op": "group", "name": "Cell",
+        "selection": [{
+            "document": "reach-model", "composites": ["wrapper", "controller"],
+            "element": {"kind": "component", "id": "cell"},
+        }],
+    }})
+    result = apply_model_edit(
+        "reach-model", state, command, ports=ports.port, accepts=ports.accepts,
+    )
+    assert isinstance(result, ModelEditResult), result
+    raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
+    planned = compile_project(Project.model_validate(raw))
+    assert not planned.diagnostics, planned.diagnostics
+    train = next(run for run in planned.runs if run.kind == "train")
+    graph = decode_request(planned.requests[train.request_id], planned.documents.__getitem__).spec.graph
+    resolved = graph.subgraphs["wrapper"].subgraphs["controller"]
+    (delay,) = [wire.recurrent_initializer for wire in resolved.wires if wire.temporality == "recurrent"]
+    assert delay["shape"] == [controller["interior"]["components"]["cell"]["fields"]["hidden_size"]]
+    assert delay["units"] == "1"
+
+
 @pytest.mark.parametrize("grouped", [False, True])
 def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys, grouped):
     registry = new_application_registry_bundle()

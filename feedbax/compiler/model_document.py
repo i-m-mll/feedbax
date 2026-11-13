@@ -8,7 +8,7 @@ from hashlib import sha256
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
-from feedbax.contracts.model_address import FieldElement, ModelAddress
+from feedbax.contracts.model_address import FieldElement, ModelAddress, SignalSource
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
@@ -18,7 +18,6 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.model_values import MODEL_OWNERS
 from feedbax.runtime.task_data_roles import task_data_role
-from feedbax.studio.model_ports import ModelRegistryPorts
 from feedbax.studio.protocol import task_binding_id
 
 
@@ -32,12 +31,18 @@ def _generated(role: str, *parts: str) -> str:
     return "_model_" + role + "_" + sha256(canonical_json_v2_bytes(list(parts))).hexdigest()
 
 
+@dataclass(frozen=True)
+class _Signal:
+    shape: tuple[int, ...] | None = None
+    dtype: str = "float32"
+    units: str | None = None
+
+
 @dataclass
 class _Lower:
     document: str
     model: ModelDocument
     components: ComponentRegistry
-    ports: ModelRegistryPorts
     origins: dict[tuple[str, ...], ModelAddress] = field(default_factory=dict)
 
     def address(self, path, kind, **fields) -> ModelAddress:
@@ -51,6 +56,50 @@ class _Lower:
     def remember(self, path, derived, element):
         tokens = tuple(token for parent in path for token in ("subgraphs", parent))
         self.origins[("graph", *tokens, *derived)] = self.address(path, **element)
+
+    def source_signal(
+        self, interior: GraphInterior | PhysicalInterior, ports: ModelPorts, end: SignalSource,
+    ) -> _Signal:
+        def shape_of(shape):
+            return tuple(shape) if shape is not None and all(type(size) is int for size in shape) else None
+
+        if end.owner == "inputs":
+            port = next((port for port in ports.inputs if port.id == end.port), None)
+            return _Signal(shape_of(port.type.shape), units=port.type.unit) if port else _Signal()
+
+        component = interior.components.get(end.component)
+        if component is None:
+            return _Signal()
+        if component.kind == "composite":
+            output = next((port for port in component.ports.outputs if port.id == end.port), None)
+            if output is None:
+                return _Signal()
+            source = next(
+                (wire.source for wire in component.interior.wires.values()
+                 if wire.target.owner == "outputs" and wire.target.port == end.port),
+                None,
+            )
+            declared = shape_of(output.type.shape)
+            upstream = (
+                self.source_signal(component.interior, component.ports, source)
+                if source is not None else _Signal()
+            )
+            return _Signal(
+                upstream.shape if declared is None else declared,
+                upstream.dtype, output.type.unit or upstream.units,
+            )
+        definition = self.components.get(component.type)
+        types = definition.port_types if definition is not None else None
+        port_type = types.outputs.get(end.port) if types is not None else None
+        shape = shape_of(port_type.shape) if port_type is not None else None
+        units = None
+        if component.type == "feedbax.GRU" and end.port in {"hidden", "output"}:
+            size = component.fields.get("hidden_size")
+            if size is None:
+                size = definition.params.model.model_fields["hidden_size"].default
+            shape = shape_of((size,))
+            units = "1"
+        return _Signal(shape, component.fields.get("dtype", "float32"), units)
 
     def graph(
         self, interior: GraphInterior | PhysicalInterior, ports: ModelPorts, path: tuple[str, ...],
@@ -120,7 +169,7 @@ class _Lower:
                 recurrent_initializer=reset,
             ))
 
-        def transform(source, chain, key, at, *, finish=None):
+        def transform(source, chain, key, at, *, finish=None, signal: _Signal | None = None):
             pending_reset = None
             for attachment in chain:
                 origin = {"kind": "attachment", "parent": at, "id": attachment.id}
@@ -132,13 +181,13 @@ class _Lower:
                         length /= self.model.step_seconds
                     if round(length) != 1 or attachment.initial != 0 or pending_reset is not None:
                         raise self.problem(path, "attachment", "only a one-step zero-initialized delay is qualified", parent=at, id=attachment.id)
-                    shape, dtype = source_type
-                    if shape is None:
+                    if signal is None or signal.shape is None:
                         raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
-                    if dtype != "float32":
+                    if signal.dtype != "float32":
                         raise self.problem(path, "attachment", "delay requires a float32 reset", parent=at, id=attachment.id)
                     pending_reset = ModelDelayCarry(
-                        shape=tuple(shape), dtype=dtype, model_delay_id=attachment.id, model_wire_id=key,
+                        shape=signal.shape, dtype=signal.dtype, units=signal.units,
+                        model_delay_id=attachment.id, model_wire_id=key,
                     ).model_dump(mode="json")
                     relay = _generated("delay", key, attachment.id)
                     add_generated(relay, "feedbax.Input", {}, origin=origin)
@@ -171,7 +220,6 @@ class _Lower:
                 emit(source, finish, key, origin, reset=pending_reset)
             return source, pending_reset
 
-        source_type = (None, "float32")
         for port in ports.inputs:
             external = port.id if path else port.name
             relay = _generated("input", port.id)
@@ -202,31 +250,24 @@ class _Lower:
             a, b = wire.source, wire.target
             if a.owner == "inputs":
                 source = input_sources.get(a.port)
-                input_port = next((port for port in ports.inputs if port.id == a.port), None)
-                shape = input_port.type.shape if input_port else None
-                source_type = (list(shape) if shape is not None and all(isinstance(n, int) for n in shape) else None, "float32")
             else:
                 source = component_sources.get((a.component, a.port), (a.component, a.port))
                 if a.component not in nodes or a.port not in nodes[a.component].output_ports:
                     source = None
-                node = nodes.get(a.component)
-                component = interior.components.get(a.component)
-                declaration = self.ports.port(component.model_dump(mode="json"), "output", a.port) if component and component.kind == "leaf" else None
-                shape = declaration.type.shape if declaration and not isinstance(declaration.type, str) else None
-                if node and node.type == "feedbax.GRU" and a.port in {"hidden", "output"}:
-                    shape = (node.params["hidden_size"],)
-                source_type = (list(shape) if shape is not None and all(isinstance(n, int) for n in shape) else None,
-                               node.params.get("dtype", "float32") if node else "float32")
             if source is None:
                 raise self.problem(path, "wire", "source port does not exist", id=key)
             at = {"kind": "wire", "id": key}
+            signal = (
+                self.source_signal(interior, ports, a)
+                if any(isinstance(item, DelayAttachment) for item in wire.attachments) else None
+            )
             if b.owner == "outputs":
                 external = output_names.get(b.port)
                 if external is None:
                     raise self.problem(path, "wire", "boundary output port does not exist", id=key)
                 if external in output_bindings:
                     raise self.problem(path, "wire", "boundary output already has a driver", id=key)
-                output, reset = transform(source, wire.attachments, key, at)
+                output, reset = transform(source, wire.attachments, key, at, signal=signal)
                 if reset is not None:
                     relay = _generated("output", b.port)
                     add_generated(relay, "feedbax.Input", {}, origin=at)
@@ -239,7 +280,7 @@ class _Lower:
                     raise self.problem(path, "wire", "target port does not exist", id=key)
                 if any(w.target_node == b.component and w.target_port == b.port for w in wires):
                     raise self.problem(path, "wire", "target port already has a driver", id=key)
-                transform(source, wire.attachments, key, at, finish=(b.component, b.port))
+                transform(source, wire.attachments, key, at, finish=(b.component, b.port), signal=signal)
         return GraphSpec(
             nodes=nodes, wires=wires, input_ports=list(input_bindings), output_ports=list(output_names.values()),
             input_bindings=input_bindings, output_bindings=output_bindings, subgraphs=subgraphs or None,
@@ -308,7 +349,7 @@ def lower_model_document(
     task: StudioTaskBindingSpec | None = None,
 ) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
-    lower = _Lower(document, model, components, ModelRegistryPorts(components))
+    lower = _Lower(document, model, components)
     if model.world is not None:
         raise lower.problem((), "field", "model world requires qualified mechanics lowering",
                             parent={"kind": "graph"}, path=["world"])

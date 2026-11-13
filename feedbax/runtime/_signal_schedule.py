@@ -50,6 +50,7 @@ class SignalSchedule:
     order: tuple[Scope, ...]
     routes: tuple[SignalRoute, ...]
     inputs: tuple[tuple[str, ScopedPort], ...]
+    input_aliases: tuple[tuple[ScopedPort, ScopedPort], ...]
     outputs: tuple[tuple[str, ScopedPort], ...]
     output_aliases: tuple[tuple[ScopedPort, ScopedPort], ...]
 
@@ -172,4 +173,11 @@ def resolve_signal_schedule(graph: GraphSpec) -> SignalSchedule:
         for owner, interior in sorted(interiors.items()) if owner
         for port in sorted(interior.output_bindings)
     )
-    return SignalSchedule(tuple(order), tuple(routes), inputs, outputs, output_aliases)
+    input_aliases = tuple(
+        (ScopedPort(owner, port), resolve(
+            owner, port, "input", f"{_graph_path(owner)}/input_bindings/{_pointer_token(port)}",
+        ))
+        for owner, interior in sorted(interiors.items()) if owner
+        for port in sorted(interior.input_bindings)
+    )
+    return SignalSchedule(tuple(order), tuple(routes), inputs, input_aliases, outputs, output_aliases)

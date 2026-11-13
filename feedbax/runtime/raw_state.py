@@ -31,7 +31,7 @@ class StateLayoutError(ValueError):
 class BoundStateValue:
     key: str
     dimension: str | None
-    units: str
+    units: str | None
     frame: str | None
     read: Callable[[State, dict | None], jax.Array]
     legacy_carry: bool = False
@@ -199,7 +199,7 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         BoundStateValue(
             semantic_key("model", "carry", scope, delay.model_delay_id, wire=delay.model_wire_id),
             "/".join((*scope, delay.model_wire_id, delay.model_delay_id)) if delay.shape else None,
-            "1", None, _carry_reader(target, scope, delay),
+            delay.units, None, _carry_reader(target, scope, delay),
         )
         for target, delay in model_delays.items()
     ) + tuple(
