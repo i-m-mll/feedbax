@@ -325,7 +325,9 @@ def _patch_parent(root_fd: int, relative: Path, *, create: bool = False) -> Iter
         os.close(descriptor)
 
 
-def _patch_preimage(relative: Path, directory_fd: int) -> tuple[int, str | None]:
+def _patch_preimage(relative: Path, directory_fd: int, *, exact_name: bool = False) -> tuple[int, str | None]:
+    if exact_name and relative.name not in os.listdir(directory_fd):
+        return 0o600, None
     try:
         descriptor, info = open_existing_file(
             relative.name, dir_fd=directory_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
@@ -364,23 +366,27 @@ def _finish_patch_at(root: Path, root_fd: int) -> None:
         target = sha256_bytes(data) if data is not None else None
         try:
             with _patch_parent(root_fd, relative) as directory_fd:
-                _, current = _patch_preimage(relative, directory_fd)
+                _, current = _patch_preimage(
+                    relative, directory_fd, exact_name=file.before is None or data is None,
+                )
         except FileNotFoundError:
             current = None
         if current not in (target, file.before):
             raise ProjectFolderInvalid(f"{relative} changed during a Studio edit")
 
-    for file, relative, data in targets:
+    # Clear old spellings before creating new ones on case-insensitive volumes.
+    for file, relative, data in sorted(targets, key=lambda target: target[2] is not None):
+        exact_name = file.before is None or data is None
         try:
             with _patch_parent(root_fd, relative, create=file.before is None and data is not None) as directory_fd:
-                mode, current = _patch_preimage(relative, directory_fd)
+                mode, current = _patch_preimage(relative, directory_fd, exact_name=exact_name)
                 target = sha256_bytes(data) if data is not None else None
                 if current == target:
                     os.fsync(directory_fd)
                     continue
 
                 def guard() -> None:
-                    if _patch_preimage(relative, directory_fd)[1] != file.before:
+                    if _patch_preimage(relative, directory_fd, exact_name=exact_name)[1] != file.before:
                         raise ProjectFolderInvalid(f"{relative} changed during a Studio edit")
 
                 if data is None:
@@ -423,6 +429,22 @@ def _publish_patch(root: Path, files: list[_PendingFile], guard: Callable[[], No
             _finish_patch_at(root, root_fd)
     finally:
         os.close(root_fd)
+
+
+def _check_file_spellings(root: Path, files: Iterable[str]) -> None:
+    lock = root / STUDIO_WRITE_LOCK_FILENAME
+    try:
+        alternate = lock.with_name(lock.name.upper()).lstat()
+    except FileNotFoundError:
+        return
+    if not os.path.samestat(alternate, lock.lstat()):
+        return
+    folded = set()
+    for name in files:
+        normalized = name.casefold()
+        if normalized in folded:
+            raise ProjectFolderInvalid(f"{name} aliases another authored file on this volume")
+        folded.add(normalized)
 
 
 @contextmanager
@@ -759,6 +781,7 @@ class ProjectFolder:
                             encoding="base64",
                         ))
                 if pending:
+                    _check_file_spellings(root, proposed)
                     validated = parse_text_project_files(root, proposed)
                     # Validate the encodings the acknowledged snapshot will need before committing.
                     project_semantic_root(validated.project)

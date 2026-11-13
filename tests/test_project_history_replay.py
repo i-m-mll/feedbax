@@ -229,3 +229,22 @@ def test_replay_refuses_a_symlinked_family(study, tmp_path: Path):
     assert client.post(REPLAY, json=body).status_code == 422
     assert list(outside.iterdir()) == []
     assert not (root / STUDIO_PATCH_JOURNAL_FILENAME).exists()
+
+
+def test_replay_case_only_rename_is_order_independent(study):
+    root, client = study
+    original = root / "documents/model.json"
+    renamed = original.with_name("Model.json")
+    before = _snapshot(client)
+    if renamed.exists():
+        add_alias = _replay_body(before, before, ("document", "Model"))
+        add_alias["files"][0]["after"] = _files(before)[MODEL]["data"]
+        assert client.post(REPLAY, json=add_alias).status_code == 422
+        assert _snapshot(client) == before
+
+    original.rename(renamed)
+    outside = _snapshot(client)
+    assert _replay(client, outside, before, MODEL, ("document", "Model")) == before
+    assert {path.name for path in original.parent.iterdir()} == {"model.json", "notes.json"}
+    assert _replay(client, before, outside, ("document", "Model"), MODEL) == outside
+    assert {path.name for path in original.parent.iterdir()} == {"Model.json", "notes.json"}
