@@ -47,6 +47,7 @@ class CallContext:
     period_seconds: Any
     defined: tuple[Any, ...]
     step: Any
+    discrete_uniform: bool
 
 
 def _type(reason: str) -> SignatureError:
@@ -273,6 +274,9 @@ def _sample(family: str, context: CallContext, *args):
 
     key = context.key
     match family:
+        case "uniform" if context.discrete_uniform:
+            low, high = (jnp.rint(arg / context.period_seconds).astype(int) for arg in args)
+            return random.randint(key, (), low, high + 1) * context.period_seconds
         case "uniform" | "loguniform":
             lo, hi = args
             shape = jnp.broadcast_shapes(jnp.shape(lo), jnp.shape(hi))

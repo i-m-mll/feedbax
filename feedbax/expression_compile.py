@@ -76,6 +76,7 @@ def compile_expression(
     field_address: tuple[str, ...],
     period_seconds: float | None = None,
     reset_on_epoch: bool = False,
+    discrete_uniform: bool = False,
     path: NodePath = (),
 ) -> Compiled | tuple[Problem, ...]:
     """Compile with dynamic literal operands, independently of the authored spelling."""
@@ -86,6 +87,19 @@ def compile_expression(
         return (
             Problem(
                 code=ProblemCode.STRUCTURE, reason="The model period must be positive.", path=path
+            ),
+        )
+    if discrete_uniform and (
+        period_seconds is None
+        or not isinstance(tree, DrawValue)
+        or tree.family != "uniform"
+        or site.expected.shape
+    ):
+        return (
+            Problem(
+                code=ProblemCode.STRUCTURE,
+                reason="Discrete uniform draws need a scalar uniform draw and a period.",
+                path=path,
             ),
         )
     if not field_address or any(not part for part in field_address):
@@ -207,6 +221,7 @@ def compile_expression(
                     period_seconds,
                     defined,
                     inputs.step,
+                    discrete_uniform and not at,
                 )
                 result = implementation(
                     context,
