@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, JsonValue, StringConstraints, model_validator
@@ -190,18 +191,31 @@ class ModelDocument(StrictModel):
 
     def scientific_projection(self) -> dict[str, JsonValue]:
         value = self.model_dump(mode="json")
-        _project_interior(value["interior"])
+        omit_model_display_names(value)
         return value
 
 
-def _project_interior(interior: dict[str, Any]) -> None:
-    for component in interior["components"].values():
-        del component["name"]
+def _display_names(interior: dict[str, Any]) -> Iterator[tuple[dict[str, Any], str]]:
+    for identifier, component in interior.get("components", {}).items():
+        yield component, identifier
         if component["kind"] == "composite":
-            for ports in component["ports"].values():
+            for direction in ("inputs", "outputs", "physical"):
+                ports = component["ports"].get(direction, ())
                 for port in ports:
-                    del port["name"]
-            _project_interior(component["interior"])
+                    yield port, port["id"]
+            yield from _display_names(component["interior"])
+
+
+def omit_model_display_names(value: dict[str, Any]) -> None:
+    """Remove presentation-only names from a serialized model in place."""
+    for element, _ in _display_names(value["interior"]):
+        element.pop("name", None)
+
+
+def restore_model_display_names(value: dict[str, Any]) -> None:
+    """Supply required display names using stable IDs when reading scientific data."""
+    for element, identifier in _display_names(value["interior"]):
+        element["name"] = identifier
 
 
 ModelDocument.model_rebuild()

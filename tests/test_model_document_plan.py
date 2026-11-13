@@ -26,6 +26,8 @@ from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_proj
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.jobs import JobService
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.studio.model_edit import apply_model_edit
@@ -427,8 +429,9 @@ def _group_reaching_pipeline(raw, registry):
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
     group = result.changed[-1].element.id
-    term = raw["steps"]["train"]["base"]["inline"]["objective"]["loss"]
-    term["selector"] = f"path:{group}.plant.effector.pos"
+    for link in raw["documents"]["task"]["payload"]["links"]:
+        address = ModelAddress.from_text(link["model_field"])
+        link["model_field"] = address.model_copy(update={"composites": (group, *address.composites)}).to_text()
     return group
 
 
@@ -1026,11 +1029,13 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys, grouped):
+def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys, record_property, grouped):
+    from tests.test_document_train_pair import authored_documents, document_project
+
     registry = new_application_registry_bundle()
     jobs = JobService(host, registry, enable_evaluation_candidate=True)
     folders = ProjectFolderService(tmp_path / "projects")
-    raw = _model_project()
+    raw = document_project(authored_documents(), evaluation=True)
     group = _group_reaching_pipeline(raw, registry.components) if grouped else None
     if grouped:
         model = raw["documents"]["reach-model"]["payload"]
@@ -1065,6 +1070,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             plan = folders.read_plan(project, revision=None)
         assert next(run.request_id for run in plan.plan.runs if run.kind == "train") == train_before
     assert main(["plan", str(folders.root / project)]) == 0
+    assert not plan.plan.diagnostics
     assert set(line.split()[1] for line in capsys.readouterr().out.splitlines()) == {
         run.request_id for run in plan.plan.runs
     }
@@ -1091,24 +1097,64 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
     result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation_job.job_id)
+    service = ProjectPlanService(folders, jobs)
+    accepted = service.read(project, revision=plan.revision)
+    train_receipt = accepted.attempts_by_run[train][0].successful_receipt
+    assert train_receipt is not None
+    store = ImmutableArtifactBlobProvider(plan.store_path)
+
+    def authenticated_receipts():
+        view = SuccessView(store)
+        receipts = tuple(view.read_attempt(job.job_id) for job in (train_job, evaluation_job))
+        assert all(receipt is not None for receipt in receipts)
+        return receipts
+
+    original_receipts = authenticated_receipts()
     with result.open_states() as dataset:
-        assert dataset.data("/v1/model/state/wrapper/controller/cell/hidden").shape[-2] == 101
+        n_samples = raw["steps"]["train"]["base"]["inline"]["training_config"]["n_reach_steps"] + 1
+        assert dataset.data("/v1/model/state/wrapper/controller/cell/hidden").shape[-2] == n_samples
         carry = dataset.data("/v1/model/carry/wrapper/controller/carry/carry")
-        assert carry.shape[-(3 if grouped else 2)] == 101
+        assert carry.shape[-(3 if grouped else 2)] == n_samples
         if grouped:
             assert carry.shape[-2] == 3
             np.testing.assert_array_equal(carry[..., 0, :, :], 0)
         assert np.isfinite(dataset.data("objective/total")).all()
         if group is not None:
-            assert dataset.data(f"/v1/model/state/{group}/plant/effector~1position").shape[-2] == 101
+            assert dataset.data(f"/v1/model/state/{group}/plant/effector~1position").shape[-2] == n_samples
 
     _rename_components(raw["documents"]["reach-model"]["payload"])
     _save_project(folders, project, Project.model_validate(raw))
     renamed = folders.read_plan(project, revision=None)
     assert [run.request_id for run in renamed.plan.runs] == [run.request_id for run in plan.plan.runs]
-    joined = ProjectPlanService(folders, jobs).read(project, revision=renamed.revision)
+    joined = service.read(project, revision=renamed.revision)
     assert joined.attempts_by_run[train][0].job_id == train_job.job_id
+    assert joined.attempts_by_run[train][0].successful_receipt == train_receipt
     assert joined.attempts_by_run[evaluate][0].successful_receipt == result.receipt
+
+    reopened = ProjectFolderService(folders.root)
+    reopened_view = ProjectPlanService(reopened, jobs).read(project, revision=None)
+    reopened_model = reopened.read(project).project.documents["reach-model"].payload
+    assert reopened_model == raw["documents"]["reach-model"]["payload"]
+    assert reopened_view.settled.plan.requests == plan.plan.requests
+    assert reopened_view.attempts_by_run[train][0].job_id == train_job.job_id
+    assert reopened_view.attempts_by_run[train][0].successful_receipt == train_receipt
+    assert reopened_view.attempts_by_run[evaluate][0].successful_receipt == result.receipt
+    assert authenticated_receipts() == original_receipts
+
+    model = raw["documents"]["reach-model"]["payload"]
+    model["ports"]["inputs"][0]["name"] = "renamed_reach_target"
+    overrides = raw["steps"]["train"]["base"]["inline"]["trial_documents"]["input_overrides"]
+    overrides["renamed_reach_target"] = overrides.pop("reach_target")
+    _save_project(folders, project, Project.model_validate(raw))
+    changed = reopened.read_plan(project, revision=None)
+    assert not changed.plan.diagnostics
+    before_ids = {run.key: run.request_id for run in plan.plan.runs}
+    after_ids = {run.key: run.request_id for run in changed.plan.runs}
+    assert before_ids.keys() == after_ids.keys() == {train, evaluate}
+    assert all(before_ids[key] != after_ids[key] for key in before_ids)
+    record_property("request_ids_before_root_rename", ",".join(before_ids.values()))
+    record_property("request_ids_after_root_rename", ",".join(after_ids.values()))
+    record_property("authenticated_receipts", ",".join(receipt.ref.sha256 for receipt in original_receipts))
 
 
 def test_same_seed_nested_rename_preserves_values_and_batch_loss():
