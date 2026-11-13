@@ -159,6 +159,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "scipy>=1.17.1",
     "ruff>=0.12.11",
+    "hypothesis>=6.170.15",
 ]
 mjx-warp-cpu = [
     "dill>=0.3.9",

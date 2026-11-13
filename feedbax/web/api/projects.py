@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_authoring import (
@@ -179,6 +180,16 @@ def patch_project(
 ) -> StudioProjectSnapshot:
     return _project_response(
         response, lambda: request.app.state.project_folders.patch(project_id, body)
+    )
+
+
+@router.post("/{project_id}/model/edit", response_model_exclude_unset=True)
+def edit_model(
+    project_id: ProjectName, body: ModelEditRequest, request: Request, response: Response,
+) -> ModelEditResponse:
+    components = request.app.state.bootstrap_state.bundle.components
+    return _project_response(
+        response, lambda: request.app.state.project_folders.edit_model(project_id, body, components)
     )
 
 

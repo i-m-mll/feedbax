@@ -357,7 +357,7 @@ export interface LeafComponent {
   kind: "leaf";
   name: string;
   type: string;
-  revision?: string | null;
+  revision?: number | null;
   fields?: Record<string, JsonValue>;
   port_counts?: Record<string, number>;
   attachments?: ModelPortAttachments;
@@ -397,6 +397,144 @@ export interface ModelDocument {
   ports: ModelPorts;
   interior: GraphInterior;
   world?: ModelWorld | null;
+}
+
+export interface ModelPosition {
+  x: number;
+  y: number;
+}
+
+export interface AddComponent {
+  op: "add_component";
+  graph: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  position: ModelPosition;
+}
+
+export interface DeleteElements {
+  selection: ModelAddress[];
+  op: "delete";
+}
+
+export interface ConnectSignal {
+  op: "connect";
+  graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd;
+  target: ComponentPortEnd | OutputBoundaryEnd;
+}
+
+export interface ConnectPhysical {
+  op: "connect_physical";
+  graph: ModelAddress;
+  connection: ModelPhysicalConnection;
+}
+
+export interface AddPort {
+  op: "add_port";
+  graph: ModelAddress;
+  direction: "input" | "output" | "physical";
+  port: SignalInput | SignalOutput | PhysicalPort;
+}
+
+export interface RemovePort {
+  op: "remove_port";
+  address: ModelAddress;
+}
+
+export interface RenameElement {
+  op: "rename";
+  address: ModelAddress;
+  name: string;
+}
+
+export interface MovePort {
+  op: "move_port";
+  address: ModelAddress;
+  index: number;
+}
+
+export interface SetField {
+  op: "set_field";
+  address: ModelAddress;
+  value: JsonValue;
+}
+
+export interface BringSignalIn {
+  op: "bring_signal_in";
+  source_graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd;
+  destination: ModelAddress;
+}
+
+export interface ModelClipboard {
+  components: Record<string, LeafComponent | CompositeComponent>;
+  wires: Record<string, ModelWire>;
+  connections: Record<string, ModelPhysicalConnection>;
+  positions?: Record<string, ModelPosition>;
+}
+
+export interface CopyComponents {
+  selection: ModelAddress[];
+  op: "copy";
+}
+
+export interface CutComponents {
+  selection: ModelAddress[];
+  op: "cut";
+}
+
+export interface DuplicateComponents {
+  selection: ModelAddress[];
+  op: "duplicate";
+}
+
+export interface PasteComponents {
+  op: "paste";
+  graph: ModelAddress;
+  clipboard: ModelClipboard;
+}
+
+export interface GroupComponents {
+  selection: ModelAddress[];
+  op: "group";
+  name: string;
+}
+
+export interface UngroupComposite {
+  op: "ungroup";
+  address: ModelAddress;
+}
+
+export interface ModelEditCommand {
+  operation: AddComponent | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+}
+
+export interface ModelEditProblem {
+  address: ModelAddress;
+  detail: string;
+}
+
+export interface ModelEditRequest {
+  revision: unknown;
+  presentation_revision: unknown;
+  document: string;
+  command: ModelEditCommand;
+}
+
+export interface ModelEditApplied {
+  status: "applied";
+  snapshot: StudioProjectSnapshot;
+  changed: ModelAddress[];
+  clipboard?: ModelClipboard | null;
+}
+
+export interface ModelEditRefused {
+  status: "refused";
+  problem: ModelEditProblem;
+}
+
+export interface ModelEditResponse {
+  result: ModelEditApplied | ModelEditRefused;
 }
 
 export interface SparseCooEntrySpec {
@@ -4120,7 +4258,7 @@ export const LeafComponentSchema: z.ZodType<LeafComponent> = z.lazy(() =>
       "kind": z.literal("leaf"),
       "name": z.string().min(1),
       "type": z.string().min(1),
-      "revision": z.string().nullable().optional(),
+      "revision": z.number().int().safe().gte(1).nullable().optional(),
       "fields": z.record(z.string(), jsonValueSchema).optional(),
       "port_counts": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.number().int().safe().gte(0)).optional(),
       "attachments": ModelPortAttachmentsSchema.optional(),
@@ -4223,6 +4361,240 @@ export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
       }
     })
 ) as unknown as z.ZodType<ModelDocument>;
+
+export const ModelPositionSchema: z.ZodType<ModelPosition> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number().finite(),
+      "y": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPosition>;
+
+export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("add_component"),
+      "graph": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "position": ModelPositionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<AddComponent>;
+
+export const DeleteElementsSchema: z.ZodType<DeleteElements> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("delete"),
+    })
+    .strict()
+) as unknown as z.ZodType<DeleteElements>;
+
+export const ConnectSignalSchema: z.ZodType<ConnectSignal> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect"),
+      "graph": ModelAddressSchema,
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectSignal>;
+
+export const ConnectPhysicalSchema: z.ZodType<ConnectPhysical> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect_physical"),
+      "graph": ModelAddressSchema,
+      "connection": ModelPhysicalConnectionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectPhysical>;
+
+export const AddPortSchema: z.ZodType<AddPort> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("add_port"),
+      "graph": ModelAddressSchema,
+      "direction": z.union([z.literal("input"), z.literal("output"), z.literal("physical")]),
+      "port": z.union([SignalInputSchema, SignalOutputSchema, PhysicalPortSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<AddPort>;
+
+export const RemovePortSchema: z.ZodType<RemovePort> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("remove_port"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<RemovePort>;
+
+export const RenameElementSchema: z.ZodType<RenameElement> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("rename"),
+      "address": ModelAddressSchema,
+      "name": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<RenameElement>;
+
+export const MovePortSchema: z.ZodType<MovePort> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_port"),
+      "address": ModelAddressSchema,
+      "index": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<MovePort>;
+
+export const SetFieldSchema: z.ZodType<SetField> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("set_field"),
+      "address": ModelAddressSchema,
+      "value": jsonValueSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<SetField>;
+
+export const BringSignalInSchema: z.ZodType<BringSignalIn> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("bring_signal_in"),
+      "source_graph": ModelAddressSchema,
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "destination": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<BringSignalIn>;
+
+export const ModelClipboardSchema: z.ZodType<ModelClipboard> = z.lazy(() =>
+  z
+    .object({
+      "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema),
+      "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema),
+      "positions": z.record(z.string(), ModelPositionSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelClipboard>;
+
+export const CopyComponentsSchema: z.ZodType<CopyComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("copy"),
+    })
+    .strict()
+) as unknown as z.ZodType<CopyComponents>;
+
+export const CutComponentsSchema: z.ZodType<CutComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("cut"),
+    })
+    .strict()
+) as unknown as z.ZodType<CutComponents>;
+
+export const DuplicateComponentsSchema: z.ZodType<DuplicateComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("duplicate"),
+    })
+    .strict()
+) as unknown as z.ZodType<DuplicateComponents>;
+
+export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("paste"),
+      "graph": ModelAddressSchema,
+      "clipboard": ModelClipboardSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PasteComponents>;
+
+export const GroupComponentsSchema: z.ZodType<GroupComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("group"),
+      "name": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<GroupComponents>;
+
+export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("ungroup"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<UngroupComposite>;
+
+export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
+  z
+    .object({
+      "operation": z.union([AddComponentSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditCommand>;
+
+export const ModelEditProblemSchema: z.ZodType<ModelEditProblem> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "detail": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditProblem>;
+
+export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "presentation_revision": z.unknown(),
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "command": ModelEditCommandSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditRequest>;
+
+export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
+  z
+    .object({
+      "status": z.literal("applied"),
+      "snapshot": StudioProjectSnapshotSchema,
+      "changed": z.array(ModelAddressSchema),
+      "clipboard": ModelClipboardSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditApplied>;
+
+export const ModelEditRefusedSchema: z.ZodType<ModelEditRefused> = z.lazy(() =>
+  z
+    .object({
+      "status": z.literal("refused"),
+      "problem": ModelEditProblemSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditRefused>;
+
+export const ModelEditResponseSchema: z.ZodType<ModelEditResponse> = z.lazy(() =>
+  z
+    .object({
+      "result": z.union([ModelEditAppliedSchema, ModelEditRefusedSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditResponse>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -9012,6 +9384,8 @@ export const contractSchemas = {
   StudioSubmissionItem: StudioSubmissionItemSchema,
   ModelAddress: ModelAddressSchema,
   ModelDocument: ModelDocumentSchema,
+  ModelEditRequest: ModelEditRequestSchema,
+  ModelEditResponse: ModelEditResponseSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   ReportDocument: ReportDocumentSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
@@ -9120,6 +9494,8 @@ export interface ContractTypeMap {
   StudioSubmissionItem: StudioSubmissionItem;
   ModelAddress: ModelAddress;
   ModelDocument: ModelDocument;
+  ModelEditRequest: ModelEditRequest;
+  ModelEditResponse: ModelEditResponse;
   AnalysisDocument: AnalysisDocument;
   ReportDocument: ReportDocument;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;

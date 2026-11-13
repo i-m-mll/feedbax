@@ -21,6 +21,7 @@ from feedbax._secure_fs import directory_open_flags, rename_no_replace
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, Sha256, json_pointer_parts
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_inputs import ProjectName
@@ -49,6 +50,7 @@ from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
     CreateNamedDocument,
     PresentationDocument,
+    StudioProjectFilePatch,
     SetProjectValue,
     StudioAuthoredFileRevision,
     StudioPresentationWrite,
@@ -63,6 +65,8 @@ from feedbax.contracts.studio_project import (
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse
 
 
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
@@ -491,6 +495,68 @@ class ProjectFolderService:
             )
 
     def patch(self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch) -> StudioProjectSnapshot:
+        return self._patch(project_id, body, model_operation=False)
+
+    def edit_model(
+        self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
+    ) -> ModelEditResponse:
+        from feedbax.contracts.model_edit import (
+            ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse, ModelEditState,
+            ModelPosition,
+        )
+        from feedbax.contracts.project_sources import pointer
+        from feedbax.studio.model_edit import apply_model_edit
+        from feedbax.studio.model_ports import ModelRegistryPorts
+
+        snapshot = self.read(project_id, revision=body.revision)
+        _check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
+        source = snapshot.project.documents.get(body.document)
+        if source is None or source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+            raise ProjectFolderNotFound(body.document)
+        if snapshot.presentation is None:
+            raise ProjectFolderInvalid("The project presentation document is unreadable")
+        presentation = snapshot.presentation.documents.get(body.document)
+        state = ModelEditState.model_validate({
+            "document": source.payload,
+            "positions": {key: ModelPosition(x=value.x, y=value.y)
+                          for key, value in presentation.positions.items()} if presentation else {},
+        })
+        authority = ModelRegistryPorts(components)
+        result = apply_model_edit(body.document, state, body.command, ports=authority.port, accepts=authority.accepts)
+        if isinstance(result, ModelEditProblem):
+            return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
+        if result.state != state:
+            files = [StudioProjectFilePatch(
+                address=AuthoredFileAddress(kind="document", id=body.document),
+                patches=[SetProjectValue(
+                    op="replace", path="/payload", value=result.state.document.model_dump(mode="json"),
+                )],
+            )]
+            positions = {key: value.model_dump(mode="json") for key, value in result.state.positions.items()}
+            if result.state.positions != state.positions:
+                if presentation is None and not snapshot.presentation.documents:
+                    path = "/documents"
+                    value = {body.document: {"positions": positions}}
+                elif presentation is None:
+                    path = pointer(("documents", body.document))
+                    value = {"positions": positions}
+                else:
+                    path = pointer(("documents", body.document, "positions"))
+                    value = positions
+                files.append(StudioProjectFilePatch(
+                    address=PRESENTATION_ADDRESS,
+                    patches=[SetProjectValue(op="add", path=path, value=value)],
+                ))
+            snapshot = self._patch(project_id, StudioProjectPatchBatch(
+                revision=body.revision, presentation_revision=body.presentation_revision, files=files,
+            ), model_operation=True)
+        return ModelEditResponse(result=ModelEditApplied(
+            status="applied", snapshot=snapshot, changed=result.changed, clipboard=result.clipboard,
+        ))
+
+    def _patch(
+        self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,
+    ) -> StudioProjectSnapshot:
         root = self._folder(project_id)
         with _folder_lock(root):
             text = self._load(root)
@@ -525,6 +591,8 @@ class ProjectFolderService:
                         family = _FAMILIES[file.address.kind]
                         target = payload["sweep"]["rows"] if family == "variants" else payload[family]
                         entry = target[file.address.id]
+                        if family == "documents" and not model_operation and entry["schema"] == MODEL_DOCUMENT_SCHEMA_ID:
+                            raise ProjectFolderInvalid("Model documents are edited through addressed operations")
                     for patch in file.patches:
                         apply_value_patch_in_place(
                             entry,
@@ -533,6 +601,11 @@ class ProjectFolderService:
                             patch.value if isinstance(patch, SetProjectValue) else None,
                             path=patch.path,
                         )
+                    if (
+                        file.address.kind == "document" and not model_operation
+                        and entry.get("schema") == MODEL_DOCUMENT_SCHEMA_ID
+                    ):
+                        raise ProjectFolderInvalid("Model documents are edited through addressed operations")
                 project = Project.model_validate(payload)
                 encoded = dump_text_project(project, text.configuration)
                 if presentation is not None:

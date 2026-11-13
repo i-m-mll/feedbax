@@ -112,7 +112,7 @@ class LeafComponent(StrictModel):
     kind: Literal["leaf"]
     name: ModelName
     type: ModelName
-    revision: str | None = None
+    revision: Annotated[int, Field(strict=True, ge=1)] | None = None
     fields: dict[str, JsonValue] = Field(default_factory=dict)
     port_counts: dict[ModelElementId, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     attachments: ModelPortAttachments = Field(default_factory=ModelPortAttachments)
