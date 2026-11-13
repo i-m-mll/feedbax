@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
@@ -96,15 +96,6 @@ class AddPort(StrictModel):
     graph: ModelAddress
     direction: Literal["input", "output", "physical"]
     port: SignalInput | SignalOutput | PhysicalPort
-
-    @model_validator(mode="before")
-    @classmethod
-    def _typed_port(cls, value):
-        if isinstance(value, dict) and isinstance(value.get("port"), dict):
-            model = {"input": SignalInput, "output": SignalOutput, "physical": PhysicalPort}.get(value.get("direction"))
-            if model is not None:
-                return value | {"port": model.model_validate(value["port"])}
-        return value
 
 
 class RemovePort(StrictModel):

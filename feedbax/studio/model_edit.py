@@ -541,15 +541,18 @@ class ModelEditDraft:
 
     def add_port(self, command: edits.AddPort) -> None:
         owner, graph = self.graph(command.graph)
-        expected = {"input": SignalInput, "output": SignalOutput, "physical": PhysicalPort}
-        if not isinstance(command.port, expected[command.direction]):
+        expected = {"input": SignalInput, "output": SignalOutput, "physical": PhysicalPort}[command.direction]
+        port = command.port
+        if isinstance(port, SignalInput) and expected is SignalOutput and "default" not in port.model_fields_set:
+            port = SignalOutput(id=port.id, name=port.name, type=port.type)
+        if not isinstance(port, expected):
             raise _Refusal(command.graph, "port does not match the requested direction")
         if command.direction == "physical" and graph["physical_domain"] is None:
             raise _Refusal(command.graph, "physical ports require an Equations or Mechanics interior")
-        _port_list(owner, command.direction).append(command.port.model_dump(mode="json"))
+        _port_list(owner, command.direction).append(port.model_dump(mode="json"))
         boundary = {"input": "inputs", "output": "outputs", "physical": "boundary"}[command.direction]
         self.changed.append(_address(
-            self.name, command.graph.composites, "port", end=_card(boundary, command.port.id),
+            self.name, command.graph.composites, "port", end=_card(boundary, port.id),
         ))
 
     def bring_in(self, command: edits.BringSignalIn) -> None:
