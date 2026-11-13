@@ -73,13 +73,14 @@ function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }:
 }
 
 export function StudioEvaluateAuthoring({
-  authored, source, projection, domain, disabled, focusTrialSet, onTrialSetFocused, onEdit,
+  authored, source, projection, domain, disabled, editSubject, focusTrialSet, onTrialSetFocused, onEdit,
 }: {
   authored: { terms: SubsetTerms; trialSet: TrialSet; hasWhere: boolean };
   source: PlanStepView;
   projection: StudioSavedTrainRuns;
   domain: TrialDomain | undefined;
   disabled: boolean;
+  editSubject: boolean;
   focusTrialSet: boolean;
   onTrialSetFocused(): void;
   onEdit(name: string, edit: ProjectValueEdit): void;
@@ -97,7 +98,7 @@ export function StudioEvaluateAuthoring({
   const editRows = terms.rows !== undefined;
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
   return <div className="grid gap-3">
-    {(editRows || sweeps.length > 0) && <fieldset aria-label="Subject subset" className="grid gap-1" disabled={disabled}>
+    {editSubject && (editRows || sweeps.length > 0) && <fieldset aria-label="Subject subset" className="grid gap-1" disabled={disabled}>
       <legend className="font-semibold">Subject subset</legend>
       {editRows && <Checkboxes options={rows} selected={draft.rows ?? []}
         onToggle={(id, checked) => setDraft({ ...draft, rows: toggle(draft.rows ?? [], id, checked) })} />}

@@ -143,6 +143,7 @@ export interface StudioSavedTrainAttempt {
   successful_receipt: JobReceipt | null;
   continues: string | null;
   checkpoint_source: StudioTrainCheckpointSource | null;
+  stopped_checkpoint?: number | null;
 }
 
 export interface StudioSavedTrainChange {
@@ -4511,6 +4512,7 @@ export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> =
       "successful_receipt": JobReceiptSchema.nullable(),
       "continues": z.string().nullable(),
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
+      "stopped_checkpoint": z.number().int().safe().gt(0).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainAttempt>;

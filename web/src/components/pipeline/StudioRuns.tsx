@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import { studioAccessibleName, studioCountOf, studioName, studioReason, studioRunStatus } from "@/components/activity/studioVocabulary";
@@ -19,6 +19,7 @@ interface StudioRunsProps extends RunSelectionProps {
   plan: PlanView;
   region: StudioRegionState;
   pivotActive?: boolean;
+  upstreamDetail?: ReactNode;
 }
 
 function StudioRunLineage({
@@ -27,12 +28,14 @@ function StudioRunLineage({
   downstream,
   onChoose,
   single,
+  upstreamDetail,
 }: {
   plan: PlanView;
   upstream: RunSetsByStep;
   downstream: RunSetsByStep;
   onChoose: (stepId: string) => void;
   single: boolean;
+  upstreamDetail?: ReactNode;
 }) {
   return (
     <div className="space-y-2">
@@ -59,6 +62,7 @@ function StudioRunLineage({
               );
             })}
           </ul>
+          {name === "madeFrom" && single && upstreamDetail}
         </section>
       ))}
     </div>
@@ -210,7 +214,7 @@ export function StudioRunControls({ commands, pivotCommand, pivotActive, reason 
   </div>;
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, pivotActive }: StudioRunsProps) {
+function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstreamDetail }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
@@ -230,7 +234,7 @@ function RunsContent({ plan, step, state, onSelectionChange, pivotActive }: Stud
     </div>
     {(upstream.size > 0 || downstream.size > 0) && <div className="max-h-36 shrink-0 overflow-auto px-2 pb-2 text-sm">
       <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={selected.length === 1}
-        onChoose={(id) => onSelectionChange(selectStep(state, id))} />
+        upstreamDetail={upstreamDetail} onChoose={(id) => onSelectionChange(selectStep(state, id))} />
     </div>}
   </div>;
 }

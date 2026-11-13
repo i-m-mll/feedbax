@@ -1,7 +1,7 @@
 """Join the acknowledged compiler projection to observed Jobs attempts."""
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -277,11 +277,12 @@ class ProjectPlanService:
         self.jobs = jobs
 
     def read(
-        self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = ()
+        self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = (),
+        stopped_checkpoint_jobs: Sequence[str] = (),
     ) -> ProjectPlanRead:
         """Read one saved revision and its request-scoped attempt evidence."""
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
-        return read_settled_project_plan(settled, self.jobs)
+        return read_settled_project_plan(settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs)
 
     def window_map(self, view: ProjectPlanRead) -> StudioProjectWindowMap:
         evaluation_tasks = self.jobs.registries.python_tasks if self.jobs.evaluation_candidate_enabled else None
@@ -314,11 +315,14 @@ class ProjectPlanService:
             raise JobConflict("The retained data for the selected Evaluate trial could not be read and authenticated.") from error
 
 
-def read_settled_project_plan(settled: SettledProjectPlan, reader: PlanJobReader) -> ProjectPlanRead:
+def read_settled_project_plan(
+    settled: SettledProjectPlan, reader: PlanJobReader, *, stopped_checkpoint_jobs: Sequence[str] = (),
+) -> ProjectPlanRead:
     """Join one saved Plan to the verified Host evidence used by Studio."""
     requests = {run.request_id for run in settled.plan.runs if run.kind in {"train", "evaluate"}}
     jobs = reader.read_plan_attempts(
-        project=settled.project_id, store=settled.store_path, requests=requests
+        project=settled.project_id, store=settled.store_path, requests=requests,
+        stopped_checkpoint_jobs=stopped_checkpoint_jobs,
     )
     evaluations = {}
     evaluation_problems = []

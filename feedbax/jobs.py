@@ -54,7 +54,7 @@ from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
-from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT
+from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoint_producer
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -110,6 +110,7 @@ class PlanJobAttempt:
     checkpoint_source: StudioTrainCheckpointSource | None = None
     output_size_bytes: int | None = None
     checkpoint_sources: tuple[StudioTrainCheckpointSource, ...] = ()
+    stopped_checkpoint: int | None = None
 
 
 @dataclass(frozen=True)
@@ -166,9 +167,10 @@ class PlanJobReader:
         return params, checkpoint
 
     def read_plan_attempts(
-        self, *, project: str, store: Path, requests: Collection[RequestId]
+        self, *, project: str, store: Path, requests: Collection[RequestId],
+        stopped_checkpoint_jobs: Sequence[str] = (),
     ) -> PlanJobAttempts:
-        """Read saved Plan attempt facts at the settled store locator from one Host snapshot."""
+        """Read saved Plan attempts and authenticate any selected stopped checkpoints."""
         manifest_root = str(store)
         key = plan_ref_key(project, manifest_root)
         include_producers = self._enable_evaluation_candidate and any(
@@ -183,6 +185,7 @@ class PlanJobReader:
             for row in plan_ref["rows"].values():
                 wanted.add(row["request_id"])
                 wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
+        stopped_jobs = set(stopped_checkpoint_jobs) if self._enable_evaluation_candidate else set()
         attempts: dict[RequestId, list[PlanJobAttempt]] = {}
         by_id = {
             job["id"]: job for job in snapshot["jobs"]
@@ -191,12 +194,13 @@ class PlanJobReader:
         producers = Counter(
             job["request"] for job in by_id.values()
             if include_producers and job["request"].startswith("train:")
-            and _is_checkpoint_producer(job, manifest_root)
+            and is_checkpoint_producer(job["launch"], continues=job["continues"], manifest_root=manifest_root)
         )
         catalogs = {
             job["request"]: tuple(job["launch"]["payload"].get("checkpoint_catalog", ()))
             for job in by_id.values()
-            if producers[job["request"]] == 1 and _is_checkpoint_producer(job, manifest_root)
+            if producers[job["request"]] == 1
+            and is_checkpoint_producer(job["launch"], continues=job["continues"], manifest_root=manifest_root)
         }
         for job in by_id.values():
             request_id = job["request"]
@@ -227,6 +231,11 @@ class PlanJobReader:
             status, reason = _job_status(
                 job, progress=progress, receipt_intact=not succeeded or receipt is not None
             )
+            stopped_checkpoint = (
+                self.host.stopped_checkpoint(job["id"], project=project, manifest_root=manifest_root)
+                if not evaluate and status == JobStatus.STOPPED and job["id"] in stopped_jobs
+                else None
+            )
             attempts.setdefault(request_id, []).append(
                 PlanJobAttempt(
                     job["id"], status, (job.get("phase") or {}).get("phase"),
@@ -235,6 +244,7 @@ class PlanJobReader:
                     checkpoint_source=_train_checkpoint_source(job, by_id),
                     output_size_bytes=size,
                     checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
+                    stopped_checkpoint=stopped_checkpoint,
                 )
             )
         return PlanJobAttempts(
@@ -508,7 +518,7 @@ class JobService(PlanJobReader):
         anchors = [
             row["id"]
             for row in self.host.jobs(project=project, request=request, include_launch=True)
-            if _is_checkpoint_producer(row, str(root))
+            if is_checkpoint_producer(row["launch"], continues=row["continues"], manifest_root=str(root))
         ]
         return anchors[0] if len(anchors) == 1 else None
 
@@ -891,15 +901,6 @@ class JobService(PlanJobReader):
                 earlier_definition=current.get(key, request_id) != request_id,
             )
         return result
-
-
-def _is_checkpoint_producer(job: dict[str, Any], manifest_root: str) -> bool:
-    payload = job["launch"]["payload"]
-    return (
-        job["continues"] is None
-        and payload.get("canonical_request") is not None
-        and payload.get("manifest_root") == manifest_root
-    )
 
 
 def _plan_run_data(name: str, run: PlannedRun) -> dict[str, Any]:

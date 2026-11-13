@@ -296,6 +296,12 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     stopped = terminal(producer.job_id, "stopped")
     checkpoint = stopped["outcome"]["checkpoint"]
     assert checkpoint["completed_updates"] == 3
+    assert host.stopped_checkpoint(producer.job_id, project=project, manifest_root=str(plan.store_path)) == 3
+    hidden = JobService(host, registries, enable_evaluation_candidate=False).read_plan_attempts(
+        project=project, store=plan.store_path, requests=(by_step["train"].request_id,),
+        stopped_checkpoint_jobs=(producer.job_id,),
+    )
+    assert hidden.by_request[by_step["train"].request_id][0].stopped_checkpoint is None
     assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
     evaluated = terminal(exact.job_id, "succeeded")
     binding = evaluated["edges"][0]["binding"]
@@ -331,6 +337,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         ))
         assert pinned == binding
         with _damaged_prng(checkpoint):
+            assert host.stopped_checkpoint(producer.job_id, project=project, manifest_root=str(plan.store_path)) is None
             # A fresh admission detects corruption at selection. The earlier pin also
             # detects the same damage before delivery.
             (corrupt,) = launch("corrupt", "exact")

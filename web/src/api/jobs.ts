@@ -23,8 +23,9 @@ function savedTrainRunsPath(project: string) {
   return `/api/projects/${encodeURIComponent(project)}/train-runs`;
 }
 
-export function fetchSavedTrainRuns(project: string, revision: string, signal?: AbortSignal) {
+export function fetchSavedTrainRuns(project: string, revision: string, signal?: AbortSignal, stoppedCheckpointJob?: string) {
   const query = new URLSearchParams({ revision, window_map: 'true' });
+  if (stoppedCheckpointJob) query.set('stopped_checkpoint_job', stoppedCheckpointJob);
   return readContract(`${savedTrainRunsPath(project)}?${query}`, 'StudioSavedTrainRuns', { signal });
 }
 

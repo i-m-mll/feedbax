@@ -75,8 +75,12 @@ def seed(home: str, project_id: str):
     return project_id
 
 
-def walkthrough_files():
+def walkthrough_files(batches: str | None = None):
     project = document_project(authored_documents())
+    if batches is not None:
+        train = project["steps"]["train"]["base"]["inline"]
+        train["training_config"]["n_batches"] = int(batches)
+        train["method_payload"]["payload"]["target_total"] = int(batches)
     documents = [
         {"kind": "document", "id": name, "document": document}
         for name, document in project["documents"].items()

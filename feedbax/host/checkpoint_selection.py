@@ -20,6 +20,15 @@ class CheckpointSelection:
     requires_catalog: bool
 
 
+def is_checkpoint_producer(launch: dict, *, continues: str | None, manifest_root: str) -> bool:
+    payload = launch["payload"]
+    return (
+        continues is None
+        and payload.get("canonical_request") is not None
+        and payload.get("manifest_root") == manifest_root
+    )
+
+
 def requested_checkpoint_selection(request: str, launch: dict) -> CheckpointSelection | None:
     """Read the coordinate demand from the canonical or private input binding."""
     payload = launch["payload"]

@@ -6,6 +6,7 @@ import { ProjectEditConflictError, type ProjectEditController } from './projectE
 import { savedRunId } from './projectWindowPlan';
 
 const rollout = 'feedbax.rollout';
+export const checkpointLabel = (update: number) => `Checkpoint at update ${update}`;
 
 export type TrialSet =
   | { kind: 'every_condition' }
@@ -15,6 +16,19 @@ export type TrialSet =
 export type TrialDomain =
   | { kind: 'fixed'; conditions: string[] }
   | { kind: 'sampler' };
+
+export type StoppedEvaluationSubject = {
+  runId: string;
+  jobId: string;
+  at: number;
+};
+
+export function exactCheckpoint(step: Step | undefined): number | undefined {
+  const subject = StepReferenceSchema.safeParse(step?.inputs?.subject);
+  if (!subject.success) return undefined;
+  const checkpoint = subject.data.checkpoint;
+  return checkpoint && typeof checkpoint === 'object' && 'at' in checkpoint ? checkpoint.at : undefined;
+}
 
 export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined, members: readonly PlanRunView[]): TrialDomain | undefined {
   if (!members.length) return undefined;
@@ -42,7 +56,9 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
   const parsed = StepReferenceSchema.safeParse(step.inputs?.subject);
   if (!parsed.success) return undefined;
   const subject = parsed.data;
-  if (subject.checkpoint !== 'last' || subject.row != null || subject.variants != null) return undefined;
+  const checkpoint = subject.checkpoint;
+  if (!(checkpoint === 'last' || checkpoint && typeof checkpoint === 'object' && 'at' in checkpoint) ||
+      subject.row != null || subject.variants != null) return undefined;
   const terms = subject.where ?? {};
   if ('subset' in terms || terms.best || terms.when) return undefined;
   const sweep = step.sweep;
@@ -65,10 +81,17 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
 
 export async function createEvaluation(
   editor: ProjectEditController, source: PipelineMapStepSource, plan: PlanView, projection: StudioSavedTrainRuns,
+  stopped?: StoppedEvaluationSubject,
 ) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== projection.revision || saved.project.sweep) throw new ProjectEditConflictError();
   const { step, members, where } = trainSourceSubset(source, plan, projection);
+  if (stopped && (
+    members.length !== 1 || members[0].id !== stopped.runId ||
+    !projection.rows.find(({ key }) => savedRunId(key) === stopped.runId)?.attempts.some(
+      ({ job_id, stopped_checkpoint }) => job_id === stopped.jobId && stopped_checkpoint === stopped.at,
+    )
+  )) throw new ProjectEditConflictError();
   const domain = managedTrialDomain(projection, members);
   if (!domain) throw new Error('Choose managed Train runs that share a trial-set rule.');
   const trialSet: TrialSet = domain.kind === 'fixed' ? { kind: 'every_condition' } : { kind: 'sample', count: 1 };
@@ -82,7 +105,7 @@ export async function createEvaluation(
         evaluation_type: rollout,
         params: { trial_set: trialSet, seed: 0, trial_policy: 'paired', variation: [] },
       } },
-      inputs: { subject: { step: step.id, checkpoint: 'last', ...(where && { where }) } },
+      inputs: { subject: { step: step.id, checkpoint: stopped ? { at: stopped.at } : 'last', ...(where && { where }) } },
       sweep: { axes: { subject: { input: 'subject' } } },
     },
   }, projection.revision);

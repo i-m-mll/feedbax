@@ -9,7 +9,7 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.host.checkpoint_selection import (
-    CheckpointSelection, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
+    CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
 )
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
@@ -646,6 +646,37 @@ class Store:
         if record_keys:
             snapshot["records"] = self.record_get_many(record_keys)
         return snapshot
+
+    def stopped_checkpoint(self, *, job_id: str, project: str, manifest_root: str) -> int | None:
+        """Project exact stopped subjects through the same binding check used at delivery."""
+        job = self.db.execute(
+            "SELECT request, data, outcome FROM jobs WHERE id=? AND project=? AND state='stopped'",
+            (job_id, project),
+        ).fetchone()
+        if (
+            job is None or not job["outcome"] or not job["request"].startswith("train:")
+            or json.loads(job["data"]).get("manifest_root") != manifest_root
+        ):
+            return None
+        checkpoint = json.loads(job["outcome"]).get("checkpoint")
+        update = checkpoint.get("completed_updates") if isinstance(checkpoint, dict) else None
+        if type(update) is not int or update <= 0:
+            return None
+        anchors = [
+            row["id"] for row in self.db.execute(
+                "SELECT id, launch FROM jobs WHERE project=? AND request=? AND continues IS NULL",
+                (project, job["request"]),
+            )
+            if is_checkpoint_producer(json.loads(row["launch"]), continues=None, manifest_root=manifest_root)
+        ]
+        if len(anchors) != 1:
+            return None
+        binding, _, _ = self._completion_candidate(anchors[0], CheckpointSelection((update,), False))
+        if binding is not None:
+            (member,) = binding["checkpoint_selection"]["members"]
+            if member["producer_job_id"] == job_id and member["checkpoint"] == checkpoint:
+                return update
+        return None
 
     def record_get_many(self, keys: list[str]) -> dict:
         return {

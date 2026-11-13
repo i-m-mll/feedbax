@@ -67,6 +67,7 @@ class StudioSavedTrainAttempt(StrictModel):
     successful_receipt: JobReceipt | None
     continues: str | None
     checkpoint_source: StudioTrainCheckpointSource | None
+    stopped_checkpoint: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
 
 
 class StudioSavedTrainKey(StrictModel):

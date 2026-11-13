@@ -165,6 +165,11 @@ class HostClient:
             ),
         )
 
+    def stopped_checkpoint(self, job_id: str, *, project: str, manifest_root: str) -> int | None:
+        return cast(int | None, self._call(
+            "stopped_checkpoint", start_host=False, job_id=job_id, project=project, manifest_root=manifest_root,
+        ))
+
     def record_get(self, key: str) -> JsonObject | None:
         return cast(JsonObject | None, self._call("record_get", key=key))
 

@@ -53,11 +53,14 @@ def _host_error(exc: HostError) -> HTTPException:
 @router.get("/projects/{project_id}/train-runs", response_model_exclude_unset=True)
 def saved_train_runs(
     project_id: ProjectName, revision: Sha256, request: Request, response: Response,
-    window_map: bool = False,
+    window_map: bool = False, stopped_checkpoint_job: str | None = None,
 ) -> StudioSavedTrainRuns:
     def read() -> StudioSavedTrainRuns:
         service = request.app.state.project_plan
-        view = service.read(project_id, revision=revision)
+        view = service.read(
+            project_id, revision=revision,
+            stopped_checkpoint_jobs=(stopped_checkpoint_job,) if stopped_checkpoint_job is not None else (),
+        )
         result = StudioSavedTrainRuns(
             revision=view.settled.revision,
             rows=[

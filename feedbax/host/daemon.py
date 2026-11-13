@@ -585,6 +585,8 @@ class Host:
                 return await self._events(**message)
             case "jobs_snapshot":
                 return self.store.jobs_snapshot(**message)
+            case "stopped_checkpoint":
+                return self.store.stopped_checkpoint(**message)
             case "admit_with_completion":
                 result = self.store.admit(**message, allow_completion=True)
                 self.wake.set()

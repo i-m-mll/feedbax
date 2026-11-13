@@ -1,8 +1,8 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
-  StudioJobSubmission, StudioProjectSnapshot, StudioSavedEvaluationRow, StudioSavedTrainRuns, WorkspaceReplayTrial,
+  StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow, StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
-import { captureStudioWindow, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { captureStudioWindow, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -47,7 +47,7 @@ function expectPositionSamples(samples: number[][]) {
   expect(samples.every((sample) => sample.length === 2 && sample.every(Number.isFinite))).toBe(true);
 }
 
-async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string) {
+async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string, checkpoint?: number) {
   const trialId = row.trials[trialIndex];
   await chooseStep(page, row.key.step);
   await plans(page).getByRole('button', { name: label, exact: true }).click();
@@ -60,7 +60,9 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await trials.selectOption(trialId);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
-  expect(reply.request().postDataJSON()).toMatchObject({ key: row.key, job_id: row.result!.job_id, trial: trialId });
+  expect(reply.request().postDataJSON()).toMatchObject({
+    key: row.key, job_id: row.result!.job_id, trial: trialId, ...(checkpoint === undefined ? {} : { checkpoint }),
+  });
   const replay = await reply.json() as WorkspaceReplayTrial;
   expect(replay.identity).toMatchObject({ index: 1, stable_id: trialId, source: 'stable_id' });
   expect(replay.manifest_refs.producer_manifest).toMatchObject({
@@ -231,6 +233,88 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
 test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by default'}`, async ({ page, request }, info) => {
   test.setTimeout(60_000);
   await runSavedEvaluation(page, request, info);
+});
+
+test('authors and replays Evaluate from the selected stopped Train checkpoint', async ({ page, request }, info) => {
+  test.skip(!enabled, 'Requires the Evaluate candidate flag');
+  test.setTimeout(58_000);
+  const files = JSON.parse(await runProjectFixture(fixture, 'walkthrough-files', '1200'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const runsPath = projectPath + '/train-runs';
+  const projection = async (revision: string, stoppedJob?: string) => {
+    const response = await request.get(runsPath, { params: {
+      revision, window_map: 'true', ...(stoppedJob && { stopped_checkpoint_job: stoppedJob }),
+    } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  };
+  await page.goto('/?project=' + snapshot.project_id);
+  await chooseStep(page, 'train');
+  const [producer] = await submit(page, runsPath);
+  expect(producer.disposition).toBe('admitted');
+  await plans(page).getByRole('button').first().click();
+  await page.getByRole('button', { name: 'Open Run', exact: true }).click();
+  const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
+  await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first())
+    .toBeAttached({ timeout: 18_000 });
+  const stop = posted(page, '/api/jobs/stop');
+  await page.keyboard.press('Meta+Period');
+  const stopped = await stop;
+  expect(stopped.status(), await stopped.text()).toBe(202);
+  expect(stopped.request().postDataJSON()).toEqual({ job_ids: [producer.job_id], mode: 'checkpoint' });
+  const checkpoint = results.getByRole('region', { name: /Checkpoint at update [0-9]+/ });
+  await expect(checkpoint).toBeVisible({ timeout: 16_000 });
+  const [train] = (await projection(snapshot.revision, producer.job_id!)).rows;
+  const [attempt] = train.attempts;
+  expect(attempt).toMatchObject({ job_id: producer.job_id, status: 'stopped', successful_receipt: null });
+  const at = attempt.stopped_checkpoint!;
+  expect(at).toBeGreaterThan(0);
+  expect(at).toBeLessThan(1200);
+  const label = `Checkpoint at update ${at}`;
+  await expect(checkpoint.getByRole('heading')).toHaveText(label);
+
+  const creating = posted(page, projectPath + '/files');
+  await checkpoint.getByRole('button', { name: 'New Step', exact: true }).click();
+  const chooser = page.getByRole('dialog', { name: 'New Step', exact: true });
+  await expect(chooser).toContainText(label);
+  await expect(chooser.getByRole('button', { name: 'Train', exact: true })).toHaveCount(0);
+  await chooser.getByRole('button', { name: 'Evaluate', exact: true }).click();
+  const created = await creating;
+  expect(created.status(), await created.text()).toBe(201);
+  const { snapshot: saved } = await created.json() as StudioProjectDocument;
+  expect(saved.project.steps.evaluate.inputs?.subject).toMatchObject({
+    step: 'train', where: { rows: [train.key.row] }, checkpoint: { at },
+  });
+  await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
+  await expect(page.getByRole('combobox', { name: 'Trial set', exact: true })).toBeFocused();
+  const [consumer] = await submit(page, runsPath);
+  expect(consumer.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  const [evaluation] = (await projection(saved.revision)).window_map!.evaluations!;
+  expect(evaluation.result).toMatchObject({
+    job_id: consumer.job_id, checkpoint_source: null,
+    checkpoint_sources: [{ job_id: producer.job_id, request_id: train.request_id, completed_updates: at }],
+    receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+  });
+  await page.reload();
+  await chooseStep(page, 'evaluate');
+  await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
+  const row = plans(page).getByRole('button').first();
+  await row.click();
+  const lineage = page.getByRole('tabpanel', { name: 'Runs', exact: true })
+    .getByRole('region', { name: 'Made From', exact: true });
+  await expect(lineage).toContainText(producer.job_id!);
+  await lineage.getByRole('button', { name: new RegExp(label) }).click();
+  await expect(checkpoint).toBeVisible();
+
+  const plannedLabel = (await projection(saved.revision)).window_map!.rows
+    .find(({ key }) => key.step === evaluation.key.step && key.row === evaluation.key.row)!.label;
+  const replay = await showTrial(page, projectPath + '/evaluate-replay', evaluation, plannedLabel, at);
+  expectPositionSamples(replay.tracks![0].samples);
+  await info.attach('stopped-checkpoint-evaluation', {
+    body: JSON.stringify({ revision: saved.revision, source: train, evaluation, replay: replay.manifest_refs }),
+    contentType: 'application/json',
+  });
 });
 
 test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request }, info) => {
