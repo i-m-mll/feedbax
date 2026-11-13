@@ -52,10 +52,10 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_plan import PlannedRun, ProjectPlan, RunKey
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId
+from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
-from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoint_producer
+from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoint_producer, selected_coordinates
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -547,8 +547,15 @@ class JobService(PlanJobReader):
         launch = replace(
             self._training_worker,
             warm_entrypoint="feedbax.training.evaluate_worker:main",
-            payload=payload.model_dump(mode="json"),
+            payload=payload.model_dump(mode="json", by_alias=True),
         )
+        if isinstance(checkpoint.select, UpdateSeriesMember):
+            from feedbax.training.validation_placement import place_validation
+
+            placement = place_validation(
+                checkpoint.select.updates, producer_started=False, live_products_supported=False, budget=None,
+            )
+            data = data | {"placement": placement.location}
         return AdmissionItem(
             run_key=data["run_key"],
             job=Job(
@@ -1046,10 +1053,16 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
         if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
             selection = binding["checkpoint_selection"]
             members = selection["members"]
-            if list(coordinates) != selection["requested"] or list(coordinates) != [
-                member["checkpoint"]["completed_updates"] for member in members
-            ]:
+            if (
+                list(coordinates) != selection["requested"]
+                or ("gaps" in selection and not isinstance(subject.select, UpdateSeriesMember))
+                or selected_coordinates(selection) != tuple(
+                    member["checkpoint"]["completed_updates"] for member in members
+                )
+            ):
                 return None
+            if "gaps" in selection:
+                members = [*members, selection["closure"]["product"]]
         else:
             members = [binding["completion"]]
         if any(

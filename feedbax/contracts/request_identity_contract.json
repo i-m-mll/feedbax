@@ -2174,7 +2174,8 @@
           "best_by",
           "last",
           "member",
-          "slot"
+          "slot",
+          "update_series"
         ]
       }
     },
@@ -2186,6 +2187,28 @@
         ]
       },
       "slot": {}
+    },
+    "feedbax.contracts.request_refs.UpdateCadence": {
+      "every": {},
+      "from_": {
+        "absent": null
+      },
+      "through": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.request_refs.UpdateCheckpoint": {
+      "at": {}
+    },
+    "feedbax.contracts.request_refs.UpdateSeriesMember": {
+      "kind": {
+        "absent": "update_series",
+        "values": [
+          "update_series"
+        ]
+      },
+      "rule": {},
+      "updates": {}
     },
     "feedbax.contracts.request_specs.AnalysisRequestSpec": {
       "analysis_type": {},

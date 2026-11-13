@@ -3026,7 +3026,7 @@ export type CheckpointCadence = {
   "through": number;
 };
 
-export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence;
+export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
 
@@ -4194,6 +4194,18 @@ export type TrialDocuments = {
   "input_overrides"?: Record<string, string>;
   "python_task"?: PythonTaskSelection | null;
 };
+
+export type UpdateCadence = {
+  "every": number;
+  "from"?: number | null;
+  "through"?: number | null;
+};
+
+export type UpdateCheckpoint = {
+  "at": number;
+};
+
+export type UpdateRule = UpdateCadence | Array<UpdateCheckpoint>;
 
 export type ValidationTrial = {
   "variables"?: Record<string, ValidationValue>;
@@ -9475,7 +9487,7 @@ export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =
 ) as unknown as z.ZodType<CheckpointCadence>;
 
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
-  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema])
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
 
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
@@ -11020,6 +11032,24 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
+
+export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
+  z.object({
+    "every": z.number().int().safe().gt(0).max(9007199254740991),
+    "from": z.union([z.number().int().safe().gt(0).max(9007199254740991), z.null()]).optional(),
+    "through": z.union([z.number().int().safe().gt(0).max(9007199254740991), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<UpdateCadence>;
+
+export const UpdateCheckpointSchema: z.ZodType<UpdateCheckpoint> = z.lazy(() =>
+  z.object({
+    "at": z.number().int().safe().gt(0).max(9007199254740991),
+  }).strict()
+) as unknown as z.ZodType<UpdateCheckpoint>;
+
+export const UpdateRuleSchema: z.ZodType<UpdateRule> = z.lazy(() =>
+  z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])
+) as unknown as z.ZodType<UpdateRule>;
 
 export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>
   z.object({

@@ -66,6 +66,49 @@ class BatchSetMember(CheckpointBatches):
         return self
 
 
+class UpdateCheckpoint(ReferenceValue):
+    at: BatchCoordinate
+
+
+class UpdateCadence(ReferenceValue):
+    every: BatchCoordinate
+    from_: BatchCoordinate | None = Field(default=None, alias="from")
+    through: BatchCoordinate | None = None
+
+    def coordinates(self, horizon: int) -> tuple[int, ...]:
+        start = self.from_ or 1
+        end = min(self.through or horizon, horizon)
+        first = ((start + self.every - 1) // self.every) * self.every
+        count = (end - first) // self.every + 1
+        if not 1 <= count <= MAX_CHECKPOINT_MEMBERS:
+            raise ValueError("update cadence must select one to 64 completed updates")
+        return tuple(range(first, end + 1, self.every))
+
+
+type UpdateRule = (
+    UpdateCadence | Annotated[tuple[UpdateCheckpoint, ...], Field(min_length=1, max_length=MAX_CHECKPOINT_MEMBERS)]
+)
+
+
+class UpdateSeriesMember(ReferenceValue):
+    """Requested updates of one Train row, with explicit gaps at execution."""
+
+    kind: Literal["update_series"] = "update_series"
+    rule: UpdateRule
+    updates: tuple[BatchCoordinate, ...] = Field(min_length=1, max_length=MAX_CHECKPOINT_MEMBERS)
+
+    @model_validator(mode="after")
+    def _compiled_coordinates(self):
+        updates = finite_coordinates(self.updates)
+        if isinstance(self.rule, UpdateCadence):
+            expected = self.rule.coordinates(updates[-1])
+        else:
+            expected = tuple(point.at for point in self.rule)
+        if updates != expected:
+            raise ValueError("requested updates differ from the update-series rule")
+        return self
+
+
 class SlotMember(ReferenceValue):
     kind: Literal["slot"] = "slot"
     slot: Name
@@ -91,7 +134,7 @@ class BestMember(ReferenceValue):
 
 
 ProductSelector = Annotated[
-    BatchMember | BatchSetMember | SlotMember | NamedMember | BarrierMember | LastMember | BestMember,
+    BatchMember | BatchSetMember | UpdateSeriesMember | SlotMember | NamedMember | BarrierMember | LastMember | BestMember,
     Field(discriminator="kind"),
 ]
 

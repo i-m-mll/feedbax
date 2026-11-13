@@ -78,12 +78,15 @@ from feedbax.contracts.request_refs import (
     ProductSelector,
     RequestId,
     RequestKind,
+    UpdateCadence,
+    UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import (
     DocumentTrainingRequestSpec,
     ReportRequestSpec,
     TrainingRequestSpec,
 )
+from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
@@ -272,7 +275,7 @@ type _CompiledRun = PlannedRun | PlannedAnalyzeRun
 type _Members = tuple[tuple[PlannedInput, _CompiledRun], ...]
 
 
-def _checkpoint(rule: CheckpointRule | None) -> ProductSelector | None:
+def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> ProductSelector | None:
     match rule:
         case None:
             return None
@@ -286,6 +289,12 @@ def _checkpoint(rule: CheckpointRule | None) -> ProductSelector | None:
             return BatchSetMember(batches=batches)
         case CheckpointCadence():
             return BatchSetMember(batches=rule.coordinates(), cadence=rule)
+        case tuple():
+            return UpdateSeriesMember(rule=rule, updates=tuple(point.at for point in rule))
+        case UpdateCadence():
+            if horizon is None:
+                raise ValueError("an update cadence requires a planned Train definition")
+            return UpdateSeriesMember(rule=rule, updates=rule.coordinates(horizon))
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
 
@@ -1794,14 +1803,30 @@ class _Compiler:
                 f"no plannable rows for {reference.step!r}",
                 name,
             )
-        selector = _checkpoint(reference.checkpoint)
-        if isinstance(selector, BatchSetMember) and role.name != "subject":
+        rule = reference.checkpoint
+        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and role.name != "subject":
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
                 "finite checkpoint sets require an Evaluate subject", name,
             )
         members = []
         for run in runs:
+            try:
+                horizon = None
+                if isinstance(rule, UpdateCadence) and isinstance(run, PlannedRun):
+                    train = request_identity.decode_request(
+                        self.requests[run.request_id], self.documents.__getitem__,
+                    ).spec
+                    if isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
+                        horizon = train.training_config.n_batches
+                        if train.method_ref == STUDIO_GRAPH_METHOD:
+                            method = StudioGraphMethodPayload.model_validate(train.method_payload.payload)
+                            horizon = method.target_total
+                selector = _checkpoint(rule, horizon=horizon)
+            except ValueError as error:
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint", str(error), name,
+                )
             if isinstance(run, PlannedAnalyzeRun):
                 assert reference.element is not None
                 element = run.elements.get(reference.element)

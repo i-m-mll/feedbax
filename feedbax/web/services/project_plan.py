@@ -441,7 +441,6 @@ def _evaluation_row(
     attempts = jobs.by_request.get(run.request_id, ())
     success = next((attempt for attempt in reversed(attempts) if (
         attempt.successful_receipt is not None
-        and (attempt.checkpoint_source is not None or attempt.checkpoint_sources)
         and attempt.output_size_bytes is not None
     )), None)
     result = None
