@@ -138,16 +138,14 @@ def resolve_effective_model(
             if document != address.document:
                 raise ValueError("This step does not use the addressed Model document")
             if isinstance(difference, SetField):
+                if not isinstance(element, FieldElement) or any(not isinstance(part, str) for part in element.path):
+                    raise ValueError("A Model difference must name a field using named parts")
                 attachment = None
-                if isinstance(element, FieldElement) and isinstance(element.parent, AttachmentElement):
+                if isinstance(element.parent, AttachmentElement):
                     attachment = chain_for(element.parent, address).items.get(element.parent.id)
                     if attachment is None:
                         raise ValueError("The addressed attachment no longer exists")
-                    if element.path[0] not in attachment:
-                        raise ValueError("The addressed attachment field no longer exists")
-                    if element.path[0] == "fields" and len(element.path) > 1 and element.path[1] not in attachment["fields"]:
-                        raise ValueError("The addressed attachment field no longer exists")
-                elif isinstance(element, FieldElement) and element.parent.kind == "component":
+                elif element.parent.kind == "component":
                     _, graph = edit.context(address)
                     component = graph["components"].get(element.parent.id)
                     if component is not None and component["kind"] == "leaf" and len(element.path) > 1:
@@ -221,10 +219,13 @@ def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
 def lower_evaluate_attachments(
     document: str, model: ModelDocument, binding: StudioTaskBindingSpec | None, components: ComponentRegistry,
     differences: tuple[ModelDifference, ...], *, functions=None,
-) -> tuple[LoweredModelDocument, tuple[OverridePatch, ...]]:
+) -> tuple[LoweredModelDocument, LoweredModelDocument, tuple[OverridePatch, ...]]:
     """Derive the scoped wire/port variation from the resolved authored model."""
     before = lower_model_document(document, model, components, binding)
     resolved = resolve_effective_model(document, model, components, differences, functions=functions)
     after = lower_model_document(document, resolved, components, binding)
-    derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
-    return after, derived
+    try:
+        derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
+    except ValueError as error:
+        raise ModelCompilationProblem(differences[-1].address, str(error)) from error
+    return before, after, derived

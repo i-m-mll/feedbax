@@ -9,7 +9,7 @@ from pydantic import JsonValue
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project_plan import ElementKey, PlanRequest, PlanRequests, RunKey
-from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
+from feedbax.contracts.request_identity import decode_request, stored_request_descriptor
 from feedbax.contracts.request_refs import ProductRef, RequestId, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
@@ -47,7 +47,7 @@ def dump_plan_requests(plan: PlanRequests, variants: tuple[str, ...] | None) -> 
     digests = {
         request["spec"][name]
         for request in requests.values()
-        for name in REQUEST_KINDS[request["kind"]].documents
+        for name in stored_request_descriptor(request["schema"], request["kind"]).documents
     }
     file = _PlanFile(
         schema_version="feedbax.project-plan.v1",

@@ -131,6 +131,12 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     )
     assert requests() == before
 
+    variant_axis = Project.model_validate(raw).sweep.axes["condition"]
+    raw["sweep"]["axes"]["condition"] = axis_to_list(variant_axis).model_dump(
+        mode="json", exclude_unset=True,
+    )
+    assert requests() == before
+
     missing = deepcopy(raw)
     missing["steps"]["train"].pop("model_attachments")
     plan = compile_project(Project.model_validate(missing), memo=memo)
@@ -169,6 +175,29 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
     })
     with pytest.raises(SweepExpansionError, match="already writes"):
         expand_sweep(sweep)
+
+
+def test_document_variant_only_changes_the_addressed_base_model(authored):
+    raw = document_project(authored, evaluation=False)
+    target = _wire_field("base", "fields", "factor")
+    _model_controller(raw)["wires"]["read"]["attachments"] = [
+        _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
+    ]
+    raw["sweep"] = {"rows": {
+        "original": {},
+        "variant": {"patches": {target.to_text(): {"value": 0.6}}},
+    }}
+    keys = tuple(RunKey(variant, "train", "default") for variant in ("original", "variant"))
+    plan = compile_project(Project.model_validate(raw), source_runs=keys)
+    assert not plan.diagnostics
+    assert [
+        _controller(_decode(plan, key).trial_documents.model).wires["read"].attachments[0].fields["factor"]
+        for key in keys
+    ] == [0.9, 0.6]
+    provenance = "/payload/trial_documents/model/interior/components/wrapper/interior/components/controller"
+    origin = plan.selected_definitions[keys[1]].sources[provenance + "/interior/wires/read/attachments/0/fields/factor"]
+    assert origin.kind == "variant"
+    assert plan.selected_definitions[keys[1]].sources[provenance + "/name"].kind == "document"
 
 
 def test_integer_range_uses_the_site_and_preserves_whole_request_ids(tmp_path, authored):

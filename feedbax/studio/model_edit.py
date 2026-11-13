@@ -375,6 +375,8 @@ class ModelEditDraft:
             else:
                 item = attachment
             allowed = {"fields", "window", "operation", "initial", "delay", "name"}
+            if item is not None and len(path) > 1 and path[0] == "fields" and path[1] not in item["fields"]:
+                raise _Refusal(address, "the addressed attachment field no longer exists")
         elif parent.kind == "port":
             port_address = _address(self.name, address.composites, "port", end=parent.end.model_dump(mode="json"))
             port_owner, _, direction, port = self.port_owner(port_address)
@@ -383,7 +385,7 @@ class ModelEditDraft:
             item, allowed = owner, {"step_seconds", "world"}
         else:
             item, allowed = None, set()
-        if item is None or path[0] not in allowed:
+        if item is None or path[0] not in allowed or path[0] not in item:
             raise _Refusal(address, "field does not exist or is not editable")
         try:
             _set_field_value(item, path, value, functions)

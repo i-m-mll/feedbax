@@ -151,10 +151,13 @@ class PlanJobReader:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
         if (source := plan.requests.get(checkpoint.request_id)) is not None:
-            from feedbax.contracts.request_specs import TrainingRequestSpec
+            from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 
             spec = decode_request(source, plan.documents.__getitem__).spec
-            if not isinstance(spec, TrainingRequestSpec) or spec.trial_documents is None:
+            if (
+                not isinstance(spec, (TrainingRequestSpec, DocumentTrainingRequestSpec))
+                or spec.trial_documents is None
+            ):
                 raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
         return params, checkpoint
 

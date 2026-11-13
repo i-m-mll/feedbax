@@ -28,6 +28,7 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
+    DocumentTrainingRequestSpec,
     EvaluationRequestSpec,
     RenderRequestSpec,
     ReportRequestSpec,
@@ -37,6 +38,7 @@ from feedbax.contracts.request_specs import (
 
 _IDENTITY = "feedbax.identity.request.v1"
 _STORAGE_SCHEMA = "feedbax.request.v1"
+_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v1"
 _EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v1"
 _INPUTS = TypeAdapter(RequestInputs)
 
@@ -45,6 +47,7 @@ _INPUTS = TypeAdapter(RequestInputs)
 class RequestDescriptor:
     spec_type: type[RequestSpec]
     documents: tuple[str, ...] = ()
+    storage_schema: str = _STORAGE_SCHEMA
 
 
 REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
@@ -56,6 +59,20 @@ REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
     "render": RequestDescriptor(RenderRequestSpec),
     "report": RequestDescriptor(ReportRequestSpec),
 }
+
+DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
+    DocumentTrainingRequestSpec, ("method_payload",), _DOCUMENT_TRAIN_STORAGE_SCHEMA
+)
+_REQUEST_FORMATS = (*REQUEST_KINDS.items(), ("train", DOCUMENT_TRAIN_REQUEST))
+
+
+def stored_request_descriptor(schema: str, kind: RequestKind) -> RequestDescriptor:
+    for request_kind, descriptor in _REQUEST_FORMATS:
+        if request_kind == kind and descriptor.storage_schema == schema:
+            return descriptor
+    raise ValueError("Unsupported stored request envelope")
+
+
 @dataclass(frozen=True)
 class EncodedRequest:
     """A request ID, its stored bytes, and the named bytes it references."""
@@ -151,7 +168,7 @@ def request_codec_authority() -> tuple[object, ...]:
         encode,
         tuple(
             (kind, descriptor, descriptor.spec_type.__pydantic_validator__)
-            for kind, descriptor in REQUEST_KINDS.items()
+            for kind, descriptor in _REQUEST_FORMATS
         ),
         sha256_bytes(to_json(_identity_contract())),
     )
@@ -159,7 +176,7 @@ def request_codec_authority() -> tuple[object, ...]:
 
 def generate_identity_fields() -> dict[str, Any]:
     roots = [InputMember]
-    for descriptor in REQUEST_KINDS.values():
+    for _, descriptor in _REQUEST_FORMATS:
         for name in descriptor.documents:
             if not descriptor.spec_type.model_fields[name].is_required():
                 raise ValueError(
@@ -210,13 +227,14 @@ def encode_request(
     spec: RequestSpec, inputs: RequestInputs, *, document_memo: RequestDocumentMemo | None = None
 ) -> EncodedRequest:
     """Encode a typed, validated author request and compute its identity."""
-    kind = next(
-        (kind for kind, descriptor in REQUEST_KINDS.items() if descriptor.spec_type is type(spec)),
+    match = next(
+        ((kind, descriptor) for kind, descriptor in _REQUEST_FORMATS
+         if descriptor.spec_type is type(spec)),
         None,
     )
-    if kind is None:
+    if match is None:
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
-    descriptor = REQUEST_KINDS[kind]
+    kind, descriptor = match
     inputs = _validated_inputs(inputs)
     fields = _identity_contract()["fields"]
     reused = {}
@@ -243,7 +261,7 @@ def encode_request(
         documents[digest] = data
 
     envelope = {
-        "schema": _STORAGE_SCHEMA,
+        "schema": descriptor.storage_schema,
         "kind": kind,
         "spec": projection,
         "inputs": {
@@ -270,10 +288,7 @@ def _read_object(data: bytes, *, nullable: bool = False) -> dict | None:
 def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> DecodedRequest:
     """Verify stored bytes and fill pinned values before validating the request."""
     payload = _read_object(data)
-    if (
-        payload.keys() != {"schema", "kind", "spec", "inputs"}
-        or payload["schema"] != _STORAGE_SCHEMA
-    ):
+    if payload.keys() != {"schema", "kind", "spec", "inputs"}:
         raise ValueError("Unsupported stored request envelope")
     kind = payload["kind"]
     if (
@@ -282,7 +297,7 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         or not isinstance(payload["spec"], dict)
     ):
         raise ValueError("Unknown request kind or invalid stored request spec")
-    descriptor = REQUEST_KINDS[kind]
+    descriptor = stored_request_descriptor(payload["schema"], kind)
     spec_payload = dict(payload["spec"])
     fields = _identity_contract()["fields"]
     input_groups = payload["inputs"]

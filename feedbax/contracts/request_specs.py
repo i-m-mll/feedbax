@@ -65,6 +65,30 @@ class TrainingRequestSpec(RequestSpec):
         return self
 
 
+class DocumentTrainingConfig(BaseModel):
+    """Run controls authored alongside a Model, Task and Objective."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    n_batches: int = 2000
+    batch_size: int = 128
+    grad_clip: float | None = 1.0
+    n_reach_steps: int = 80
+    snapshot_interval: int = 100
+
+
+class DocumentTrainingRequestSpec(RequestSpec):
+    """Managed Train parameters with optimizer settings owned by the method."""
+
+    trial_documents: TrialDocuments
+    method_payload: MethodPayloadEnvelope
+    method_ref: MethodRefSpec
+    training_config: DocumentTrainingConfig
+    risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)
+    seed: Annotated[int | None, IdentityWideInteger()] = Field(default=None, strict=True)
+    on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
+
+
 class EvaluationRequestSpec(RequestSpec):
     evaluation_type: Name
     params: dict[str, JsonValue] = Field(default_factory=dict)

@@ -14,7 +14,7 @@ from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host import HostClient, HostError
@@ -102,8 +102,8 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
     for run in plan.runs:
         if run.kind == "train":
             decoded = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
-            assert isinstance(decoded.spec, TrainingRequestSpec)
-            graph = decoded.spec.graph
+            assert isinstance(decoded.spec, (TrainingRequestSpec, DocumentTrainingRequestSpec))
+            graph = decoded.spec.graph if isinstance(decoded.spec, TrainingRequestSpec) else None
             if decoded.spec.trial_documents is not None:
                 from feedbax.compiler.model_document import lower_model_document
                 from feedbax.component_registry import ComponentRegistry

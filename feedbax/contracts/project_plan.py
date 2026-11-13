@@ -19,13 +19,13 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import StudioTaskBindingSpec
-from feedbax.contracts.model_address import ComponentElement, ModelAddress
+from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.operation import DatasetPort
-from feedbax.contracts.project import Document, Payload, Project, Step, StepBase, StepKind
+from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -77,7 +77,11 @@ from feedbax.contracts.request_refs import (
     RequestId,
     RequestKind,
 )
-from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import (
+    DocumentTrainingRequestSpec,
+    ReportRequestSpec,
+    TrainingRequestSpec,
+)
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
@@ -418,7 +422,8 @@ def _integer_model_site(
 ) -> bool:
     from feedbax.contracts.model_document import CompositeComponent, LeafComponent
 
-    if document != address.document or not isinstance(address.element.parent, ComponentElement):
+    element = address.element
+    if document != address.document or not isinstance(element, FieldElement) or not isinstance(element.parent, ComponentElement):
         return False
     graph = model
     for name in address.composites:
@@ -426,8 +431,8 @@ def _integer_model_site(
         if not isinstance(component, CompositeComponent):
             return False
         graph = component
-    component = graph.interior.components.get(address.element.parent.id)
-    path = address.element.path
+    component = graph.interior.components.get(element.parent.id)
+    path = element.path
     if isinstance(component, CompositeComponent):
         return path == ("substeps",)
     if not isinstance(component, LeafComponent) or len(path) != 2 or path[0] != "fields":
@@ -438,8 +443,8 @@ def _integer_model_site(
     )
 
 
-def _integer_train_site(path: str) -> bool:
-    annotation = TrainingRequestSpec
+def _integer_train_site(path: str, *, managed: bool) -> bool:
+    annotation = DocumentTrainingRequestSpec if managed else TrainingRequestSpec
     for segment in path.split("."):
         fields = getattr(annotation, "model_fields", {})
         if segment not in fields:
@@ -508,7 +513,6 @@ def _encode_row(
                 ".".join(("payload.trial_documents", *map(str, problem.path))),
                 problem.reason, key.step, row=key.row, variant=key.variant,
             ) for problem in paired), encoding_stamp)
-        payload = {"graph": None, "task": None, "objective": None} | payload
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
         from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
@@ -576,6 +580,8 @@ def _encode_row(
                     encoding_stamp,
                 )
             spec = ReportRequestSpec(report_type=None, document=document)
+        elif document_train:
+            spec = DocumentTrainingRequestSpec.model_validate(payload)
         else:
             spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         encoded = request_identity.encode_request(
@@ -735,7 +741,8 @@ class _Compiler:
             parts = path.split(".", 4)
             if len(parts) == 5 and parts[0] == "steps" and parts[2:4] == ["base", "inline"]:
                 step = self.project.steps.get(parts[1])
-                return step is not None and step.kind == "train" and _integer_train_site(parts[4])
+                if step is not None and step.kind == "train" and isinstance(step.base, InlineBase):
+                    return _integer_train_site(parts[4], managed=step.base.inline.get("trial_documents") is not None)
             return False
 
         try:
@@ -922,11 +929,15 @@ class _Compiler:
 
         def expand(read_document=None, _previous=None):
             @cache
-            def train_model():
-                resolved = self.resolve_row(
+            def train_payload():
+                return self.resolve_row(
                     composition, RunKey(variant, name, DEFAULT_SWEEP_ROW),
                     ExpandedRow(DEFAULT_SWEEP_ROW, None, {}, {}, {}), read_document,
                 )
+
+            @cache
+            def train_model():
+                resolved = train_payload()
                 if isinstance(resolved, ProjectDiagnostic):
                     return None
                 _, model = self.lower_train_model(
@@ -937,7 +948,12 @@ class _Compiler:
             def integer_site(path: str) -> bool:
                 target = model_field_target(path)
                 if target is None:
-                    return kind == "train" and _integer_train_site(path)
+                    if kind != "train":
+                        return False
+                    resolved = train_payload()
+                    return isinstance(resolved, ResolvedStep) and _integer_train_site(
+                        path, managed=resolved.payload.get("trial_documents") is not None,
+                    )
                 if target.step is not None:
                     raise ValueError("A step-scoped Model target belongs in the project sweep")
                 sources = subjects if kind == "evaluate" else (train_model(),) if kind == "train" else ()
@@ -1119,7 +1135,9 @@ class _Compiler:
             lower,
         )
 
-    def lower_train_model(self, key, payload, document_ids):
+    def lower_train_model(
+        self, key: RunKey, payload: Payload, document_ids: Mapping[str, str],
+    ) -> tuple[Payload | ProjectDiagnostic, _ModelSource | None]:
         from feedbax.compiler.model_attachment import resolve_effective_model
         from feedbax.compiler.model_document import ModelCompilationProblem
 
@@ -1137,7 +1155,10 @@ class _Compiler:
                     raise ValueError("Model differences require an authored Train Model")
                 return payload, None
             if not isinstance(document, str):
-                return payload, None  # TrialDocuments validation supplies the missing name diagnostic.
+                if differences:
+                    address = differences[0].address
+                    raise ValueError("Model differences require a named Train Model")
+                return payload, None
             model = ModelDocument.model_validate(model_payload)
             if differences:
                 model = resolve_effective_model(
@@ -1156,7 +1177,9 @@ class _Compiler:
             detail = str(error)
         return _model_difference_problem(key, address, detail), None
 
-    def lower_evaluate_model(self, key, payload, model_source, reference):
+    def lower_evaluate_model(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
+    ) -> Payload | ProjectDiagnostic:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.studio.schema import validate_graph_connection_schema
@@ -1175,7 +1198,7 @@ class _Compiler:
             train = request_identity.decode_request(
                 self.requests[reference.request_id], self.documents.__getitem__,
             ).spec
-            if not isinstance(train, TrainingRequestSpec):
+            if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
                 raise ValueError("Attachment differences require a Train request")
             if model_source is None:
                 raise ValueError("Attachment differences need a saved Model document")
@@ -1183,16 +1206,13 @@ class _Compiler:
             documents = train.trial_documents
             document, model = model_source.document, model_source.model
             if documents is not None:
-                from feedbax.compiler.model_document import lower_model_document
-
                 binding = None
-                base_graph = lower_model_document(document, model, components).graph
                 base_task = documents.task
             else:
+                assert isinstance(train, TrainingRequestSpec)
                 binding = train.task_binding_spec or StudioTaskBindingSpec()
-                base_graph = train.graph
                 base_task = train.task
-            lowered, derived = lower_evaluate_attachments(
+            before, lowered, derived = lower_evaluate_attachments(
                 document, model, binding, components, differences, functions=self.functions,
             )
             params = RolloutParameters.model_validate(payload["params"])
@@ -1202,9 +1222,10 @@ class _Compiler:
             if isinstance(prior, dict):
                 prior = tuple(prior[name] for name in sorted(prior))
             variation = (*prior, *derived)
-            effective = resolve_evaluation_variant(base_graph, base_task, variation)
+            effective = resolve_evaluation_variant(before.graph, base_task, variation)
             issues = validate_graph_connection_schema(
-                effective.graph, "/graph", train.task_binding_spec, component_registry=components,
+                effective.graph, "/graph", binding,
+                component_registry=components,
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
                 issue_path = (issue.location or {}).get("path", "/graph")

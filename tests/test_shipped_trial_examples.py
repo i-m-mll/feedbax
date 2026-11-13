@@ -12,7 +12,7 @@ from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.examples import load_shipped_projects
 from feedbax.plugins.application import new_application_registry_bundle
@@ -54,8 +54,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation():
         name = run.key.step
         assert run.admission_problem is None, run.admission_problem
         request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        assert isinstance(request, TrainingRequestSpec)
-        assert request.trial_documents is not None
+        assert isinstance(request, DocumentTrainingRequestSpec)
         documents = request.trial_documents
         assert documents.model_name == "point-mass"
         assert documents.task.id == documents.objective.id == name
