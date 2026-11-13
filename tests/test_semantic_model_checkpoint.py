@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from tests.support.store_damage import writable_store_object
 
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_assets import model_asset_refs
@@ -213,7 +214,8 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
     with pytest.raises(ModelCheckpointError) as missing:
         open_published_model_slot(written.root, written.latest_pointer)
     assert str(missing.value).startswith(authored_path)
-    physical.write_bytes(exact[:-1] + b"!")
+    with writable_store_object(physical):
+        physical.write_bytes(exact[:-1] + b"!")
     with pytest.raises(ModelCheckpointError) as changed:
         open_published_model_slot(written.root, written.latest_pointer)
     assert str(changed.value).startswith(authored_path)

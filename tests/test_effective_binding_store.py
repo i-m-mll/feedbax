@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.support.store_damage import writable_store_object
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
 from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
@@ -110,7 +111,8 @@ def test_frozen_and_rule_lookup_require_the_same_exact_ordered_binding(tmp_path,
             size_bytes=changed_content.content.size,
         )
     )
-    target.write_bytes(b"x" * changed_content.content.size)
+    with writable_store_object(target):
+        target.write_bytes(b"x" * changed_content.content.size)
     with pytest.raises(ArtifactBlobIntegrityError):
         content.lookup(case.rule)
 
@@ -217,7 +219,8 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
 def test_corrupt_receipt_bytes_never_admit_an_index_hit(tmp_path):
     store = ImmutableArtifactBlobProvider(tmp_path)
     case = prepare(store, SUPPLIER, ANALYSIS)
-    store.object_path(case.original.ref).write_bytes(b"x" * case.original.ref.size_bytes)
+    with writable_store_object(store.object_path(case.original.ref)) as path:
+        path.write_bytes(b"x" * case.original.ref.size_bytes)
     with pytest.raises(ArtifactBlobIntegrityError):
         SuccessView(store).lookup(case.frozen)
 

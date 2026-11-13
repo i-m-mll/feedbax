@@ -16,8 +16,11 @@ from feedbax.contracts.project_io import (
     read_text_project_snapshot,
 )
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
+from feedbax.contracts.store_check import StoreCheckResult
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
+from tests.support.store_damage import writable_store_object
 from tests.test_local_job_host import admit, job_row, run_job, wait_until
 from tests.test_local_job_host import host as host_fixture
 from tests.test_text_project_plan_cli import _edit, _write_walkthrough
@@ -52,7 +55,10 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     wait_until(lambda: job_row(host, gate.id, "running"))
 
     baseline = tmp_path / "review.json"
+    declared_store = ImmutableArtifactBlobProvider(train / "results")
+    payload = declared_store.store_object(b"integrity witness")
     cases = {
+        "check": (StoreCheckResult, (str(declaration),)),
         "plan": (StudioSavedTrainRuns, (str(walkthrough), "--out", str(baseline))),
         "status": (StudioSavedTrainRuns, (str(walkthrough / "reaching.feedbax"),)),
         "run": (StudioJobSubmission, (str(declaration), "train", "--label", "explicit actor")),
@@ -83,9 +89,8 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
             main([name, "--help"])
         assert help_exit.value.code == 0
         help_text = capsys.readouterr().out
-        assert all(text in help_text for text in (
-            "--json", "0  Success", "1  Review drift", "2  Invalid project",
-        ))
+        nonzero_help = "1  Damaged objects" if name == "check" else "1  Review drift"
+        assert all(text in help_text for text in ("--json", "0  Success", nonzero_help, "2  Invalid project"))
         _, problems = call([name, "--not-a-real-flag", "--json"], 2)
         (problem,) = problems
         assert problem.code == "invalid_arguments"
@@ -96,6 +101,22 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
 
     _, problems = call(["pla", "--json"], 2)
     assert [problem.code for problem in problems] == ["unknown_command"]
+    assert results["check"].verified_bytes == payload.size_bytes
+    assert results["check"].verified_objects == 1
+    _, problems = call(["check", str(declaration), "--attempt", "absent", "--json"], 2)
+    assert "No committed receipt" in problems[0].detail
+    object_path = declared_store.object_path(payload)
+    with writable_store_object(object_path):
+        original = object_path.read_bytes()
+        altered = b"x" * len(original)
+        try:
+            object_path.write_bytes(altered)
+            damaged, problems = call(["check", str(declaration), "--json"], 1, StoreCheckResult)
+            assert damaged.verified_objects == 0
+            assert [problem.address for problem in problems] == [payload.object_id]
+            assert object_path.read_bytes() == altered
+        finally:
+            object_path.write_bytes(original)
 
     plan = results["plan"]
     status = results["status"]
@@ -160,8 +181,12 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
         walkthrough, files, "velocity-analysis",
         lambda doc: doc["operations"]["align"].update(operation="feedbax.unknown"),
     )
+    separate_store = ImmutableArtifactBlobProvider(walkthrough / "results")
+    separate_store.store_object(b"independent of Plan compilation")
+    checked, problems = call(["check", str(walkthrough), "--json"], 0, StoreCheckResult)
+    assert checked.verified_objects == 1 and problems == []
     project_errors = {}
-    for name in PROJECT_COMMANDS.keys() - {"describe"}:
+    for name in PROJECT_COMMANDS.keys() - {"describe", "check"}:
         model = cases[name][0] if name != "run" else None
         result, problems = call([name, str(walkthrough), "--json"], 2, model)
         project_errors[name] = problems

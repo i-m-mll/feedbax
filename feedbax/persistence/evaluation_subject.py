@@ -20,7 +20,7 @@ from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.studio.canonical_evaluate import decode_evaluation_manifest, evaluation_manifest_id, states_product
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.receipt_content import success_content_objects
+from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects
 
 
 def checkpoint_transaction(
@@ -105,6 +105,7 @@ def subject_tree(
 
 def evaluation_subject_objects(
     store: ImmutableArtifactBlobProvider, request: DecodedRequest, member: InputMember, bound: BoundMember,
+    *, visitors: ClosureVisitors | None = None,
 ) -> tuple[ContentObjectRef, ...]:
     """Verify a frozen Evaluate projection without selecting a current Train result."""
     source, reference = bound.evaluation_subject, member.reference
@@ -115,6 +116,10 @@ def evaluation_subject_objects(
         or bound.content.media_type != EVALUATION_SUBJECT_MEDIA_TYPE or not bound.content.tree
     ):
         raise ValueError("Malformed managed Evaluate subject")
+    objects = [source.producer.object, *source.producer.documents]
+    if visitors is not None:
+        for ref in objects:
+            visitors.object(ref)
     producer = read_success_request(source.producer, store.get_object)
     if producer.kind != "train":
         raise ValueError("Evaluate subject does not name a Train request")
@@ -143,8 +148,12 @@ def evaluation_subject_objects(
     ):
         raise ValueError("Evaluate trial binding differs from its authored parameters")
 
-    objects = [source.producer.object, *source.producer.documents]
     if source.closure is not None:
+        if visitors is not None:
+            for ref in (source.closure.checkpoint.transaction, source.closure.checkpoint.train_binding):
+                visitors.object(ref)
+            if source.closure.receipt is not None:
+                visitors.object(source.closure.receipt)
         closure = checkpoint_transaction(store, source.closure.checkpoint)
         method = _verify_train_contract(store, source.closure.checkpoint, closure, producer, source.producer)
         if source.closure.kind == "recovery" and any(
@@ -160,6 +169,11 @@ def evaluation_subject_objects(
 
     models = []
     for checkpoint, item in zip(source.checkpoints, resolved.members if resolved else (), strict=True):
+        if visitors is not None:
+            visitors.object(checkpoint.transaction)
+            visitors.object(checkpoint.train_binding)
+            if source.terminal_receipt is not None:
+                visitors.object(source.terminal_receipt)
         manifest = checkpoint_transaction(store, checkpoint)
         method = _verify_train_contract(store, checkpoint, manifest, producer, source.producer)
         product = model_product(manifest)
@@ -170,13 +184,17 @@ def evaluation_subject_objects(
                 raise ValueError("Evaluate terminal checkpoint differs from its authored horizon")
             _verify_terminal(store, source.terminal_receipt, checkpoint, item.coordinate)
             objects.append(source.terminal_receipt)
-        model_objects = success_content_objects(store, product)
+        model_objects = success_content_objects(store, product, visitors=visitors)
         models.append(success_content_ref(product.content))
         objects.extend((checkpoint.transaction, checkpoint.train_binding, *model_objects))
 
     tree_ref = success_content_ref(bound.content)
+    if visitors is not None:
+        visitors.object(tree_ref.descriptor)
     tree = store.get_tree(tree_ref)
     descriptor = tree.files[0].object
+    if visitors is not None:
+        visitors.object(descriptor)
     if (
         tree != subject_tree(store, descriptor, tuple(models))
         or store.get_object(descriptor) != canonical_json_v2_bytes(value.model_dump(mode="json"))
@@ -185,7 +203,9 @@ def evaluation_subject_objects(
     return (tree_ref.descriptor, descriptor, *objects)
 
 
-def verify_evaluation_success_evidence(store: ImmutableArtifactBlobProvider, success: Success) -> tuple[ContentObjectRef, ...]:
+def verify_evaluation_success_evidence(
+    store: ImmutableArtifactBlobProvider, success: Success, *, visitors: ClosureVisitors | None = None,
+) -> tuple[ContentObjectRef, ...]:
     ref = success.evaluation_manifest
     assert ref is not None
     manifest, _ = decode_evaluation_manifest(
@@ -223,6 +243,8 @@ def verify_evaluation_success_evidence(store: ImmutableArtifactBlobProvider, suc
     evidence = [ref]
     if source.closure is not None:
         evidence.append(source.closure.checkpoint.transaction)
+        if visitors is not None:
+            visitors.object(source.closure.checkpoint.transaction)
         settled = coverage["closure"]
         transaction = checkpoint_transaction(store, source.closure.checkpoint)
         if (

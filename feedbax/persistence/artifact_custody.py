@@ -380,9 +380,9 @@ def _clone_staged_file(parent: int, name: str, *, source: int) -> int:
         if clone(source, parent, os.fsencode(name), 0) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error), name)
-        descriptor = os.open(name, _file_flags(writable=True), dir_fd=parent)
+        descriptor = os.open(name, _file_flags(), dir_fd=parent)
         try:
-            os.fchmod(descriptor, 0o600)
+            os.fchmod(descriptor, 0o400)
             os.utime(descriptor, None)
             return descriptor
         except BaseException:
@@ -397,6 +397,11 @@ def _clone_staged_file(parent: int, name: str, *, source: int) -> int:
         fcntl.ioctl(descriptor, request, source)
 
     return _write_staged_file(parent, name, write_payload=clone_payload)
+
+
+def _remove_write_permissions(descriptor: int, info: os.stat_result) -> None:
+    mode = stat.S_IMODE(info.st_mode)
+    os.fchmod(descriptor, mode & ~0o222)
 
 
 def _stage_blob(
@@ -420,6 +425,7 @@ def _stage_blob(
         if validate is not None:
             os.lseek(temporary_descriptor, 0, os.SEEK_SET)
             validate(_descriptor_path(temporary_descriptor))
+        _remove_write_permissions(temporary_descriptor, os.fstat(temporary_descriptor))
         os.fsync(temporary_descriptor)
         if _stream_file_descriptor(temporary_descriptor) != expected_identity:
             raise ArtifactBlobIntegrityError(f"staged blob failed verification: {destination}")
@@ -456,6 +462,10 @@ def _stage_blob(
                 f"canonical blob identity changed during publication: {destination}"
             )
         _recheck_directory_chain(records)
+        if after.st_mode & 0o222:
+            _remove_write_permissions(final_descriptor, after)
+            os.fsync(final_descriptor)
+            return os.fstat(final_descriptor)
         return after
     except OSError as exc:
         if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
@@ -540,30 +550,33 @@ def _read_blob(target: Path, expected_size: int) -> bytes:
         data = _read_file_descriptor(descriptor)
     if len(data) != expected_size:
         raise ArtifactBlobIntegrityError(
-            f"artifact read size mismatch: expected {expected_size}, found {len(data)}"
+            f"artifact read size mismatch: expected {expected_size}, found {len(data)}: {target}"
         )
     return data
 
 
 def _verify_blob(
-    target: Path, *, sha256: str, size_bytes: int, destination_descriptor: int | None = None
+    target: Path, *, sha256: str, size_bytes: int, destination_descriptor: int | None = None,
+    freeze: bool = False,
 ) -> None:
-    with _open_blob_for_read(target, size_bytes) as descriptor:
+    with _open_blob_for_read(target, size_bytes, freeze=freeze) as descriptor:
         actual_digest, actual_size = _stream_file_descriptor(
             descriptor, target=destination_descriptor
         )
-    if actual_size != size_bytes:
-        raise ArtifactBlobIntegrityError(
-            f"artifact read size mismatch: expected {size_bytes}, found {actual_size}"
-        )
-    if actual_digest != sha256:
-        raise ArtifactBlobIntegrityError(
-            f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}"
-        )
+        if actual_size != size_bytes:
+            raise ArtifactBlobIntegrityError(
+                f"artifact read size mismatch: expected {size_bytes}, found {actual_size}: {target}"
+            )
+        if actual_digest != sha256:
+            raise ArtifactBlobIntegrityError(
+                f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}: {target}"
+            )
 
 
 @contextmanager
-def _open_blob_for_read(target: Path, expected_size: int | None) -> Iterator[int]:
+def _open_blob_for_read(
+    target: Path, expected_size: int | None, *, freeze: bool = False,
+) -> Iterator[int]:
     try:
         records = _open_directory_chain(target.parent, create=False)
     except FileNotFoundError as exc:
@@ -600,7 +613,7 @@ def _open_blob_for_read(target: Path, expected_size: int | None) -> Iterator[int
         if expected_size is not None and file_stat_before.st_size != expected_size:
             raise ArtifactBlobIntegrityError(
                 "artifact size mismatch: "
-                f"expected {expected_size}, found {file_stat_before.st_size}"
+                f"expected {expected_size}, found {file_stat_before.st_size}: {target}"
             )
         yield file_descriptor
         file_stat_after = os.fstat(file_descriptor)
@@ -626,6 +639,9 @@ def _open_blob_for_read(target: Path, expected_size: int | None) -> Iterator[int
             raise ArtifactBlobContainmentError(
                 f"canonical artifact path mapping changed during read: {target}"
             )
+        if freeze and file_stat_after.st_mode & 0o222:
+            _remove_write_permissions(file_descriptor, file_stat_after)
+            os.fsync(file_descriptor)
     except OSError as exc:
         if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
             raise ArtifactBlobContainmentError(
@@ -662,7 +678,7 @@ def _read_store_document(path: Path) -> tuple[bytes, dict[str, JsonValue]] | Non
 def _read_content_object(path: Path, digest: str, expected_size: int) -> bytes:
     data = _read_blob(path, expected_size)
     if hashlib.sha256(data).hexdigest() != digest:
-        raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
+        raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}: {path}")
     return data
 
 
@@ -1020,6 +1036,10 @@ class ImmutableArtifactBlobProvider:
                                 f"canonical blob bytes do not match content identity: {destination}"
                             )
                         _recheck_directory_chain(destination_records)
+                        if written.st_mode & 0o222:
+                            _remove_write_permissions(destination_descriptor, written)
+                            os.fsync(destination_descriptor)
+                            written = os.fstat(destination_descriptor)
                     finally:
                         if destination_descriptor is not None:
                             os.close(destination_descriptor)
@@ -1077,15 +1097,13 @@ class ImmutableArtifactBlobProvider:
         self, source: ImmutableArtifactBlobProvider, object_ref: ContentObjectRef
     ) -> bool:
         """Clone into canonical custody, or reuse a verified object, with both Stores locked."""
-        try:
-            self.verify_object(object_ref)
-        except FileNotFoundError:
-            pass
-        else:
-            return False
-
         digest, size_bytes = _object_identity(object_ref)
         target = self._canonical_path(digest)
+        if os.path.lexists(target):
+            source.verify_object(object_ref)
+            _verify_blob(target, sha256=digest, size_bytes=size_bytes, freeze=True)
+            return False
+
         self._validate_store_target(target)
         with _open_blob_for_read(source.object_path(object_ref), size_bytes) as descriptor:
             _stage_blob(

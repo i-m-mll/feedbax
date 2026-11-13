@@ -10,6 +10,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from tests.support.store_damage import writable_store_object
 
 import pytest
 
@@ -649,7 +650,9 @@ def test_hash_truncation_and_extension_tampering_are_rejected(
     original = b"abcde"
     artifact = provider.store_bytes(original, role="payload", logical_name="blob")
     path = _artifact_path(provider.root, artifact.sha256 or "")
-    path.write_bytes(tampered)
+    assert not path.stat().st_mode & 0o222
+    with writable_store_object(path):
+        path.write_bytes(tampered)
 
     with pytest.raises(ArtifactBlobIntegrityError):
         provider.get_bytes(artifact)

@@ -30,6 +30,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
 from tests.test_studio_training_host_worker import _authored_spec
+from tests.support.store_damage import writable_store_object
 
 host = host_fixture
 
@@ -418,7 +419,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     def corrupt_part(name):
         begin, _ = parts[name]["data_offsets"]
         offset = header_end + begin
-        data_path.write_bytes(raw[:offset] + bytes([raw[offset] ^ 1]) + raw[offset + 1:])
+        with writable_store_object(data_path):
+            data_path.write_bytes(raw[:offset] + bytes([raw[offset] ^ 1]) + raw[offset + 1:])
 
     try:
         corrupt_part(carry)
@@ -432,7 +434,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
                 dataset.select(position, labels={"trial": trial_ids[0]})
             np.testing.assert_array_equal(dataset.data(target)[0, 0], base_tgt)
     finally:
-        data_path.write_bytes(raw)
+        with writable_store_object(data_path):
+            data_path.write_bytes(raw)
 
     (rerun,) = launch(jobs, (baseline,), "evaluate-rerun").items
     assert rerun.disposition == "admitted" and rerun.job_id != submitted.items[0].job_id
@@ -441,11 +444,13 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     manifest_ref, raw = store.resolve_manifest("EvaluationRunManifest", outcomes[baseline].receipt.manifest_id)
     manifest_path = store.object_path(manifest_ref.object)
     try:
-        manifest_path.write_bytes(raw + b"\n")
+        with writable_store_object(manifest_path):
+            manifest_path.write_bytes(raw + b"\n")
         with pytest.raises(JobConflict, match="cannot be authenticated"):
             jobs.read_evaluation_result(project=project, store=root, job_id=submitted.items[0].job_id)
     finally:
-        manifest_path.write_bytes(raw)
+        with writable_store_object(manifest_path):
+            manifest_path.write_bytes(raw)
 
     authored_path = folders.root / project / "steps" / "baseline.json"
     changed = json.loads(authored_path.read_bytes())

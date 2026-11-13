@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.support.store_damage import writable_store_object
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
 from feedbax.contracts.effective_success import INDEX_REF, success_content_ref
@@ -134,14 +135,18 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
         assert destination.get_object(ref) == source.get_object(ref)
         src, dst = source.object_path(ref).stat(), destination.object_path(ref).stat()
         assert src.st_ino != dst.st_ino and src.st_nlink == dst.st_nlink == 1
+        assert not (src.st_mode | dst.st_mode) & 0o222
     for ref in (latest.ref, success_content_ref(sibling.content)):
         with pytest.raises(FileNotFoundError):
             destination.verify_object(ref)
 
     assert destination.read_ref(INDEX_REF) is None
+    original_report = source.object_path(report_ref)
+    original_report.chmod(0o600)
     imported = sync_store(destination, source, "packets/ancestry", destination_ref="imported")
     assert imported.closure == ancestry
     assert imported.cloned == 0 and imported.reused == len(closure_refs)
+    assert not original_report.stat().st_mode & 0o222
     reachability = measure_store(destination, now=datetime.now(UTC), keep_superseded_days=0)
     assert not reachability.gaps
     assert {root.name: root.closure.objects for root in reachability.roots} == {
@@ -151,14 +156,20 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
 
     report_path = destination.object_path(report_ref)
     report_bytes = source.get_object(report_ref)
-    report_path.write_bytes(b"x" * len(report_bytes))
+    with writable_store_object(report_path):
+        report_path.write_bytes(b"x" * len(report_bytes))
     with pytest.raises(ArtifactBlobIntegrityError):
         sync_store(source, destination, ancestry, destination_ref="packets/corrupt")
     assert destination.read_ref("packets/corrupt") is None
-    report_path.write_bytes(report_bytes)
+    with pytest.raises(ArtifactBlobIntegrityError, match=report_ref.sha256):
+        sync_store(destination, source, "packets/ancestry", destination_ref="corrupt-source")
+    assert source.read_ref("corrupt-source") is None
+    with writable_store_object(report_path):
+        report_path.write_bytes(report_bytes)
 
     sibling_ref = success_content_ref(sibling.content)
-    source.object_path(sibling_ref).write_bytes(b"x" * sibling_ref.size_bytes)
+    with writable_store_object(source.object_path(sibling_ref)) as path:
+        path.write_bytes(b"x" * sibling_ref.size_bytes)
     whole_receipt = StoreClosureRef(roots=(ReceiptRoot(receipt=result.ref),))
     with pytest.raises(ArtifactBlobIntegrityError):
         sync_store(

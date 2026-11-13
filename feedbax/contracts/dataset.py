@@ -23,6 +23,9 @@ from feedbax.contracts.request_refs import ContentRef, ReferenceValue, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
 
+DATASET_MEDIA_TYPE = "application/vnd.safetensors"
+
+
 def _valid_name(value: str) -> str:
     if not value or value.strip() != value or not value.isprintable():
         raise ValueError("dataset names must be nonempty printable strings without edge whitespace")
