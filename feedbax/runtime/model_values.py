@@ -1,5 +1,7 @@
 """Declared values of the currently qualified model owner revisions."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -18,6 +20,22 @@ class StateValue:
     units: str
     axis: Literal["xy", "unit", "muscle"]
     frame: str | None = None
+    reset: StateReset | None = None
+
+
+@dataclass(frozen=True)
+class StateReset:
+    output_port: str
+    output_path: tuple[str, ...] = ()
+    aliases: tuple[tuple[str, ...], ...] = ()
+    override_port: str | None = None
+
+
+@dataclass(frozen=True)
+class TrialParameter:
+    name: str
+    kind: Literal["real", "boolean"]
+    units: str = "1"
 
 
 @dataclass(frozen=True)
@@ -30,6 +48,8 @@ class ModelOwner:
     scene_effector_port: str | None = None
     configuration_slots: tuple[str, ...] = ()
     fixed_configuration: bool = False
+    trial_parameters: tuple[TrialParameter, ...] = ()
+    trial_parameter_override_port: str | None = None
 
 
 def _learned(*values: tuple[str, str]) -> tuple[ModelValue, ...]:
@@ -41,11 +61,17 @@ def _source(*names: str) -> tuple[ModelValue, ...]:
 
 
 def _cartesian(symbol: str, path: tuple[str, ...]) -> tuple[StateValue, ...]:
-    return tuple(
-        StateValue(f"{symbol}/{name}", (*path, field), units, "xy", "world")
-        for name, field, units in (
-            ("position", "pos", "m"), ("velocity", "vel", "m/s"), ("force", "force", "N"),
-        )
+    writable = symbol == "effector"
+    return (
+        StateValue(
+            f"{symbol}/position", (*path, "pos"), "m", "xy", "world",
+            reset=StateReset("effector", ("pos",)) if writable else None,
+        ),
+        StateValue(
+            f"{symbol}/velocity", (*path, "vel"), "m/s", "xy", "world",
+            reset=StateReset("effector", ("vel",)) if writable else None,
+        ),
+        StateValue(f"{symbol}/force", (*path, "force"), "N", "xy", "world"),
     )
 
 
@@ -60,7 +86,10 @@ MODEL_OWNERS = {
             ("candidate_bias", "cell.bias_n"),
         ),
         states=(
-            StateValue("hidden", ("hidden",), "1", "unit"),
+            StateValue(
+                "hidden", ("hidden",), "1", "unit",
+                reset=StateReset("hidden", aliases=(("output",),), override_port="hidden"),
+            ),
             StateValue("output", ("output",), "1", "unit"),
         ),
     ),
@@ -98,6 +127,11 @@ MODEL_OWNERS = {
     ),
     "feedbax.CurlField": ModelOwner(
         2, (), states=(), checkpointable=False, configuration_slots=("params_index",),
+        trial_parameters=(
+            TrialParameter("active", "boolean"), TrialParameter("scale", "real"),
+            TrialParameter("amplitude", "real"),
+        ),
+        trial_parameter_override_port="params_override",
     ),
     SPATIAL_OWNER: ModelOwner(1, ()),
 }

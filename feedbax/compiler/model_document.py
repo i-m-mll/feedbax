@@ -31,6 +31,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.task_data_roles import task_data_role
+from feedbax.runtime.model_reset import ModelResetPlan, resolve_model_reset
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.studio.protocol import task_binding_id
 
@@ -720,6 +721,7 @@ class LoweredModelDocument:
             _scoped_ports(document, model, resolution, "outputs"),
             self.links,
             self.plugins,
+            resolve_model_reset(document, resolution, components),
         )
 
     def source_address(self, path: str) -> ModelAddress | None:
@@ -741,6 +743,7 @@ class ResolvedModelInterface:
     outputs: tuple[ScopedValue, ...]
     links: tuple[ResolvedModelLink, ...]
     plugins: tuple[str, ...]
+    reset: ModelResetPlan = ModelResetPlan()
 
 
 class ResolvedModelInput(ScopedValue):
