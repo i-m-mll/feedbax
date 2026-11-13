@@ -23,6 +23,7 @@ import optax
 from pydantic import BaseModel, ConfigDict
 
 import feedbax.training.executor as training_executor
+from feedbax.training import invocation, retained_executor
 import feedbax.training.phase_executor as phase_executor
 import feedbax.orchestration.events as orchestration_events
 import feedbax.__main__ as feedbax_main
@@ -6348,7 +6349,7 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
         failure_kind="nan_guard",
     )
     monkeypatch.setattr(
-        feedbax_main,
+        retained_executor,
         "execute_training_run_spec",
         lambda *args, **kwargs: SimpleNamespace(
             run_id="cli-failed",
@@ -6436,7 +6437,7 @@ def test_execute_training_run_spec_cli_forwards_authored_checkpoint_plans(
             manifest=manifest,
         )
 
-    monkeypatch.setattr(feedbax_main, "execute_training_run_spec", fake_execute)
+    monkeypatch.setattr(retained_executor, "execute_training_run_spec", fake_execute)
     common = [
         "execute-training-run-spec",
             "--plugin", "tests.support.training_fixtures",
@@ -6572,12 +6573,10 @@ def _synthetic_cli_run_spec():
 
 
 def test_default_supervised_cli_rejects_before_graph_construction(tmp_path, monkeypatch):
-    import feedbax.compiler as compiler
-
     def unexpected_graph(*_args, **_kwargs):
         pytest.fail("unavailable runtime must reject before graph construction")
 
-    monkeypatch.setattr(compiler, "compile_graph", unexpected_graph)
+    monkeypatch.setattr(invocation, "compile_graph", unexpected_graph)
     spec_path = tmp_path / "spec.json"
     _write_json(spec_path, _run_spec().model_dump(mode="json"))
     with pytest.raises(ValueError, match="feedbax/standard_supervised/v1.*real runtime"):
