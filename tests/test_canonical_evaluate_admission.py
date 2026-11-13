@@ -373,7 +373,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     np.testing.assert_allclose(nominal_pos, base_pos, rtol=2e-5, atol=1e-8)
     np.testing.assert_allclose(
         heavy_pos[:, 1:] - heavy_pos[:, :1], (base_pos[:, 1:] - base_pos[:, :1]) * 0.5,
-        rtol=3e-5, atol=1e-7,
+        rtol=3e-5, atol=2 * np.finfo(base_pos.dtype).eps,
     )
     np.testing.assert_array_equal(heavy_pos[:, 0], base_pos[:, 0])
     assert len({base_condition, nominal_condition, heavy_condition}) == 3
