@@ -1,4 +1,4 @@
-"""Real saved finite selection through Plan, Host, checkpoint custody and datasets."""
+"""Real saved checkpoint selection through Plan, Host, custody and datasets."""
 
 from copy import deepcopy
 
@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BatchSetMember, CheckpointCadence
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, CheckpointCadence
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
@@ -18,7 +18,7 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
-from tests.test_private_checkpoint_evaluation import install_finite_gate
+from tests.test_private_checkpoint_evaluation import _damaged_prng, install_finite_gate
 
 host = host_fixture
 
@@ -225,3 +225,163 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     ]
     assert {row["id"] for row in train_attempts} == {producer.job_id, resumed.job_id}
     assert all(row["launch"]["payload"]["checkpoint_catalog"] == [2, 4] for row in train_attempts)
+
+
+def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, monkeypatch):
+    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    registries = new_application_registry_bundle()
+    jobs = JobService(host, registries, enable_evaluation_candidate=True)
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "stopped"
+    definition = document_project(authored_documents(), evaluation=True)
+    baseline = definition["steps"]["baseline"]
+
+    def evaluate(rule, source="train"):
+        return baseline | {"inputs": {"subject": {"step": source, "checkpoint": rule}}}
+
+    steps = {
+        "train": _train(definition["steps"]["train"], 6),
+        "short": _train(definition["steps"]["train"], 2),
+        "last": evaluate("last"),
+        "exact": evaluate({"at": 3}),
+        "past": evaluate({"at": 1}),
+        "future": evaluate({"at": 4}),
+        "missing": evaluate({"at": 3}, source="short"),
+        "zero": evaluate({"at": 0}),
+    }
+
+    def save():
+        _save_project(folders, project, Project.model_validate(definition | {"steps": steps}))
+        saved = folders.read_plan(project, revision=None)
+        assert not saved.plan.diagnostics
+        return saved, {run.key.step: run for run in saved.plan.runs}
+
+    plan, by_step = save()
+
+    def launch(token, *names, service=jobs):
+        return service.admit_plan(
+            folders, plan, run_keys=tuple(by_step[name].key for name in names), token=token,
+        ).items
+
+    def terminal(job_id, state):
+        row = wait_until(lambda: (
+            row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
+        ), timeout=22)
+        assert row["state"] == state, row.get("outcome")
+        return row
+
+    def pending(item):
+        row = job_row(host, item.job_id, "queued")
+        assert row["delivery"] == 0 and not row["edges"][0]["satisfied"]
+
+    subject = by_step["exact"].inputs["subject"].member.reference
+    assert subject.select == BatchMember(batch=3)
+    assert subject.request_id == by_step["train"].request_id
+    (held,) = launch("held", "exact", service=JobService(host, registries))
+    assert held.disposition == "rejected" and "/evaluation_type" in held.reason
+    (zero,) = launch("zero", "zero")
+    assert zero.disposition == "rejected" and "/inputs/subject/checkpoint" in zero.reason
+
+    host.policy(compute=1)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4, managed=True)
+    (producer,) = launch("producer", "train")
+    last, exact = launch("consumers", "last", "exact")
+    assert {last.disposition, exact.disposition} == {"admitted"}
+    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    pending(last)
+    pending(exact)
+    jobs.stop([producer.job_id], "checkpoint")
+    stopped = terminal(producer.job_id, "stopped")
+    checkpoint = stopped["outcome"]["checkpoint"]
+    assert checkpoint["completed_updates"] == 3
+    assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
+    evaluated = terminal(exact.job_id, "succeeded")
+    binding = evaluated["edges"][0]["binding"]
+    selection = binding["checkpoint_selection"]
+    (member,) = selection["members"]
+    assert selection["requested"] == [3] and selection["lineage"] == [producer.job_id]
+    assert member["checkpoint"] == checkpoint
+    assert member["producer_job_id"] == producer.job_id
+    assert evaluated["delivery"] == 1
+    restart(host)
+    pending(last)
+    assert launch("consumers", "last", "exact") == [last, exact]
+    past, future = launch("around-stop", "past", "future")
+    absent = terminal(past.job_id, "blocked")
+    assert absent["outcome"]["error"]["code"] == "input_unavailable"
+    assert absent["delivery"] == 0 and not absent["edges"][0]["satisfied"]
+    pending(future)
+
+    # A coordinate authored after admission uses the retained publication in the same lineage.
+    steps["late"] = deepcopy(evaluate({"at": 3}))
+    steps["late"]["base"]["inline"]["params"]["seed"] += 1
+    plan, by_step = save()
+    service = ProjectPlanService(folders, jobs)
+    assert service.read(project, revision=plan.revision).evaluations[by_step["late"].key].can_run
+    resumed = jobs.resume(producer.job_id, token="resume")
+    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    pending(last)
+    try:
+        (late,) = launch("late", "late")
+        assert late.disposition == "admitted"
+        pinned = wait_until(lambda: (
+            row["edges"][0]["binding"] if (row := job_row(host, late.job_id, "queued")) else None
+        ))
+        assert pinned == binding
+        with _damaged_prng(checkpoint):
+            # A fresh admission detects corruption at selection. The earlier pin also
+            # detects the same damage before delivery.
+            (corrupt,) = launch("corrupt", "exact")
+            rejected = terminal(corrupt.job_id, "blocked")
+            assert not rejected["edges"][0]["satisfied"]
+            host.policy(compute=2)
+            refused = terminal(late.job_id, "blocked")
+            assert refused["edges"][0]["binding"] == binding
+            for row in (rejected, refused):
+                assert row["outcome"]["error"]["code"] == "dependency_corrupt"
+                assert row["delivery"] == 0 and "receipt" not in row["outcome"]
+        released = terminal(future.job_id, "succeeded")["edges"][0]["binding"]["checkpoint_selection"]
+        assert job_row(host, resumed.job_id, "running") is not None
+    finally:
+        (tmp_path / "finish-train").touch()
+    completed = terminal(resumed.job_id, "succeeded")
+    final = terminal(last.job_id, "succeeded")
+    completion = final["edges"][0]["binding"]["completion"]
+    assert completion == completed["outcome"]["completion"]
+    assert completion["checkpoint"]["completed_updates"] == 6
+    assert released["requested"] == [4]
+    assert released["lineage"] == [producer.job_id, resumed.job_id]
+    (resumed_member,) = released["members"]
+    assert resumed_member["producer_job_id"] == resumed.job_id
+    restart(host)
+    assert job_row(host, exact.job_id)["edges"][0]["binding"] == binding
+    assert job_row(host, last.job_id)["edges"][0]["binding"]["completion"] == completion
+
+    result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=exact.job_id)
+    receipt = result._manifest()
+    assert receipt.input_training_runs == []
+    (parent,) = receipt.provenance.parents
+    assert parent.id == checkpoint["pointer"]["transaction_id"]
+    assert parent.metadata["publication_cursor"] == member["publication_cursor"]
+    assert parent.metadata["transaction_root_sha256"] == checkpoint["pointer"]["transaction_root_sha256"]
+    settled = service.read(project, revision=plan.revision)
+    planned = settled.evaluations[by_step["exact"].key].result
+    assert planned.receipt == result.receipt
+    (source,) = planned.checkpoint_sources
+    assert source.job_id == producer.job_id and source.completed_updates == 3
+    with result.open_states() as dataset:
+        assert dataset.data("checkpoint").tolist() == [3]
+    trial = settled.evaluations[by_step["exact"].key].trials[0]
+    assert result.replay_trial(trial, anchor_id="effector").identity.stable_id == trial
+
+    (short,) = launch("short", "short")
+    terminal(short.job_id, "succeeded")
+    (missing,) = launch("missing", "missing")
+    unavailable = terminal(missing.job_id, "blocked")
+    assert unavailable["delivery"] == 0 and not unavailable["edges"][0]["satisfied"]
+    assert unavailable["outcome"]["error"] == {
+        "code": "input_unavailable", "path": "/inputs/subject/checkpoint",
+        "message": "Producer closed without checkpoint coordinates [3].",
+    }

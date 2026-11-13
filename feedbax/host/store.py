@@ -9,7 +9,7 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.host.checkpoint_selection import (
-    requested_batches, selector_sha256, verify_selected_publication,
+    CheckpointSelection, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
 )
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
@@ -280,7 +280,7 @@ class Store:
                     ):
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
                 try:
-                    selected = requested_batches(job["request"], job["launch"])
+                    selected = requested_checkpoint_selection(job["request"], job["launch"])
                     if selected is not None and not evaluate:
                         edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
                         if len(edges) != 1 or job["continues"] is not None:
@@ -293,7 +293,7 @@ class Store:
                             or producer["request"] != payload["producer_request"]
                             or source.get("manifest_root") != payload["manifest_root"]
                             or source.get("canonical_request") is None
-                            or not set(selected) <= set(source.get("checkpoint_catalog", ()))
+                            or not set(selected.coordinates) <= set(source.get("checkpoint_catalog", ()))
                         ):
                             raise ValueError("Private evaluation differs from its admitted Train catalogue.")
                 except (ValueError, KeyError, TypeError) as exc:
@@ -325,7 +325,10 @@ class Store:
                         or source_payload.get("canonical_request") is None
                     ):
                         raise HostError("invalid_request", f"{input_path}: checkpoint edge differs from its canonical input.")
-                    if selected is not None and not set(selected) <= set(source_payload.get("checkpoint_catalog", ())):
+                    if (
+                        selected is not None and selected.requires_catalog
+                        and not set(selected.coordinates) <= set(source_payload.get("checkpoint_catalog", ()))
+                    ):
                         results.append({
                             "run_key": run_key, "job_id": None, "disposition": "rejected",
                             "reason": f"{input_path}/checkpoint: admitted Train catalogue omits requested batches",
@@ -756,10 +759,11 @@ class Store:
         verify_completion_files(completion)
         return completion, None
 
-    def _finite_checkpoint_members(
-        self, path: tuple[sqlite3.Row, ...], coordinates: tuple[int, ...],
+    def _checkpoint_members(
+        self, path: tuple[sqlite3.Row, ...], selection: CheckpointSelection,
     ) -> tuple[list[int], list[dict]]:
         """Collect one path through exact ancestor recovery pointers."""
+        coordinates = selection.coordinates
         found = {}
         keys = [f"checkpoint:{coordinate}" for coordinate in coordinates]
         placeholders = ",".join("?" for _ in keys)
@@ -784,6 +788,13 @@ class Store:
             )
             for row in rows:
                 publication = json.loads(row["data"])
+                if (
+                    not selection.requires_catalog
+                    and "checkpoint_product" not in publication
+                    and "checkpoint_product_error" not in publication
+                ):
+                    # Older recovery-only publications did not attest an Evaluate product.
+                    continue
                 coordinate = int(publication["key"].split(":")[1])
                 if coordinate <= lower or (upper is not None and (
                     coordinate > upper
@@ -828,9 +839,9 @@ class Store:
         return [], members
 
     def _completion_candidate(
-        self, anchor: str, coordinates: tuple[int, ...] | None = None,
+        self, anchor: str, selection: CheckpointSelection | None = None,
     ) -> tuple[dict | None, dict | None, list[_CompletionRejection]]:
-        """Select an authenticated final product or one exact finite publication set.
+        """Select an authenticated final product or exact checkpoint publications.
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
         """
@@ -850,7 +861,7 @@ class Store:
         for attempt in attempts:
             attempt_id = attempt["id"]
             payload = json.loads(attempt["launch"])["payload"]
-            resume = dump(payload.pop("resume", None), sort_keys=True)
+            resume = payload.pop("resume", None)
             if attempt_id == anchor:
                 expected_request = (attempt["project"], attempt["request"])
                 expected_payload = dump(payload, sort_keys=True)
@@ -860,7 +871,7 @@ class Store:
                     continue
                 if (
                     (attempt["project"], attempt["request"]) != expected_request
-                    or resume != source_checkpoint
+                    or dump(resume, sort_keys=True) != source_checkpoint
                     or dump(payload, sort_keys=True) != expected_payload
                 ):
                     rejections.append(_CompletionRejection(
@@ -869,16 +880,20 @@ class Store:
                     ))
                     continue
 
-            if coordinates is not None:
+            can_publish = True
+            if selection is not None:
                 prior = paths.get(attempt["continues"], ()) if attempt_id != anchor else ()
                 path = (*prior, attempt)
                 paths[attempt_id] = path
                 try:
-                    absent, members = self._finite_checkpoint_members(path, coordinates)
+                    absent, members = self._checkpoint_members(path, selection)
                 except CompletionFileError as error:
                     rejections.append(_CompletionRejection(attempt_id, "checkpoint_selection", str(error)))
+                    # An exact publication is immutable within this path, including on resume.
+                    can_publish = selection.requires_catalog
                 else:
                     if members:
+                        coordinates = selection.coordinates
                         return {
                             "dependency_job_id": anchor,
                             "checkpoint_selection": {
@@ -892,7 +907,7 @@ class Store:
                     missing = f"Producer closed without checkpoint coordinates {absent}."
 
             state = attempt["state"]
-            if state == "succeeded" and coordinates is None:
+            if state == "succeeded" and selection is None:
                 try:
                     completion, message = self._completed_product(attempt)
                 except CompletionFileError as error:
@@ -901,14 +916,18 @@ class Store:
                     if completion is not None:
                         return {"dependency_job_id": anchor, "completion": completion}, None, rejections
                     missing = missing or message
-            elif can_resume_attempt(state, attempt["checkpoint"], attempt["delivery"]):
+            resumable = can_resume_attempt(state, attempt["checkpoint"], attempt["delivery"])
+            boundary = resume
+            if resumable:
                 raw = attempt["checkpoint"]
-                resume_checkpoints[attempt_id] = dump(
-                    json.loads(raw) if raw is not None else None, sort_keys=True
+                boundary = json.loads(raw) if raw is not None else None
+                resume_checkpoints[attempt_id] = dump(boundary, sort_keys=True)
+            if resumable or state in LIVE_STATES:
+                # A continuation starts after its recovery coordinate.
+                pending |= can_publish and (
+                    selection is None or selection.requires_catalog
+                    or boundary is None or selection.coordinates[0] > boundary["completed_updates"]
                 )
-                pending = True
-            elif state in LIVE_STATES:
-                pending = True
 
         if pending:
             return None, None, rejections
@@ -920,7 +939,7 @@ class Store:
         return None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",
-            **({"path": "/inputs/subject/checkpoint"} if coordinates is not None else {}),
+            **({"path": "/inputs/subject/checkpoint"} if selection is not None else {}),
         }, rejections
 
     def _record_completion_rejections(
@@ -960,10 +979,10 @@ class Store:
                     continue
                 anchor = edge["parent"]
                 launch = json.loads(job["launch"])
-                coordinates = requested_batches(job["request"], launch)
-                key = anchor, coordinates
+                selection = requested_checkpoint_selection(job["request"], launch)
+                key = anchor, selection
                 if key not in candidates:
-                    candidates[key] = self._completion_candidate(anchor, coordinates)
+                    candidates[key] = self._completion_candidate(anchor, selection)
                 binding, error, rejections = candidates[key]
                 self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:

@@ -1,8 +1,9 @@
-"""Exact finite checkpoint publications and lineage bindings for the local Host."""
+"""Exact checkpoint publications and lineage bindings for the local Host."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import PurePosixPath
@@ -13,21 +14,31 @@ from feedbax.host.completion import CompletionFileError, verify_completion_files
 EVALUATION_ENTRYPOINT = "feedbax.training.private_evaluation:main"
 
 
-def requested_batches(request: str, launch: dict) -> tuple[int, ...] | None:
-    """Read the finite selector from the existing canonical or private input binding."""
+@dataclass(frozen=True)
+class CheckpointSelection:
+    coordinates: tuple[int, ...]
+    requires_catalog: bool
+
+
+def requested_checkpoint_selection(request: str, launch: dict) -> CheckpointSelection | None:
+    """Read the coordinate demand from the canonical or private input binding."""
     payload = launch["payload"]
     if launch.get("warm_entrypoint") == EVALUATION_ENTRYPOINT:
-        return finite_coordinates(payload["coordinates"])
+        return CheckpointSelection(finite_coordinates(payload["coordinates"]), requires_catalog=True)
     if request.startswith("evaluate:"):
         binding = payload.get("canonical_request") or {}
         selector = (binding.get("checkpoint") or {}).get("select")
-        if isinstance(selector, dict) and selector.get("kind") == "batch_set":
+        if not isinstance(selector, dict):
+            return None
+        if selector.get("kind") == "batch":
+            return CheckpointSelection(finite_coordinates((selector["batch"],)), requires_catalog=False)
+        if selector.get("kind") == "batch_set":
             coordinates = finite_coordinates(selector["batches"])
             if (cadence := selector.get("cadence")) is not None and coordinates != cadence_coordinates(
                 cadence["every_k"], cadence["through"],
             ):
                 raise ValueError("checkpoint batches differ from the bounded cadence")
-            return coordinates
+            return CheckpointSelection(coordinates, requires_catalog=True)
     return None
 
 
@@ -97,7 +108,7 @@ def verify_dependency_files(binding: dict) -> None:
             or len(lineage) != len(set(lineage))
             or len(selection["members"]) != len(requested)
         ):
-            raise CompletionFileError("Malformed finite checkpoint selection binding.")
+            raise CompletionFileError("Malformed checkpoint selection binding.")
         for coordinate, product in zip(requested, selection["members"], strict=True):
             if (
                 product["checkpoint"]["completed_updates"] != coordinate

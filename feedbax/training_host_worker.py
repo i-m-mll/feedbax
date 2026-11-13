@@ -444,7 +444,10 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                 "checkpoint": checkpoint.model_dump(mode="json"),
                 "elapsed_seconds": events.elapsed(),
             }
-            if completed in launch.checkpoint_catalog:
+            if (
+                launch.canonical_request is not None
+                and checkpoint.pointer.completed_coordinate.completed_barrier == "after_train_batch"
+            ):
                 try:
                     publication["checkpoint_product"] = attest_checkpoint_publication(
                         launch=launch, binding_sha256=binding_sha256, checkpoint=checkpoint, write=write,
