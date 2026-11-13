@@ -91,6 +91,7 @@ def _rollouts(
     from feedbax.contracts.rollout import trial_indices
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.dataset import Dataset, Variable
+    from feedbax.objectives.document import ObjectiveUse
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state, scene_position_key
     from feedbax.tasks.document import TaskParameters
@@ -127,6 +128,7 @@ def _rollouts(
         paired = compile_trial_execution(
             documents.model_name, documents.model, variant.task,
             registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
+            objective_use=ObjectiveUse.INHERITED,
             input_overrides=documents.input_overrides, artifact_provider=slot.provider,
             initialization_key=key, graph_override=variant.graph,
         )

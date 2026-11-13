@@ -27,7 +27,7 @@ from feedbax.contracts.model_document import GraphInterior, ModelDocument
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.expression_registry import FunctionRegistry
-from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, compile_objective
+from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.trial_execution import TrialExecution
 from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
@@ -208,6 +208,7 @@ def compile_trial_execution(
     *,
     python_tasks: PythonTaskRegistry | None = None,
     objective: ObjectiveDocument | None = None,
+    objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
     input_overrides: Mapping[str, str] | None = None,
     initialization_key: jax.Array | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
@@ -236,7 +237,7 @@ def compile_trial_execution(
                 *compiled_task.interface.variables,
                 *compiled_task.interface.signals,
             )
-            scorer = compile_objective(objective, names, functions, task=compiled_task)
+            scorer = compile_objective(objective, names, functions, task=compiled_task, use=objective_use)
             if not isinstance(scorer, ObjectiveExecutor):
                 return scorer
             referenced = {name.id for name in scorer.names}
