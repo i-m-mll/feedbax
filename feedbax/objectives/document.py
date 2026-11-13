@@ -27,7 +27,8 @@ from feedbax.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.objectives.loss import AbstractLoss, TermTree
-from feedbax.tasks.document import Trial
+from feedbax.runtime.epoch_windows import whole_window
+from feedbax.tasks.document import DocumentTask, Trial
 
 
 class Reduction(StrEnum):
@@ -43,6 +44,7 @@ class ObjectiveTerm(ValueRecord):
     measure_type: ValueType = ValueType(base=ValueBase.REAL)
     weight: Expression = LiteralValue(value=1)
     reduction: Reduction = Reduction.MEAN
+    epochs: tuple[str, ...] = ()
     enabled: bool = True
 
 
@@ -54,7 +56,6 @@ class ObjectiveDocument(ValueRecord):
 class ObjectiveInputs(NamedTuple):
     run_key: jax.Array
     trial_keys: jax.Array
-    windows: jax.Array
     parameters: Mapping[str, Mapping[str, tuple]] | None = None
 
 
@@ -74,6 +75,8 @@ class _Term:
     measure: Compiled
     weight: Compiled
     reduction: Reduction
+    epochs: tuple[int, ...]
+    references: frozenset[str]
 
 
 class ObjectiveExecutor(AbstractLoss):
@@ -83,6 +86,7 @@ class ObjectiveExecutor(AbstractLoss):
     terms: tuple[_Term, ...] = ()
     names: tuple[ScopedValue, ...] = ()
     period: float = 1.0
+    n_steps: int = 0
 
     def __call__(self, states, trial_specs: Trial, model: ObjectiveInputs):
         """Expose the same batch values as a loss tree."""
@@ -95,23 +99,21 @@ class ObjectiveExecutor(AbstractLoss):
                     trial_specs,
                     run_key=model.run_key,
                     trial_keys=model.trial_keys,
-                    windows=model.windows,
                     parameters=model.parameters,
                 ).terms.items()
             },
         )
 
-    def evaluate(self, retained, trials, *, run_key, trial_keys, windows, parameters=None):
+    def evaluate(self, retained, trials, *, run_key, trial_keys, parameters=None):
         values = jax.vmap(
-            lambda kept, trial, key, window: self.evaluate_trial(
+            lambda kept, trial, key: self.evaluate_trial(
                 kept,
                 trial,
                 run_key,
                 key,
-                window,
                 parameters=parameters,
             )
-        )(retained, trials, trial_keys, windows)
+        )(retained, trials, trial_keys)
         reduced = {}
         for name, (value, covered) in values.items():
             count = jnp.count_nonzero(covered)
@@ -128,12 +130,11 @@ class ObjectiveExecutor(AbstractLoss):
         trial: Trial,
         run_key,
         trial_key,
-        windows,
         *,
         parameters=None,
     ) -> Mapping[str, TermValue]:
         """Evaluate every measure over the full trial before selecting its window."""
-        n_steps = windows.shape[-1]
+        n_steps = self.n_steps
         k = jnp.arange(n_steps)
         results = {}
         fixed = {}
@@ -146,13 +147,19 @@ class ObjectiveExecutor(AbstractLoss):
                 source = trial.variables[name.name]
                 if trial.variable_defined is not None and name.name in trial.variable_defined:
                     available[name.id] = trial.variable_defined[name.name]
-            else:
+            elif name.name in trial.inputs:
                 source = trial.inputs[name.name]
                 available[name.id] = trial.present[name.name]
+            else:
+                continue
             (traces if name.level == Level.STEP else fixed)[name.id] = source
 
-        for index, term in enumerate(self.terms):
-            selected = windows[index]
+        supplied = fixed.keys() | traces.keys()
+        for term in self.terms:
+            if term.references - supplied:
+                results[term.id] = TermValue(jnp.asarray(0.0), jnp.asarray(False))
+                continue
+            selected = whole_window(trial.epochs, n_steps, term.epochs)
             weight_is_step = term.weight.checked.root.level == Level.STEP
             measure_is_step = term.measure.checked.root.level == Level.STEP
             authored = {} if parameters is None else parameters.get(term.id, {})
@@ -237,9 +244,11 @@ def compile_objective(
     names: tuple[ScopedValue, ...],
     functions: FunctionRegistry,
     *,
-    period: float,
+    task: DocumentTask,
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
-    """Use the time owner's selected masks at evaluation."""
+    """Compile objective expressions and whole-epoch windows against a paired task."""
+    period = task.period
+    indexes = {epoch: index for index, epoch in enumerate(task.epochs)}
     problems = []
     terms = []
     seen = set()
@@ -287,6 +296,15 @@ def compile_objective(
         if not isinstance(measure, Compiled):
             problems.extend(measure)
             continue
+        absent = set(term.epochs) - indexes.keys()
+        if absent or term.epochs and measure.checked.root.level != Level.STEP:
+            reason = (
+                f"Unknown epochs {sorted(absent)}." if absent else "This measure has no time axis."
+            )
+            problems.append(
+                Problem(code=ProblemCode.OUT_OF_SCOPE, path=(*path, "epochs"), reason=reason)
+            )
+            continue
         limit = Level.STEP if measure.checked.root.level == Level.STEP else Level.TRIAL
         weight = compile_expression(
             term.weight,
@@ -299,10 +317,24 @@ def compile_objective(
         if not isinstance(weight, Compiled):
             problems.extend(weight)
             continue
-        terms.append(_Term(term.id, measure, weight, term.reduction))
-        referenced.update(references(term.measure) | references(term.weight))
+        used = (references(term.measure) | references(term.weight)) - {"t", "T", "u"}
+        terms.append(
+            _Term(
+                term.id,
+                measure,
+                weight,
+                term.reduction,
+                tuple(indexes[epoch] for epoch in term.epochs),
+                used,
+            )
+        )
+        referenced.update(used)
     if problems:
         return tuple(problems)
     return ObjectiveExecutor(
-        document.id, tuple(terms), tuple(name for name in names if name.id in referenced), period
+        document.id,
+        tuple(terms),
+        tuple(name for name in names if name.id in referenced),
+        period,
+        task.n_steps,
     )
