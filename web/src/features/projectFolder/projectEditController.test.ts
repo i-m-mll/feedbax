@@ -41,14 +41,14 @@ function fixture(settleMs = 400, start = initial) {
     return revision;
   }
   const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
-  const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[]) => {
+  const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[], indent?: number) => {
     if (address.kind === 'presentation') {
       const { project } = applyAuthoredEdits({ ...current.project, presentation: current.presentation }, address, edits);
       current = { ...current, presentation: project.presentation ?? null, presentation_revision: hex(sequence++) };
       return current;
     }
     const { project } = applyAuthoredEdits(current.project, address, edits);
-    const data = encoded(project.documents?.[address.id]);
+    const data = btoa(JSON.stringify(project.documents?.[address.id], null, indent));
     current = {
       ...current,
       project,
@@ -299,11 +299,12 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   expect(editor.getSnapshot().undoName).toBe('Outside Change');
 
   await editor.undo();
-  const files = replay.mock.calls[0][1];
-  expect(files).toMatchObject({ revision: outside, files: expect.arrayContaining([
-    { address: task, after: encoded({ schema: 'task', payload: { value: 2 } }) },
-    { address: model, after: encoded({ schema: 'graph', payload: { value: 1 } }) },
-  ]) });
+  const request = replay.mock.calls[0][1];
+  expect(request.revision).toBe(outside);
+  expect(request.files.map(({ address, after }) => [address.id, after]).sort()).toEqual([
+    ['model', encoded({ schema: 'graph', payload: { value: 1 } })],
+    ['task', encoded({ schema: 'task', payload: { value: 2 } })],
+  ]);
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Local Task', redoName: 'Outside Change' });
   await editor.redo();
   expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
@@ -316,6 +317,27 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   await editor.flush();
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Second Local Task', redoName: 'Outside Change' });
   expect(current().project.documents?.task?.payload).toEqual({ value: 5 });
+  editor.dispose();
+});
+
+it('replays exact outside bytes after local Undo canonicalizes the same authored content', async () => {
+  const { editor, external, current, replay } = fixture();
+  const outside = external(task, [value(3)], 4);
+  editor.observe(outside);
+  await editor.flush();
+  editor.edit(task, 'Local Task', [value(5)]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  const canonical = current().file_revisions.find(({ address }) => address.id === task.id)!;
+  expect(canonical.revision).not.toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.revision);
+
+  await editor.undo();
+  expect(replay.mock.calls[0][1].files[0].before).toBe(canonical.revision);
+  expect(current().project.documents?.task?.payload).toEqual({ value: 1 });
+  await editor.redo();
+  expect(current().file_revisions.find(({ address }) => address.id === task.id)?.data)
+    .toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.data);
   editor.dispose();
 });
 

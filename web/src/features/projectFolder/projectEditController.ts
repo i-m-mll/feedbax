@@ -65,6 +65,7 @@ interface ReplayTarget {
   readonly address: ReplayFile['address'];
   readonly data: string | null;
   readonly revision: string | null;
+  readonly content?: string;
 }
 const declarationAddress = { kind: 'declaration', id: 'declaration' } as const;
 
@@ -152,6 +153,12 @@ function withoutChangedFiles(
   return { undo: history.undo.filter(usable), redo: history.redo.filter(usable) };
 }
 
+function authoredFileContent(project: AuthoredProject, { kind, id }: ReplayFile['address']) {
+  const files = kind === 'document' ? project.documents : kind === 'step' ? project.steps
+    : kind === 'variant' ? project.sweep?.rows : undefined;
+  return files && Object.prototype.hasOwnProperty.call(files, id) ? JSON.stringify(files[id]) : undefined;
+}
+
 function outsideGesture(before: StudioProjectSnapshot, after: StudioProjectSnapshot): OutsideGesture | null {
   const previous = new Map(before.file_revisions.map((file) => [addressKey(file.address), file]));
   const current = new Map(after.file_revisions.map((file) => [addressKey(file.address), file]));
@@ -164,8 +171,14 @@ function outsideGesture(before: StudioProjectSnapshot, after: StudioProjectSnaps
     const { kind, id } = (to ?? from)!.address;
     if (kind === 'presentation' || (from && from.data == null) || (to && to.data == null)) return null;
     const address = { kind, id };
-    undo.push({ address, data: from?.data ?? null, revision: from?.revision ?? null });
-    redo.push({ address, data: to?.data ?? null, revision: to?.revision ?? null });
+    undo.push({
+      address, data: from?.data ?? null, revision: from?.revision ?? null,
+      content: authoredFileContent(before.project, address),
+    });
+    redo.push({
+      address, data: to?.data ?? null, revision: to?.revision ?? null,
+      content: authoredFileContent(after.project, address),
+    });
   }
   if (before.declaration?.authored_revision !== after.declaration?.authored_revision) {
     if (!before.declaration || !after.declaration) return null;
@@ -185,7 +198,11 @@ function replayFiles(
     const declaration = address.kind === 'declaration';
     const before = declaration ? current.declaration?.revision : digests.get(addressKey(address));
     const actual = declaration ? current.declaration?.authored_revision : before;
-    if ((actual ?? null) !== from[index].revision) throw new ProjectEditConflictError();
+    const source = from[index];
+    // Earlier local Undo can re-encode a file with the same ordered content.
+    const sameContent = !declaration && source.content !== undefined &&
+      source.content === authoredFileContent(current.project, address);
+    if ((actual ?? null) !== source.revision && !sameContent) throw new ProjectEditConflictError();
     return { address, before: before ?? null, after: data };
   });
 }

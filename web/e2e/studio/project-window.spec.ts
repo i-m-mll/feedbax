@@ -87,6 +87,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   }
   const json = (data: unknown) => JSON.stringify(data, null, 4) + '\n';
   const model = panel('Model');
+  const plant = model.getByRole('article', { name: 'Point mass', exact: true }).locator('header');
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
   const batches = panel('Training').getByRole('textbox', { name: 'N Batches', exact: true });
   const batchSize = panel('Training').getByRole('textbox', { name: 'Batch Size', exact: true });
@@ -103,7 +104,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   await edit(batchSize, '6');
   await edit(batches, '5');
   await tab('Model').click();
-  await model.getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  await plant.click();
   await edit(mass, '2', true);
 
   const beforeOutside = await read(modelPath);
@@ -117,7 +118,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   expect(await read(modelPath)).toBe(beforeOutside);
 
   await history('Meta+Z', 'Model', '/model/undo');
-  await expect(mass).toHaveValue(/^1(?:\.0)?$/);
+  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(1);
   await tab('Training').click();
   await history('Meta+Z', 'Training');
   await expect(batches).toHaveValue('2');
@@ -130,6 +131,8 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   await expect(batches).toHaveValue('5');
   await tab('Model').click();
   await history('Meta+Shift+Z', 'Model', '/model/undo');
+  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(2);
+  await plant.click();
   await expect(mass).toHaveValue('2');
   await menu('Redo Outside Change');
   await history('Meta+Shift+Z', 'Model', '/history/replay');
