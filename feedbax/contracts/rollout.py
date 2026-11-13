@@ -8,9 +8,11 @@ from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter, field_validator
 
-from feedbax.contracts.base import StrictModel
+from feedbax.contracts.base import StrictModel, sha256_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.request_refs import Sha256
 
 STUDIO_DEFAULT_EVALUATION_TYPE = "feedbax.studio.default_eval"
 ROLLOUT_TYPE = "feedbax.rollout"
@@ -120,3 +122,24 @@ class RolloutParameters(RolloutSettings):
         if any(not value.strip() for value in values) or len(set(values)) != len(values):
             raise ValueError("expected distinct nonempty trial IDs")
         return values
+
+
+class ResolvedRolloutMember(StrictModel):
+    coordinate: int
+    model_tree: Sha256
+    model: Sha256
+    task: Sha256
+    trials: tuple[str, ...]
+
+
+class ResolvedRolloutBinding(StrictModel):
+    """Scientific inputs bound by the worker before starting the paired rollout."""
+
+    schema_id: Literal["feedbax.evaluate.binding.v1"] = "feedbax.evaluate.binding.v1"
+    members: tuple[ResolvedRolloutMember, ...] = Field(min_length=1)
+    objective: Sha256
+    seed: int
+    trial_policy: Literal["paired"]
+
+    def digest(self) -> str:
+        return sha256_bytes(canonical_json_v2_bytes(self.model_dump(mode="json")))

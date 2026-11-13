@@ -41,6 +41,7 @@ class PreparedTrialExecution:
     execution: TrialExecution
     objective: ObjectiveExecutor | None
     lowered: LoweredModelDocument
+    task_source: TaskDocument | PythonTaskSelection
 
 
 _DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase.REAL: jnp.float32}
@@ -54,6 +55,7 @@ class TrialPair:
     prototypes: dict
     input_bindings: tuple[tuple[str, str], ...]
     problems: tuple[Problem, ...]
+    task_source: TaskDocument | PythonTaskSelection
 
 
 def validate_python_task(
@@ -105,9 +107,12 @@ def pair_trial_source(
 ) -> TrialPair | tuple[Problem, ...]:
     overrides = input_overrides or {}
     if isinstance(task, PythonTaskSelection):
-        template = resolve_python_task(task, python_tasks or builtin_python_tasks())
-        if isinstance(template, tuple):
-            return template
+        resolved = validate_python_task(task, python_tasks or builtin_python_tasks())
+        if isinstance(resolved[0], Problem):
+            return resolved
+        definition, parameters = resolved
+        template = definition.template(parameters)
+        task = PythonTaskSelection(type=definition.key, params=parameters.model_dump(mode="json"))
         signal_types = template.signals
     else:
         template = None
@@ -168,7 +173,7 @@ def pair_trial_source(
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
     bindings, problems = bind_task_inputs(interface, compiled.interface.signals, overrides)
-    return TrialPair(interface, compiled, lowered, prototypes, bindings, problems)
+    return TrialPair(interface, compiled, lowered, prototypes, bindings, problems, task)
 
 
 def _missing_required_input(
@@ -276,4 +281,5 @@ def compile_trial_execution(
         TrialExecution(compiled_task, interface.reset, pairing.input_bindings, observations),
         scorer,
         pairing.lowered,
+        pairing.task_source,
     )

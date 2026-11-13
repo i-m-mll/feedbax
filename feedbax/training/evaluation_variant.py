@@ -157,16 +157,6 @@ def _replacement_task(task, patch, path):
         raise CannotRun(path, error.errors()[0]["msg"]) from error
 
 
-def resolve_evaluation_task(
-    task: TaskDocument | PythonTaskSelection, patches: VariationEdits,
-) -> TaskDocument | PythonTaskSelection:
-    """Resolve the Task projection without realizing the checkpoint graph."""
-    for path, patch in authored_variation(patches):
-        if patch.path == "task" and patch.op == "replace":
-            task = _replacement_task(task, patch, f"{path}/value")
-    return task
-
-
 def resolve_evaluation_variant(
     graph: GraphSpec, task: TaskSpec | TaskDocument | PythonTaskSelection, patches: VariationEdits,
 ) -> EvaluationVariant:

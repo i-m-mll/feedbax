@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, CheckpointCadence
+from feedbax.contracts.rollout import ResolvedRolloutBinding
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
@@ -134,7 +135,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     target = "/v1/task/output/target_pos"
     service = ProjectPlanService(folders, jobs)
     settled = service.read(project, revision=plan.revision)
-    trajectories = []
+    trajectories, effective_bindings = [], []
     for name, row, coordinates, attempts in zip(
         ("ordered", "cadence"), rows, ([4, 2], [2, 4]),
         ([resumed.job_id, producer.job_id], [producer.job_id, resumed.job_id]), strict=True,
@@ -150,6 +151,10 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         ] == [row["edges"][0]["binding"]]
         result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=row["id"])
         receipt = result._manifest()
+        effective = ResolvedRolloutBinding.model_validate(receipt.metadata["effective_binding"])
+        assert [member.coordinate for member in effective.members] == coordinates
+        assert receipt.metadata["effective_binding_sha256"] == effective.digest()
+        effective_bindings.append(effective)
         assert receipt.input_training_runs == []
         assert receipt.provenance.metadata["checkpoint_selection"]["lineage_tip"] == resumed.job_id
         assert [item.id for item in receipt.provenance.parents] == [
@@ -195,6 +200,10 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         np.testing.assert_allclose(replay.tracks[0].samples, trajectories[-1][coordinates.index(4), 0, 1])
     assert not np.array_equal(trajectories[0][0], trajectories[0][1])
     np.testing.assert_array_equal(trajectories[0], trajectories[1][::-1])
+    first, second = effective_bindings
+    assert first.members == second.members[::-1]
+    assert len({member.model_tree for member in first.members}) == 2
+    assert first.digest() != second.digest()
 
     (short,) = launch("short-producer", "short").items
     (missing,) = launch("missing-consumer", "missing").items

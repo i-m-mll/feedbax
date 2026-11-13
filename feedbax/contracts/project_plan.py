@@ -19,7 +19,7 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
-from feedbax.contracts.graph import StudioTaskBindingSpec
+from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
@@ -378,6 +378,7 @@ class _ModelSource:
     model: ModelDocument
     stamp: str
     evaluation_problem: ProjectDiagnostic | None = None
+    evaluation_graph: GraphSpec | None = None
 
 
 def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference, ...]]:
@@ -590,15 +591,18 @@ def _encode_row(
         from feedbax.studio.canonical_evaluate import CannotRun
         from feedbax.training.evaluation_variant import validate_evaluation_source
 
+        graph = paired.executable.resolved.graph
+        assert model_source is not None
         try:
-            validate_evaluation_source(paired.executable.resolved.graph)
+            validate_evaluation_source(graph)
         except CannotRun as error:
             address = paired.lowered.source_address(error.path.removeprefix("/inputs/subject"))
-            assert model_source is not None
             model_source = replace(model_source, evaluation_problem=ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, error.path, error.reason,
                 document=address.document if address is not None else None, model_address=address,
             ))
+        else:
+            model_source = replace(model_source, evaluation_graph=graph)
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
         from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
@@ -1215,7 +1219,7 @@ class _Compiler:
                     key, payload, model_source, subject.member.reference if subject is not None else None,
                 )
             if kind == "evaluate" and isinstance(payload, dict) and subject is not None:
-                payload = self.lower_evaluate_trials(key, payload, subject.member.reference)
+                payload = self.lower_evaluate_trials(key, payload, subject.member.reference, model_source)
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             return replace(
@@ -1285,12 +1289,17 @@ class _Compiler:
             detail = str(error)
         return _model_difference_problem(key, address, detail), None
 
-    def lower_evaluate_trials(self, key: RunKey, payload: Payload, reference: object) -> Payload | ProjectDiagnostic:
+    def lower_evaluate_trials(
+        self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
+    ) -> Payload | ProjectDiagnostic:
         from feedbax.compiler.trial_execution import evaluation_conditions
         from feedbax.studio.canonical_evaluate import CannotRun
-        from feedbax.training.evaluation_variant import resolve_evaluation_task
+        from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
-        if payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(reference, ProductRef):
+        if (
+            payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(reference, ProductRef)
+            or model_source is None or model_source.evaluation_graph is None
+        ):
             return payload
         source = self.requests.get(reference.request_id)
         if source is None:
@@ -1306,17 +1315,18 @@ class _Compiler:
             if "trial_set" not in raw or "trials" in raw:
                 raise ValueError("Declare a trial-set rule for managed Evaluate.")
             settings = authored_rollout_settings(raw)
-            task = resolve_evaluation_task(train.trial_documents.task_source, settings.variation)
+            task = resolve_evaluation_variant(
+                model_source.evaluation_graph, train.trial_documents.task_source, settings.variation,
+            ).task
             conditions = evaluation_conditions(task, self.python_tasks)
             trials = resolve_trial_ids(raw["trial_set"], conditions)
             return payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
                 "trials": list(trials),
             }}
         except ValueError as error:
-            if isinstance(error, CannotRun):
-                location = error.path.removeprefix("/params/").replace("/", ".")
             return ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, f"payload.params.{location}",
+                ResolutionCode.INVALID_PAYLOAD,
+                error.path if isinstance(error, CannotRun) else f"payload.params.{location}",
                 error.reason if isinstance(error, CannotRun) else str(error), key.step,
                 row=key.row, variant=key.variant,
             )
