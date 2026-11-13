@@ -319,6 +319,8 @@ from feedbax.web.models.trajectory import (
     TrajectoryData,
     TrajectoryMetadata,
 )
+from feedbax.contracts.expression_values import FieldTextResult, Problem
+from feedbax.expression_site import SiteProjection
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
@@ -380,7 +382,10 @@ JOB_MODELS = (
 
 AUTHORED_CONTRACT_MODELS = (
     AnalysisDocument,
+    FieldTextResult,
+    Problem,
     ReportDocument,
+    SiteProjection,
     StudioAnalyzeAuthoring,
     StudioAnalyzeRequest,
     StudioAuthoringCatalog,

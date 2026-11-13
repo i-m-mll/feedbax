@@ -8,6 +8,7 @@ from pydantic import Field, JsonValue, StrictBool, StrictFloat, StrictInt, Stric
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
+from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.graph import WireSpec
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.operation import OperationDefinition
@@ -45,7 +46,7 @@ class StudioAuthoringOrigin(StrictModel):
 
 
 class StudioAuthoringRegistry(StrictModel):
-    entries: list[ComponentDefinition | OperationDefinition | StudioAuthoringMethod]
+    entries: list[ComponentDefinition | OperationDefinition | StudioAuthoringMethod | FunctionInfo]
     origins: dict[str, StudioAuthoringOrigin]
 
 

@@ -67,7 +67,7 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import TargetStateLossSpec
-from feedbax.plugins.application import COMPONENTS, OPERATIONS, TRAINING_PROGRAMS
+from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERATIONS, TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
 from feedbax.studio.protocol import infer_task_n_steps
@@ -184,6 +184,10 @@ def authoring_surface(
             OPERATIONS.family: StudioAuthoringRegistry(
                 entries=list(state.bundle.operations.definitions()),
                 origins=_origins(state, OPERATIONS.family),
+            ),
+            EXPRESSION_FUNCTIONS.family: StudioAuthoringRegistry(
+                entries=list(state.bundle.expression_functions.definitions()),
+                origins=_origins(state, EXPRESSION_FUNCTIONS.family),
             ),
             "training_methods": StudioAuthoringRegistry(entries=methods, origins=method_origins),
         },
