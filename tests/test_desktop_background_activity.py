@@ -96,11 +96,14 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
 
         requested = control.post(f"{ACTIVITY}/open").json()
         assert requested["pid"] is None
+        assert control.get(f"{ACTIVITY}/window").json() == {"pid": None}
         gui = {"pid": 10, "project": "reach", "ready": True}
         intent = control.post(f"{ACTIVITY}/window", json=gui).json()["open"]
         assert isinstance(intent, int)
         assert control.post(f"{ACTIVITY}/window", json=gui).json()["open"] == intent
         assert control.post(f"{ACTIVITY}/ack/{intent}").status_code == 200
+        assert control.post(f"{ACTIVITY}/window", json=gui).json()["open"] is None
+        assert control.get(f"{ACTIVITY}/window").json() == {"pid": 10}
         assert control.post(f"{ACTIVITY}/window", json=gui).json()["open"] is None
         assert control.post(f"{ACTIVITY}/open").json()["pid"] == 10
 
