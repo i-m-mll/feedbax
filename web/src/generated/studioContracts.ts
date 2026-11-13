@@ -33,6 +33,11 @@ export interface JobReceipt {
   manifest_sha256: string;
 }
 
+export interface StudioSubmissionActor {
+  client: "studio" | "cli";
+  label?: string | null;
+}
+
 export interface StudioActivityJob {
   job_id: string;
   project_id: string;
@@ -53,6 +58,7 @@ export interface StudioActivityJob {
   outcome?: JobOutcome | null;
   earlier_definition?: boolean;
   seen?: boolean;
+  actor?: StudioSubmissionActor | null;
 }
 
 export interface StudioEventReset {
@@ -107,6 +113,7 @@ export interface StudioJobSubmission {
   token: string;
   project_id: string;
   items: StudioSubmissionItem[];
+  actor?: StudioSubmissionActor | null;
 }
 
 export interface StudioSavedEvaluationReplayRequest {
@@ -187,6 +194,21 @@ export interface StudioSavedTrainRuns {
   revision: string;
   rows: StudioSavedTrainRow[];
   window_map?: StudioProjectWindowMap | null;
+  review?: StudioPlanReviewEntry[] | null;
+}
+
+export interface StudioPlanRequestAddress {
+  key: StudioSavedTrainKey;
+  element?: string | null;
+}
+
+export interface StudioPlanReviewEntry {
+  key: StudioSavedTrainKey;
+  element?: string | null;
+  request_id: string;
+  state: "unchanged" | "changed" | "added" | "removed";
+  path?: string | null;
+  upstream?: StudioPlanRequestAddress | null;
 }
 
 export interface StudioTrainCheckpointSource {
@@ -3418,6 +3440,16 @@ export type RemoveValue = {
   "op": "remove";
 };
 
+export type ReplayDeclarationAddress = {
+  "kind": "declaration";
+  "id": "declaration";
+};
+
+export type ReplayFileAddress = {
+  "kind": "document" | "step" | "variant";
+  "id": string;
+};
+
 export type ReportDocument = {
   "schema_version"?: "feedbax.report_document.v1";
   "title": string;
@@ -3595,6 +3627,12 @@ export type StudioAnalyzeWire = {
   "source": StepDataset | OperationDataset;
 };
 
+export type StudioAuthoredDeclaration = {
+  "revision": Sha256;
+  "authored_revision": Sha256;
+  "data": string;
+};
+
 export type StudioAuthoredDocumentFamily = {
   "schema_id": string | null;
   "payload_schema": Record<string, JsonValue>;
@@ -3603,6 +3641,7 @@ export type StudioAuthoredDocumentFamily = {
 export type StudioAuthoredFileRevision = {
   "address": AuthoredFileAddress;
   "revision": Sha256;
+  "data"?: string | null;
 };
 
 export type StudioAuthoringCatalog = {
@@ -3753,6 +3792,12 @@ export type StudioNameSweepValue = {
   "label": string | null;
 };
 
+export type StudioPlanRequest = {
+  "key": StudioSavedTrainKey;
+  "element"?: string | null;
+  "request_id": string;
+};
+
 export type StudioPresentationWrite = {
   "revision": Sha256;
   "presentation": PresentationDocument;
@@ -3791,6 +3836,11 @@ export type StudioProjectRename = {
   "name": string;
 };
 
+export type StudioProjectReplay = {
+  "revision": Sha256;
+  "files": Array<StudioReplayFile>;
+};
+
 export type StudioProjectRevision = {
   "project_id": string;
   "revision": Sha256;
@@ -3806,6 +3856,7 @@ export type StudioProjectSnapshot = {
   "presentation": PresentationDocument | null;
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
+  "declaration"?: StudioAuthoredDeclaration | null;
 };
 
 export type StudioProjectWindowMap = {
@@ -3814,6 +3865,7 @@ export type StudioProjectWindowMap = {
   "rows": Array<StudioProjectWindowMapRow>;
   "edges": Array<StudioProjectWindowMapEdge>;
   "problems": Array<StudioProjectWindowMapProblem>;
+  "requests"?: Array<StudioPlanRequest>;
   "evaluations"?: Array<StudioSavedEvaluationRow>;
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
@@ -3863,6 +3915,8 @@ export type StudioProjectWindowMapProblem = {
   "element"?: string | null;
   "document_path"?: string | null;
   "model_address"?: ModelAddress | null;
+  "address"?: string | null;
+  "layer"?: string | null;
 };
 
 export type StudioProjectWindowMapRow = {
@@ -3908,6 +3962,12 @@ export type StudioReachTargetEdit = {
   "kind": "bindReachTarget";
   "input": string;
   "position": StudioReachPosition;
+};
+
+export type StudioReplayFile = {
+  "address": ReplayFileAddress | ReplayDeclarationAddress;
+  "before": Sha256 | null;
+  "after": string | null;
 };
 
 export type StudioReportStep = {
@@ -4348,6 +4408,15 @@ export const JobReceiptSchema: z.ZodType<JobReceipt> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<JobReceipt>;
 
+export const StudioSubmissionActorSchema: z.ZodType<StudioSubmissionActor> = z.lazy(() =>
+  z
+    .object({
+      "client": z.union([z.literal("studio"), z.literal("cli")]),
+      "label": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSubmissionActor>;
+
 export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =>
   z
     .object({
@@ -4370,6 +4439,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "outcome": JobOutcomeSchema.nullable().optional(),
       "earlier_definition": z.boolean().optional(),
       "seen": z.boolean().optional(),
+      "actor": StudioSubmissionActorSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioActivityJob>;
@@ -4460,6 +4530,7 @@ export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(
       "token": z.string(),
       "project_id": z.string(),
       "items": z.array(StudioSubmissionItemSchema),
+      "actor": StudioSubmissionActorSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmission>;
@@ -4580,9 +4651,32 @@ export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.laz
       "revision": z.string(),
       "rows": z.array(StudioSavedTrainRowSchema),
       "window_map": StudioProjectWindowMapSchema.nullable().optional(),
+      "review": z.array(StudioPlanReviewEntrySchema).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRuns>;
+
+export const StudioPlanRequestAddressSchema: z.ZodType<StudioPlanRequestAddress> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "element": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanRequestAddress>;
+
+export const StudioPlanReviewEntrySchema: z.ZodType<StudioPlanReviewEntry> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "element": z.string().nullable().optional(),
+      "request_id": z.string(),
+      "state": z.union([z.literal("unchanged"), z.literal("changed"), z.literal("added"), z.literal("removed")]),
+      "path": z.string().nullable().optional(),
+      "upstream": StudioPlanRequestAddressSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanReviewEntry>;
 
 export const StudioTrainCheckpointSourceSchema: z.ZodType<StudioTrainCheckpointSource> = z.lazy(() =>
   z
@@ -9950,6 +10044,20 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
 
+export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("declaration"),
+    "id": z.literal("declaration"),
+  }).strict()
+) as unknown as z.ZodType<ReplayDeclarationAddress>;
+
+export const ReplayFileAddressSchema: z.ZodType<ReplayFileAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<ReplayFileAddress>;
+
 export const ReportDocumentSchema: z.ZodType<ReportDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.report_document.v1").optional(),
@@ -10185,6 +10293,14 @@ export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeWire>;
 
+export const StudioAuthoredDeclarationSchema: z.ZodType<StudioAuthoredDeclaration> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "authored_revision": Sha256Schema,
+    "data": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredDeclaration>;
+
 export const StudioAuthoredDocumentFamilySchema: z.ZodType<StudioAuthoredDocumentFamily> = z.lazy(() =>
   z.object({
     "schema_id": z.union([z.string(), z.null()]),
@@ -10196,6 +10312,7 @@ export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevis
   z.object({
     "address": AuthoredFileAddressSchema,
     "revision": Sha256Schema,
+    "data": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoredFileRevision>;
 
@@ -10389,6 +10506,14 @@ export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioNameSweepValue>;
 
+export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "element": z.union([z.string(), z.null()]).optional(),
+    "request_id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioPlanRequest>;
+
 export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10441,6 +10566,13 @@ export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<StudioProjectRename>;
 
+export const StudioProjectReplaySchema: z.ZodType<StudioProjectReplay> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(StudioReplayFileSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectReplay>;
+
 export const StudioProjectRevisionSchema: z.ZodType<StudioProjectRevision> = z.lazy(() =>
   z.object({
     "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -10459,6 +10591,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "presentation": z.union([PresentationDocumentSchema, z.null()]),
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
+    "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
 
@@ -10469,6 +10602,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "rows": z.array(StudioProjectWindowMapRowSchema),
     "edges": z.array(StudioProjectWindowMapEdgeSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema),
+    "requests": z.array(StudioPlanRequestSchema).optional(),
     "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
@@ -10530,6 +10664,8 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "element": z.union([z.string(), z.null()]).optional(),
     "document_path": z.union([z.string(), z.null()]).optional(),
     "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
+    "address": z.union([z.string(), z.null()]).optional(),
+    "layer": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -10589,6 +10725,14 @@ export const StudioReachTargetEditSchema: z.ZodType<StudioReachTargetEdit> = z.l
     "position": StudioReachPositionSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioReachTargetEdit>;
+
+export const StudioReplayFileSchema: z.ZodType<StudioReplayFile> = z.lazy(() =>
+  z.object({
+    "address": z.union([ReplayFileAddressSchema, ReplayDeclarationAddressSchema]),
+    "before": z.union([Sha256Schema, z.null()]),
+    "after": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioReplayFile>;
 
 export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   z.object({
@@ -10933,6 +11077,7 @@ export const contractSchemas = {
   JobOutcome: JobOutcomeSchema,
   JobProgress: JobProgressSchema,
   JobReceipt: JobReceiptSchema,
+  StudioSubmissionActor: StudioSubmissionActorSchema,
   StudioActivityJob: StudioActivityJobSchema,
   StudioEventReset: StudioEventResetSchema,
   StudioEventWatermark: StudioEventWatermarkSchema,
@@ -10953,6 +11098,8 @@ export const contractSchemas = {
   StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
+  StudioPlanRequestAddress: StudioPlanRequestAddressSchema,
+  StudioPlanReviewEntry: StudioPlanReviewEntrySchema,
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
@@ -11006,6 +11153,7 @@ export const contractSchemas = {
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
   StudioProjectFilePatch: StudioProjectFilePatchSchema,
   StudioProjectRename: StudioProjectRenameSchema,
+  StudioProjectReplay: StudioProjectReplaySchema,
   StudioProjectRevision: StudioProjectRevisionSchema,
   StudioProjectSnapshot: StudioProjectSnapshotSchema,
   ProjectValueEdit: ProjectValueEditSchema,
@@ -11068,6 +11216,7 @@ export interface ContractTypeMap {
   JobOutcome: JobOutcome;
   JobProgress: JobProgress;
   JobReceipt: JobReceipt;
+  StudioSubmissionActor: StudioSubmissionActor;
   StudioActivityJob: StudioActivityJob;
   StudioEventReset: StudioEventReset;
   StudioEventWatermark: StudioEventWatermark;
@@ -11088,6 +11237,8 @@ export interface ContractTypeMap {
   StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedTrainRuns: StudioSavedTrainRuns;
+  StudioPlanRequestAddress: StudioPlanRequestAddress;
+  StudioPlanReviewEntry: StudioPlanReviewEntry;
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioSubmissionItem: StudioSubmissionItem;
@@ -11141,6 +11292,7 @@ export interface ContractTypeMap {
   StudioProjectPatchBatch: StudioProjectPatchBatch;
   StudioProjectFilePatch: StudioProjectFilePatch;
   StudioProjectRename: StudioProjectRename;
+  StudioProjectReplay: StudioProjectReplay;
   StudioProjectRevision: StudioProjectRevision;
   StudioProjectSnapshot: StudioProjectSnapshot;
   ProjectValueEdit: ProjectValueEdit;

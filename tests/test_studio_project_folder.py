@@ -15,6 +15,7 @@ from pydantic import Field, JsonValue
 import pytest
 
 from feedbax._atomic import write_bytes_atomic
+from feedbax import project_folder
 from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioJobEventHistory
@@ -32,7 +33,6 @@ from feedbax.plugins.bootstrap import BootstrapState, PluginProvenance
 from feedbax.studio.authoring import authoring_surface, project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
-from feedbax.web.services import project_folder
 from web.e2e.studio.fixtures.canonical_train import legacy_graph_files
 from web.e2e.studio.fixtures.reaching_project import reaching_project
 
@@ -1466,7 +1466,8 @@ def test_project_and_authored_paths_cannot_point_outside_the_root(study, tmp_pat
     assert client.get(_URL).status_code == 422
 
 
-def test_existing_event_stream_observes_an_actual_external_file_edit(study, monkeypatch):
+@pytest.mark.parametrize("through_core", [False, True], ids=["raw-text", "core-edit"])
+def test_existing_event_stream_observes_an_external_edit(study, monkeypatch, through_core):
     root, client = study
     before = load_text_project(root).revision
     monkeypatch.setattr(jobs, "_FOLDER_OBSERVATION_INTERVAL", 0)
@@ -1477,10 +1478,19 @@ def test_existing_event_stream_observes_an_actual_external_file_edit(study, monk
         def events(self, *, after, projects, wait, machine):
             self.calls += 1
             if self.calls == 2:
-                path = root / "documents/model.json"
-                document = json.loads(path.read_bytes())
-                document["payload"]["nodes"]["gain"]["params"]["gain"] = 11
-                write_bytes_atomic(path, json.dumps(document).encode())
+                if through_core:
+                    from feedbax.contracts.studio_project import StudioProjectPatch
+
+                    project_folder.ProjectFolder(root.parent).patch(root.name, StudioProjectPatch.model_validate({
+                        "revision": before,
+                        "address": {"kind": "document", "id": "model"},
+                        "patches": [{"op": "replace", "path": _GAIN, "value": 11}],
+                    }))
+                else:
+                    path = root / "documents/model.json"
+                    document = json.loads(path.read_bytes())
+                    document["payload"]["nodes"]["gain"]["params"]["gain"] = 11
+                    write_bytes_atomic(path, json.dumps(document).encode())
             if self.calls > 2:
                 raise HostError("unavailable", "Stream ended")
             return 0, StudioJobEventHistory(cursor=0, oldest_cursor=0, events=[])

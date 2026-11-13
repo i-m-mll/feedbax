@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import ConfigDict, Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
+
+
+if TYPE_CHECKING:
+    from feedbax.contracts.project_resolution import ProjectDiagnostic
 
 
 Token = Annotated[str, Field(min_length=1, max_length=128)]
@@ -184,6 +188,34 @@ class StudioProjectWindowMapProblem(StrictModel):
     document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
     model_address: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
 
+    address: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    layer: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @classmethod
+    def from_diagnostic(cls, diagnostic: ProjectDiagnostic) -> StudioProjectWindowMapProblem:
+        from feedbax.contracts.project_io import PROJECT_DECLARATION_FILENAME
+
+        source = f"steps/{diagnostic.step}.json" if diagnostic.step else PROJECT_DECLARATION_FILENAME
+        problem = cls.model_validate(diagnostic, from_attributes=True)
+        problem.address = source
+        problem.layer = diagnostic.layer
+        return problem
+
+
+class StudioPlanRequestAddress(StrictModel):
+    key: StudioSavedTrainKey
+    element: str | None = None
+
+
+class StudioPlanRequest(StudioPlanRequestAddress):
+    request_id: str
+
+
+class StudioPlanReviewEntry(StudioPlanRequest):
+    state: Literal["unchanged", "changed", "added", "removed"]
+    path: str | None = None
+    upstream: StudioPlanRequestAddress | None = None
+
 
 class StudioProjectWindowMapFigure(StrictModel):
     key: StudioSavedTrainKey
@@ -207,6 +239,7 @@ class StudioProjectWindowMap(StrictModel):
     rows: list[StudioProjectWindowMapRow]
     edges: list[StudioProjectWindowMapEdge]
     problems: list[StudioProjectWindowMapProblem]
+    requests: list[StudioPlanRequest] = Field(default_factory=list)
     evaluations: list[StudioSavedEvaluationRow] = Field(default_factory=list)
     analysis_elements: list[StudioProjectWindowMapElement] = Field(default_factory=list, exclude_if=lambda value: not value)
     analysis_figures: list[StudioProjectWindowMapFigure] = Field(default_factory=list, exclude_if=lambda value: not value)
@@ -216,6 +249,7 @@ class StudioSavedTrainRuns(StrictModel):
     revision: str
     rows: list[StudioSavedTrainRow]
     window_map: StudioProjectWindowMap | None = None
+    review: list[StudioPlanReviewEntry] | None = None
 
 
 class StudioSavedTrainRunRequest(StrictModel):
@@ -230,6 +264,13 @@ class JobOutcome(StrictModel):
     receipt: JobReceipt | None = None
     signal: int | None = None
     exit: int | None = None
+
+
+class StudioSubmissionActor(StrictModel):
+    model_config = ConfigDict(frozen=True)
+
+    client: Literal["studio", "cli"]
+    label: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioActivityJob(StrictModel):
@@ -252,6 +293,7 @@ class StudioActivityJob(StrictModel):
     outcome: JobOutcome | None = None
     earlier_definition: bool = False
     seen: bool = False
+    actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioLocalSession(StrictModel):
@@ -278,6 +320,7 @@ class StudioJobSubmission(StrictModel):
     token: str
     project_id: str
     items: list[StudioSubmissionItem]
+    actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioJobStopRequest(StrictModel):

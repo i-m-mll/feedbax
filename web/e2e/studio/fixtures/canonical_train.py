@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -303,6 +304,13 @@ def observe_history(home: Path, project: str, revision: str):
     return output
 
 
+def run_saved_cli(home: str, project_id: str, label: str) -> None:
+    paths = AppPaths.resolve(instance_root=Path(home))
+    paths.configure_studio(desktop=False)
+    project = paths.web / "projects" / project_id
+    os.execv(sys.executable, [sys.executable, "-m", "feedbax.cli", "run", str(project), "train", "--label", label])
+
+
 if __name__ == "__main__":
     action, *arguments = sys.argv[1:]
     if action == "files" and not arguments:
@@ -311,6 +319,8 @@ if __name__ == "__main__":
         print(json.dumps([*ordinary_files("2"), successor_file()]))
     elif action == "ordinary-files":
         print(json.dumps(ordinary_files(*arguments)))
+    elif action == "run-saved-cli":
+        run_saved_cli(*arguments)
     elif action == "seed-variants":
         print(json.dumps(seed_variants(*arguments)))
     elif action == "history-files" and not arguments:

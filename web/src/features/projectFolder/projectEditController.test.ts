@@ -9,6 +9,7 @@ import { projectWindowPlan, savedRunId } from './projectWindowPlan';
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
 const task: AuthoredFileAddress = { kind: 'document', id: 'task' };
 const hex = (number: number) => number.toString(16).padStart(64, '0');
+const encoded = (value: unknown) => btoa(JSON.stringify(value));
 const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
 const initial: StudioProjectSnapshot = {
   project_id: 'reach',
@@ -16,7 +17,11 @@ const initial: StudioProjectSnapshot = {
   presentation_revision: hex(2),
   semantic_root: hex(3),
   presentation: null,
-  file_revisions: [{ address: model, revision: hex(4) }, { address: task, revision: hex(5) }],
+  declaration: { revision: hex(3), data: encoded({}), authored_revision: hex(3) },
+  file_revisions: [
+    { address: model, revision: hex(4), data: encoded({ schema: 'graph', payload: { value: 1 } }) },
+    { address: task, revision: hex(5), data: encoded({ schema: 'task', payload: { value: 1 } }) },
+  ],
   project: { documents: {
     model: { schema: 'graph', payload: { value: 1 } },
     task: { schema: 'task', payload: { value: 1 } },
@@ -27,20 +32,29 @@ function fixture(settleMs = 400, start = initial) {
   let current = start;
   let name = 'reach';
   let sequence = 6;
+  const digests = new Map(start.file_revisions.flatMap(({ data, revision }) => data == null ? [] : [[data, revision] as const]));
+  function fileDigest(data: string) {
+    const known = digests.get(data);
+    if (known) return known;
+    const revision = hex(sequence++);
+    digests.set(data, revision);
+    return revision;
+  }
   const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
-  const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[]) => {
+  const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[], indent?: number) => {
     if (address.kind === 'presentation') {
       const { project } = applyAuthoredEdits({ ...current.project, presentation: current.presentation }, address, edits);
       current = { ...current, presentation: project.presentation ?? null, presentation_revision: hex(sequence++) };
       return current;
     }
     const { project } = applyAuthoredEdits(current.project, address, edits);
+    const data = btoa(JSON.stringify(project.documents?.[address.id], null, indent));
     current = {
       ...current,
       project,
       revision: hex(sequence++),
       file_revisions: current.file_revisions.map((entry) => addressKey(entry.address) === addressKey(address)
-        ? { ...entry, revision: hex(sequence++) } : entry),
+        ? { ...entry, revision: fileDigest(data), data } : entry),
     };
     return current;
   };
@@ -54,6 +68,25 @@ function fixture(settleMs = 400, start = initial) {
     for (const { address, patches } of files) external(address, patches);
     return current;
   });
+  const replay = vi.fn<ProjectEditTransport['replay']>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/history/replay', 'Changed', { status: 409 });
+    const documents = { ...current.project.documents };
+    const revisions = new Map(current.file_revisions.map((file) => [addressKey(file.address), file]));
+    for (const { address, before, after } of body.files) {
+      if (address.kind !== 'document') throw new Error('Expected a document in the fixture');
+      const key = addressKey(address);
+      if (before !== (revisions.get(key)?.revision ?? null)) throw new Error('Wrong file preimage');
+      if (after === null) {
+        delete documents[address.id];
+        revisions.delete(key);
+      } else {
+        documents[address.id] = JSON.parse(atob(after));
+        revisions.set(key, { address, revision: fileDigest(after), data: after });
+      }
+    }
+    current = { ...current, project: { ...current.project, documents }, revision: hex(sequence++), file_revisions: [...revisions.values()] };
+    return current;
+  });
   const externalRename = (next: string) => {
     name = next;
     current = { ...current, revision: hex(sequence++) };
@@ -65,8 +98,8 @@ function fixture(settleMs = 400, start = initial) {
     return externalRename(body.name);
   });
   const create = vi.fn<ProjectEditTransport['create']>();
-  const editor = new ProjectEditController(document(), { read, write, rename, create }, settleMs);
-  return { editor, write, read, rename, create, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
+  const editor = new ProjectEditController(document(), { read, write, replay, rename, create }, settleMs);
+  return { editor, write, replay, read, rename, create, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -241,7 +274,7 @@ it('retains history for an unchanged file and offers both versions for dirty out
   await editor.flush();
   editor.observe(external(task, [value(4)]));
   await editor.flush();
-  expect(editor.getSnapshot().undoName).toBe('Model value');
+  expect(editor.getSnapshot().undoName).toBe('Outside Change');
   editor.edit(task, 'New local value', [value(6)]);
   const outside = external(task, [value(5)]);
   editor.observe(outside);
@@ -252,6 +285,105 @@ it('retains history for an unchanged file and offers both versions for dirty out
   await editor.keep('disk');
   expect(editor.getSnapshot().draft).toEqual(outside.project);
   expect(editor.getSnapshot().undoName).toBe('Model value');
+  editor.dispose();
+});
+
+it('coalesces observed revisions across files and stops the burst at an undo or a user edit', async () => {
+  const { editor, external, current, replay } = fixture();
+  editor.edit(task, 'Local Task', [value(2)]);
+  await editor.flush();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  editor.observe(external(model, [value(4)]));
+  const outside = await editor.flush();
+  expect(editor.getSnapshot().undoName).toBe('Outside Change');
+
+  await editor.undo();
+  const request = replay.mock.calls[0][1];
+  expect(request.revision).toBe(outside);
+  expect(request.files.map(({ address, after }) => [address.id, after]).sort()).toEqual([
+    ['model', encoded({ schema: 'graph', payload: { value: 1 } })],
+    ['task', encoded({ schema: 'task', payload: { value: 2 } })],
+  ]);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Local Task', redoName: 'Outside Change' });
+  await editor.redo();
+  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+
+  editor.edit(task, 'Second Local Task', [value(5)]);
+  await editor.flush();
+  editor.observe(external(task, [value(6)]));
+  await editor.flush();
+  await editor.undo();
+  await editor.flush();
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Second Local Task', redoName: 'Outside Change' });
+  expect(current().project.documents?.task?.payload).toEqual({ value: 5 });
+  editor.dispose();
+});
+
+it('replays exact outside bytes after local Undo canonicalizes the same authored content', async () => {
+  const { editor, external, current, replay } = fixture();
+  const outside = external(task, [value(3)], 4);
+  editor.observe(outside);
+  await editor.flush();
+  editor.edit(task, 'Local Task', [value(5)]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  const canonical = current().file_revisions.find(({ address }) => address.id === task.id)!;
+  expect(canonical.revision).not.toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.revision);
+
+  await editor.undo();
+  expect(replay.mock.calls[0][1].files[0].before).toBe(canonical.revision);
+  expect(current().project.documents?.task?.payload).toEqual({ value: 1 });
+  await editor.redo();
+  expect(current().file_revisions.find(({ address }) => address.id === task.id)?.data)
+    .toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.data);
+  editor.dispose();
+});
+
+it('drops a net-zero outside burst and restores the prior redo branch', async () => {
+  const { editor, external, write } = fixture();
+  editor.edit(task, 'Local Task', [value(2)]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Outside Change', redoName: null });
+  editor.observe(external(task, [value(1)]));
+  await editor.flush();
+  expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Local Task' });
+  expect(write).toHaveBeenCalledTimes(2);
+  editor.dispose();
+});
+
+it('moves a replay acknowledged by exact observed file digests after losing its response', async () => {
+  const { editor, external, replay, current } = fixture();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  const perform = replay.getMockImplementation()!;
+  replay.mockImplementationOnce(async (...args) => {
+    await perform(...args);
+    throw new ApiRequestError('network', '/history/replay', 'Response lost');
+  });
+  await editor.undo();
+  expect(replay).toHaveBeenCalledTimes(1);
+  expect(current().project).toEqual(initial.project);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Outside Change' });
+  await editor.redo();
+  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+  editor.dispose();
+});
+
+it('rejects a stale outside replay and shows the newer observation', async () => {
+  const { editor, external, replay, current } = fixture();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  external(task, [value(4)]);
+  await expect(editor.undo()).rejects.toMatchObject({ status: 409 });
+  expect(replay).toHaveBeenCalledTimes(1);
+  expect(editor.getSnapshot()).toMatchObject({ saved: current(), pending: 0, undoName: 'Outside Change', redoName: null });
+  expect(current().project.documents?.task?.payload).toEqual({ value: 4 });
   editor.dispose();
 });
 
@@ -279,8 +411,13 @@ it('checks a structural edit guard against outside dependencies on undo and Keep
   await saved.editor.flush();
   saved.editor.observe(saved.external(task, [value(5)]));
   await saved.editor.flush();
-  expect(() => saved.editor.undo()).toThrow('depends on the existing model layout');
-  expect(saved.editor.getSnapshot()).toMatchObject({ pending: 0, undoName: 'Change layout' });
+  expect(saved.editor.getSnapshot().undoName).toBe('Outside Change');
+  await saved.editor.undo();
+  await saved.editor.flush();
+  expect(saved.editor.getSnapshot().undoName).toBe('Change layout');
+  await saved.editor.redo();
+  await saved.editor.flush();
+  expect(saved.editor.getSnapshot()).toMatchObject({ pending: 0, undoName: 'Outside Change' });
   saved.editor.dispose();
 
   const pending = fixture();

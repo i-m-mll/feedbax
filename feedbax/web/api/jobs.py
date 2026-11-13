@@ -22,9 +22,6 @@ from feedbax.contracts.jobs import (
     StudioJobSubmission,
     StudioLocalSession,
     StudioSavedEvaluationReplayRequest,
-    StudioSavedTrainAttempt,
-    StudioSavedTrainKey,
-    StudioSavedTrainRow,
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
 )
@@ -61,30 +58,7 @@ def saved_train_runs(
             project_id, revision=revision,
             stopped_checkpoint_jobs=(stopped_checkpoint_job,) if stopped_checkpoint_job is not None else (),
         )
-        result = StudioSavedTrainRuns(
-            revision=view.settled.revision,
-            rows=[
-                StudioSavedTrainRow(
-                    key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
-                    label=run.label or run.key.row,
-                    request_id=run.request_id,
-                    attempts=[
-                        StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
-                        for attempt in view.attempts_by_run.get(run.key, ())
-                    ],
-                    status=view.history[run.key].status,
-                    reason=view.history[run.key].reason,
-                    result=view.history[run.key].result,
-                    previous=view.history[run.key].previous,
-                    change=view.history[run.key].change,
-                )
-                for run in view.settled.plan.runs
-                if run.kind == "train"
-            ],
-        )
-        if window_map:
-            result.window_map = service.window_map(view)
-        return result
+        return service.response(view, include_window_map=window_map)
 
     try:
         return _project_response(response, read)

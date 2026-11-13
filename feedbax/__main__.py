@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import TypeAdapter
 
-from feedbax.bin import project_plan as project_plan_cli
+from feedbax.bin import project_commands
 from feedbax.bin import store as store_cli
 from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
@@ -43,7 +43,6 @@ from feedbax.governance.science_surface import (
     build_parser as build_science_surface_parser,
     run_cli as run_science_surface_cli,
 )
-from feedbax.plugins.composition import compose_application
 from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.executor import (
     prepare_training_manifest_metadata_projection,
@@ -357,25 +356,10 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    project_plan_cli.configure_parser(subparsers.add_parser(
-        "plan", prog="feedbax plan", help="Compile an authored text project for review.",
-    ))
-    project_plan_cli.configure_status_parser(subparsers.add_parser(
-        "status", prog="feedbax status", help="Show saved project run and element states.",
-    ))
+    project_commands.register_engine_commands(subparsers)
     store_cli.configure_parser(subparsers.add_parser(
         "store", prog="feedbax store", help="Inspect the declared project Store.",
     ))
-    describe_parser = subparsers.add_parser(
-        "describe", prog="feedbax describe", help="Show authored schemas and registry declarations.",
-    )
-    describe_parser.add_argument(
-        "selector", nargs="?",
-        help="Family, step kind or registry. Qualify with family:, step: or registry: as needed.",
-    )
-    describe_parser.add_argument(
-        "--plugin", action="append", help="Load a plugin module's declarations. May be repeated.",
-    )
     studio_migration = subparsers.add_parser(
         "migrate-project", prog="feedbax migrate-project",
         help="Convert a saved Studio workspace into a new project folder.",
@@ -749,12 +733,13 @@ def engine_command_names() -> tuple[str, ...]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     command_started_at = time.perf_counter()
+    command_line = sys.argv[1:] if argv is None else argv
+    if command_line and command_line[0] in project_commands.PROJECT_COMMANDS:
+        name, *rest = command_line
+        if not project_commands.PROJECT_COMMANDS[name].delegated:
+            return project_commands.run_project_command(name, rest)
     parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.command == "plan":
-        return project_plan_cli.run(args)
-    if args.command == "status":
-        return project_plan_cli.run_status(args)
+    args = parser.parse_args(command_line)
     if args.command == "store":
         return store_cli.run(args)
     if args.command == "migrate-project":
@@ -811,10 +796,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             root=args.root, policy=args.policy, baseline_ref=args.baseline_ref
         )
     modules = tuple(getattr(args, "plugin", None) or ())
-    if args.command == "describe":
-        from feedbax.bin.describe import describe
-
-        return describe(asyncio.run(compose_application(modules=modules)), args.selector)
     from feedbax.plugins.retained import compose_retained_application
 
     bootstrap_state = asyncio.run(compose_retained_application(modules=modules))

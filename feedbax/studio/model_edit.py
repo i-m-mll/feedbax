@@ -441,10 +441,10 @@ class ModelEditDraft:
         if item is None:
             raise _Refusal(address, "Attachment does not exist")
         if destination.element == element.parent:
-            self.set_attachment(ChangeModelAttachment(address=address, attachment=item, after=command.after))
+            self.set_attachment(ChangeModelAttachment(op="change", address=address, attachment=item, after=command.after))
             return
         self.remove(address)
-        self.set_attachment(AddModelAttachment(owner=destination, attachment=item, after=command.after))
+        self.set_attachment(AddModelAttachment(op="add", owner=destination, attachment=item, after=command.after))
 
     def insert_component(self, command: edits.InsertComponentOnWire) -> None:
         address = command.address

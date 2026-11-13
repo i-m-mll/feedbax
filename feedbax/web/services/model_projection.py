@@ -5,20 +5,14 @@ from collections.abc import Iterator
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.resolution import resolve_graph_parameters
-from feedbax.compiler.trial_execution import resolve_python_task
-from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.graph import StudioTaskBindingSpec, StudioTaskDataSpec
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
-from feedbax.contracts.model_document import ModelDocument, SignalType
+from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
-from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection, ModelProjectionRequest, ModelTaskSignal
-from feedbax.contracts.project_plan import RunKey, SelectedRunDefinition
-from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
-from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
 from feedbax.expression_check import references
 from feedbax.objectives.service import loss_service
 from feedbax.studio.schema import _enumerate_graph_ports
-from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
 
 
 def _objective_selectors(value: object) -> Iterator[str]:
@@ -48,15 +42,6 @@ def _objective_selectors(value: object) -> Iterator[str]:
                     yield selector
 
 
-def _signal(item: StudioTaskDataSpec) -> ModelTaskSignal:
-    shape = item.expected_shape
-    if shape and shape[0] == "time":
-        shape = shape[1:]
-    return ModelTaskSignal(
-        id=item.id, label=item.label, type=SignalType(base=item.dtype, shape=shape, unit=item.units),
-    )
-
-
 def _port(document, composites, component, direction, port):
     return ModelAddress(
         document=document, composites=composites, element=PortElement(
@@ -65,58 +50,9 @@ def _port(document, composites, component, direction, port):
     )
 
 
-def selected_model(definition: SelectedRunDefinition, document: str) -> object:
-    managed = definition.payload.get("trial_documents")
-    path = "payload.trial_documents.model" if isinstance(managed, dict) else "payload.graph"
-    if definition.document_ids.get(path) != document or definition.document_pointers.get(path):
-        return None
-    return managed.get("model") if isinstance(managed, dict) else definition.payload.get("graph")
-
-
-def _selected(folders: ProjectFolderService, project_id: str, body: ModelProjectionRequest):
-    key = RunKey(body.run.variant, body.run.step, body.run.row)
-    plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
-    definition = plan.selected_definitions.get(key)
-    if definition is None or (model := selected_model(definition, body.document)) is None:
-        raise ProjectFolderInvalid("The selected run does not use this Model")
-    managed = definition.payload.get("trial_documents")
-    objective = definition.payload.get("objective")
-    if isinstance(managed, dict):
-        if managed.get("python_task") is not None:
-            selection = PythonTaskSelection.model_validate(managed["python_task"])
-            template = resolve_python_task(selection, folders.python_tasks or builtin_python_tasks())
-            signals = {} if isinstance(template, tuple) else template.signals
-        else:
-            task = TaskDocument.model_validate(managed["task"])
-            signals = {signal.name: signal.type for signal in task.signals}
-        binding = StudioTaskBindingSpec(exposed_data=[
-            StudioTaskDataSpec(
-                id=name, label=name, kind="signal", path=name,
-                dtype={"integer": "int", "real": "float", "boolean": "bool"}[type_.base],
-                expected_shape=["time", *type_.shape], bindable=True,
-                units=next((name for name, unit in UNITS.items()
-                            if name and name != "st" and unit.scale == 1 and unit.dimensions == type_.dimensions), None),
-            ) for name, type_ in signals.items()
-        ])
-        objective = managed.get("objective")
-    else:
-        binding = StudioTaskBindingSpec.model_validate(definition.payload.get("task_binding_spec") or {})
-    overrides = managed.get("input_overrides", {}) if isinstance(managed, dict) else {}
-    return ModelDocument.model_validate(model), binding, objective, isinstance(managed, dict), overrides
-
-
-def selected_task_signal(folders: ProjectFolderService, project_id: str, body: ModelProjectionRequest, signal: str) -> ModelTaskSignal:
-    _, task, _, _, _ = _selected(folders, project_id, body)
-    item = next((item for item in task.exposed_data if item.bindable and item.id == signal), None)
-    if item is None:
-        raise ProjectFolderInvalid("The selected task does not expose this signal")
-    projected = _signal(item)
-    return projected.model_copy(update={"type": projected.type.model_copy(update={"base": None})})
-
-
 def model_projection(folders, project_id, body, components):
-    model, task, objective, managed, overrides = _selected(folders, project_id, body)
-    task_signals = tuple(_signal(item) for item in task.exposed_data if item.bindable)
+    model, task, objective, managed, overrides = selected_model_and_task(folders, project_id, body)
+    task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable)
     names = {signal.id for signal in task_signals}
     supplied = {port.name for port in model.ports.inputs if overrides.get(port.name, port.name) in names}
     try:

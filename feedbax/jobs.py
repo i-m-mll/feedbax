@@ -39,6 +39,7 @@ from feedbax.contracts.jobs import (
     StudioJobStopItem,
     StudioJobSubmission,
     StudioLocalSession,
+    StudioSubmissionActor,
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
 )
@@ -296,6 +297,7 @@ class JobService(PlanJobReader):
         run_keys: Sequence[RunKey],
         token: str,
         checkpoint_catalog: tuple[int, ...] = (),
+        actor: StudioSubmissionActor = StudioSubmissionActor(client="studio"),
     ) -> StudioJobSubmission:
         """Admit selected rows from a server-issued saved Plan."""
         selected = {
@@ -452,6 +454,7 @@ class JobService(PlanJobReader):
                         )
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
+                "actor": actor.model_dump(mode="json"),
             }
             if runs and not evaluate:
                 requests = {
@@ -741,7 +744,10 @@ class JobService(PlanJobReader):
             result = self._admit(
                 token,
                 [AdmissionItem(run_key=key, job=job)],
-                {"project": row["project"], "continues": job_id, "runs": {}},
+                {
+                    "project": row["project"], "continues": job_id, "runs": {},
+                    "actor": StudioSubmissionActor(client="studio").model_dump(mode="json"),
+                },
             )
             previous = self._submission_for_action(result, project=row["project"], continues=job_id)
 
@@ -884,10 +890,16 @@ class JobService(PlanJobReader):
             [_seen_key(row["id"]) for row in rows if row["state"] not in _LIVE_STATES]
         )
         current: dict[tuple[str, str], str] = {}
+        job_ids = {row["id"] for row in rows}
+        actors: dict[str, StudioSubmissionActor | None] = {}
         for submission in reversed(self.host.submissions(project=project)):
             if not _is_studio_submission(submission):
                 continue
             record = submission["record"]
+            for item in submission["items"]:
+                job_id = item.get("job_id")
+                if job_id in job_ids and item["disposition"] == "admitted":
+                    actors[job_id] = _submission_actor(record)
             for run_key, run in record["runs"].items():
                 current.setdefault((record["project"], run_key), run["request_id"])
         result = {}
@@ -899,6 +911,7 @@ class JobService(PlanJobReader):
                 receipt_intact=row["state"] != "succeeded" or self._receipt_matches(row),
                 seen=_seen_key(row["id"]) in seen,
                 earlier_definition=current.get(key, request_id) != request_id,
+                actor=actors.get(row["id"]),
             )
         return result
 
@@ -943,6 +956,12 @@ def _is_studio_submission(submission: dict[str, Any]) -> bool:
     )
 
 
+def _submission_actor(record: dict[str, Any]) -> StudioSubmissionActor | None:
+    if (actor := record.get("actor")) is not None:
+        return StudioSubmissionActor.model_validate(actor)
+    return None
+
+
 def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
     record = response["record"]
     items = response["items"]
@@ -955,6 +974,7 @@ def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
         id=response["id"],
         token=response["token"],
         project_id=record["project"],
+        actor=_submission_actor(record),
         items=[
             StudioSubmissionItem(
                 run_key=item["run_key"],
@@ -1191,6 +1211,7 @@ def _project_activity(
     receipt_intact: bool,
     seen: bool,
     earlier_definition: bool,
+    actor: StudioSubmissionActor | None,
 ) -> StudioActivityJob:
     state = job["state"]
     phase = (job.get("phase") or {}).get("phase")
@@ -1216,6 +1237,7 @@ def _project_activity(
         allowed_actions=actions,
         seen=seen,
         earlier_definition=earlier_definition,
+        actor=actor,
         progress=progress,
         outcome=JobOutcome.model_validate(
             {key: value for key, value in outcome.items() if key in JobOutcome.model_fields}
@@ -1225,6 +1247,6 @@ def _project_activity(
         **{
             key: value
             for key, value in job["data"].items()
-            if key in StudioActivityJob.model_fields
+            if key in StudioActivityJob.model_fields and key != "actor"
         },
     )

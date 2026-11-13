@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  createProjectFolder, openProjectFolder, patchProjectFolder, renameProjectFolder, writeProjectPresentation,
+  createProjectFolder, openProjectFolder, patchProjectFolder, renameProjectFolder, replayProjectHistory, writeProjectPresentation,
 } from '@/api/projectFolders';
 import type { StudioProjectSnapshot } from '@/generated/studioContracts';
 
@@ -14,7 +14,8 @@ function snapshot(): StudioProjectSnapshot {
     presentation_revision: presentationRevision,
     semantic_root: 'c'.repeat(64),
     presentation: {},
-    file_revisions: [{ address: { kind: 'document', id: 'model' }, revision }],
+    declaration: { revision, data: 'e30=', authored_revision: revision },
+    file_revisions: [{ data: 'e30=', address: { kind: 'document', id: 'model' }, revision }],
     project: {
       documents: {
         model: {
@@ -74,6 +75,16 @@ describe('Studio project folder HTTP contracts', () => {
       method: 'POST', body: JSON.stringify({ revision, name: 'renamed' }),
     }));
     await expect(openProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
+  });
+
+  it('replays one revision-bound authored history transaction', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json(snapshot()));
+    vi.stubGlobal('fetch', fetch);
+    const body = { revision, files: [{ address: { kind: 'document' as const, id: 'model' }, before: revision, after: 'e30=' }] };
+    expect(await replayProjectHistory('reaches', body)).toEqual(snapshot());
+    expect(fetch).toHaveBeenCalledWith('/api/projects/reaches/history/replay', expect.objectContaining({
+      method: 'POST', body: JSON.stringify(body),
+    }));
   });
 
   it('rejects an unvalidated write operation before sending it', async () => {

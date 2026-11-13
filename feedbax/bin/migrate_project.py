@@ -39,7 +39,7 @@ from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
 from feedbax.contracts.training import ObjectiveSlotSpec, TaskSpec, TrainingSpec
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.studio.training_requests import StudioTrainingLoweringError, studio_graph_training_settings
-from feedbax.web.services.project_folder import write_new_project_folder
+from feedbax.project_folder import write_new_project_folder
 
 
 _STAGE_KINDS: dict[str, StepKind] = {
