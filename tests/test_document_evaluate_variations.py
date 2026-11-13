@@ -21,7 +21,7 @@ from feedbax.contracts.objective_document import ObjectiveTerm
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.rollout import RolloutParameters
+from feedbax.contracts.rollout import ResolvedRolloutBinding, RolloutParameters
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -423,6 +423,113 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     assert [(run.key, run.request_id) for run in restored.runs] == [
         (run.key, run.request_id) for run in initial.runs
     ]
+
+
+def _curl_addition():
+    return {
+        "curl": {"path": "graph.nodes.curl", "op": "add", "value": {
+            "type": "feedbax.CurlField", "params": {"active": True, "scale": 2.0},
+            "input_ports": ["effector", "force"], "output_ports": ["force"],
+        }},
+        "insert": {"path": "graph.wires.plant-wire.target_node", "op": "replace", "value": "curl"},
+        "drive": {"path": "graph.wires.curl-drive", "op": "add", "value": {
+            "source_node": "curl", "source_port": "force", "target_node": "plant", "target_port": "force",
+        }},
+        "feedback": {"path": "graph.wires.curl-feedback", "op": "add", "value": {
+            "source_node": "plant", "source_port": "effector", "target_node": "curl", "target_port": "effector",
+            "temporality": "recurrent", "recurrent_initializer": {
+                "kind": "state_output", "model_state_sample": True,
+                "source_node": "plant", "source_port": "effector",
+            },
+        }},
+    }
+
+
+def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host, tmp_path, authored):  # noqa: F811
+    registry = new_application_registry_bundle()
+    folders = ProjectFolderService(
+        tmp_path / "projects", components=registry.components, functions=registry.expression_functions,
+    )
+    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    raw = document_project(authored, evaluation=True)
+    steps = raw["steps"]
+    selected = [raw["documents"]["task"]["payload"]["validation_trials"][0]]
+    raw["documents"]["task"]["payload"]["validation_trials"] = selected
+
+    def step(variation):
+        result = deepcopy(steps["baseline"])
+        result["base"]["inline"]["params"]["variation"] = variation
+        return result
+
+    steps["curl"] = step(_curl_addition())
+    steps["learned"] = step({"kernel": {
+        "path": "graph.subgraphs.wrapper.subgraphs.controller.nodes.cell.params.input_kernel",
+        "op": "add", "value": [[0.0]],
+    }})
+    steps["retired"] = step({"mass": {"path": "nodes.plant.params.mass", "op": "replace", "value": 2.0}})
+    project = "curl-field"
+    _save_project(folders, project, Project.model_validate(raw))
+    snapshot = folders.read_plan(project, revision=None)
+    problems = {item.step: item for item in snapshot.plan.diagnostics}
+    assert set(problems) == {"learned", "retired"}, problems
+    assert problems["learned"].path == "/params/variation/kernel"
+    assert "preserves retained learned values" in problems["learned"].detail
+    assert problems["retired"].path == "/params/variation/mass"
+    view = read_settled_project_plan(snapshot, jobs)
+    rows = {row.key.step: row for row in view.status_rows()}
+    assert rows["learned"].status == rows["retired"].status == "cannot_run"
+    refused = jobs.admit_plan(folders, snapshot, run_keys=(rows["learned"].key,), token="learned")
+    assert refused.items[0].disposition == "rejected"
+    assert not host.jobs()
+
+    keys = {step: RunKey("default", step, "default") for step in ("train", "baseline", "curl")}
+    (train,) = jobs.admit_plan(folders, snapshot, run_keys=(keys["train"],), token="train").items
+    evaluations = jobs.admit_plan(
+        folders, snapshot, run_keys=(keys["baseline"], keys["curl"]), token="evaluate",
+    ).items
+    assert train.disposition == "admitted"
+    assert all(item.disposition == "admitted" for item in evaluations)
+
+    def settled(job_id):
+        row = wait_until(lambda: job_row(host, job_id, "succeeded") or job_row(host, job_id, "failed"), timeout=30)
+        assert row["state"] == "succeeded", row["outcome"]
+        return row
+
+    checkpoint = settled(train.job_id)["outcome"]["completion"]
+    published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
+    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    assert slot is not None and "curl" not in slot.graph.nodes
+    results = {}
+    for step, item in zip(("baseline", "curl"), evaluations, strict=True):
+        (edge,) = settled(item.job_id)["edges"]
+        assert edge["binding"]["completion"] == checkpoint
+        result = jobs.read_evaluation_result(project=project, store=snapshot.store_path, job_id=item.job_id)
+        metadata = result._manifest().metadata
+        binding = ResolvedRolloutBinding.model_validate(metadata["effective_binding"])
+        assert binding.digest() == metadata["effective_binding_sha256"]
+        assert binding.seed == 731 and binding.trial_policy == "paired"
+        (member,) = binding.members
+        assert member.model_tree == slot.tree.descriptor.sha256 and member.coordinate == 2
+        with result.open_states() as states:
+            assert member.trials == tuple(states.data("trial"))
+            results[step] = (
+                member, states.data("/v1/model/state/plant/effector~1position")[0, 0],
+                states.data("/v1/model/state/plant/effector~1velocity")[0, 0],
+                states.data("/v1/model/state/wrapper/controller/cell/hidden")[0, 0],
+            )
+    baseline, position, velocity, hidden = results["baseline"]
+    curl, varied_position, varied_velocity, varied_hidden = results["curl"]
+    assert baseline.task == curl.task and baseline.model != curl.model
+    np.testing.assert_array_equal(hidden, varied_hidden)
+    np.testing.assert_array_equal(position[:, :2], varied_position[:, :2])
+    np.testing.assert_array_equal(velocity[:, :2], varied_velocity[:, :2])
+    assert np.max(np.abs(velocity[:, 1])) > 0
+    curl_acceleration = 2.0 * velocity[:, 1, ::-1] * np.array([-1.0, 1.0])
+    np.testing.assert_allclose(
+        varied_velocity[:, 2] - velocity[:, 2], curl_acceleration * slot.graph.nodes["plant"].params["dt"],
+        rtol=2e-4, atol=1e-7,
+    )
+    assert np.max(np.abs(position - varied_position)) > 1e-4
 
 
 def test_native_subject_refuses_before_backend_realization():

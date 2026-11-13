@@ -10,6 +10,7 @@ from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
 from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
@@ -18,6 +19,7 @@ from feedbax.contracts.manifest import (
     normalize_manifest_spec_payloads,
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
+from feedbax.contracts.rollout import ResolvedRolloutBinding, ResolvedRolloutMember
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
@@ -87,7 +89,6 @@ def _rollouts(
 
     from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
     from feedbax.contracts.authored_canonical import canonical_sha256
-    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.rollout import trial_indices
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.dataset import Dataset, Variable
@@ -146,6 +147,20 @@ def _rollouts(
         layout = bind_raw_state(graph, effective_graph)
     except (ModelCheckpointError, StateLayoutError) as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
+    model = sha256(canonical_json_v2_bytes({
+        "graph": effective_graph.model_dump(mode="json"),
+        "key_schedule": paired.executable.resolved.key_schedule.model_dump(mode="json"),
+        "source_overrides": variant.source_overrides,
+    })).hexdigest()
+    task = sha256(canonical_json_v2_bytes({
+        "source": paired.task_source.model_dump(mode="json"),
+        "input_bindings": dict(paired.execution.input_bindings),
+    })).hexdigest()
+    member = ResolvedRolloutMember(
+        coordinate=checkpoint.completed_updates, model_tree=slot.tree.descriptor.sha256,
+        model=model, task=task, trials=params.trials,
+    )
+    objective = sha256(canonical_json_v2_bytes(documents.objective.model_dump(mode="json"))).hexdigest()
     if stop.exists():
         return None
     key = jax.random.PRNGKey(params.seed)
@@ -217,7 +232,7 @@ def _rollouts(
         },
         attrs=attrs,
         schema_id=params.states_schema,
-    ), {"objective/total": float(evaluated.objective.loss)}
+    ), float(evaluated.objective.loss), member, objective
 
 
 def _checkpoint_dataset(datasets):
@@ -275,16 +290,24 @@ def main(argv: Sequence[str]) -> int:
         events.phase("restoring")
         members, binding = _bound_subject(request)
         events.phase("running")
-        datasets, summaries = [], []
+        datasets, summaries, resolved_members, objectives = [], [], [], set()
         for checkpoint, source in members:
             result = _rollouts(source, checkpoint, params, stop)
             if result is None or stop.exists():
                 return events.result(_Result("stopped"))
-            dataset, summary = result
+            dataset, summary, member, objective = result
             datasets.append(dataset)
-            summaries.append(summary["objective/total"])
+            summaries.append(summary)
+            resolved_members.append(member)
+            objectives.add(objective)
         dataset = _checkpoint_dataset(datasets)
         summary = {"objective/total": sum(summaries) / len(summaries)}
+        if len(objectives) != 1:
+            raise CannotRun("/inputs/subject/checkpoint", "selected checkpoints have different Objectives")
+        effective = ResolvedRolloutBinding(
+            members=tuple(resolved_members), seed=params.seed, trial_policy=params.trial_policy,
+            objective=objectives.pop(),
+        )
         events.phase("finalizing")
         train, provenance = evaluation_subject_provenance(binding)
         projection = EvaluationRunSpec(
@@ -313,6 +336,8 @@ def main(argv: Sequence[str]) -> int:
                 metadata={
                     "request_id": request.request_id,
                     "canonical_request": request.canonical_request.request.model_dump(mode="json"),
+                    "effective_binding": effective.model_dump(mode="json"),
+                    "effective_binding_sha256": effective.digest(),
                 },
             )
             normalized = normalize_manifest_spec_payloads(manifest)
