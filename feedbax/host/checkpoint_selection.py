@@ -18,6 +18,7 @@ EVALUATION_ENTRYPOINT = "feedbax.training.private_evaluation:main"
 class CheckpointSelection:
     coordinates: tuple[int, ...]
     requires_catalog: bool
+    allows_gaps: bool = False
 
 
 def is_checkpoint_producer(launch: dict, *, continues: str | None, manifest_root: str) -> bool:
@@ -41,6 +42,8 @@ def requested_checkpoint_selection(request: str, launch: dict) -> CheckpointSele
             return None
         if selector.get("kind") == "batch":
             return CheckpointSelection(finite_coordinates((selector["batch"],)), requires_catalog=False)
+        if selector.get("kind") == "update_series":
+            return CheckpointSelection(finite_coordinates(selector["updates"]), False, allows_gaps=True)
         if selector.get("kind") == "batch_set":
             coordinates = finite_coordinates(selector["batches"])
             if (cadence := selector.get("cadence")) is not None and coordinates != cadence_coordinates(
@@ -101,6 +104,20 @@ def verify_selected_publication(
         raise CompletionFileError(f"Invalid selected checkpoint publication: {error}") from error
 
 
+def selected_coordinates(selection: dict) -> tuple[int, ...]:
+    requested = finite_coordinates(selection["requested"])
+    gaps = selection.get("gaps", ())
+    missing = {gap["update"] for gap in gaps}
+    if (
+        len(missing) != len(gaps)
+        or not missing <= set(requested)
+        or any(type(gap["update"]) is not int or gap["reason"] != "checkpoint_unavailable" for gap in gaps)
+        or [gap["update"] for gap in gaps] != [update for update in requested if update in missing]
+    ):
+        raise CompletionFileError("Malformed checkpoint selection gaps.")
+    return tuple(update for update in requested if update not in missing)
+
+
 def verify_dependency_files(binding: dict) -> None:
     try:
         if "checkpoint_selection" not in binding:
@@ -108,6 +125,7 @@ def verify_dependency_files(binding: dict) -> None:
             return
         selection = binding["checkpoint_selection"]
         requested = finite_coordinates(selection["requested"])
+        available = selected_coordinates(selection)
         lineage = selection["lineage"]
         if (
             selection["selector_sha256"] != selector_sha256(binding["dependency_job_id"], requested)
@@ -115,10 +133,24 @@ def verify_dependency_files(binding: dict) -> None:
             or lineage[0] != binding["dependency_job_id"]
             or lineage[-1] != selection["lineage_tip"]
             or len(lineage) != len(set(lineage))
-            or len(selection["members"]) != len(requested)
+            or len(selection["members"]) != len(available)
         ):
             raise CompletionFileError("Malformed checkpoint selection binding.")
-        for coordinate, product in zip(requested, selection["members"], strict=True):
+        if "gaps" in selection:
+            closure = selection["closure"]
+            product = closure["product"]
+            if (
+                closure["kind"] not in ("completion", "recovery")
+                or product["producer_job_id"] != selection["lineage_tip"]
+                or (closure["kind"] == "completion" and not product.get("receipt"))
+                or (closure["kind"] == "recovery" and any(
+                    gap["update"] > product["checkpoint"]["completed_updates"]
+                    for gap in selection["gaps"]
+                ))
+            ):
+                raise CompletionFileError("Malformed checkpoint coverage closure.")
+            verify_completion_files(product)
+        for coordinate, product in zip(available, selection["members"], strict=True):
             if (
                 product["checkpoint"]["completed_updates"] != coordinate
                 or product["producer_job_id"] not in lineage

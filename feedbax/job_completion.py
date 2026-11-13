@@ -21,7 +21,7 @@ from feedbax.contracts.studio_training import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.training import TrainingRunSpec
-from feedbax.host.checkpoint_selection import verify_dependency_files
+from feedbax.host.checkpoint_selection import selected_coordinates, verify_dependency_files
 from feedbax.host.completion import CompletionFileError, completion_file
 from feedbax.persistence.array_container import open_array_container
 from feedbax.studio.canonical_train import (
@@ -305,15 +305,24 @@ def read_host_completion_binding() -> dict:
 
 def load_bound_checkpoint_selection(
     binding: dict, *, root: Path, producer_request: str, coordinates: tuple[int, ...],
-    project: str | None = None,
+    project: str | None = None, allow_gaps: bool = False,
 ) -> tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...]:
     """Open exactly the ordered checkpoint publications already bound by the Host."""
     selection = binding["checkpoint_selection"]
-    if selection["requested"] != list(coordinates):
+    if selection["requested"] != list(coordinates) or ("gaps" in selection and not allow_gaps):
         raise CompletionFileError("Host selection differs from the authored checkpoint coordinates.")
     verify_dependency_files(binding)
+    if closure := selection.get("closure"):
+        product = closure["product"]
+        if (
+            product["request_id"] != producer_request or product["manifest_root"] != str(root)
+            or (project is not None and product["project_id"] != project)
+        ):
+            raise CompletionFileError("/inputs: checkpoint coverage closed on a different Train request")
+        if closure["kind"] == "completion":
+            verify_bound_training_completion(product, scope="model_only")
     pinned = []
-    for update, member in zip(coordinates, selection["members"], strict=True):
+    for update, member in zip(selected_coordinates(selection), selection["members"], strict=True):
         if (
             member["request_id"] != producer_request
             or member["manifest_root"] != str(root)

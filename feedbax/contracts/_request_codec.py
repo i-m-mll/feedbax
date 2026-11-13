@@ -247,10 +247,10 @@ def _decode_model(model: type[BaseModel], value: dict, pins: Mapping) -> dict:
             item = int(item)
         if model is ComponentSpec and name == "params":
             item = _array_parameters(item, decode=True)
-        result[name] = decode(item, _field_annotation(model, name), pins)
+        result[fields[name].alias or name] = decode(item, _field_annotation(model, name), pins)
     for name in fields:
         if _wire(model, name):
-            result[name] = fields[name].default
+            result[fields[name].alias or name] = fields[name].default
     return result
 
 

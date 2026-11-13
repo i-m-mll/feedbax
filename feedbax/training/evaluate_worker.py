@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import os
 from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
 from feedbax.contracts.base import ArtifactRef
@@ -19,6 +21,7 @@ from feedbax.contracts.manifest import (
     normalize_manifest_spec_payloads,
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
+from feedbax.contracts.request_refs import UpdateSeriesMember
 from feedbax.contracts.rollout import ResolvedRolloutBinding, ResolvedRolloutMember
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -40,6 +43,40 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
 
 
+if TYPE_CHECKING:
+    from feedbax.compiler.trial_execution import PreparedTrialExecution
+    from feedbax.contracts.artifact_custody import ArtifactBlobProvider
+    from feedbax.contracts.graph import GraphSpec
+    from feedbax.dataset import Dataset
+    from feedbax.runtime.graph import Graph
+    from feedbax.runtime.raw_state import RawStateLayout
+    from feedbax.runtime.trial_execution import TrialEvaluation
+    from feedbax.training.evaluation_variant import EvaluationVariant
+    from feedbax.training.model_checkpoint import SemanticModelSlot
+    from feedbax.training.rollout_scoring import RolloutScorer
+
+
+@dataclass(frozen=True)
+class ResolvedRollout:
+    paired: PreparedTrialExecution
+    variant: EvaluationVariant
+    source_pair: PreparedTrialExecution
+    scorer: RolloutScorer
+
+
+@dataclass(frozen=True)
+class PreparedRollout:
+    paired: PreparedTrialExecution
+    variant: EvaluationVariant
+    graph: Graph
+    layout: RawStateLayout
+    scorer: RolloutScorer
+    slot: SemanticModelSlot
+    member: ResolvedRolloutMember
+    objective: str
+    varied: bool
+
+
 def _bound_subject(
     request: BoundEvaluationJobInput,
 ) -> tuple[tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...], dict]:
@@ -55,6 +92,7 @@ def _bound_subject(
         return load_bound_checkpoint_selection(
             binding, root=request.manifest_root, producer_request=subject.request_id,
             coordinates=coordinates, project=request.project_id,
+            allow_gaps=isinstance(subject.select, UpdateSeriesMember),
         ), binding
     completion = binding["completion"]
     if (
@@ -78,28 +116,18 @@ def score_paired_validation(
     return task_execution.validation(graph, objective, parameters, key=key)
 
 
-def _rollouts(
-    source: BoundStudioTrainingJobInput,
-    checkpoint: PublishedTrainingCheckpoint,
-    params: RolloutParameters,
-    stop: Path,
-):
+def resolve_rollout(
+    source: BoundStudioTrainingJobInput, source_graph: GraphSpec, params: RolloutParameters,
+    *, model_assets: ArtifactBlobProvider,
+) -> ResolvedRollout:
     import jax
-    import numpy as np
 
     from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-    from feedbax.contracts.authored_canonical import canonical_sha256
-    from feedbax.contracts.rollout import trial_indices
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
-    from feedbax.dataset import Dataset, Variable
     from feedbax.objectives.document import ObjectiveUse
     from feedbax.plugins.composition import compose_application
-    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state, scene_position_key
-    from feedbax.tasks.document import TaskParameters
-    from feedbax.tasks.reaching import is_world_target
-    from feedbax.training.checkpoint_custody import open_published_model_slot
-    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
     from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
+    from feedbax.training.rollout_scoring import RolloutScorer
     from feedbax.training.studio_executor import studio_training_key
 
     spec = source.spec
@@ -108,36 +136,52 @@ def _rollouts(
         raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
     if jax.default_backend() != "cpu" or jax.config.jax_enable_x64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
-    slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
-    if slot is None:
-        raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
-    validate_evaluation_source(slot.graph)
+    validate_evaluation_source(source_graph)
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
-    variant = resolve_evaluation_variant(slot.graph, documents.task_source, params.variation)
+    variant = resolve_evaluation_variant(source_graph, documents.task_source, params.variation)
     key = studio_training_key(method.seed, "model")
     source_pair = compile_trial_execution(
         documents.model_name, documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
-        input_overrides=documents.input_overrides, artifact_provider=slot.provider,
+        input_overrides=documents.input_overrides, artifact_provider=model_assets,
         initialization_key=key,
     )
     if not isinstance(source_pair, PreparedTrialExecution):
         problem = source_pair[0]
         raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
     paired = source_pair
-    if variant.graph != slot.graph or variant.task != documents.task_source:
+    if variant.graph != source_graph or variant.task != documents.task_source:
         paired = compile_trial_execution(
             documents.model_name, documents.model, variant.task,
             registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
             objective_use=ObjectiveUse.INHERITED,
-            input_overrides=documents.input_overrides, artifact_provider=slot.provider,
+            input_overrides=documents.input_overrides, artifact_provider=model_assets,
             initialization_key=key, graph_override=variant.graph,
         )
     if not isinstance(paired, PreparedTrialExecution):
         problem = paired[0]
         raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
     assert paired.objective is not None
+    try:
+        scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials)
+    except ValueError as error:
+        raise CannotRun("/params/trials", str(error)) from error
+    return ResolvedRollout(paired, variant, source_pair, scorer)
+
+
+def prepare_rollout(
+    source: BoundStudioTrainingJobInput, checkpoint: PublishedTrainingCheckpoint, params: RolloutParameters,
+) -> PreparedRollout:
+    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
+    from feedbax.training.checkpoint_custody import open_published_model_slot
+    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
+
+    slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
+    if slot is None:
+        raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
+    resolved = resolve_rollout(source, slot.graph, params, model_assets=slot.provider)
+    paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
     try:
         target = None if paired is source_pair else ModelRestoreTarget(
             paired.executable.resolved.graph, paired.executable.graph, variant.source_overrides,
@@ -160,37 +204,47 @@ def _rollouts(
         coordinate=checkpoint.completed_updates, model_tree=slot.tree.descriptor.sha256,
         model=model, task=task, trials=params.trials,
     )
+    documents = source.spec.trial_documents
+    assert documents is not None
     objective = sha256(canonical_json_v2_bytes(documents.objective.model_dump(mode="json"))).hexdigest()
-    if stop.exists():
-        return None
-    key = jax.random.PRNGKey(params.seed)
-    try:
-        trial_indices(params.trials, paired.execution.task.condition_ids)
-    except ValueError as error:
-        raise CannotRun("/params/trials", str(error)) from error
-    evaluated = paired.execution.evaluate(
-        graph, paired.objective, TaskParameters(), key=key, trial_ids=params.trials, capture_state=layout.capture,
+    return PreparedRollout(
+        paired, variant, graph, layout, resolved.scorer, slot, member, objective, paired is not source_pair,
     )
-    if stop.exists():
-        return None
+
+
+def rollout_dataset(
+    prepared: PreparedRollout, evaluated: TrialEvaluation, params: RolloutParameters,
+    *, update_axis: str = "checkpoint",
+) -> Dataset:
+    import jax
+    import numpy as np
+
+    from feedbax.contracts.authored_canonical import canonical_sha256
+    from feedbax.dataset import Dataset, Variable
+    from feedbax.runtime.raw_state import scene_position_key
+    from feedbax.tasks.reaching import is_world_target
+
+    paired, variant, graph = prepared.paired, prepared.variant, prepared.graph
+    effective_graph = paired.executable.resolved.graph
+    slot, layout = prepared.slot, prepared.layout
     history = evaluated.history
     assert history is not None
     n_trials = evaluated.trials.epochs.starts.shape[0]
     trials = [jax.tree.map(lambda value: value[i], history) for i in range(n_trials)]
     variables, state_coordinates = layout.dataset_fields(
-        trials, axes=("checkpoint", "condition", "trial"),
+        trials, axes=(update_axis, "condition", "trial"),
     )
     terms = evaluated.objective.terms
     for name, term in terms.items():
         if not np.isfinite(term.value):
             raise FloatingPointError(f"Nonfinite objective value at {name}")
         path = json_pointer((name,))
-        variables["objective/terms" + path] = Variable(np.asarray(term.value)[None, None], ("checkpoint", "condition"))
-        variables["objective/coverage" + path] = Variable(np.asarray(term.covered)[None, None], ("checkpoint", "condition"))
-    variables["objective/total"] = Variable(np.asarray(evaluated.objective.loss)[None, None], ("checkpoint", "condition"))
+        variables["objective/terms" + path] = Variable(np.asarray(term.value)[None, None], (update_axis, "condition"))
+        variables["objective/coverage" + path] = Variable(np.asarray(term.covered)[None, None], (update_axis, "condition"))
+    variables["objective/total"] = Variable(np.asarray(evaluated.objective.loss)[None, None], (update_axis, "condition"))
     for signal in paired.execution.task.interface.signals:
         samples = evaluated.trials.inputs[signal.name]
-        base_axes = ("checkpoint", "condition", "trial", "transition")
+        base_axes = (update_axis, "condition", "trial", "transition")
         if is_world_target(variant.task, signal):
             state_coordinates.setdefault("xy", Variable(np.asarray(["x", "y"]), ("xy",)))
             variable = Variable(np.asarray(samples)[None, None], (*base_axes, "xy"), units="m", frame="world")
@@ -207,7 +261,7 @@ def _rollouts(
         attrs["source_graph_sha256"] = sha256(
             canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
         ).hexdigest()
-        if paired is not source_pair:
+        if prepared.varied:
             attrs.update({
                 "effective_graph_sha256": canonical_sha256({
                     "resolved_graph": paired.executable.resolved.resolved_sha256,
@@ -222,7 +276,7 @@ def _rollouts(
     return Dataset.from_arrays(
         variables,
         coords={
-            "checkpoint": Variable(np.asarray([checkpoint.completed_updates]), ("checkpoint",)),
+            update_axis: Variable(np.asarray([prepared.member.coordinate]), (update_axis,)),
             "condition": Variable(np.asarray([variation]), ("condition",)),
             "trial": Variable(np.asarray(params.trials), ("trial",)),
             **state_coordinates,
@@ -232,10 +286,31 @@ def _rollouts(
         },
         attrs=attrs,
         schema_id=params.states_schema,
-    ), float(evaluated.objective.loss), member, objective
+    )
 
 
-def _checkpoint_dataset(datasets):
+def _rollouts(source, checkpoint, params, stop, *, update_axis="checkpoint"):
+    if stop.exists():
+        return None
+    prepared = prepare_rollout(source, checkpoint, params)
+    if stop.exists():
+        return None
+    if update_axis == "update":
+        import jax
+
+        compiled = prepared.scorer.lower(prepared.graph, capture_state=prepared.layout.capture).compile()
+        evaluated = jax.block_until_ready(compiled(prepared.graph))
+    else:
+        evaluated = prepared.scorer.evaluate(prepared.graph, capture_state=prepared.layout.capture)
+    if stop.exists():
+        return None
+    return (
+        rollout_dataset(prepared, evaluated, params, update_axis=update_axis), float(evaluated.objective.loss),
+        prepared.member, prepared.objective,
+    )
+
+
+def _checkpoint_dataset(datasets, *, axis="checkpoint"):
     """Concatenate singleton rollout datasets along their existing checkpoint axis."""
     if len(datasets) == 1:
         return datasets[0]
@@ -251,10 +326,10 @@ def _checkpoint_dataset(datasets):
 
     def join(name, field):
         values = [dataset.data(name) for dataset in datasets]
-        if "checkpoint" in field.dims:
+        if axis in field.dims:
             if any(value.dtype != values[0].dtype for value in values[1:]):
                 raise CannotRun("/inputs/subject/checkpoint", f"selected checkpoints differ in dtype for {name}")
-            array = np.concatenate(values, axis=field.dims.index("checkpoint"))
+            array = np.concatenate(values, axis=field.dims.index(axis))
         else:
             if any(not np.array_equal(value, values[0]) for value in values[1:]):
                 raise CannotRun("/inputs/subject/checkpoint", f"selected checkpoints differ in coordinate {name}")
@@ -263,11 +338,21 @@ def _checkpoint_dataset(datasets):
 
     coords = {name: join(name, field) for name, field in base.coords.items()}
     if any(graph is not None for graph in member_graphs):
-        coords["effective_graph_sha256"] = Variable(np.asarray(member_graphs), ("checkpoint",))
+        coords["effective_graph_sha256"] = Variable(np.asarray(member_graphs), (axis,))
     return Dataset.from_arrays(
         {name: join(name, field) for name, field in base.variables.items()},
         coords=coords, attrs=base.attrs, schema_id=base.schema_id,
     )
+
+
+def _empty_update_dataset(params: RolloutParameters) -> Dataset:
+    import numpy as np
+
+    from feedbax.dataset import Dataset, Variable
+
+    return Dataset.from_arrays({}, coords={
+        "update": Variable(np.empty(0, dtype=np.int64), ("update",)),
+    }, schema_id=params.states_schema)
 
 
 def main(argv: Sequence[str]) -> int:
@@ -291,8 +376,10 @@ def main(argv: Sequence[str]) -> int:
         members, binding = _bound_subject(request)
         events.phase("running")
         datasets, summaries, resolved_members, objectives = [], [], [], set()
+        is_series = isinstance(subject.select, UpdateSeriesMember)
+        update_axis = "update" if is_series else "checkpoint"
         for checkpoint, source in members:
-            result = _rollouts(source, checkpoint, params, stop)
+            result = _rollouts(source, checkpoint, params, stop, update_axis=update_axis)
             if result is None or stop.exists():
                 return events.result(_Result("stopped"))
             dataset, summary, member, objective = result
@@ -300,14 +387,23 @@ def main(argv: Sequence[str]) -> int:
             summaries.append(summary)
             resolved_members.append(member)
             objectives.add(objective)
-        dataset = _checkpoint_dataset(datasets)
-        summary = {"objective/total": sum(summaries) / len(summaries)}
-        if len(objectives) != 1:
+        dataset = _checkpoint_dataset(datasets, axis=update_axis) if datasets else _empty_update_dataset(params)
+        summary = {"objective/total": sum(summaries) / len(summaries)} if summaries else {}
+        if len(objectives) > 1:
             raise CannotRun("/inputs/subject/checkpoint", "selected checkpoints have different Objectives")
-        effective = ResolvedRolloutBinding(
-            members=tuple(resolved_members), seed=params.seed, trial_policy=params.trial_policy,
-            objective=objectives.pop(),
+        effective = (
+            ResolvedRolloutBinding(
+                members=tuple(resolved_members), seed=params.seed, trial_policy=params.trial_policy,
+                objective=objectives.pop(),
+            )
+            if resolved_members else None
         )
+        effective_metadata = {
+            "effective_binding": effective.model_dump(mode="json"),
+            "effective_binding_sha256": effective.digest(),
+        } if effective is not None else {}
+        if is_series:
+            effective_metadata["placement"] = "ordinary"
         events.phase("finalizing")
         train, provenance = evaluation_subject_provenance(binding)
         projection = EvaluationRunSpec(
@@ -336,8 +432,7 @@ def main(argv: Sequence[str]) -> int:
                 metadata={
                     "request_id": request.request_id,
                     "canonical_request": request.canonical_request.request.model_dump(mode="json"),
-                    "effective_binding": effective.model_dump(mode="json"),
-                    "effective_binding_sha256": effective.digest(),
+                    **effective_metadata,
                 },
             )
             normalized = normalize_manifest_spec_payloads(manifest)

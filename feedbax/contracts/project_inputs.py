@@ -13,7 +13,7 @@ from pydantic import (
 )
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.request_refs import CheckpointBatches, CheckpointCadence
+from feedbax.contracts.request_refs import CheckpointBatches, CheckpointCadence, UpdateRule
 from feedbax.contracts.selection import ManifestPredicate
 
 # These names serve as file stems and path segments in project-level patches.
@@ -141,8 +141,10 @@ class BarrierCheckpoint(StrictModel):
     barrier: NonemptyText
 
 
-type CheckpointRule = Literal["last"] | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence
-
+type CheckpointRule = (
+    Literal["last"] | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint
+    | CheckpointBatches | CheckpointCadence | UpdateRule
+)
 
 class StepReference(StrictModel):
     step: ProjectName

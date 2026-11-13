@@ -871,7 +871,7 @@ class Store:
             for row in rows:
                 publication = json.loads(row["data"])
                 if (
-                    not selection.requires_catalog
+                    not selection.requires_catalog and not selection.allows_gaps
                     and "checkpoint_product" not in publication
                     and "checkpoint_product_error" not in publication
                 ):
@@ -895,10 +895,12 @@ class Store:
                     continue
                 found[coordinate] = (attempt, publication, row["cursor"])
         missing = [coordinate for coordinate in coordinates if coordinate not in found]
-        if missing:
+        if missing and not selection.allows_gaps:
             return missing, []
         members = []
         for coordinate in coordinates:
+            if coordinate not in found:
+                continue
             attempt, publication, cursor = found[coordinate]
             binding = self.db.execute(
                 "SELECT data FROM events WHERE job=? AND kind='binding' ORDER BY cursor LIMIT 1",
@@ -918,7 +920,19 @@ class Store:
                 root=launch["manifest_root"], binding_sha256=digest,
             )
             members.append(member | {"publication_cursor": cursor})
-        return [], members
+        return missing, members
+
+    def _series_closure(self, attempt: sqlite3.Row, path: tuple[sqlite3.Row, ...]) -> dict | None:
+        if attempt["state"] == "succeeded":
+            completion, _ = self._completed_product(attempt)
+            return {"kind": "completion", "product": completion} if completion is not None else None
+        if attempt["state"] in {"stopped", "failed", "interrupted"} and attempt["checkpoint"] is not None:
+            boundary = json.loads(attempt["checkpoint"])
+            selection = CheckpointSelection((boundary["completed_updates"],), False)
+            _, members = self._checkpoint_members(path, selection)
+            if members and members[0]["checkpoint"] == boundary:
+                return {"kind": "recovery", "product": members[0]}
+        return None
 
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None,
@@ -940,6 +954,8 @@ class Store:
         pending = False
         rejections: list[_CompletionRejection] = []
         missing = None
+        settled_series = None
+        completed_series = None
         for attempt in attempts:
             attempt_id = attempt["id"]
             payload = json.loads(attempt["launch"])["payload"]
@@ -963,6 +979,7 @@ class Store:
                     continue
 
             can_publish = True
+            absent = ()
             if selection is not None:
                 prior = paths.get(attempt["continues"], ()) if attempt_id != anchor else ()
                 path = (*prior, attempt)
@@ -972,11 +989,11 @@ class Store:
                 except CompletionFileError as error:
                     rejections.append(_CompletionRejection(attempt_id, "checkpoint_selection", str(error)))
                     # An exact publication is immutable within this path, including on resume.
-                    can_publish = selection.requires_catalog
+                    can_publish = selection.requires_catalog and not selection.allows_gaps
                 else:
-                    if members:
+                    if members or selection.allows_gaps:
                         coordinates = selection.coordinates
-                        return {
+                        binding = {
                             "dependency_job_id": anchor,
                             "checkpoint_selection": {
                                 "requested": list(coordinates),
@@ -985,7 +1002,23 @@ class Store:
                                 "lineage": [member["id"] for member in path],
                                 "members": members,
                             },
-                        }, None, rejections
+                        }
+                        if not absent:
+                            return binding, None, rejections
+                        binding["checkpoint_selection"]["gaps"] = [
+                            {"update": update, "reason": "checkpoint_unavailable"} for update in absent
+                        ]
+                        try:
+                            closure = self._series_closure(attempt, path)
+                        except CompletionFileError as error:
+                            rejections.append(_CompletionRejection(attempt_id, "checkpoint_selection", str(error)))
+                        else:
+                            if closure is not None:
+                                binding["checkpoint_selection"]["closure"] = closure
+                                if attempt["state"] == "succeeded" and completed_series is None:
+                                    completed_series = binding
+                                elif settled_series is None:
+                                    settled_series = binding
                     missing = f"Producer closed without checkpoint coordinates {absent}."
 
             state = attempt["state"]
@@ -1006,11 +1039,17 @@ class Store:
                 resume_checkpoints[attempt_id] = dump(boundary, sort_keys=True)
             if resumable or state in LIVE_STATES:
                 # A continuation starts after its recovery coordinate.
+                pending |= (selection is not None and selection.allows_gaps and state in LIVE_STATES)
                 pending |= can_publish and (
                     selection is None or selection.requires_catalog
-                    or boundary is None or selection.coordinates[0] > boundary["completed_updates"]
+                    or boundary is None
+                    or any(update > boundary["completed_updates"] for update in (
+                        absent if selection.allows_gaps else selection.coordinates[:1]
+                    ))
                 )
 
+        if completed_series is not None:
+            return completed_series, None, rejections
         if pending:
             return None, None, rejections
         if rejections:
@@ -1018,6 +1057,8 @@ class Store:
                 "code": "dependency_corrupt",
                 "message": rejections[0].message,
             }, rejections
+        if settled_series is not None:
+            return settled_series, None, rejections
         return None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",

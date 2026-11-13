@@ -21,7 +21,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, ContentRef, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
@@ -73,6 +73,8 @@ def _unexpected_document(digest: str) -> bytes:
 def evaluation_checkpoint_coordinates(subject: ProductRef) -> tuple[int, ...] | None:
     if isinstance(subject.select, BatchMember):
         return finite_coordinates((subject.select.batch,))
+    if isinstance(subject.select, UpdateSeriesMember):
+        return subject.select.updates
     if isinstance(subject.select, BatchSetMember):
         return subject.select.batches
     return None
@@ -97,11 +99,11 @@ def decode_rollout_request(
         not isinstance(subject, ProductRef)
         or subject.role != "checkpoint"
         or not subject.request_id.startswith("train:")
-        or not isinstance(subject.select, (LastMember, BatchMember, BatchSetMember))
+        or not isinstance(subject.select, (LastMember, BatchMember, BatchSetMember, UpdateSeriesMember))
     ):
         raise CannotRun(
             "/inputs/subject/checkpoint",
-            "requires a Train checkpoint selected by last, an exact batch, or a complete batch set",
+            "requires a Train checkpoint selected by last, an exact batch, a batch set, or an update series",
         )
     try:
         evaluation_checkpoint_coordinates(subject)
@@ -139,6 +141,21 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
             },
         }
         train = []
+        if "gaps" in selection:
+            closure = selection["closure"]
+            product = closure["product"]
+            metadata["checkpoint_selection"]["gaps"] = selection["gaps"]
+            metadata["checkpoint_selection"]["closure"] = {
+                "kind": closure["kind"],
+                "attempt": product["producer_job_id"],
+                "checkpoint": product["checkpoint"]["pointer"]["transaction_root_sha256"],
+            }
+            if closure["kind"] == "completion":
+                receipt = JobReceipt.model_validate(product["receipt"])
+                train.append(ParentRef(
+                    kind="TrainingRunManifest", id=receipt.manifest_id, role="coverage_closure",
+                    metadata={"manifest_sha256": receipt.manifest_sha256},
+                ))
     else:
         completion = binding["completion"]
         members = [completion]
@@ -254,12 +271,13 @@ class EvaluationResult:
             name = descriptor.attrs.get("scene_position")
             if not isinstance(name, str) or name not in descriptor.variables:
                 raise CannotRun("/states/scene_position", "the result has no declared Scene position")
+            update_axis = "update" if "update" in descriptor.dimensions else "checkpoint"
             if checkpoint is None:
-                if descriptor.dimensions["checkpoint"] != 1:
+                if descriptor.dimensions[update_axis] != 1:
                     raise CannotRun("/checkpoint", "choose a retained checkpoint for replay")
                 checkpoint_index = 0
             else:
-                checkpoints = dataset.data("checkpoint").tolist()
+                checkpoints = dataset.data(update_axis).tolist()
                 if checkpoint not in checkpoints:
                     raise CannotRun("/checkpoint", "the chosen checkpoint is absent from the retained set")
                 checkpoint_index = checkpoints.index(checkpoint)
@@ -269,7 +287,7 @@ class EvaluationResult:
             trial_index = trials.index(trial)
             field = descriptor.variables[name]
             if (
-                field.dims != ("checkpoint", "condition", "trial", "state_time", "xy")
+                field.dims != (update_axis, "condition", "trial", "state_time", "xy")
                 or descriptor.dimensions["condition"] != 1 or descriptor.dimensions["xy"] != 2
             ):
                 raise ValueError("The retained Scene position has an incompatible layout.")
