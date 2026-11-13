@@ -33,6 +33,7 @@ class ProjectCommand:
 
 
 PROJECT_COMMANDS = {
+    "check": ProjectCommand("check", "Verify a committed result closure or the declared Store."),
     "plan": ProjectCommand("project_plan", "Compile an authored text project for review."),
     "status": ProjectCommand(
         "project_plan", "Show saved project run and element states.",

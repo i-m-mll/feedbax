@@ -1,7 +1,7 @@
 """Measure an immutable Store from a read-only snapshot of its known roots."""
 
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
@@ -22,6 +22,7 @@ from feedbax.contracts.effective_success import (
     Success,
     decode_success_index,
 )
+from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.store_closure import (
     STORE_CLOSURE_REF_SCHEMA,
     ReceiptRoot,
@@ -41,6 +42,7 @@ from feedbax.persistence.content_retention import (
     _target_objects,
 )
 from feedbax.persistence.receipt_closure import ReceiptClosure
+from feedbax.persistence.receipt_content import ClosureVisitors
 
 
 FRESH_OBJECT_GRACE_SECONDS = 24 * 60 * 60
@@ -104,15 +106,18 @@ def _success_roots(
     store: ImmutableArtifactBlobProvider,
     value: dict,
     gaps: list[str],
+    *,
+    include_history: bool = False,
+    visitors: ClosureVisitors | None = None,
 ) -> Iterator[RootObservation]:
     index = decode_success_index(value)
     closure = ReceiptClosure(store, index)
     receipts: dict[str, tuple[ContentObjectRef, Success]] = {}
-    for attempt, ref in index.attempts.items():
+    for attempt in index.attempts:
         try:
-            receipt = closure.receipt_at(ref)
-            if receipt.attempt != attempt:
-                raise ContentRetentionError("receipt differs from the indexed attempt")
+            if visitors is not None:
+                visitors.object(index.attempts[attempt])
+            ref, receipt = closure.receipt_for_attempt(attempt)
             receipts[ref.sha256] = ref, receipt
         except (ValueError, OSError) as error:
             gaps.append(f"successful attempt {attempt}: {error}")
@@ -125,7 +130,7 @@ def _success_roots(
 
     def targets(ref: ContentObjectRef) -> tuple[ContentRetentionTarget, ...]:
         selection = StoreClosureRef(roots=(ReceiptRoot(receipt=ref),), include_ancestry=True)
-        return tuple(object_target(item) for item in closure.walk(selection))
+        return tuple(object_target(item) for item in closure.walk(selection, visitors=visitors))
 
     current: dict[str, ContentObjectRef] = {}
     for key, ref in index.authored.items():
@@ -142,7 +147,8 @@ def _success_roots(
             current[ref.sha256] = ref
         except ContentRetentionError as error:
             gaps.append(f"successful effective ref {key}: {error}")
-    for ref in current.values():
+    selected = (ref for ref, _ in receipts.values()) if include_history else current.values()
+    for ref in selected:
         try:
             yield RootObservation(f"success:{receipt_at(ref).attempt}", targets(ref))
         except (ValueError, OSError) as error:
@@ -163,15 +169,16 @@ def _success_roots(
             if previous.sha256 in predecessors:
                 raise ContentRetentionError("predecessor has more than one successor")
             predecessors.add(previous.sha256)
-            if when is None:
+            if when is None and not include_history:
                 gaps.append(
                     f"success {successor.attempt}: authoritative supersession time unavailable"
                 )
-            yield RootObservation(
-                f"superseded-success:{predecessor.attempt}",
-                targets(previous),
-                when,
-            )
+            if not include_history:
+                yield RootObservation(
+                    f"superseded-success:{predecessor.attempt}",
+                    targets(previous),
+                    when,
+                )
         except (ValueError, OSError) as error:
             gaps.append(f"success {successor.attempt}: {error}")
 
@@ -194,6 +201,10 @@ def _files(directory: Path) -> Iterator[Path]:
 def _store_refs(
     store: ImmutableArtifactBlobProvider,
     gaps: list[str],
+    *,
+    retention_gaps: list[str],
+    include_history: bool = False,
+    visitors: ClosureVisitors | None = None,
 ) -> Iterator[RootObservation]:
     root = store.root / "refs"
     for path in _files(root):
@@ -203,13 +214,21 @@ def _store_refs(
                 raise ContentRetentionError("ref changed while being read")
             value = record[1]
             if name == INDEX_REF:
-                yield from _success_roots(store, value, gaps)
+                yield from _success_roots(
+                    store, value, gaps, include_history=include_history, visitors=visitors,
+                )
                 continue
             if name == "plan" or name.startswith("runs/"):
-                gaps.append(f"ref {name}: plan or result root contract is unavailable")
+                retention_gaps.append(f"ref {name}: plan or result root contract is unavailable")
             if value.get("schema_version") == STORE_CLOSURE_REF_SCHEMA:
-                closure = ReceiptClosure(store).walk(read_store_closure_ref(value))
+                closure = ReceiptClosure(store).walk(read_store_closure_ref(value), visitors=visitors)
                 yield RootObservation(f"ref:{name}", tuple(object_target(item) for item in closure))
+                continue
+            if value.keys() == {"content", "descriptor_sha256"}:
+                dataset = DatasetProductRef.model_validate(value)
+                if visitors is not None:
+                    visitors.array(dataset.object_ref, dataset.descriptor_sha256)
+                yield RootObservation(f"ref:{name}", (object_target(dataset.object_ref),))
                 continue
             match value.get("schema_id"):
                 case identity if identity == CONTENT_OBJECT_REF_SCHEMA_ID:
@@ -224,7 +243,7 @@ def _store_refs(
                         ref_kind="manifest",
                         manifest=ContentManifestRef.model_validate(value),
                     )
-                    gaps.append(
+                    retention_gaps.append(
                         f"ref {name}: typed receipt closure and supersession are unavailable"
                     )
                 case _:
@@ -247,7 +266,7 @@ def _store_refs(
                 f"manifest:{ref.kind}/{ref.id}",
                 (ContentRetentionTarget(ref_kind="manifest", manifest=ref),),
             )
-            gaps.append(f"manifest {ref.kind}/{ref.id}: legacy receipt closure is unavailable")
+            retention_gaps.append(f"manifest {ref.kind}/{ref.id}: legacy receipt closure is unavailable")
         except (ValueError, OSError) as error:
             gaps.append(f"{name}: {error}")
 
@@ -256,6 +275,8 @@ def _legacy_roots(
     store: ImmutableArtifactBlobProvider,
     now: datetime,
     gaps: list[str],
+    *,
+    retention_gaps: list[str],
 ) -> Iterator[RootObservation]:
     index = _read_index(store)
     if index.pending_gc is not None:
@@ -263,7 +284,7 @@ def _legacy_roots(
     for record in index.roots:
         if not record.released:
             if record.nonterminal or record.restartable or record.root_kind == "migration":
-                gaps.append(f"legacy root {record.root_id} is still open")
+                retention_gaps.append(f"legacy root {record.root_id} is still open")
             yield RootObservation(f"legacy-root:{record.root_id}", record.targets)
     for record in index.holds:
         if not record.released:
@@ -273,8 +294,33 @@ def _legacy_roots(
             record.expiry_disposition != "release" or record.expires_at > now
         ):
             if record.expires_at <= now:
-                gaps.append(f"legacy lease {record.lease_id} expired without release")
+                retention_gaps.append(f"legacy lease {record.lease_id} expired without release")
             yield RootObservation(f"legacy-lease:{record.lease_id}", record.targets)
+
+
+def store_roots(
+    store: ImmutableArtifactBlobProvider,
+    now: datetime,
+    errors: list[str],
+    *,
+    retention_gaps: list[str],
+    include_history: bool = False,
+    visitors: ClosureVisitors | None = None,
+) -> Iterator[RootObservation]:
+    """Observe stored root authorities while the caller holds the Store lock."""
+    if os.path.lexists(store.root / "jobs"):
+        errors.append("Store jobs namespace has no supported root contract")
+    readers: tuple[Callable[[], Iterator[RootObservation]], ...] = (
+        lambda: _store_refs(
+            store, errors, retention_gaps=retention_gaps, include_history=include_history, visitors=visitors,
+        ),
+        lambda: _legacy_roots(store, now, errors, retention_gaps=retention_gaps),
+    )
+    for read in readers:
+        try:
+            yield from read()
+        except (ValueError, OSError) as error:
+            errors.append(str(error))
 
 
 def measure_store(
@@ -295,14 +341,8 @@ def measure_store(
     with store._exclusive_lock(create=False):
         inventory, errors = _inventory_stats(store)
         incomplete.extend(errors)
-        if os.path.lexists(store.root / "jobs"):
-            incomplete.append("Store jobs namespace has no supported root contract")
-        for read in (_store_refs, lambda store, gaps: _legacy_roots(store, now, gaps)):
-            try:
-                for root in read(store, incomplete):
-                    _mark(store, inventory, closures, root, now, window, incomplete)
-            except (ValueError, OSError) as error:
-                incomplete.append(str(error))
+        for root in store_roots(store, now, incomplete, retention_gaps=incomplete):
+            _mark(store, inventory, closures, root, now, window, incomplete)
         for root in observations:
             _mark(store, inventory, closures, root, now, window, incomplete)
 

@@ -16,7 +16,7 @@ from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
-from feedbax.persistence.receipt_content import continuation_objects, success_content_objects, tree_objects
+from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
 
 
 class ReceiptClosure:
@@ -45,17 +45,30 @@ class ReceiptClosure:
             raise ValueError(f"Conflicting receipt evidence: {ref.sha256}")
         return cached[1]
 
+    def receipt_for_attempt(self, attempt: str) -> tuple[ContentObjectRef, Success]:
+        if self.index is None or (ref := self.index.attempts.get(attempt)) is None:
+            raise ValueError(f"No committed receipt for attempt {attempt!r}")
+        receipt = self.receipt_at(ref)
+        if receipt.attempt != attempt:
+            raise ValueError(f"Receipt differs from the indexed attempt {attempt!r}")
+        return ref, receipt
+
     def _request_at(self, ref: ContentObjectRef, receipt: Success) -> DecodedRequest:
         if ref.sha256 not in self._requests:
             self._requests[ref.sha256] = read_effective_request(receipt, self.store.get_object)
         return self._requests[ref.sha256]
 
-    def walk(self, closure: StoreClosureRef) -> tuple[ContentObjectRef, ...]:
+    def walk(
+        self, closure: StoreClosureRef, *, visitors: ClosureVisitors | None = None,
+    ) -> tuple[ContentObjectRef, ...]:
+        """Return the closure and optionally visit exact objects and array anchors."""
         objects: dict[str, ContentObjectRef] = {}
         pending: list[tuple[ReceiptRoot, tuple[DecodedRequest, BoundMember] | None]] = []
         visited: set[tuple[str, str | None, str | None, bytes | None]] = set()
 
         def add(ref: ContentObjectRef) -> None:
+            if ref.sha256 not in objects and visitors is not None:
+                visitors.object(ref)
             if objects.setdefault(ref.sha256, ref) != ref:
                 raise ValueError(f"Conflicting object evidence: {ref.sha256}")
 
@@ -65,11 +78,12 @@ class ReceiptClosure:
             elif isinstance(root, ContentObjectRef):
                 add(root)
             else:
-                for ref in tree_objects(self.store, root):
+                for ref in tree_objects(self.store, root, visitors=visitors):
                     add(ref)
 
         while pending:
             root, consumer = pending.pop()
+            add(root.receipt)
             receipt = self.receipt_at(root.receipt)
             if root.product is None:
                 key = root.receipt.sha256, None, None, None
@@ -97,17 +111,18 @@ class ReceiptClosure:
             if key in visited:
                 continue
             visited.add(key)
-            decoded = self._request_at(root.receipt, receipt)
-            for ref in (root.receipt, receipt.request.object, *receipt.request.documents):
+            for ref in (receipt.request.object, *receipt.request.documents):
                 add(ref)
+            decoded = self._request_at(root.receipt, receipt)
             if receipt.evaluation_manifest is not None:
-                for ref in verify_evaluation_success_evidence(self.store, receipt):
+                add(receipt.evaluation_manifest)
+                for ref in verify_evaluation_success_evidence(self.store, receipt, visitors=visitors):
                     add(ref)
             for product in products:
-                for ref in success_content_objects(self.store, product):
+                for ref in success_content_objects(self.store, product, visitors=visitors):
                     add(ref)
             if root.product is None and receipt.continuation is not None:
-                for ref in continuation_objects(receipt.continuation):
+                for ref in continuation_objects(receipt.continuation, visitors=visitors):
                     add(ref)
 
             for role, members in decoded.inputs.items():
@@ -116,7 +131,9 @@ class ReceiptClosure:
                     selection = bound.selection
                     if bound.evaluation_subject is not None:
                         if closure.include_ancestry:
-                            for ref in evaluation_subject_objects(self.store, decoded, member, bound):
+                            for ref in evaluation_subject_objects(
+                                self.store, decoded, member, bound, visitors=visitors,
+                            ):
                                 add(ref)
                     elif isinstance(reference, ProductRef):
                         if selection is None:

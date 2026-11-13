@@ -15,7 +15,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.dataset import DatasetProductRef
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.graph import StudioManifestRef, StudioSelectorRef
 from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
@@ -51,9 +51,6 @@ from feedbax.host.checkpoint_selection import selected_coordinates
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 if TYPE_CHECKING:
     from feedbax.dataset import Dataset
-
-STATES_MEDIA_TYPE = "application/vnd.safetensors"
-
 
 class CannotRun(ValueError):
     """A capability required by the authored request is unavailable."""

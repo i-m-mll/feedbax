@@ -19,6 +19,7 @@ from feedbax.persistence.dataset import (
     open_stored_dataset,
     publish_dataset,
 )
+from feedbax.persistence.store_check import check_store
 
 
 @pytest.fixture
@@ -151,3 +152,22 @@ def test_stored_reads_use_custody_for_slices_and_scrub_is_explicit(tmp_path, ret
         )
     with pytest.raises(ArtifactBlobIntegrityError):
         store.verify_object(ref.object_ref)
+
+
+def test_check_uses_the_anchored_tensor_digest_even_when_object_bytes_match(tmp_path, retained_dataset):
+    store = ImmutableArtifactBlobProvider(tmp_path / "cas")
+    encoded = encode_dataset(retained_dataset)
+    source = tmp_path / "source.safetensors"
+    source.write_bytes(encoded.data)
+    malformed = _change_commands(source)
+    ref = _binding(malformed, encoded.descriptor_sha256)
+    assert store.store_object(malformed) == ref.object_ref
+    store.verify_object(ref.object_ref)
+    assert store.compare_and_swap_ref("fixtures/dataset", expected=None, replacement=ref.model_dump(mode="json"))
+
+    result = check_store(store)
+
+    (finding,) = result.findings
+    assert finding.code == "damaged_object" and finding.address == ref.object_ref.object_id
+    assert "digest mismatch" in finding.detail
+    assert store.get_object(ref.object_ref) == malformed
