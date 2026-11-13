@@ -34,8 +34,8 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const runs = page.getByRole('table', { name: 'Runs' });
   const inspector = page.getByRole('complementary', { name: 'Inspector' });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-  const plant = page.getByRole('complementary', { name: 'Details Drawer' })
-    .getByRole('button', { name: 'Point mass', exact: true });
+  const plant = page.getByRole('tabpanel', { name: 'Model', exact: true }).getByRole('article', { name: 'Point mass', exact: true });
+  const selectPlant = () => plant.locator('header').click();
   await page.goto(url);
   await expect(variants).toHaveValue('base');
   await mapStep(page, 'train').click();
@@ -62,7 +62,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
 
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
-  await plant.click();
+  await selectPlant();
   await expect(mass).toHaveValue(/^1(?:\.0)?$/);
   await expect(mass).toBeEditable();
   const write = page.waitForResponse((response) => response.request().method() === 'PATCH'
@@ -118,7 +118,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
   await variants.selectOption('compare');
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
-  await plant.click();
+  await selectPlant();
   await expect(mass).toHaveValue(/^2(?:\.0)?$/);
   expect((await snapshot()).revision).toBe(edited.revision);
 });

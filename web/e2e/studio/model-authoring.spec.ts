@@ -17,6 +17,8 @@ function matchesFields(actual: unknown, expected: unknown): boolean {
 
 async function connect(page: Page, source: Locator, target: Locator, path: string,
   operation: Record<string, unknown>, matchesWire: (wire: ModelWire) => boolean) {
+  await expect(source).toHaveAttribute('aria-disabled', 'false');
+  await expect(target).toHaveAttribute('aria-disabled', 'false');
   const saved = page.waitForResponse((response) => {
     const request = response.request();
     if (request.method() !== 'POST' || new URL(response.url()).pathname !== path + '/model/edit') return false;

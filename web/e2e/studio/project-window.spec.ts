@@ -26,7 +26,8 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
   await rail.getByRole('tab', { name: 'Model', exact: true }).click();
-  await page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'Point mass', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
   await expect(mass).toHaveValue(/^1(?:\.0)?$/);
   await expect(mass).toBeEditable();

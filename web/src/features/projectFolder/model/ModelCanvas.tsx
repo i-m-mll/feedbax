@@ -82,11 +82,14 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       const physical = port.direction === 'physical';
       const reason = data.portReasons?.get(portId(port));
       const available = data.canPick?.(port);
+      const connectable = !data.locked && !data.canPick;
       return <div key={portId(port)} className="studio-model-port" data-collapsed={data.collapsed}
         data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
         data-verdict={reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined}>
         <Handle id={portId(port)} type={port.direction === 'input' ? 'target' : 'source'}
-          position={location} isConnectable={!data.locked && !data.canPick} tabIndex={data.collapsed ? -1 : 0}
+          position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
+          tabIndex={data.collapsed ? -1 : 0}
+          aria-disabled={!connectable && !available}
           aria-label={port.name} className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
             event.stopPropagation();
             if (available) data.pickPort?.(port);

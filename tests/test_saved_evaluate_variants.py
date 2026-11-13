@@ -36,7 +36,9 @@ def _saved_variants():
     task = deepcopy(definition["documents"]["task"])
     signal = next(signal for signal in task["payload"]["signals"] if signal["id"] == "target_pos")
     signal["cells"][0]["value"] = {
-        "kind": "literal", "value": [-0.05, 0.10], "unit": "m",
+        "kind": "call",
+        "function": "vector",
+        "args": [{"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (-0.05, 0.10)],
     }
     definition["documents"]["replacement-task"] = task
 
@@ -70,7 +72,7 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     task = TaskDocument.model_validate(definition["documents"]["task"]["payload"])
     graph = lower_model_document("reach-model", model, registries.components).graph
     first = next(wire for wire in graph.wires if wire.target_node == "plant")
-    second = next(wire for wire in graph.wires if wire.source_node == "wrapper" and wire != first)
+    second = next(wire for wire in graph.wires if wire.target_node == "wrapper")
     baseline = deepcopy(definition["steps"]["baseline"])
     baseline["base"]["inline"]["params"]["variation"] = {}
     axes, ordered = {}, []
@@ -150,7 +152,9 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     )
     replacement_task = decoded.spec.params["variation"][0]["value"]
     signal = next(signal for signal in replacement_task["signals"] if signal["id"] == "target_pos")
-    assert signal["cells"][0]["value"]["value"] == [-0.05, 0.10]
+    assert signal["cells"][0]["value"]["args"] == [
+        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (-0.05, 0.10)
+    ]
 
     (train,) = jobs.admit_plan(
         folders, reviewed, run_keys=(RunKey("default", "train", "default"),), token="train",
