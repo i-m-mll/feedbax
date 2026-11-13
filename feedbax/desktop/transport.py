@@ -31,8 +31,9 @@ fetch("/_desktop/exchange", { method: "POST", headers: {"X-Feedbax-Ticket": tick
   .then(response => {
     if (!response.ok) throw Error();
     const project = response.headers.get("X-Feedbax-Project");
-    if (!project) throw Error();
-    location.replace("/?project=" + encodeURIComponent(project));
+    if (project) location.replace("/?project=" + encodeURIComponent(project));
+    else if (response.headers.get("X-Feedbax-Activity") === "1") location.replace("/?activity=1");
+    else throw Error();
   })
   .catch(() => {
     document.querySelector("#status").textContent =
@@ -53,12 +54,13 @@ class _TicketRequest(StrictModel):
     project_file: Path | None = None
     project_id: str | None = None
     folder_identity: tuple[int, int] | None = None
+    activity: bool = False
 
 
 @dataclass(frozen=True)
 class _Ticket:
     expires: float
-    project_id: str
+    project_id: str | None
 
 
 class DesktopTransport:
@@ -69,7 +71,7 @@ class DesktopTransport:
         self.session = secrets.token_urlsafe(32)
         self.tickets: dict[str, _Ticket] = {}
 
-    def issue_ticket(self, project_id: str) -> str:
+    def issue_ticket(self, project_id: str | None) -> str:
         now = time.monotonic()
         self.tickets = {token: ticket for token, ticket in self.tickets.items() if ticket.expires > now}
         if len(self.tickets) >= 32:
@@ -83,10 +85,15 @@ class DesktopTransport:
         async def ticket(request: _TicketRequest):
             if is_stopping():
                 raise HTTPException(503, "Studio service is stopping")
-            if sum(value is not None for value in (request.project_folder, request.project_file, request.project_id)) > 1:
-                raise HTTPException(422, "Select a folder, a declaration, or one project to reconnect.")
+            if sum((
+                request.project_folder is not None, request.project_file is not None,
+                request.project_id is not None, request.activity,
+            )) > 1:
+                raise HTTPException(422, "Select one folder, declaration, project, or Activity.")
             if request.folder_identity is not None and request.project_folder is None:
                 raise HTTPException(422, "Restoring a project requires its folder.")
+            if request.activity:
+                return {"ticket": self.issue_ticket(None)}
             folders = self.app.state.project_folders
             try:
                 if request.project_folder is not None:
@@ -154,7 +161,10 @@ class DesktopTransport:
                 await self._deny(scope, receive, send)
                 return
             response = Response(status_code=204, headers=_BROWSER_HEADERS)
-            response.headers["x-feedbax-project"] = ticket.project_id
+            if ticket.project_id is None:
+                response.headers["x-feedbax-activity"] = "1"
+            else:
+                response.headers["x-feedbax-project"] = ticket.project_id
             response.set_cookie(_COOKIE, self.session, httponly=True, samesite="strict")
         elif (
             path.startswith(f"{CONTROL_ROUTE}/")

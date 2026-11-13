@@ -31,6 +31,25 @@ def _service_lock(directory: Path):
         os.close(fd)
 
 
+def _register_stop(app, server) -> None:
+    from fastapi import HTTPException
+
+    lock = asyncio.Lock()
+
+    @app.post(CONTROL_ROUTE + "/stop")
+    async def stop(request: dict):
+        disposition = request.get("disposition")
+        if disposition not in ("defer", "checkpoint", "force"):
+            raise HTTPException(422, "select defer, checkpoint, or force")
+        async with lock:
+            if server.should_exit:
+                raise HTTPException(409, "Studio service is already stopping")
+            result = await app.state.desktop_jobs.stop(disposition=disposition)
+            if result["status"] == "ready_to_stop":
+                server.should_exit = True
+            return result
+
+
 async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket) -> None:
     from hashlib import sha256
     from importlib.metadata import version
@@ -38,9 +57,9 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
     import jax
     import jaxlib
     import uvicorn
-    from fastapi import HTTPException
     from starlette.staticfiles import StaticFiles
 
+    from feedbax.desktop.activity import register_activity
     from feedbax.desktop.preferences import register_preferences
     from feedbax.desktop.transport import DesktopTransport
     from feedbax.orchestration.revision import assert_feedbax_revision_exact
@@ -89,7 +108,6 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
             lifespan="on",
         )
     )
-    stop_lock = asyncio.Lock()
 
     @app.get(CONTROL_ROUTE + "/health")
     async def health():
@@ -105,6 +123,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
         }
 
     transport.register_ticket_route(lambda: server.should_exit)
+    register_activity(app, release.digest)
 
     @app.get("/api/desktop/jobs")
     async def jobs():
@@ -112,18 +131,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
 
     register_preferences(app, paths.settings / "studio.json")
 
-    @app.post(CONTROL_ROUTE + "/stop")
-    async def stop(request: dict):
-        disposition = request.get("disposition")
-        if disposition not in ("defer", "checkpoint", "force"):
-            raise HTTPException(422, "select defer, checkpoint, or force")
-        async with stop_lock:
-            if server.should_exit:
-                raise HTTPException(409, "Studio service is already stopping")
-            result = await app.state.desktop_jobs.stop(disposition=disposition)
-            if result["status"] == "ready_to_stop":
-                server.should_exit = True
-            return result
+    _register_stop(app, server)
 
     app.mount("/", StaticFiles(directory=release.resource("studio"), html=True), name="studio")
     control_socket_path = paths.control / "service.sock"
@@ -149,12 +157,15 @@ def main() -> None:
     project.add_argument("--project-folder")
     project.add_argument("--project-file")
     project.add_argument("--project-id")
+    project.add_argument("--activity", action="store_true", default=None)
     parser.add_argument("--folder-identity", nargs=2, type=int, metavar=("DEVICE", "INODE"))
     args = parser.parse_args()
     if args.action != "ticket" and any(
-        value is not None for value in (args.project_folder, args.project_id, args.project_file, args.folder_identity)
+        value is not None for value in (
+            args.project_folder, args.project_id, args.project_file, args.folder_identity, args.activity,
+        )
     ):
-        parser.error("project selection requires ticket")
+        parser.error("project or Activity selection requires ticket")
     if args.folder_identity is not None and args.project_folder is None:
         parser.error("--folder-identity requires --project-folder")
     os.umask(0o077)
@@ -171,13 +182,14 @@ def main() -> None:
             "control": str(paths.control),
             "projects": str(paths.web / "projects"),
             "storage_id": list(storage_id),
+            "release": release.digest,
         }))
         return
     if args.action != "serve":
         print(json.dumps(connect(
             release, paths, seconds=args.wait, action=args.action, disposition=args.disposition,
             project_folder=args.project_folder, project_id=args.project_id,
-            project_file=args.project_file,
+            project_file=args.project_file, activity=args.activity,
             folder_identity=tuple(args.folder_identity) if args.folder_identity is not None else None,
         )))
         return

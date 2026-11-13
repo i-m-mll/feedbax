@@ -1,7 +1,7 @@
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
 import { useState } from 'react';
 import type { StudioActivityJob } from '@/generated/studioContracts';
-import { useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
+import { StudioJobsProvider, useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
@@ -166,6 +166,7 @@ interface StudioActivityPaneProps {
   projectNames: ReadonlyMap<string, string>;
   onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
   onClose: () => void;
+  standalone?: boolean;
 }
 
 export function StudioActivityPane(props: StudioActivityPaneProps) {
@@ -176,7 +177,7 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
   );
 }
 
-function ActivityContent({ projectNames, onOpenRun, onClose }: StudioActivityPaneProps) {
+function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
   const actions = useStudioJobActions();
   const connection = useStudioJobConnection();
@@ -235,7 +236,9 @@ function ActivityContent({ projectNames, onOpenRun, onClose }: StudioActivityPan
           />
         ))}
       </ul>
-      {selected && <StudioRunInspector job={selected} />}
+      {selected && (standalone
+        ? <StudioJobsProvider projectId={selected.project_id}><StudioRunInspector job={selected} /></StudioJobsProvider>
+        : <StudioRunInspector job={selected} />)}
     </StudioRegion>
   );
 }

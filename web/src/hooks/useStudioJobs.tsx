@@ -39,7 +39,7 @@ function useStudioJobsContext() {
   return context;
 }
 
-export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ projectId: string }>) {
+export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ projectId: string | null }>) {
   const cache = useQueryClient();
   // The window owns replay. Closing its last inspector must not cancel it.
   useQuery<StudioJobEvent[]>({
@@ -100,13 +100,15 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         if (current !== generation) return;
         through = snapshot.cursor;
         snapshotReady = true;
-        await cache.fetchQuery({
-          queryKey: history,
-          queryFn: ({ signal }) =>
-            fetchStudioJobHistory(projectId, snapshot.oldest_cursor, snapshot.cursor, signal),
-          retry: false,
-          staleTime: 0,
-        });
+        if (projectId !== null) {
+          await cache.fetchQuery({
+            queryKey: history,
+            queryFn: ({ signal }) =>
+              fetchStudioJobHistory(projectId, snapshot.oldest_cursor, snapshot.cursor, signal),
+            retry: false,
+            staleTime: 0,
+          });
+        }
         if (current !== generation) return;
         historyReady = true;
       } catch {

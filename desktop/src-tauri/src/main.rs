@@ -1,3 +1,5 @@
+mod activity_window;
+mod background_activity;
 #[cfg(target_os = "macos")]
 mod native_frame;
 mod service;
@@ -847,6 +849,9 @@ fn start_windows(app: &AppHandle) {
 }
 
 fn reconnect(app: &AppHandle) {
+    if activity_window::reconnect(app) {
+        return;
+    }
     let windows = app.state::<Mutex<Windows>>();
     {
         let mut state = windows.lock().unwrap();
@@ -952,85 +957,20 @@ fn open_failed(app: &AppHandle, detail: &str) {
     drain_entries(app);
 }
 
-fn stop(app: &AppHandle, disposition: &'static str) {
-    run_operation(
-        app,
-        move || {
-            let release = service::Release::load()?;
-            Ok((release.stop(disposition)?, release.paths()?))
-        },
-        |app, answer, _paths| {
-            let summary = match answer["status"].as_str() {
-                Some("ready_to_stop") => {
-                    "The Studio service stopped. Select Reconnect to start it again."
-                }
-                Some("deferred") => {
-                    "The Studio service is still running. Active jobs need a disposition."
-                }
-                Some("timed_out") => {
-                    "Job shutdown reached its deadline. Inspect the jobs or request Force Stop."
-                }
-                Some("recovery_required") => {
-                    "Complete the interrupted Studio installation recovery before stopping the service."
-                }
-                _ => "Studio could not stop this installed service.",
-            };
-            status(
-                app,
-                summary,
-                &serde_json::to_string_pretty(&answer).expect("JSON value"),
-            )?;
-            if answer["status"] == "ready_to_stop" {
-                if let Some(window) = app.get_webview_window("studio") {
-                    window.destroy()?;
-                }
-            }
-            Ok(())
-        },
-    );
-}
-
 fn setup(app: &mut App) -> tauri::Result<()> {
     let reconnect = MenuItem::with_id(app, "reconnect", "Reconnect", true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, "stop", "Stop Service When Idle", true, None::<&str>)?;
-    let checkpoint = MenuItem::with_id(
-        app,
-        "checkpoint",
-        "Checkpoint and Stop Service",
-        true,
-        None::<&str>,
-    )?;
-    let force = MenuItem::with_id(
-        app,
-        "force",
-        "Force Stop Service (May Lose Unsaved Progress)",
-        true,
-        None::<&str>,
-    )?;
     let permissions =
         MenuItem::with_id(app, "permissions", "Open Login Items…", true, None::<&str>)?;
     let logs = MenuItem::with_id(app, "logs", "Open Service Logs", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", format!("Quit {TITLE}"), true, Some("Cmd+Q"))?;
-    let studio = Submenu::with_items(
-        app,
-        TITLE,
-        true,
-        &[
-            &reconnect,
-            &stop,
-            &checkpoint,
-            &force,
-            &permissions,
-            &logs,
-            &quit,
-        ],
-    )?;
+    let studio = Submenu::with_items(app, TITLE, true, &[&reconnect, &permissions, &logs, &quit])?;
     studio_menu::install(app.handle(), studio)?;
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let activity_launch = args.first().is_some_and(|arg| arg == "--activity");
     if args
         .first()
         .is_some_and(|arg| matches!(arg.as_str(), "install" | "recover" | "uninstall"))
@@ -1093,9 +1033,6 @@ fn main() {
                     let _ = status(app, "Could not clear recent projects.", &error.to_string());
                 }
             }
-            "stop" => stop(app, "defer"),
-            "checkpoint" => stop(app, "checkpoint"),
-            "force" => stop(app, "force"),
             "permissions" => service::open_login_items(),
             "quit" => {
                 #[cfg(target_os = "macos")]
@@ -1127,8 +1064,14 @@ fn main() {
         })
         .build(tauri::generate_context!());
     match application {
-        Ok(app) => app.run(|app, event| match event {
-            RunEvent::Ready => start_windows(app),
+        Ok(app) => app.run(move |app, event| match event {
+            RunEvent::Ready => {
+                start_windows(app);
+                if activity_launch {
+                    app.state::<Mutex<Windows>>().lock().unwrap().starting = false;
+                }
+                activity_window::observe(app, activity_launch);
+            }
             RunEvent::MainEventsCleared => drain_entries(app),
             #[cfg(target_os = "macos")]
             RunEvent::Opened { urls } => {

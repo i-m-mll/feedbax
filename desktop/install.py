@@ -119,7 +119,7 @@ def _require_closed_gui(app: Path) -> None:
     processes = subprocess.check_output(
         ["/bin/ps", "-axww", "-o", "command="], text=True, timeout=5,
     )
-    if executable in processes.splitlines():
+    if any(command in (executable, f"{executable} --activity") for command in processes.splitlines()):
         raise RuntimeError("Quit the installed Studio GUI before replacing or removing it")
 
 

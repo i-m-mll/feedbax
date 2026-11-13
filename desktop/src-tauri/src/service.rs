@@ -26,6 +26,7 @@ struct Manifest {
     resources: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 pub struct Release {
     contents: PathBuf,
     bundle: String,
@@ -40,6 +41,7 @@ pub struct Paths {
     pub projects: PathBuf,
     pub settings: PathBuf,
     pub storage_id: [u8; 16],
+    pub release: String,
 }
 
 impl Release {
@@ -182,7 +184,7 @@ impl Release {
 
     fn await_agent_absent(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(8);
-        let label = format!("gui/{}/{}.runtime", unsafe { libc::getuid() }, self.bundle);
+        let label = self.agent_label();
         loop {
             let output = Command::new("/bin/launchctl")
                 .args(["print", &label])
@@ -203,6 +205,10 @@ impl Release {
         }
     }
 
+    fn agent_label(&self) -> String {
+        format!("gui/{}/{}.runtime", unsafe { libc::getuid() }, self.bundle)
+    }
+
     pub fn connect(&self, ticket_args: &[&str]) -> Result<Value> {
         let paths = self.paths()?;
         let Some(_activation) = activation_lock(&paths)? else {
@@ -217,16 +223,29 @@ impl Release {
             Some("unavailable") => {}
             _ => return Ok(health),
         }
+        let registered = self.registration_status() == "enabled";
         let status = self.register()?;
         if status != "enabled" {
             return Ok(json!({"status": status}));
+        }
+        if registered {
+            let output = Command::new("/bin/launchctl")
+                .args(["kickstart", &self.agent_label()])
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Could not start the Studio service: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+                .into());
+            }
         }
         let mut wait = vec!["--wait", "20"];
         wait.extend_from_slice(ticket_args);
         self.call("ticket", &wait)
     }
 
-    pub fn stop(&self, disposition: &str) -> Result<Value> {
+    pub fn quit_background(&self) -> Result<Value> {
         let paths = self.paths()?;
         let Some(_activation) = activation_lock(&paths)? else {
             return Ok(json!({"status": "installing"}));
@@ -234,7 +253,20 @@ impl Release {
         if paths.control.join("installation.json").exists() {
             return Ok(json!({"status": "recovery_required"}));
         }
-        self.stop_locked(disposition)
+        self.call("stop", &["--disposition", "checkpoint"])
+    }
+
+    pub fn activity_ticket(&self, paths: &Paths) -> Result<Value> {
+        let _guard = self.activity_activation(paths)?;
+        self.call("ticket", &["--activity"])
+    }
+
+    pub fn activity_activation(&self, paths: &Paths) -> Result<File> {
+        let guard = activation_lock(paths)?.ok_or("A Studio installation is in progress")?;
+        if paths.control.join("installation.json").exists() {
+            return Err("Complete Studio installation recovery first".into());
+        }
+        Ok(guard)
     }
 
     fn stop_locked(&self, disposition: &str) -> Result<Value> {
@@ -258,8 +290,10 @@ impl Release {
     }
 
     fn serve(&self) -> Result<()> {
-        let logs = self.paths()?.logs;
+        let paths = self.paths()?;
+        let logs = &paths.logs;
         fs::create_dir_all(&logs)?;
+        let activity = crate::background_activity::Menu::new(self, &paths)?;
         let mut child = self
             .command("serve")
             .stdout(Stdio::piped())
@@ -272,7 +306,8 @@ impl Release {
         let (status, output, error) = thread::scope(|scope| {
             let output = scope.spawn(move || append_log(stdout, &output_log));
             let error = scope.spawn(move || append_log(stderr, &error_log));
-            (child.wait(), output.join(), error.join())
+            let status = activity.run(child);
+            (status, output.join(), error.join())
         });
         output.map_err(|_| "Studio stdout logger panicked")??;
         error.map_err(|_| "Studio stderr logger panicked")??;
@@ -281,6 +316,12 @@ impl Release {
             return Err(format!("Bundled Studio runtime exited with {status}").into());
         }
         Ok(())
+    }
+
+    pub fn bundle_path(&self) -> &Path {
+        self.contents
+            .parent()
+            .expect("installed Contents directory")
     }
 }
 

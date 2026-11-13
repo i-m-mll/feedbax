@@ -41,9 +41,9 @@ Run the installer commands on the executable in the unpacked app. The executable
 
 ## Service and data
 
-Studio's Quit command closes the GUI. Its per-user background service continues training and analysis. Reopen Studio and use Background jobs to inspect them. Cancel requests a cooperative training stop or interrupts an analysis job. A settled native training checkpoint can start a linked continuation. After a service crash, native training adopts verified surviving local workers, while interrupted HTTP worker jobs and analyses retain their last durable disposition and results.
+Studio's Quit command closes the GUI. Its per-user background service continues running jobs. The service shows the active run count in the menu bar while runs are active. Choose Activity to see those runs. Stop All requests checkpoints and Option reveals Force Stop All. Quit Service requests checkpoints and shuts down the service when its jobs settle. Open Studio again to start the service.
 
-The application menu has idle, checkpoint and force service stops, Reconnect, Login Items and Service Logs. Stop at a checkpoint can wait for the next supported training checkpoint. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
+The application menu has Reconnect, Login Items and Service Logs. A run that finishes or fails can notify you when its project window is in the background. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
 
 Installed files live inside the app bundle. Durable application state lives under `~/.feedbax`, with configuration in `config`, preferences in `settings` and the default workspace under `workspace`. Project-selected output locations retain models, checkpoints and results. `~/.cache/feedbax` contains disposable compilation files, temporary files and bounded service logs. Replacement and uninstall preserve durable state and project data.
 

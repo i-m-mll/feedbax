@@ -128,6 +128,7 @@ def connect(
     release: Release, paths: AppPaths, *, seconds: float, action: str, disposition: str,
     project_folder: str | None = None, project_id: str | None = None, project_file: str | None = None,
     folder_identity: tuple[int, int] | None = None,
+    activity: bool | None = None,
 ) -> dict:
     deadline = time.monotonic() + seconds
     while True:
@@ -147,7 +148,7 @@ def connect(
         if action == "ticket":
             body = {key: value for key, value in (
                 ("project_folder", project_folder), ("project_id", project_id), ("project_file", project_file),
-                ("folder_identity", folder_identity),
+                ("folder_identity", folder_identity), ("activity", activity),
             ) if value is not None}
             try:
                 result = call(paths, "ticket", body=body)
