@@ -1,15 +1,15 @@
 import { expect, it } from 'vitest';
 
-import { ModelDocumentSchema } from '@/generated/studioContracts';
-import { modelAddressFromText, modelAddressText } from './modelAddress';
+import { ModelAddressSchema, ModelDocumentSchema } from '@/generated/studioContracts';
+import { canonicalJsonV2 } from './canonicalJsonV2';
 
 it('round-trips the canonical address of a field on a nested port', () => {
   const text = '{"composites":["outer","inner"],"document":"model","element":{"kind":"field",'
     + '"parent":{"end":{"component":"same","direction":"input","owner":"component",'
     + '"port":"value"},"kind":"port"},"path":["fields","array/length",0]}}';
-  expect(modelAddressText(modelAddressFromText(text))).toBe(text);
-  expect(() => modelAddressFromText(text.replace(',0]', ',true]'))).toThrow();
-  expect(() => modelAddressFromText(text + ' ')).toThrow(/canonical JSON/);
+  expect(canonicalJsonV2(ModelAddressSchema.parse(JSON.parse(text)))).toBe(text);
+  expect(() => ModelAddressSchema.parse(JSON.parse(text.replace(',0]', ',true]')))).toThrow();
+  expect(canonicalJsonV2(ModelAddressSchema.parse(JSON.parse(text + ' ')))).toBe(text);
 });
 
 it('validates a recursive model and refuses a malformed ID below the root', () => {
