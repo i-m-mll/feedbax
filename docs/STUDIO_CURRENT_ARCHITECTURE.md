@@ -1,166 +1,31 @@
-# Feedbax Studio Current Architecture
+# Feedbax Studio current architecture
 
-This is the short orientation path for agents working on Feedbax Studio. The
-older `docs/WEB_UI_SPEC.md` is a historical 2026-01 draft, not the current
-architecture contract.
+## Mounted application
 
-## Source Of Truth
+The browser and desktop Studio share the React application rooted at [`web/src/main.tsx`](../web/src/main.tsx) and [`App.tsx`](../web/src/App.tsx). The browser root creates a managed project through `POST /api/projects` and puts its ID in the URL. `/?project=<id>` opens an existing project. `/?activity=1` opens standalone Activity. The desktop File picker and Finder entry points open project folders or declarations through the native control socket and take the webview to the same managed project route. The desktop shell and control transport are described in [`desktop/README.md`](../desktop/README.md).
 
-The graph is the model. The Studio canvas and its subgraphs describe the model
-that the worker builds and trains. Do not synthesize background architecture,
-fall back to stale outer params, or treat missing subgraphs as a recoverable
-default. If the graph is incomplete, raise or surface a clear error.
+[`SavedTrainWorkspace.tsx`](../web/src/features/projectFolder/SavedTrainWorkspace.tsx) opens one project editor and supplies [`ProjectWindow.tsx`](../web/src/features/projectWindow/ProjectWindow.tsx) with the project’s Plan, selection, views, and commands. The map and its drawer, the two Details slots, and the inspector share a variant-qualified selection with Back and Forward history. The available tabs follow the selected step and its data. Train exposes Runs, Model, Task, Objective, Training, Scene, and Results as applicable. Evaluate uses Runs, Results, and Scene for saved evaluation and replay where available. Analyze exposes Analysis and Figures, and Report exposes Document. Activity follows the shared Jobs stream and can open a run in its project.
 
-Durable Studio specs and emitted payloads must keep explicit schema identity or
-an explicit migration/rejection path. Validation-only frontend shapes are not a
-substitute for durable schema handling.
+The managed Model canvas is in [`web/src/features/projectFolder/model/`](../web/src/features/projectFolder/model/). [`managedProjectDetails.tsx`](../web/src/features/projectFolder/managedProjectDetails.tsx) connects the saved Model, Task, and Scene projections to mounted views. Scene uses the Scenario projection and replay types and domain-specific model data. [`studioCommands.ts`](../web/src/features/projectWindow/studioCommands.ts) defines the shared command bindings. The current selection, focus, and command availability govern the palette, keyboard actions, and native project menus.
 
-## Frontend Shape
+## Authored files, Plan, and Jobs
 
-Studio is a React/Vite/TypeScript app in `web/`. It uses Zustand for local
-stores, TanStack Query for server state, React Flow (`@xyflow/react`) for the
-model canvas, generated Zod contracts, Tailwind CSS, lucide icons, Plotly, and
-Recharts. `web/package.json` is the dependency authority; Radix UI and React
-DnD are not current dependencies.
+The [text project codec](../feedbax/contracts/project_io.py) defines the folder format. A single `*.feedbax` declaration names the project and its Store. Authored JSON files hold documents and steps. `presentation.json` holds shared layout independently of scientific identity. [`openProjectEditor.ts`](../web/src/features/projectFolder/openProjectEditor.ts) and [`projectEditController.ts`](../web/src/features/projectFolder/projectEditController.ts) manage optimistic edits, revision-checked saves, Undo and Redo, and reconciliation against outside edits. Pane modes and dimensions are window preferences. The project-folder service verifies and applies writes in the [core folder implementation](../feedbax/project_folder.py).
 
-The main surfaces are:
+[`/api/projects`](../feedbax/web/api/projects.py) serves open, authoring, Model operations, projection, history replay, and presentation. [`ProjectPlanService`](../feedbax/web/services/project_plan.py) compiles the acknowledged folder revision and joins its run keys to Jobs attempts. The managed window requests that projection through `GET /api/projects/{id}/train-runs?revision=…&window_map=true`. The Plan supplies the map, runs, coordinates, lineage, and Problems. The Jobs routes in [`feedbax/web/api/jobs.py`](../feedbax/web/api/jobs.py) handle admission, Stop, Resume, snapshots, and replayable server-sent events. The [shared browser Jobs client](../web/src/jobs/studioJobWorker.ts) follows the origin’s event stream and resynchronizes its projection after disconnects. The [local Host](../feedbax/host/daemon.py) owns execution and attempts beyond the browser or API process. A local Evaluate candidate uses the separate explicit `FEEDBAX_STUDIO_EVALUATION_CANDIDATE=1` gate.
 
-- `web/src/components/layout/`: top shelf, bottom shelf, header, sidebars,
-  settings overlay, and shelf sizing behavior.
-- `web/src/components/canvas/`: React Flow canvas, node renderers, routed
-  edges, state-flow edges, tap nodes, subgraph nodes, and port context menus.
-- `web/src/components/panels/`: training/evaluation/analysis/report stage
-  panels, properties, validation, console, and pipeline-stage workspaces.
-- `web/src/components/scenario/`: the top-pane Workspace view, task projection,
-  observable/objective projections, and scenario inspection.
-- `web/src/components/ui/`, `web/src/components/primitives/` if present, and
-  nearby files: shared primitives and visual tokens.
-- `web/src/stores/`: graph, workspace, layout, training, run, analysis,
-  trajectory, statistics, settings, and project-tab state.
+TypeScript API contracts are generated from Python models by [`scripts/generate_studio_contracts.py`](../scripts/generate_studio_contracts.py). [`studioContracts.ts`](../web/src/generated/studioContracts.ts) is the generated output. The [Studio vocabulary table](../web/src/components/activity/vocabulary.json) supplies names, statuses, and reason templates for converted surfaces.
 
-The top shelf owns the model/task/scenario workspace. The bottom shelf owns the
-stage workspace and console mode. Stage panels should read and write through
-`workspaceStore` and the generated contract types rather than inventing local
-payload shapes.
+## Supported backend boundaries
 
-The figure gallery, statistics panel, and standalone trajectory viewer are reserved for upcoming surfaces. CI checks imports from the production entry point and those reserved modules, and checks that exported client functions have a caller.
+[`feedbax/web/app.py`](../feedbax/web/app.py) is the public FastAPI route inventory. Components, domains, and provider registries supply authoring metadata. The Scenario task-trial sampler, domain registry, and MuJoCo asset intake retain their explicit endpoints. The managed window uses Plan and Jobs for training and activity. The retired Studio training and simulation transports have no routes in this app.
 
-Generated frontend contracts live in
-`web/src/generated/studioContracts.ts` and are produced by
-`scripts/generate_studio_contracts.py` from Python/Pydantic contract models.
-Do not edit the generated file by hand.
+The remaining orchestration, run discovery, analysis, figure, trajectory, statistics, and inspection routers are separate backend surfaces. Their presence in FastAPI does not imply that Studio mounts a standalone pane for each of them. The managed Figures view comes from the selected authored analysis. The retained legacy graph and worker internals support compatibility callers and explicit project migration. For the file and API contracts, use the [downstream interface policy](design/downstream_interface_stability.md), the [typed domain design](design/typed_subgraph_domains.md), and the current route handlers.
 
-## Save And Persistence
+## Verification
 
-Project save state is optimistic-concurrency protected. The backend increments
-`save_revision` on every accepted project write. Frontend saves send the current
-revision through `expected_save_revision`/`If-Match`; stale saves return HTTP
-409 with expected/current revision details. The frontend fetches the server copy
-where possible and shows concrete local-versus-server conflict sections.
+Follow the [source setup](../README.md) before running `scripts/dev.sh`. Its default launch creates a temporary home. `--home <dir>` keeps an explicit project and run home. `--preview` builds and serves the production browser bundle. Both modes proxy to the isolated loopback API. [`.claude/launch.json`](../.claude/launch.json) names both launch modes.
 
-The persistence coordinator debounces backend writes. On pagehide Studio records the local project tabs synchronously, so a reload can resume a pending save. The separate `WorkspaceDocument` is the durable authority for graph layout, viewport, analysis-page presentation, workspace-, stage-, and scenario-level view state, and revision-pinned semantic anchors. The backend receives the semantic workspace without UI state. Studio composes the presentation fields into its runtime view when loading a project. Same-project editing is detected through `BroadcastChannel`.
+From `web/`, `bun scripts/check-reachability.ts` checks the production import graph rooted at `main.tsx` and checks for exported API functions without references in that graph. [CI](../.github/workflows/ci.yml) invokes it explicitly. `bun run test:studio <spec-or-pattern>` starts a real isolated backend through the [Studio Playwright configuration](../web/playwright.studio.config.ts). Set `FEEDBAX_STUDIO_E2E_PREVIEW=1` to use the production browser build. `bun run test:e2e` runs the separate mocked smoke configuration.
 
-Local UI preferences are intentionally persisted where visible state should
-survive refreshes. Examples include shelf/sidebar sizing and mode in
-`layoutStore`, local project-tab restore state in `projectsStore`, and
-shortcut-triggered save/delete/fit-view behavior in `useShortcuts`.
-
-## Backend Shape
-
-The Studio backend is FastAPI under `feedbax/web/`.
-
-- `feedbax/web/app.py` wires REST and WebSocket routes.
-- `feedbax/web/api/` contains graph, component, provider/schema, training,
-  execution, run, analysis, figure, trajectory, statistics, inspection, and
-  orchestration routes.
-- `feedbax/web/services/graph_service.py` stores graph projects as filesystem
-  JSON files under the configured graphs directory. It normalizes/migrates
-  project payloads, validates graph connectivity, and enforces `save_revision`.
-  SQLite is not the current Studio graph/project store.
-- `feedbax/web/api/provider.py` exposes provider registries, schema
-  enumeration, execution planning, Studio training preparation/local execution,
-  and pipeline materialization.
-- `feedbax/web/services/training_service.py` starts a local
-  `feedbax.web.worker` subprocess on demand or forwards to a configured remote
-  worker. It relays worker SSE progress, tracks monotonic event/status state,
-  emits schema-versioned error/resync events, and proxies checkpoint metadata
-  and checkpoint downloads.
-- `feedbax/orchestration/controller.py` is the durable authority for Studio
-  invocation intent, effect reservations, operator authentication, external
-  effects, attempts, recovery, cancellation, and artifact inspection. Its
-  append-only event log reconstructs status; the web layer owns no parallel
-  cloud state machine. GCP is an adapter behind this controller and an inert
-  reservation must be authenticated by identity before provider contact.
-- `feedbax/web/worker/client.py` is the HTTP/SSE client for worker health,
-  start/stop/status/checkpoint endpoints, streaming, reconnect, and resync.
-- `feedbax/web/ws/training.py` relays the worker SSE stream to browser
-  WebSocket clients and closes defensively on disconnects.
-
-The local development worker is an explicit loopback origin such as
-`http://127.0.0.1:8765` and needs no credential. Every other worker is remote:
-it must use HTTPS, resolve only to public network addresses, match one exact
-origin in the server-side `FEEDBAX_WORKER_ALLOWED_ORIGINS` JSON array, and use
-the bearer credential supplied through `FEEDBAX_WORKER_AUTH_TOKEN` or the
-connect API. Worker HTTP, checkpoint, SSE, and browser WebSocket consumption
-share finite time, byte, event-size, and event-count limits. Redirects and
-unsafe or unverifiable configurations are refused. The current GCP Studio
-adapter is unavailable because it cannot yet establish this verified HTTPS
-worker identity; the provider-neutral orchestration core remains the lifecycle
-authority.
-
-The simulation WebSocket at `feedbax/web/ws/simulation.py` currently sends one
-empty `simulation_state` message and closes. Do not document it as a production
-simulation preview.
-
-## Design Routing
-
-Use this file for current orientation, then route to narrower authorities:
-
-- Model graph semantics: `docs/design/SPEC_EAGER_MODELS.md`,
-  `docs/COMPONENTS_AND_WIRES_SPEC.md`, `docs/STATE_MERGE_SEMANTICS_SPEC.md`,
-  and `docs/STATE_WIRE_TAPS_SPEC.md`.
-- Typed subgraph domains, including acausal/mechanics/penzai interiors and
-  compile-status routing: `docs/design/typed_subgraph_domains.md`; umbrella
-  `6116155`.
-- Loss and training UI details: `docs/LOSS_UI_SPEC.md`; durable cloud operations
-  are described above and implemented by the controller protocol.
-- Historical UI design conversation and old issue lists:
-  `docs/WEB_UI_RESPONSE_2026-01-27.md` and `docs/WEB_UI_ISSUES*.md`.
-- Pipeline pane and Workspace view behavior: current code in
-  `web/src/components/panels/PipelineStageWorkspace.tsx`,
-  `web/src/components/panels/RunCollectionStagePanel.tsx`,
-  `web/src/components/scenario/ScenarioProjectionWorkspace.tsx`, and
-  `web/src/stores/workspaceStore.ts` is the current authority unless a newer
-  checked-in design doc appears.
-- Studio platform-health umbrella planning: read the Mandible umbrella and
-  child issues, especially `e59ed00`, when working in that umbrella. This
-  checkout does not currently contain a standalone platform-health design doc.
-
-## Verification Entry Points
-
-Use the narrowest check that matches the change while iterating. Common Studio
-checks are:
-
-- Full integration bar at lane closeout: `scripts/full_suite.sh`.
-- Generated contract freshness:
-  `uv run --no-sync pytest tests/test_studio_api_contracts.py::test_generated_studio_contracts_are_current -q`.
-  To regenerate, run `cd web && bun run generate:contracts`.
-- Backend focused tests: relevant `uv run --no-sync pytest ...` paths such as
-  `tests/test_studio_api_contracts.py`, `tests/test_studio_workspace.py`,
-  `tests/test_studio_execution.py`, `tests/test_studio_runs_api.py`, and
-  `tests/test_studio_analysis_jobs.py`.
-- Frontend build: `cd web && bun run build`.
-- Frontend focused tests: `cd web && bun run test <path-or-pattern>`.
-
-For docs-only updates, use `git diff --check` and targeted searches for stale terms.
-
-## Known Non-Claims
-
-Do not claim these are complete unless the code changes first:
-
-- The simulation WebSocket is not a production preview stream.
-- Python export from `GraphService.export_graph(..., "python")` is still a
-  TODO placeholder.
-- Studio graph/project storage is filesystem JSON, not SQLite.
-- Training is not an in-process thread in the backend. The current local path
-  is a worker subprocess with HTTP/SSE, relayed to browser WebSockets.
+The older [web UI specification](WEB_UI_SPEC.md) and [design response](WEB_UI_RESPONSE_2026-01-27.md) record the architecture before the managed project window.

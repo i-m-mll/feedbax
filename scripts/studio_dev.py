@@ -15,11 +15,11 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import mkdtemp
 from typing import BinaryIO
 
 from feedbax.desktop.release import AppPaths
-from feedbax.host import HostClient
+from feedbax.host import HostClient, HostError
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -80,22 +80,28 @@ def try_test_lock(lease: BinaryIO, mode: int, offset: int) -> bool:
     return True
 
 
-def stop_test_host(root: Path) -> None:
+def stop_isolated_host(root: Path) -> None:
     if not root.exists():
         return
     host = HostClient(root)
-    active = [job["id"] for job in host.jobs() if job["outcome"] is None]
+    try:
+        snapshot = host.jobs_snapshot(start_host=False)
+    except HostError as error:
+        if isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError)):
+            return
+        raise
+    active = [job["id"] for job in snapshot["jobs"] if job["outcome"] is None]
     if active:
         host.stop(active, "force")
         wait_until(
             lambda: all(job["outcome"] is not None for job in host.jobs()),
-            f"Studio test jobs did not settle in {root}",
+            f"Isolated Studio jobs did not settle in {root}",
         )
     pid = host.ping()["pid"]
     if type(pid) is not int or pid <= 1:
-        raise RuntimeError(f"Invalid Studio test host PID in {root}")
+        raise RuntimeError(f"Invalid isolated Studio host PID in {root}")
     os.kill(pid, signal.SIGTERM)
-    wait_until(lambda: not process_exists(pid), f"Studio test host did not exit in {root}")
+    wait_until(lambda: not process_exists(pid), f"Isolated Studio host did not exit in {root}")
 
 
 def finish_test_home(home: Path, host_root: Path, lease: BinaryIO, *, remove: bool) -> None:
@@ -104,7 +110,7 @@ def finish_test_home(home: Path, host_root: Path, lease: BinaryIO, *, remove: bo
         f"A restarted Studio backend is still using {home}",
         timeout=6,
     )
-    stop_test_host(host_root)
+    stop_isolated_host(host_root)
     if remove:
         shutil.rmtree(home)
 
@@ -127,11 +133,7 @@ def claim_test_home(home: Path, paths: AppPaths, args: argparse.Namespace, scope
     scope.callback(finish_test_home, home, paths.host, lease, remove=args.remove_test_home)
 
 
-def serve(args: argparse.Namespace, scope: ExitStack, backend_app: str) -> int:
-    if args.home is None:
-        home = Path(scope.enter_context(TemporaryDirectory(prefix="feedbax-studio-"))).resolve()
-    else:
-        home = args.home.expanduser().resolve()
+def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: str) -> int:
     paths = AppPaths.resolve(instance_root=home)
     if args.owner is not None:
         claim_test_home(home, paths, args, scope)
@@ -203,12 +205,20 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     signal.signal(signal.SIGINT, exit_on_signal)
     signal.signal(signal.SIGTERM, exit_on_signal)
     with ExitStack() as scope:
+        if args.home is None:
+            # Retain the home if cleanup fails and a detached worker may still need it.
+            home = Path(mkdtemp(prefix="feedbax-studio-")).resolve()
+        else:
+            home = args.home.expanduser().resolve()
         try:
-            return serve(args, scope, backend_app)
+            return serve(home, args, scope, backend_app)
         finally:
-            if args.owner is not None:
-                signal.signal(signal.SIGINT, signal.SIG_IGN)
-                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            scope.close()
+            if args.home is None:
+                stop_isolated_host(AppPaths.resolve(instance_root=home).host)
+                shutil.rmtree(home)
 
 
 if __name__ == "__main__":
