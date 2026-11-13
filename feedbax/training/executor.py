@@ -1047,6 +1047,7 @@ def _execute_training_run(
             owner=f"training-executor:{resolved_run_id}",
             scope=(
                 "model_only" if initialization is not None and initialization.mode == "initialize_from"
+                else checkpoint_fork_plan_bindings.source_scope if checkpoint_fork_plan_bindings is not None
                 else "full"
             ),
         ) as canonical_source_root:
@@ -2709,9 +2710,11 @@ def _resolve_checkpoint_fork_initialization(
         raise TrainingRunExecutorError(
             "checkpoint fork target run-spec binding disagrees with the executed run spec"
         )
-    authenticated_source = authenticate_published_checkpoint_custody(source_root)
-    source_structure = checkpoint_structure_from_manifest(authenticated_source.manifest)
-    target_names = [slot.slot for slot in source_structure.slots]
+    authenticated_source = authenticate_published_checkpoint_custody(
+        source_root, scope=bindings.source_scope,
+    )
+    manifest = authenticated_source.manifest
+    target_names = [slot.slot for slot in manifest.slots]
     if set(target_names) != set(bound_target_slots) or set(target_names) - set(target_slots):
         raise TrainingRunExecutorError(
             "checkpoint fork target template must cover exactly the source checkpoint slots"
@@ -2741,6 +2744,13 @@ def _resolve_checkpoint_fork_initialization(
         raise TrainingRunExecutorError(
             "graph-changing execution requires exactly one target_post semantic transform step"
         )
+    if isinstance(bindings.source_scope, frozenset):
+        if set(target_names) - bindings.source_scope != semantic_steps[0].target_only_slots.keys():
+            raise TrainingRunExecutorError("Checkpoint projection differs from target initialization slots")
+        manifest = manifest.model_copy(update={
+            "slots": [slot for slot in manifest.slots if slot.slot in bindings.source_scope],
+        })
+    source_structure = checkpoint_structure_from_manifest(manifest)
     try:
         semantic_runtime = bind_semantic_checkpoint_fork_step(
             semantic_steps[0],

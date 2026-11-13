@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.checkpoint_projection import CarriedOptimizer
 from feedbax.contracts.checkpoints import (
     CheckpointForkHistoryPolicy,
     CheckpointForkPlan,
@@ -64,12 +65,13 @@ def plan_studio_checkpoint_fork(
     custody = authenticate_checkpoint_custody_ref(
         source.model_copy(update={"uri": pointer.manifest_relative_path}),
         allowed_root=source_root,
+        scope=policy.source_slots,
     )
     manifest = custody.manifest
-    expected_media = dict.fromkeys(STANDARD_TRAIN_SLOTS, STANDARD_TRAIN_STATE_MEDIA_TYPE)
+    expected_media = dict.fromkeys(policy.source_slots & STANDARD_TRAIN_SLOTS.keys(), STANDARD_TRAIN_STATE_MEDIA_TYPE)
     expected_media["model"] = MODEL_TREE_MEDIA_TYPE
-    actual_media = {slot.slot: slot.media_type for slot in manifest.slots}
-    for name in sorted(expected_media.keys() | actual_media.keys()):
+    actual_media = {slot.slot: slot.media_type for slot in manifest.slots if slot.slot in policy.source_slots}
+    for name in sorted(expected_media):
         if actual_media.get(name) != expected_media.get(name):
             raise CheckpointCompatibilityError(
                 f"/slots/{name}: no typed standard Train state binding for the source slot"
@@ -84,14 +86,10 @@ def plan_studio_checkpoint_fork(
         preserve_optimizer=policy.optimizer == "preserve",
     )
     if policy.optimizer == "preserve":
-        old, new = source_method.optimizer, method.optimizer
-        if (
-            old.type != new.type
-            or (old.lr_schedule is None) != (new.lr_schedule is None)
-            or {k: v for k, v in old.params.items() if k != "learning_rate"}
-            != {k: v for k, v in new.params.items() if k != "learning_rate"}
-            or source_spec.training_config.grad_clip != spec.training_config.grad_clip
-        ):
+        old = CarriedOptimizer.from_spec(source_method.optimizer, source_spec.training_config.grad_clip)
+        new = CarriedOptimizer.from_spec(method.optimizer, spec.training_config.grad_clip)
+        same_schedule_kind = (source_method.optimizer.lr_schedule is None) == (method.optimizer.lr_schedule is None)
+        if old != new or not same_schedule_kind:
             raise CheckpointCompatibilityError(
                 "/slots/optimizer: optimizer change requires an explicit reset"
             )
@@ -117,6 +115,7 @@ def plan_studio_checkpoint_fork(
         update={
             "run_id": job_id,
             "schedule_origin_step": origin,
+            "metrics": {},
         }
     )
     transformed_slots = ["model", "optimizer"]
@@ -132,6 +131,10 @@ def plan_studio_checkpoint_fork(
     step = CheckpointForkTransformStep(
         step_id="studio_stateful_successor",
         stage="target_post",
+        target_only_slots={
+            name: {"initialization": "target_request"} for name in transformed_slots
+            if name not in policy.source_slots
+        },
         records=[
             CheckpointForkTransformRecord(
                 slot=name,
@@ -170,6 +173,7 @@ def plan_studio_checkpoint_fork(
         run_specs={"run": spec},
         slot_templates={"slots": slots},
         semantic_model_writers={"successor": writer},
+        source_scope=policy.source_slots,
     )
 
 

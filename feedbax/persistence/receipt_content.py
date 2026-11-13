@@ -1,6 +1,7 @@
 """Resolve and verify the canonical Store objects behind receipt content."""
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
+from feedbax.contracts.checkpoint_projection import ContinuationEncoding, ContinuationOccurrence
 from feedbax.contracts.effective_success import Product, success_content_ref
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_ARRAY_PATH,
@@ -47,11 +48,22 @@ def success_content_objects(
     if isinstance(ref, ContentObjectRef):
         return (ref,)
     encoding = None
+    extra: tuple[ContentObjectRef, ...] = ()
     if content.media_type == MODEL_TREE_MEDIA_TYPE:
         if not isinstance(value, Product):
             raise ValueError("A semantic model binding requires a product array descriptor")
-        encoding = SemanticModelEncoding.model_validate(value.descriptor)
-    return tree_objects(store, ref, model_encoding=encoding)
+        descriptor = value.descriptor
+        if isinstance(descriptor, dict) and "schema_version" in descriptor:
+            projection = ContinuationEncoding.model_validate(descriptor)
+            encoding = projection.model
+            extra = tuple(slot.content for slot in projection.array_slots.values())
+        else:
+            encoding = SemanticModelEncoding.model_validate(descriptor)
+    return (*tree_objects(store, ref, model_encoding=encoding), *extra)
+
+
+def continuation_objects(occurrence: ContinuationOccurrence) -> tuple[ContentObjectRef, ...]:
+    return tuple(slot.content for slot in (occurrence.batch_counter, occurrence.optimizer, occurrence.prng))
 
 
 def verify_success_content(

@@ -14,7 +14,7 @@ from feedbax.host import live_evaluate
 from feedbax.host.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
 )
-from feedbax.host.completion import CompletionFileError, verify_completion_files
+from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 
@@ -226,7 +226,7 @@ class Store:
         self.append(row, kind, data)
 
     def _publish_train_result(self, row: sqlite3.Row, outcome: dict) -> dict:
-        from feedbax.host.train_success import publish_train_success
+        from feedbax.host.train_success import ContinuationEvidenceUnavailable, publish_train_success
 
         launch = json.loads(row["launch"])
         payload = launch["payload"]
@@ -253,6 +253,10 @@ class Store:
             ref = publish_train_success(
                 Path(payload["manifest_root"]), row["id"], row["request"], payload, outcome, predecessor,
             )
+        except ContinuationEvidenceUnavailable as error:
+            return outcome | {"store_publication_error": {
+                "code": "input_unavailable", "message": str(error),
+            }}
         except (ValueError, KeyError, TypeError, OSError) as error:
             if isinstance(error, OSError) and error.errno in {
                 errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EBUSY, errno.EINTR,
@@ -815,7 +819,9 @@ class Store:
                 results.append({"job_id": job_id, "state": state})
         return results
 
-    def _completed_product(self, attempt: sqlite3.Row) -> tuple[dict | None, str | None]:
+    def _completed_product(
+        self, attempt: sqlite3.Row, train_slots: frozenset[str] | None = None,
+    ) -> tuple[dict | None, str | None]:
         """Authenticate a successful attempt's product or report its absence."""
         outcome = json.loads(attempt["outcome"])
         completion = outcome.get("completion")
@@ -833,7 +839,7 @@ class Store:
                 raise CompletionFileError(reported["message"])
             return None, reported["message"]
         self._check_completion_identity(attempt, outcome)
-        verify_completion_files(completion)
+        verify_completion_files(completion, train_slots=train_slots)
         return completion, None
 
     def _check_completion_identity(self, attempt: sqlite3.Row, outcome: dict) -> None:
@@ -955,7 +961,8 @@ class Store:
         return None
 
     def _completion_candidate(
-        self, anchor: str, selection: CheckpointSelection | None = None, *, tip: str | None = None,
+        self, anchor: str, selection: CheckpointSelection | None = None, *,
+        train_slots: frozenset[str] | None = None, tip: str | None = None,
     ) -> tuple[dict | None, dict | None, list[_CompletionRejection]]:
         """Select an authenticated final product or exact checkpoint publications.
 
@@ -1056,7 +1063,7 @@ class Store:
             state = attempt["state"]
             if state == "succeeded" and selection is None:
                 try:
-                    completion, message = self._completed_product(attempt)
+                    completion, message = self._completed_product(attempt, train_slots)
                 except CompletionFileError as error:
                     rejections.append(_CompletionRejection(attempt_id, "completion", str(error)))
                 else:
@@ -1210,6 +1217,14 @@ class Store:
                 anchor = edge["parent"]
                 launch = json.loads(job["launch"])
                 selection = requested_checkpoint_selection(job["request"], launch)
+                try:
+                    train_slots = train_source_slots(launch)
+                except CompletionFileError as error:
+                    self.finished(job, {
+                        "outcome": "blocked",
+                        "error": {"code": "invalid_request", "message": str(error)},
+                    })
+                    continue
                 is_live = json.loads(job["data"]).get("placement") == "live"
                 tip = live_evaluate.pinned_tip(self.db, job["id"]) if is_live else None
                 if is_live and tip is None:
@@ -1222,9 +1237,11 @@ class Store:
                 if tip is not None and tip["state"] in LIVE_STATES:
                     continue
                 tip_id = tip["id"] if tip is not None else None
-                key = anchor, selection, tip_id
+                key = anchor, selection, train_slots, tip_id
                 if key not in candidates:
-                    candidates[key] = self._completion_candidate(anchor, selection, tip=tip_id)
+                    candidates[key] = self._completion_candidate(
+                        anchor, selection, train_slots=train_slots, tip=tip_id,
+                    )
                 binding, error, rejections = candidates[key]
                 self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:

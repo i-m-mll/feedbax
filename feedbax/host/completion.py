@@ -18,6 +18,40 @@ class CompletionFileError(ValueError):
     """A pinned completion file is absent, malformed or changed."""
 
 
+def train_source_slots(launch: dict) -> frozenset[str] | None:
+    if launch.get("warm_entrypoint") != "feedbax.training_host_worker:main":
+        return None
+    payload = launch["payload"]
+    if not (payload.get("canonical_request") or {}).get("checkpoint"):
+        return None
+    value = payload["spec"]["method_payload"]["payload"].get("checkpoint_initialization")
+    if not isinstance(value, dict):
+        return None
+    from feedbax.contracts.studio_training import StudioTrainContinuation
+
+    try:
+        return StudioTrainContinuation.model_validate(value).source_slots
+    except ValueError as error:
+        raise CompletionFileError("Invalid Train checkpoint carryover policy") from error
+
+
+def _ignored_train_files(binding: dict, slots: frozenset[str]) -> set[str]:
+    from feedbax.contracts.strict_json import strict_json_loads
+
+    root = Path(binding["manifest_root"])
+    checkpoint = binding["checkpoint"]
+    pointer = checkpoint["pointer"]
+    manifest = Path(checkpoint["checkpoint_root"]) / pointer["manifest_relative_path"]
+    with completion_file(root, manifest.relative_to(root).as_posix()) as (stream, _):
+        data = stream.read()
+    if hashlib.sha256(data).hexdigest() != pointer["manifest_sha256"]:
+        raise CompletionFileError("Train checkpoint manifest changed before source verification")
+    return {
+        (manifest.parent / slot["relative_path"]).relative_to(root).as_posix()
+        for slot in strict_json_loads(data)["slots"] if slot["slot"] not in slots
+    }
+
+
 @contextmanager
 def completion_file(root: Path, relative: str) -> Iterator[tuple[BinaryIO, int]]:
     if not isinstance(relative, str) or any(
@@ -58,24 +92,29 @@ def completion_file(root: Path, relative: str) -> Iterator[tuple[BinaryIO, int]]
             raise CompletionFileError(f"Completion file changed while open: {relative}")
 
 
-def verify_completion_files(binding: dict) -> None:
+def verify_completion_files(binding: dict, *, train_slots: frozenset[str] | None = None) -> None:
     """Rehash the producer-attested immutable byte closure before delivery."""
     try:
         root = Path(binding["manifest_root"])
         files = binding["files"]
         if not root.is_absolute() or not isinstance(files, list) or not files:
             raise CompletionFileError("Completion requires an absolute root and file evidence.")
+        ignored = _ignored_train_files(binding, train_slots) if train_slots is not None else set()
         paths = set()
         for item in files:
             relative = item["path"]
             if relative in paths or type(item["size_bytes"]) is not int:
                 raise CompletionFileError("Invalid or duplicate completion file evidence.")
             paths.add(relative)
+            if relative in ignored:
+                continue
             with completion_file(root, relative) as (stream, size):
                 if (
                     size != item["size_bytes"]
                     or hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]
                 ):
                     raise CompletionFileError(f"Completion file changed: {relative}")
-    except (KeyError, TypeError, OSError) as error:
+    except CompletionFileError:
+        raise
+    except (KeyError, TypeError, OSError, ValueError) as error:
         raise CompletionFileError(f"Cannot verify completion files: {error}") from error

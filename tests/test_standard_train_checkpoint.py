@@ -5,18 +5,20 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.training import OptimizerSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.training.checkpoint_custody import load_latest_checkpoint, write_checkpoint_transaction
-from feedbax.training.invocation import prepare_training_invocation
+from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.training.model_checkpoint import SemanticModelWriter
 from feedbax.training.standard_train_checkpoint import (
     STANDARD_TRAIN_STATE_MEDIA_TYPE,
     StandardTrainStateError,
     decode_standard_train_slot,
 )
-from tests.test_studio_training_host_worker import _authored_spec
+from tests.support.managed_train_fixture import managed_train_payload
 
 
 @pytest.mark.parametrize(("optimizer_type", "params"), [
@@ -27,12 +29,18 @@ from tests.test_studio_training_host_worker import _authored_spec
     ("rmsprop", {"centered": True, "momentum": 0.9}),
 ])
 def test_typed_standard_optimizer_state_reproduces_the_next_update(tmp_path, optimizer_type, params):
-    spec = _authored_spec(batches=2).model_copy(deep=True)
-    spec.method_payload.payload["optimizer"] = OptimizerSpec(
-        type=optimizer_type, params={"learning_rate": spec.training_config.learning_rate, **params},
+    payload = managed_train_payload(batches=2)
+    method = payload["method_payload"]["payload"]
+    rate = method["optimizer"]["params"]["learning_rate"]
+    method["optimizer"] = OptimizerSpec(
+        type=optimizer_type, params={"learning_rate": rate, **params},
     ).model_dump(mode="json", exclude_none=True)
     registries = new_application_registry_bundle()
-    preparation = prepare_training_invocation(spec, registries, run_id="optimizer-codec", resume=False)
+    spec = lower_canonical_train(
+        DocumentTrainingRequestSpec.model_validate(payload),
+        registries.training_programs, registries=registries,
+    )
+    preparation = prepare_managed_training(spec, registries)
     kernel = preparation.kernel_context["studio_graph_update"]
     state = kernel.reported_update(preparation.initial_slots)
     graph = GraphSpec.model_validate(spec.graph.inline)

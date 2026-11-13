@@ -266,9 +266,10 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         dependencies = strict_json_loads(raw_dependencies)["bindings"]
     checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
     stateful = method.continuation
-    source_scope = "model_only" if checkpoint_ref is not None and stateful is None else "full"
-    for dependency in dependencies:
-        verify_bound_training_completion(dependency["completion"], scope=source_scope)
+    source_scope = stateful.source_slots if stateful is not None else "model_only"
+    if launch.resume is None or stateful is None:
+        for dependency in dependencies:
+            verify_bound_training_completion(dependency["completion"], scope=source_scope)
     if checkpoint_ref is not None:
         if len(dependencies) != 1:
             raise CompletionFileError("Train requires one bound predecessor checkpoint.")
@@ -566,8 +567,6 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             if launch.canonical_request is not None:
                 if semantic_model is None:
                     unavailable = "The terminal checkpoint has no declared semantic model tree"
-                elif stateful is not None:
-                    unavailable = "Typed publication of stateful checkpoint inputs is unavailable"
                 else:
                     product, _ = verify_training_model_product(completion)
                     model_product = product.model_dump(mode="json")

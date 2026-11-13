@@ -183,11 +183,13 @@ from feedbax.training.worker_validation import resolve_execution_mapping
 
 
 LATEST_POINTER_NAME = "latest.json"
-CheckpointReadScope = Literal["full", "model_only"]
-_CHECKPOINT_CONTENT_KIND: dict[CheckpointReadScope, str] = {
-    "full": "checkpoint-custody",
-    "model_only": "checkpoint-model-custody",
-}
+CheckpointReadScope = Literal["full", "model_only"] | frozenset[str]
+
+
+def _checkpoint_content_kind(scope: CheckpointReadScope) -> str:
+    if isinstance(scope, frozenset):
+        return "checkpoint-custody:" + ",".join(sorted(scope))
+    return "checkpoint-model-custody" if scope == "model_only" else "checkpoint-custody"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
 CHECKPOINT_SET_NAME = "checkpoint-set.json"
@@ -737,18 +739,21 @@ def _publish_checkpoint_content(
                     manifest_path.parent / relative
                 )
 
+    kind = _checkpoint_content_kind(scope)
+    root_id = f"checkpoint:{checkpoint_set.checkpoint_id}"
+    if scope == "model_only":
+        root_id += ":model-only"
+    elif isinstance(scope, frozenset):
+        root_id += f":{kind}"
     tree_ref, content_root = provider.publish_rooted_tree(
         members,
-        root_id=(
-            f"checkpoint:{checkpoint_set.checkpoint_id}:model-only"
-            if scope == "model_only" else f"checkpoint:{checkpoint_set.checkpoint_id}"
-        ),
+        root_id=root_id,
         root_kind="logical-ref",
     )
     return (
         ContentBinding(
             binding_name=manifest.transaction_id,
-            root_kind=_CHECKPOINT_CONTENT_KIND[scope],
+            root_kind=kind,
             tree=tree_ref,
         ),
         content_root,
@@ -840,6 +845,7 @@ class CheckpointForkPlanBindings:
         default_factory=dict
     )
     semantic_model_writers: Mapping[str, SemanticModelWriter] = dataclass_field(default_factory=dict)
+    source_scope: CheckpointReadScope = "full"
 
 
 @dataclass(frozen=True)
@@ -2624,6 +2630,11 @@ def _checkpoint_scope_slots(
 ) -> tuple[CheckpointSlotBlobRef, ...]:
     if scope == "full":
         return tuple(manifest.slots)
+    if isinstance(scope, frozenset):
+        selected = tuple(slot for slot in manifest.slots if slot.slot in scope)
+        if {slot.slot for slot in selected} != scope:
+            raise CheckpointReferenceResolutionError("The bound checkpoint lacks projected slots")
+        return selected
     if scope != "model_only":
         raise CheckpointReferenceResolutionError(f"Unknown checkpoint read scope {scope!r}")
     selected = tuple(slot for slot in manifest.slots if slot.role in INITIALIZE_FROM_SOURCE_ROLES)
@@ -4998,7 +5009,7 @@ def _prepare_checkpoint_fork_plan(
 
     typed_targets = {target.target_id for target in plan.targets} <= bindings.semantic_model_writers.keys()
     source = _load_latest_checkpoint_transaction(
-        source_root, operation="typed_fork" if typed_targets else "fork",
+        source_root, operation="typed_fork" if typed_targets else "fork", scope=bindings.source_scope,
     )
     source_axes = {
         record.slot: record.materialized_axes
@@ -5235,6 +5246,7 @@ def fork_checkpoint_plan(
             content_provider=content_provider,
             source_content_binding=source_content_binding,
             semantic_model=bindings.semantic_model_writers.get(prepared.target_id),
+            source_scope=bindings.source_scope,
         )
         results[prepared.target_id] = result
     return results
@@ -5268,6 +5280,7 @@ def _fork_checkpoint_transaction_from_path(
     content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
     semantic_model: SemanticModelWriter | None = None,
+    source_scope: CheckpointReadScope = "full",
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
 
@@ -5289,7 +5302,7 @@ def _fork_checkpoint_transaction_from_path(
     Callers must not supply both forms.
     """
     source = _load_latest_checkpoint_transaction(
-        source_root, operation="typed_fork" if semantic_model is not None else "fork",
+        source_root, operation="typed_fork" if semantic_model is not None else "fork", scope=source_scope,
     )
     source_axes = {
         record.slot: record.materialized_axes
@@ -5561,7 +5574,7 @@ def _fork_checkpoint_transaction_from_path(
             optimizer_bindings=phase_program.optimizer_bindings,
         )
         population_slots = _population_slot_names(target_run_spec)
-        source_slots_by_name = {slot.slot: slot for slot in source.manifest.slots}
+        source_slots_by_name = {slot.slot: slot for slot in _checkpoint_scope_slots(source.manifest, source_scope)}
         source_transaction_dir = source.manifest_path.parent
         transfer = link_strategy or _hardlink_first_copy_fallback
         slot_records: list[CheckpointSlotBlobRef] = []
@@ -5919,6 +5932,7 @@ def fork_checkpoint_transaction(
     content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
     semantic_model: SemanticModelWriter | None = None,
+    source_scope: CheckpointReadScope = "full",
 ) -> CheckpointForkResult:
     """Fork from a leased canonical projection when content custody is supplied."""
     common = dict(
@@ -5946,6 +5960,7 @@ def fork_checkpoint_transaction(
         content_provider=content_provider,
         source_content_binding=source_content_binding,
         semantic_model=semantic_model,
+        source_scope=source_scope,
     )
     if source_content_binding is None:
         if content_provider is not None and link_strategy is None:
@@ -5955,15 +5970,11 @@ def fork_checkpoint_transaction(
         raise CheckpointCustodyError(
             "canonical checkpoint forks require both content_provider and source_content_binding"
         )
-    if source_content_binding.root_kind != "checkpoint-custody":
-        raise CheckpointCustodyError(
-            "canonical checkpoint forks require a checkpoint-custody content binding"
-        )
-
     with materialize_checkpoint_content(
         source_content_binding,
         content_provider,
         owner="checkpoint-fork",
+        scope=source_scope,
     ) as materialized:
         return _fork_checkpoint_transaction_from_path(materialized, target_root, **common)
 
@@ -5977,7 +5988,9 @@ def materialize_checkpoint_content(
     scope: CheckpointReadScope = "full",
 ) -> Iterator[Path]:
     """Lease and materialize one canonical checkpoint tree for a bounded operation."""
-    if binding.root_kind not in {_CHECKPOINT_CONTENT_KIND["full"], _CHECKPOINT_CONTENT_KIND[scope]}:
+    expected_kind = _checkpoint_content_kind(scope)
+    allowed_kinds = {expected_kind, "checkpoint-custody"} if scope == "model_only" else {expected_kind}
+    if binding.root_kind not in allowed_kinds:
         raise CheckpointCustodyError(
             f"canonical checkpoint materialization requires a binding for {scope} custody"
         )
@@ -5989,7 +6002,7 @@ def materialize_checkpoint_content(
 
     # The private scope is checked above. Transport uses the existing
     # checkpoint tree role and authenticates every member of the chosen view.
-    transport = binding.model_copy(update={"root_kind": _CHECKPOINT_CONTENT_KIND["full"]})
+    transport = binding.model_copy(update={"root_kind": "checkpoint-custody"})
     projection = compile_content_input_projection((transport,), provider)
     lease_id = f"{owner}:{uuid.uuid4().hex}"
     acquire_content_projection_lease(
@@ -6015,6 +6028,7 @@ def materialize_checkpoint_content(
 
 def _load_latest_checkpoint_transaction(
     root: str | Path, *, operation: Literal["fork", "typed_fork", "history"],
+    scope: CheckpointReadScope = "full",
 ) -> _LoadedCheckpointTransaction:
     root_path = Path(root)
     latest = _load_latest_pointer(root_path)
@@ -6029,7 +6043,7 @@ def _load_latest_checkpoint_transaction(
         )
     loaded_slots: dict[str, Any] = {}
     transaction_dir = manifest_path.parent
-    for slot in manifest.slots:
+    for slot in _checkpoint_scope_slots(manifest, scope):
         loaded_slots[slot.slot] = _deserialize_checkpoint_slot(
             slot, transaction_dir, manifest, loaded_model=loaded_slots.get("model"),
         )

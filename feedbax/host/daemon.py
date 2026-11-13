@@ -18,7 +18,7 @@ from pathlib import Path
 
 from feedbax.host import live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection, verify_dependency_files
-from feedbax.host.completion import CompletionFileError
+from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
@@ -196,16 +196,20 @@ class Host:
 
     def _assign(self, row: sqlite3.Row) -> None:
         bindings = self.store.completion_bindings(row["id"])
+        launch = json.loads(row["launch"])
         try:
+            train_slots = train_source_slots(launch)
             for binding in bindings:
-                verify_dependency_files(binding)
+                if train_slots is None:
+                    verify_dependency_files(binding)
+                elif row["continues"] is None:
+                    verify_completion_files(binding["completion"], train_slots=train_slots)
         except CompletionFileError as error:
             with self.store.db:
                 self.store.finished(
                     row, failure("dependency_corrupt", str(error), outcome="blocked")
                 )
             return
-        launch = json.loads(row["launch"])
         key, profile = self._profile(launch, row["slot"])
         if launch["warm_entrypoint"]:
             self.profiles.pop(key, None)

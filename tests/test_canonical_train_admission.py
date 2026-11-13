@@ -15,11 +15,12 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.checkpoint_projection import ContinuationEncoding
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.jobs import StudioSubmissionActor
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_identity import decode_request, effective_binding_id
 from feedbax.contracts.request_refs import NamedMember, ProductRef
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
@@ -62,8 +63,9 @@ from tests.test_local_job_host import host as host_fixture
 host = host_fixture
 
 
+@pytest.mark.parametrize("damage_committed_state", [False, True], ids=["recover", "corrupt"])
 def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
-    host, tmp_path, monkeypatch
+    host, tmp_path, monkeypatch, damage_committed_state,
 ):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     registries = new_application_registry_bundle()
@@ -182,12 +184,18 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         import os
         from pathlib import Path
         from feedbax.host.store import Store
+        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+        from feedbax.persistence.effective_success import SuccessView
 
         finished = Store.finished
 
         def interrupt(self, row, outcome):
             marker = Path({str(marker)!r})
             if row['id'] == {attempt!r} and 'store_success' in outcome and not marker.exists():
+                if {damage_committed_state!r}:
+                    store = ImmutableArtifactBlobProvider(Path({str(reviewed.store_path)!r}))
+                    receipt = SuccessView(store).read_attempt(row['id']).receipt
+                    store.object_path(receipt.continuation.prng.content).unlink()
                 marker.touch()
                 os._exit(81)
             return finished(self, row, outcome)
@@ -200,18 +208,23 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         restart(host)
         release.touch()
         wait_until(marker.exists, timeout=26)
-        committed = SuccessView(store).read_attempt(attempt)
-        assert committed is not None
+        if not damage_committed_state:
+            committed = SuccessView(store).read_attempt(attempt)
+            assert committed is not None
 
         def recovered():
             try:
-                return job_row(host, attempt, "succeeded")
+                return job_row(host, attempt, "failed" if damage_committed_state else "succeeded")
             except HostError as error:
                 if error.code != "disconnected":
                     raise
                 return None
 
         finished = wait_until(recovered, timeout=26)
+    if damage_committed_state:
+        assert finished["delivery"] == 1
+        assert finished["outcome"]["error"]["code"] == "publication_failed"
+        return
     assert finished["delivery"] == 1 and finished["request"] == request_id
     completion = finished["outcome"]["completion"]
     assert completion["request_id"] == request_id and completion["producer_job_id"] == attempt
@@ -753,7 +766,12 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, optimizer_policy
         transform["producer_source"]["metadata"]["manifest_sha256"]
         == producer["checkpoint"]["pointer"]["manifest_sha256"]
     )
-    assert transform["producer_content_binding"]["root_kind"] == "checkpoint-custody"
+    expected_slots = {"model", "batch_counter"}
+    if preserve:
+        expected_slots.update(("optimizer", "prng"))
+    assert transform["producer_content_binding"]["root_kind"] == (
+        "checkpoint-custody:" + ",".join(sorted(expected_slots))
+    )
     bootstrap = resolve_checkpoint_custody_ref(
         ParentRef.model_validate(initialization["source"]).model_copy(update={
             "uri": f"transactions/{transform['fork_transaction_id']}/manifest.json",
@@ -777,12 +795,88 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, optimizer_policy
     resumed_custody, _ = _checkpoint(resumed_done)
     assert resumed_custody.manifest.parent_lineage[0].transaction_id == stopped_custody.manifest.transaction_id
 
-    (control,) = jobs.admit_plan(folders, reviewed, run_keys=(child,), token="control").items
-    control_done = await_state(control.job_id, "succeeded")["outcome"]
+    with ExitStack() as restore:
+        if not preserve:
+            for slot in ("optimizer", "prng"):
+                (item,) = [
+                    file for file in producer["files"] if f"/blobs/{slot}-" in file["path"]
+                ]
+                path = reviewed.store_path / item["path"]
+                held = path.with_suffix(".held")
+                path.rename(held)
+                restore.callback(held.replace, path)
+                path.write_bytes(b"undecodable" if slot == "optimizer" else held.read_bytes()[::-1])
+        (control,) = jobs.admit_plan(folders, reviewed, run_keys=(child,), token="control").items
+        control_done = await_state(control.job_id, "succeeded")["outcome"]
     verify_bound_training_completion(control_done["completion"])
     control_custody, _ = _checkpoint(control_done)
     for slot in ("model", "optimizer", "prng", "batch_counter"):
         require_checkpoint_semantic_state_equal(control_custody.manifest, resumed_custody.manifest, slot)
+
+    store = ImmutableArtifactBlobProvider(reviewed.store_path)
+    view = SuccessView(store)
+    source_receipt = view.read_attempt(prefix_id)
+    resumed_receipt = view.read_attempt(resumed.job_id)
+    control_receipt = view.read_attempt(control.job_id)
+    assert resumed_receipt.ref.model_dump(mode="json") == resumed_done["store_success"]
+    assert resumed_receipt.receipt.effective == control_receipt.receipt.effective
+    assert resumed_receipt.receipt.inputs == control_receipt.receipt.inputs
+    recovery = resumed_receipt.receipt.recovery
+    assert (recovery.transaction_id, recovery.manifest_sha256) == (
+        stopped_custody.manifest.transaction_id, stopped["checkpoint"]["pointer"]["manifest_sha256"],
+    )
+    assert control_receipt.receipt.recovery is None
+    (binding,) = resumed_receipt.receipt.inputs["checkpoint"]
+    assert binding.selection.receipt == source_receipt.ref
+    assert binding.selection.occurrence.transaction_id == source_custody.manifest.transaction_id
+    projection = ContinuationEncoding.model_validate(binding.descriptor)
+    assert {"model", *projection.array_slots} == expected_slots
+    assert projection.clock.completed_batches == boundary
+    assert projection.clock.segment_start_batch == 0
+
+    # Different retained state in the selected occurrence changes only consumers that carry it.
+    source_state = source_receipt.receipt.continuation
+    target_state = control_receipt.receipt.continuation
+    assert source_state.prng != target_state.prng
+    assert source_state.optimizer != target_state.optimizer
+    alternate = view.publish_bound(
+        source_receipt.receipt.request,
+        attempt="alternate-source",
+        products=source_receipt.receipt.products,
+        bindings={},
+        continuation=source_state.model_copy(update={
+            "optimizer": target_state.optimizer, "prng": target_state.prng,
+            "provenance": target_state.provenance,
+        }),
+    )
+    view = SuccessView(store)
+    decoded = view.read_request(resumed_receipt.receipt.request)
+    (member,) = decoded.inputs["checkpoint"]
+    alternative_binding = view.resolve(decoded, member, alternate.ref)
+    assert (
+        effective_binding_id(decoded, {"checkpoint": (alternative_binding,)})
+        == resumed_receipt.receipt.effective
+    ) is (not preserve)
+    alternate_clock = view.publish_bound(
+        source_receipt.receipt.request,
+        attempt="alternate-clock",
+        products=source_receipt.receipt.products,
+        bindings={},
+        continuation=source_state.model_copy(update={"learning_rate": 0.003}),
+    )
+    rate_binding = SuccessView(store).resolve(decoded, member, alternate_clock.ref)
+    assert effective_binding_id(decoded, {"checkpoint": (rate_binding,)}) != resumed_receipt.receipt.effective
+
+    closure = ReceiptClosure(store).walk(StoreClosureRef(
+        roots=(ReceiptRoot(receipt=resumed_receipt.ref, product=ProductRef(
+            request_id=resumed_receipt.receipt.request.id, role="checkpoint",
+            select=NamedMember(member="model"),
+        )),),
+        include_ancestry=True,
+    ))
+    assert source_state.batch_counter.content in closure
+    assert (source_state.optimizer.content in closure) is preserve
+    assert (source_state.prng.content in closure) is preserve
 
     (bad,) = jobs.admit_plan(folders, reviewed, run_keys=(incompatible,), token="incompatible").items
     refusal = await_state(bad.job_id, "failed")["outcome"]
