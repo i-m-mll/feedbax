@@ -3,18 +3,23 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, expect, it, vi } from 'vitest';
 import { ProjectWindow } from './ProjectWindow';
 import { defaultProjectWindowState } from './projectWindowState';
-import { bindStudioCommand } from './studioCommands';
+import { bindStudioCommand, type StudioCommand } from './studioCommands';
 
 type Snapshot = NonNullable<Parameters<NonNullable<Window['__FEEDBAX_STUDIO_MENU__']>['publish']>[0]>;
 
-function studio(run: () => void, projectName = 'First', withScene = false, rename?: () => void) {
+function studio(
+  run: () => void, projectName = 'First', withScene = false, rename?: () => void,
+  commands: readonly StudioCommand[] = [
+    bindStudioCommand('run', run), bindStudioCommand('stop', () => {}, { enabled: false }),
+  ],
+) {
   return <ProjectWindow state={defaultProjectWindowState} onStateChange={() => {}}
     projectName={projectName} availableViews={withScene ? ['runs', 'scene'] : ['runs']}
     renderView={() => ({ body: <input aria-label="Training field" /> })}
     map={<button>Map item</button>} mapDrawer={null} compactMap={<button>Compact item</button>}
     activity={<div data-studio-activity-panel><button>Activity item</button></div>}
     commands={[
-      bindStudioCommand('run', run), bindStudioCommand('stop', () => {}, { enabled: false }),
+      ...commands,
       ...(rename ? [bindStudioCommand('rename', rename)] : []),
     ]} />;
 }
@@ -47,7 +52,25 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it('delivers a native accelerator once and refuses commands from another project scope', async () => {
+it.each([
+  { id: 'undo', key: 'z', code: 'KeyZ', accelerator: 'Cmd+Z' },
+  { id: 'redo', key: 'Z', code: 'KeyZ', shiftKey: true, accelerator: 'Shift+Cmd+Z' },
+  { id: 'run', key: 'r', code: 'KeyR', accelerator: 'Cmd+R' },
+  { id: 'stop', key: '.', code: 'Period', accelerator: 'Cmd+.' },
+] as const)('leaves $accelerator to the native menu and dispatches its command once', async ({ id, accelerator, ...key }) => {
+  setup();
+  const bridge = menu();
+  const invoke = vi.fn();
+  render(studio(vi.fn(), 'First', false, undefined, [bindStudioCommand(id, invoke)]));
+  await waitFor(() => expect(item(bridge.latest(), id)).toMatchObject({ accelerator, enabled: true }));
+
+  expect(fireEvent.keyDown(document.body, { ...key, metaKey: true })).toBe(true);
+  expect(invoke).not.toHaveBeenCalled();
+  bridge.select(id, bridge.latest()!.scope);
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
+
+it('refuses native commands from another project scope', async () => {
   setup();
   const bridge = menu();
   const first = vi.fn();
@@ -60,7 +83,7 @@ it('delivers a native accelerator once and refuses commands from another project
   expect(item(bridge.latest(), 'scene')).toMatchObject({ accelerator: 'Cmd+6', enabled: false });
   const scope = bridge.latest()!.scope;
 
-  fireEvent.keyDown(document.body, { key: 'r', code: 'KeyR', metaKey: true });
+  expect(fireEvent.keyDown(document.body, { key: 'r', code: 'KeyR', metaKey: true })).toBe(true);
   expect(first).not.toHaveBeenCalled();
   bridge.select('run', scope);
   expect(first).toHaveBeenCalledTimes(1);
@@ -82,11 +105,15 @@ it('updates menu availability and rechecks the focused control on delivery', asy
   setup();
   const bridge = menu();
   const run = vi.fn();
-  render(studio(run));
+  const undo = vi.fn();
+  render(studio(run, 'First', false, undefined, [bindStudioCommand('run', run), bindStudioCommand('undo', undo)]));
   await waitFor(() => expect(item(bridge.latest(), 'run')?.enabled).toBe(true));
   const scope = bridge.latest()!.scope;
 
   act(() => { screen.getByRole('textbox', { name: 'Training field' }).focus(); });
+  expect(fireEvent.keyDown(document.activeElement!, { key: 'z', code: 'KeyZ', metaKey: true })).toBe(true);
+  bridge.select('undo', scope);
+  expect(undo).not.toHaveBeenCalled();
   bridge.select('run', scope);
   expect(run).not.toHaveBeenCalled();
   await waitFor(() => expect(bridge.latest()?.textEditing).toBe(true));
@@ -104,7 +131,7 @@ it('keeps the web shortcut in a browser without the native host', () => {
   setup();
   const run = vi.fn();
   render(studio(run));
-  fireEvent.keyDown(document.body, { key: 'r', code: 'KeyR', metaKey: true });
+  expect(fireEvent.keyDown(document.body, { key: 'r', code: 'KeyR', metaKey: true })).toBe(false);
   expect(run).toHaveBeenCalledTimes(1);
 });
 

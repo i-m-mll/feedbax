@@ -186,9 +186,11 @@ def text_project_declaration(root: Path) -> Path:
     return _regular_declaration(root, _declaration_candidates(root))
 
 
-def read_text_project_declaration(root: Path, directory: int) -> Path:
+def read_text_project_declaration(root: Path, directory: int, *, expected: str | None = None) -> Path:
     """Read the sole declaration through an already verified directory descriptor."""
     name = _one_declaration(root, _declaration_candidates(root, directory))
+    if expected is not None and name != expected:
+        raise ProjectReadError(root / expected, "not the folder's project declaration")
     path = root / name
     descriptor, before = open_existing_file(
         name, dir_fd=directory, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,

@@ -445,6 +445,24 @@ def test_recent_ticket_returns_the_latest_acknowledged_title(tmp_path):
     assert list(projects.iterdir()) == [projects / project_id]
 
 
+@pytest.mark.parametrize("entries", [
+    {"README.txt": b"ordinary folder"},
+    {"first.feedbax": b"one", "second.feedbax": b"two"},
+    {"broken.feedbax": b"not a declaration"},
+])
+def test_native_open_refuses_without_writing_to_selected_folder(tmp_path, entries):
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    for name, content in entries.items():
+        (repo / name).write_bytes(content)
+    _, control, _ = _desktop_clients(create_app(projects_dir=tmp_path / "projects"))
+
+    refused = control.post("/_desktop/ticket", json={"project_folder": str(repo)})
+
+    assert refused.status_code == 422, refused.text
+    assert {path.name: path.read_bytes() for path in repo.iterdir()} == entries
+
+
 def test_native_declaration_entry_and_rename_preserve_folder_and_plan(tmp_path):
     projects = tmp_path / "projects"
     repo = tmp_path / "checkout"
