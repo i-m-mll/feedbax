@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Sequence
+from hashlib import sha256
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
@@ -86,6 +87,7 @@ def _rollouts(
 
     from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
     from feedbax.contracts.authored_canonical import canonical_sha256
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.dataset import Dataset, Variable
     from feedbax.plugins.composition import compose_application
@@ -168,6 +170,23 @@ def _rollouts(
         variables[semantic_key("task", "output", (), name)] = Variable(np.asarray(samples)[None, None], axes)
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
     variation = canonical_sha256(params.model_dump(mode="json")["variation"])
+    attrs = {"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"}
+    if params.retention == "raw_states":
+        attrs["source_graph_sha256"] = sha256(
+            canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
+        ).hexdigest()
+        if paired is not source_pair:
+            attrs.update({
+                "effective_graph_sha256": canonical_sha256({
+                    "resolved_graph": paired.executable.resolved.resolved_sha256,
+                    "checkpoint_values": slot.arrays.sha256,
+                    "source_overrides": variant.source_overrides,
+                }),
+                "effective_task_sha256": sha256(
+                    canonical_json_v2_bytes(variant.task.model_dump(mode="json"))
+                ).hexdigest(),
+                "variation_sha256": variation,
+            })
     return Dataset.from_arrays(
         variables,
         coords={
@@ -179,7 +198,7 @@ def _rollouts(
             "transition_start": Variable(time[:-1], ("transition",), units="s"),
             "transition_end": Variable(time[1:], ("transition",), units="s"),
         },
-        attrs={"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"},
+        attrs=attrs,
         schema_id=params.states_schema,
     ), {"objective/total": float(evaluated.objective.loss)}
 

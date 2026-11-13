@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from functools import cache
 
 import equinox as eqx
@@ -6,13 +8,16 @@ import jax.random as jr
 import jax.tree as jt
 import numpy as np
 from equinox import filter_vmap as vmap
-from feedbax.tasks import AbstractTask
 from feedbax._vendor.jax_cookbook import LDict, MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import get_validation_trial_specs
 from feedbax.config.namespace import TreeNamespace
 from feedbax.config.defaults import REPLICATE_CRITERION
+
+
+if TYPE_CHECKING:
+    from feedbax.tasks import AbstractTask
 
 
 def get_pos_endpoints(trial_specs):
@@ -31,7 +36,7 @@ def vmap_eval_ensemble(
     key: PRNGKeyArray,
     hps: TreeNamespace,
     models: eqx.Module,
-    task: AbstractTask,
+    task: "AbstractTask",
     *,
     model_axes: PyTree,
 ):
@@ -265,7 +270,7 @@ def trim_tails(
     return jt.map(_trim_ma, tree, is_leaf=is_type(MaskedArray))
 
 
-def get_trial_start_positions(task: AbstractTask) -> Array:
+def get_trial_start_positions(task: "AbstractTask") -> Array:
     return get_validation_trial_specs(task).inits["mechanics.effector"].pos
 
 

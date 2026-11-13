@@ -21,14 +21,13 @@ from feedbax.expression_builtins import register_builtins
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.document import TaskParameters
 from feedbax.training.evaluate_worker import score_paired_validation
-from feedbax.training.studio_executor import prepare_trial_update
+from feedbax.training.managed_studio import prepare_trial_update
 from tests.test_document_task_parity import _model_payload, _pair_model, example, expression, legacy
 from tests.test_model_document_plan import _model_project
 from tests.test_local_job_host import host as host_fixture  # noqa: F401
 
 
-@pytest.fixture
-def authored():
+def authored_documents():
     functions = FunctionRegistry()
     register_builtins(functions)
     functions.seal()
@@ -46,6 +45,10 @@ def authored():
     )
     return functions, model, task, objective
 
+
+@pytest.fixture
+def authored():
+    return authored_documents()
 
 def test_bounded_train_and_evaluate_share_trial_objective(authored):
     functions, model, task, objective = authored

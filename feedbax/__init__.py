@@ -48,7 +48,7 @@ _LAZY_EXPORTS = {
     "get_masks": ("feedbax.tasks", "get_masks"),
     "get_masked_seqs": ("feedbax.tasks", "get_masked_seqs"),
     "get_scalar_epoch_seq": ("feedbax.tasks", "get_scalar_epoch_seq"),
-    "is_termtree": ("feedbax.objectives.loss", "is_termtree"),
+    "is_termtree": ("feedbax.objectives.base", "is_termtree"),
     "init_state_from_component": ("feedbax.runtime.graph", "init_state_from_component"),
     "network_template_graph": ("feedbax.compiler.templates", "network_template_graph"),
     "pos_only_states": ("feedbax.tasks", "_pos_only_states"),

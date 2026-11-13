@@ -26,7 +26,7 @@ from feedbax.integrations.provider import (
     registry_snapshot,
     validate_spec,
 )
-from feedbax.plugins.composition import compose_application
+from feedbax.plugins.retained import compose_retained_application
 
 
 class ProviderStalenessResolutionError(ValueError):
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    registries = asyncio.run(compose_application()).bundle
+    registries = asyncio.run(compose_retained_application()).bundle
 
     if args.command == "health":
         _write_json(health())

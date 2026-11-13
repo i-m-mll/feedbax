@@ -1,0 +1,209 @@
+{
+  "schema": "feedbax.spec.objective_document",
+  "payload": {
+    "id": "simple-reaches",
+    "terms": [
+      {
+        "id": "effector_position",
+        "measure": {
+          "kind": "call",
+          "function": "sqnorm",
+          "args": [
+            {
+              "kind": "call",
+              "function": "sub",
+              "args": [
+                {
+                  "kind": "name",
+                  "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"hand\"},\"kind\":\"port\"}}"
+                },
+                {
+                  "kind": "name",
+                  "reference": "goal"
+                }
+              ]
+            }
+          ]
+        },
+        "measure_type": {
+          "base": "real",
+          "dimensions": {
+            "length": 2
+          }
+        },
+        "weight": {
+          "kind": "call",
+          "function": "mul",
+          "args": [
+            {
+              "kind": "call",
+              "function": "mul",
+              "args": [
+                {
+                  "kind": "call",
+                  "function": "mul",
+                  "args": [
+                    {
+                      "kind": "call",
+                      "function": "mul",
+                      "args": [
+                        {
+                          "kind": "call",
+                          "function": "mul",
+                          "args": [
+                            {
+                              "kind": "call",
+                              "function": "add",
+                              "args": [
+                                {
+                                  "kind": "name",
+                                  "reference": "u"
+                                },
+                                {
+                                  "kind": "literal",
+                                  "value": 0.0125
+                                }
+                              ]
+                            },
+                            {
+                              "kind": "call",
+                              "function": "add",
+                              "args": [
+                                {
+                                  "kind": "name",
+                                  "reference": "u"
+                                },
+                                {
+                                  "kind": "literal",
+                                  "value": 0.0125
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "kind": "call",
+                          "function": "add",
+                          "args": [
+                            {
+                              "kind": "name",
+                              "reference": "u"
+                            },
+                            {
+                              "kind": "literal",
+                              "value": 0.0125
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "kind": "call",
+                      "function": "add",
+                      "args": [
+                        {
+                          "kind": "name",
+                          "reference": "u"
+                        },
+                        {
+                          "kind": "literal",
+                          "value": 0.0125
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "kind": "call",
+                  "function": "add",
+                  "args": [
+                    {
+                      "kind": "name",
+                      "reference": "u"
+                    },
+                    {
+                      "kind": "literal",
+                      "value": 0.0125
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "kind": "call",
+              "function": "add",
+              "args": [
+                {
+                  "kind": "name",
+                  "reference": "u"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.0125
+                }
+              ]
+            }
+          ]
+        },
+        "reduction": "sum"
+      },
+      {
+        "id": "effector_final_velocity",
+        "measure": {
+          "kind": "call",
+          "function": "sqnorm",
+          "args": [
+            {
+              "kind": "name",
+              "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"velocity\"},\"kind\":\"port\"}}"
+            }
+          ]
+        },
+        "measure_type": {
+          "base": "real",
+          "dimensions": {
+            "length": 2,
+            "time": -2
+          }
+        },
+        "reduction": "last"
+      },
+      {
+        "id": "nn_output",
+        "measure": {
+          "kind": "call",
+          "function": "sqnorm",
+          "args": [
+            {
+              "kind": "name",
+              "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"command\"},\"kind\":\"port\"}}"
+            }
+          ]
+        },
+        "weight": {
+          "kind": "literal",
+          "value": 1e-05
+        },
+        "reduction": "sum"
+      },
+      {
+        "id": "nn_hidden",
+        "measure": {
+          "kind": "call",
+          "function": "sqnorm",
+          "args": [
+            {
+              "kind": "name",
+              "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"activity\"},\"kind\":\"port\"}}"
+            }
+          ]
+        },
+        "weight": {
+          "kind": "literal",
+          "value": 1e-05
+        },
+        "reduction": "sum"
+      }
+    ]
+  }
+}

@@ -144,7 +144,9 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
         captured_modules.append(plugin_modules)
         return state
 
-    monkeypatch.setattr(feedbax_main, "compose_application", capture_compose_application)
+    monkeypatch.setattr(
+        "feedbax.plugins.retained.compose_retained_application", capture_compose_application
+    )
     monkeypatch.setattr(harness, "main", lambda argv, **_kwargs: calls.append(argv) or 0)
 
     result = feedbax_main.main(
@@ -246,7 +248,7 @@ def test_top_level_matrix_harness_executes_v3_axis_matrix(monkeypatch, tmp_path:
     async def compose_application(**_kwargs):
         return state
 
-    monkeypatch.setattr(feedbax_main, "compose_application", compose_application)
+    monkeypatch.setattr("feedbax.plugins.retained.compose_retained_application", compose_application)
     result = feedbax_main.main(
         [
             "matrix-harness",

@@ -160,7 +160,7 @@ def main(argv: Sequence[str]) -> int:
         if argv:
             events.current_phase = "binding"
             raise ValueError("Studio training accepts its request from the host input document")
-        if "feedbax.training.invocation" not in sys.modules:
+        if "feedbax.training.managed_studio" not in sys.modules:
             events.phase("importing")
         result = _run(
             events,
@@ -223,7 +223,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     )
     from feedbax.training.preparation import ExecutionPreparationResult
     from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
-    from feedbax.training.studio_executor import StudioUpdateKernel, prepare_managed_training, studio_training_key
+    from feedbax.training.managed_studio import prepare_managed_training
+    from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
     from feedbax.web.model_assets import model_artifact_provider
 
     events.current_phase = "binding"

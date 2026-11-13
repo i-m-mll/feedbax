@@ -28,6 +28,7 @@ from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.component_registry import ComponentParamValidationError, ComponentRegistry
+from feedbax.component_registry.retained import retained_component_registry
 
 
 def _network_controller_graph_spec() -> GraphSpec:
@@ -1165,7 +1166,8 @@ def test_delayed_center_out_task_params_round_trip_through_graph_spec() -> None:
         output_bindings={"inputs": ("task", "inputs")},
     )
 
-    round_tripped = graph_to_spec(spec_to_graph(spec, ComponentRegistry()))
+    registry = retained_component_registry()
+    round_tripped = graph_to_spec(spec_to_graph(spec, registry), registry)
     params = round_tripped.nodes["task"].params
 
     assert params["preset"] == "delayed_center_out"

@@ -19,6 +19,7 @@ from feedbax.component_registry import (
     ComponentRegistry,
 )
 from feedbax.component_registry.cde_templates import cde_template_pack
+from feedbax.component_registry.retained import retained_component_registry
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
@@ -585,7 +586,7 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
 
 
 def test_builtin_reach_tasks_expose_schematic_objective_representations() -> None:
-    registry = ComponentRegistry()
+    registry = retained_component_registry()
     definitions = {item.name: item for item in registry.list_all()}
 
     simple = definitions["feedbax.SimpleReaches"]

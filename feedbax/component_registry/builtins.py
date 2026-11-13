@@ -27,7 +27,6 @@ _PORTABLE_MODULES = (
     "feedbax.mechanics.muscle_graph",
     "feedbax.mechanics.direct_force_components",
     "feedbax.mechanics.analytical_component",
-    "feedbax.tasks.reach_components",
     "feedbax.components.penzai",
 )
 
@@ -36,7 +35,7 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
     """Build the fixed set of packages shipped with Feedbax."""
 
     from feedbax.acausal.system import AcausalSystem
-    from feedbax.component_migrations import control, mechanics, networks, penzai, runtime, tasks
+    from feedbax.component_migrations import control, mechanics, networks, penzai, runtime
     from feedbax.component_migrations.composites import HISTORIES as COMPOSITE_HISTORIES
     from feedbax.component_migrations.equinox import HISTORIES as EQUINOX_HISTORIES
     from feedbax.runtime.graph import Subgraph
@@ -54,7 +53,7 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
 
     histories = {
         owner: history
-        for group in (runtime, control, mechanics, networks, tasks, penzai)
+        for group in (runtime, control, mechanics, networks, penzai)
         for owner, history in group.HISTORIES.items()
     }
     presentation = builtin_component_presentation.builtin_component_presentation()

@@ -21,7 +21,6 @@ from feedbax.contracts.studio_api import (
     WorkerStatusResponse,
 )
 from feedbax.web.services.graph_service import GraphService
-from feedbax.objectives.service import loss_service
 from feedbax.web.services.desktop_jobs import TrainingJobsUnavailable
 from feedbax.web.services.training_service import RunStateCorruptionError, training_service
 from feedbax.web.worker.transport import WorkerConfigurationError, WorkerTransportError
@@ -206,6 +205,8 @@ async def get_available_probes(graph_id: str) -> List[ProbeResponse]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
 
+    from feedbax.objectives.service import loss_service
+
     probes = loss_service.get_available_probes(record.project.graph)
     return [
         ProbeResponse(
@@ -244,6 +245,8 @@ async def validate_loss_spec(payload: ValidateLossRequest) -> ValidateLossRespon
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
 
+    from feedbax.objectives.service import loss_service
+
     errors = loss_service.validate_loss_spec(payload.loss_spec, record.project.graph)
     return ValidateLossResponse(
         valid=len(errors) == 0,
@@ -270,6 +273,8 @@ async def resolve_selector(payload: ResolveSelectorRequest) -> Dict[str, Any]:
         record = graph_service.get_graph(payload.graph_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+
+    from feedbax.objectives.service import loss_service
 
     result = loss_service.resolve_probe_selector(payload.selector, record.project.graph)
     if result is None:

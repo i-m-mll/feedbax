@@ -60,11 +60,9 @@ from feedbax.compiler.serialization import prototypes_from_task_bindings
 from feedbax.compiler.trainability import compile_trainability
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
-from feedbax.training.executor import execute_training_run_spec
-from feedbax.training.studio_executor import (
-    executor_method_contract,
-    studio_training_registry,
-)
+from feedbax.training.retained_executor import execute_training_run_spec
+from feedbax.training.retained_studio import studio_training_registry
+from feedbax.training.studio_executor import executor_method_contract
 from feedbax.web.worker.diagnostics import (
     GraphCompilationError,
     exception_diagnostic,

@@ -173,13 +173,7 @@ def authoring_surface(
         document_families=documents,
         registries={
             COMPONENTS.family: StudioAuthoringRegistry(
-                entries=sorted(
-                    (definition for definition in state.bundle.components.list_all()
-                     if (owner := state.bundle.components.get(definition.name)) is not None
-                     and (owner.owner_class is None
-                          or owner.owner_class.__module__ != "feedbax.tasks.reach_components")),
-                    key=lambda definition: definition.name,
-                ),
+                entries=sorted(state.bundle.components.list_all(), key=lambda definition: definition.name),
                 origins=_origins(state, COMPONENTS.family),
             ),
             OPERATIONS.family: StudioAuthoringRegistry(

@@ -72,7 +72,7 @@ def _evaluate(request: PrivateEvaluationRequest, checkpoint, launch):
     from feedbax.dataset import Dataset, Variable
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.dataset import open_dataset, publish_dataset
-    from feedbax.plugins.composition import compose_application
+    from feedbax.plugins.retained import compose_retained_application
     from feedbax.runtime._graph_key_schedule import derive_key
     from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
     from feedbax.training.checkpoint_custody import open_published_model_slot
@@ -102,7 +102,7 @@ def _evaluate(request: PrivateEvaluationRequest, checkpoint, launch):
         raise ValueError("/graph/nodes/readout: the witness requires a frozen readout")
 
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
-    registry = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
+    registry = asyncio.run(compose_retained_application(modules=launch.bootstrap_modules)).bundle
 
     def build(seed):
         return compile_graph(

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from pydantic import BaseModel
+from typing import Any
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.expression_registry import FunctionRegistry
@@ -50,7 +49,7 @@ class TrainingProgramCatalog(TrainingProgramRegistry):
         self._row_lowerers = row_lowerers
         self._preparations = preparations
 
-    def register_program(self, program: DeclaredTrainingProgram[BaseModel]) -> None:
+    def register_program(self, program: DeclaredTrainingProgram[Any]) -> None:
         super().register_program(program)
         if program.row_lowering is not None:
             for registration in program.row_lowering.registrations:
@@ -192,10 +191,16 @@ APPLICATION_REGISTRY_KEYS = (
 
 def new_application_registry_bundle() -> ApplicationRegistryBundle:
     """Construct fresh built-in registries before plugin registration."""
+    return _new_registry_bundle(ComponentRegistry(), studio_graph_training_program())
+
+
+def _new_registry_bundle(
+    components: ComponentRegistry,
+    studio_program: DeclaredTrainingProgram[Any],
+) -> ApplicationRegistryBundle:
     from feedbax.analysis.builtin_operations import register_builtin_operations
     from feedbax.expression_builtins import register_builtins
 
-    components = ComponentRegistry()
     operations = OperationRegistry()
     register_builtin_operations(operations)
     expression_functions = FunctionRegistry()
@@ -211,7 +216,7 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
     preparations = ExecutionPreparationProviderRegistry()
     training_programs = TrainingProgramCatalog(row_lowerers, preparations)
     training_programs.register_program(standard_supervised_training_program())
-    training_programs.register_program(studio_graph_training_program(components))
+    training_programs.register_program(studio_program)
     return ApplicationRegistryBundle(
         components=components,
         training_programs=training_programs,

@@ -22,7 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError as PydanticValidationError
 
 from feedbax.plugins.bootstrap import BootstrapState
-from feedbax.plugins.composition import compose_application
+from feedbax.plugins.retained import compose_retained_application
 
 from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.studio.protocol import infer_task_n_steps
@@ -599,7 +599,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
+        app.state.bootstrap_state = await compose_retained_application(modules=bootstrap_modules)
         yield
 
     app = FastAPI(title="Feedbax Training Worker", version="0.1.0", lifespan=lifespan)

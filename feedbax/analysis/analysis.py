@@ -26,7 +26,6 @@ import jax.tree as jt
 import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
-from feedbax.tasks import AbstractTask
 from feedbax._vendor.jax_cookbook import (
     LDict,
     LDictConstructor,
@@ -106,6 +105,7 @@ from feedbax.analysis.result_cache import (
 from feedbax.contracts.computation_revision import validate_computation_revision
 
 if TYPE_CHECKING:
+    from feedbax.tasks import AbstractTask
     from typing import ClassVar as AbstractClassVar
 
     from feedbax.analysis.context import AnalysisRunContext
@@ -223,7 +223,7 @@ def _normalize_name(name: str) -> str:
     return _NAME_NORMALIZATION.get(name, name)
 
 
-def get_validation_trial_specs(task: AbstractTask):
+def get_validation_trial_specs(task: "AbstractTask"):
     # TODO: Support any number of extra axes (i.e. for analyses that vmap over multiple axes in their task/model objects)
     # if len(task.workspace.shape) == 3:
     #     #! I don't understand why/if this is necessary

@@ -1,0 +1,284 @@
+{
+  "schema": "feedbax.spec.model",
+  "payload": {
+    "step_seconds": 0.01,
+    "ports": {
+      "inputs": [
+        {
+          "id": "target_pos",
+          "name": "target_pos",
+          "type": {
+            "shape": [
+              2
+            ],
+            "unit": "m"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "hand",
+          "name": "hand",
+          "type": {
+            "shape": [
+              2
+            ],
+            "unit": "m"
+          }
+        },
+        {
+          "id": "velocity",
+          "name": "velocity",
+          "type": {
+            "shape": [
+              2
+            ],
+            "unit": "m/s"
+          }
+        },
+        {
+          "id": "command",
+          "name": "command",
+          "type": {
+            "shape": [
+              2
+            ]
+          }
+        },
+        {
+          "id": "activity",
+          "name": "activity",
+          "type": {
+            "shape": [
+              4
+            ]
+          }
+        }
+      ]
+    },
+    "interior": {
+      "components": {
+        "plant": {
+          "kind": "leaf",
+          "name": "Point mass",
+          "type": "feedbax.PointMass",
+          "fields": {
+            "mass": 1.0
+          }
+        },
+        "position": {
+          "kind": "leaf",
+          "name": "Hand position",
+          "type": "feedbax.SelectState",
+          "fields": {
+            "paths": [
+              "pos"
+            ]
+          }
+        },
+        "velocity": {
+          "kind": "leaf",
+          "name": "Hand velocity",
+          "type": "feedbax.SelectState",
+          "fields": {
+            "paths": [
+              "vel"
+            ]
+          }
+        },
+        "feedback": {
+          "kind": "leaf",
+          "name": "Feedback inputs",
+          "type": "feedbax.AssembleFeedback",
+          "fields": {
+            "n_inputs": 3,
+            "layout": {
+              "tuple": [
+                null,
+                null,
+                null
+              ]
+            }
+          }
+        },
+        "flatten": {
+          "kind": "leaf",
+          "name": "Controller input",
+          "type": "feedbax.Ravel",
+          "fields": {}
+        },
+        "cell": {
+          "kind": "leaf",
+          "name": "Recurrent controller",
+          "type": "feedbax.GRU",
+          "fields": {
+            "input_size": 6,
+            "hidden_size": 4
+          }
+        },
+        "readout": {
+          "kind": "leaf",
+          "name": "Motor command",
+          "type": "feedbax.Linear",
+          "fields": {
+            "input_size": 4,
+            "output_size": 2
+          }
+        }
+      },
+      "wires": {
+        "target": {
+          "source": {
+            "owner": "inputs",
+            "port": "target_pos"
+          },
+          "target": {
+            "owner": "component",
+            "component": "feedback",
+            "port": "in_0"
+          }
+        },
+        "sense-position": {
+          "source": {
+            "owner": "component",
+            "component": "plant",
+            "port": "effector"
+          },
+          "target": {
+            "owner": "component",
+            "component": "position",
+            "port": "state"
+          }
+        },
+        "sense-velocity": {
+          "source": {
+            "owner": "component",
+            "component": "plant",
+            "port": "effector"
+          },
+          "target": {
+            "owner": "component",
+            "component": "velocity",
+            "port": "state"
+          }
+        },
+        "position-feedback": {
+          "source": {
+            "owner": "component",
+            "component": "position",
+            "port": "output"
+          },
+          "target": {
+            "owner": "component",
+            "component": "feedback",
+            "port": "in_1"
+          }
+        },
+        "velocity-feedback": {
+          "source": {
+            "owner": "component",
+            "component": "velocity",
+            "port": "output"
+          },
+          "target": {
+            "owner": "component",
+            "component": "feedback",
+            "port": "in_2"
+          }
+        },
+        "flatten-inputs": {
+          "source": {
+            "owner": "component",
+            "component": "feedback",
+            "port": "output"
+          },
+          "target": {
+            "owner": "component",
+            "component": "flatten",
+            "port": "input"
+          }
+        },
+        "controller-input": {
+          "source": {
+            "owner": "component",
+            "component": "flatten",
+            "port": "output"
+          },
+          "target": {
+            "owner": "component",
+            "component": "cell",
+            "port": "input"
+          }
+        },
+        "decode": {
+          "source": {
+            "owner": "component",
+            "component": "cell",
+            "port": "output"
+          },
+          "target": {
+            "owner": "component",
+            "component": "readout",
+            "port": "input"
+          }
+        },
+        "drive": {
+          "source": {
+            "owner": "component",
+            "component": "readout",
+            "port": "output"
+          },
+          "target": {
+            "owner": "component",
+            "component": "plant",
+            "port": "force"
+          }
+        },
+        "hand": {
+          "source": {
+            "owner": "component",
+            "component": "position",
+            "port": "output"
+          },
+          "target": {
+            "owner": "outputs",
+            "port": "hand"
+          }
+        },
+        "record-velocity": {
+          "source": {
+            "owner": "component",
+            "component": "velocity",
+            "port": "output"
+          },
+          "target": {
+            "owner": "outputs",
+            "port": "velocity"
+          }
+        },
+        "command": {
+          "source": {
+            "owner": "component",
+            "component": "readout",
+            "port": "output"
+          },
+          "target": {
+            "owner": "outputs",
+            "port": "command"
+          }
+        },
+        "activity": {
+          "source": {
+            "owner": "component",
+            "component": "cell",
+            "port": "output"
+          },
+          "target": {
+            "owner": "outputs",
+            "port": "activity"
+          }
+        }
+      }
+    }
+  }
+}

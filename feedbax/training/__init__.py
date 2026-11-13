@@ -117,19 +117,12 @@ from feedbax.contracts.training import (
 )
 
 try:
-    from ..config.hyperparams import load_hps
-    from .trainer import (
-        SimpleTrainer,
-        grad_wrap_simple_loss_func,
-        training_step_for_abstract_loss,
-    )
     from .executor import (
         DiagnosticsEmissionConflictError,
         ManifestEmissionConflictError,
         StreamingCheckpointStore,
         TrainingRunExecutionResult,
         TrainingRunExecutorError,
-        execute_training_run_spec,
         load_training_run_spec,
     )
     from .optimizers import (
@@ -311,3 +304,28 @@ __all__ = [
     "validate_optimizer_state_for_spec",
     "write_checkpoint_transaction",
 ]
+
+_TRAINER_EXPORTS = frozenset({
+    "SimpleTrainer",
+    "grad_wrap_simple_loss_func",
+    "training_step_for_abstract_loss",
+})
+
+
+def __getattr__(name: str):
+    if name in _TRAINER_EXPORTS:
+        from . import trainer
+
+        value = getattr(trainer, name)
+    elif name == "load_hps":
+        from ..config.hyperparams import load_hps
+
+        value = load_hps
+    elif name == "execute_training_run_spec":
+        from .retained_executor import execute_training_run_spec
+
+        value = execute_training_run_spec
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value

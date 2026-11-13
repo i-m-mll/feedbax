@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from feedbax.component_registry import ComponentPack
+from feedbax.component_registry.retained import retained_component_registry
 from feedbax.contracts.component import DynamicPortPolicy
 
 from feedbax.runtime.graph import Component
@@ -1177,7 +1178,7 @@ def test_graph_validation_rejects_runtime_network_authoring_payloads(
     assert "unknown_component_type" in {error.type for error in result.errors}
 
 
-def test_graph_validation_rejects_task_nodes(application_registry_bundle) -> None:
+def test_graph_validation_rejects_task_nodes() -> None:
     graph = _minimal_graph_spec()
     graph["nodes"]["task"] = {
         "type": "feedbax.SimpleReaches",
@@ -1186,7 +1187,7 @@ def test_graph_validation_rejects_task_nodes(application_registry_bundle) -> Non
         "output_ports": ["inputs", "targets", "inits", "intervene"],
     }
 
-    result = validate_graph_spec(graph, component_registry=application_registry_bundle.components)
+    result = validate_graph_spec(graph, component_registry=retained_component_registry())
 
     assert not result.valid
     assert result.errors[0].type == "task_node_not_allowed"

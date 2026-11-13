@@ -27,7 +27,6 @@ from feedbax.contracts.worker import (
     MethodContractSpec,
     validate_worker_identifier,
 )
-from feedbax.objectives.service import LossService
 from feedbax.training.checkpoint_custody import ResumeSlotTransform
 from feedbax.training.worker_validation import resolve_execution_mapping
 
@@ -72,6 +71,13 @@ class _ImmutableDict(dict[Any, Any]):
         return cls(zip(keys, values, strict=True))
 
 
+@runtime_checkable
+class ObjectiveLowerer(Protocol):
+    """Preparation-supplied lowerer for a declared objective slot."""
+
+    def lower_objective_slot(self, slot, *, graph, trial_axis: str, path: str): ...
+
+
 class ExecutionPreparationError(ValueError):
     """Raised when a training method cannot prepare its runtime inputs."""
 
@@ -98,7 +104,7 @@ class ExecutionPreparationResult:
 
     initial_slots: Mapping[str, Any]
     kernel_context: Mapping[str, Any] = field(default_factory=dict)
-    loss_service: LossService | None = None
+    loss_service: ObjectiveLowerer | None = None
     resume_slot_transform: ResumeSlotTransform | None = None
     restored_schedule_context_binder: RestoredScheduleContextBinder | None = None
 
@@ -173,7 +179,7 @@ class ExecutionPreparationPlan:
 
     shared_slots: Mapping[str, Any]
     kernel_context: Mapping[str, Any]
-    loss_service: LossService | None
+    loss_service: ObjectiveLowerer | None
     resume_slot_transform: ResumeSlotTransform | None
     rng_roots: Mapping[str, Any]
     materialize_instance: ScalarInstanceMaterializer
@@ -182,8 +188,8 @@ class ExecutionPreparationPlan:
     def __post_init__(self) -> None:
         if not callable(self.materialize_instance):
             raise TypeError("materialize_instance must be callable")
-        if self.loss_service is not None and not isinstance(self.loss_service, LossService):
-            raise TypeError("loss_service must be a LossService when provided")
+        if self.loss_service is not None and not isinstance(self.loss_service, ObjectiveLowerer):
+            raise TypeError("loss_service must implement lower_objective_slot when provided")
         if self.resume_slot_transform is not None and not callable(self.resume_slot_transform):
             raise TypeError("resume_slot_transform must be callable when provided")
         if self.restored_schedule_context_binder is not None and not callable(
@@ -227,7 +233,7 @@ class MaterializedExecutionPreparation:
 
     initial_slots: Mapping[str, Any]
     kernel_context: Mapping[str, Any]
-    loss_service: LossService | None
+    loss_service: ObjectiveLowerer | None
     resume_slot_transform: ResumeSlotTransform | None
     restored_schedule_context_binder: RestoredScheduleContextBinder | None
     mapping_levels: tuple[MaterializedMappingLevelSpec, ...]
@@ -432,7 +438,7 @@ def _build_materialized_execution_preparation(
     provider_identity: str,
     initial_slots: Mapping[str, Any],
     kernel_context: Mapping[str, Any],
-    loss_service: LossService | None,
+    loss_service: ObjectiveLowerer | None,
     resume_slot_transform: ResumeSlotTransform | None,
     restored_schedule_context_binder: RestoredScheduleContextBinder | None = None,
     coordinate_order: tuple[tuple[AxisCoordinateSpec, ...], ...],
@@ -945,7 +951,7 @@ class ExecutionPreparationProviderRegistry:
                 f"execution preparation provider for {method_ref!r} returned reserved "
                 f"kernel_context keys {sorted(reserved_keys)!r}"
             )
-        if result.loss_service is not None and not isinstance(result.loss_service, LossService):
+        if result.loss_service is not None and not isinstance(result.loss_service, ObjectiveLowerer):
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} returned invalid loss_service"
             )

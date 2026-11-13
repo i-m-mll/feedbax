@@ -19,6 +19,7 @@ from feedbax.runtime.graph import (
 )
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.compiler.builders import build_component
+from feedbax.component_registry.retained import retained_component_registry
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 from feedbax.tasks import (
@@ -29,7 +30,6 @@ from feedbax.tasks import (
     TrialSpecDependency,
     eval_ensemble_on_trials,
 )
-from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 class DummyLoss(AbstractLoss):
@@ -491,9 +491,8 @@ def test_delayed_center_out_preset_exposes_timeline_and_catch_metadata():
     )
 
 
-def test_delayed_center_out_task_spec_materializes_from_compact_params(
-    application_registry_bundle,
-):
+def test_delayed_center_out_task_spec_materializes_from_compact_params():
+    registry = retained_component_registry()
     params = delayed_center_out_reaches_params(
         n_control_stages=8,
         workspace=[[-1.0, -1.0], [1.0, 1.0]],
@@ -505,7 +504,7 @@ def test_delayed_center_out_task_spec_materializes_from_compact_params(
         "task",
         f"feedbax.{DelayedReaches.__name__}",
         params,
-        component_registry=application_registry_bundle.components,
+        component_registry=registry,
     )
     task = component.task
     trial = component.trial_spec
@@ -515,7 +514,7 @@ def test_delayed_center_out_task_spec_materializes_from_compact_params(
             "task",
             f"feedbax.{DelayedReaches.__name__}",
             {**params, "epoch_len_ranges": [[2, 2.5]]},
-            component_registry=application_registry_bundle.components,
+            component_registry=registry,
         )
 
     assert task.n_steps == 9

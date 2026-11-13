@@ -14,7 +14,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote, urlsplit
 
 import jax
@@ -92,7 +92,6 @@ from feedbax.contracts.nan_attribution import (
     SlotNonFiniteSummary,
 )
 from feedbax.contracts.training import (
-    GraphTopologySourceSpec,
     OptimizerSpec,
     ResolvedTrainingMethod,
     ScheduleProjection,
@@ -112,7 +111,6 @@ from feedbax.contracts.worker import (
     MethodTrainingDiagnosticsSpec,
     ProgressCoordinate,
 )
-from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_VERSION,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
@@ -170,6 +168,7 @@ from feedbax.training.standard_train_checkpoint import TrainStateCodec
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
+    ObjectiveLowerer,
     RestoredScheduleContextBinder,
     _thaw_runtime_value,
     executor_owned_initial_slot_names,
@@ -198,6 +197,9 @@ from feedbax.training.worker_validation import (
     resolve_execution_mapping,
     validate_worker_contract,
 )
+
+if TYPE_CHECKING:
+    from feedbax.objectives.spec import ObjectiveExecutionRequirements
 
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
@@ -689,105 +691,25 @@ class StreamingCheckpointStore:
         return saved
 
 
-def execute_training_run_spec(
-    spec: TrainingRunSpec | Mapping[str, Any],
-    *,
-    run_id: str | None = None,
-    preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
-    initial_slots: Mapping[str, Any] | None = None,
-    kernel_context: Mapping[str, Any] | None = None,
-    manifest_root: Path | str | None = None,
-    checkpoint_root: Path | str | None = None,
-    checkpoint_source_root: Path | str | None = None,
-    checkpoint_source_pointer: CheckpointLatestPointer | None = None,
-    checkpoint_history_parent_roots: Mapping[str, Path | str] | None = None,
-    checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
-    checkpoint_initialization_request: CheckpointInitializationRequest | None = None,
-    checkpoint_fork_plan: CheckpointForkPlan | None = None,
-    checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
-    checkpoint_fork_target_id: str | None = None,
-    checkpoint_content_provider: ArtifactBlobProvider | None = None,
-    semantic_model: SemanticModelWriter | None = None,
-    train_state_codec: TrainStateCodec = "legacy",
-    checkpoint_source_content_binding: ContentBinding | None = None,
-    registry: TrainingProgramRegistry,
-    loss_service: LossService | None = None,
-    environment: WorkerExecutabilityEnvironment | None = None,
-    training_spec_payload: Mapping[str, Any] | None = None,
-    training_spec_payload_kind: str = "TrainingRunSpec",
-    training_spec_payload_schema_id: str | None = None,
-    training_spec_payload_schema_version: str | None = None,
-    training_spec_payload_ref: str | None = None,
-    manifest_metadata_projection: TrainingManifestMetadataProjection
-    | Mapping[str, Any]
-    | None = None,
-    task_binding_spec: Mapping[str, Any] | None = None,
-    resume: bool = False,
-    resume_slot_transform: ResumeSlotTransform | None = None,
-    stop_after_barrier: str | None = None,
-    update_budget: int | None = None,
-    manifest_conflict_policy: ManifestConflictPolicy = "error",
-    issues: Sequence[str] | None = None,
-    progress_callback: ProgressCallback | None = None,
-    retain_history: bool = True,
-    run_event_emitter: RunEventEmitter | None = None,
-    cancellation_probe: CancellationProbe | None = None,
-    stop_before_update: Callable[[], bool] | None = None,
-    start_callback: Callable[[int], None] | None = None,
-    committed_update_callback: CommittedUpdateCallback | None = None,
-    checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
-    before_finalize: Callable[[], None] | None = None,
-    execution_started_at_monotonic: float | None = None,
-    execution_start_semantics: str = "executor_entry",
-    execution_context: NativeExecutionProducerContext | Mapping[str, Any] | None = None,
-) -> TrainingRunExecutionResult:
-    """Validate, execute, checkpoint, and natively emit one training-run manifest.
+def __getattr__(name: str):
+    if name == "execute_training_run_spec":
+        from feedbax.training.retained_executor import execute_training_run_spec
 
-    ``progress_callback`` is called once for each generated training-progress
-    history event, in history order, as each progress coordinate is produced
-    during execution. Callback payloads have the same shape as stored history
-    events. Exceptions raised by the callback propagate to the caller.
-
-    With ``retain_history=False``, the result omits the in-memory history and
-    diagnostics (``history_events=()``, ``diagnostics=None``). The published
-    artifacts and progress callbacks are produced in either mode.
-
-    ``run_event_emitter`` optionally receives the versioned run-event protocol.
-    Emitter I/O diagnostics are contained by the emitter and do not change
-    training-loop failure behavior.
-
-    ``cancellation_probe`` is checked at progress boundaries. A ``stop``
-    decision completes the next durable checkpoint before returning a cancelled
-    manifest; ``terminate`` emits a cancelled manifest immediately.
-    ``stop_before_update`` can interrupt before any pending update, finalizing
-    the last committed state. Unsaved progress is checkpointed through the
-    committed phase's authored barrier. A stop before any new progress leaves
-    existing custody in place.
-
-    ``checkpoint_source_root`` names a read-only source for legacy resume or an
-    explicit initialization/fork plan. Plan-driven execution additionally
-    requires the source's canonical content binding and publishes every output
-    checkpoint through that immutable content provider.
-    For same-request resume, ``checkpoint_source_pointer`` authenticates one
-    specific published transaction without consulting a mutable latest pointer.
-    ``checkpoint_history_parent_roots`` locates ancestor transactions for
-    self-contained history materialization when custody spans multiple roots.
-    """
-    return _execute_training_run(
-        **{name: value for name, value in locals().items() if name != "spec"},
-        spec=spec, managed=False,
-    )
+        return execute_training_run_spec
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def execute_managed_training_run(spec: TrainingRunSpec, **arguments):
+def execute_managed_training_run(spec: TrainingRunSpec, **arguments: Any) -> TrainingRunExecutionResult:
     """Drive a prepared document run through the shared lifecycle."""
-    return _execute_training_run(spec=spec, managed=True, **arguments)
+    return _execute_training_run(spec=spec, lower_objective=None, **arguments)
 
 
 def _execute_training_run(
     spec: TrainingRunSpec | Mapping[str, Any],
     *,
-    managed: bool,
+    lower_objective: Callable[
+        [TrainingRunSpec, ObjectiveLowerer | None], tuple[Any, ObjectiveExecutionRequirements | None]
+    ] | None,
     run_id: str | None = None,
     preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
     initial_slots: Mapping[str, Any] | None = None,
@@ -807,7 +729,7 @@ def _execute_training_run(
     train_state_codec: TrainStateCodec = "legacy",
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
-    loss_service: LossService | None = None,
+    loss_service: ObjectiveLowerer | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
     training_spec_payload: Mapping[str, Any] | None = None,
     training_spec_payload_kind: str = "TrainingRunSpec",
@@ -844,7 +766,7 @@ def _execute_training_run(
     )
     cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
-    if managed != (run_spec.trial_documents is not None):
+    if (lower_objective is None) != (run_spec.trial_documents is not None):
         raise TrainingRunExecutorError("/trial_documents: This entry point requires its own request family.")
     if run_spec.task_binding_spec is not None:
         bound_task = run_spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
@@ -996,7 +918,7 @@ def _execute_training_run(
     method_contract = resolved_method.contract
     _validate_declarations_match_spec(run_spec, method_contract.method_ref)
 
-    if managed:
+    if lower_objective is None:
         if preparation is None or loss_service is not None:
             raise TrainingRunExecutorError("Managed Train requires its prepared objective.")
         # The prepared numerical kernel closes over its objective. The shared
@@ -1004,11 +926,7 @@ def _execute_training_run(
         lowered_objective = None
         requirements = None
     else:
-        lowered = _lower_objective(
-            run_spec, graph_inline=_graph_inline(run_spec.graph),
-            loss_service=loss_service or LossService(),
-        )
-        lowered_objective, requirements = lowered.loss, lowered.requirements
+        lowered_objective, requirements = lower_objective(run_spec, loss_service)
     kernels = dict(resolved_method.update_kernels)
     guards = dict(resolved_method.guard_predicates)
     effective_phase = validate_worker_contract(
@@ -2573,30 +2491,6 @@ def _validate_declarations_match_spec(spec: TrainingRunSpec, resolved_method_ref
         raise TrainingRunExecutorError(
             "/worker_execution/method_contract/method_ref must match registry declaration"
         )
-
-
-def _graph_inline(graph: GraphTopologySourceSpec) -> dict[str, Any] | None:
-    return dict(graph.inline) if graph.inline is not None else None
-
-
-def _lower_objective(
-    spec: TrainingRunSpec,
-    *,
-    graph_inline: dict[str, Any] | None,
-    loss_service: LossService,
-) -> Any:
-    try:
-        from feedbax.contracts.graph import GraphSpec
-
-        graph = GraphSpec.model_validate(graph_inline) if graph_inline is not None else None
-        return loss_service.lower_objective_slot(
-            spec.objective,
-            graph=graph,
-            trial_axis="batch",
-            path="/objective",
-        )
-    except ObjectiveLoweringError as exc:
-        raise TrainingRunExecutorError(str(exc)) from exc
 
 
 def _initial_slots(

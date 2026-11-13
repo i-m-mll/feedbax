@@ -6,7 +6,6 @@ import jax.numpy as jnp
 import jax.tree as jt
 import feedbax._vendor.jax_cookbook.tree as jtree
 from equinox import Module, field
-from feedbax.tasks import AbstractTask
 from feedbax._vendor.jax_cookbook import (
     LDict,
     compose,
@@ -38,6 +37,7 @@ from feedbax.analysis.types import (
 )
 
 if TYPE_CHECKING:
+    from feedbax.tasks import AbstractTask
     import plotly.graph_objects as go
 
     from feedbax.analysis.plot import ScatterPlots
@@ -46,12 +46,12 @@ VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
 
 
-def get_reach_directions(task: AbstractTask, *args) -> Array:
+def get_reach_directions(task: "AbstractTask", *args) -> Array:
     pos_endpoints = get_pos_endpoints(get_validation_trial_specs(task))
     return pos_endpoints[1] - pos_endpoints[0]
 
 
-def get_trivial_reach_directions(task: AbstractTask, *args) -> Array:
+def get_trivial_reach_directions(task: "AbstractTask", *args) -> Array:
     """Return 'aligns' 'reaches' with the x-y axes; i.e. effectively does nothing.
 
     The purpose of this is to avoid (for now) trying to bypass `AlignedVars` as a dependency of
@@ -177,7 +177,7 @@ def get_aligned_vars(vars, directions):
     )
 
 
-def get_reach_origins_directions(task: AbstractTask, models: PyTree[Module], hps: TreeNamespace):
+def get_reach_origins_directions(task: "AbstractTask", models: PyTree[Module], hps: TreeNamespace):
     pos_endpoints = get_pos_endpoints(get_validation_trial_specs(task))
     directions = pos_endpoints[1] - pos_endpoints[0]
     origins = pos_endpoints[0]

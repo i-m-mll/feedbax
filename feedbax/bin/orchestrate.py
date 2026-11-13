@@ -80,7 +80,7 @@ from feedbax.orchestration.stages import (
     PreflightFailed,
     StageEngine,
 )
-from feedbax.plugins.composition import compose_application
+from feedbax.plugins.retained import compose_retained_application
 from feedbax.training.interruption import CancellationDecision, RunInterruptionController
 
 
@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        args.bootstrap_state = asyncio.run(compose_application())
+        args.bootstrap_state = asyncio.run(compose_retained_application())
         return int(args.func(args))
     except StateLockError as exc:
         _print_error(exc)

@@ -684,7 +684,9 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.training_host_worker import main as training_worker
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
-    from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
+    from feedbax.contracts.project import Project
+    from tests.test_canonical_evaluate_admission import _save_project
+    from tests.test_document_train_pair import authored_documents, document_project
 
     # Pause only the original attempt at its first committed update so the
     # actual host can deliver the checkpoint stop before the next update.
@@ -702,7 +704,7 @@ def main(args):
     launch = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
     if launch.get("resume") is not None:
         return run_training(args)
-    execute = executor.execute_training_run_spec
+    execute = executor.execute_managed_training_run
 
     def pause_first_update(*args, **kwargs):
         callback = kwargs["committed_update_callback"]
@@ -722,7 +724,7 @@ def main(args):
         kwargs["committed_update_callback"] = wait_for_stop
         return execute(*args, **kwargs)
 
-    with patch.object(executor, "execute_training_run_spec", pause_first_update):
+    with patch.object(executor, "execute_managed_training_run", pause_first_update):
         return run_training(args)
 """)
 
@@ -732,7 +734,10 @@ def main(args):
         "_training_worker",
         replace(
             service._training_worker,
-            env={"JAX_PLATFORMS": "cpu", "PYTHONPATH": str(tmp_path)},
+            env={
+                "JAX_PLATFORMS": "cpu",
+                "PYTHONPATH": os.pathsep.join((str(tmp_path), str(Path(__file__).resolve().parents[1]))),
+            },
             warm_entrypoint="gated_training:main",
         ),
     )
@@ -742,22 +747,14 @@ def main(args):
     app.state.job_service = service
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
-    created = client.post("/api/projects")
-    assert created.status_code == 201, created.text
-    snapshot = created.json()["snapshot"]
-    project = snapshot["project_id"]
-    request = reaching_train_request(reaching_project(batches=2))
-    added = client.post(f"/api/projects/{project}/files", json={
-        "revision": snapshot["revision"],
-        "file": {"kind": "step", "id": "train", "step": {
-            "kind": "train", "base": {"inline": request.model_dump(mode="json", exclude_none=True)},
-        }},
-    })
-    assert added.status_code == 201, added.text
-    snapshot = added.json()["snapshot"]
+    project = "document-resume"
+    _save_project(
+        app.state.project_folders, project, Project.model_validate(document_project(authored_documents()))
+    )
+    revision = app.state.project_folders.read_plan(project, revision=None).revision
     submission = {
         "token": "ordinary-m1",
-        "revision": snapshot["revision"],
+        "revision": revision,
         "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
     }
     run_path = f"/api/projects/{project}/train-runs"
@@ -935,7 +932,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                         edit = await http.post(
                             f"/api/projects/{project}/files",
                             json={
-                                "revision": snapshot["revision"],
+                                "revision": revision,
                                 "file": {
                                     "kind": "step",
                                     "id": "observe",
@@ -944,7 +941,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                             },
                         )
                         assert edit.status_code == 201, edit.text
-                        assert edit.json()["snapshot"]["revision"] != snapshot["revision"]
+                        assert edit.json()["snapshot"]["revision"] != revision
                     else:
                         changed.set()
                         await asyncio.Future()
@@ -967,7 +964,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
 
     notices, replay = asyncio.run(observe_folder())
     current = client.get(f"/api/projects/{project}").json()
-    assert notices == [snapshot["revision"], current["revision"]]
+    assert notices == [revision, current["revision"]]
     assert any(f"id: {raw['head']}\nevent: replay_complete\n" in frame for frame in replay)
     assert not any(
         '"kind":"dependency_bound"' in frame

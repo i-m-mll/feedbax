@@ -26,7 +26,7 @@ from plotly.subplots import make_subplots
 # pyright: reportMissingTypeStubs=false
 from plotly.colors import convert_colors_to_same_type
 
-from feedbax.objectives.loss import TermTree
+from feedbax.objectives.base import TermTree
 from feedbax.plot import apply_default_template
 from feedbax.plot.colors import DEFAULT_COLORS, color_add_alpha
 from feedbax.plot.misc import columns_mean_std, errorbars

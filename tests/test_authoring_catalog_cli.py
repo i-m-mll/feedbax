@@ -94,7 +94,7 @@ def test_cli_authoring_catalog_matches_studio_and_registered_declarations(
         "step_payloads": {"train": steps["train"]},
         "document_schemas": {
             families[name]["schema_id"]: families[name]["payload_schema"]
-            for name in ("model", "task")
+            for name in ("model", "task", "objective")
         },
         "training_methods": methods,
     }

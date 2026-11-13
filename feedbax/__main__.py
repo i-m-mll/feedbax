@@ -46,7 +46,6 @@ from feedbax.governance.science_surface import (
 from feedbax.plugins.composition import compose_application
 from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.executor import (
-    execute_training_run_spec,
     prepare_training_manifest_metadata_projection,
 )
 from feedbax.training.interruption import CHECKPOINT_STOP_FILE_ENV, RunInterruptionController
@@ -811,13 +810,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_science_surface_cli(
             root=args.root, policy=args.policy, baseline_ref=args.baseline_ref
         )
-    bootstrap_state = asyncio.run(
-        compose_application(modules=tuple(getattr(args, "plugin", None) or ()))
-    )
+    modules = tuple(getattr(args, "plugin", None) or ())
     if args.command == "describe":
         from feedbax.bin.describe import describe
 
-        return describe(bootstrap_state, args.selector)
+        return describe(asyncio.run(compose_application(modules=modules)), args.selector)
+    from feedbax.plugins.retained import compose_retained_application
+
+    bootstrap_state = asyncio.run(compose_retained_application(modules=modules))
     registries = bootstrap_state.bundle
     if args.command == "matrix-harness":
         from feedbax.analysis.harness import main as harness_main
@@ -860,6 +860,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _execute_experiment_workflow(args, registries)
     if args.command == "execute-training-run-spec":
         from feedbax.training.invocation import prepare_training_invocation
+        from feedbax.training.retained_executor import execute_training_run_spec
 
         run_spec = validate_training_run_spec(_read_json(args.spec))
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None

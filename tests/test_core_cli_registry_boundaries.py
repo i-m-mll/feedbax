@@ -50,7 +50,7 @@ def _install_unknown_method_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     async def compose_application(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         return state
 
-    monkeypatch.setattr(feedbax_cli, "compose_application", compose_application)
+    monkeypatch.setattr("feedbax.plugins.retained.compose_retained_application", compose_application)
     monkeypatch.setattr(feedbax_cli, "TrainingRunSpec", _StructuralTrainingRunSpec)
     monkeypatch.setattr(feedbax_cli, "_read_json", lambda _path: {})
 

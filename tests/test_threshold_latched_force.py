@@ -12,6 +12,7 @@ import jax.random as jr
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.retained import retained_component_registry
 from feedbax.compiler import GraphCompilationError
 from feedbax.compiler.builders import build_component
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
@@ -358,7 +359,7 @@ def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> Non
 
 @pytest.fixture(scope="module")
 def compiled_target_relative_rollout():
-    registry = ComponentRegistry()
+    registry = retained_component_registry()
     graph = spec_to_graph(_target_relative_graph_spec(), registry)
     stabilization = build_component(
         "hold",

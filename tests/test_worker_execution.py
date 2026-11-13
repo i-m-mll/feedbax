@@ -40,6 +40,7 @@ from feedbax.web.worker.execution import (
     run_training_graph,
 )
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.retained import new_retained_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.training.checkpoint_custody import (
     authenticate_checkpoint_custody_ref,
@@ -464,7 +465,7 @@ def test_builtin_studio_graph_resumes_the_numerical_checkpoint(tmp_path: Path) -
     from feedbax.training.preparation import ExecutionPreparationRequest
 
     spec = _studio_worker_run_spec()
-    registries = new_application_registry_bundle()
+    registries = new_retained_registry_bundle()
 
     def prepare(run_spec, *, resume=False):
         method = resolve_training_run_spec(run_spec, registries.training_programs)

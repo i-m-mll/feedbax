@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import Any
 
 import equinox as eqx
@@ -13,10 +12,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 
-from feedbax.compiler.trainability import compile_trainability
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.artifact_custody import ArtifactBlobProvider
-from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     STUDIO_GRAPH_METHOD_PAYLOAD_ID,
@@ -26,26 +21,15 @@ from feedbax.contracts.studio_training import (
 from feedbax.contracts.training import (
     DeclaredTrainingProgram,
     ScheduleProjection,
-    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-    StandardSupervisedMethodPayload,
-    TrainingMethodRegistration,
     TrainingMethodScheduleProjector,
-    TrainingProgramRegistry,
-    TrainingSpec,
     declare_training_program,
     standard_supervised_method_contract,
-    standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
-from feedbax.objectives.document import ObjectiveExecutor
-from feedbax.runtime.graph import Graph
-from feedbax.runtime.trial_execution import TrialExecution
-from feedbax.tasks.document import TaskParameters
 from feedbax.runtime._graph_key_schedule import derive_key, sample_training_trials
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.training.optimizers import build_optimizer
-from feedbax.training.preparation import ExecutionPreparationRequest, ExecutionPreparationResult
+from feedbax.training.preparation import ExecutionPreparationProvider, RestoredScheduleContextBinder
 
 
 def studio_training_key(seed: int, stream: str) -> jax.Array:
@@ -127,6 +111,7 @@ class StudioUpdateKernel:
         self,
         *,
         compiled: Any,
+        batch_size: int | None = None,
         optimizer: optax.GradientTransformationExtraArgs,
         score_batch: Callable[[Any, jax.Array, int], tuple[jax.Array, dict[str, jax.Array]]] | None = None,
         rollout_fn: Callable[[Any, Any, Any], dict[str, Any]] | None = None,
@@ -141,7 +126,8 @@ class StudioUpdateKernel:
             raise TypeError("Supply exactly one scoring interface.")
         self._snapshot = snapshot
         trainable_filter = compiled.trainable_filter
-        batch_size = compiled.batch_size if isinstance(compiled, PairedUpdateInputs) else compiled.training_spec.batch_size
+        if batch_size is None:
+            batch_size = compiled.training_spec.batch_size
 
         @eqx.filter_jit
         def numerical_update(model, optimizer_state, key, batch_counter):
@@ -228,71 +214,6 @@ def _score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn):
     return score
 
 
-def _legacy_snapshot(compiled):
-    from feedbax.web.worker.execution import training_trajectory_snapshot
-
-    return lambda graph, key: training_trajectory_snapshot(graph, compiled, key)
-
-
-def studio_training_registry(
-    *,
-    compiled: Any,
-    optimizer: optax.GradientTransformationExtraArgs,
-    total_batches: int,
-    rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
-    evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
-    observe_model: Callable[[Any], None] | None = None,
-) -> TrainingProgramRegistry:
-    """Build an executor registry whose kernel performs one Studio graph update."""
-    method_contract = executor_method_contract(total_batches=total_batches)
-    kernel = StudioUpdateKernel(
-        compiled=compiled,
-        optimizer=optimizer,
-        score_batch=_score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn),
-        snapshot=_legacy_snapshot(compiled),
-    )
-    compiled.metadata["numerical_compile_time_ms"] = kernel.compile_time_ms
-
-    def gradient_update(
-        slots: Mapping[str, Any],
-        coordinate: Any,
-        context: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        del context, coordinate
-        updated = kernel.reported_update(slots)
-        if observe_model is not None:
-            observe_model(updated["model"])
-        return updated
-
-    def continue_training(
-        slots: Mapping[str, Any],
-        coordinate: Any,
-        context: Mapping[str, Any],
-    ) -> bool:
-        del coordinate, context
-        return int(slots["batch_counter"]) < total_batches
-
-    registry = TrainingProgramRegistry()
-    registry.register(
-        TrainingMethodRegistration(
-            method_ref=standard_supervised_method_ref().key,
-            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-            payload_model=StandardSupervisedMethodPayload,
-            contract_factory=lambda: method_contract,
-            update_kernels_factory=lambda _payload: {
-                "feedbax.training.standard_supervised.gradient_update": gradient_update
-            },
-            guard_predicates_factory=lambda _payload: {
-                "feedbax.training.studio_executor.continue_training": continue_training
-            },
-            owner="feedbax.training.studio_executor",
-            package="feedbax",
-        )
-    )
-    return registry
-
-
 def studio_graph_method_contract(payload: StudioGraphMethodPayload):
     return executor_method_contract(total_batches=payload.target_total).model_copy(update={
         "method_ref": STUDIO_GRAPH_METHOD.key,
@@ -300,68 +221,10 @@ def studio_graph_method_contract(payload: StudioGraphMethodPayload):
     })
 
 
-def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingProgram[StudioGraphMethodPayload]:
-    """Declare the existing Studio graph update for the checkpointable native executor."""
-    def prepare(request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
-        from feedbax.web.worker.execution import (
-            _StudioWorkerLossService,
-            _evaluate_loss,
-            compile_training_run,
-            rollout_graph,
-        )
-
-        spec, payload = request.run_spec, request.method_payload
-        if not isinstance(payload, StudioGraphMethodPayload):
-            raise ValueError("Studio graph preparation requires its resolved method payload")
-        payload.require_supported_launch(resume=request.resume)
-        if spec.graph.inline is None or spec.task_binding_spec is None or spec.objective.loss is None:
-            raise ValueError("Studio graph training requires an inline graph, typed task bindings and a loss")
-        continuation = spec.checkpoint_progress.continuation
-        offset = continuation.source_completed_batches if continuation is not None else 0
-        if offset + spec.training_config.n_batches != payload.target_total:
-            raise ValueError("Studio graph segment does not reach its original batch target")
-        compiled = compile_training_run(
-            graph_spec=spec.graph.inline,
-            training_spec=TrainingSpec(
-                optimizer=payload.optimizer, loss=spec.objective.loss,
-                n_batches=spec.training_config.n_batches, batch_size=spec.training_config.batch_size,
-            ),
-            task_spec=spec.task.model_dump(mode="json", exclude_none=True),
-            task_binding_spec=spec.task_binding_spec.model_dump(mode="json", exclude_none=True),
-            cfg=spec.training_config,
-            component_registry=component_registry,
-            executable_graph=request.executable_graph,
-        )
-        optimizer = standard_train_optimizer(payload, gradient_clip=spec.training_config.grad_clip)
-        kernel = StudioUpdateKernel(
-            compiled=compiled, optimizer=optimizer,
-            score_batch=_score_legacy_batch(
-                compiled, lambda graph, plan, key: rollout_graph(graph, plan, key=key), _evaluate_loss,
-            ),
-            snapshot=_legacy_snapshot(compiled),
-        )
-        trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
-
-        def bind_schedule(_slots, origin, current, count):
-            policy = payload.continuation
-            assert policy is not None
-            authored = policy.progress.source_completed_batches if policy.schedule == "restart" else 0
-            if origin != authored or current != count:
-                raise ValueError("/slots/optimizer: restored schedule clock differs from the prepared clock")
-            return {}
-
-        return ExecutionPreparationResult(
-            initial_slots={
-                "model": compiled.graph,
-                "optimizer": optimizer.init(trainable),
-                "prng": studio_training_key(payload.seed, "update"),
-                "batch_counter": jnp.array(0, dtype=jnp.int32),
-            },
-            kernel_context={"studio_graph_update": kernel},
-            loss_service=_StudioWorkerLossService(compiled),
-            restored_schedule_context_binder=bind_schedule if payload.continuation is not None else None,
-        )
-
+def studio_graph_training_program(
+    *, preparation_provider: ExecutionPreparationProvider | None = None,
+) -> DeclaredTrainingProgram[StudioGraphMethodPayload]:
+    """Declare the checkpointable Studio update shared by both entry points."""
     def gradient_update(slots: Mapping[str, Any], coordinate: Any, context: Mapping[str, Any]):
         del coordinate
         return context["studio_graph_update"].reported_update(slots)
@@ -383,7 +246,7 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
             "feedbax.training.standard_supervised.gradient_update": gradient_update,
         },
         guard_predicates_factory=guard,
-        preparation_provider=prepare,
+        preparation_provider=preparation_provider,
         schedule_projector=TrainingMethodScheduleProjector(
             projector_id="feedbax.training.studio_graph.schedule_projection",
             projector_version="v1",
@@ -396,90 +259,17 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
     )
 
 
-@dataclass(frozen=True)
-class PairedUpdateInputs:
-    graph: Graph
-    trainable_filter: Any
-    batch_size: int
-
-
-def prepare_trial_update(
-    graph: Graph,
-    task_execution: TrialExecution,
-    objective: ObjectiveExecutor,
-    *,
-    parameters: TaskParameters,
-    run_key: jax.Array,
-    batch_size: int,
-    trainable_filter: Any,
-    optimizer: optax.GradientTransformationExtraArgs,
-) -> StudioUpdateKernel:
-    """Use the existing bounded optimizer step for a separate task and objective."""
-    if batch_size < 1:
-        raise ValueError("A training batch must contain at least one trial.")
-
-    def score(model, step_key, count):
-        result = task_execution.training_batch(
-            model, objective, parameters, run_key=run_key, update_key=step_key, count=count,
-        )
-        return result.loss, {name: term.value for name, term in result.terms.items()}
-
-    def snapshot(model, key):
-        trial = task_execution.task.ahead(parameters, key, key)
-        retained, _ = task_execution.rollout(model, trial, key)
-        return {"n_steps": task_execution.task.n_steps,
-                "outputs": {name: value.tolist() for name, value in retained.items()}}
-
-    return StudioUpdateKernel(
-        compiled=PairedUpdateInputs(graph, trainable_filter, batch_size),
-        snapshot=snapshot,
-        optimizer=optimizer,
-        score_batch=score,
-    )
-
-
-def prepare_managed_training(
-    spec: TrainingRunSpec, registries, *, model_assets: ArtifactBlobProvider | None = None,
-) -> ExecutionPreparationResult:
-    """Prepare the document pair through the existing bounded update kernel."""
-    documents = spec.trial_documents
-    if documents is None:
-        raise ValueError("/trial_documents: Managed Train requires a document pair.")
-    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
-    paired = compile_trial_execution(
-        documents.model_name, documents.model, documents.task,
-        registries.components, registries.expression_functions,
-        objective=documents.objective, input_overrides=documents.input_overrides,
-        initialization_key=studio_training_key(method.seed, "model"),
-        artifact_provider=model_assets,
-    )
-    if not isinstance(paired, PreparedTrialExecution):
-        problem = paired[0]
-        raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
-    assert paired.objective is not None
-    graph = paired.executable.graph
-    _, mask = compile_trainability(paired.executable.resolved.graph, graph, registries.components)
-    optimizer = standard_train_optimizer(method, gradient_clip=spec.training_config.grad_clip)
-    kernel = prepare_trial_update(
-        graph, paired.execution, paired.objective, parameters=TaskParameters(),
-        run_key=studio_training_key(method.seed, "task-run"),
-        batch_size=spec.training_config.batch_size, trainable_filter=mask, optimizer=optimizer,
-    )
+def studio_schedule_context_binder(
+    payload: StudioGraphMethodPayload,
+) -> RestoredScheduleContextBinder | None:
+    policy = payload.continuation
+    if policy is None:
+        return None
+    authored = policy.progress.source_completed_batches if policy.schedule == "restart" else 0
 
     def bind_schedule(_slots, origin, current, count):
-        policy = method.continuation
-        assert policy is not None
-        authored = policy.progress.source_completed_batches if policy.schedule == "restart" else 0
         if origin != authored or current != count:
             raise ValueError("/slots/optimizer: restored schedule clock differs from the prepared clock")
         return {}
 
-    return ExecutionPreparationResult(
-        initial_slots={
-            "model": graph, "optimizer": optimizer.init(eqx.filter(graph, mask)),
-            "prng": studio_training_key(method.seed, "update"),
-            "batch_counter": jnp.array(0, dtype=jnp.int32),
-        },
-        kernel_context={"studio_graph_update": kernel},
-        restored_schedule_context_binder=bind_schedule if method.continuation is not None else None,
-    )
+    return bind_schedule

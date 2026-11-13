@@ -265,7 +265,7 @@ class JobService(PlanJobReader):
             },
             cwd=str(Path.cwd()),
             warm_entrypoint="feedbax.training_host_worker:main",
-            preload=("jax", "feedbax.training.invocation", "feedbax.plugins.composition"),
+            preload=("jax", "feedbax.training.managed_studio", "feedbax.plugins.composition"),
         )
         self._launch_lock = Lock()
         self._accepting = True
@@ -482,7 +482,12 @@ class JobService(PlanJobReader):
             run_key=request_id,
             job=Job(
                 id=uuid4().hex, project=source["project"], request=request_id,
-                launch=replace(self._training_worker, warm_entrypoint=EVALUATION_ENTRYPOINT, payload=payload),
+                launch=replace(
+                    self._training_worker,
+                    warm_entrypoint=EVALUATION_ENTRYPOINT,
+                    preload=("jax", "feedbax.plugins.retained"),
+                    payload=payload,
+                ),
                 data={"private_evaluation_root": root},
                 edges=(Edge(producer, authenticated_completion=True),),
             ),

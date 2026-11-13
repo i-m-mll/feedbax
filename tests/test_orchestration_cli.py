@@ -414,7 +414,7 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
         events.append("bootstrap")
         return state
 
-    monkeypatch.setattr(orchestrate, "compose_application", compose)
+    monkeypatch.setattr(orchestrate, "compose_retained_application", compose)
     monkeypatch.setattr(
         orchestrate,
         "_load_assembly_request",
@@ -855,7 +855,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     async def compose() -> BootstrapState:
         return BootstrapState(bundle=bundle, provenance=())
 
-    monkeypatch.setattr(orchestrate, "compose_application", compose)
+    monkeypatch.setattr(orchestrate, "compose_retained_application", compose)
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
     assert (
@@ -982,7 +982,7 @@ def test_resume_bootstraps_before_running(
         calls.append(("bootstrap", {}))
         return state
 
-    monkeypatch.setattr(orchestrate, "compose_application", compose)
+    monkeypatch.setattr(orchestrate, "compose_retained_application", compose)
     monkeypatch.setattr(
         orchestrate,
         "_run_existing",
