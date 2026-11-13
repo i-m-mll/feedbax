@@ -3,14 +3,15 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
-import { editEvaluateAttachment, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
+import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { Dialog } from '@/components/ui/Dialog';
+import { StudioFieldControl } from '@/components/values/StudioFieldControl';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
   ComponentDefinition, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
-  ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
+  ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
 import { ModelAddressSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
@@ -31,6 +32,10 @@ type Props = {
   window: ModelSelectionStore;
   active: boolean;
   editable: boolean;
+  fieldEditable: boolean;
+  fieldLitSteps?: ReadonlySet<string>;
+  fieldRows?: readonly string[];
+  selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
@@ -120,7 +125,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, window: state, active, editable, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
+export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
   const selected = useStore(state, (current) => current.selection);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -176,6 +181,44 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
+  const fieldOwner = selection?.element.kind === 'component' ? selection : !selection ? graph : undefined;
+  const fieldBody = model && fieldOwner && !libraryItem
+    ? { owner: fieldOwner, revision: saved.revision, run: projectionRun } : undefined;
+  const fields = useQuery({
+    queryKey: ['model-fields', saved.project_id, fieldBody],
+    queryFn: ({ signal }) => projectModelFields(saved.project_id, fieldBody!, signal),
+    enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
+      const previousBody = query?.queryKey[2] as typeof fieldBody;
+      return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner) ? previous : undefined;
+    },
+  });
+  async function editField(address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
+    if (!fieldBody || !fieldEditable || fields.isPlaceholderData) return 'Wait for the saved field.';
+    try {
+      const result = await projectModelFields(saved.project_id, {
+        ...fieldBody, address, edit, lit_steps: [...fieldLitSteps ?? []], rows: [...fieldRows ?? []],
+      }, editor.signal);
+      if (result.problems.length) return result.problems[0].reason;
+      if (result.command) {
+        const applied = await editor.editModel('Set Value', address.document, result.command, saved);
+        return applied.status === 'refused' ? applied.problem.detail : undefined;
+      }
+      if (result.files.length) editor.editFiles('Set Field', result.files, {
+        reviewedRevision: fieldBody.revision,
+        dependencies: [{ kind: 'document', id: address.document }, ...(projectionRun ? [{ kind: 'step' as const, id: projectionRun.step }] : [])],
+      });
+      return undefined;
+    } catch (error) {
+      return apiErrorMessage(error);
+    }
+  }
+  const projectedFields = fields.data?.fields ?? [];
+  const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
+    address.element.kind === 'field' && typeof address.element.path[1] === 'string' ? [address.element.path[1]] : []));
+  const fieldControls = projectedFields.map((field) => <StudioFieldControl key={addressKey(field.address)} field={field}
+    commit={fieldEditable && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined}
+    rowSelection={!!fieldRows?.length}
+    selectedValues={field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined} />);
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {
     let address = item.address;
@@ -661,9 +704,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     <ul>{[...(libraryItem.input_ports ?? []), ...(libraryItem.output_ports ?? [])].map((name, index) => <li key={index}>{name}</li>)}</ul>
     {editTopology && <button className={button} type="button" onClick={() => add(libraryItem)}>Add {shortName(libraryItem.name)}</button>}
   </section> : model && <section className="grid gap-2 p-2 text-sm">
+    {fields.isError && <p role="alert">{apiErrorMessage(fields.error)}</p>}
     {component && selection ? <>
       <strong>{component.name}</strong>
+      {fieldControls}
       <ComponentFields component={component} definition={component.kind === 'leaf' ? registry.get(component.type) : undefined}
+        projected={projectedNames}
         change={editTopology ? (path, value) => void apply('Set Value', {
           op: 'set_field', address: fieldAddress(selection, ...path), value,
         }, false) : undefined} />
@@ -688,7 +734,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         </select>
       </label>}
     </> : ownerAddress ? <strong>Wire</strong>
-      : <ModelFields model={model.value} change={editTopology && !currentPath.length ? (path, value) => void apply('Step', {
+      : projectedFields.length ? fieldControls
+      : <ModelFields model={model.value} change={editTopology && !fieldBody && !currentPath.length ? (path, value) => void apply('Step', {
         op: 'set_field', address: fieldAddress(graph, ...path), value,
       }, false) : undefined} />}
     {ownerAddress && !attachment && chain && <div className="border-t border-shell-divider pt-1">

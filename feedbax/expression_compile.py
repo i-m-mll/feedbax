@@ -78,8 +78,12 @@ def compile_expression(
     reset_on_epoch: bool = False,
     discrete_uniform: bool = False,
     path: NodePath = (),
+    root_draw_key: bool = False,
 ) -> Compiled | tuple[Problem, ...]:
-    """Compile with dynamic literal operands, independently of the authored spelling."""
+    """Compile with dynamic literal operands.
+
+    A kept sweep sample supplies the root draw's already folded key.
+    """
     checked = check(tree, site, functions, path=path)
     if not isinstance(checked, Checked):
         return checked
@@ -199,8 +203,8 @@ def compile_expression(
                 source = inputs.run_key if node_type.level == Level.RUN else inputs.trial_key
                 key_value = None
                 if stream is not None:
-                    key_value = derive_key(
-                        source, "expression", *field_address, *stream, index=inputs.repeat
+                    key_value = source if root_draw_key and not at and isinstance(node, DrawValue) else derive_key(
+                        source, "expression", *field_address, *stream, index=inputs.repeat,
                     )
                     if not isinstance(node, DrawValue) and node_type.level == Level.STEP:
                         key_value = random.fold_in(key_value, inputs.step)

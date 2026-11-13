@@ -76,6 +76,8 @@ interface DetailInputs {
   readonly evaluationReplay: ReturnType<typeof useSavedEvaluationScene>;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly namedRun?: StudioSavedTrainKey;
+  readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly fieldRows?: readonly string[];
   readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
   readonly problemReveal?: ProblemReveal;
   readonly modelWindow: ModelSelectionStore;
@@ -471,6 +473,11 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const storedView = useStoredModelView({
     model: activeView === 'model' ? stored : undefined, editor, saved, window: input.modelWindow,
     active: activeView === 'model',
+    selectedSweepValues: input.selectedSweepValues,
+    fieldLitSteps: graphScope?.lit,
+    fieldRows: input.fieldRows,
+    fieldEditable: !outside && !pending && !saving && !saved.project.sweep && input.step?.kind === 'train' &&
+      Boolean(input.namedRun && (canEdit || selection?.kind === 'values' || selection?.kind === 'rows')),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
     editable: canEdit && !pending && !saving && !!saved.presentation && input.step?.kind === 'train' &&
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,

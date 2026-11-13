@@ -261,6 +261,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
   const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
     selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
+  const selectedSweepValues = new Map<string, Set<string>>();
+  if (state.selection && state.selection.kind !== 'steps') {
+    for (const row of selectedDefinitionRows) {
+      for (const [axis, { value_id }] of Object.entries(row.coordinates)) {
+        const values = selectedSweepValues.get(axis) ?? new Set<string>();
+        values.add(value_id);
+        selectedSweepValues.set(axis, values);
+      }
+    }
+  }
   const evaluated = step?.kind === 'evaluate' && namedRun && state.selection;
   const modelSource = step?.kind === 'evaluate' ? plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds?.['payload.graph'] : undefined;
@@ -288,7 +298,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems,
+    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues,
+    fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({

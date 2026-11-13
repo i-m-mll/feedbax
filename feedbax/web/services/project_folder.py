@@ -50,7 +50,7 @@ from feedbax.contracts.project_io import (
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import BaseReaders
-from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis
+from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
@@ -97,6 +97,40 @@ class _ModelInverse(StrictModel):
 
 
 _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
+
+
+def _document_sweep_paths(project: Project, document: str) -> set[tuple[str, ...]]:
+    prefix = f"documents.{document}.payload."
+
+    def paths(sweep: Sweep):
+        for axis in sweep.axes.values():
+            if isinstance(axis, GeneratedAxis):
+                yield axis.path
+            if isinstance(axis, NamedAxis):
+                for entry in axis.values.values():
+                    if entry is not None:
+                        yield from entry.patches
+        for entry in (*sweep.rows.values(), *sweep.exceptions.values()):
+            if entry is not None:
+                yield from entry.patches
+
+    return {
+        tuple(path.removeprefix(prefix).split("."))
+        for sweep in (project.sweep, *(step.sweep for step in project.steps.values()))
+        if sweep is not None
+        for path in paths(sweep) if path.startswith(prefix)
+    }
+
+
+def _model_field_exists(payload, path):
+    for key in path:
+        if isinstance(payload, list) and key.isdecimal() and int(key) < len(payload):
+            payload = payload[int(key)]
+        elif isinstance(payload, dict) and key in payload:
+            payload = payload[key]
+        else:
+            return False
+    return True
 
 
 def _model_edit_source(
@@ -594,6 +628,15 @@ class ProjectFolderService:
         token = None
         if result.state != state:
             next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
+            if next_payload is not payload and any(
+                _model_field_exists(payload, path) and not _model_field_exists(next_payload, path)
+                for path in _document_sweep_paths(snapshot.project, body.document)
+            ):
+                return ModelEditResponse(result=ModelEditRefused(
+                    status="refused", problem=ModelEditProblem(
+                        address=result.changed[0], detail="Convert the affected sweep to a Value before moving or removing its field.",
+                    ),
+                ))
             next_layout = layout.copy()
             updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
             for key in _MODEL_LAYOUT_FIELDS:

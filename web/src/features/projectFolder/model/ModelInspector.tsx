@@ -96,8 +96,9 @@ export function ModelFields({ model, change }: { model: ModelDocument; change?: 
   return <Field label="Step" value={`${model.step_seconds} s`} parse={period} commit={change && ((value) => change(['step_seconds'], value))} />;
 }
 
-export function ComponentFields({ component, definition, change }: {
+export function ComponentFields({ component, definition, change, projected }: {
   component: Component; definition?: ComponentDefinition; change?: (path: string[], value: JsonValue) => void;
+  projected?: ReadonlySet<string>;
 }) {
   if (component.kind === 'composite') {
     const domain = component.interior.physical_domain;
@@ -107,7 +108,7 @@ export function ComponentFields({ component, definition, change }: {
         commit={change && ((value) => change(['substeps'], value))} /> : null;
   }
   const values = { ...definition?.default_params, ...component.fields };
-  return <>{definition?.param_schema?.filter(({ name }) => name !== 'dt' && name !== 'control_dt').map((schema) =>
+  return <>{definition?.param_schema?.filter(({ name }) => name !== 'dt' && name !== 'control_dt' && !projected?.has(name)).map((schema) =>
     <Parameter key={schema.name} name={schema.name} schema={schema} value={values[schema.name] as JsonValue | undefined}
       change={change && ((value) => change(['fields', schema.name], value))} />)}</>;
 }

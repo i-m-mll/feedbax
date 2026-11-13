@@ -209,6 +209,92 @@ def _rename_components(model):
             _rename_components(component)
 
 
+def test_addressed_field_range_sample_and_row_provenance(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    model = raw["documents"]["reach-model"]["payload"]
+    raw["steps"]["train"]["base"]["inline"]["alias"] = {"document": "reach-model", "pointer": "/step_seconds"}
+    raw["steps"]["train"]["document_overrides"] = {"reach-model": {"/step_seconds": 0.02}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "fields", Project.model_validate(raw))
+    url = "/api/projects/fields"
+    owner = {"document": "reach-model", "composites": [], "element": {"kind": "graph"}}
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        initial = client.get(url).json()
+        body = {"revision": initial["revision"], "owner": owner,
+                "run": {"variant": "default", "step": "train", "row": "default"}}
+        state = client.post(url + "/model/fields", json=body).json()["fields"][0]
+        assert (state["text"], state["effective"]) == (f"{model['step_seconds']} s", "0.02 s")
+        assert state["site"]["kinds"] == ["value", "sweep", "formula"]
+        response = client.post(url + "/model/fields", json=body | {
+            "address": state["address"], "edit": {"kind": "text", "text": "linspace(10 ms, 30 ms, 3)"},
+        })
+        assert response.status_code == 200, response.text
+        recipe = response.json()
+        assert not recipe["problems"], recipe
+        saved = client.patch(url, json={"revision": initial["revision"], "files": recipe["files"]})
+        assert saved.status_code == 200, saved.text
+        assert client.post(url + "/model/fields", json=body).status_code == 409
+        snapshot = folders.read("fields")
+        plan = folders.read_plan("fields", revision=snapshot.revision).plan
+        keys = tuple(row.key for row in plan.rows)
+        assert len(keys) == 3
+        plan = folders.read_plan("fields", revision=snapshot.revision, source_runs=keys).plan
+        for key, period in zip(keys, (0.01, 0.02, 0.03), strict=True):
+            definition = plan.selected_definitions[key]
+            assert definition.payload["graph"]["step_seconds"] == pytest.approx(period)
+            assert definition.payload["alias"] == pytest.approx(period)
+            assert definition.document_ids["payload.graph"] == "reach-model"
+            assert definition.sources["/payload/graph/step_seconds"].kind == "sweep_value"
+        assert snapshot.project.documents["reach-model"].payload == model
+
+        component_owner = {"document": "reach-model", "composites": [],
+                           "element": {"kind": "component", "id": "plant"}}
+        selected = body | {
+            "owner": component_owner, "revision": snapshot.revision,
+            "run": body["run"] | {"row": keys[0].row},
+        }
+        plant = client.post(url + "/model/fields", json=selected).json()["fields"]
+        mass = next(field for field in plant if field["label"] == "Mass")
+        prepared = client.post(url + "/model/fields", json=selected | {
+            "address": mass["address"], "edit": {"kind": "text", "text": "2"},
+            "rows": [keys[0].row],
+        }).json()
+        assert not prepared["problems"], prepared
+        scoped = client.patch(url, json={"revision": snapshot.revision, "files": prepared["files"]})
+        assert scoped.status_code == 200, scoped.text
+        scoped_plan = folders.read_plan("fields", revision=scoped.json()["revision"], source_runs=keys).plan
+        mass_path = "/payload/graph/interior/components/plant/fields/mass"
+        assert scoped_plan.selected_definitions[keys[0]].sources[mass_path].kind == "exception"
+        assert scoped_plan.selected_definitions[keys[1]].sources[mass_path].kind == "document"
+        restored = client.patch(url, json={
+            "revision": scoped.json()["revision"], "address": {"kind": "step", "id": "train"},
+            "patches": [{"op": "remove", "path": "/sweep/exceptions"}],
+        })
+        assert restored.status_code == 200, restored.text
+        snapshot = folders.read("fields")
+
+        body["revision"] = snapshot.revision
+        body["run"]["row"] = keys[0].row
+        sampled = client.post(url + "/model/fields", json=body | {
+            "address": state["address"], "edit": {
+                "kind": "text", "text": "sample(U(0.02 s, 0.03 s), 3)", "seed": 8,
+            },
+        })
+        assert sampled.status_code == 200, sampled.text
+        recipe = sampled.json()
+        assert not recipe["problems"], recipe
+        saved = client.patch(url, json={"revision": snapshot.revision, "files": recipe["files"]})
+        assert saved.status_code == 200, saved.text
+        sampled_axis = folders.read("fields").project.steps["train"].sweep.axes["step"]
+        assert sampled_axis.sampler.distribution.family == "uniform"
+        assert sampled_axis.sampler.seed == 8
+        expected = [float(jax.random.uniform(jax.random.fold_in(jax.random.key(8), index),
+                                             minval=0.02, maxval=0.03)) for index in range(3)]
+        assert list(sampled_axis.draws.values()) == expected
+
+
 def _group_reaching_pipeline(raw, registry):
     payload = raw["documents"]["reach-model"]["payload"]
     payload["interior"]["components"]["relay"] = {

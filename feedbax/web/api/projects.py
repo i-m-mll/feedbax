@@ -33,6 +33,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
+from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse
 from feedbax.web.services.project_folder import (
     ProjectFileExists,
     ProjectFolderInvalid,
@@ -217,6 +218,20 @@ def edit_model(
     components = request.app.state.bootstrap_state.bundle.components
     return _project_response(
         response, lambda: request.app.state.project_folders.edit_model(project_id, body, components)
+    )
+
+
+@router.post("/{project_id}/model/fields")
+def project_model_fields(
+    project_id: ProjectName, body: ModelFieldRequest, request: Request, response: Response,
+) -> ModelFieldResponse:
+    from feedbax.web.services.model_field import model_fields
+
+    bundle = request.app.state.bootstrap_state.bundle
+    return _project_response(
+        response, lambda: model_fields(
+            request.app.state.project_folders, project_id, body, bundle.components, bundle.expression_functions,
+        ),
     )
 
 

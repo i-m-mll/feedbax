@@ -717,6 +717,47 @@ export interface ModelTaskSignal {
   type: SignalType;
 }
 
+export interface ModelFieldRequest {
+  revision: unknown;
+  owner: ModelAddress;
+  run?: StudioSavedTrainKey | null;
+  address?: ModelAddress | null;
+  lit_steps?: string[];
+  rows?: string[];
+  edit?: FieldTextEdit | FieldKindEdit | null;
+}
+
+export interface ModelFieldResponse {
+  fields?: StudioFieldView[];
+  files?: StudioProjectFilePatch[];
+  problems?: Problem[];
+  command?: ModelEditCommand | null;
+}
+
+export interface FieldKindEdit {
+  kind: "to_sweep" | "to_value" | "to_list";
+  value_id?: string | null;
+}
+
+export interface FieldTextEdit {
+  kind: "text";
+  text: string;
+  value_id?: string | null;
+  seed?: number | null;
+}
+
+export interface StudioFieldView {
+  address: ModelAddress;
+  label: string;
+  text: string;
+  effective?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  members?: StudioSweepValue[];
+}
+
 export interface SparseCooEntrySpec {
   coordinate: number[];
   value: boolean | number | "nan" | "+inf" | "-inf";
@@ -3276,7 +3317,7 @@ export type RunReference = {
 };
 
 export type SampleValues = {
-  "distribution": string;
+  "distribution": DrawValue | string;
   "count": number;
   "seed": number;
 };
@@ -5249,6 +5290,67 @@ export const ModelTaskSignalSchema: z.ZodType<ModelTaskSignal> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<ModelTaskSignal>;
+
+export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "owner": ModelAddressSchema,
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "address": ModelAddressSchema.nullable().optional(),
+      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "rows": z.array(z.string()).optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldRequest>;
+
+export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(() =>
+  z
+    .object({
+      "fields": z.array(StudioFieldViewSchema).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "problems": z.array(ProblemSchema).optional(),
+      "command": ModelEditCommandSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldResponse>;
+
+export const FieldKindEditSchema: z.ZodType<FieldKindEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("to_sweep"), z.literal("to_value"), z.literal("to_list")]),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldKindEdit>;
+
+export const FieldTextEditSchema: z.ZodType<FieldTextEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("text"),
+      "text": z.string().max(8192),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "seed": z.number().int().safe().gte(0).lte(4294967295).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldTextEdit>;
+
+export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioFieldView>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -9438,7 +9540,7 @@ export const RunReferenceSchema: z.ZodType<RunReference> = z.lazy(() =>
 
 export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
   z.object({
-    "distribution": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "distribution": z.union([DrawValueSchema, z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))]),
     "count": z.number().int().safe().min(1),
     "seed": z.number().int().safe(),
   }).strict()
@@ -10246,6 +10348,8 @@ export const contractSchemas = {
   ModelConnectionReview: ModelConnectionReviewSchema,
   ModelProjectionRequest: ModelProjectionRequestSchema,
   ModelProjection: ModelProjectionSchema,
+  ModelFieldRequest: ModelFieldRequestSchema,
+  ModelFieldResponse: ModelFieldResponseSchema,
   EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
@@ -10369,6 +10473,8 @@ export interface ContractTypeMap {
   ModelConnectionReview: ModelConnectionReview;
   ModelProjectionRequest: ModelProjectionRequest;
   ModelProjection: ModelProjection;
+  ModelFieldRequest: ModelFieldRequest;
+  ModelFieldResponse: ModelFieldResponse;
   EvaluateAttachmentRequest: EvaluateAttachmentRequest;
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
   EvaluateAttachmentState: EvaluateAttachmentState;

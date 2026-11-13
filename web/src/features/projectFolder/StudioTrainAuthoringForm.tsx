@@ -69,7 +69,9 @@ function formFields(projection: StudioTrainAuthoring, { view, component, step, s
         count: sweep.rule.count, scale: sweep.rule.scale === 'log' ? 'logarithmic' : 'linear' };
     } else if (sweep?.kind === 'sampler') {
       if (sweep.can_list) actions.push('toList');
-      projected = { kind: 'sampler', id: sweep.id, label, ...sweep.rule };
+      const { distribution, count, seed } = sweep.rule;
+      projected = { kind: 'sampler', id: sweep.id, label, count, seed,
+        distribution: typeof distribution === 'string' ? distribution : distribution.family };
     }
     return {
       id, label: node ? `${node} · ${label}` : label, actions, sweep: projected,

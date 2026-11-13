@@ -41,8 +41,11 @@ class SweepTarget:
 
     value: int | float
     writes: Callable[[int | float], list[SetProjectValue]]
+    patch_path: str | None = None
 
     def entry(self, value: int | float, label: str | None = None) -> AxisValue:
+        if self.patch_path is not None:
+            return AxisValue(label=label, value=value, patches={self.patch_path: SetValue(value=value)})
         return AxisValue(
             label=label,
             value=value,
@@ -146,18 +149,19 @@ class TrainFieldSweeps:
         return f"{base}-{counter}"
 
     @staticmethod
-    def _axis_write(name: str, axis: NamedAxis) -> SetProjectValue:
+    def _axis_write(name: str, axis: Axis) -> SetProjectValue:
+        value = axis.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        if isinstance(axis, SampledAxis) and not isinstance(axis.sampler.distribution, str):
+            value["sampler"]["distribution"] = axis.sampler.distribution.model_dump(mode="json", exclude_none=True)
         return SetProjectValue(
             op="replace", path=pointer(("sweep", "axes", name)),
-            value=axis.model_dump(mode="json", exclude_none=True, exclude_defaults=True),
+            value=value,
         )
 
-    def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:
-        edit = command.edit
-        if edit.kind == "toSweep" and self.can_sweep:
+    def write_axis(self, axis: Axis) -> list[SetProjectValue]:
+        if self.can_sweep:
             base = re.sub(r"[^a-z0-9]+", "-", self.label.lower()).strip("-") or "value"
             name = self._fresh_id(base, self.axes)
-            axis = NamedAxis(values={"value": self.target.entry(self.target.value)})
             write = self._axis_write(name, axis)
             if self.step.sweep is None:
                 return [SetProjectValue(
@@ -167,6 +171,19 @@ class TrainFieldSweeps:
             if "axes" not in self.step.sweep.model_fields_set:
                 return [SetProjectValue(op="add", path="/sweep/axes", value={name: write.value})]
             return [SetProjectValue(op="add", path=write.path, value=write.value)]
+        if len(self.covering) == 1:
+            name, previous = self.covering[0]
+            editable = self._editable_list(previous) if isinstance(previous, NamedAxis) else (
+                isinstance(previous, GeneratedAxis) and self._can_list(previous)
+            )
+            if editable:
+                return [self._axis_write(name, axis)]
+        raise ValueError(f"{self.label} has no supported sweep edit")
+
+    def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:
+        edit = command.edit
+        if edit.kind == "toSweep" and self.can_sweep:
+            return self.write_axis(NamedAxis(values={"value": self.target.entry(self.target.value)}))
 
         if edit.kind != "toSweep" and len(self.covering) == 1:
             name, axis = self.covering[0]
