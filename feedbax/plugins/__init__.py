@@ -187,21 +187,7 @@ __all__ = [
     "EvaluationBatchFragment",
     "EvaluationCompactProductUnionFinalizerRegistry",
     "EvaluationCompactProductUnionInput",
-    "CONFORMANCE_CHECKS",
-    "EXPERIMENT_PACKAGES",
-    "FIGURES",
-    "REPORT_RECIPES",
-    "BOOTSTRAP_CONTEXT_VERSION",
-    "ExperimentRegistry",
-    "PLUGIN_DECLARATION_SCHEMA_ID",
-    "PLUGIN_DECLARATION_SCHEMA_VERSION",
-    "PLUGIN_DECLARATION_SCHEMA_VERSION_V1",
-    "PLUGIN_PROTOCOL_VERSION",
-    "ExperimentEnvelopeCompileRequest",
-    "ExperimentEnvelopeParentAuthority",
-    "ExperimentEnvelopeCompileResult",
-    "ExperimentEnvelopeRejection",
-    "ExperimentEnvelopeRejectionCategory",
+    *_NON_GUARANTEED_PLUGIN_EXPORTS,
 ]
 
 

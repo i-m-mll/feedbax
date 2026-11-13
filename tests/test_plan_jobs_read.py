@@ -20,14 +20,14 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.request_specs import TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.host import AdmissionItem, HostClient, HostError, Job, Launch
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
+from tests.support.managed_train_fixture import managed_train_payload, managed_train_project
 from tests.test_project_plan import _project_data
-from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
 def _until(read, ready=bool, *, timeout=34):
@@ -41,7 +41,7 @@ def _until(read, ready=bool, *, timeout=34):
     pytest.fail(f"Host did not reach the expected state. Last observation was {result!r}")
 
 
-def _write_project(root: Path, spec: TrainingRequestSpec) -> None:
+def _write_project(root: Path, spec: DocumentTrainingRequestSpec) -> None:
     assert spec.seed is not None
     project = Project.model_validate({
         "steps": {"fit": {"kind": "train", "base": {"inline": spec.model_dump(mode="json")}}},
@@ -113,6 +113,9 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     data, _ = _project_data()
+    managed = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    data["documents"] = managed["documents"]
+    data["steps"]["fit"] = managed["steps"]["train"]
     data["steps"]["fit"]["sweep"] = {"axes": {"seed": {"values": {
         "a": {"label": "11", "patches": {"seed": {"value": 11}}},
         "b": {"label": "12", "patches": {"seed": {"value": 12}}},
@@ -147,7 +150,11 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert set(response) == {"revision", "rows"}
     assert window["variants"] == ["default"]
     steps = {step["step_id"]: step for step in window["steps"]}
-    assert steps["fit"]["document_ids"] == {"payload.graph": "model"}
+    assert steps["fit"]["document_ids"] == {
+        "payload.trial_documents.model": "point-mass",
+        "payload.trial_documents.task": "simple-reaches-task",
+        "payload.trial_documents.objective": "simple-reaches-objective",
+    }
     assert steps["fit"]["status_counts"] == {"not_run": 2}
     assert steps["broken"]["status_counts"] == {}
     assert steps["invalid"]["status_counts"] == {"cannot_run": 1}
@@ -191,7 +198,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    canonical = reaching_train_request(reaching_project(batches=160)).model_copy(update={"seed": 0})
+    canonical = DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=160) | {"seed": 0})
     _write_project(root, canonical)
     same = RunKey("same", "fit", "default")
     original = RunKey("original", "fit", "default")

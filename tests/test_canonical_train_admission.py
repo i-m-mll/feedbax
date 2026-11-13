@@ -47,23 +47,16 @@ from feedbax.training.checkpoint_custody import (
     require_checkpoint_semantic_state_equal,
     resolve_checkpoint_custody_ref,
 )
-from feedbax.training.invocation import prepare_training_invocation
+from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.managed_train_fixture import managed_train_payload
 from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
 from tests.test_local_job_host import host as host_fixture
-from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
 host = host_fixture
-
-
-def _train_payload(registries, *, batches):
-    request = reaching_train_request(reaching_project(batches=batches))
-    return lower_canonical_train(request, registries.training_programs), request.model_dump(
-        mode="json", exclude_none=True,
-    )
 
 
 def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
@@ -75,7 +68,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     folders = ProjectFolderService(tmp_path / "projects")
     snapshot = folders.new().snapshot
     project = snapshot.project_id
-    legacy, payload = _train_payload(registries, batches=2)
+    payload = managed_train_payload()
     for name in ("train", "stable"):
         snapshot = folders.create_file(
             project,
@@ -98,7 +91,6 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     ids = {row.key: row.request_id for row in reviewed.plan.runs}
     request_id = ids[train]
     assert request_id == ids[stable] and request_id.startswith("train:")
-    assert request_id != canonical_training_run_spec_sha256(legacy)
     assert not reviewed.store_path.exists()
 
     host.policy(compute=1)
@@ -118,6 +110,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     assert row["request"] == request_id and row["state"] == "queued"
     launch = BoundStudioTrainingJobInput.model_validate(row["launch"]["payload"])
     assert launch.request_id == request_id and launch.manifest_root == reviewed.store_path
+    assert request_id != canonical_training_run_spec_sha256(launch.spec)
     assert launch.canonical_request is not None
     store = ImmutableArtifactBlobProvider(reviewed.store_path)
     encoded = store.get_object(launch.canonical_request.request)
@@ -128,6 +121,9 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     )
     decoded = decode_request(encoded, lambda digest: store.get_object(refs[digest]))
     assert decoded.id == request_id
+    assert launch.spec == lower_canonical_train(
+        decoded.spec, registries.training_programs, registries=registries,
+    )
 
     edited = folders.patch(
         project,
@@ -327,9 +323,9 @@ def _checkpoint(outcome):
 _CHAIN_UPDATES = 64
 
 
-def _saved_chain(folders, registries):
+def _saved_chain(folders):
     snapshot = folders.new().snapshot
-    _, payload = _train_payload(registries, batches=_CHAIN_UPDATES)
+    payload = managed_train_payload(batches=_CHAIN_UPDATES)
     payload["training_config"]["snapshot_interval"] = 16
     snapshot = _saved_step(
         folders,
@@ -362,7 +358,6 @@ def _saved_chain(folders, registries):
                             "path": "method_payload.payload.optimizer.params.learning_rate",
                             "value": 0.0005,
                         },
-                        {"path": "training_config.learning_rate", "value": 0.0005},
                     ],
                 }
             ],
@@ -380,7 +375,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     registries = new_application_registry_bundle()
     jobs = JobService(host, registries)
     folders = ProjectFolderService(tmp_path / "projects")
-    reviewed, prefix, child = _saved_chain(folders, registries)
+    reviewed, prefix, child = _saved_chain(folders)
     project = reviewed.project_id
     plan_rows = {row.key: row for row in reviewed.plan.runs}
     source_input = plan_rows[child].inputs["checkpoint"]
@@ -431,9 +426,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     np.testing.assert_array_equal(slots["prng"], key)
     (child_launch,) = host.jobs(job_id=child_id, include_launch=True)
     native = BoundStudioTrainingJobInput.model_validate(child_launch["launch"]["payload"]).spec
-    preparation = prepare_training_invocation(
-        native, registries, run_id="carried-model-control", resume=False,
-    )
+    preparation = prepare_managed_training(native, registries)
     parent_checkpoint, parent_slots = _checkpoint(succeeded["outcome"])
 
     def readout(model):
@@ -568,8 +561,8 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, optimizer_policy
     snapshot = folders.new().snapshot
     boundary, additional = 4, 16
     rate = 0.001
-    _, source_payload = _train_payload(registries, batches=boundary)
-    source_payload["graph"]["nodes"]["readout"]["params"]["trainable"] = False
+    source_payload = managed_train_payload(batches=boundary)
+    source_payload["trial_documents"]["model"]["interior"]["components"]["readout"]["fields"]["trainable"] = False
     source_method = source_payload["method_payload"]["payload"]
     del source_method["optimizer"]["params"]["learning_rate"]
     source_method["optimizer"]["lr_schedule"] = {
@@ -607,8 +600,9 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, optimizer_policy
             "reason": "Restart a segment-local cosine at the selected checkpoint.",
         }]
     else:
-        child_payload["graph"]["nodes"]["readout"]["params"]["trainable"] = True
-        child_payload["graph"]["nodes"]["cell"]["params"]["trainable"] = False
+        components = child_payload["trial_documents"]["model"]["interior"]["components"]
+        components["readout"]["fields"]["trainable"] = True
+        components["cell"]["fields"]["trainable"] = False
         child_method["optimizer"]["type"] = "adamw"
         child_method["seed"] = 19
         policy["rng"] = "reset"
@@ -665,7 +659,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, optimizer_policy
 
     (launched,) = host.jobs(job_id=child_id, include_launch=True)
     spec = BoundStudioTrainingJobInput.model_validate(launched["launch"]["payload"]).spec
-    prepared = prepare_training_invocation(spec, registries, run_id="stateful-control", resume=False)
+    prepared = prepare_managed_training(spec, registries)
     expected = dict(prepared.initial_slots)
     if preserve:
         expected.update(source_slots)

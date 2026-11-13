@@ -6,37 +6,32 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from feedbax.contracts.jobs import StudioSavedEvaluationReplayRequest, StudioSavedTrainKey
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, CheckpointCadence
-from feedbax.contracts.request_specs import TrainingRequestSpec
 from feedbax.jobs import JobService
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
-from tests.test_canonical_evaluate_admission import _save_project, authored_evaluation_project
+from tests.test_canonical_evaluate_admission import _save_project
+from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
 from tests.test_private_checkpoint_evaluation import install_finite_gate
-from tests.test_studio_training_host_worker import _authored_spec
 
 host = host_fixture
 
 
-def _train(batches):
-    spec = _authored_spec(batches=batches, sampled_hold=True)
-    request = TrainingRequestSpec(
-        graph=spec.graph.inline, task=spec.task, task_binding_spec=spec.task_binding_spec,
-        objective=spec.objective, method_ref=spec.method_ref, method_payload=spec.method_payload,
-        training_config=spec.training_config.model_copy(update={"snapshot_interval": 2}),
-    )
-    return {"kind": "train", "base": {"inline": request.model_dump(mode="json", exclude_none=True)}}
+def _train(step, batches):
+    step = deepcopy(step)
+    payload = step["base"]["inline"]
+    payload["training_config"].update(n_batches=batches, snapshot_interval=2)
+    payload["method_payload"]["payload"]["target_total"] = batches
+    return step
 
 
 def _fixture(*, late=False):
-    existing, _ = authored_evaluation_project()
-    baseline = existing.steps["baseline"].model_dump(mode="json", exclude_unset=True)
+    definition = document_project(authored_documents(), evaluation=True)
+    baseline = definition["steps"]["baseline"]
 
     def evaluate(rule, source="train"):
         step = deepcopy(baseline)
@@ -44,8 +39,8 @@ def _fixture(*, late=False):
         return step
 
     steps = {
-        "train": _train(6),
-        "short": _train(2),
+        "train": _train(definition["steps"]["train"], 6),
+        "short": _train(definition["steps"]["train"], 2),
         "ordered": evaluate({"batches": [4, 2]}),
         "cadence": evaluate({"every_k": 2, "through": 4}),
         "ascending": evaluate({"batches": [2, 4]}),
@@ -53,7 +48,7 @@ def _fixture(*, late=False):
     }
     if late:
         steps["late"] = evaluate({"batches": [2, 6]})
-    return Project.model_validate({"steps": steps})
+    return Project.model_validate(definition | {"steps": steps})
 
 
 @pytest.mark.parametrize("rule", [
@@ -93,7 +88,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert len({by_step[name].request_id for name in ("ordered", "ascending", "cadence")}) == 3
 
     host.policy(compute=1)
-    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4, managed=True)
 
     def launch(token, *steps):
         return jobs.admit_plan(folders, plan, run_keys=tuple(by_step[name].key for name in steps), token=token)
@@ -134,7 +129,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     events = host.events(projects=(project,))["events"]
 
     position = "/v1/model/state/plant/effector~1position"
-    target = "/v1/task/output/reach_target"
+    target = "/v1/task/output/target_pos"
     service = ProjectPlanService(folders, jobs)
     settled = service.read(project, revision=plan.revision)
     trajectories = []
@@ -170,17 +165,14 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         assert [item.completed_updates for item in planned.checkpoint_sources] == coordinates
         with result.open_states() as dataset:
             assert dataset.descriptor.dimensions["checkpoint"] == 2
-            assert dataset.descriptor.dimensions["state_time"] == 101
+            assert dataset.descriptor.dimensions["state_time"] == 81
             assert dataset.data("checkpoint").tolist() == coordinates
             np.testing.assert_array_equal(dataset.data(target)[0], dataset.data(target)[1])
             trajectories.append(dataset.data(position))
-        with pytest.raises(CannotRun, match="/checkpoint"):
-            result.replay_trial("alpha", anchor_id="effector")
-        replay = service.evaluation_replay(project, StudioSavedEvaluationReplayRequest(
-            revision=plan.revision, key=StudioSavedTrainKey.model_validate(by_step[name].key, from_attributes=True),
-            job_id=row["id"], trial="alpha", checkpoint=4,
-        ))
-        np.testing.assert_array_equal(replay.tracks[0].samples, trajectories[-1][coordinates.index(4), 0, 0])
+            np.testing.assert_array_equal(
+                dataset.select(position, labels={"checkpoint": 4, "trial": 0})[0],
+                trajectories[-1][coordinates.index(4), 0, 0],
+            )
     assert not np.array_equal(trajectories[0][0], trajectories[0][1])
     np.testing.assert_array_equal(trajectories[0], trajectories[1][::-1])
 

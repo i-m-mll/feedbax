@@ -24,7 +24,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   let { snapshot } = await created.json() as StudioProjectDocument;
   const id = snapshot.project_id;
   const projectPath = `/api/projects/${id}`;
-  for (const file of await fixture('files')) {
+  for (const file of await fixture('managed-files')) {
     const saved = await request.post(`${projectPath}/files`, { data: { revision: snapshot.revision, file } });
     expect(saved.status(), await saved.text()).toBe(201);
     ({ snapshot } = await saved.json() as StudioProjectDocument);
@@ -266,7 +266,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
 test('Mounted field sweep continues exactly two Train rows with state', async ({ page, request }, info) => {
   test.setTimeout(47_000);
   await page.setViewportSize({ width: 1440, height: 900 });
-  let { snapshot, projectPath } = await seedManagedProject(request, (await fixture('files')).slice(0, 3));
+  let { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const id = snapshot.project_id;
   const filesPath = `${projectPath}/files`;
   const runsPath = `${projectPath}/train-runs`;

@@ -4,11 +4,26 @@ import type {
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ channel: 'chrome', trace: 'retain-on-failure', viewport: { width: 1440, height: 900 } });
 
-async function connect(page: Page, source: Locator, target: Locator, path: string) {
-  const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
-    new URL(response.url()).pathname === path + '/model/edit');
+type ModelWire = NonNullable<ModelDocument['interior']['wires']>[string];
+
+function matchesFields(actual: unknown, expected: unknown): boolean {
+  if (expected === null || typeof expected !== 'object') return actual === expected;
+  if (actual === null || typeof actual !== 'object') return false;
+  return Object.entries(expected).every(([key, value]) =>
+    matchesFields((actual as Record<string, unknown>)[key], value));
+}
+
+async function connect(page: Page, source: Locator, target: Locator, path: string,
+  operation: Record<string, unknown>, matchesWire: (wire: ModelWire) => boolean) {
+  const saved = page.waitForResponse((response) => {
+    const request = response.request();
+    if (request.method() !== 'POST' || new URL(response.url()).pathname !== path + '/model/edit') return false;
+    const actual = request.postDataJSON()?.command?.operation;
+    return actual?.graph?.document === 'model' && actual.graph.element?.kind === 'graph' &&
+      !actual.graph.composites.length && matchesFields(actual, operation);
+  });
   await source.hover();
   await page.mouse.down();
   await target.hover();
@@ -17,6 +32,8 @@ async function connect(page: Page, source: Locator, target: Locator, path: strin
   expect(response.ok(), await response.text()).toBe(true);
   const { result } = await response.json();
   expect(result.status, result.problem?.detail).toBe('applied');
+  const model = result.snapshot.project.documents.model.payload as ModelDocument;
+  expect(Object.values(model.interior.wires ?? {}).filter(matchesWire)).toHaveLength(1);
 }
 
 test('authors a managed Train in an empty folder and reopens its result', async ({ page, request }) => {
@@ -111,20 +128,41 @@ test('authors a managed Train in an empty folder and reopens its result', async 
       type: 'feedbax.Linear', fields: expect.objectContaining({ input_size: 4, output_size: 2 }),
     })]));
   const plant = await add('PointMass', 'Mechanics');
+  const cellId = (await cell.getAttribute('data-id'))!;
+  const linearId = (await linear.getAttribute('data-id'))!;
+  const plantId = (await plant.getAttribute('data-id'))!;
+  const endpoint = (id: string, port: string) => ({ owner: 'component', component: id, port } as const);
+  const inputToCell = endpoint(cellId, 'input');
+  const gruOutput = endpoint(cellId, 'output');
+  const linearInput = endpoint(linearId, 'input');
+  const linearOutput = endpoint(linearId, 'output');
+  const plantForce = endpoint(plantId, 'force');
   await model.getByRole('button', { name: 'Fit View', exact: true }).click();
   await connect(page, model.locator('[aria-label="reach_target"].react-flow__handle'),
-    cell.locator('[data-handleid="input:input"]'), projectPath);
+    cell.locator('[data-handleid="input:input"]'), projectPath,
+    { op: 'connect_task_signal', signal: 'reach_target', target: inputToCell },
+    (wire) => wire.source.owner === 'inputs' && matchesFields(wire.target, inputToCell));
   await connect(page, cell.locator('[data-handleid="output:output"]'),
-    linear.locator('[data-handleid="input:input"]'), projectPath);
+    linear.locator('[data-handleid="input:input"]'), projectPath,
+    { op: 'connect', source: gruOutput, target: linearInput },
+    (wire) => matchesFields(wire.source, gruOutput) && matchesFields(wire.target, linearInput));
   await connect(page, linear.locator('[data-handleid="output:output"]'),
-    plant.locator('[data-handleid="input:force"]'), projectPath);
+    plant.locator('[data-handleid="input:force"]'), projectPath,
+    { op: 'connect', source: linearOutput, target: plantForce },
+    (wire) => matchesFields(wire.source, linearOutput) && matchesFields(wire.target, plantForce));
   const output = model.locator('[data-id="@outputs"]');
   await output.getByRole('button', { name: 'Add Port', exact: true }).click();
   const portDialog = page.getByRole('dialog', { name: 'Add Port', exact: true });
   await enter(portDialog.getByRole('textbox', { name: 'Name', exact: true }), 'Command');
   await expect(portDialog).toBeHidden();
+  const savedModel = (await saved()).project.documents?.model?.payload as unknown as ModelDocument;
+  const command = savedModel.ports?.outputs?.find(({ name }) => name === 'Command');
+  expect(command).toBeDefined();
+  const commandOutput = { owner: 'outputs', port: command!.id };
   await connect(page, linear.locator('[data-handleid="output:output"]'),
-    output.locator('[aria-label="Command"].react-flow__handle'), projectPath);
+    output.locator('[aria-label="Command"].react-flow__handle'), projectPath,
+    { op: 'connect', source: linearOutput, target: commandOutput },
+    (wire) => matchesFields(wire.source, linearOutput) && matchesFields(wire.target, commandOutput));
 
   await expect(output.locator('[aria-label="Command"].react-flow__handle')).toBeVisible();
   await tab('Objective').click();
@@ -149,6 +187,13 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   });
 
   const reopened = await saved();
+  const reopenedModel = reopened.project.documents?.model?.payload as unknown as ModelDocument;
+  expect(Object.values(reopenedModel.interior.wires ?? {})).toEqual(expect.arrayContaining([
+    expect.objectContaining({ target: inputToCell }),
+    expect.objectContaining({ source: gruOutput, target: linearInput }),
+    expect.objectContaining({ source: linearOutput, target: plantForce }),
+    expect.objectContaining({ source: linearOutput, target: commandOutput }),
+  ]));
   const runsPath = projectPath + '/train-runs';
   const reviewed = async () => {
     const response = await request.get(runsPath + '?window_map=true&revision=' + reopened.revision);

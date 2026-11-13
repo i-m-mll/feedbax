@@ -23,7 +23,7 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueBase
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_document import GraphInterior, ModelDocument
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.expression_registry import FunctionRegistry
@@ -156,6 +156,35 @@ def pair_trial_source(
     return TrialPair(interface, compiled, lowered, prototypes, bindings, problems)
 
 
+def _missing_required_input(
+    graph: GraphSpec, model: ModelDocument, components: ComponentRegistry,
+    bound_ports: frozenset[str],
+) -> Problem | None:
+    def check(
+        graph: GraphSpec, interior: GraphInterior, path: tuple[str, ...], supplied: set[str],
+    ) -> Problem | None:
+        connected = {(wire.target_node, wire.target_port) for wire in graph.wires}
+        connected.update(graph.input_bindings[name] for name in supplied if name in graph.input_bindings)
+        for name, component in interior.components.items():
+            here = (*path, "interior", "components", name)
+            child = (graph.subgraphs or {}).get(name)
+            if component.kind == "composite":
+                if isinstance(child, GraphSpec) and isinstance(component.interior, GraphInterior):
+                    ports = {port for node, port in connected if node == name}
+                    if problem := check(child, component.interior, here, ports):
+                        return problem
+            elif (owner := components.get(component.type)) is not None:
+                for port in owner.compiler.required_inputs:
+                    if (name, port) not in connected:
+                        return Problem(
+                            code=ProblemCode.STRUCTURE, path=("model", *here),
+                            reason=f"{component.name} input {port!r} needs a connection.",
+                        )
+        return None
+
+    return check(graph, model.interior, (), set(bound_ports))
+
+
 def compile_trial_execution(
     model_name: str,
     model: ModelDocument,
@@ -180,6 +209,10 @@ def compile_trial_execution(
             return pairing
         if pairing.problems:
             return pairing.problems
+        if problem := _missing_required_input(
+            pairing.lowered.graph, model, components, frozenset(port for port, _ in pairing.input_bindings),
+        ):
+            return (problem,)
         interface, compiled_task = pairing.model, pairing.task
         scorer = None
         observations = ()

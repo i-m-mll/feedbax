@@ -205,10 +205,16 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         const applied = await editor.editModel('Set Value', address.document, result.command, saved);
         return applied.status === 'refused' ? applied.problem.detail : undefined;
       }
-      if (result.files.length) editor.editFiles('Set Field', result.files, {
-        reviewedRevision: fieldBody.revision,
-        dependencies: [{ kind: 'document', id: address.document }, ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : [])],
-      });
+      if (result.files.length) {
+        const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
+        const dependencies = variant ? saved.file_revisions.map(({ address: file }) => file).filter((file) =>
+          (file.kind === 'document' && file.id === address.document) ||
+          (file.kind === 'step' && fieldLitSteps?.has(file.id)) ||
+          (file.kind === 'variant' && file.id !== variant))
+          : [{ kind: 'document' as const, id: address.document },
+            ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : [])];
+        editor.editFiles('Set Field', result.files, { reviewedRevision: fieldBody.revision, dependencies });
+      }
       return undefined;
     } catch (error) {
       return apiErrorMessage(error);

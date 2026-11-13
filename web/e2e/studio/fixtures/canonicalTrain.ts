@@ -8,10 +8,16 @@ const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const run = promisify(execFile);
 
 export async function runProjectFixture(module: string, ...arguments_: string[]) {
-  const { stdout } = await run('uv', [
-    'run', '--no-sync', 'python', '-B', '-m', module, ...arguments_,
-  ], { cwd: repo, timeout: 12_000 });
-  return stdout;
+  try {
+    const { stdout } = await run('uv', [
+      'run', '--no-sync', 'python', '-B', '-m', module, ...arguments_,
+    ], { cwd: repo, timeout: 12_000 });
+    return stdout;
+  } catch (error) {
+    const failure = error as Error & { code?: number | string; signal?: string; killed?: boolean; stderr?: string };
+    throw new Error(`${failure.message}\nExit ${failure.code ?? 'none'}, signal ${failure.signal ?? 'none'}, killed ${failure.killed ?? false}\n${failure.stderr ?? ''}`,
+      { cause: error });
+  }
 }
 
 export async function fixture(...arguments_: string[]) {

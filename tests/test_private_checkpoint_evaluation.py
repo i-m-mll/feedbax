@@ -44,7 +44,7 @@ def _damaged_prng(checkpoint):
         path.write_bytes(original)
 
 
-def install_finite_gate(jobs, tmp_path, *, stop_at, resume_at):
+def install_finite_gate(jobs, tmp_path, *, stop_at, resume_at, managed=False):
     (tmp_path / "finite_gate.py").write_text("""
 import json
 import os
@@ -58,7 +58,8 @@ def main(argv):
     root = Path(os.environ["FINITE_PROOF_ROOT"])
     source = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes())
     stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-    execute = executor.execute_training_run_spec
+    entry = os.environ["FINITE_PROOF_ENTRY"]
+    execute = getattr(executor, entry)
 
     def wait(path):
         deadline = monotonic() + 22
@@ -86,7 +87,7 @@ def main(argv):
         kwargs.update(committed_update_callback=on_commit, checkpoint_published=on_publish)
         return execute(*args, **kwargs)
 
-    with patch.object(executor, "execute_training_run_spec", wrapped):
+    with patch.object(executor, entry, wrapped):
         return train(argv)
 """)
     jobs._training_worker = replace(
@@ -95,6 +96,7 @@ def main(argv):
         | {
             "JAX_PLATFORMS": "cpu",
             "FINITE_PROOF_ROOT": str(tmp_path),
+            "FINITE_PROOF_ENTRY": "execute_managed_training_run" if managed else "execute_training_run_spec",
             "FINITE_STOP_AT": str(stop_at),
             "FINITE_RESUME_AT": str(resume_at),
             "PYTHONPATH": f"{tmp_path}:{Path.cwd()}",

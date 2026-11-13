@@ -11,8 +11,7 @@ test.use({
 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }) => {
   test.setTimeout(45_000);
-  const files = await fixture('files');
-  const { snapshot, projectPath } = await seedManagedProject(request, files.slice(0, 3));
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const card = page.getByRole('article', { name: 'Train train' });
@@ -27,14 +26,19 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
   await rail.getByRole('tab', { name: 'Model', exact: true }).click();
-  await page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'plant', exact: true }).click();
-  const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('spinbutton', { name: 'Edit Mass' });
-  await expect(mass).toHaveValue('1');
-  const write = page.waitForResponse((response) => response.request().method() === 'PATCH'
-    && new URL(response.url()).pathname === projectPath);
+  await page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'Point mass', exact: true }).click();
+  const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
+  await expect(mass).toHaveValue(/^1(?:\.0)?$/);
+  await expect(mass).toBeEditable();
+  const write = page.waitForResponse((response) => {
+    if (response.request().method() !== 'POST' || new URL(response.url()).pathname !== projectPath + '/model/edit') return false;
+    return response.request().postDataJSON()?.command?.operation?.op === 'set_field';
+  });
   await mass.fill('2');
   await mass.press('Enter');
-  expect((await write).ok()).toBe(true);
+  const saved = await write;
+  expect(saved.ok(), await saved.text()).toBe(true);
+  expect((await saved.json()).result.status).toBe('applied');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
   await expect(card.getByText('1 Out of date')).toBeVisible();
   await expect(drawer.getByText('1 Out of date')).toBeVisible();

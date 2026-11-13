@@ -15,9 +15,11 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.model_edit import EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, ModelEditCommand, SetField
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue, Step
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sweep import _paths_overlap, authored_row
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, ModelFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.expression_registry import FunctionRegistry
@@ -28,6 +30,7 @@ from feedbax.web.services.evaluate_attachment import (
 )
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+from feedbax.web.services.trial_scope import variant_file
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,7 @@ def model_fields(
     model = ModelDocument.model_validate(document.payload)
     step = selected = plan = effective_model = None
     evaluate = None
+    variant = None
     if body.evaluate_scope is not None and body.run is not None:
         if not isinstance(body.owner.element, AttachmentElement):
             raise ProjectFolderInvalid("Choose an attachment in the selected Evaluate.")
@@ -218,13 +222,16 @@ def model_fields(
         if definition is not None and (model_payload := selected_model(definition, body.owner.document)) is not None:
             effective_model = ModelDocument.model_validate(model_payload)
             selected = next((row for row in plan.rows if row.key == key), None)
-            if project.sweep is None and plan.steps[(key.variant, key.step)].kind == "train":
-                step = project.steps[key.step]
+            if plan.steps[(key.variant, key.step)].kind == "train":
+                if project.sweep is None:
+                    step = project.steps[key.step]
+                elif key.variant != plan.variants[0] and project.sweep.rows.get(key.variant) is not None:
+                    variant = key.variant
     effective_fields = {
         field.address.to_text(): field for field in _fields(effective_model, body.owner, components)
     } if effective_model is not None else {}
     authored_fields = {field.address.to_text(): field for field in _fields(model, body.owner, components)}
-    visible_fields = effective_fields if evaluate else effective_fields | authored_fields
+    visible_fields = effective_fields if evaluate or variant is not None else effective_fields | authored_fields
     fields = []
     targets = {}
     for field_key, field in visible_fields.items():
@@ -242,7 +249,7 @@ def model_fields(
     if body.edit is None:
         return ModelFieldResponse(fields=fields)
     if body.address is None or body.address.to_text() not in targets or body.run is None or (
-        evaluate is None and (step is None or plan is None)
+        evaluate is None and variant is None and (step is None or plan is None)
     ):
         raise ProjectFolderInvalid("Choose a supported field of the selected Model.")
     field, axis = targets[body.address.to_text()]
@@ -285,6 +292,42 @@ def model_fields(
         except EvaluateAttachmentRefused as error:
             return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason=error.problem.detail)])
         return ModelFieldResponse(files=[edit.file])
+    if variant is not None:
+        if body.rows or plan is None or set(body.lit_steps) != plan.document_users(variant, owner_name):
+            raise ProjectFolderInvalid("Select the steps that use this Model in the authored variant.")
+        sweep = project.sweep
+        assert sweep is not None
+        if any(row is not None and row.source == variant for row in sweep.rows.values()):
+            raise ProjectFolderInvalid("This variant supplies inherited patches to another variant.")
+        path = difference.address.to_text()
+        expanded = authored_row(sweep, variant)
+        if expanded is None or any(
+            _paths_overlap(other, path) and (other != path or origin[0] != "row")
+            for other, origin in expanded.patch_origins.items()
+        ):
+            raise ProjectFolderInvalid("The Model field has no local variant write destination.")
+        if path not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
+            raise ProjectFolderInvalid("This Model field is not part of the named document.")
+        keys = [row.key for row in plan.rows if row.key.variant == variant and owner_name in row.document_uses]
+        if key not in keys:
+            raise ProjectFolderInvalid("The selected run no longer uses this Model.")
+        definitions = folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan.selected_definitions
+        relative = pointer(difference.address.stored_path())
+        for selected_key in keys:
+            definition = definitions.get(selected_key)
+            if definition is None or selected_model(definition, owner_name) is None:
+                raise ProjectFolderInvalid("A selected run no longer uses this Model directly.")
+            slot = "trial_documents/model" if "trial_documents" in definition.payload else "graph"
+            source = definition.sources.get(f"/payload/{slot}{relative}")
+            if source is None:
+                raise ProjectFolderInvalid("The Model field has no authored source in every selected run.")
+            if not (
+                source.kind == "document" and source.name == owner_name and source.path == relative
+                or source.kind == "variant" and source.variant == variant and source.path == pointer(("sweep", path))
+            ):
+                raise ProjectFolderInvalid("The Model field is controlled by a different authored source.")
+        write = OverridePatch(op="replace", path=path, value=value)
+        return ModelFieldResponse(files=[variant_file(project, variant, [write])])
     if body.address.to_text() not in authored_fields:
         return ModelFieldResponse(files=[step_file(_step_field_write(step, field.address, value))])
     if set(body.lit_steps) != plan.document_users(body.run.variant, owner_name):

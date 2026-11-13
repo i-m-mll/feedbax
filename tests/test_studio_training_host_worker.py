@@ -6,10 +6,12 @@ import hashlib
 import json
 import math
 import os
+from dataclasses import replace
 from pathlib import Path
 from shutil import copytree
 import subprocess
 import sys
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -22,11 +24,15 @@ import pytest
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.graph import STUDIO_TASK_TIMELINE_SCHEMA_VERSION
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest, training_run_manifest_id
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
+from feedbax.contracts.studio_training import StudioGraphMethodPayload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
+from feedbax.studio.canonical_train import lower_canonical_train
+from feedbax.tasks.document import TaskParameters
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     load_checkpoint_custody_documents,
@@ -39,7 +45,7 @@ from feedbax.training.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.training.optimizers import build_optimizer
 from feedbax.training.standard_train_checkpoint import STANDARD_TRAIN_STATE_MEDIA_TYPE
 from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
-from feedbax.web.worker import execution
+from tests.support.managed_train_fixture import COMMAND_ADDRESS, managed_train_payload
 from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
@@ -63,35 +69,42 @@ def _readout(graph):
     return graph.nodes["readout"].layer.weight
 
 
-def _trial_endpoints(compiled):
+class _TrialEndpoint(NamedTuple):
+    predicted: jax.Array
+    target: jax.Array
+    hold_steps: jax.Array
+
+
+def _trial_endpoints(execution, seed):
+    run_key = studio_training_key(seed, "task-run")
+
     @eqx.filter_jit
     def scalar_trial(model, key):
-        rollout = execution.rollout_graph(model, compiled, key=key)
-        return (
-            rollout["trace"]["path:plant.effector.pos"][-1],
-            rollout["task_data"]["reach_target"],
+        trial = execution.task.ahead(TaskParameters(), run_key, key)
+        retained, _ = execution.rollout(model, trial, derive_key(key, "trial-model"))
+        command = retained[COMMAND_ADDRESS][-1]
+        return _TrialEndpoint(
+            command, jnp.zeros_like(command), trial.epochs.ends[0] - trial.epochs.starts[0],
         )
 
     return scalar_trial
 
 
-def _reference_trials(compiled, scalar_trial, slots, result):
+def _reference_trials(batch_size, scalar_trial, slots, result, *, hold_bounds):
     next_key, step_key = jr.split(slots["prng"])
     np.testing.assert_array_equal(result["prng"], next_key)
     assert int(result["batch_counter"]) == int(slots["batch_counter"]) + 1
     keys = [step_key]
     keys.extend(
         derive_key(step_key, "studio_training", "trial", index=i)
-        for i in range(1, compiled.training_spec.batch_size)
+        for i in range(1, batch_size)
     )
     values = [scalar_trial(slots["model"], key) for key in keys]
-    positions, targets = (
-        np.asarray(field, dtype=np.float64) for field in zip(*values, strict=True)
-    )
-    hold_steps = np.count_nonzero(np.all(targets == 0, axis=-1), axis=1)
-    assert np.all((hold_steps >= 1) & (hold_steps <= 80))
+    predicted, targets, hold_steps = map(np.asarray, zip(*values, strict=True))
+    minimum_hold, maximum_hold = hold_bounds
+    assert np.all((hold_steps >= minimum_hold) & (hold_steps <= maximum_hold))
     assert len(set(hold_steps)) > 1
-    endpoint_losses = np.sum(np.square(positions - targets[:, -1]), axis=1)
+    endpoint_losses = np.sum(np.square(predicted.astype(np.float64) - targets), axis=1)
     reference_mean = math.fsum(endpoint_losses) / len(keys)
     assert result["train_loss"] == pytest.approx(reference_mean, rel=1e-5, abs=1e-8)
     (term,) = result["loss_terms"].values()
@@ -99,20 +112,20 @@ def _reference_trials(compiled, scalar_trial, slots, result):
     return keys, {
         "trial_keys": [np.asarray(jr.key_data(key)).tolist() for key in keys],
         "hold_steps": hold_steps.tolist(),
-        "endpoint_positions": positions.tolist(),
-        "endpoint_targets": targets[:, -1].tolist(),
+        "endpoint_predictions": predicted.tolist(),
+        "endpoint_targets": targets.tolist(),
         "per_trial_endpoint_losses": endpoint_losses.tolist(),
         "independent_mean": reference_mean,
         "mean_absolute_error": abs(reference_mean - result["train_loss"]),
     }
 
 
-def _reference_gradient(compiled, scalar_trial, slots, result, keys, grad_clip):
-    trainable, frozen = eqx.partition(slots["model"], compiled.trainable_filter)
+def _reference_gradient(trainable_filter, method, scalar_trial, slots, result, keys, grad_clip):
+    trainable, frozen = eqx.partition(slots["model"], trainable_filter)
 
     def endpoint_error(candidate, key):
-        position, target = scalar_trial(eqx.combine(candidate, frozen), key)
-        return jnp.sum(jnp.square(position - target[-1]))
+        result = scalar_trial(eqx.combine(candidate, frozen), key)
+        return jnp.sum(jnp.square(result.predicted - result.target))
 
     gradient = eqx.filter_jit(eqx.filter_grad(endpoint_error))
     trial_grads = [gradient(trainable, key) for key in keys]
@@ -121,7 +134,7 @@ def _reference_gradient(compiled, scalar_trial, slots, result, keys, grad_clip):
     assert result["grad_norm"] == pytest.approx(grad_norm, rel=1e-4, abs=1e-8)
 
     optimizer = build_optimizer(
-        compiled.training_spec.optimizer, schedule_origin_step=0, current_step=0,
+        method.optimizer, schedule_origin_step=0, current_step=0,
         gradient_clip=grad_clip,
     )
     updates, opt_state = optimizer.update(grads, slots["optimizer"], trainable)
@@ -149,12 +162,14 @@ def _observe_worker(
     audit_path: Path, stop_after: int, distinct_preparation: bool, checkpoint_profile: str,
 ) -> int:
     from feedbax import training_host_worker
-    from feedbax.training import checkpoint_custody, executor
+    from feedbax.compiler.trainability import compile_trainability
+    from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+    from feedbax.training import checkpoint_custody, executor, managed_studio
 
-    compile_run = execution.compile_training_run
+    prepare_run = managed_studio.prepare_managed_training
     update = StudioUpdateKernel.reported_update
-    execute = executor.execute_training_run_spec
-    scalar_trial = None
+    execute = executor.execute_managed_training_run
+    prepared_model = trainable_filter = scalar_trial = method = config = None
     pending_evidence = None
     slot_reads = {}
     read_blob = checkpoint_custody._read_blob
@@ -163,22 +178,34 @@ def _observe_worker(
         slot_reads[slot.slot] = slot.media_type
         return read_blob(slot, path, read_bytes=read_bytes)
 
-    def prepare(*args, **kwargs):
-        nonlocal scalar_trial
-        compiled = compile_run(*args, **kwargs)
+    def prepare(spec, registries, *, model_assets=None):
+        nonlocal prepared_model, trainable_filter, scalar_trial, method, config
+        preparation = prepare_run(spec, registries, model_assets=model_assets)
+        documents = spec.trial_documents
+        assert documents is not None
+        config = spec.training_config
+        method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
+        prepared_model = preparation.initial_slots["model"]
+        paths, trainable_filter = compile_trainability(spec.graph.inline, prepared_model, registries.components)
+        assert paths == ("cell",)
         if distinct_preparation:
-            # Change only the resume worker's template before AOT compilation.
-            compiled.graph = eqx.tree_at(_readout, compiled.graph, _readout(compiled.graph) + 0.25)
-        if compiled.training_spec.batch_size > 1:
-            scalar_trial = _trial_endpoints(compiled)
-        return compiled
+            prepared_model = eqx.tree_at(_readout, prepared_model, _readout(prepared_model) + 0.25)
+            preparation = replace(preparation, initial_slots=dict(preparation.initial_slots) | {"model": prepared_model})
+        if config.batch_size > 1:
+            pair = compile_trial_execution(
+                documents.model_name, documents.model, documents.task_source,
+                registries.components, registries.expression_functions,
+                python_tasks=registries.python_tasks, objective=documents.objective,
+                input_overrides=documents.input_overrides, artifact_provider=model_assets,
+            )
+            assert isinstance(pair, PreparedTrialExecution), pair
+            scalar_trial = _trial_endpoints(pair.execution, method.seed)
+        return preparation
 
     def observe(kernel, slots):
         nonlocal pending_evidence
-        compiled = kernel._compiled
         model = slots["model"]
         result = update(kernel, slots)
-        assert compiled.trainable_nodes == ("cell",)
         assert np.any(np.asarray(_readout(model)) != 0)
         assert _array_digests(model.nodes["cell"]) != _array_digests(result["model"].nodes["cell"])
         evidence = {
@@ -186,7 +213,7 @@ def _observe_worker(
             "update": int(result["batch_counter"]),
             "before": {name: _array_digests(slots[name]) for name in _STATE},
             "after": {name: _array_digests(result[name]) for name in _STATE},
-            "prepared_readout": _array_digests(_readout(compiled.graph)),
+            "prepared_readout": _array_digests(_readout(prepared_model)),
             "input_readout": _array_digests(_readout(model)),
             "output_readout": _array_digests(_readout(result["model"])),
             "slot_reads": dict(slot_reads),
@@ -197,13 +224,13 @@ def _observe_worker(
             },
         }
         if scalar_trial is not None:
-            keys, reference = _reference_trials(compiled, scalar_trial, slots, result)
+            keys, reference = _reference_trials(
+                config.batch_size, scalar_trial, slots, result, hold_bounds=(5, 14),
+            )
             evidence["trial_reference"] = reference
             if int(slots["batch_counter"]) == 0 and not stop_after:
-                launch = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
-                grad_clip = launch["spec"]["training_config"]["grad_clip"]
                 evidence["gradient_reference"] = _reference_gradient(
-                    compiled, scalar_trial, slots, result, keys, grad_clip
+                    trainable_filter, method, scalar_trial, slots, result, keys, config.grad_clip,
                 )
         assert pending_evidence is None
         pending_evidence = evidence
@@ -233,9 +260,9 @@ def _observe_worker(
         return execute(*args, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(execution, "compile_training_run", prepare)
+        patch.setattr(managed_studio, "prepare_managed_training", prepare)
         patch.setattr(StudioUpdateKernel, "reported_update", observe)
-        patch.setattr(executor, "execute_training_run_spec", stop_at_commit)
+        patch.setattr(executor, "execute_managed_training_run", stop_at_commit)
         patch.setattr(checkpoint_custody, "_read_blob", record_slot_read)
         # Force an immediate first emission and one final partial interval.
         patch.setattr(training_host_worker._Events, "elapsed", lambda _events: 0.1)
@@ -295,6 +322,58 @@ def _authored_spec(**options):
         worker_execution=WorkerExecutionSpec(method_contract=resolved.contract, effective_phase=resolved.effective_phase),
         checkpoint_progress={"checkpoint_interval": request.training_config.snapshot_interval, "progress_interval": 1},
     )
+
+
+def _managed_spec(*, batches=8, batch_size=1, sampled_hold=False):
+    scenario = "delayed-reaches" if sampled_hold else "simple-reaches"
+    payload = managed_train_payload(batches=batches, scenario=scenario)
+    payload["training_config"]["batch_size"] = batch_size
+    documents = payload["trial_documents"]
+    documents["model"]["interior"]["components"]["readout"]["fields"]["trainable"] = False
+    request = DocumentTrainingRequestSpec.model_validate(payload)
+    registries = new_application_registry_bundle()
+    return lower_canonical_train(request, registries.training_programs, registries=registries)
+
+
+def test_retained_reaching_batch_matches_independent_endpoint_reduction():
+    from feedbax.plugins.retained import new_retained_registry_bundle
+    from feedbax.training.invocation import prepare_training_invocation
+    from feedbax.web.worker import execution
+
+    spec = _authored_spec(batches=4, batch_size=3, sampled_hold=True)
+    registries = new_retained_registry_bundle()
+    compile_run = execution.compile_training_run
+    compiled = None
+
+    def capture(*args, **kwargs):
+        nonlocal compiled
+        compiled = compile_run(*args, **kwargs)
+        return compiled
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(execution, "compile_training_run", capture)
+        preparation = prepare_training_invocation(
+            spec, registries, run_id="retained-endpoint-control", resume=False,
+        )
+    assert compiled is not None
+
+    @eqx.filter_jit
+    def scalar_trial(model, key):
+        rollout = execution.rollout_graph(model, compiled, key=key)
+        targets = rollout["task_data"]["reach_target"]
+        return _TrialEndpoint(
+            rollout["trace"]["path:plant.effector.pos"][-1],
+            targets[-1],
+            jnp.count_nonzero(jnp.all(targets == 0, axis=-1)),
+        )
+
+    slots = preparation.initial_slots
+    result = preparation.kernel_context["studio_graph_update"].reported_update(slots)
+    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
+    keys, reference = _reference_trials(3, scalar_trial, slots, result, hold_bounds=(1, 80))
+    assert reference["independent_mean"] != pytest.approx(reference["per_trial_endpoint_losses"][0])
+    assert reference["independent_mean"] != pytest.approx(sum(reference["per_trial_endpoint_losses"]))
+    _reference_gradient(compiled.trainable_filter, method, scalar_trial, slots, result, keys, spec.training_config.grad_clip)
 
 
 def _launch(
@@ -401,7 +480,7 @@ def _require_progress(events, rows, start):
 def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path):
     from feedbax.contracts.studio_training import STUDIO_INDEPENDENT_KEY_SCHEDULE
 
-    row = _authored_spec()
+    row = _managed_spec()
     assert row.method_payload.payload["key_schedule"] == STUDIO_INDEPENDENT_KEY_SCHEDULE
     legacy = row.model_copy(deep=True)
     del legacy.method_payload.payload["key_schedule"]
@@ -532,7 +611,7 @@ def test_reaching_continues_checkpoint_frozen_readout_across_two_stops(tmp_path)
 
 
 def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes(tmp_path):
-    row = _authored_spec(batches=4, batch_size=3, sampled_hold=True)
+    row = _managed_spec(batches=4, batch_size=3, sampled_hold=True)
     assert row.training_config.batch_size == 3
     _, uninterrupted, whole, _, _ = _launch(tmp_path, "batch-whole", row)
     stopped, paused, prefix, _, receipt = _launch(
@@ -564,7 +643,7 @@ def test_reaching_trial_batch_matches_independent_endpoint_reduction_and_resumes
         require_checkpoint_semantic_state_equal(uninterrupted, restarted, name)
     assert receipt.read_bytes() == original_receipt
 
-    scalar = _authored_spec(batches=4, sampled_hold=True)
+    scalar = _managed_spec(batches=4, sampled_hold=True)
     assert canonical_training_run_spec_sha256(scalar) != canonical_training_run_spec_sha256(row)
     rejected = _launch(tmp_path, "different-batch-size", scalar, resume=stopped, fail=True)
     assert rejected["error"]["code"] == "incompatible_checkpoint"

@@ -178,6 +178,44 @@ def test_plan_round_trips_the_authored_task_and_objective(authored):
     assert encode_request(decoded.spec, decoded.inputs).data == data
 
 
+def test_plan_refuses_a_model_with_an_unwired_linear_input(authored):
+    raw = document_project(authored)
+    model = raw["documents"]["reach-model"]["payload"]
+    controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    del controller["interior"]["wires"]["decode"]
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.runs
+    assert any(
+        issue.path.endswith(".components.readout") and "input 'input' needs a connection" in issue.detail
+        for issue in plan.diagnostics
+    )
+
+
+def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, authored):
+    from fastapi.testclient import TestClient
+
+    from feedbax.web.app import create_app
+    from feedbax.web.services.project_folder import ProjectFolderService
+    from tests.test_canonical_evaluate_admission import _save_project
+
+    raw = document_project(authored)
+    raw["sweep"] = {"rows": {"base": {}, "compare": {"from": "base"}, "follow": {"from": "compare"}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "variant", Project.model_validate(raw))
+    owner = {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "plant"}}
+    revision = folders.read("variant").revision
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        result = client.post("/api/projects/variant/model/fields", json={
+            "revision": revision, "owner": owner, "lit_steps": ["train"],
+            "run": {"variant": "compare", "step": "train", "row": "default"},
+            "address": owner | {"element": {"kind": "field", "parent": owner["element"], "path": ["fields", "mass"]}},
+            "edit": {"kind": "text", "text": "2"},
+        })
+    assert result.status_code == 422, result.text
+    assert "supplies inherited patches" in result.json()["detail"]
+    assert folders.read("variant").revision == revision
+
+
 def test_document_learning_rate_sweep_projects_only_after_expansion(authored):
     from feedbax.plugins.application import new_application_registry_bundle
     from feedbax.studio.canonical_train import lower_canonical_train

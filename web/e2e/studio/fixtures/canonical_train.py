@@ -23,11 +23,31 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from tests.support.managed_train_fixture import managed_train_project
 from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
-def authored_files(batches: int = 2):
-    payload = reaching_train_request(reaching_project(batches=batches)).model_dump(mode="json", exclude_none=True)
+def successor_file():
+    return {"kind": "step", "id": "successor", "step": {
+        "kind": "train", "base": {"step": "train"},
+        "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
+        "deltas": [{
+            "layer_id": "initialize",
+            "patches": [
+                {
+                    "path": "method_payload.payload.checkpoint_initialization",
+                    "op": "add",
+                    "value": "initialize_from",
+                },
+                {"path": "method_payload.payload.target_total", "value": 1200},
+                {"path": "training_config.n_batches", "value": 1200},
+            ],
+        }],
+    }}
+
+
+def legacy_graph_files():
+    payload = reaching_train_request(reaching_project(batches=2)).model_dump(mode="json", exclude_none=True)
     files = []
     for name, schema, field in (
         ("model", "feedbax.spec.graph", "graph"),
@@ -38,47 +58,39 @@ def authored_files(batches: int = 2):
             "document": {"schema": schema, "payload": payload[field]},
         })
         payload[field] = {"document": name}
-    files.extend([
+    return [
+        *files,
         {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": payload}}},
-        {"kind": "step", "id": "successor", "step": {
-            "kind": "train", "base": {"step": "train"},
-            "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
-            "deltas": [{
-                "layer_id": "initialize",
-                "patches": [
-                    {
-                        "path": "method_payload.payload.checkpoint_initialization",
-                        "op": "add",
-                        "value": "initialize_from",
-                    },
-                    {"path": "method_payload.payload.target_total", "value": 1200},
-                    {"path": "training_config.n_batches", "value": 1200},
-                ],
-            }],
-        }},
-    ])
-    return files
+        successor_file(),
+    ]
 
 
 def ordinary_files(batches: str, *rates: str):
-    files = authored_files(int(batches))[:3]
+    example = managed_train_project(batches=int(batches))
+    step = example.steps["train"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     if rates:
-        files[-1]["step"]["sweep"] = {
+        step["sweep"] = {
             "axes": {"rate": {"values": {
                 f"rate-{index}": {"label": rate, "patches": {
-                    "training_config.learning_rate": {"value": float(rate)},
                     "method_payload.payload.optimizer.params.learning_rate": {"value": float(rate)},
                 }}
                 for index, rate in enumerate(rates)
             }}},
         }
+    files = [
+        {"kind": "document", "id": name, "document": document.model_dump(
+            mode="json", by_alias=True, exclude_unset=True,
+        )}
+        for name, document in example.documents.items()
+    ]
+    files.append({"kind": "step", "id": "train", "step": step})
     return files
 
 
 def seed_variants(home: str, project_id: str):
-    model, task, train, _ = authored_files()
+    *documents, train = ordinary_files("2")
     project = Project.model_validate({
-        "documents": {"model": model["document"], "task": task["document"]},
+        "documents": {file["id"]: file["document"] for file in documents},
         "steps": {"train": train["step"]},
         "sweep": {"rows": {
             "base": {"label": "Baseline"},
@@ -207,11 +219,11 @@ def observe(
 
 
 def history_files():
-    model, task, train, _ = authored_files()
+    *documents, train = ordinary_files("2")
     sibling = deepcopy(train)
     sibling["id"] = "sibling"
     sibling["step"]["base"]["inline"]["method_payload"]["payload"]["seed"] = 91
-    return [model, task, train, sibling]
+    return [*documents, train, sibling]
 
 
 def observe_swept(home: Path, project: str, successors: list[str]):
@@ -294,7 +306,9 @@ def observe_history(home: Path, project: str, revision: str):
 if __name__ == "__main__":
     action, *arguments = sys.argv[1:]
     if action == "files" and not arguments:
-        print(json.dumps(authored_files()))
+        print(json.dumps(legacy_graph_files()))
+    elif action == "managed-files" and not arguments:
+        print(json.dumps([*ordinary_files("2"), successor_file()]))
     elif action == "ordinary-files":
         print(json.dumps(ordinary_files(*arguments)))
     elif action == "seed-variants":

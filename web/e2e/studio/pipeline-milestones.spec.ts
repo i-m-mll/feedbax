@@ -144,8 +144,8 @@ test('M2 reopens a project folder and evaluates two conditions on its training r
   test.fixme(!evaluationEnabled, 'M2 public gate · 736786f, dbbfb13, 339d687, 01e4c26, ed09a0a');
   test.setTimeout(50_000);
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
-  const authored = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
-  const { snapshot, projectPath } = await seedManagedProject(request, authored.train);
+  const files = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
   const mounted = '/?project=' + snapshot.project_id;
   await page.goto(mounted);
   await select(page, 'train');
@@ -153,11 +153,11 @@ test('M2 reopens a project folder and evaluates two conditions on its training r
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
 
   await page.goto('about:blank');
-  const revision = JSON.parse(await runProjectFixture(
+  const { revision, steps } = JSON.parse(await runProjectFixture(
     evaluation, 'save-walkthrough-conditions', String(info.config.metadata.home), snapshot.project_id,
-  ));
+  )) as { revision: string; steps: string[] };
   await page.goto(mounted);
-  for (const step of authored.conditions.map(({ id }: { id: string }) => id)) {
+  for (const step of steps) {
     await select(page, step);
     await admit(page, projectPath);
     await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
@@ -170,9 +170,12 @@ test('M2 reopens a project folder and evaluates two conditions on its training r
   const train = plan.rows[0].result!;
   const conditions = plan.window_map!.evaluations!;
   expect(conditions).toHaveLength(2);
+  expect(conditions.map(({ key }) => key.step).sort()).toEqual([...steps].sort());
   expect(new Set(conditions.map((row) => row.request_id)).size).toBe(2);
   for (const condition of conditions) {
-    expect(condition.result?.checkpoint_source?.job_id).toBe(train.job_id);
+    expect(condition.result?.checkpoint_source).toEqual({
+      job_id: train.job_id, request_id: plan.rows[0].request_id, completed_updates: 2,
+    });
     expect(condition.result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
   }
 });

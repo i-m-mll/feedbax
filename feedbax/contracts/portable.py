@@ -24,11 +24,14 @@ class Ports:
     inputs: Mapping[str, PortType]
     outputs: Mapping[str, PortType]
     dynamic: DynamicPortPolicy | None = None
+    required_inputs: tuple[str, ...] = ()
 
     def __post_init__(self):
         for names in (self.inputs, self.outputs):
             if any(not isinstance(name, str) or not name for name in names):
                 raise ValueError("Port names must be nonempty strings")
+        if set(self.required_inputs) - self.inputs.keys():
+            raise ValueError("Required inputs must be declared fixed input ports")
         if self.dynamic is not None and self.dynamic.count_mode != "names":
             if (
                 tuple(self.inputs) != self.dynamic.fixed_input_ports

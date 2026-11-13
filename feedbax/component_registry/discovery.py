@@ -194,6 +194,7 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
             parameter_contract=contract,
             input_ports=input_ports,
             output_ports=output_ports,
+            required_inputs=ports.required_inputs,
             port_types=port_types,
             dynamic_port_policy=ports.dynamic,
             build_output_prototypes=prototype_bindings,

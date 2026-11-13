@@ -7,7 +7,7 @@ from feedbax.cli import main
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.manifest import TrainingRunManifest, training_run_manifest_id, write_manifest
-from feedbax.contracts.project_io import read_text_project_snapshot
+from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.host import HostClient
 from feedbax.host.plan_history import advance_plan, plan_ref_key, plan_run_key
@@ -18,6 +18,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, bind_canonical_train
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from tests.support.managed_train_fixture import managed_train_project
 from tests.test_text_project_plan_cli import _edit, _files, _write_walkthrough
 
 
@@ -42,6 +43,7 @@ def _retain_train(root, project, registries):
         plan.documents,
         registries.training_programs,
         store,
+        registries=registries,
     )
     bound = (
         BoundStudioTrainingJobInput(
@@ -104,6 +106,14 @@ def _retain_train(root, project, registries):
 def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monkeypatch, capsys):
     root = (tmp_path / "saved").resolve()
     project, _ = _write_walkthrough(root)
+    managed = managed_train_project()
+    project.steps["train"] = managed.steps["train"]
+    project.documents.update(managed.documents)
+    configuration = read_text_project_snapshot(root).configuration
+    for relative, data in dump_text_project(project, configuration).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     registries = new_application_registry_bundle()
     registries.seal()
     snapshot, plan_key, manifest = _retain_train(root, project, registries)

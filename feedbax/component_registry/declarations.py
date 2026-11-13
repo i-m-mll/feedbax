@@ -258,6 +258,7 @@ class ComponentCompilerFacet:
     parameter_contract: ComponentParamContract
     input_ports: tuple[str, ...]
     output_ports: tuple[str, ...]
+    required_inputs: tuple[str, ...] = ()
     port_types: PortTypeSpec | None = None
     dynamic_port_policy: DynamicPortPolicy | None = None
     domain: str = CAUSAL_DOMAIN_ID

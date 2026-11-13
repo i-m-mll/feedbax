@@ -1172,7 +1172,8 @@ class LinearLayer(GraphNode):
     """Linear layer."""
 
     ports: ClassVar[Ports] = Ports(
-        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")},
+        required_inputs=("input",),
     )
 
     input_ports: ClassVar = tuple(ports.inputs)
@@ -1365,6 +1366,7 @@ class GRU(Component):
     ports: ClassVar[Ports] = Ports(
         inputs={"input": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
         outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+        required_inputs=("input",),
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
         reset_outputs=("hidden", "output"),
