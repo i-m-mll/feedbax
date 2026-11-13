@@ -47,6 +47,7 @@ def create_app(
     bootstrap_modules: tuple[str, ...] = (),
     studio_controller: StudioController | None = None,
     desktop_job_root: Path | None = None,
+    desktop_release: Path | None = None,
     projects_dir: Path | None = None,
     enable_evaluation_candidate: bool = False,
 ) -> FastAPI:
@@ -81,6 +82,7 @@ def create_app(
             await asyncio.to_thread(training_service.reconcile_desktop_worker, desktop_job_root)
             desktop_jobs = StudioJobLifecycle(
                 analysis_jobs, training_service, desktop_job_root, app.state.job_service,
+                desktop_release,
             )
             app.state.desktop_jobs = desktop_jobs
         controller = studio_controller or StudioController(training_service=training_service)

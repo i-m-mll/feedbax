@@ -322,9 +322,14 @@ impl Menu {
         let child = Rc::new(RefCell::new(child));
         let child_for_timer = child.clone();
         let launching = Cell::new(None::<Instant>);
+        let stop_forwarded = Cell::new(false);
         let pending = Arc::new(AtomicBool::new(false));
         let handled = Arc::new(Mutex::new(None));
         let block = RcBlock::new(move |_| {
+            if service::background_stop_requested() && !stop_forwarded.replace(true) {
+                let pid = child_for_timer.borrow().id() as libc::pid_t;
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
             let exit = child_for_timer.borrow_mut().try_wait().transpose();
             if let Some(outcome) = exit {
                 *result_for_timer.borrow_mut() = Some(outcome);
@@ -336,6 +341,9 @@ impl Menu {
                 if let Some(wake) = wake {
                     app_for_timer.postEvent_atStart(&wake, false);
                 }
+                return;
+            }
+            if service::background_stop_requested() {
                 return;
             }
             {

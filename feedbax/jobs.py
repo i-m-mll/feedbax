@@ -692,28 +692,23 @@ class JobService(PlanJobReader):
     def warm(self) -> None:
         with self._launch_lock:
             if self._accepting and not self._warmed:
-                self.host.warm(self._training_worker)
+                self.host.warm(
+                    self._training_worker,
+                    runtime_owner=os.path.realpath(sys.executable)
+                    if os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT") else None,
+                )
                 self._warmed = True
 
-    def begin_runtime_shutdown(self, disposition: str) -> bool:
-        """Quiesce jobs using this interpreter before replacing its runtime."""
+    def retire_runtime(self, release: str, disposition: str) -> dict:
+        """Quiesce installed-runtime admissions and release its owned Host."""
         with self._launch_lock:
-            jobs = self.live_runtime_jobs()
-            if disposition == "defer" and jobs:
-                return False
-            self._accepting = False
-            if jobs:
-                self.host.stop(
-                    [row["id"] for row in jobs], "force" if disposition == "force" else "checkpoint"
-                )
-            return True
-
-    def live_runtime_jobs(self) -> list[dict[str, Any]]:
-        return [
-            row
-            for row in self.host.jobs()
-            if row["state"] in _LIVE_STATES and row["data"].get("runtime") == sys.executable
-        ]
+            result = self.host.retire_runtime(
+                os.path.realpath(sys.executable), release, disposition,
+            )
+            if result["status"] != "deferred":
+                self._accepting = False
+                self.host.prohibit_start()
+            return result
 
     def submissions(self, *, project: str | None = None) -> list[StudioJobSubmission]:
         return [

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
@@ -38,7 +42,8 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     _project(projects / "reach", batches=160)
     _project(projects / "long", batches=3000)
-    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "desktop-jobs")
+    release = Path(sys.executable).resolve().parent.parent
+    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "desktop-jobs", desktop_release=release)
     transport, control, browser = _desktop_clients(app)
     register_activity(app, "fixture")
     control.headers["X-Feedbax-Release"] = "fixture"
@@ -46,6 +51,15 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     _register_stop(app, server)
     origin = {"Origin": transport.endpoint.origin}
     initial_host = host.ping()["pid"]
+    foreign_hold = tmp_path / "foreign-release"
+    foreign = run_job(
+        "foreign",
+        f"from pathlib import Path; from time import sleep\n"
+        f"while not Path({str(foreign_hold)!r}).exists(): sleep(.02)",
+        slot="light",
+    )
+    admit(host, "foreign", foreign)
+    wait_until(lambda: job_row(host, foreign.id, "running"))
 
     def launch(client: TestClient, project: str) -> str:
         url = f"/api/projects/{project}"
@@ -161,6 +175,8 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
             quit_service = quitting.result(timeout=12)
         assert quit_service.status_code == 200 and quit_service.json()["status"] == "ready_to_stop", quit_service.text
         assert server.should_exit and host.ping()["pid"] == initial_host
+        assert job_row(host, foreign.id)["state"] == "running"
+        foreign_hold.touch()
         assert control.post("/_desktop/stop", json={"disposition": "checkpoint"}).status_code == 409
         reopened.close()
 
@@ -178,3 +194,74 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
         }
         assert control.post(f"{ACTIVITY}/stop", json={"mode": "checkpoint"}).json() == []
         assert not HostClient(root).address.exists()
+
+
+def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):
+    from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+    from feedbax.host import HostError
+    from feedbax.host.process import process_group_member_pids
+    from feedbax.host.io import append
+    from feedbax.jobs import JobService
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.training.checkpoint_custody import open_published_model_slot
+    from feedbax.web.services.project_folder import ProjectFolderService
+
+    root = tmp_path / "host"
+    runtime = os.path.realpath(sys.executable)
+    release = Path(runtime).parent.parent
+    monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(release))
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
+    projects = tmp_path / "projects"
+    _project(projects / "reach", batches=1000)
+    folders = ProjectFolderService(projects)
+    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "jobs", desktop_release=release)
+    host = HostClient(root)
+    owner = host.ping()["pid"]
+    plan = folders.read_plan("reach", revision=None)
+    try:
+        with TestClient(app):
+            jobs = app.state.job_service
+            (run,) = plan.plan.runs
+            (item,) = jobs.admit_plan(folders, plan, run_keys=(run.key,), token="first").items
+            attempt = item.job_id
+
+            def checkpointed():
+                row = job_row(host, attempt, "running")
+                return row if row and row["checkpoint"] else None
+
+            before = wait_until(checkpointed, timeout=20)
+            source = PublishedTrainingCheckpoint.model_validate(before["checkpoint"])
+            model = open_published_model_slot(source.checkpoint_root, source.pointer)
+            assert model is not None
+            model.provider.verify_object(model.arrays)
+            before_cursor = host.events()["head"]
+            result = asyncio.run(app.state.desktop_jobs.stop("interrupt", timeout_seconds=8))
+            assert result["status"] == "ready_to_stop", result
+            assert not host.address.exists()
+            assert process_group_member_pids(before["worker_pid"]) == ((), None)
+            with pytest.raises(HostError, match="No such file"):
+                jobs.host.ping()
+            assert not host.address.exists()
+        log = root / "deliveries" / attempt / str(before["delivery"]) / "events.jsonl"
+        append(log, "terminal", {"outcome": "failed"}, sync=True)
+        assert host.retire_runtime(runtime, str(release), "interrupt") == {"status": "absent"}
+        assert host.ping()["pid"] != owner
+        interrupted = job_row(host, attempt, "interrupted")
+        assert interrupted is not None and interrupted["checkpoint"] == before["checkpoint"]
+        assert interrupted["outcome"]["error"]["code"] == "service_stopped"
+        terminal = [
+            event for event in host.events(after=before_cursor)["events"]
+            if event["job_id"] == attempt and event["kind"] == "terminal"
+        ]
+        assert len(terminal) == 1
+        resumed = JobService(host, new_application_registry_bundle()).resume(attempt, "resume")
+        assert resumed.continues == attempt
+        (successor,) = host.jobs(job_id=resumed.job_id, include_launch=True)
+        assert successor["launch"]["payload"]["resume"] == before["checkpoint"]
+        done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=22)
+        assert done["progress"]["completed_updates"] == 1000
+    finally:
+        wait_until(lambda: host.retire_runtime(runtime, str(release), "force")["status"] == "absent")

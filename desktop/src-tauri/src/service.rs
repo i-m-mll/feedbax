@@ -9,14 +9,40 @@ use std::{
     io::{Read, Write},
     os::fd::{AsRawFd, FromRawFd, RawFd},
     os::unix::fs::MetadataExt,
+    os::unix::process::CommandExt,
     path::{Component, Path, PathBuf},
     process::{self, Command, Stdio},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_stop(_: libc::c_int) {
+    STOP_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+pub fn background_stop_requested() -> bool {
+    STOP_REQUESTED.load(Ordering::Relaxed)
+}
+
+fn install_stop_handlers() -> std::io::Result<()> {
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = request_stop as *const () as libc::sighandler_t;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+        if unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -270,7 +296,11 @@ impl Release {
     }
 
     fn stop_locked(&self, disposition: &str) -> Result<Value> {
-        let result = self.call("stop", &["--disposition", disposition])?;
+        let result = if self.call("health", &[])?["status"] == "unavailable" {
+            self.call("retire-host", &["--disposition", disposition])?
+        } else {
+            self.call("stop", &["--disposition", disposition])?
+        };
         if result["status"] == "ready_to_stop" {
             let deadline = Instant::now() + Duration::from_secs(8);
             loop {
@@ -284,18 +314,34 @@ impl Release {
                 }
                 thread::sleep(Duration::from_millis(125));
             }
-            self.unregister()?;
         }
         Ok(result)
     }
 
     fn serve(&self) -> Result<()> {
+        install_stop_handlers()?;
+        let result = self.run_background();
+        if result.is_err() && background_stop_requested() {
+            match self.call("retire-host", &["--disposition", "interrupt"]) {
+                Ok(outcome) if outcome["status"] == "ready_to_stop" => {}
+                outcome => {
+                    eprintln!("Could not release the Studio background runtime: {outcome:?}")
+                }
+            }
+            // launchd must not relaunch after the system requested a stop.
+            return Ok(());
+        }
+        result
+    }
+
+    fn run_background(&self) -> Result<()> {
         let paths = self.paths()?;
         let logs = &paths.logs;
         fs::create_dir_all(&logs)?;
         let activity = crate::background_activity::Menu::new(self, &paths)?;
         let mut child = self
             .command("serve")
+            .process_group(0)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -458,7 +504,11 @@ pub fn cli(args: &[String]) -> Result<()> {
         ("health", _) | ("paths", []) => release.call(action, &rest)?,
         ("stop", [disposition @ ("defer" | "checkpoint" | "force")]) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;
-            release.stop_locked(disposition)?
+            let stopped = release.stop_locked(disposition)?;
+            if stopped["status"] == "ready_to_stop" && descriptor.is_none() {
+                release.unregister()?;
+            }
+            stopped
         }
         _ => return Err("Unknown Studio service operation".into()),
     };

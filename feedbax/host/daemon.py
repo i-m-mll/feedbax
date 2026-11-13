@@ -23,7 +23,7 @@ from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, w
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
-from feedbax.host.protocol import MAX_RPC_BYTES, VERSION, HostError
+from feedbax.host.protocol import LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError
 from feedbax.host.store import Store, StorePublicationPending
 
 LOG_LINE_LIMIT = 8192
@@ -40,7 +40,9 @@ class Worker:
     control: socket.socket
     profile_key: str
     profile_dir: Path
+    runtime_owner: str | None
     ready: bool = False
+    retiring_since: float | None = None
     job_id: str | None = None
     data: bytes = b""
 
@@ -73,6 +75,12 @@ class Host:
         self.file_changes = FileChanges(self.loop, self.wake.set)
         self.workers: dict[int, Worker] = {}
         self.profiles: dict[str, dict] = {}
+        self.release_owner = os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT")
+        self.interpreter = os.path.realpath(sys.executable)
+        self.retiring: set[str] = set()
+        self.retiring_groups: dict[str, dict[int, str]] = {}
+        self.exiting = False
+        self.shutdown_acknowledged = False
         self.force_started: dict[str, float] = {}
         self.identity_errors: set[str] = set()
         self.publication_errors: dict[str, str] = {}
@@ -92,7 +100,7 @@ class Host:
             "stop_file": directory / "stop",
         }
 
-    def _profile(self, launch: dict, slot: str) -> tuple[str, dict]:
+    def _profile(self, launch: dict, slot: str, runtime_owner: str | None = None) -> tuple[str, dict]:
         interpreter = launch["argv"][0] if launch["warm_entrypoint"] else sys.executable
         profile = {
             "interpreter": interpreter,
@@ -101,6 +109,7 @@ class Host:
             "preload": launch["preload"],
             "warm_entrypoint": launch["warm_entrypoint"],
             "slot": slot,
+            "runtime_owner": runtime_owner,
         }
         return hashlib.sha256(encode(profile)).hexdigest(), profile
 
@@ -142,7 +151,7 @@ class Host:
             raise
         finally:
             theirs.close()
-        worker = Worker(process, token, ours, key, profile_dir)
+        worker = Worker(process, token, ours, key, profile_dir, profile["runtime_owner"])
         self.workers[process.pid] = worker
         self.loop.add_reader(ours.fileno(), self._worker_ready, worker)
         return worker
@@ -166,9 +175,15 @@ class Host:
             self.loop.remove_reader(worker.control.fileno())
             worker.control.close()
 
-    def warm(self, launch: dict) -> None:
+    def warm(self, launch: dict, runtime_owner: str | None = None) -> None:
+        if runtime_owner is not None and (
+            not isinstance(runtime_owner, str) or runtime_owner != os.path.realpath(launch["argv"][0])
+        ):
+            raise HostError("invalid_request", "Warm runtime owner differs from its interpreter.")
+        if runtime_owner in self.retiring or self.exiting:
+            raise HostError("shutting_down", "The desktop runtime is stopping.")
         if launch["warm_entrypoint"]:
-            key, profile = self._profile(launch, "compute")
+            key, profile = self._profile(launch, "compute", runtime_owner)
             self.profiles[key] = profile
 
     def _maintain_pool(self) -> None:
@@ -194,7 +209,81 @@ class Host:
                     self.profiles.pop(key)
                     break
 
+    def _retire_runtime(self, runtime: str, release: str, mode: str) -> dict:
+        if (
+            not Path(release).is_absolute() or not Path(runtime).is_relative_to(release)
+            or mode not in ("defer", "checkpoint", "force", "interrupt")
+        ):
+            raise HostError("invalid_request", "Invalid installed runtime retirement.")
+        owned = self.release_owner == release and self.interpreter == runtime
+        if self.interpreter == runtime and self.release_owner is not None and not owned:
+            raise HostError("runtime_owner", "The installed interpreter's Host has no matching release owner.")
+        rows = self.store.db.execute(
+            """SELECT id, state, data, worker_pid, worker_token FROM jobs
+               WHERE state IN (?, ?, ?, ?) OR worker_pid IS NOT NULL""",
+            LIVE_STATES,
+        )
+        matching, jobs = set(), []
+        foreign = False
+        for row in rows:
+            if self._runtime(json.loads(row["data"])) == runtime:
+                matching.add(row["id"])
+                if row["state"] in LIVE_STATES:
+                    jobs.append(row["id"])
+                    if row["worker_pid"] is not None:
+                        self.retiring_groups.setdefault(runtime, {})[row["worker_pid"]] = row["worker_token"]
+            elif row["state"] in LIVE_STATES:
+                foreign = owned
+        if (mode == "defer" and jobs) or (foreign and mode != "interrupt"):
+            return {"status": "deferred", "jobs": jobs, "foreign": foreign}
+        self.retiring.add(runtime)
+        if jobs:
+            self.store.stop(jobs, mode, service=True)
+        whole_host = owned and not foreign
+        for key, profile in tuple(self.profiles.items()):
+            if whole_host or profile.get("runtime_owner") == runtime:
+                del self.profiles[key]
+        remaining = [
+            worker for worker in self.workers.values()
+            if whole_host or worker.job_id in matching
+            or (worker.job_id is None and worker.runtime_owner == runtime)
+        ]
+        for worker in remaining:
+            if worker.job_id is None:
+                self._close_control(worker)
+                now = time.monotonic()
+                if worker.retiring_since is None or now - worker.retiring_since >= TERM_GRACE:
+                    sent, _ = self._signal_group(
+                        worker.process.pid, worker.token, escalate=worker.retiring_since is not None,
+                    )
+                    if sent and worker.retiring_since is None:
+                        worker.retiring_since = now
+            elif worker.job_id not in jobs:
+                self._signal_group(worker.process.pid, worker.token, escalate=True)
+        groups = self.retiring_groups.get(runtime, {})
+        for pid, token in tuple(groups.items()):
+            verdict, _ = verify(pid, token)
+            if verdict == "gone":
+                del groups[pid]
+            elif verdict == "verified" and not jobs:
+                self._signal_group(pid, token, escalate=True)
+        if jobs or remaining or groups:
+            return {"status": "settling", "jobs": jobs}
+        self.retiring_groups.pop(runtime, None)
+        if whole_host:
+            self.exiting = True
+        else:
+            self.retiring.discard(runtime)
+        return {"status": "exiting" if whole_host else "released", "jobs": []}
+
+    @staticmethod
+    def _runtime(data: dict) -> str | None:
+        runtime = data.get("runtime")
+        return os.path.realpath(runtime) if isinstance(runtime, str) else None
+
     def _assign(self, row: sqlite3.Row) -> None:
+        if self.exiting or self._runtime(json.loads(row["data"])) in self.retiring:
+            return
         bindings = self.store.completion_bindings(row["id"])
         launch = json.loads(row["launch"])
         try:
@@ -210,7 +299,7 @@ class Host:
                     row, failure("dependency_corrupt", str(error), outcome="blocked")
                 )
             return
-        key, profile = self._profile(launch, row["slot"])
+        key, profile = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))
         if launch["warm_entrypoint"]:
             self.profiles.pop(key, None)
             self.profiles[key] = profile
@@ -349,7 +438,7 @@ class Host:
                         ):
                             raise ValueError("Publication event must name its key.")
                         if kind == "terminal":
-                            if data.get("outcome") not in ("succeeded", "stopped", "failed"):
+                            if data.get("outcome") not in ("succeeded", "stopped", "failed", "interrupted"):
                                 raise ValueError("Invalid terminal outcome.")
                             row = self.store.get(row["id"])
                             if not self._tail_output(row, paths, finished=True):
@@ -422,23 +511,30 @@ class Host:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temp, paths["stop_file"])
-        if row["stop_mode"] != "force":
+        if row["stop_mode"] not in ("force", "interrupt"):
             return
         now = time.monotonic()
         job_id = row["id"]
         started = self.force_started.get(job_id)
         if started is not None and now - started < TERM_GRACE:
             return
-        verdict, error = verify(row["worker_pid"], row["worker_token"])
-        if verdict == "unverifiable" and job_id not in self.identity_errors:
+        sent, error = self._signal_group(row["worker_pid"], row["worker_token"], escalate=started is not None)
+        if error is not None and job_id not in self.identity_errors:
             self.identity_errors.add(job_id)
             self.store.append(row, "log", {"stream": "host", "line": error})
-        if verdict == "verified":
-            try:
-                os.killpg(row["worker_pid"], signal.SIGTERM if started is None else signal.SIGKILL)
-            except ProcessLookupError:
-                return
+        if sent:
             self.force_started[job_id] = now if started is None else started
+
+    @staticmethod
+    def _signal_group(pid: int, token: str, *, escalate: bool) -> tuple[bool, str | None]:
+        verdict, error = verify(pid, token)
+        if verdict != "verified":
+            return False, error
+        try:
+            os.killpg(pid, signal.SIGKILL if escalate else signal.SIGTERM)
+        except ProcessLookupError:
+            return False, None
+        return True, None
 
     def _lost_worker(self, row: sqlite3.Row, paths: dict[str, Path], *, recovering: bool) -> None:
         log = paths["event_log"]
@@ -447,7 +543,11 @@ class Host:
             with log.open("rb") as stream:
                 revoked = json.loads(stream.readline())["kind"] == "revoked"
         if revoked:
-            if row["stop_mode"] is not None:
+            if row["stop_mode"] == "interrupt":
+                self.store.finished(row, failure(
+                    "service_stopped", "The background service stopped.", outcome="interrupted",
+                ))
+            elif row["stop_mode"] is not None:
                 self.store.finished(row, {"outcome": "stopped"})
             elif recovering or row["delivery"] < 2:
                 self.store.db.execute(
@@ -468,6 +568,10 @@ class Host:
             outcome = (
                 {"outcome": "stopped"}
                 if row["stop_mode"] == "force"
+                else failure(
+                    "service_stopped", "The background service stopped.", outcome="interrupted",
+                )
+                if row["stop_mode"] == "interrupt"
                 else failure(
                     "worker_lost",
                     "Worker group disappeared without a terminal event.",
@@ -533,13 +637,12 @@ class Host:
         for pid, worker in tuple(self.workers.items()):
             if worker.process.poll() is not None:
                 self._close_control(worker)
+                if verify(pid, worker.token)[0] != "gone":
+                    continue
                 self.workers.pop(pid)
                 if worker.job_id is None:
                     self.profiles.pop(worker.profile_key, None)
-                # A lost launcher can still have a child in the group. Keep the
-                # startup profile until the worker is no longer executing.
-                if verify(pid, worker.token)[0] == "gone":
-                    shutil.rmtree(worker.profile_dir)
+                shutil.rmtree(worker.profile_dir)
         active = self.store.active()
         for row in active:
             self._observe(row, self._paths(row), recovering=recovering)
@@ -552,7 +655,7 @@ class Host:
             for row in running:
                 launch = json.loads(row["launch"])
                 if launch["warm_entrypoint"]:
-                    key, profile = self._profile(launch, row["slot"])
+                    key, profile = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))
                     self.profiles[key] = profile
         self._maintain_pool()
         self.file_changes.watch(
@@ -579,7 +682,7 @@ class Host:
 
     async def _schedule(self) -> None:
         recovering = True
-        while True:
+        while not self.shutdown_acknowledged:
             self.wake.clear()
             try:
                 self._tick(recovering=recovering)
@@ -627,7 +730,18 @@ class Host:
         if message.pop("version") != VERSION:
             raise HostError("protocol_version", f"Host expects protocol version {VERSION}.")
         op = message.pop("op")
+        if op in ("admit", "admit_with_completion") and (
+            self.exiting or any(
+                item.get("job") is not None and self._runtime(item["job"]["data"]) in self.retiring
+                for item in message["items"]
+            )
+        ):
+            raise HostError("shutting_down", "The desktop runtime is stopping.")
         match op:
+            case "retire_runtime":
+                result = self._retire_runtime(**message)
+                self.wake.set()
+                return result
             case "ping":
                 return {"version": VERSION, "pid": os.getpid()}
             case "events":
@@ -664,6 +778,7 @@ class Host:
                 raise HostError("invalid_request", f"Unknown host operation: {op}")
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        exiting = False
         try:
             try:
                 raw = await asyncio.wait_for(reader.readline(), 5)
@@ -671,6 +786,7 @@ class Host:
                     return
                 message = json.loads(raw)
                 value = await self._call(message)
+                exiting = isinstance(value, dict) and value.get("status") == "exiting" and self.exiting
                 reply = {"value": value}
             except HostError as error:
                 reply = {"error": {"code": error.code, "message": str(error)}}
@@ -688,6 +804,9 @@ class Host:
             pass
         finally:
             writer.close()
+            if exiting:
+                self.shutdown_acknowledged = True
+                self.wake.set()
 
     async def run(self) -> None:
         self.address.unlink(missing_ok=True)

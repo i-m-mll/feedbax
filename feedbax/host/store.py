@@ -163,8 +163,9 @@ class Store:
         )
 
     def finished(self, row: sqlite3.Row, outcome: dict) -> None:
-        self.db.execute(
-            """UPDATE jobs SET state=?, outcome=?, checkpoint=coalesce(checkpoint, ?) WHERE id=?""",
+        updated = self.db.execute(
+            """UPDATE jobs SET state=?, outcome=?, checkpoint=coalesce(checkpoint, ?)
+               WHERE id=? AND outcome IS NULL""",
             (
                 outcome["outcome"],
                 dump(outcome),
@@ -172,6 +173,8 @@ class Store:
                 row["id"],
             ),
         )
+        if not updated.rowcount:
+            return
         self.append(row, "terminal", outcome)
         if outcome["outcome"] == "succeeded":
             self.db.execute(
@@ -207,6 +210,8 @@ class Store:
             self.evaluation_error(row, require_text(data.get("message"), "evaluation error"))
             return
         elif kind == "terminal":
+            if row["outcome"] is not None:
+                return
             outcome = dict(data)
             if row["event_error"] and outcome["outcome"] == "succeeded":
                 outcome = {
@@ -219,6 +224,8 @@ class Store:
             if row["stop_mode"] == "force" and "signal" in outcome:
                 outcome["outcome"] = "stopped"
                 outcome.pop("error", None)
+            elif row["stop_mode"] == "interrupt" and outcome["outcome"] == "interrupted":
+                outcome["error"] = {"code": "service_stopped", "message": "The background service stopped."}
             if outcome["outcome"] == "succeeded":
                 try:
                     if "model_product" in outcome:
@@ -813,9 +820,10 @@ class Store:
                 self.db.execute("UPDATE policy SET capacity=? WHERE slot=?", (value, slot))
         return dict(self.db.execute("SELECT slot, capacity FROM policy"))
 
-    def stop(self, job_ids: list[str], mode: str) -> list[dict]:
-        if mode not in ("checkpoint", "force"):
+    def stop(self, job_ids: list[str], mode: str, *, service: bool = False) -> list[dict]:
+        if mode not in ("checkpoint", "force") and not (service and mode == "interrupt"):
             raise HostError("invalid_request", "Unknown stop mode.")
+        strength = {None: 0, "checkpoint": 1, "interrupt": 2, "force": 3}
         results = []
         with self.db:
             for job_id in job_ids:
@@ -829,14 +837,15 @@ class Store:
                     )
                     continue
                 state = row["state"]
-                if state in LIVE_STATES and row["stop_mode"] not in (mode, "force"):
-                    self.db.execute("UPDATE jobs SET stop_mode=? WHERE id=?", (mode, job_id))
+                if state in LIVE_STATES and strength[mode] > strength[row["stop_mode"]]:
+                    mode_for_job = "checkpoint" if state == "queued" and mode == "interrupt" else mode
+                    self.db.execute("UPDATE jobs SET stop_mode=? WHERE id=?", (mode_for_job, job_id))
                     if state == "queued":
                         self.finished(row, {"outcome": "stopped"})
                         state = "stopped"
                     else:
                         self.db.execute("UPDATE jobs SET state='stopping' WHERE id=?", (job_id,))
-                        self.append(row, "stopping", {"mode": mode})
+                        self.append(row, "stopping", {"mode": "force" if mode == "interrupt" else mode})
                         state = "stopping"
                 results.append({"job_id": job_id, "state": state})
         return results

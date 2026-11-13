@@ -298,6 +298,7 @@ def _write_launch_agent(contents: Path, identifier: str) -> str:
         "ProgramArguments": [Path(LAUNCHER).name, "service", "serve"],
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
+        "ExitTimeOut": 45,
     }))
     return relative
 

@@ -49,11 +49,12 @@ def _outcome(log: Path, status: int, require_result: bool) -> dict:
                 break
     if status < 0:
         signum = signal.Signals(-status)
+        interrupted = signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGKILL)
         return {
-            "outcome": "failed",
+            "outcome": "interrupted" if interrupted else "failed",
             "signal": int(signum),
             "error": {
-                "code": "worker_signal",
+                "code": "worker_interrupted" if interrupted else "worker_signal",
                 "message": f"Worker exited on {signum.name}.",
             },
         }

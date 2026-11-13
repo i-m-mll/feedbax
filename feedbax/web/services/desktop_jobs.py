@@ -13,7 +13,7 @@ from feedbax.web.services.training_service import TrainingService
 if TYPE_CHECKING:
     from feedbax.jobs import JobService
 
-StopDisposition = Literal["defer", "checkpoint", "force"]
+StopDisposition = Literal["defer", "checkpoint", "force", "interrupt"]
 
 
 class StudioJobLifecycle:
@@ -21,12 +21,13 @@ class StudioJobLifecycle:
 
     def __init__(
         self, analysis: AnalysisJobService, legacy: TrainingService,
-        job_root: Path, hosted: JobService,
+        job_root: Path, hosted: JobService, release: Path | None,
     ) -> None:
         self.analysis = analysis
         self._legacy = legacy
         self._job_root = job_root
         self._hosted = hosted
+        self._release = release
         self._lock = asyncio.Lock()
         self._closing = False
 
@@ -40,6 +41,17 @@ class StudioJobLifecycle:
     async def stop(
         self, disposition: StopDisposition, timeout_seconds: float = 30
     ) -> dict:
+        if disposition == "interrupt":
+            self._closing = True
+            self.analysis.begin_stop(force=True)
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                host = await self._retire_host(disposition)
+                if self.analysis.idle and host["status"] in ("released", "absent"):
+                    return {"status": "ready_to_stop", "disposition": disposition}
+                if time.monotonic() >= deadline:
+                    return {"status": "timed_out", "disposition": disposition, "jobs": host.get("jobs", [])}
+                await asyncio.sleep(0.1)
         async with self._lock:
             jobs = self.snapshot()
             legacy_active = [
@@ -49,10 +61,9 @@ class StudioJobLifecycle:
             active = not self.analysis.idle or bool(legacy_active)
             if disposition == "defer" and active:
                 return {"status": "deferred", "disposition": disposition, "jobs": jobs}
-            if not await asyncio.to_thread(self._hosted.begin_runtime_shutdown, disposition):
-                jobs["hosted"] = [
-                    job["id"] for job in await asyncio.to_thread(self._hosted.live_runtime_jobs)
-                ]
+            host = await self._retire_host(disposition)
+            if host["status"] == "deferred":
+                jobs["hosted"] = host["jobs"]
                 return {"status": "deferred", "disposition": disposition, "jobs": jobs}
             self._closing = True
             force = disposition == "force"
@@ -71,12 +82,18 @@ class StudioJobLifecycle:
                         "pending", "launched", "ready", "running"
                     ) for job in jobs["training"]
                 )
-                hosted = await asyncio.to_thread(self._hosted.live_runtime_jobs)
-                if self.analysis.idle and (force or not legacy_running) and not hosted:
+                if self.analysis.idle and (force or not legacy_running) and host["status"] in ("released", "absent"):
                     return {"status": "ready_to_stop", "disposition": disposition, "jobs": jobs}
                 if time.monotonic() >= deadline:
                     return {
                         "status": "timed_out", "disposition": disposition, "jobs": jobs,
-                        "unsettled_training": [row["id"] for row in hosted],
+                        "unsettled_training": host.get("jobs", []),
                     }
                 await asyncio.sleep(0.1)
+                if host["status"] not in ("released", "absent"):
+                    host = await self._retire_host(disposition)
+
+    async def _retire_host(self, disposition: StopDisposition) -> dict:
+        if self._release is None:
+            return {"status": "released"}
+        return await asyncio.to_thread(self._hosted.retire_runtime, str(self._release), disposition)

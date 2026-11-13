@@ -39,6 +39,11 @@ class HostClient:
         self.root = (root or default_root()).resolve()
         self.address = socket_path(self.root)
         self._start_lock = threading.Lock()
+        self._start_allowed = True
+
+    def prohibit_start(self) -> None:
+        with self._start_lock:
+            self._start_allowed = False
 
     def _connect(self, timeout: float) -> socket.socket:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -59,6 +64,8 @@ class HostClient:
             try:
                 return self._connect(timeout)
             except (FileNotFoundError, ConnectionRefusedError):
+                if not self._start_allowed:
+                    raise
                 private_directory(self.root)
                 with (self.root / "host.log").open("ab") as log:
                     process = subprocess.Popen(
@@ -101,8 +108,9 @@ class HostClient:
     def ping(self) -> JsonObject:
         return cast(JsonObject, self._call("ping"))
 
-    def warm(self, launch: Launch) -> None:
-        self._call("warm", launch=asdict(launch))
+    def warm(self, launch: Launch, *, runtime_owner: str | None = None) -> None:
+        owner = {"runtime_owner": runtime_owner} if runtime_owner is not None else {}
+        self._call("warm", launch=asdict(launch), **owner)
 
     def admit(self, token: str, items: Sequence[AdmissionItem], *, record: JsonObject) -> Admission:
         requires_authentication = any(
@@ -212,6 +220,17 @@ class HostClient:
 
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[JsonObject]:
         return cast(list[JsonObject], self._call("stop", job_ids=list(job_ids), mode=mode))
+
+    def retire_runtime(self, runtime: str, release: str, mode: str) -> JsonObject:
+        """Retire the installed runtime on the existing Host without launching one."""
+        try:
+            return cast(JsonObject, self._call(
+                "retire_runtime", start_host=False, runtime=runtime, release=release, mode=mode,
+            ))
+        except HostError as error:
+            if isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError)):
+                return {"status": "absent"}
+            raise
 
     def mark_satisfied(self, job_id: str, edge: Edge) -> None:
         self._call("mark_satisfied", job_id=job_id, edge=asdict(edge))

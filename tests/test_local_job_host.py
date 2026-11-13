@@ -269,7 +269,7 @@ def main(args):
     assert failed["outcome"]["error"]["code"] == "update_failed"
 
 
-def test_force_escalates_and_signal_without_intent_fails(host, tmp_path):
+def test_force_escalates_and_separates_interruption_from_worker_fault(host, tmp_path):
     child_pid = tmp_path / "child-pid"
     ignores_term = run_job(
         "ignores-term",
@@ -292,8 +292,14 @@ time.sleep(120)
 
     crash = run_job("crash", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)")
     admit(host, "crash", crash)
-    outcome = wait_until(lambda: job_row(host, crash.id, "failed"))["outcome"]
+    outcome = wait_until(lambda: job_row(host, crash.id, "interrupted"))["outcome"]
     assert outcome["signal"] == signal.SIGKILL
+    assert outcome["error"]["code"] == "worker_interrupted"
+
+    fault = run_job("fault", "import os, signal; os.kill(os.getpid(), signal.SIGABRT)")
+    admit(host, "fault", fault)
+    outcome = wait_until(lambda: job_row(host, fault.id, "failed"))["outcome"]
+    assert outcome["signal"] == signal.SIGABRT
     assert outcome["error"]["code"] == "worker_signal"
 
 
