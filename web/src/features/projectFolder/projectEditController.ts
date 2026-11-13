@@ -161,8 +161,9 @@ function outsideGesture(before: StudioProjectSnapshot, after: StudioProjectSnaps
     const from = previous.get(key);
     const to = current.get(key);
     if (from?.revision === to?.revision) continue;
-    const address = (to ?? from)!.address;
-    if (address.kind === 'presentation' || (from && from.data == null) || (to && to.data == null)) return null;
+    const { kind, id } = (to ?? from)!.address;
+    if (kind === 'presentation' || (from && from.data == null) || (to && to.data == null)) return null;
+    const address = { kind, id };
     undo.push({ address, data: from?.data ?? null, revision: from?.revision ?? null });
     redo.push({ address, data: to?.data ?? null, revision: to?.revision ?? null });
   }
