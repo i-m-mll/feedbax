@@ -202,12 +202,12 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   async function editNumber(label: string, value: number, before: string) {
     await mapStep(page, 'train').click();
     await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
-    const field = page.getByRole('spinbutton', { name: `Edit ${label}` });
+    const field = page.getByRole('textbox', { name: label, exact: true });
     await expect(field).toHaveValue(before);
     const saved = page.waitForResponse((response) => {
       const request = response.request();
       return request.method() === 'PATCH' && new URL(response.url()).pathname === projectPath
-        && request.postDataJSON().address?.id === 'train';
+        && request.postDataJSON().files?.some((file: { address: { id: string } }) => file.address.id === 'train');
     });
     await field.fill(String(value));
     await field.press('Enter');
