@@ -138,7 +138,7 @@ def _python_related(root: Path, changed: set[str]) -> list[str]:
         for path in os.fsdecode(raw).split("\0")[:-1]
         if path.endswith(".py")
         and path.partition("/")[0] in PYTHON_ROOTS
-        and not path.startswith("tests/fixtures/")
+        and not path.startswith("tests/fixtures/downstream/")
         and (root / path).is_file()
     }
     pants = _pants_launcher()
@@ -396,7 +396,11 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
             ):
                 python_reason = studio_reason = f"shared Python contract: {path}"
                 browser = build = contracts = True
-        elif _python_test(path):
+        elif (
+            path.startswith("tests/")
+            and path.endswith(".py")
+            and not path.startswith("tests/fixtures/downstream/")
+        ):
             python.add(path)
         elif path.startswith("tests/fixtures/") and Path(path).suffix in {".json", ".yaml", ".yml"}:
             fixtures.add(path)

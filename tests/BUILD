@@ -16,4 +16,4 @@ python_tests(
         },
     },
 )
-python_sources(name="support", sources=["**/*.py", "!**/test_*.py", "!fixtures/**/*.py"])
+python_sources(name="support", sources=["**/*.py", "!**/test_*.py", "!fixtures/downstream/**/*.py"])
