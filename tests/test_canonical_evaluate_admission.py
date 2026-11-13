@@ -150,7 +150,9 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     definition["steps"]["stoppable"] = stoppable
     _save_project(folders, project, Project.model_validate(definition))
     plan = folders.read_plan(project, revision=None)
-    assert not plan.plan.diagnostics
+    assert [(item.step, item.path) for item in plan.plan.diagnostics] == [
+        ("unsupported-condition", "/params/variation/0"),
+    ]
     by_key = {run.key: run for run in plan.plan.runs}
     train = RunKey("default", "train", "default")
     baseline = RunKey("default", "baseline", "default")
@@ -275,14 +277,14 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     }
     target = "/v1/task/output/target_pos"
     selected = []
-    read_tensor = ArrayContainerReader.read_tensor
+    read_slice = ArrayContainerReader.read_unverified_slice
 
-    def observed(reader, name):
+    def observed(reader, name, selection):
         selected.append(name)
-        return read_tensor(reader, name)
+        return read_slice(reader, name, selection)
 
     with monkeypatch.context() as context:
-        context.setattr(ArrayContainerReader, "read_tensor", observed)
+        context.setattr(ArrayContainerReader, "read_unverified_slice", observed)
         with outcomes[baseline].open_states() as dataset:
             assert not selected
             descriptor = dataset.descriptor
@@ -385,11 +387,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
 
     unavailable = RunKey("default", "unsupported-condition", "default")
     (unsupported_condition,) = launch(jobs, (unavailable,), "unsupported-condition").items
-    assert unsupported_condition.disposition == "admitted"
-    failed = wait_until(lambda: job_row(host, unsupported_condition.job_id, "failed"))
-    assert failed["outcome"]["error"]["code"] == "cannot_run"
-    assert failed["outcome"]["error"]["path"] == "/params/variation/0"
-    assert "receipt" not in failed["outcome"]
+    assert unsupported_condition.disposition == "rejected"
+    assert unsupported_condition.job_id is None
 
     (legacy_attempt,) = launch(jobs, (RunKey("default", "legacy", "default"),), "legacy-observations").items
     legacy_job = wait_until(lambda: (
@@ -423,12 +422,12 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
 
     try:
         corrupt_part(carry)
-        with original.open_states() as dataset:
+        with original.open_states(verify=True) as dataset:
             np.testing.assert_array_equal(dataset.select(position, labels={"trial": trial_ids[0]})[0, 0], base_pos[0])
             with pytest.raises(ArrayContainerError):
                 dataset.select(carry, labels={"trial": trial_ids[0]})
         corrupt_part(position)
-        with original.open_states() as dataset:
+        with original.open_states(verify=True) as dataset:
             with pytest.raises(ArrayContainerError):
                 dataset.select(position, labels={"trial": trial_ids[0]})
             np.testing.assert_array_equal(dataset.data(target)[0, 0], base_tgt)

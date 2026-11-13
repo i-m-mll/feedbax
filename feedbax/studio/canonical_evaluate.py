@@ -304,7 +304,11 @@ def states_product(manifest: EvaluationRunManifest):
 
 
 class EvaluationResult:
-    """Open the dataset through the exact receipt of one successful Jobs attempt."""
+    """Open the dataset through the exact receipt of one successful Jobs attempt.
+
+    Jobs supplies a manifest object only after authenticating the typed Store success
+    and its exact states product.
+    """
 
     def __init__(
         self, root: Path, job_id: str, request_id: str, receipt: JobReceipt,
@@ -332,18 +336,16 @@ class EvaluationResult:
         return states_ref(self._manifest()).content.size
 
     @contextmanager
-    def open_states(self) -> Iterator[Dataset]:
-        from feedbax.persistence.dataset import open_dataset
+    def open_states(self, *, verify: bool = False) -> Iterator[Dataset]:
+        """Read Store-owned slices, or authenticate selected tensors on request."""
+        from feedbax.persistence.dataset import open_stored_dataset
 
         manifest = self._manifest()
         ref = states_ref(manifest)
         spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
         params = RolloutParameters.model_validate(spec.params)
         store = ImmutableArtifactBlobProvider(self._root)
-        with (
-            store.open_owned_object(ref.object_ref) as path,
-            open_dataset(path, expected_descriptor_sha256=ref.descriptor_sha256) as dataset,
-        ):
+        with open_stored_dataset(store, ref, verify=verify or self._manifest_object is None) as dataset:
             if dataset.descriptor.schema_id != params.states_schema:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset

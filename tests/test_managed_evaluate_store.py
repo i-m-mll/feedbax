@@ -1,21 +1,25 @@
 """Accepted saved Evaluate terminal evidence commits once through Host replay."""
 
+import json
 import os
 from pathlib import Path
 from textwrap import dedent
 
+import numpy as np
 import pytest
 
-from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.host import HostError
 from feedbax.jobs import JobService
+from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.canonical_evaluate import EvaluationResult, states_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
@@ -138,8 +142,67 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     original = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=attempt)
     (states,) = committed.receipt.products["states"]
     assert states.content.sha256 == original._manifest().artifacts[0].sha256
+    manifest = original._manifest()
+    states_binding = states_ref(manifest)
+    with original.open_states(verify=True) as dataset:
+        position = dataset.descriptor.attrs["scene_position"]
+        trial = dataset.data("trial")[1]
+        expected = dataset.data(position, (0, 0, 1))
+        expected_axis = dataset.data("state_time").tolist()
+
+    read_slice = ArrayContainerReader.read_unverified_slice
+    reads = []
+
+    def observe_slice(reader, name, index):
+        reads.append((name, index))
+        return read_slice(reader, name, index)
+
+    def unexpected_tensor(*args):
+        pytest.fail("The default Store-owned reader verified a whole tensor")
+
+    with monkeypatch.context() as probe:
+        probe.setattr(ArrayContainerReader, "read_unverified_slice", observe_slice)
+        probe.setattr(ArrayContainerReader, "read_tensor", unexpected_tensor)
+        with original.open_states() as dataset:
+            assert not reads
+            np.testing.assert_array_equal(dataset.data(position, (0, 0, 1)), expected)
+            assert reads == [(position, (0, 0, 1))]
+        reads.clear()
+        replayed = original.replay_trial(trial, anchor_id="effector")
+        assert reads == [("state_time", ()), (position, (0, 0, 1))]
+        assert replayed.time.values == expected_axis
+        assert replayed.tracks[0].samples == expected.tolist()
+
+    unpinned = EvaluationResult(plan.store_path, attempt, runs["evaluate"].request_id, original.receipt)
+    path = store.object_path(states_binding.object_ref)
+    raw = path.read_bytes()
+    header_end = 8 + int.from_bytes(raw[:8], "little")
+    offsets = json.loads(raw[8:header_end])[position]["data_offsets"]
+    offset = header_end + offsets[0] + expected.nbytes
+    altered = raw[:offset] + bytes([raw[offset] ^ 1]) + raw[offset + 1:]
     closure = StoreClosureRef(roots=(ReceiptRoot(receipt=committed.ref),), include_ancestry=True)
     destination = ImmutableArtifactBlobProvider(tmp_path / "copied")
+    mode = path.stat().st_mode & 0o777
+    path.chmod(mode | 0o200)
+    try:
+        with pytest.raises(ArtifactBlobIntegrityError, match="changed during read"):
+            with original.open_states() as dataset:
+                np.testing.assert_array_equal(dataset.data(position, (0, 0, 1)), expected)
+                path.write_bytes(altered)
+        with original.open_states() as dataset:
+            assert dataset.data(position, (0, 0, 1)).tobytes() != expected.tobytes()
+        for reader in (original.open_states(verify=True), unpinned.open_states()):
+            with pytest.raises(ArrayContainerError, match="digest mismatch"):
+                with reader as dataset:
+                    dataset.data(position, (0, 0, 1))
+        with pytest.raises(ArtifactBlobIntegrityError):
+            store.verify_object(states_binding.object_ref)
+        with pytest.raises(ArtifactBlobIntegrityError):
+            sync_store(store, destination, closure, destination_ref="proof/evaluate-closure")
+        assert destination.read_ref("proof/evaluate-closure") is None
+    finally:
+        path.write_bytes(raw)
+        path.chmod(mode)
     sync_store(store, destination, closure, destination_ref="proof/evaluate-closure")
     refs = ReceiptClosure(destination).walk(closure)
     assert committed.receipt.evaluation_manifest in refs

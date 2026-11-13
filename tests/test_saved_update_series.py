@@ -5,6 +5,7 @@ import pytest
 
 from feedbax.contracts.effective_success import EvaluationSubjectValue, success_content_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
@@ -152,7 +153,12 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
             {"update": update, "reason": "checkpoint_unavailable"} for update in expected if update not in observed
         ]
         read = StudioSavedEvaluationRead(revision=plan.revision, key=evaluation.key, job_id=evaluation.result.job_id)
-        curve = service.evaluation_objective(project, read)
+        with monkeypatch.context() as probe:
+            def unexpected_tensor(*args):
+                pytest.fail("Held-out Results authenticated an entire tensor on read")
+
+            probe.setattr(ArrayContainerReader, "read_tensor", unexpected_tensor)
+            curve = service.evaluation_objective(project, read)
         assert curve.requested == expected
         assert curve.receipt == evaluation.result.receipt
         assert curve.lineage == [producer.job_id]
