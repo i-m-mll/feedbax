@@ -2,6 +2,8 @@
 
 import time
 
+from dataclasses import replace
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -10,6 +12,11 @@ import numpy as np
 import pytest
 from scipy.stats import ks_2samp
 
+from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.compiler.model_document import ResolvedModelInterface, lower_model_document
+from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.expression_values import (
     LENGTH,
     TIME,
@@ -40,10 +47,19 @@ from feedbax.tasks.document import (
     Signal,
     TaskDocument,
     TaskParameters,
+    ValidationTrial,
     Variable,
     compile_task,
 )
-from feedbax.tasks.task import DelayedReaches, SimpleReaches, Stabilization
+from feedbax.runtime.graph import GraphTraceRequest
+from feedbax.tasks.task import (
+    DelayedReaches,
+    SimpleReaches,
+    Stabilization,
+    gen_epoch_lengths,
+    set_state_by_path,
+)
+from tests.test_model_document_plan import _model_project
 from feedbax.xabdeef.losses import delayed_reach_loss, simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
 
@@ -54,6 +70,48 @@ POINT = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
 REAL = ValueType(base=ValueBase.REAL)
 TIME_TYPE = ValueType(base=ValueBase.REAL, dimensions=TIME)
 BOOLEAN = ValueType(base=ValueBase.BOOLEAN)
+
+
+RESET_POSITION = ModelAddress.model_validate(
+    {
+        "document": "reach-model",
+        "composites": [],
+        "element": {
+            "kind": "field",
+            "parent": {"kind": "component", "id": "plant"},
+            "path": ["reset", "effector", "pos"],
+        },
+    }
+)
+PORTLESS = ResolvedModelInterface(PERIOD, (), (), (), ())
+
+
+@pytest.fixture(scope="module")
+def paired_model():
+    payload = _model_project()["documents"]["reach-model"]["payload"]
+    payload["step_seconds"] = PERIOD
+    inputs = payload["ports"]["inputs"]
+    inputs[0]["type"]["unit"] = "m"
+    payload["ports"]["outputs"] = [
+        {"id": "command", "name": "command", "type": {"shape": [2]}},
+    ]
+    payload["interior"]["wires"]["effector-wire"] = {
+        "source": {"owner": "component", "component": "wrapper", "port": "force"},
+        "target": {"owner": "outputs", "port": "command"},
+    }
+    model = ModelDocument.model_validate(payload)
+    registry = ComponentRegistry()
+    lowered = lower_model_document("reach-model", model, registry)
+    source = lowered.graph.input_bindings["reach_target"]
+    prototypes = {source: jax.ShapeDtypeStruct((2,), jnp.float32)}
+    interface = lowered.interface("reach-model", model, registry, input_prototypes=prototypes)
+    graph = compile_graph(
+        GraphDocument(graph=lowered.graph),
+        registry,
+        input_prototypes=prototypes,
+        initialization_key=jr.key(4),
+    ).graph
+    return interface, graph
 
 
 @pytest.fixture
@@ -74,7 +132,7 @@ def expression(text, scope=()):
     return result.value
 
 
-def example(kind, functions, *, zero=False):
+def example(kind, functions, *, zero=False, interface=PORTLESS, old=None):
     delayed = kind == "delayed"
     initial = kind == "stabilization"
     names = (
@@ -114,7 +172,11 @@ def example(kind, functions, *, zero=False):
     )
     signals = [
         signal("target_pos", POINT, cell("cue" if delayed else first, "move", "target")),
-        signal("target_vel", POINT, cell("cue" if delayed else first, "move", "[0, 0]")),
+        signal(
+            "target_vel",
+            ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1)),
+            cell("cue" if delayed else first, "move", "[0, 0]"),
+        ),
         signal("goal", POINT, *target_cells),
     ]
     if delayed:
@@ -136,26 +198,60 @@ def example(kind, functions, *, zero=False):
         signals=tuple(signals),
         links=(Link(model_field="reset_position", variable="start"),),
         fixed_steps=STEPS,
-        validation_count=7,
+        validation_trials=validation_rows(kind, old) if old else (ValidationTrial(),),
     )
     task = compile_task(
         doc,
         functions,
-        period=PERIOD,
-        model_links={"reset_position": ModelField("mechanics.effector.pos", POINT)},
+        model=interface,
+        reset_fields={"reset_position": ModelField(RESET_POSITION, POINT)},
+        input_overrides={"reach_target": "target_pos"} if interface.inputs else None,
     )
     assert isinstance(task, DocumentTask), task
     return doc, task
 
 
 def legacy(kind):
-    common = dict(n_steps=STEPS + 1, workspace=WORKSPACE)
+    common = dict(n_steps=STEPS + 1, workspace=WORKSPACE, eval_grid_n=2)
     if kind == "delayed":
         return DelayedReaches(
             **common, loss_func=delayed_reach_loss(), catch_metadata_policy="flag"
         )
     cls = Stabilization if kind == "stabilization" else SimpleReaches
     return cls(**common, loss_func=simple_reach_loss(), epoch_name="move")
+
+
+def validation_rows(kind, old):
+    size = old.eval_grid_n
+    bounds = np.asarray(old.workspace)
+    stabilization = kind == "stabilization"
+    ticks = [
+        np.linspace(lo, hi, size if stabilization else size + 2, dtype=np.float32)
+        for lo, hi in bounds.T
+    ]
+    if not stabilization:
+        ticks = [axis[1:-1] for axis in ticks]
+    start = np.stack(np.meshgrid(*ticks), axis=-1).reshape(-1, 2)
+    if stabilization:
+        goal = start
+    else:
+        angles = np.arange(old.eval_n_directions) * (2 * np.pi / old.eval_n_directions)
+        offsets = old.eval_reach_length * np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+        goal = (start[:, None] + offsets).reshape(-1, 2)
+        start = np.repeat(start, old.eval_n_directions, axis=0)
+    if kind == "delayed":
+        trials_key = jr.split(jr.PRNGKey(old.seed_validation), 3)[0]
+        epoch_keys = jax.vmap(lambda key: jr.split(key)[0])(jr.split(trials_key, len(start)))
+        lengths = jax.vmap(lambda key: gen_epoch_lengths(key, old.epoch_len_ranges))(epoch_keys)
+    rows = []
+    for i, (a, b) in enumerate(zip(start, goal, strict=True)):
+        variables = {"start": tuple(map(float, a)), "target": tuple(map(float, b))}
+        epoch_steps = {}
+        if kind == "delayed":
+            variables["catch"] = False
+            epoch_steps = dict(zip(("hold", "cue"), map(int, lengths[i]), strict=True))
+        rows.append(ValidationTrial(variables=variables, epoch_steps=epoch_steps))
+    return tuple(rows)
 
 
 def overrides(kind, old_trials):
@@ -212,7 +308,7 @@ def objective(kind, task, functions):
     add("nn_output", "sqnorm(command)", weight="0.0001" if kind == "delayed" else "0.00001")
     add("nn_hidden", "sqnorm(activity)", weight="0.00001")
     executor = compile_objective(
-        ObjectiveDocument(id=kind, terms=tuple(terms)), scope[:-1], functions, period=PERIOD
+        ObjectiveDocument(id=kind, terms=tuple(terms)), scope[:-1], functions, task=task
     )
     assert isinstance(executor, ObjectiveExecutor), executor
     return executor
@@ -240,9 +336,9 @@ def vectorized_signals(kind, trial):
 
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
 def test_document_trial_and_objective_match_legacy(kind, functions):
-    doc, task = example(kind, functions)
-    assert TaskDocument.model_validate_json(doc.model_dump_json()) == doc
     old = legacy(kind)
+    doc, task = example(kind, functions, old=old)
+    assert TaskDocument.model_validate_json(doc.model_dump_json()) == doc
     run_key = jr.key(1)
     keys = jr.split(run_key, 250)
     old_trials = jax.jit(jax.vmap(old.get_train_trial))(keys)
@@ -259,7 +355,7 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
         trial.inputs["goal"], old_trials.targets["mechanics.effector.pos"].value
     )
     np.testing.assert_array_equal(
-        trial.inits["mechanics.effector.pos"], old_trials.inits["mechanics.effector"].pos
+        trial.inits[RESET_POSITION.to_text()], old_trials.inits["mechanics.effector"].pos
     )
     np.testing.assert_array_equal(trial.epochs.starts, old_trials.timeline.epoch_bounds[:, :-1])
     np.testing.assert_array_equal(trial.epochs.ends, old_trials.timeline.epoch_bounds[:, 1:])
@@ -271,10 +367,34 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
     for signal, expected in vectorized_signals(kind, trial).items():
         np.testing.assert_array_equal(trial.inputs[signal], expected)
     validation = jax.jit(task.validation)(TaskParameters(), run_key)
-    assert validation.inputs["goal"].shape == (7, STEPS, 2)
-    np.testing.assert_array_equal(
-        validation.inputs["goal"], task.validation(TaskParameters(), run_key).inputs["goal"]
+    legacy_validation = old.validation_trials
+    target = legacy_validation.targets["mechanics.effector.pos"].value
+    assert validation.inputs["goal"].shape == (old.n_validation_trials, STEPS, 2)
+    np.testing.assert_allclose(validation.inputs["goal"], target, rtol=0, atol=3e-7)
+    np.testing.assert_allclose(
+        validation.inits[RESET_POSITION.to_text()],
+        legacy_validation.inits["mechanics.effector"].pos,
+        rtol=0,
+        atol=3e-7,
     )
+    np.testing.assert_array_equal(
+        validation.epochs.starts, legacy_validation.timeline.epoch_bounds[:, :-1]
+    )
+    np.testing.assert_array_equal(
+        validation.epochs.ends, legacy_validation.timeline.epoch_bounds[:, 1:]
+    )
+    np.testing.assert_array_equal(
+        validation.inputs["goal"], task.validation(TaskParameters(), jr.key(99)).inputs["goal"]
+    )
+
+    old_inputs = legacy_validation.inputs
+    old_effector = old_inputs["effector_target"] if kind == "simple" else old_inputs.effector_target
+    np.testing.assert_allclose(validation.inputs["target_pos"], old_effector.pos, rtol=0, atol=3e-7)
+    np.testing.assert_array_equal(validation.inputs["target_vel"], old_effector.vel)
+    if kind == "delayed":
+        np.testing.assert_array_equal(validation.inputs["fixation"], old_inputs.hold[..., 0])
+        np.testing.assert_array_equal(validation.inputs["target_on"], old_inputs.target_on[..., 0])
+        assert not validation.variables["catch"].any()
 
     # Compare objective values on an actual PointMass controller rollout.
     model = point_mass_nn(old, n_steps=STEPS + 1, dt=PERIOD, hidden_size=4, key=jr.key(7))
@@ -286,7 +406,6 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
         "activity": states.net.hidden,
     }
     executor = objective(kind, task, functions)
-    windows = jnp.ones((keys.shape[0], len(executor.terms), STEPS), dtype=bool)
     # The fixation signal has an explicit zero outside the scored epochs.
     results = jax.jit(
         lambda kept: executor.evaluate(
@@ -294,7 +413,6 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
             trial,
             run_key=run_key,
             trial_keys=keys,
-            windows=windows,
         )
     )(retained)
     if kind == "simple":
@@ -306,7 +424,7 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
             old_trials.targets["mechanics.effector.pos"].discount[0],
         )
     expected_loss = old.loss_func(states, old_trials, model)
-    tree = executor(retained, trial, ObjectiveInputs(run_key, keys, windows))
+    tree = executor(retained, trial, ObjectiveInputs(run_key, keys))
     assert tree.total == pytest.approx(float(results.loss), rel=2e-5, abs=1e-6)
     assert results.loss == pytest.approx(float(expected_loss.total), rel=2e-5, abs=1e-6)
     for term, observed in results.terms.items():
@@ -320,7 +438,8 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
         start = time.perf_counter()
         batch(keys, given).inputs["goal"].block_until_ready()
         samples.append((time.perf_counter() - start) * 1000)
-    print(f"{kind} batch250 median {np.median(samples):.3f} ms")
+    median = np.median(samples)
+    print(f"{kind} batch250 median {median:.3f} ms")
 
 
 def test_zero_length_and_delayed_distribution(functions):
@@ -371,39 +490,63 @@ def test_zero_length_and_delayed_distribution(functions):
 
 
 def test_objective_windows_reduce_defined_samples_with_history(functions):
-    steps = 5
-    x = name("x", REAL)
-    _, task = example("simple", functions)
+    from feedbax.runtime.epoch_windows import EpochRecord
+
     keys = jr.split(jr.key(3), 3)
     key = keys[0]
+    x = name("x", REAL)
+    steps = 5
+    task = compile_task(
+        TaskDocument(
+            id="windows",
+            variables=(),
+            signals=(),
+            epochs=(
+                Epoch(id="first", name="first", length=expression("1 st")),
+                Epoch(id="left", name="left", length=expression("2 st")),
+                Epoch(id="right", name="right", length=expression("2 st")),
+            ),
+        ),
+        functions,
+        model=PORTLESS,
+    )
+    assert isinstance(task, DocumentTask), task
     batch = jax.vmap(lambda trial_key: task.ahead(TaskParameters(), key, trial_key))(keys)
+    batch = batch._replace(
+        epochs=EpochRecord(
+            starts=jnp.asarray([[0, 1, 3], [0, -1, -1], [-1, -1, -1]]),
+            ends=jnp.asarray([[1, 3, 5], [1, -1, -1], [-1, -1, -1]]),
+            outcomes=jnp.asarray([[1, 1, 1], [1, 0, 0], [0, 0, 0]]),
+        )
+    )
+    formula = expression("diff(x)", (x,))
     terms = tuple(
-        ObjectiveTerm(id=reduction.value, measure=expression("diff(x)", (x,)), reduction=reduction)
+        ObjectiveTerm(
+            id=reduction.value,
+            measure=formula,
+            reduction=reduction,
+            epochs=("first", "left", "right"),
+        )
         for reduction in Reduction
     ) + (
-        ObjectiveTerm(id="left", measure=expression("diff(x)", (x,)), reduction=Reduction.SUM),
-        ObjectiveTerm(id="right", measure=expression("diff(x)", (x,)), reduction=Reduction.SUM),
+        ObjectiveTerm(id="left", measure=formula, reduction=Reduction.SUM, epochs=("left",)),
+        ObjectiveTerm(id="right", measure=formula, reduction=Reduction.SUM, epochs=("right",)),
         ObjectiveTerm(id="disabled", measure=expression("42"), enabled=False),
     )
     executor = compile_objective(
-        ObjectiveDocument(id="difference", terms=terms), (x,), functions, period=PERIOD
+        ObjectiveDocument(id="difference", terms=terms), (x,), functions, task=task
     )
     assert isinstance(executor, ObjectiveExecutor), executor
-    retained = {"x": jnp.broadcast_to(jnp.asarray([0.0, 1.0, 4.0, 9.0, 16.0]), (3, steps))}
-    windows = jnp.zeros((3, len(executor.terms), steps), dtype=bool)
-    windows = windows.at[0, :4, 1:].set(True)
-    windows = windows.at[0, 4, :3].set(True)
-    windows = windows.at[0, 5, 3:].set(True)
-    windows = windows.at[1, :, 0].set(True)  # present, with no predecessor
-    actual = jax.jit(
+    retained = {"x": jnp.broadcast_to(jnp.arange(steps, dtype=float) ** 2, (3, steps))}
+    score = jax.jit(
         lambda trace: executor.evaluate(
             trace,
             batch,
             run_key=key,
             trial_keys=keys,
-            windows=windows,
         )
-    )(retained)
+    )
+    actual = score(retained)
     assert set(actual.terms) == {"sum", "mean", "last", "max", "left", "right"}
     expected = {"sum": 16.0, "mean": 4.0, "last": 7.0, "max": 7.0, "left": 4.0, "right": 12.0}
     for term, value in actual.terms.items():
@@ -411,6 +554,10 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
         assert float(value.value) == expected[term]
     assert actual.terms["left"].value + actual.terms["right"].value == actual.terms["sum"].value
     assert float(actual.loss) == sum(expected.values())
+    assert int(score({}).terms["sum"].covered) == 0
+    derivative = jax.grad(lambda trace: score({"x": trace}).terms["right"].value)(retained["x"])
+    np.testing.assert_array_equal(derivative[0], [0, 0, -1, 0, 1])
+    np.testing.assert_array_equal(derivative[1:], 0)
 
 
 def test_temporal_variable_can_leave_a_cell_absent(functions):
@@ -445,10 +592,120 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
             ),
         ),
     )
-    task = compile_task(document, functions, period=0.5, model_links={})
+    task = compile_task(document, functions, model=replace(PORTLESS, period_seconds=0.5))
     assert isinstance(task, DocumentTask), task
     key = jr.key(4)
     trial = jax.jit(task.ahead)(TaskParameters(), key, key)
     assert trial.present["seen"].tolist() == [False, True, True, True]
     assert trial.variable_defined["velocity"].tolist() == [False, True, True, True]
     np.testing.assert_array_equal(trial.inputs["seen"], [0.0, 1.0, 1.0, 1.0])
+
+
+@pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
+def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions, paired_model):
+    interface, graph = paired_model
+    old = legacy(kind)
+    doc, task = example(kind, functions, interface=interface, old=old)
+    (port,) = interface.inputs
+    (command,) = interface.outputs
+    assert port.required and port.type == POINT
+    assert ModelAddress.from_text(port.id).element.end.port == "task-input"
+    assert task.period == graph.period_seconds == graph.nodes["plant"].dt == PERIOD
+    refused = compile_task(doc, functions, model=interface)
+    assert any(problem.path == ("model", "inputs", port.id) for problem in refused)
+    bad = compile_task(
+        doc,
+        functions,
+        model=interface,
+        input_overrides={"reach_target": "target_vel"},
+        reset_fields={"reset_position": ModelField(RESET_POSITION, POINT)},
+    )
+    assert bad[0].code.value == "type_mismatch"
+
+    run_key = jr.key(8)
+    keys = jr.split(run_key, 6)
+    trials = jax.jit(jax.vmap(lambda key: task.ahead(TaskParameters(), run_key, key)))(keys)
+    trace = (
+        GraphTraceRequest("state_path", "hand", path="plant.effector.pos"),
+        GraphTraceRequest("state_path", "velocity", path="plant.effector.vel"),
+    )
+
+    def run(trial, key):
+        state = graph.init_state(key=key)
+        (address,) = trial.inits
+        authored = ModelAddress.from_text(address)
+        element = authored.element
+        reset_path = ".".join((*authored.composites, element.parent.id, *element.path[1:]))
+        state = set_state_by_path(graph, state, reset_path, trial.inits[address])
+        state = graph.state_consistency_update(state)
+        before = graph.nodes["plant"].state_view(state).effector
+        outputs, _, retained = graph.rollout_with_trace(
+            task.model_inputs(trial),
+            state,
+            key=key,
+            n_steps=task.n_steps,
+            trace=trace,
+        )
+        return before, outputs["command"], retained
+
+    initial, output, retained = jax.jit(jax.vmap(run))(trials, keys)
+    np.testing.assert_array_equal(initial.pos, trials.inits[RESET_POSITION.to_text()])
+    np.testing.assert_array_equal(initial.vel, 0)
+    np.testing.assert_array_equal(initial.force, 0)
+    assert output.shape == (6, STEPS, 2)
+    np.testing.assert_allclose(
+        retained["hand"][:, 0],
+        initial.pos + retained["velocity"][:, 0] * (PERIOD / 2),
+        atol=2e-6,
+        rtol=0,
+    )
+    np.testing.assert_array_equal(
+        task.model_inputs(trials)["reach_target"], trials.inputs["target_pos"]
+    )
+    term = ObjectiveTerm(
+        id="effort",
+        measure=expression("sqnorm(command)", (command,)),
+        reduction=Reduction.SUM,
+        epochs=("move",),
+    )
+    executor = compile_objective(
+        ObjectiveDocument(id="effort", terms=(term,)),
+        (command,),
+        functions,
+        task=task,
+    )
+    assert isinstance(executor, ObjectiveExecutor), executor
+    loss = executor.evaluate({command.id: output}, trials, run_key=run_key, trial_keys=keys)
+    mask = jnp.arange(STEPS) >= trials.epochs.starts[:, -1, None]
+    expected = jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
+    assert int(loss.terms["effort"].covered) == len(keys)
+    assert float(loss.loss) == pytest.approx(float(expected), rel=2e-6)
+
+
+@pytest.mark.parametrize("kind", ["simple", "stabilization"])
+def test_reach_and_stabilization_sample_distributions(kind, functions):
+    _, task = example(kind, functions)
+    old = legacy(kind)
+    before_keys = jr.split(jr.key(24), 20_000)
+    after_keys = jr.split(jr.key(25), 20_000)
+
+    def legacy_positions(key):
+        trial = old.get_train_trial(key)
+        return trial.inits["mechanics.effector"].pos, trial.targets["mechanics.effector.pos"].value[
+            0
+        ]
+
+    def document_positions(key):
+        prepared, _ = task.init(TaskParameters(), key, key)
+        return prepared.values["start"], prepared.values["target"]
+
+    before = jax.jit(jax.vmap(legacy_positions))(before_keys)
+    after = jax.jit(jax.vmap(document_positions))(after_keys)
+    for old_values, new_values in zip(before, after, strict=True):
+        for axis in range(2):
+            assert (
+                ks_2samp(np.asarray(old_values[:, axis]), np.asarray(new_values[:, axis])).statistic
+                < 0.025
+            )
+    if kind == "stabilization":
+        np.testing.assert_array_equal(after[0], after[1])

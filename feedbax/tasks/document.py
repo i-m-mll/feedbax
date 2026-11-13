@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 from math import isfinite
 from typing import Any, NamedTuple, Protocol
+
+from feedbax.compiler.model_document import ResolvedModelInterface
+from feedbax.contracts.model_address import ModelAddress
 
 import jax
 import jax.numpy as jnp
@@ -14,6 +17,7 @@ from pydantic import Field
 
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
+    Scalar,
     TIME,
     DrawValue,
     Expression,
@@ -32,6 +36,7 @@ from feedbax.expression_check import dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
 
 
 class Variable(ValueRecord):
@@ -67,6 +72,14 @@ class Link(ValueRecord):
     variable: str
 
 
+type ValidationValue = Scalar | tuple[ValidationValue, ...]
+
+
+class ValidationTrial(ValueRecord):
+    variables: dict[str, ValidationValue] = Field(default_factory=dict)
+    epoch_steps: dict[str, int] = Field(default_factory=dict)
+
+
 class TaskDocument(ValueRecord):
     id: str
     variables: tuple[Variable, ...]
@@ -74,12 +87,14 @@ class TaskDocument(ValueRecord):
     signals: tuple[Signal, ...]
     links: tuple[Link, ...] = ()
     fixed_steps: int | None = Field(default=None, ge=0)
-    validation_count: int = Field(default=1, ge=1)
+    validation_trials: tuple[ValidationTrial, ...] = Field(
+        default=(ValidationTrial(),), min_length=1
+    )
 
 
 @dataclass(frozen=True)
 class ModelField:
-    address: Hashable
+    address: ModelAddress
     type: ValueType
 
 
@@ -87,7 +102,7 @@ class ModelField:
 class TaskInterface:
     variables: tuple[ScopedValue, ...]
     signals: tuple[ScopedValue, ...]
-    links: tuple[tuple[Hashable, str], ...]
+    links: tuple[tuple[str, str], ...]
     model_outputs: tuple[ScopedValue, ...] = ()
 
 
@@ -96,14 +111,8 @@ class EpochEnd(IntEnum):
     LENGTH = 1
 
 
-class EpochRecord(NamedTuple):
-    starts: jax.Array
-    ends: jax.Array
-    outcomes: jax.Array
-
-
 class Trial(NamedTuple):
-    inits: Mapping[Hashable, Any]
+    inits: Mapping[str, Any]
     inputs: Mapping[str, jax.Array]
     present: Mapping[str, jax.Array]
     variables: Mapping[str, jax.Array]
@@ -189,7 +198,8 @@ class DocumentTask:
     length_fields: tuple[_Field | None, ...]
     bounds: tuple[int, ...]
     signals: tuple[_Signal, ...]
-    validation_count: int
+    validation_rows: tuple[TaskParameters, ...]
+    input_bindings: tuple[tuple[str, str], ...]
     reads_model: bool = False
 
     def init(self, parameters, run_key, trial_key):
@@ -272,7 +282,7 @@ class DocumentTask:
             for cell, previous in zip(signal.cells, cell_states, strict=True):
                 start = variables.epochs.starts[cell.first]
                 end = variables.epochs.ends[cell.last]
-                active = (start >= 0) & (start <= k) & (k < end)
+                active = in_epoch(k, start, end)
                 duration = (end - start) * self.period
                 t = (k - start) * self.period
                 environment = values | {
@@ -316,10 +326,27 @@ class DocumentTask:
         )
 
     def validation(self, parameters, key) -> Trial:
+        rows = self.validation_rows
         keys = jax.vmap(lambda i: derive_key(key, "task", "validation", index=i))(
-            jnp.arange(self.validation_count)
+            jnp.arange(len(rows))
         )
-        return jax.vmap(self.ahead, in_axes=(None, None, 0))(parameters, key, keys)
+        if not rows[0].variables and not rows[0].epoch_steps:
+            return jax.vmap(self.ahead, in_axes=(None, None, 0))(parameters, key, keys)
+        batch = jax.tree.map(lambda *samples: jnp.stack(samples), *rows)
+        return jax.vmap(
+            lambda row, trial_key: self.ahead(
+                row._replace(fields=parameters.fields), key, trial_key
+            )
+        )(batch, keys)
+
+    def model_inputs(self, trial: Trial) -> dict[str, jax.Array]:
+        return {port: trial.inputs[signal] for port, signal in self.input_bindings}
+
+
+def _validation_expression(value: ValidationValue) -> Expression:
+    if isinstance(value, tuple):
+        return CallValue(function="vector", args=tuple(map(_validation_expression, value)))
+    return LiteralValue(value=value)
 
 
 def _zero(base, shape):
@@ -333,11 +360,13 @@ def compile_task(
     document: TaskDocument,
     functions: FunctionRegistry,
     *,
-    period: float,
-    model_links: Mapping[str, ModelField],
+    model: ResolvedModelInterface,
+    reset_fields: Mapping[str, ModelField] | None = None,
+    input_overrides: Mapping[str, str] | None = None,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types."""
     problems = []
+    period = model.period_seconds
     if not isfinite(period) or period <= 0:
         return (Problem(code=ProblemCode.STRUCTURE, reason="The model period must be positive."),)
 
@@ -373,7 +402,7 @@ def compile_task(
             tree,
             Site(expected=expected, finest=finest, names=tuple(scope)),
             functions,
-            field_address=(document.id, *address),
+            field_address=(document.id, *map(str, address)),
             period_seconds=period,
             reset_on_epoch=epoch,
             discrete_uniform=discrete,
@@ -515,23 +544,104 @@ def compile_task(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
 
+    bindings = []
+    signal_names = {value.name: value for value in declared_signals}
+    overrides = input_overrides or {}
+    for port in model.inputs:
+        signal_name = overrides.get(port.name, port.name)
+        signal = signal_names.get(signal_name)
+        path = ("model", "inputs", port.id)
+        if signal is None:
+            if port.required or port.name in overrides:
+                problem(
+                    ProblemCode.UNKNOWN_NAME,
+                    f"Model input {port.name!r} needs signal {signal_name!r}.",
+                    path,
+                )
+        elif not port.type.accepts(signal.type):
+            problem(
+                ProblemCode.TYPE_MISMATCH,
+                f"Signal {signal_name!r} has an incompatible sample type.",
+                path,
+            )
+        else:
+            bindings.append((port.name, signal.name))
+    for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
+        problem(
+            ProblemCode.UNKNOWN_NAME, f"Unknown model input {port!r}.", ("model", "inputs", port)
+        )
+
+    # In the signed model interface, delay Initial links are reset-output
+    # references. A trial cannot write those computed values.
+    writable = reset_fields or {}
     links = {}
     for link in document.links:
-        model = model_links.get(link.model_field)
+        target = writable.get(link.model_field)
         variable = scope.get(link.variable)
         path = ("links", link.model_field)
-        if model is None or variable is None:
+        if target is None or variable is None:
             problem(
                 ProblemCode.UNKNOWN_NAME,
                 "Link must resolve to a model field and a task variable.",
                 path,
             )
-        elif variable.level == Level.STEP or not model.type.accepts(variable.type):
+        elif variable.level == Level.STEP or not target.type.accepts(variable.type):
             problem(ProblemCode.TYPE_MISMATCH, "Link needs a compatible run or trial value.", path)
-        elif model.address in links:
+        elif target.address.to_text() in links:
             problem(ProblemCode.STRUCTURE, "A model field may be linked once.", path)
         else:
-            links[model.address] = link.variable
+            links[target.address.to_text()] = link.variable
+    rows = []
+    first = document.validation_trials[0]
+    for index, row in enumerate(document.validation_trials):
+        path = ("validation_trials", index)
+        if (
+            row.variables.keys() != first.variables.keys()
+            or row.epoch_steps.keys() != first.epoch_steps.keys()
+        ):
+            problem(ProblemCode.STRUCTURE, "Validation rows must assign the same fields.", path)
+            continue
+        row_values = {}
+        for key, value in row.variables.items():
+            variable = scope.get(key)
+            if variable is None or variable.level == Level.STEP:
+                problem(
+                    ProblemCode.OUT_OF_SCOPE,
+                    "Validation needs a run or trial variable.",
+                    (*path, "variables", key),
+                )
+                continue
+            code = lower(
+                _validation_expression(value),
+                variable.type,
+                Level.RUN,
+                (),
+                (*path, "variables", key),
+            )
+            if code is not None:
+                literal_inputs = Inputs(code.code.parameters, {}, None, None)
+                run = code.code.evaluate_run(literal_inputs)
+                row_values[key] = code.code.evaluate_step(
+                    literal_inputs, code.code.with_trial(literal_inputs, run)
+                )[0].value
+        for key, value in row.epoch_steps.items():
+            epoch_index = indexes.get(key)
+            if (
+                epoch_index is None
+                or lengths[epoch_index] is None
+                or not 0 <= value <= bounds[epoch_index]
+            ):
+                problem(
+                    ProblemCode.LENGTH_BUDGET,
+                    "Validation epoch step count must fit a bounded length.",
+                    (*path, "epoch_steps", key),
+                )
+        rows.append(
+            TaskParameters(
+                variables=row_values,
+                epoch_steps={key: jnp.asarray(value) for key, value in row.epoch_steps.items()},
+            )
+        )
     if problems:
         return tuple(problems)
     n_steps = sum(bounds) if document.fixed_steps is None else document.fixed_steps
@@ -544,5 +654,6 @@ def compile_task(
         tuple(lengths),
         tuple(bounds),
         tuple(signals),
-        document.validation_count,
+        tuple(rows),
+        tuple(bindings),
     )
