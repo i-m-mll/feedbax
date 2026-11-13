@@ -1862,7 +1862,8 @@ export interface SampledTaskTrial {
 export interface TaskTrialSampleRequest {
   model_name: string;
   model: ModelDocument;
-  task: TaskDocument;
+  task?: TaskDocument | null;
+  python_task?: PythonTaskSelection | null;
   input_overrides?: Record<string, string>;
   seed?: number;
   count?: number;
@@ -3706,6 +3707,11 @@ export type StudioSweepValue = {
   "value": number;
 };
 
+export type StudioTaskChoice = {
+  "document": string;
+  "problems": Array<Problem>;
+};
+
 export type StudioTaskType = {
   "type": string;
   "label": string;
@@ -3759,6 +3765,7 @@ export type StudioTrialAuthoring = {
   "task": TaskDocument | PythonTaskSelection;
   "objective": ObjectiveDocument | null;
   "task_types": Array<StudioTaskType>;
+  "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<Epoch>;
@@ -3775,7 +3782,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectTask | null;
 };
 
 export type StudioTrialBindingEdit = {
@@ -3813,6 +3820,11 @@ export type StudioTrialReset = {
   "type": ValueType;
   "finest": Level;
   "variable": string | null;
+};
+
+export type StudioTrialSelectTask = {
+  "kind": "select_task";
+  "document": string;
 };
 
 export type SubsetTerms = {
@@ -7384,12 +7396,21 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
     .object({
       "model_name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "model": ModelDocumentSchema,
-      "task": TaskDocumentSchema,
+      "task": TaskDocumentSchema.nullable().optional(),
+      "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_overrides": z.record(z.string(), z.string()).optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).lte(64).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.task == null) === (value.python_task == null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Select one Task document or registered Python task.",
+        });
+      }
+    })
 ) as unknown as z.ZodType<TaskTrialSampleRequest>;
 
 export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> = z.lazy(() =>
@@ -10008,6 +10029,13 @@ export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioSweepValue>;
 
+export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
+  z.object({
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "problems": z.array(ProblemSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskChoice>;
+
 export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
   z.object({
     "type": z.string(),
@@ -10074,6 +10102,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "task_types": z.array(StudioTaskTypeSchema),
+    "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(EpochSchema),
@@ -10092,7 +10121,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema, StudioTrialSelectTaskSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
 
@@ -10144,6 +10173,13 @@ export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
     "variable": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialReset>;
+
+export const StudioTrialSelectTaskSchema: z.ZodType<StudioTrialSelectTask> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("select_task"),
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialSelectTask>;
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
@@ -10228,7 +10264,7 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "objective": ObjectiveDocumentSchema,
     "input_overrides": z.record(z.string(), z.string()).optional(),
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
-  }).strict()
+  }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
 
 export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>

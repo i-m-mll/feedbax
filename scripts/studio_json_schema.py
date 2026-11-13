@@ -11,6 +11,8 @@ from typing import Any, NamedTuple
 from pydantic import BaseModel
 from pydantic.json_schema import models_json_schema
 
+from feedbax.contracts.studio_refinements import CROSS_FIELD_REFINEMENTS
+
 
 class _Projection(NamedTuple):
     typescript: str
@@ -189,6 +191,14 @@ def emit_authored_contracts(
             raise ValueError(f"Invalid Studio contract name: {name}")
         typescript, zod = _project(definition, name)
         interfaces.append(f"export type {name} = {typescript};")
+        for refinement in CROSS_FIELD_REFINEMENTS.get(name, ()):
+            zod += (
+                ".superRefine((value, ctx) => { "
+                f"if ({refinement.typescript_invalid}) "
+                "ctx.addIssue({ code: z.ZodIssueCode.custom, "
+                f"message: {json.dumps(refinement.message)} "
+                "}); })"
+            )
         validators.append(
             f"export const {name}Schema: z.ZodType<{name}> = z.lazy(() =>\n"
             f"  {zod.replace(chr(10), chr(10) + '  ')}\n"

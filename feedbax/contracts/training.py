@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.graph import (
     GraphSpec,
@@ -1521,8 +1522,7 @@ class TrialDocuments(TrainingRunContractModel):
 
     @model_validator(mode="after")
     def _one_task(self) -> "TrialDocuments":
-        if (self.task is None) == (self.python_task is None):
-            raise ValueError("Select one Task document or registered Python task.")
+        validate_cross_field_refinements("TrialDocuments", self)
         return self
 
 

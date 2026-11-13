@@ -12,6 +12,7 @@ from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_tri
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.runtime._graph_key_schedule import sample_training_trials
 from feedbax.tasks.document import TaskParameters
@@ -41,8 +42,7 @@ class TaskTrialSampleRequest(BaseModel):
 
     @model_validator(mode="after")
     def _one_task(self):
-        if (self.task is None) == (self.python_task is None):
-            raise ValueError("Select one Task document or registered Python task.")
+        validate_cross_field_refinements("TaskTrialSampleRequest", self)
         return self
 
 
