@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
@@ -154,11 +154,21 @@ class ModelEditRequest(StrictModel):
     command: ModelEditCommand
 
 
+type ModelUndoToken = Annotated[str, StringConstraints(min_length=1)]
+
+
+class ModelUndoRequest(StrictModel):
+    revision: Sha256
+    presentation_revision: Sha256
+    token: ModelUndoToken
+
+
 class ModelEditApplied(StrictModel):
     status: Literal["applied"]
     snapshot: StudioProjectSnapshot
     changed: tuple[ModelAddress, ...]
     clipboard: ModelClipboard | None = None
+    undo_token: ModelUndoToken | None = None
 
 
 class ModelEditRefused(StrictModel):

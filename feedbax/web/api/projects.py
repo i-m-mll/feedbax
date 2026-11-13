@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse
+from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse, ModelUndoRequest
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_authoring import (
@@ -190,6 +190,15 @@ def edit_model(
     components = request.app.state.bootstrap_state.bundle.components
     return _project_response(
         response, lambda: request.app.state.project_folders.edit_model(project_id, body, components)
+    )
+
+
+@router.post("/{project_id}/model/undo", response_model_exclude_unset=True)
+def undo_model(
+    project_id: ProjectName, body: ModelUndoRequest, request: Request, response: Response,
+) -> ModelEditResponse:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.undo_model(project_id, body)
     )
 
 

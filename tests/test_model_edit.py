@@ -12,6 +12,7 @@ from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, Mod
 from feedbax.contracts.project import Document, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.studio.model_edit import Port, apply_model_edit
+from feedbax.studio.model_undo import apply_delta, inverse_delta
 from feedbax.web.app import create_app
 
 SCALAR = Port(SignalType(base="scalar", shape=()))
@@ -172,6 +173,34 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
             "x": 2, "y": 3,
         }
         assert client.post(url + "/model/edit", json=body).status_code == 409
+        later = client.put(url + "/presentation", json={
+            "revision": reopened["presentation_revision"],
+            "presentation": reopened["presentation"] | {"visible_groups": ["group"]},
+        }).json()
+
+        def replay(snapshot, token):
+            return client.post(url + "/model/undo", json={
+                "revision": snapshot["revision"],
+                "presentation_revision": snapshot["presentation_revision"],
+                "token": token,
+            })
+
+        token = result["undo_token"]
+        assert replay(later, ("A" if token[0] != "A" else "B") + token[1:]).status_code == 422
+        assert replay(reopened, token).status_code == 409
+        undone = replay(later, token)
+        assert undone.status_code == 200, undone.text
+        inverse = undone.json()["result"]
+        saved = inverse["snapshot"]
+        assert saved["project"] == before["project"]
+        assert saved["presentation"]["visible_groups"] == ["group"]
+        assert not saved["presentation"].get("documents")
+        assert replay(saved, token).status_code == 409
+        redone = replay(saved, inverse["undo_token"])
+        assert redone.status_code == 200, redone.text
+        reapplied = redone.json()["result"]["snapshot"]
+        assert reapplied["project"] == reopened["project"]
+        assert reapplied["presentation"] == later["presentation"]
 
 
 def _graphs(owner, scope=()):
@@ -200,7 +229,9 @@ class ModelEdits(RuleBasedStateMachine):
         if result.clipboard is not None:
             self.clipboard = result.clipboard
         if _bytes(result.state) != before:
-            self.undo.append(self.current)
+            self.undo.append(tuple(inverse_delta(
+                self.current.model_dump(mode="json"), result.state.model_dump(mode="json"),
+            )))
             self.redo.clear()
             self.current = result.state
         return result
@@ -292,14 +323,19 @@ class ModelEdits(RuleBasedStateMachine):
     @rule()
     def undo_edit(self):
         if self.undo:
-            self.redo.append(self.current)
-            self.current = self.undo.pop()
+            self.replay(self.undo, self.redo)
 
     @rule()
     def redo_edit(self):
         if self.redo:
-            self.undo.append(self.current)
-            self.current = self.redo.pop()
+            self.replay(self.redo, self.undo)
+
+    def replay(self, source, target):
+        before = self.current.model_dump(mode="json")
+        after = self.current.model_dump(mode="json")
+        apply_delta(after, source.pop())
+        target.append(tuple(inverse_delta(before, after)))
+        self.current = ModelEditState.model_validate(after)
 
     @invariant()
     def local_ids_and_wire_directions(self):

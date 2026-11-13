@@ -2,27 +2,34 @@
 
 from __future__ import annotations
 
+from base64 import b64decode, urlsafe_b64encode
+from binascii import Error as Base64Error
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 import fcntl
 from functools import lru_cache
+from hmac import compare_digest, digest
 import os
 from pathlib import Path
+from secrets import token_bytes
 import stat
 from tempfile import TemporaryDirectory
 from typing import Literal, TYPE_CHECKING
 from uuid import uuid4
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import directory_open_flags, rename_no_replace
 from feedbax.contracts.base import StrictModel, sha256_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import Project, Sha256, json_pointer_parts
+from feedbax.contracts.project import Project, ProjectValueEdit, Sha256, json_pointer_parts
 from feedbax.contracts.project_experiment import PROJECT_DECLARATION_FILENAME
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
@@ -51,6 +58,7 @@ from feedbax.contracts.studio_project import (
     CreateNamedDocument,
     PresentationDocument,
     StudioProjectFilePatch,
+    RemoveProjectValue,
     SetProjectValue,
     StudioAuthoredFileRevision,
     StudioPresentationWrite,
@@ -66,13 +74,42 @@ from feedbax.contracts.studio_project import (
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse
+    from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse, ModelUndoRequest
 
 
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
 _KINDS = {family: kind for kind, family in _FAMILIES.items()}
 _FOLDER_ID = TypeAdapter(ProjectName)
 type _Resource = Literal["project", "presentation"]
+
+
+class _ModelInverse(StrictModel):
+    project: ProjectName
+    document: ProjectName
+    payload: tuple[ProjectValueEdit, ...]
+    positions: tuple[ProjectValueEdit, ...]
+    changed: tuple[ModelAddress, ...]
+    before: Sha256
+    had_entry: bool
+    had_documents: bool
+
+
+def _model_edit_source(
+    snapshot: StudioProjectSnapshot, document: ProjectName,
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue] | None]:
+    source = snapshot.project.documents.get(document)
+    if source is None or source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        raise ProjectFolderNotFound(document)
+    if snapshot.presentation is None:
+        raise ProjectFolderInvalid("The project presentation document is unreadable")
+    entry = snapshot.presentation.documents.get(document)
+    positions = (
+        {key: value.model_dump(mode="json") for key, value in entry.positions.items()}
+        if entry is not None and "positions" in entry.model_fields_set else None
+    )
+    assert isinstance(source.payload, dict)
+    return source.payload, positions
+
 
 
 class ProjectFolderNotFound(FileNotFoundError):
@@ -301,6 +338,7 @@ class ProjectFolderService:
         self.root = root.resolve()
         self.operations = operations
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
+        self._model_undo_key = token_bytes(32)
 
     def _folder(self, project_id: str) -> Path:
         try:
@@ -502,57 +540,132 @@ class ProjectFolderService:
     ) -> ModelEditResponse:
         from feedbax.contracts.model_edit import (
             ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse, ModelEditState,
-            ModelPosition,
         )
-        from feedbax.contracts.project_sources import pointer
         from feedbax.studio.model_edit import apply_model_edit
         from feedbax.studio.model_ports import ModelRegistryPorts
 
         snapshot = self.read(project_id, revision=body.revision)
         _check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
-        source = snapshot.project.documents.get(body.document)
-        if source is None or source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
-            raise ProjectFolderNotFound(body.document)
-        if snapshot.presentation is None:
-            raise ProjectFolderInvalid("The project presentation document is unreadable")
-        presentation = snapshot.presentation.documents.get(body.document)
+        payload, positions = _model_edit_source(snapshot, body.document)
         state = ModelEditState.model_validate({
-            "document": source.payload,
-            "positions": {key: ModelPosition(x=value.x, y=value.y)
-                          for key, value in presentation.positions.items()} if presentation else {},
+            "document": payload, "positions": positions or {},
         })
         authority = ModelRegistryPorts(components)
         result = apply_model_edit(body.document, state, body.command, ports=authority.port, accepts=authority.accepts)
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
+        token = None
         if result.state != state:
-            files = [StudioProjectFilePatch(
-                address=AuthoredFileAddress(kind="document", id=body.document),
-                patches=[SetProjectValue(
-                    op="replace", path="/payload", value=result.state.document.model_dump(mode="json"),
-                )],
-            )]
-            positions = {key: value.model_dump(mode="json") for key, value in result.state.positions.items()}
-            if result.state.positions != state.positions:
-                if presentation is None and not snapshot.presentation.documents:
-                    path = "/documents"
-                    value = {body.document: {"positions": positions}}
-                elif presentation is None:
-                    path = pointer(("documents", body.document))
-                    value = {"positions": positions}
-                else:
-                    path = pointer(("documents", body.document, "positions"))
-                    value = positions
-                files.append(StudioProjectFilePatch(
-                    address=PRESENTATION_ADDRESS,
-                    patches=[SetProjectValue(op="add", path=path, value=value)],
-                ))
-            snapshot = self._patch(project_id, StudioProjectPatchBatch(
-                revision=body.revision, presentation_revision=body.presentation_revision, files=files,
-            ), model_operation=True)
+            next_payload = result.state.document.model_dump(mode="json")
+            next_positions = (
+                {key: value.model_dump(mode="json") for key, value in result.state.positions.items()}
+                if result.state.positions != state.positions else positions
+            )
+            token = self._model_inverse(
+                snapshot, body.document, (payload, positions), (next_payload, next_positions), result.changed,
+            )
+            snapshot = self._write_model_change(snapshot, body.document, next_payload, next_positions)
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=snapshot, changed=result.changed, clipboard=result.clipboard,
+            undo_token=token,
         ))
+
+    def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
+        from feedbax.contracts.model_edit import ModelEditApplied, ModelEditResponse
+        from feedbax.studio.model_undo import apply_delta
+
+        try:
+            encoded = b64decode(body.token, altchars=b"-_", validate=True)
+            signature, data = encoded[:32], encoded[32:]
+            if not compare_digest(signature, digest(self._model_undo_key, data, "sha256")):
+                raise ValueError("Invalid model undo signature")
+            edit = _ModelInverse.model_validate_json(data)
+        except (Base64Error, ValueError) as error:
+            raise ProjectFolderInvalid("The model edit history entry is unavailable") from error
+        if edit.project != project_id:
+            raise ProjectFolderInvalid("The model edit history entry belongs to another project")
+        snapshot = self.read(project_id, revision=body.revision)
+        _check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
+        current = _model_edit_source(snapshot, edit.document)
+        if self._model_edit_digest(current) != edit.before:
+            raise ProjectRevisionConflict("project", snapshot.revision)
+        payload, positions = deepcopy(current[0]), {"positions": deepcopy(current[1])}
+        apply_delta(payload, edit.payload)
+        apply_delta(positions, edit.positions)
+        next_positions = positions["positions"]
+        token = self._model_inverse(snapshot, edit.document, current, (payload, next_positions), edit.changed)
+        snapshot = self._write_model_change(
+            snapshot, edit.document, payload, next_positions,
+            had_entry=edit.had_entry, had_documents=edit.had_documents,
+        )
+        return ModelEditResponse(result=ModelEditApplied(
+            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token,
+        ))
+
+    @staticmethod
+    def _model_edit_digest(value: tuple[dict, dict | None]) -> str:
+        return sha256_bytes(canonical_json_v2_bytes(list(value)))
+
+    def _model_inverse(
+        self, snapshot: StudioProjectSnapshot, document: ProjectName,
+        before: tuple[dict, dict | None], after: tuple[dict, dict | None],
+        changed: tuple[ModelAddress, ...],
+    ) -> str:
+        from feedbax.studio.model_undo import inverse_delta
+
+        assert snapshot.presentation is not None
+        inverse = _ModelInverse(
+            project=snapshot.project_id, document=document, before=self._model_edit_digest(after),
+            payload=tuple(inverse_delta(before[0], after[0])),
+            positions=tuple(inverse_delta({"positions": before[1]}, {"positions": after[1]})),
+            changed=changed,
+            had_entry=document in snapshot.presentation.documents,
+            had_documents="documents" in snapshot.presentation.model_fields_set,
+        )
+        data = inverse.model_dump_json().encode()
+        return urlsafe_b64encode(digest(self._model_undo_key, data, "sha256") + data).decode()
+
+    def _write_model_change(
+        self, snapshot: StudioProjectSnapshot, document: ProjectName,
+        payload: dict[str, JsonValue], positions: dict[str, JsonValue] | None,
+        *, had_entry: bool = True, had_documents: bool = True,
+    ) -> StudioProjectSnapshot:
+        from feedbax.contracts.project_sources import pointer
+
+        assert snapshot.presentation is not None
+        before, old_positions = _model_edit_source(snapshot, document)
+        files: list[StudioProjectFilePatch] = []
+        if canonical_json_v2_bytes(before) != canonical_json_v2_bytes(payload):
+            files.append(StudioProjectFilePatch(
+                address=AuthoredFileAddress(kind="document", id=document),
+                patches=[SetProjectValue(op="replace", path="/payload", value=payload)],
+            ))
+        if positions != old_positions:
+            entry = snapshot.presentation.documents.get(document)
+            if positions is None:
+                assert entry is not None
+                path = ("documents", document, "positions")
+                if not had_entry and entry.model_fields_set == {"positions"}:
+                    path = ("documents", document)
+                    if not had_documents and snapshot.presentation.documents.keys() == {document}:
+                        path = ("documents",)
+                path = pointer(path)
+                patch = RemoveProjectValue(op="remove", path=path)
+            elif "documents" not in snapshot.presentation.model_fields_set:
+                patch = SetProjectValue(op="add", path="/documents", value={document: {"positions": positions}})
+            elif entry is None:
+                patch = SetProjectValue(op="add", path=pointer(("documents", document)), value={"positions": positions})
+            else:
+                patch = SetProjectValue(
+                    op="replace" if "positions" in entry.model_fields_set else "add",
+                    path=pointer(("documents", document, "positions")), value=positions,
+                )
+            files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=[patch]))
+        if not files:
+            return snapshot
+        return self._patch(snapshot.project_id, StudioProjectPatchBatch(
+            revision=snapshot.revision, presentation_revision=snapshot.presentation_revision, files=files,
+        ), model_operation=True)
 
     def _patch(
         self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,

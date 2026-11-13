@@ -526,6 +526,7 @@ export interface ModelEditApplied {
   snapshot: StudioProjectSnapshot;
   changed: ModelAddress[];
   clipboard?: ModelClipboard | null;
+  undo_token?: unknown | null;
 }
 
 export interface ModelEditRefused {
@@ -535,6 +536,12 @@ export interface ModelEditRefused {
 
 export interface ModelEditResponse {
   result: ModelEditApplied | ModelEditRefused;
+}
+
+export interface ModelUndoRequest {
+  revision: unknown;
+  presentation_revision: unknown;
+  token: unknown;
 }
 
 export interface SparseCooEntrySpec {
@@ -4576,6 +4583,7 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
       "snapshot": StudioProjectSnapshotSchema,
       "changed": z.array(ModelAddressSchema),
       "clipboard": ModelClipboardSchema.nullable().optional(),
+      "undo_token": z.unknown().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;
@@ -4596,6 +4604,16 @@ export const ModelEditResponseSchema: z.ZodType<ModelEditResponse> = z.lazy(() =
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditResponse>;
+
+export const ModelUndoRequestSchema: z.ZodType<ModelUndoRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "presentation_revision": z.unknown(),
+      "token": z.unknown(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelUndoRequest>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -9388,6 +9406,7 @@ export const contractSchemas = {
   ModelDocument: ModelDocumentSchema,
   ModelEditRequest: ModelEditRequestSchema,
   ModelEditResponse: ModelEditResponseSchema,
+  ModelUndoRequest: ModelUndoRequestSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   ReportDocument: ReportDocumentSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
@@ -9498,6 +9517,7 @@ export interface ContractTypeMap {
   ModelDocument: ModelDocument;
   ModelEditRequest: ModelEditRequest;
   ModelEditResponse: ModelEditResponse;
+  ModelUndoRequest: ModelUndoRequest;
   AnalysisDocument: AnalysisDocument;
   ReportDocument: ReportDocument;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
