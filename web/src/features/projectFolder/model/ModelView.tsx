@@ -193,10 +193,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   async function apply(name: string, operation: Operation, choose = true) {
     if (!model || !editTopology || requestBusy.current) return false;
     requestBusy.current = true;
+    const reviewed = editor.getSnapshot().saved;
     setBusy(true);
     setIssue(undefined);
     try {
-      const result = await editor.editModel(name, model.id, { operation }, saved);
+      const result = await editor.editModel(name, model.id, { operation }, reviewed);
       if (result.status === 'refused') {
         setIssue({ address: result.problem.address, reason: result.problem.detail });
         return false;

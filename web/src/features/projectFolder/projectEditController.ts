@@ -310,7 +310,6 @@ export class ProjectEditController {
     this.modelWriting = true;
     this.publish();
     const work = this.sequence(async () => {
-      await this.refresh();
       await this.drain();
       if (this.outside) throw new ProjectEditConflictError();
       try {
