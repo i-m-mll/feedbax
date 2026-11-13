@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import time
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
-from pydantic import PositiveInt
+from pydantic import Field, PositiveInt
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_inputs import ProjectName
@@ -25,12 +26,24 @@ class _StopAll(StrictModel):
     mode: StopMode
 
 
-def register_activity(app: FastAPI, release: str) -> None:
+class _DocumentOpen(StrictModel):
+    sequence: PositiveInt
+    urls: list[str] = Field(min_length=1)
+
+
+class _DocumentReceipt(StrictModel):
+    generation: str
+    through: PositiveInt
+
+
+def register_activity(app: FastAPI, release: str, generation: str) -> None:
     prefix = f"{CONTROL_ROUTE}/activity"
     gui: _WindowPresence | None = None
     last_report = 0.0
     open_until = 0.0
     intent = 0
+    received_documents = 0
+    documents: deque[_DocumentOpen] = deque()
 
     def check_release(x_feedbax_release: str | None = Header(None)) -> None:
         if x_feedbax_release != release:
@@ -80,11 +93,33 @@ def register_activity(app: FastAPI, release: str) -> None:
     async def running_gui():
         return {"pid": gui.pid if gui is not None else None}
 
+    @router.post("/open-documents")
+    async def open_documents(body: _DocumentOpen):
+        nonlocal received_documents
+        if body.sequence > received_documents:
+            documents.append(body)
+            received_documents = body.sequence
+        return {"pid": gui.pid if gui is not None else None}
+
     @router.post("/window")
     async def window_report(body: _WindowPresence):
         nonlocal gui, last_report
         gui, last_report = body, time.monotonic()
-        return {"open": intent if body.ready and last_report < open_until else None}
+        return {
+            "open": intent if body.ready and last_report < open_until else None,
+            "documents": {
+                "generation": generation,
+                "batches": list(documents),
+            } if documents else None,
+        }
+
+    @router.post("/ack-documents")
+    async def acknowledge_documents(body: _DocumentReceipt):
+        if body.generation != generation or body.through > received_documents:
+            raise HTTPException(409, "Studio document delivery changed")
+        while documents and documents[0].sequence <= body.through:
+            documents.popleft()
+        return {}
 
     @router.post("/ack/{opened}")
     async def acknowledge(opened: int):

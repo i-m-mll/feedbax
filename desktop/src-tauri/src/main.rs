@@ -41,6 +41,9 @@ struct Windows {
     recents: RecentProjects,
     open: OpenWindows,
     pending: VecDeque<Entry>,
+    awaiting_documents: bool,
+    received_documents: Option<(String, u64)>,
+    requested_window: Option<String>,
     restore_problems: Vec<String>,
     starting: bool,
     ready: bool,
@@ -83,10 +86,44 @@ enum Entry {
 }
 
 impl Windows {
-    fn queue(&mut self, entry: Entry) {
-        if !self.pending.contains(&entry) {
-            self.pending.push_back(entry);
+    fn queue_open_urls(&mut self, urls: &[Url]) {
+        for entry in urls.iter().filter_map(opened_entry) {
+            if self.pending.contains(&entry) {
+                continue;
+            }
+            let position = self
+                .pending
+                .iter()
+                .position(|item| matches!(item, Entry::Restore(..)));
+            self.pending
+                .insert(position.unwrap_or(self.pending.len()), entry);
         }
+    }
+
+    fn receive_documents(
+        &mut self,
+        intents: background_activity::DocumentIntents,
+    ) -> Option<(String, u64)> {
+        if !self.ready || self.quitting || self.flushing_exit {
+            return None;
+        }
+        let through = intents.batches.last()?.sequence;
+        self.awaiting_documents = false;
+        let previous = self
+            .received_documents
+            .as_ref()
+            .filter(|(generation, _)| generation == &intents.generation)
+            .map_or(0, |(_, sequence)| *sequence);
+        for batch in intents
+            .batches
+            .iter()
+            .filter(|batch| batch.sequence > previous)
+        {
+            self.queue_open_urls(&batch.urls);
+        }
+        self.received_documents = Some((intents.generation.clone(), through.max(previous)));
+        let received = (intents.generation, through);
+        Some(received)
     }
 
     fn restore(&mut self, path: PathBuf, open: OpenWindows) {
@@ -100,7 +137,12 @@ impl Windows {
     }
 
     fn next(&mut self) -> Option<Entry> {
-        if !self.ready || self.waiting || self.quitting || self.flushing_exit {
+        if !self.ready
+            || self.awaiting_documents
+            || self.waiting
+            || self.quitting
+            || self.flushing_exit
+        {
             return None;
         }
         let startup = std::mem::take(&mut self.starting);
@@ -122,6 +164,24 @@ impl Windows {
         });
     }
 
+    fn requested_focus(&mut self, label: String) {
+        if self.requested_window.is_some()
+            || self
+                .pending
+                .iter()
+                .any(|entry| matches!(entry, Entry::Restore(..)))
+        {
+            self.requested_window = Some(label);
+        }
+    }
+
+    fn take_requested_window(&mut self) -> Option<String> {
+        if self.waiting || self.flushing_exit || self.quitting || !self.pending.is_empty() {
+            return None;
+        }
+        self.requested_window.take()
+    }
+
     fn save(&self) -> io::Result<()> {
         if let Some(path) = &self.session_file {
             window_session::write(path, &self.open)?;
@@ -135,12 +195,16 @@ impl Windows {
     }
 }
 
-fn opened_entry(url: &Url) -> Option<Entry> {
+fn open_path(url: &Url) -> Option<PathBuf> {
     if url.scheme() != "file" || url.has_host() || url.query().is_some() || url.fragment().is_some()
     {
         return None;
     }
-    url.to_file_path().ok().map(|path| {
+    url.to_file_path().ok()
+}
+
+fn opened_entry(url: &Url) -> Option<Entry> {
+    open_path(url).map(|path| {
         if !url.path().ends_with('/')
             && path
                 .extension()
@@ -263,6 +327,7 @@ fn show_studio(
     ticket: StudioTicket,
     storage_id: [u8; 16],
     reconnect: bool,
+    focused: bool,
 ) -> tauri::Result<()> {
     let label = ticket.label();
     let windows = app.state::<Mutex<Windows>>();
@@ -282,7 +347,9 @@ fn show_studio(
             ticket.declaration.clone(),
         )?;
         window.set_title(title)?;
-        focus(&window)?;
+        if focused {
+            focus(&window)?;
+        }
     } else {
         let origin = ticket.url.origin();
         #[cfg(target_os = "macos")]
@@ -308,6 +375,7 @@ fn show_studio(
             .title(title)
             .inner_size(size.width, size.height)
             .min_inner_size(Size::MIN.width, Size::MIN.height)
+            .focused(focused)
             .devtools(false)
             .data_store_identifier(storage_id)
             .initialization_script(script)
@@ -539,7 +607,14 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                     title: ticket.project.title.clone(),
                     folder: ticket.folder.clone(),
                 };
-                show_studio(app, ticket, paths.storage_id, reconnect)?;
+                let windows = app.state::<Mutex<Windows>>();
+                let restoring = matches!(entry, Entry::Restore(..));
+                let focused = !restoring || windows.lock().unwrap().requested_window.is_none();
+                let label = ticket.label();
+                show_studio(app, ticket, paths.storage_id, reconnect, focused)?;
+                if matches!(entry, Entry::Folder(_) | Entry::Document(_)) {
+                    windows.lock().unwrap().requested_focus(label);
+                }
                 if matches!(
                     entry,
                     Entry::NewProject | Entry::Folder(_) | Entry::Document(_) | Entry::Recent(_)
@@ -549,7 +624,12 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                 if let Some(window) = app.get_webview_window("status") {
                     let state = app.state::<Mutex<Windows>>();
                     let mut state = state.lock().unwrap();
-                    if state.restore_problems.is_empty() && state.status.take().is_some() {
+                    let preserving_refusal =
+                        restoring && state.requested_window.as_deref() == Some("status");
+                    if !preserving_refusal
+                        && state.restore_problems.is_empty()
+                        && state.status.take().is_some()
+                    {
                         drop(state);
                         window.destroy()?;
                     }
@@ -570,6 +650,12 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                         state.restore_problems.join("\n\n")
                     };
                     return status(app, "Some Studio windows could not be restored.", &problems);
+                }
+                if matches!(entry, Entry::Folder(_) | Entry::Document(_)) {
+                    app.state::<Mutex<Windows>>()
+                        .lock()
+                        .unwrap()
+                        .requested_focus("status".into());
                 }
                 return status(app, "Could not open a Studio project.", detail);
             }
@@ -631,10 +717,22 @@ fn drain_entries(app: &AppHandle) {
     if BUSY.load(Ordering::Acquire) {
         return;
     }
-    let entry = app.state::<Mutex<Windows>>().lock().unwrap().next();
+    let windows = app.state::<Mutex<Windows>>();
+    let mut state = windows.lock().unwrap();
+    let entry = state.next();
+    let requested = entry
+        .is_none()
+        .then(|| state.take_requested_window())
+        .flatten();
+    drop(state);
     if let Some(entry) = entry {
         if reserve_operation(app) {
             connect_reserved(app, entry);
+        }
+    }
+    if let Some(window) = requested.and_then(|label| app.get_webview_window(&label)) {
+        if let Err(error) = focus(&window) {
+            eprintln!("Could not focus the requested Studio project: {error}");
         }
     }
 }
@@ -992,6 +1090,9 @@ fn setup(app: &mut App) -> tauri::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let activity_launch = args.first().is_some_and(|arg| arg == "--activity");
+    let document_launch = args
+        .first()
+        .is_some_and(|arg| arg == background_activity::OPEN_DOCUMENTS);
     if args
         .first()
         .is_some_and(|arg| matches!(arg.as_str(), "install" | "recover" | "uninstall"))
@@ -1010,7 +1111,10 @@ fn main() {
         return;
     }
     let application = tauri::Builder::default()
-        .manage(Mutex::new(Windows::default()))
+        .manage(Mutex::new(Windows {
+            awaiting_documents: document_launch,
+            ..Windows::default()
+        }))
         .setup(|app| Ok(setup(app)?))
         .invoke_handler(tauri::generate_handler![
             studio_menu::publish_studio_menu,
@@ -1089,7 +1193,7 @@ fn main() {
         Ok(app) => app.run(move |app, event| match event {
             RunEvent::Ready => {
                 start_windows(app);
-                if activity_launch {
+                if activity_launch || document_launch {
                     app.state::<Mutex<Windows>>().lock().unwrap().starting = false;
                 }
                 activity_window::observe(app, activity_launch);
@@ -1099,9 +1203,7 @@ fn main() {
             RunEvent::Opened { urls } => {
                 let windows = app.state::<Mutex<Windows>>();
                 let mut state = windows.lock().unwrap();
-                for entry in urls.iter().filter_map(opened_entry) {
-                    state.queue(entry);
-                }
+                state.queue_open_urls(&urls);
             }
             RunEvent::Reopen {
                 has_visible_windows: false,
@@ -1109,7 +1211,10 @@ fn main() {
             } => {
                 let windows = app.state::<Mutex<Windows>>();
                 let state = windows.lock().unwrap();
-                let started = state.ready && !state.starting && state.pending.is_empty();
+                let started = state.ready
+                    && !state.starting
+                    && !state.awaiting_documents
+                    && state.pending.is_empty();
                 drop(state);
                 if started && !BUSY.load(Ordering::Acquire) {
                     reconnect(app);
@@ -1186,12 +1291,15 @@ mod tests {
         ] {
             assert!(opened_entry(&Url::parse(invalid).unwrap()).is_none());
         }
-        state.queue(first.clone());
+        let urls = [
+            Url::parse("file:///projects/First%20Project/reach.feedbax").unwrap(),
+            Url::parse("file:///projects/Second.feedbax/").unwrap(),
+        ];
+        state.queue_open_urls(&urls[..1]);
         assert!(state.next().is_none());
         state.restore("/settings/windows.json".into(), OpenWindows::new());
         state.ready = true;
-        state.queue(first.clone());
-        state.queue(second.clone());
+        state.queue_open_urls(&urls);
         let first_entry = state.next().unwrap();
         assert_eq!(first_entry, first);
         state.pending.push_front(first_entry.clone());
@@ -1248,7 +1356,6 @@ mod tests {
             folder: second.folder,
             size: Size::DEFAULT,
         };
-        state.queue(Entry::Folder(first.folder.path.clone()));
         state.restore(
             "/settings/windows.json".into(),
             OpenWindows::from([
@@ -1257,6 +1364,7 @@ mod tests {
             ]),
         );
         state.ready = true;
+        state.queue_open_urls(&[Url::from_directory_path(&first.folder.path).unwrap()]);
         assert_eq!(state.next(), Some(Entry::Folder(first.folder.path.clone())));
         assert_eq!(state.saved_size("one", &first.folder), Some(size));
         state.opened("one", &first.folder);
@@ -1264,6 +1372,56 @@ mod tests {
             state.next(),
             Some(Entry::Restore("two".into(), second_saved))
         );
+        assert!(state.next().is_none());
+    }
+
+    #[test]
+    fn forwarded_open_precedes_restore_and_keeps_the_latest_requested_window() {
+        let mut state = Windows {
+            awaiting_documents: true,
+            ..Windows::default()
+        };
+        let saved = SavedWindow {
+            folder: project("saved", "Saved").folder,
+            size: Size::DEFAULT,
+        };
+        state.restore(
+            "/settings/windows.json".into(),
+            OpenWindows::from([("saved".into(), saved.clone())]),
+        );
+        state.ready = true;
+        assert!(state.next().is_none());
+        let first_url = Url::parse("file:///external/Project/a.feedbax").unwrap();
+        let second_url = Url::parse("file:///external/Other/").unwrap();
+        let receive = |state: &mut Windows, second: bool| {
+            let mut batches = vec![background_activity::DocumentOpen {
+                sequence: 1,
+                urls: vec![first_url.clone()],
+            }];
+            if second {
+                batches.push(background_activity::DocumentOpen {
+                    sequence: 2,
+                    urls: vec![second_url.clone()],
+                });
+            }
+            state.receive_documents(background_activity::DocumentIntents {
+                generation: "service".into(),
+                batches,
+            })
+        };
+        assert_eq!(receive(&mut state, false), Some(("service".into(), 1)));
+        assert_eq!(state.next(), opened_entry(&first_url));
+        state.requested_focus("project-first".into());
+        assert_eq!(receive(&mut state, true), Some(("service".into(), 2)));
+        assert_eq!(state.next(), opened_entry(&second_url));
+        state.requested_focus("project-second".into());
+        assert!(state.take_requested_window().is_none());
+        assert_eq!(state.next(), Some(Entry::Restore("saved".into(), saved)));
+        assert_eq!(
+            state.take_requested_window().as_deref(),
+            Some("project-second")
+        );
+        assert!(state.take_requested_window().is_none());
         assert!(state.next().is_none());
     }
 }
