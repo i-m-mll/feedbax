@@ -570,6 +570,11 @@ export interface MoveComponents {
   placements: PlaceComponent[];
 }
 
+export interface SetModelAttachment {
+  op: "set_attachment";
+  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment;
+}
+
 export interface GroupComponents {
   selection: ModelAddress[];
   op: "group";
@@ -582,7 +587,7 @@ export interface UngroupComposite {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | MoveComponents | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveComponents | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
 }
 
 export interface ModelEditProblem {
@@ -4925,6 +4930,15 @@ export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<MoveComponents>;
 
+export const SetModelAttachmentSchema: z.ZodType<SetModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("set_attachment"),
+      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<SetModelAttachment>;
+
 export const GroupComponentsSchema: z.ZodType<GroupComponents> = z.lazy(() =>
   z
     .object({
@@ -4947,7 +4961,7 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveComponentsSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveComponentsSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from feedbax.contracts import model_edit as edits
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAttachment, ModelAttachmentDifference
 from feedbax.contracts.model_document import (
     CompositeComponent,
     GraphInterior,
@@ -218,7 +219,15 @@ class _Edit:
         if input_port is None:
             return "Target must be a local input or a port of the outputs card"
         if not _same_port(output.type, input_port.type):
-            return "Signal types are incompatible"
+            def describe(value: SignalType | str) -> str:
+                if isinstance(value, str):
+                    return value
+                return " ".join(part for part in (
+                    value.base, str(list(value.shape)) if value.shape is not None else None, value.unit,
+                ) if part)
+
+            left, right = describe(output.type), describe(input_port.type)
+            return f"{left} ≠ {right}" if left and right else "Signal types are incompatible"
         if any(wire["target"] == target for wire in graph["wires"].values()):
             return "Target already has a wire"
         return None
@@ -345,7 +354,7 @@ class _Edit:
                     chain.pop(port_id, None)
         self.changed.append(address)
 
-    def attachment_chain(self, address: ModelAddress, parent: Record) -> list[Record]:
+    def attachment_chain(self, address: ModelAddress, parent: Record, *, create: bool = False) -> list[Record]:
         owner, graph = self.context(address)
         if parent["kind"] == "wire":
             if parent["id"] not in graph["wires"]:
@@ -355,14 +364,50 @@ class _Edit:
         if end["owner"] == "component":
             component = graph["components"].get(end["component"])
             direction = end["direction"]
+            if direction == "physical":
+                raise _Refusal(address, "Physical ports do not carry signal attachments")
             key = "sources" if direction == "output" else "sinks"
             if component is None or self.port(owner, graph, end, direction) is None:
                 raise _Refusal(address, "port does not exist")
             placement = component["attachments"]
         else:
             key = "sources" if end["owner"] == "inputs" else "sinks"
+            direction = "output" if key == "sources" else "input"
+            if self.port(owner, graph, end, direction) is None:
+                raise _Refusal(address, "port does not exist")
             placement = graph["attachments"]
+        if create:
+            return placement[key].setdefault(end["port"], [])
         return placement[key].get(end["port"], [])
+
+    def set_attachment(self, difference: ModelAttachmentDifference) -> None:
+        address = difference.address
+        element = address.element
+        assert element.kind == "attachment"
+        chain = self.attachment_chain(address, element.parent.model_dump(mode="json"), create=True)
+        existing = next((i for i, item in enumerate(chain) if item["id"] == element.id), None)
+        if isinstance(difference, AddModelAttachment):
+            if existing is not None:
+                raise _Refusal(address, "Attachment already exists on this owner")
+        elif existing is None:
+            raise _Refusal(address, "Attachment does not exist")
+        else:
+            if isinstance(difference, ChangeModelAttachment) and chain[existing]["kind"] != difference.attachment.kind:
+                raise _Refusal(address, "Changing an attachment must preserve its kind")
+            chain.pop(existing)
+        if isinstance(difference, (AddModelAttachment, ChangeModelAttachment)):
+            if isinstance(difference, ChangeModelAttachment) and "after" not in difference.model_fields_set:
+                assert existing is not None
+                position = existing
+            elif difference.after is None:
+                position = 0
+            else:
+                after = next((i for i, item in enumerate(chain) if item["id"] == difference.after), None)
+                if after is None:
+                    raise _Refusal(address, "The preceding attachment does not exist")
+                position = after + 1
+            chain.insert(position, difference.attachment.model_dump(mode="json"))
+        self.changed.append(address)
 
     def set_field(self, address: ModelAddress, value: Any) -> None:
         owner, graph = self.context(address)
@@ -378,8 +423,6 @@ class _Edit:
             chain = self.attachment_chain(address, parent.parent.model_dump(mode="json"))
             item = next((entry for entry in chain if entry["id"] == parent.id), None)
             allowed = {"fields", "window", "operation", "initial", "delay", "name"}
-        elif parent.kind == "wire":
-            item, allowed = graph["wires"].get(parent.id), {"attachments"}
         elif parent.kind == "port":
             port_address = _address(self.name, address.composites, "port", end=parent.end.model_dump(mode="json"))
             port_owner, _, direction, port = self.port_owner(port_address)
@@ -808,6 +851,9 @@ def apply_model_edit(
                 edit.change_port(primary, index=index)
             case edits.SetField(address=primary, value=value):
                 edit.set_field(primary, value)
+            case edits.SetModelAttachment(difference=difference):
+                primary = difference.address
+                edit.set_attachment(difference)
             case edits.BringSignalIn(destination=primary):
                 edit.bring_in(operation)
             case edits.CopyComponents(selection=selection):

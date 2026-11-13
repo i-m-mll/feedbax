@@ -95,6 +95,11 @@ class SetField(StrictModel):
     value: JsonValue
 
 
+class SetModelAttachment(StrictModel):
+    op: Literal["set_attachment"]
+    difference: ModelAttachmentDifference
+
+
 class BringSignalIn(StrictModel):
     op: Literal["bring_signal_in"]
     source_graph: ModelAddress
@@ -140,7 +145,7 @@ class UngroupComposite(StrictModel):
 class ModelEditCommand(StrictModel):
     operation: Annotated[
         AddComponent | MoveComponents | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort
-        | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents
+        | RenameElement | MovePort | SetField | SetModelAttachment | BringSignalIn | CopyComponents | CutComponents
         | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite,
         Field(discriminator="op"),
     ]

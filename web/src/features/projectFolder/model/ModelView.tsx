@@ -481,25 +481,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     return authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
   }
   function updateAttachment(address: ModelAddress, item: Attachment) {
+    const difference = { op: 'change', address, attachment: item } as const;
     if (evaluate) {
-      void applyEvaluate(attachmentName(item), { op: 'change', address, attachment: item });
+      void applyEvaluate(attachmentName(item), difference);
       return;
     }
-    if (address.element.kind !== 'attachment') return;
-    if (address.element.parent.kind === 'wire') {
-      const wire = at(address, address.element.parent);
-      const previous = effective.get(addressKey(wire)) ?? [];
-      void apply(attachmentName(item), {
-        op: 'set_field', address: fieldAddress(wire, 'attachments'),
-        value: previous.map((entry) => entry.id === item.id ? item : entry) as unknown as JsonValue,
-      }, false);
-    } else {
-      const fields = item.kind === 'intervention' ? [['operation', item.operation], ['fields', item.fields ?? {}]] as const
-        : item.kind === 'probe' ? [['name', item.name]] as const : [];
-      if (fields.length === 1) void apply(attachmentName(item), {
-        op: 'set_field', address: fieldAddress(address, fields[0][0]), value: fields[0][1] as JsonValue,
-      }, false);
-    }
+    void apply(attachmentName(item), { op: 'set_attachment', difference }, false);
   }
   function addAttachment(address: ModelAddress, kind: 'delay' | 'intervention' | 'probe') {
     const list = effective.get(addressKey(address)) ?? [];
@@ -507,13 +494,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial: 0 }
       : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
       : { id, kind, name: port?.name ?? 'Probe' };
-    if (evaluate) {
-      void applyEvaluate(`Add ${attachmentName(item)}`, { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item });
-    } else if (address.element.kind === 'wire') {
-      void apply(`Add ${attachmentName(item)}`, {
-        op: 'set_field', address: fieldAddress(address, 'attachments'), value: [...list, item] as unknown as JsonValue,
-      }, false).then((ok) => { if (ok) select(attachmentAddress(address, item.id)); });
-    }
+    const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
+    if (evaluate) void applyEvaluate(`Add ${attachmentName(item)}`, difference);
+    else void apply(`Add ${attachmentName(item)}`, { op: 'set_attachment', difference });
   }
   function removeAttachment(address: ModelAddress) {
     if (evaluate) void applyEvaluate('Remove Attachment', { op: 'remove', address });
@@ -553,11 +536,14 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const wire = address.element.kind === 'wire';
     const source = address.element.kind === 'port' &&
       (address.element.end.owner === 'inputs' || address.element.end.owner === 'component' && address.element.end.direction === 'output');
-    if (!(wire || source) || !(editTopology && wire || canEvaluate) || busy) return null;
+    const signalPort = address.element.kind === 'port' &&
+      (address.element.end.owner !== 'component' || address.element.end.direction !== 'physical') &&
+      address.element.end.owner !== 'boundary';
+    if (!(wire || signalPort) || !(editTopology || canEvaluate) || busy) return null;
     return <div className="flex flex-wrap gap-1">
       {wire && editTopology && <button className={button} type="button" onClick={() => addAttachment(address, 'delay')}>Add Delay</button>}
-      {canEvaluate && <button className={button} type="button" onClick={() => addAttachment(address, 'intervention')}>Add Intervention</button>}
-      {(wire && editTopology || canEvaluate) && <button className={button} type="button" onClick={() => addAttachment(address, 'probe')}>Add Probe</button>}
+      {(wire || source) && <button className={button} type="button" onClick={() => addAttachment(address, 'intervention')}>Add Intervention</button>}
+      <button className={button} type="button" onClick={() => addAttachment(address, 'probe')}>Add Probe</button>
     </div>;
   }
 

@@ -328,6 +328,7 @@ from feedbax.contracts.model_edit import (
     RemovePort,
     RenameElement,
     SetField,
+    SetModelAttachment,
     UngroupComposite,
 )
 from feedbax.contracts.workspace_replay import (
@@ -552,6 +553,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PasteComponents,
     PlaceComponent,
     MoveComponents,
+    SetModelAttachment,
     GroupComponents,
     UngroupComposite,
     ModelEditCommand,
