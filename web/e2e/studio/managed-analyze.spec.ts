@@ -13,7 +13,6 @@ test.use({
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
 test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request }, info) => {
-  test.fixme(true, 'dbbfb13 · Managed target output lacks the world-position axes and metadata required by Aligned velocity');
   test.skip(process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE !== '1', 'Requires a saved Evaluate candidate fixture');
   test.setTimeout(70_000);
   const home = String(info.config.metadata.home);
@@ -87,6 +86,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
 
   await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
+  await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
   ] as const) {
@@ -105,6 +105,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   await edit(connect);
 
   await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
+  await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
   await edit(() => enter(inspector.getByRole('spinbutton', { name: 'Edit Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('spinbutton', { name: 'Edit Ddof', exact: true }), '0'));
   await chooseSource('states');
@@ -118,6 +119,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   await edit(connect);
 
   await edit(() => drawer.getByRole('button', { name: 'Add Figure', exact: true }).click());
+  await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
   await chooseSource('summarize_velocity.summary');
   const wired = await edit(connect);
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);

@@ -94,7 +94,43 @@ def managed_evaluation_definition():
         for name, step in legacy.steps.items()
         if name != "train"
     })
+    for name, step in raw["steps"].items():
+        if name != "train":
+            params = step["base"]["inline"]["params"]
+            params.pop("trials")
+            params["trial_set"] = {"kind": "every_condition"}
     return raw
+
+
+def test_managed_plan_resolves_task_owned_trial_ids():
+    from feedbax.contracts.project_plan import compile_project
+    from feedbax.contracts.task_document import TaskDocument
+
+    raw = managed_evaluation_definition()
+    task = TaskDocument.model_validate(raw["documents"]["task"]["payload"])
+    assert len(task.condition_ids) == 28
+    assert len({tuple(row.variables["start"]) for row in task.validation_trials}) == 4
+    assert all(sum(other.variables["start"] == row.variables["start"] for other in task.validation_trials) == 7
+               for row in task.validation_trials)
+    assert task.model_copy(update={"validation_trials": task.validation_trials[::-1]}).condition_ids == task.condition_ids[::-1]
+    params = raw["steps"]["baseline"]["base"]["inline"]["params"]
+    selected = [task.condition_ids[i] for i in (10, 0, 5)]
+    params["trial_set"] = {"kind": "conditions", "ids": selected}
+    plan = compile_project(Project.model_validate(raw))
+    baseline = next(run for run in plan.runs if run.key.step == "baseline")
+    spec = decode_request(plan.requests[baseline.request_id], plan.documents.__getitem__).spec
+    assert spec.params["trials"] == selected
+    assert "trial_set" not in spec.params
+    params["trial_set"]["ids"] = ["does-not-exist"]
+    plan = compile_project(Project.model_validate(raw))
+    assert not any(run.key.step == "baseline" for run in plan.runs)
+    assert any(problem.step == "baseline" and problem.path == "payload.params.trial_set"
+               and "does-not-exist" in problem.detail for problem in plan.diagnostics)
+    params.pop("trial_set")
+    params["trials"] = selected
+    plan = compile_project(Project.model_validate(raw))
+    assert any(problem.step == "baseline" and problem.path == "payload.params.trial_set"
+               and "Declare a trial-set rule" in problem.detail for problem in plan.diagnostics)
 
 
 def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypatch):
@@ -203,8 +239,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert not eqx.tree_equal(cell(restored), cell(alternate.executable.graph))
     assert not eqx.tree_equal(cell(restored), cell(fresh.executable.graph))
     layout = bind_raw_state(restored, fresh.executable.resolved.graph)
-    reference = fresh.execution.validation(
-        restored, fresh.objective, TaskParameters(), key=jax.random.PRNGKey(731), capture_state=layout.capture,
+    trial_ids = documents.task_source.condition_ids
+    reference = fresh.execution.evaluate(
+        restored, fresh.objective, TaskParameters(), key=jax.random.PRNGKey(731),
+        trial_ids=trial_ids, capture_state=layout.capture,
     )
     root = plan.store_path
     store = ImmutableArtifactBlobProvider(root)
@@ -258,19 +296,39 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
                 field = descriptor.variables[key]
                 assert (field.dims, field.units, field.frame) == ((*state_axes, "xy"), units, "world")
             assert descriptor.coords["state_time"].units == "s"
+            assert descriptor.attrs["scene_position"] == position
+            target_field = descriptor.variables[target]
+            assert (target_field.dims, target_field.units, target_field.frame) == (
+                ("checkpoint", "condition", "trial", "transition", "xy"), "m", "world",
+            )
+            assert dataset.data("xy").tolist() == ["x", "y"]
             assert descriptor.attrs["source_graph_sha256"] == sha256(
                 canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
             ).hexdigest()
-            assert dataset.data("trial").tolist() == list(range(28))
+            assert dataset.data("trial").tolist() == list(trial_ids)
             selected.clear()
-            first = dataset.select(position, labels={"trial": 0})[0, 0, :3]
-        assert selected == ["trial", position]
+            first = dataset.select(position, labels={"trial": trial_ids[0]})[0, 0, :3]
+        assert selected == [position]
         selected.clear()
         with outcomes[baseline].open_states() as dataset:
-            hidden = dataset.select(carry, labels={"trial": 0})[0, 0, :3]
-        assert selected == ["trial", carry]
+            hidden = dataset.select(carry, labels={"trial": trial_ids[0]})[0, 0, :3]
+        assert selected == [carry]
+        selected.clear()
+        replay = outcomes[baseline].replay_trial(trial_ids[0], anchor_id="effector")
+        assert selected == ["state_time", position]
+        assert replay.identity.stable_id == trial_ids[0]
+        np.testing.assert_array_equal(np.asarray(replay.tracks[0].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
     np.testing.assert_allclose(hidden, reference.history[carry][0, :3], atol=1e-7)
+    subset = fresh.execution.evaluate(
+        restored, fresh.objective, TaskParameters(), key=jax.random.PRNGKey(731),
+        trial_ids=(trial_ids[1], trial_ids[0]), capture_state=layout.capture,
+    )
+    np.testing.assert_allclose(subset.history[position], np.asarray(reference.history[position])[[1, 0]], atol=1e-7)
+    for index, condition in enumerate((1, 0)):
+        authored = documents.task_source.validation_trials[condition]
+        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], authored.variables["target"])
+        np.testing.assert_allclose(subset.history[position][index, 0], authored.variables["start"])
 
     arrays = {}
     for key, result in outcomes.items():
@@ -295,6 +353,13 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             arrays[key] = pos, tgt, dataset.data("condition")[0]
     base_pos, base_tgt, base_condition = arrays[baseline]
     with outcomes[baseline].open_states() as dataset:
+        from feedbax.analysis.builtin_operations import AlignedVelocityParameters, aligned_velocity
+
+        analysis = aligned_velocity(dataset, AlignedVelocityParameters(
+            position=position, velocity=state_key("plant", "effector/velocity"), target=target,
+        ))
+        assert analysis.data("trial").tolist() == list(trial_ids)
+        assert np.isfinite(analysis.data("parallel_velocity")).all()
         np.testing.assert_allclose(dataset.data("state_time"), np.arange(81) * documents.model.step_seconds, atol=1e-7)
         np.testing.assert_array_equal(dataset.data("transition_start"), dataset.data("state_time")[:-1])
         np.testing.assert_array_equal(dataset.data("transition_end"), dataset.data("state_time")[1:])
@@ -359,13 +424,13 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     try:
         corrupt_part(carry)
         with original.open_states() as dataset:
-            np.testing.assert_array_equal(dataset.select(position, labels={"trial": 0})[0, 0], base_pos[0])
+            np.testing.assert_array_equal(dataset.select(position, labels={"trial": trial_ids[0]})[0, 0], base_pos[0])
             with pytest.raises(ArrayContainerError):
-                dataset.select(carry, labels={"trial": 0})
+                dataset.select(carry, labels={"trial": trial_ids[0]})
         corrupt_part(position)
         with original.open_states() as dataset:
             with pytest.raises(ArrayContainerError):
-                dataset.select(position, labels={"trial": 0})
+                dataset.select(position, labels={"trial": trial_ids[0]})
             np.testing.assert_array_equal(dataset.data(target)[0, 0], base_tgt)
     finally:
         data_path.write_bytes(raw)
@@ -373,7 +438,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (rerun,) = launch(jobs, (baseline,), "evaluate-rerun").items
     assert rerun.disposition == "admitted" and rerun.job_id != submitted.items[0].job_id
     with original.open_states() as dataset:
-        np.testing.assert_array_equal(dataset.select(position, labels={"trial": 0})[0, 0], base_pos[0])
+        np.testing.assert_array_equal(dataset.select(position, labels={"trial": trial_ids[0]})[0, 0], base_pos[0])
     manifest_ref, raw = store.resolve_manifest("EvaluationRunManifest", outcomes[baseline].receipt.manifest_id)
     manifest_path = store.object_path(manifest_ref.object)
     try:

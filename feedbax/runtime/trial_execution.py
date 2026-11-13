@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
+import jax.numpy as jnp
 
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveResult
 from feedbax.runtime._graph_key_schedule import (
     derive_key,
+    map_trial_samples,
     sample_training_trials,
     validation_trial_keys,
 )
@@ -62,10 +64,10 @@ class TrialExecution:
         trial_keys: jax.Array,
         capture_state: Callable | None = None,
     ) -> TrialEvaluation:
-        keys = jax.vmap(lambda key: derive_key(key, "trial-model"))(trial_keys)
-        retained, history = jax.vmap(
-            lambda trial, key: self.rollout(graph, trial, key, capture_state=capture_state)
-        )(trials, keys)
+        keys = map_trial_samples(lambda key: derive_key(key, "trial-model"), trial_keys, trial_keys)
+        retained, history = map_trial_samples(
+            lambda item: self.rollout(graph, item[0], item[1], capture_state=capture_state), (trials, keys), keys,
+        )
         return TrialEvaluation(
             objective.evaluate(retained, trials, run_key=run_key, trial_keys=trial_keys),
             trials,
@@ -102,4 +104,17 @@ class TrialExecution:
         keys = validation_trial_keys(key, trials.epochs.starts.shape[0])
         return self.score(
             graph, objective, trials, run_key=key, trial_keys=keys, capture_state=capture_state
+        )
+
+    def evaluate(
+        self, graph: Graph, objective: ObjectiveExecutor, parameters: TaskParameters, *,
+        key: jax.Array, trial_ids: tuple[str, ...], capture_state: Callable | None = None,
+    ) -> TrialEvaluation:
+        keys = jnp.stack([derive_key(key, "evaluate-trial", trial) for trial in trial_ids])
+        if self.task.condition_ids:
+            trials = self.task.evaluation(parameters, key, trial_ids, keys)
+        else:
+            trials = map_trial_samples(lambda trial_key: self.task.ahead(parameters, key, trial_key), keys, keys)
+        return self.score(
+            graph, objective, trials, run_key=key, trial_keys=keys, capture_state=capture_state,
         )

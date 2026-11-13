@@ -41,7 +41,8 @@ from feedbax.contracts.task_document import (
 from feedbax.expression_check import dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.expression_registry import FunctionRegistry
-from feedbax.runtime._graph_key_schedule import validation_trial_keys
+from feedbax.contracts.rollout import trial_indices
+from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
 
 
@@ -84,12 +85,17 @@ class TrialSource(Protocol):
     def epochs(self) -> tuple[str, ...]: ...
     @property
     def reads_model(self) -> bool: ...
+    @property
+    def condition_ids(self) -> tuple[str, ...]: ...
     def init(self, parameters: TaskParameters, run_key: jax.Array, trial_key: jax.Array): ...
     def step(self, parameters: TaskParameters, variables, state, k: jax.Array, model_outputs): ...
     def ahead(
         self, parameters: TaskParameters, run_key: jax.Array, trial_key: jax.Array
     ) -> Trial: ...
     def validation(self, parameters: TaskParameters, key: jax.Array) -> Trial: ...
+    def evaluation(
+        self, parameters: TaskParameters, key: jax.Array, trial_ids: tuple[str, ...], trial_keys: jax.Array,
+    ) -> Trial: ...
 
 
 class _Prepared(NamedTuple):
@@ -150,6 +156,7 @@ class DocumentTask:
     bounds: tuple[int, ...]
     signals: tuple[_Signal, ...]
     validation_rows: tuple[TaskParameters, ...]
+    condition_ids: tuple[str, ...]
     input_bindings: tuple[tuple[str, str], ...]
     reads_model: bool = False
 
@@ -277,16 +284,22 @@ class DocumentTask:
         )
 
     def validation(self, parameters, key) -> Trial:
-        rows = self.validation_rows
-        keys = validation_trial_keys(key, len(rows))
+        keys = validation_trial_keys(key, len(self.validation_rows))
+        return self._sample_rows(self.validation_rows, parameters, key, keys)
+
+    def evaluation(self, parameters, key, trial_ids, trial_keys) -> Trial:
+        indices = trial_indices(trial_ids, self.condition_ids)
+        rows = tuple(self.validation_rows[i] for i in indices)
+        return self._sample_rows(rows, parameters, key, trial_keys)
+
+    def _sample_rows(self, rows, parameters, key, trial_keys) -> Trial:
         if not rows[0].variables and not rows[0].epoch_steps:
-            return jax.vmap(self.ahead, in_axes=(None, None, 0))(parameters, key, keys)
+            return map_trial_samples(lambda trial_key: self.ahead(parameters, key, trial_key), trial_keys, trial_keys)
         batch = jax.tree.map(lambda *samples: jnp.stack(samples), *rows)
-        return jax.vmap(
-            lambda row, trial_key: self.ahead(
-                row._replace(fields=parameters.fields), key, trial_key
-            )
-        )(batch, keys)
+        return map_trial_samples(
+            lambda item: self.ahead(item[0]._replace(fields=parameters.fields), key, item[1]),
+            (batch, trial_keys), trial_keys,
+        )
 
     def model_inputs(self, trial: Trial) -> dict[str, jax.Array]:
         return {port: trial.inputs[signal] for port, signal in self.input_bindings}
@@ -622,5 +635,6 @@ def compile_task(
         tuple(bounds),
         tuple(signals),
         tuple(rows),
+        document.condition_ids,
         tuple(bindings),
     )

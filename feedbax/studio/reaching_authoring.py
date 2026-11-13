@@ -48,7 +48,7 @@ def reaching_endpoint(graph: GraphSpec, components: ComponentRegistry) -> ValueS
     ):
         return None
     position = next(
-        (state for state in owner.states or () if state.symbol == "effector/position"), None,
+        (state for state in owner.states or () if state.symbol == owner.scene_position), None,
     )
     if position is None or position.axis != "xy":
         return None

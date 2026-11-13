@@ -352,13 +352,18 @@ function isDrawerAnchor(scene: ResolvedScene, anchor: ResolvedScene['anchors'][n
   return isJoint(anchor) || scene.entities.some((entity) => entity.id === anchor.entity_id && entity.kind === 'task_object');
 }
 
-export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: SceneSelection & {
+export function SceneDrawer({ scene, selectedId, onSelect, palette, trials, checkpoints }: SceneSelection & {
   scene: ResolvedScene;
   palette?: ReactNode;
   trials?: {
     choices: readonly { id: string; label: string }[];
     selectedId: string | null;
     onSelect: (id: string) => void;
+  };
+  checkpoints?: {
+    choices: readonly number[];
+    selected: number;
+    onSelect: (checkpoint: number) => void;
   };
 }) {
   const muscleIds = new Set(scene.elements.filter((element) => element.archetype === 'muscle_path').map((element) => element.entity_id));
@@ -383,6 +388,14 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials }: Sc
   }
   return (
     <div className="space-y-3">
+      {checkpoints && (
+        <label className="grid gap-1 px-2 text-sm">
+          {studioName('checkpoint')}
+          <select value={checkpoints.selected} onChange={(event) => checkpoints.onSelect(Number(event.currentTarget.value))}>
+            {checkpoints.choices.map((coordinate) => <option key={coordinate} value={coordinate}>{coordinate}</option>)}
+          </select>
+        </label>
+      )}
       {trials && trials.choices.length > 0 && (
         <label className="grid gap-1 px-2 text-sm">
           {studioName('trials')}

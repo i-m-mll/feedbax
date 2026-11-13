@@ -49,6 +49,7 @@ class CannotRun(ValueError):
 
     def __init__(self, path: str, message: str):
         self.path = path
+        self.reason = message
         super().__init__(f"{path}: {message}")
 
 
@@ -234,20 +235,32 @@ class EvaluationResult:
         """Project the declared position selector into the existing Scene trial contract."""
         with self.open_states() as dataset:
             descriptor = dataset.descriptor
-            name = descriptor.attrs["scene_position"]
+            name = descriptor.attrs.get("scene_position")
+            if not isinstance(name, str) or name not in descriptor.variables:
+                raise CannotRun("/states/scene_position", "the result has no declared Scene position")
             if checkpoint is None:
                 if descriptor.dimensions["checkpoint"] != 1:
                     raise CannotRun("/checkpoint", "choose a retained checkpoint for replay")
-                axis = dataset.data("state_time")
-                values = dataset.select(name, labels={"trial": trial})[0, 0]
+                checkpoint_index = 0
             else:
-                if checkpoint not in dataset.data("checkpoint").tolist():
+                checkpoints = dataset.data("checkpoint").tolist()
+                if checkpoint not in checkpoints:
                     raise CannotRun("/checkpoint", "the chosen checkpoint is absent from the retained set")
-                axis = dataset.data("state_time")
-                values = dataset.select(name, labels={"checkpoint": checkpoint, "trial": trial})[0]
+                checkpoint_index = checkpoints.index(checkpoint)
             trials = dataset.data("trial").tolist()
+            if trial not in trials:
+                raise CannotRun("/trial", "the selected trial is absent from the retained result")
+            trial_index = trials.index(trial)
+            field = descriptor.variables[name]
+            if (
+                field.dims != ("checkpoint", "condition", "trial", "state_time", "xy")
+                or descriptor.dimensions["condition"] != 1 or descriptor.dimensions["xy"] != 2
+            ):
+                raise ValueError("The retained Scene position has an incompatible layout.")
+            axis = dataset.data("state_time")
+            values = dataset.data(name, (checkpoint_index, 0, trial_index))
         return WorkspaceReplayTrial(
-            identity=WorkspaceReplayTrialIdentity(index=trials.index(trial), stable_id=trial),
+            identity=WorkspaceReplayTrialIdentity(index=trial_index, stable_id=trial),
             time=WorkspaceReplaySampleAxis(length=len(axis), units="s", values=axis.tolist()),
             tracks=[
                 WorkspaceReplayTrack(
@@ -256,8 +269,8 @@ class EvaluationResult:
                     samples=values.tolist(),
                     dim=values.shape[-1],
                     dtype=str(values.dtype),
-                    units=descriptor.variables[name].units,
-                    frame=descriptor.variables[name].frame,
+                    units=field.units,
+                    frame=field.frame,
                 )
             ],
             manifest_refs=WorkspaceReplayManifestRefs(

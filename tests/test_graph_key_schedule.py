@@ -27,6 +27,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, Wir
 from feedbax.runtime._graph_key_schedule import (
     derive_key,
     keyed_nodes,
+    map_trial_samples,
     sample_steps,
     sample_training_trials,
     step_key,
@@ -282,6 +283,12 @@ def test_rbg_keys_and_draws_match_scalar_execution(implementation) -> None:
     assert jnp.array_equal(
         sample_steps(draw, key, 2), jnp.stack([draw(step_key(key, t)) for t in range(2)])
     )
+    roots = jnp.stack([derive_key(key, "evaluate-trial", name) for name in names])
+    rows = jnp.arange(len(names))
+    combined = map_trial_samples(lambda item: item[0] + draw(item[1]), (rows, roots), roots)
+    reversed_rows = map_trial_samples(lambda item: item[0] + draw(item[1]), (rows[::-1], roots[::-1]), roots[::-1])
+    assert jnp.array_equal(combined, reversed_rows[::-1])
+    assert jnp.array_equal(combined[1], rows[1] + draw(roots[1]))
 
 
 def test_branching_seeded_execution_and_cycle_diagnostics_ignore_hash_seed():

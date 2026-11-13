@@ -12,7 +12,6 @@ test.use({
 
 const enabled = process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE === '1';
 const fixture = 'web.e2e.studio.fixtures.canonical_evaluate';
-const trialId = 'beta';
 const trialIndex = 1;
 const position = '/v1/model/state/plant/effector~1position';
 const plans = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
@@ -49,6 +48,7 @@ function expectPositionSamples(samples: number[][]) {
 }
 
 async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string) {
+  const trialId = row.trials[trialIndex];
   await chooseStep(page, row.key.step);
   await plans(page).getByRole('button', { name: label, exact: true }).click();
   await tab(page, 'Scene').click();
@@ -174,11 +174,6 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
       job_id: train.job_id, request_id: source.request_id, completed_updates,
     })),
   });
-  await tab(page, 'Scene').click();
-  const finiteScene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
-  await expect(finiteScene.getByRole('status')).toHaveText('Playback is unavailable for this run');
-  await expect(footer(page).getByRole('group', { name: 'Clock' })).toHaveCount(0);
-  await expect(page.getByRole('combobox', { name: 'Checkpoint' })).toHaveCount(0);
 
   const single = rows.filter(({ key }) => key.step !== 'finite');
   for (const { result } of single) {
@@ -191,7 +186,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   });
   expect(invalidTrial.status()).toBe(422);
   const wrongJob = await request.post(replayPath, {
-    data: { revision, key: base.key, job_id: train.job_id, trial: trialId },
+    data: { revision, key: base.key, job_id: train.job_id, trial: base.trials[trialIndex] },
   });
   expect(wrongJob.status()).toBe(404);
 
@@ -208,7 +203,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
     expect(observed).toMatchObject({
       key: [key.variant, key.step, key.row], request_id, receipt: result!.receipt,
       checkpoint_source: result!.checkpoint_source, size_bytes: result!.size_bytes,
-      trial_index: trialIndex, tensor_reads: ['trial', position],
+      trial_index: trialIndex, tensor_reads: [position],
     });
     expectPositionSamples(observed.samples);
   }
@@ -218,7 +213,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
     key: [finiteRow.key.variant, finiteRow.key.step, finiteRow.key.row],
     request_id: finiteRow.request_id, receipt: finiteResult.receipt,
     checkpoint_sources: finiteResult.checkpoint_sources, size_bytes: finiteResult.size_bytes, trial_index: trialIndex,
-    tensor_reads: ['trial', position, 'trial', position],
+    tensor_reads: [position, position],
     checkpoint_coordinate_reads: 2,
   });
   expect(fromCheckpoint.checkpoints.map(({ coordinate }: { coordinate: number }) => coordinate)).toEqual([2, 1]);
@@ -239,7 +234,6 @@ test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by 
 });
 
 test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request }, info) => {
-  test.fixme(true, 'dbbfb13 · Managed states still lack a Scene position selector and stable trial labels');
   test.skip(!enabled, 'Requires the Evaluate candidate flag');
   test.setTimeout(65_000);
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
@@ -260,6 +254,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
     expect(await replayRow(row)).toEqual(replays.get(row.result!.job_id));
   }
   const finiteResult = finiteRow.result!;
+  const trialId = finiteRow.trials[trialIndex];
   const finiteReplay = { revision, key: finiteRow.key, job_id: finiteResult.job_id, trial: trialId };
   expect((await request.post(replayPath, { data: finiteReplay })).status()).toBe(422);
   for (const { coordinate, samples } of fromCheckpoint.checkpoints) {
@@ -270,6 +265,26 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
     expect(fromCheckpoint.tensor_reads).toContain(replay.tracks![0].selector.compact);
     expect(replay.time.length).toBe(81);
   }
+  await chooseStep(page, 'finite');
+  await plans(page).getByRole('button', { name: labels.get(JSON.stringify(finiteRow.key))!, exact: true }).click();
+  await tab(page, 'Scene').click();
+  const checkpoints = page.getByRole('combobox', { name: 'Checkpoint', exact: true });
+  await expect(checkpoints).toHaveValue('2');
+  const finiteTrials = page.getByRole('combobox', { name: 'Trials', exact: true });
+  let selectedReplay = posted(page, replayPath, trialId);
+  await finiteTrials.selectOption(trialId);
+  let selected = await selectedReplay;
+  expect(selected.ok(), await selected.text()).toBe(true);
+  expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 2 });
+  expect((await selected.json() as WorkspaceReplayTrial).tracks![0].samples).toEqual(fromCheckpoint.checkpoints[0].samples);
+  selectedReplay = posted(page, replayPath, trialId);
+  await checkpoints.selectOption('1');
+  selected = await selectedReplay;
+  expect(selected.ok(), await selected.text()).toBe(true);
+  expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 1 });
+  expect((await selected.json() as WorkspaceReplayTrial).tracks![0].samples).toEqual(fromCheckpoint.checkpoints[1].samples);
+  await expect(page.getByRole('slider', { name: 'Playback Position' })).toHaveValue('0');
+  await page.getByRole('slider', { name: 'Playback Position' }).press('End');
 
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const cursors = page.getByRole('tabpanel', { name: 'Scene', exact: true }).locator('[data-scene-cursor]');

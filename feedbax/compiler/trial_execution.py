@@ -81,6 +81,15 @@ def resolve_python_task(
     return definition.template(params)
 
 
+def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: PythonTaskRegistry | None) -> tuple[str, ...]:
+    if isinstance(task, TaskDocument):
+        return task.condition_ids
+    template = resolve_python_task(task, registry or builtin_python_tasks())
+    if isinstance(template, tuple):
+        raise ValueError(template[0].reason)
+    return template.condition_ids
+
+
 def pair_trial_source(
     model_name: str,
     model: ModelDocument,
@@ -152,6 +161,11 @@ def pair_trial_source(
         compiled = template.prepare(interface, functions)
     if isinstance(compiled, tuple):
         return compiled
+    if template is not None and template.condition_ids != compiled.condition_ids:
+        return (Problem(
+            code=ProblemCode.STRUCTURE, path=("python_task", "type"),
+            reason="The prepared Task's conditions differ from its registry declaration.",
+        ),)
     bindings, problems = bind_task_inputs(interface, compiled.interface.signals, overrides)
     return TrialPair(interface, compiled, lowered, prototypes, bindings, problems)
 

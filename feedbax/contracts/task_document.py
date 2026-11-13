@@ -2,6 +2,7 @@
 
 from pydantic import Field, JsonValue
 
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Expression, Scalar, ValueRecord, ValueType
 
 
@@ -59,6 +60,14 @@ class TaskDocument(ValueRecord):
     validation_trials: tuple[ValidationTrial, ...] = Field(
         default=(ValidationTrial(),), min_length=1
     )
+
+    @property
+    def condition_ids(self) -> tuple[str, ...]:
+        """Identify a fixed cohort by the variables that define each condition."""
+        rows = self.validation_trials
+        if len(rows) == 1 and not rows[0].variables and not rows[0].epoch_steps:
+            return ()
+        return tuple(canonical_json_v2_bytes(row.model_dump(mode="json")["variables"]).decode() for row in rows)
 
 
 PYTHON_TASK_SCHEMA_ID = "feedbax.spec.python_task"

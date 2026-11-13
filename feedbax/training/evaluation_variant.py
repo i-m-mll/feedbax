@@ -141,21 +141,41 @@ def _qualify_task(source: TaskSpec, task: TaskSpec, path: str) -> None:
         )
 
 
+def _replacement_task(task, patch, path):
+    try:
+        if isinstance(task, TaskSpec):
+            replacement = TaskSpec.model_validate(patch.value)
+            _qualify_task(task, replacement, path)
+            return replacement
+        return _MANAGED_TASK.validate_python(patch.value)
+    except ValidationError as error:
+        raise CannotRun(path, error.errors()[0]["msg"]) from error
+
+
+def resolve_evaluation_task(
+    task: TaskDocument | PythonTaskSelection, patches: VariationEdits,
+) -> TaskDocument | PythonTaskSelection:
+    """Resolve the Task projection without realizing the checkpoint graph."""
+    for path, patch in authored_variation(patches):
+        if patch.path == "task" and patch.op == "replace":
+            task = _replacement_task(task, patch, f"{path}/value")
+    return task
+
+
 def resolve_evaluation_variant(
     graph: GraphSpec, task: TaskSpec | TaskDocument | PythonTaskSelection, patches: VariationEdits,
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     graph_payload, wire_ids = _addressable_graph(graph)
-    payload = {"graph": graph_payload, "task": task.model_dump(mode="json")}
+    payload = {"graph": graph_payload}
     overrides: dict[str, float] = {}
-    task_path: str | None = None
+    replacement = task
     edit_origins = {}
     for path, patch in authored_variation(patches):
         parts = patch.path.split(".")
         try:
             if parts == ["task"] and patch.op == "replace":
-                task_path = f"{path}/value"
-                apply_override_patch_in_place(payload, patch)
+                replacement = _replacement_task(task, patch, f"{path}/value")
                 edit_origins[("task",)] = path
                 continue
             if parts[0] != "graph":
@@ -242,14 +262,4 @@ def resolve_evaluation_variant(
         tokens = ("graph", *map(str, first["loc"]))
         location = _edit_location(tokens, wire_ids, edit_origins) or "/inputs/subject" + pointer(tokens)
         raise CannotRun(location, first["msg"]) from error
-    try:
-        replacement = (
-            TaskSpec.model_validate(payload["task"]) if isinstance(task, TaskSpec)
-            else _MANAGED_TASK.validate_python(payload["task"])
-        )
-    except ValidationError as error:
-        first = error.errors()[0]
-        raise CannotRun(task_path or "/inputs/subject/task", first["msg"]) from error
-    if task_path is not None and isinstance(task, TaskSpec):
-        _qualify_task(task, replacement, task_path)
     return EvaluationVariant(variant, replacement, overrides, edit_origins)

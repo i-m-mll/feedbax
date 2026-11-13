@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_delay import ModelDelayCarry
+from feedbax.contracts.model_occurrence import graph_leaf_specs, graph_output_sources
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
@@ -25,6 +26,27 @@ class StateLayoutError(ValueError):
     def __init__(self, path: str, reason: str):
         self.path = path
         super().__init__(reason)
+
+
+def scene_position_key(graph: GraphSpec) -> str | None:
+    """Resolve the declared Scene effector from the effective model."""
+    leaves = dict(graph_leaf_specs(graph))
+    candidates = {
+        scope: owner for scope, node in leaves.items()
+        if (owner := MODEL_OWNERS.get(node.type)) is not None and owner.scene_position is not None
+    }
+    if len(candidates) == 1:
+        (scope, owner), = candidates.items()
+        return semantic_key("model", "state", scope, owner.scene_position)
+    positions = {
+        (scope, owner.scene_position)
+        for scope, port in graph_output_sources(graph)
+        if (owner := candidates.get(scope)) is not None and owner.scene_effector_port == port
+    }
+    if len(positions) != 1:
+        return None
+    (scope, symbol), = positions
+    return semantic_key("model", "state", scope, symbol)
 
 
 @dataclass(frozen=True)

@@ -33,7 +33,7 @@ def _evaluation_step(*, mass: int | None = None):
             "evaluation_type": ROLLOUT_TYPE,
             "params": {
                 "seed": 731,
-                "trials": ["alpha", "beta", "gamma"],
+                "trial_set": {"kind": "every_condition"},
                 "trial_policy": "paired",
                 "variation": [] if mass is None else _mass_variation(mass),
             },
@@ -127,20 +127,22 @@ def observe(home: str, project: str, revision: str, trial_index: str):
             assert descriptor.schema_id == RAW_STATES_SCHEMA
             assert descriptor.dimensions["state_time"] == 81
             assert descriptor.dimensions["checkpoint"] == len(coordinates)
-            assert dataset.data("trial").tolist() == list(range(28))
+            assert dataset.data("trial").tolist() == row.trials
+            assert len(row.trials) == 28
+            label = row.trials[trial]
             assert np.isfinite(dataset.data("objective/total")).all()
             assert np.all(dataset.data("objective/coverage/effort") == 28)
             reads.clear()
             with patch.object(ArrayContainerReader, "read_tensor", read_tensor):
                 if row.result.checkpoint_sources:
                     samples = [
-                        dataset.select(variable, labels={"checkpoint": coordinate, "trial": trial})[0].tolist()
+                        dataset.select(variable, labels={"checkpoint": coordinate, "trial": label})[0].tolist()
                         for coordinate in coordinates
                     ]
-                    expected_reads = ["checkpoint", "trial", variable] * len(coordinates)
+                    expected_reads = ["checkpoint", variable] * len(coordinates)
                 else:
-                    samples = [dataset.select(variable, labels={"trial": trial})[0, 0].tolist()]
-                    expected_reads = ["trial", variable]
+                    samples = [dataset.select(variable, labels={"trial": label})[0, 0].tolist()]
+                    expected_reads = [variable]
         assert reads == expected_reads, reads
         facts = {
             "key": [key.variant, key.step, key.row],

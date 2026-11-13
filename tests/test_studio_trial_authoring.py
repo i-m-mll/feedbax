@@ -33,6 +33,7 @@ def _python_project():
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
     documents.pop("input_overrides")
     documents.update(task=None, python_task={"document": "task"})
+    raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
     return raw
 
 

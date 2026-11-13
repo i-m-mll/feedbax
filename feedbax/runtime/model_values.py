@@ -46,6 +46,7 @@ class ModelOwner:
     clock: str | None = None
     checkpointable: bool = True
     scene_effector_port: str | None = None
+    scene_position: str | None = None
     configuration_slots: tuple[str, ...] = ()
     fixed_configuration: bool = False
     trial_parameters: tuple[TrialParameter, ...] = ()
@@ -112,6 +113,7 @@ MODEL_OWNERS = {
         ),
         clock="dt",
         scene_effector_port="effector",
+        scene_position="effector/position",
     ),
     "feedbax.RigidTendonHillMuscleThelen": ModelOwner(
         2,

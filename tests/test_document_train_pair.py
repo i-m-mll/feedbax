@@ -38,6 +38,7 @@ def authored_documents():
     model = ModelDocument.model_validate(_model_payload())
     interface, _ = _pair_model()
     task, _ = example("delayed", functions, interface=interface, old=legacy("delayed"))
+    task = task.model_copy(update={"id": "delayed-reaches"})
     (command,) = interface.outputs
     objective = ObjectiveDocument(
         id="movement-effort",
@@ -292,6 +293,10 @@ def document_project(authored, *, evaluation=False):
     raw = _model_project()
     if not evaluation:
         raw["steps"].pop("baseline")
+    else:
+        params = raw["steps"]["baseline"]["base"]["inline"]["params"]
+        params.pop("trials")
+        params["trial_set"] = {"kind": "every_condition"}
     raw["documents"]["reach-model"]["payload"] = model.model_dump(mode="json")
     from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 

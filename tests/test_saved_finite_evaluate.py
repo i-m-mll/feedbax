@@ -10,7 +10,9 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, CheckpointCadence
 from feedbax.jobs import JobService
+from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
@@ -170,9 +172,27 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
             np.testing.assert_array_equal(dataset.data(target)[0], dataset.data(target)[1])
             trajectories.append(dataset.data(position))
             np.testing.assert_array_equal(
-                dataset.select(position, labels={"checkpoint": 4, "trial": 0})[0],
+                dataset.select(position, labels={"checkpoint": 4, "trial": settled.evaluations[by_step[name].key].trials[0]})[0],
                 trajectories[-1][coordinates.index(4), 0, 0],
             )
+        trials = settled.evaluations[by_step[name].key].trials
+        with pytest.raises(CannotRun, match="choose a retained checkpoint"):
+            result.replay_trial(trials[0], anchor_id="effector")
+        with pytest.raises(CannotRun, match="absent from the retained set"):
+            result.replay_trial(trials[0], anchor_id="effector", checkpoint=3)
+        reads = []
+        original = ArrayContainerReader.read_tensor
+
+        def observed(reader, field):
+            reads.append(field)
+            return original(reader, field)
+
+        with monkeypatch.context() as context:
+            context.setattr(ArrayContainerReader, "read_tensor", observed)
+            replay = result.replay_trial(trials[1], anchor_id="effector", checkpoint=4)
+        assert reads == ["checkpoint", "state_time", position]
+        assert replay.identity.stable_id == trials[1] and replay.identity.index == 1
+        np.testing.assert_allclose(replay.tracks[0].samples, trajectories[-1][coordinates.index(4), 0, 1])
     assert not np.array_equal(trajectories[0][0], trajectories[0][1])
     np.testing.assert_array_equal(trajectories[0], trajectories[1][::-1])
 

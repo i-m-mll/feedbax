@@ -88,11 +88,13 @@ def _rollouts(
     from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+    from feedbax.contracts.rollout import trial_indices
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.dataset import Dataset, Variable
     from feedbax.plugins.composition import compose_application
-    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
+    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state, scene_position_key
     from feedbax.tasks.document import TaskParameters
+    from feedbax.tasks.reaching import is_world_target
     from feedbax.training.checkpoint_custody import open_published_model_slot
     from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
     from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -137,14 +139,19 @@ def _rollouts(
             paired.executable.resolved.graph, paired.executable.graph, variant.source_overrides,
         )
         graph = slot.restore(source_pair.executable.graph, target=target)
-        layout = bind_raw_state(graph, paired.executable.resolved.graph)
+        effective_graph = paired.executable.resolved.graph
+        layout = bind_raw_state(graph, effective_graph)
     except (ModelCheckpointError, StateLayoutError) as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
     if stop.exists():
         return None
     key = jax.random.PRNGKey(params.seed)
-    evaluated = paired.execution.validation(
-        graph, paired.objective, TaskParameters(), key=key, capture_state=layout.capture,
+    try:
+        trial_indices(params.trials, paired.execution.task.condition_ids)
+    except ValueError as error:
+        raise CannotRun("/params/trials", str(error)) from error
+    evaluated = paired.execution.evaluate(
+        graph, paired.objective, TaskParameters(), key=key, trial_ids=params.trials, capture_state=layout.capture,
     )
     if stop.exists():
         return None
@@ -163,14 +170,21 @@ def _rollouts(
         variables["objective/terms" + path] = Variable(np.asarray(term.value)[None, None], ("checkpoint", "condition"))
         variables["objective/coverage" + path] = Variable(np.asarray(term.covered)[None, None], ("checkpoint", "condition"))
     variables["objective/total"] = Variable(np.asarray(evaluated.objective.loss)[None, None], ("checkpoint", "condition"))
-    for name, samples in evaluated.trials.inputs.items():
-        axes = ("checkpoint", "condition", "trial", "transition", *(
-            f"{name}_component_{i}" for i in range(samples.ndim - 2)
-        ))
-        variables[semantic_key("task", "output", (), name)] = Variable(np.asarray(samples)[None, None], axes)
+    for signal in paired.execution.task.interface.signals:
+        samples = evaluated.trials.inputs[signal.name]
+        base_axes = ("checkpoint", "condition", "trial", "transition")
+        if is_world_target(variant.task, signal):
+            state_coordinates.setdefault("xy", Variable(np.asarray(["x", "y"]), ("xy",)))
+            variable = Variable(np.asarray(samples)[None, None], (*base_axes, "xy"), units="m", frame="world")
+        else:
+            axes = (*base_axes, *(f"{signal.name}_component_{i}" for i in range(samples.ndim - 2)))
+            variable = Variable(np.asarray(samples)[None, None], axes)
+        variables[semantic_key("task", "output", (), signal.name)] = variable
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
     variation = canonical_sha256(params.model_dump(mode="json")["variation"])
     attrs = {"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"}
+    if (position := scene_position_key(effective_graph)) is not None and position in variables:
+        attrs["scene_position"] = position
     if params.retention == "raw_states":
         attrs["source_graph_sha256"] = sha256(
             canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
@@ -192,7 +206,7 @@ def _rollouts(
         coords={
             "checkpoint": Variable(np.asarray([checkpoint.completed_updates]), ("checkpoint",)),
             "condition": Variable(np.asarray([variation]), ("condition",)),
-            "trial": Variable(np.arange(n_trials), ("trial",)),
+            "trial": Variable(np.asarray(params.trials), ("trial",)),
             **state_coordinates,
             "state_time": Variable(time, ("state_time",), units="s"),
             "transition_start": Variable(time[:-1], ("transition",), units="s"),

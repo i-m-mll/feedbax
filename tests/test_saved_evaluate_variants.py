@@ -208,7 +208,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
         with result.open_states() as states:
             descriptors[name] = states.descriptor
             assert states.descriptor.schema_id == RAW_STATES_SCHEMA
-            assert states.data("trial").tolist() == list(range(28))
+            assert len(states.data("trial")) == 28
             assert states.data("objective/coverage/effort").item() == 28
             data[name] = {
                 key: states.data(key)[0, 0] for key in (
@@ -253,6 +253,6 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     with monkeypatch.context() as context:
         context.setattr(ArrayContainerReader, "read_tensor", observe)
         with results["perturbed"].open_states() as states:
-            position_samples = states.select(position, labels={"trial": 0})[0, 0]
-        assert read == ["trial", position]
+            position_samples = states.select(position, labels={"trial": states.data("trial")[0]})[0, 0]
+        assert read == [position]
     np.testing.assert_array_equal(position_samples, perturbed[position][0])

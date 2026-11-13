@@ -296,14 +296,17 @@ function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
 
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined, visible: boolean) {
   const result = evaluation?.result;
-  const jobId = (result?.checkpoint_sources?.length ?? 0) <= 1 ? result?.job_id : undefined;
+  const jobId = result?.job_id;
+  const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
+  const [chosenCheckpoint, setCheckpoint] = useState<{ jobId: string; coordinate: number }>();
+  const checkpoint = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : coordinates?.[0];
   const [chosenTrial, setTrial] = useState<{ jobId: string; trial: string }>();
   const trial = jobId && (chosenTrial?.jobId === jobId ? chosenTrial.trial : evaluation?.trials[0]);
   const replay = useQuery({
-    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial],
+    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial, checkpoint],
     queryFn: ({ signal }) => {
       if (!evaluation || !jobId || !trial) throw new Error('Select a saved Evaluate trial.');
-      return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial }, signal);
+      return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint }, signal);
     },
     enabled: visible && !!trial,
     retry: false,
@@ -312,7 +315,7 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const view: SceneView = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
     : replayDrawing ?? { kind: trial ? 'loading' : 'empty' };
-  const timeScope = JSON.stringify([jobId, trial]);
+  const timeScope = JSON.stringify([jobId, trial, checkpoint]);
   const [clock, setClock] = useState<{ scope: string; time: number }>();
   const [speed, setSpeed] = useState(1);
   const time = clock?.scope === timeScope ? clock.time : 0;
@@ -324,8 +327,16 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
       setClock(undefined);
     },
   } : undefined;
+  const checkpoints = jobId && coordinates && coordinates.length > 1 && checkpoint !== undefined ? {
+    choices: coordinates,
+    selected: checkpoint,
+    onSelect: (coordinate: number) => {
+      setCheckpoint({ jobId, coordinate });
+      setClock(undefined);
+    },
+  } : undefined;
   return {
-    view, time, trials,
+    view, time, trials, checkpoints,
     clock: visible && view.kind === 'replay' && <SceneClockControls key={timeScope} timeline={sceneTimeline(view)} time={time}
       speed={speed} onSpeedChange={setSpeed} onTimeChange={(value) => setClock({ scope: timeScope, time: value })} />,
   };
@@ -343,6 +354,7 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
   const view = evaluating ? evaluationReplay.view : geometry;
   const time = evaluating ? evaluationReplay.time : 0;
   const trials = evaluating ? evaluationReplay.trials : undefined;
+  const checkpoints = evaluating ? evaluationReplay.checkpoints : undefined;
   const sceneScope = JSON.stringify([scope, path, evaluation?.result?.job_id]);
   const selection = useElementSelection(sceneScope);
   const [cameraState, setCamera] = useState<{ scope: string; value: SceneCamera }>();
@@ -381,7 +393,7 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
       ? evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
         : <DetailReason reason="scenePlaybackUnavailable" name="playback" />
       : omission,
-    drawer: (scene || trials) && <SceneDrawer scene={scene ?? emptyReplayScene} trials={trials} {...selection} />,
+    drawer: (scene || trials) && <SceneDrawer scene={scene ?? emptyReplayScene} trials={trials} checkpoints={checkpoints} {...selection} />,
     inspector: scene && selection.selectedId ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
   };
 }

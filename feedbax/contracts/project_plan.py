@@ -52,7 +52,7 @@ from feedbax.contracts.project_resolution import (
     compose_step,
     _select,
 )
-from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
+from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, resolve_trial_ids
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
@@ -1191,6 +1191,8 @@ class _Compiler:
                 payload = self.lower_evaluate_model(
                     key, payload, model_source, subject.member.reference if subject is not None else None,
                 )
+            if kind == "evaluate" and isinstance(payload, dict) and subject is not None:
+                payload = self.lower_evaluate_trials(key, payload, subject.member.reference)
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             return replace(
@@ -1261,6 +1263,42 @@ class _Compiler:
             detail = str(error)
         return _model_difference_problem(key, address, detail), None
 
+    def lower_evaluate_trials(self, key: RunKey, payload: Payload, reference: object) -> Payload | ProjectDiagnostic:
+        from feedbax.compiler.trial_execution import evaluation_conditions
+        from feedbax.studio.canonical_evaluate import CannotRun
+        from feedbax.training.evaluation_variant import resolve_evaluation_task
+
+        if payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(reference, ProductRef):
+            return payload
+        source = self.requests.get(reference.request_id)
+        if source is None:
+            return payload
+        train = request_identity.decode_request(source, self.documents.__getitem__).spec
+        if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)) or train.trial_documents is None:
+            return payload
+        raw = payload.get("params")
+        if not isinstance(raw, dict):
+            return payload
+        location = "trial_set"
+        try:
+            if "trial_set" not in raw or "trials" in raw:
+                raise ValueError("Declare a trial-set rule for managed Evaluate.")
+            settings = authored_rollout_settings(raw)
+            task = resolve_evaluation_task(train.trial_documents.task_source, settings.variation)
+            conditions = evaluation_conditions(task, self.python_tasks)
+            trials = resolve_trial_ids(raw["trial_set"], conditions)
+            return payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
+                "trials": list(trials),
+            }}
+        except ValueError as error:
+            if isinstance(error, CannotRun):
+                location = error.path.removeprefix("/params/").replace("/", ".")
+            return ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, f"payload.params.{location}",
+                error.reason if isinstance(error, CannotRun) else str(error), key.step,
+                row=key.row, variant=key.variant,
+            )
+
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
     ) -> Payload | ProjectDiagnostic:
@@ -1299,7 +1337,8 @@ class _Compiler:
             before, lowered, derived = lower_evaluate_attachments(
                 document, model, binding, components, differences, functions=self.functions,
             )
-            params = RolloutParameters.model_validate(payload["params"])
+            raw_params = payload["params"]
+            params = authored_rollout_settings(raw_params)
             if not derived:
                 return stripped
             prior = params.variation
@@ -1315,7 +1354,7 @@ class _Compiler:
                 issue_path = (issue.location or {}).get("path", "/graph")
                 address = lowered.source_address(issue_path) or address
                 raise ValueError(issue.message)
-            return stripped | {"params": params.model_dump(mode="json", exclude_unset=True) | {
+            return stripped | {"params": raw_params | {
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
             }}
         except ModelCompilationProblem as error:

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 class PythonTaskTemplate:
     signals: Mapping[str, ValueType]
     prepare: Callable[[ResolvedModelInterface, FunctionRegistry], TrialSource | tuple[Problem, ...]]
+    condition_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

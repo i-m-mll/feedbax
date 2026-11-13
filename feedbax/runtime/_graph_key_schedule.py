@@ -14,6 +14,7 @@ from jaxtyping import PRNGKeyArray
 
 KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.scoped_occurrence.v4"
 SampleT = TypeVar("SampleT")
+BatchT = TypeVar("BatchT")
 
 
 @lru_cache(maxsize=4096)
@@ -85,18 +86,20 @@ def step_keys(key: PRNGKeyArray, n_steps: int) -> PRNGKeyArray:
     return _derive_many(step_key, key, jnp.arange(n_steps, dtype=jnp.uint32))
 
 
-def _map_samples(sample: Callable[[PRNGKeyArray], SampleT], keys: PRNGKeyArray) -> SampleT:
+def map_trial_samples(sample: Callable[[BatchT], SampleT], samples: BatchT, keys: PRNGKeyArray) -> SampleT:
+    """Map a keyed trial without collapsing RBG draws across the batch."""
     # Both RBG samplers use the first key of a vmapped batch for all draws.
     if jr.key_impl(keys) in ("rbg", "unsafe_rbg"):
-        return jax.lax.map(sample, keys)
-    return jax.vmap(sample)(keys)
+        return jax.lax.map(sample, samples)
+    return jax.vmap(sample)(samples)
 
 
 def sample_steps(
     sample: Callable[[PRNGKeyArray], jax.Array], key: PRNGKeyArray, n_steps: int
 ) -> jax.Array:
     """Draw one sample per timestep from its independent key."""
-    return _map_samples(sample, step_keys(key, n_steps))
+    keys = step_keys(key, n_steps)
+    return map_trial_samples(sample, keys, keys)
 
 
 def sample_training_trials(
@@ -108,7 +111,8 @@ def sample_training_trials(
         update_key,
         jnp.arange(1, count, dtype=jnp.uint32),
     )
-    return _map_samples(sample, jnp.concatenate((update_key[None], additional)))
+    keys = jnp.concatenate((update_key[None], additional))
+    return map_trial_samples(sample, keys, keys)
 
 
 def validation_trial_keys(key: PRNGKeyArray, count: int) -> PRNGKeyArray:
