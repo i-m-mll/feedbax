@@ -450,6 +450,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.request_specs import TrialDocuments
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
+from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from scripts.studio_json_schema import emit_authored_contracts
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
@@ -500,6 +501,8 @@ AUTHORED_CONTRACT_MODELS = (
     TrialDocuments,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
+    StudioCheckpointRuleEdit,
+    StudioCheckpointRuleRequest,
     FieldTextResult,
     Problem,
     RangeValues,

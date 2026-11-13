@@ -39,16 +39,16 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRow,
     StudioSavedTrainRuns,
 )
-from feedbax.contracts.project_inputs import InputBinding, StepReference
+from feedbax.contracts.project_inputs import BatchCheckpoint, InputBinding, StepReference
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.request_refs import BatchSetMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.project_plan import (
     ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
+from feedbax.contracts.project_sweep import CheckpointRuleAxis
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import RequestId
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
@@ -216,10 +216,18 @@ class ProjectPlanRead:
             for role, binding in (step.inputs if step.inputs is not None else step.authored_inputs).items():
                 subset = plan.subsets.get((variant, step_id, role))
                 for input_id, reference in _step_references(role, binding):
+                    axis = next((
+                        (name, item) for name, item in step.sweep.axes.items()
+                        if isinstance(item, CheckpointRuleAxis)
+                    ), None) if step.kind == "evaluate" and role == "subject" and step.sweep else None
                     yield StudioProjectWindowMapInput(
                         id=input_id,
                         source_step_id=reference.step,
-                        checkpoint=reference.checkpoint if step.kind == "evaluate" and role == "subject" else None,
+                        checkpoint=(
+                            axis[1].checkpoint_rule if axis is not None
+                            else reference.checkpoint if step.kind == "evaluate" and role == "subject" else None
+                        ),
+                        checkpoint_axis=axis[0] if axis is not None else None,
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.members), total=subset.candidates,
                             document=subset.document,
@@ -428,13 +436,18 @@ def _evaluation_row(
 ) -> tuple[StudioSavedEvaluationRow, StudioProjectWindowMapProblem | None]:
     key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
     series = None
-    if (planned := run.inputs.get("subject")) is not None and isinstance(
-        reference := planned.member.reference, ProductRef,
-    ) and isinstance(reference.select, UpdateSeriesMember):
-        series = StudioEvaluationCheckpointSeries(
-            subject=StudioSavedTrainKey.model_validate(planned.producer, from_attributes=True),
-            requested=list(reference.select.updates),
-        )
+    rule = None
+    if (planned := run.inputs.get("subject")) is not None and isinstance(reference := planned.member.reference, ProductRef):
+        match reference.select:
+            case UpdateSeriesMember(rule=rule, updates=updates):
+                series = StudioEvaluationCheckpointSeries(
+                    subject=StudioSavedTrainKey.model_validate(planned.producer, from_attributes=True),
+                    requested=list(updates),
+                )
+            case BatchMember(batch=batch):
+                rule = BatchCheckpoint(at=batch)
+            case LastMember():
+                rule = "last"
     trials = []
     problem = None
     try:
@@ -470,7 +483,7 @@ def _evaluation_row(
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
-        can_run=problem is None, trials=trials, result=result, checkpoint_series=series,
+        can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
     ), problem
 
 

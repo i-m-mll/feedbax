@@ -11,10 +11,12 @@ type Choice = { id: string; label: string };
 const field = 'rounded border border-shell-divider bg-shell-chrome px-2 py-1';
 const apply = field + ' justify-self-start hover:bg-shell-hover disabled:opacity-50';
 
-export function CheckpointRuleEditor({ initial, disabled, onSave }: {
+export function CheckpointRuleEditor({ initial, disabled, readOnly, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
   disabled: boolean;
+  readOnly?: boolean;
   onSave(rule: EditableCheckpointRule): void;
+  onToSweep?(): void;
 }) {
   const saved = formatCheckpointRule(initial);
   const [draft, setDraft] = useState(saved);
@@ -24,13 +26,13 @@ export function CheckpointRuleEditor({ initial, disabled, onSave }: {
   const changed = 'rule' in parsed && formatCheckpointRule(parsed.rule) !== saved;
 
   function save() {
-    if (!disabled && changed && 'rule' in parsed) onSave(parsed.rule);
+    if (!disabled && !readOnly && changed && 'rule' in parsed) onSave(parsed.rule);
   }
 
   return <fieldset className="grid gap-1" disabled={disabled}>
     <label className="grid gap-1 font-semibold">
       Checkpoints
-      <input className={field + ' font-normal'} type="text" value={draft} spellCheck={false}
+      <input className={field + ' font-normal'} type="text" value={draft} spellCheck={false} readOnly={readOnly}
         aria-invalid={reason !== undefined}
         aria-describedby={reason ? errorId : undefined}
         onChange={(event) => setDraft(event.currentTarget.value)}
@@ -42,7 +44,8 @@ export function CheckpointRuleEditor({ initial, disabled, onSave }: {
         }} />
     </label>
     {reason && <p id={errorId} className="text-shell-muted" role="status">{reason}</p>}
-    <button type="button" className={apply} disabled={!changed} onClick={save}>Apply checkpoints</button>
+    {!readOnly && <button type="button" className={apply} disabled={!changed} onClick={save}>Apply checkpoints</button>}
+    {onToSweep && <button type="button" className={apply} disabled={draft !== saved} onClick={onToSweep}>To Sweep</button>}
   </fieldset>;
 }
 

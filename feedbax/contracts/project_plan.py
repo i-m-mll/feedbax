@@ -54,12 +54,16 @@ from feedbax.contracts.project_resolution import (
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, resolve_trial_ids
 from feedbax.contracts.project_sweep import (
+    CHECKPOINT_RULE_TARGET,
+    CheckpointRuleAxis,
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
     InputAxis,
+    Sweep,
     SweepCoordinate,
     SweepExpansionError,
     SweepInputMember,
+    checkpoint_rule_write,
     expand_sweep,
     model_field_target,
     sweep_patch,
@@ -205,12 +209,13 @@ class ElementChange:
 
 @dataclass(frozen=True)
 class PlannedStep:
-    """The local input declarations and the effective bindings when resolved."""
+    """Local inputs, resolved bindings, and the sweep projected for authoring."""
 
     kind: StepKind
     group: str | None
     authored_inputs: Mapping[str, InputBinding | None]
     inputs: Mapping[str, InputBinding] | None = None
+    sweep: Sweep | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -297,6 +302,14 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return UpdateSeriesMember(rule=rule, updates=rule.coordinates(horizon))
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
+
+
+def _train_checkpoint_horizon(train: object) -> int | None:
+    if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
+        return None
+    if train.method_ref == STUDIO_GRAPH_METHOD:
+        return StudioGraphMethodPayload.model_validate(train.method_payload.payload).target_total
+    return train.training_config.n_batches
 
 
 def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str | None:
@@ -819,6 +832,7 @@ class _Compiler:
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
+        self.checkpoint_horizons: dict[RequestId, int | None] = {}
 
     def expand_variants(self) -> None:
         def integer_site(path: str) -> bool:
@@ -1025,14 +1039,21 @@ class _Compiler:
         composition: StepComposition,
         members: Mapping[str, _Members],
     ) -> tuple[ExpandedRow, ...] | ProjectDiagnostic:
+        kind = self.variants[variant].steps[name].kind
+        checkpoint_axis = kind == "evaluate" and composition.sweep is not None and any(
+            isinstance(axis, CheckpointRuleAxis) for axis in composition.sweep.axes.values()
+        )
         fanout = {
             role: tuple(
-                SweepInputMember(item.member.key, producer.coordinates, producer.label)
+                SweepInputMember(
+                    item.member.key, producer.coordinates, producer.label,
+                    self.checkpoint_horizon(producer.request_id)
+                    if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
+                )
                 for item, producer in bindings
             )
             for role, bindings in members.items()
         }
-        kind = self.variants[variant].steps[name].kind
         subjects = tuple(
             self.model_sources.get(item.producer) for item, _ in members.get("subject", ())
         ) if kind == "evaluate" else ()
@@ -1078,7 +1099,10 @@ class _Compiler:
                 return True in types
 
             try:
-                return expand_sweep(composition.sweep, inputs=fanout, integer_site=integer_site)
+                return expand_sweep(
+                    composition.sweep, inputs=fanout, integer_site=integer_site,
+                    checkpoint_subject=kind == "evaluate",
+                )
             except SweepExpansionError as error:
                 return _sweep_problem(error, step=name, variant=variant)
 
@@ -1093,7 +1117,7 @@ class _Compiler:
                 tuple(subject.stamp if subject is not None else None for subject in subjects),
                 to_json(tuple(
                     (role, tuple(
-                        (member.key, tuple(member.coordinates.items()), member.label)
+                        (member.key, tuple(member.coordinates.items()), member.label, member.checkpoint_horizon)
                         for member in bindings
                     ))
                     for role, bindings in sorted(fanout.items())
@@ -1102,6 +1126,13 @@ class _Compiler:
             self.authored_inputs[variant],
             expand,
         )
+
+    def checkpoint_horizon(self, request: RequestId) -> int | None:
+        if request not in self.checkpoint_horizons:
+            self.checkpoint_horizons[request] = _train_checkpoint_horizon(request_identity.decode_request(
+                self.requests[request], self.documents.__getitem__,
+            ).spec)
+        return self.checkpoint_horizons[request]
 
     def resolve_row(
         self,
@@ -1431,7 +1462,7 @@ class _Compiler:
             self.diagnostics.append(replace(template, variant=variant))
             return ()
         self.steps[variant, name] = replace(
-            step, inputs=MappingProxyType(deepcopy(dict(template.inputs)))
+            step, inputs=MappingProxyType(deepcopy(dict(template.inputs))), sweep=template.sweep,
         )
         sweep = template.sweep
         if sweep is not None:
@@ -1462,6 +1493,10 @@ class _Compiler:
         if subset is not None:
             self.subsets[variant, name, role.name] = subset
         by_key = {item.member.key: item for item, _ in members}
+        subject = template.inputs.get("subject") if kind == "evaluate" else None
+        has_checkpoint_axis = kind == "evaluate" and sweep is not None and any(
+            isinstance(axis, CheckpointRuleAxis) for axis in sweep.axes.values()
+        )
         paired_step = _paired_checkpoint_step(authored, template.inputs.get(role.name))
         rows = self.expand_rows(variant, name, template, {role.name: members})
         if isinstance(rows, ProjectDiagnostic):
@@ -1512,6 +1547,28 @@ class _Compiler:
                 continue
             if chosen is None and members:
                 chosen = members[0][0]
+            if kind == "evaluate" and chosen is not None:
+                reference = chosen.member.reference
+                assert isinstance(reference, ProductRef)
+                try:
+                    write = row.patches.get(CHECKPOINT_RULE_TARGET)
+                    selected_subject = checkpoint_rule_write(subject, write) if write is not None else subject
+                    rule = selected_subject.checkpoint if isinstance(selected_subject, StepReference) else None
+                    if rule is None and has_checkpoint_axis:
+                        raise ValueError("The selected row has no checkpoint rule")
+                    horizon = None
+                    if isinstance(rule, UpdateCadence):
+                        horizon = self.checkpoint_horizon(reference.request_id)
+                    selector = _checkpoint(rule, horizon=horizon)
+                except ValueError as error:
+                    self.diagnostics.append(ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
+                        name, row=row.id, variant=variant,
+                    ))
+                    continue
+                chosen = replace(chosen, member=chosen.member.model_copy(update={
+                    "reference": reference.model_copy(update={"select": selector}),
+                }))
             inputs = {role.name: chosen} if chosen is not None else {}
             definition = self.select_definition(template, run_key, row, inputs)
             if kind == "analyze":
@@ -1803,7 +1860,7 @@ class _Compiler:
                 f"no plannable rows for {reference.step!r}",
                 name,
             )
-        rule = reference.checkpoint
+        rule = None if role.name == "subject" else reference.checkpoint
         if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and role.name != "subject":
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
@@ -1812,17 +1869,7 @@ class _Compiler:
         members = []
         for run in runs:
             try:
-                horizon = None
-                if isinstance(rule, UpdateCadence) and isinstance(run, PlannedRun):
-                    train = request_identity.decode_request(
-                        self.requests[run.request_id], self.documents.__getitem__,
-                    ).spec
-                    if isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
-                        horizon = train.training_config.n_batches
-                        if train.method_ref == STUDIO_GRAPH_METHOD:
-                            method = StudioGraphMethodPayload.model_validate(train.method_payload.payload)
-                            horizon = method.target_total
-                selector = _checkpoint(rule, horizon=horizon)
+                selector = _checkpoint(rule)
             except ValueError as error:
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint", str(error), name,

@@ -319,6 +319,40 @@ test('authors checkpoint rules and replays covered updates from Results', async 
     body: JSON.stringify({ train, planned, series, completed }),
     contentType: 'application/json',
   });
+
+  await tab(page, 'Runs').click();
+  async function edit(action: () => Promise<unknown>) {
+    const saving = page.waitForResponse((response) =>
+      response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+    await action();
+    const response = await saving;
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  const swept = await edit(() => page.getByRole('button', { name: 'To Sweep', exact: true }).click());
+  const definition = swept.project.steps.evaluate;
+  expect(definition.inputs?.subject).not.toHaveProperty('checkpoint');
+  expect(definition.sweep?.axes?.update).toMatchObject({ checkpoint_rule: [{ at: 4 }, { at: 1 }, { at: 2 }] });
+  const split = await plan(swept.revision);
+  const points = split.window_map!.evaluations!;
+  expect(points.map((point) => point.checkpoint_series!.requested)).toEqual([[4], [1], [2]]);
+  expect(split.window_map!.rows.filter(({ key }) => key.step === 'evaluate')
+    .map(({ coordinates }) => coordinates.update.value_id)).toEqual(['4', '1', '2']);
+  const gap = points[1];
+  const gapRow = split.window_map!.rows.find(({ key }) => key.row === gap.key.row && key.step === 'evaluate')!;
+  await plans(page).getByRole('button', { name: gapRow.label, exact: true }).click();
+  const [gapJob] = await submit(page, runsPath);
+  expect(gapJob.disposition).toBe('admitted');
+  await expect.poll(async () => (await plan(swept.revision)).window_map!.evaluations!
+    .find(({ key }) => key.row === gap.key.row)?.result?.checkpoint_gaps, { timeout: 14_000 })
+    .toEqual([{ update: 1, reason: 'checkpoint_unavailable' }]);
+  const undone = await edit(() => page.keyboard.press('Meta+Z'));
+  expect(undone.project.steps.evaluate.inputs?.subject).toMatchObject({ checkpoint: [{ at: 4 }, { at: 1 }, { at: 2 }] });
+  expect(undone.project.steps.evaluate.sweep?.axes?.update).toBeUndefined();
+  await page.reload();
+  await chooseStep(page, 'evaluate');
+  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await expect(field).toHaveValue('4, 1, 2');
 });
 
 test('edits the checkpoint rule in the selected authored variant', async ({ page, request }, info) => {
@@ -360,6 +394,57 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   await expect(field).toHaveValue('every 2 from 3');
   await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('base');
   await expect(field).toHaveValue('last');
+});
+
+test('edits a checkpoint axis value and one sibling row through saved Plan', async ({ page, request }) => {
+  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
+  const files = JSON.parse(await runProjectFixture(fixture, 'scoped-series-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const host = await request.get('/api/jobs');
+  expect(host.ok(), await host.text()).toBe(true);
+  async function plan(revision: string) {
+    const response = await request.get(projectPath + '/train-runs', { params: { revision, window_map: true } });
+    expect(response.ok(), await response.text()).toBe(true);
+    const result = await response.json() as StudioSavedTrainRuns;
+    const evaluations = result.window_map!.evaluations!;
+    const [left, right] = ['left', 'right'].map((value) =>
+      evaluations.find(({ key }) => key.row.includes(`replicate=${value}`))!);
+    return { left, right, train: result.rows[0].request_id };
+  }
+  const before = await plan(snapshot.revision);
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await chooseStep(page, 'evaluate');
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
+  async function save(action: () => Promise<unknown>) {
+    const saving = page.waitForResponse((response) =>
+      response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+    await action();
+    const response = await saving;
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  await page.getByRole('group', { name: 'replicate', exact: true }).getByRole('button', { name: 'left', exact: true }).click();
+  await expect(field).toHaveValue('every 2');
+  await field.fill('3');
+  const axis = await save(() => drawer.getByRole('button', { name: 'Apply checkpoints' }).click());
+  const axisPlan = await plan(axis.revision);
+  expect(axisPlan.left.checkpoint_series?.requested).toEqual([3]);
+  expect(axisPlan.right.request_id).toBe(before.right.request_id);
+  expect(axisPlan.train).toBe(before.train);
+  await expect(field).toHaveValue('3');
+  await plans(page).getByRole('button', { name: /replicate=right/ }).click();
+  await expect(field).toHaveValue('every 2');
+  await field.fill('1, 4');
+  const row = await save(() => drawer.getByRole('button', { name: 'Apply checkpoints' }).click());
+  const rowPlan = await plan(row.revision);
+  expect(rowPlan.right.checkpoint_series?.requested).toEqual([1, 4]);
+  expect(rowPlan.left.request_id).toBe(axisPlan.left.request_id);
+  expect(rowPlan.train).toBe(before.train);
+  const undone = await save(() => page.keyboard.press('Meta+Z'));
+  expect((await plan(undone.revision)).right.request_id).toBe(before.right.request_id);
+  await expect(field).toHaveValue('every 2');
 });
 
 test('authors and replays Evaluate from the selected stopped Train checkpoint', async ({ page, request }, info) => {

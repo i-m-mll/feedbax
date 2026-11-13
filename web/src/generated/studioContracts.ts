@@ -154,6 +154,7 @@ export interface StudioSavedEvaluationRow {
   trials: string[];
   result: StudioSavedEvaluationResult | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
+  checkpoint_rule?: unknown | null;
 }
 
 export interface StudioSavedTrainAttempt {
@@ -2951,7 +2952,7 @@ export type AuthoredFileAddress = {
   "id": string;
 };
 
-export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis;
+export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis;
 
 export type AxisGroup = {
   "axes": Array<string>;
@@ -3041,6 +3042,13 @@ export type CheckpointCadence = {
 };
 
 export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+
+export type CheckpointRuleAxis = {
+  "path"?: CheckpointRulePath;
+  "checkpoint_rule": UpdateRule;
+};
+
+export type CheckpointRulePath = "{\"field\":\"checkpoint\",\"input\":\"subject\"}";
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
 
@@ -3736,6 +3744,27 @@ export type StudioAuthoringSweepChange = {
   "edit": StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue;
 };
 
+export type StudioCheckpointRuleEdit = {
+  "revision": string;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioCheckpointRuleRequest = {
+  "revision": string;
+  "run": StudioSavedTrainKey;
+  "edit": StudioCheckpointRuleSet | StudioCheckpointRuleToSweep;
+};
+
+export type StudioCheckpointRuleSet = {
+  "kind": "set";
+  "rule": "last" | BatchCheckpoint | UpdateRule;
+  "scope": EvaluateAttachmentAxis | EvaluateAttachmentRows;
+};
+
+export type StudioCheckpointRuleToSweep = {
+  "kind": "to_sweep";
+};
+
 export type StudioDocumentAuthoring = {
   "revision": Sha256;
   "document": string;
@@ -3917,6 +3946,7 @@ export type StudioProjectWindowMapInput = {
   "source_step_id": string;
   "subset": StudioProjectWindowMapSubset | null;
   "checkpoint"?: CheckpointRule | null;
+  "checkpoint_axis"?: string | null;
 };
 
 export type StudioProjectWindowMapProblem = {
@@ -4618,6 +4648,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "trials": z.array(z.string()),
       "result": StudioSavedEvaluationResultSchema.nullable(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
+      "checkpoint_rule": z.unknown().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationRow>;
@@ -9403,7 +9434,7 @@ export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(
 ) as unknown as z.ZodType<AuthoredFileAddress>;
 
 export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
-  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema])
+  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema])
 ) as unknown as z.ZodType<Axis>;
 
 export const AxisGroupSchema: z.ZodType<AxisGroup> = z.lazy(() =>
@@ -9526,6 +9557,17 @@ export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
   z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
+
+export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
+  z.object({
+    "path": CheckpointRulePathSchema.optional(),
+    "checkpoint_rule": UpdateRuleSchema,
+  }).strict()
+) as unknown as z.ZodType<CheckpointRuleAxis>;
+
+export const CheckpointRulePathSchema: z.ZodType<CheckpointRulePath> = z.lazy(() =>
+  z.literal("{\"field\":\"checkpoint\",\"input\":\"subject\"}")
+) as unknown as z.ZodType<CheckpointRulePath>;
 
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
@@ -10467,6 +10509,35 @@ export const StudioAuthoringSweepChangeSchema: z.ZodType<StudioAuthoringSweepCha
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSweepChange>;
 
+export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleEdit>;
+
+export const StudioCheckpointRuleRequestSchema: z.ZodType<StudioCheckpointRuleRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "run": StudioSavedTrainKeySchema,
+    "edit": z.union([StudioCheckpointRuleSetSchema, StudioCheckpointRuleToSweepSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleRequest>;
+
+export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set"),
+    "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
+    "scope": z.union([EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleSet>;
+
+export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleToSweep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("to_sweep"),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
+
 export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10699,6 +10770,7 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
     "source_step_id": z.string(),
     "subset": z.union([StudioProjectWindowMapSubsetSchema, z.null()]),
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "checkpoint_axis": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
@@ -11197,6 +11269,8 @@ export const contractSchemas = {
   TrialDocuments: TrialDocumentsSchema,
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
+  StudioCheckpointRuleEdit: StudioCheckpointRuleEditSchema,
+  StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   FieldTextResult: FieldTextResultSchema,
   Problem: ProblemSchema,
   RangeValues: RangeValuesSchema,
@@ -11338,6 +11412,8 @@ export interface ContractTypeMap {
   TrialDocuments: TrialDocuments;
   StudioTrialAuthoring: StudioTrialAuthoring;
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
+  StudioCheckpointRuleEdit: StudioCheckpointRuleEdit;
+  StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   FieldTextResult: FieldTextResult;
   Problem: Problem;
   RangeValues: RangeValues;

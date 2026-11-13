@@ -117,13 +117,16 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
   const parsed = StepReferenceSchema.safeParse(step.inputs?.subject);
   if (!parsed.success) return undefined;
   const subject = parsed.data;
-  if (editableCheckpointRule(subject.checkpoint) === undefined || subject.row != null || subject.variants != null) return undefined;
+  const axes = Object.values(step.sweep?.axes ?? {}).filter((axis) => axis != null);
+  if ((editableCheckpointRule(subject.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
+      subject.row != null || subject.variants != null) return undefined;
   const terms = subject.where ?? {};
   if ('subset' in terms || terms.best || terms.when) return undefined;
   const sweep = step.sweep;
   const axis = sweep?.axes?.subject;
-  if (!axis || !('input' in axis) || axis.input !== 'subject' || Object.keys(sweep?.axes ?? {}).length !== 1 ||
-      sweep?.rows || sweep?.exceptions || sweep?.combination) return undefined;
+  if (!axis || !('input' in axis) || axis.input !== 'subject' ||
+      axes.some((axis) => !('input' in axis) && !('checkpoint_rule' in axis)) ||
+      sweep?.rows || sweep?.combination) return undefined;
   const { evaluation_type, params } = step.base.inline;
   if (evaluation_type !== rollout || !params || typeof params !== 'object' || Array.isArray(params) ||
       !Array.isArray(params.variation) || params.variation.length || 'trials' in params) return undefined;

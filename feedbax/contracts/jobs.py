@@ -116,6 +116,7 @@ class StudioSavedEvaluationRow(StrictModel):
     checkpoint_series: StudioEvaluationCheckpointSeries | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    checkpoint_rule: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSavedEvaluationReplayRequest(StrictModel):
@@ -179,6 +180,7 @@ class StudioProjectWindowMapInput(StrictModel):
     source_step_id: str
     subset: StudioProjectWindowMapSubset | None
     checkpoint: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
+    checkpoint_axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapStep(StrictModel):
