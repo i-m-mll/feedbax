@@ -85,6 +85,30 @@ def source_at(shape: Any, path: Path) -> Any:
     return shape
 
 
+def changed_sources(before: Any, after: Any, shape: Any, source: ValueSource) -> Any:
+    """Give changed leaves their new author while retaining the other origins."""
+    if before == after:
+        return shape
+    if isinstance(before, dict) and isinstance(after, dict):
+        return SourceObject(
+            getattr(shape, "source", None),
+            {
+                key: changed_sources(before[key], value, source_at(shape, (key,)), source)
+                if key in before else source_shape(value, source)
+                for key, value in after.items()
+            },
+        )
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        return SourceList(
+            getattr(shape, "source", None),
+            (
+                changed_sources(prior, value, source_at(shape, (str(index),)), source)
+                for index, (prior, value) in enumerate(zip(before, after, strict=True))
+            ),
+        )
+    return source_shape(after, source)
+
+
 def first_source(shape: Any) -> ValueSource | None:
     if isinstance(shape, ValueSource):
         return shape

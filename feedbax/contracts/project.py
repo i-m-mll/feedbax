@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, StringConstraints, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
-from feedbax.contracts.model_attachment import ModelAttachmentDifference
+from feedbax.contracts.model_attachment import ModelDifference
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
@@ -135,7 +135,7 @@ class Step(StrictModel):
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     # These differences apply when this step reads the named document.
     document_overrides: dict[ProjectName, DocumentOverrides] = Field(default_factory=dict)
-    model_attachments: dict[ProjectName, list[ModelAttachmentDifference]] = Field(default_factory=dict)
+    model_attachments: dict[ProjectName, list[ModelDifference]] = Field(default_factory=dict)
     sweep: Sweep | None = None
     inputs: dict[ProjectName, InputBinding | None] = Field(default_factory=dict)
     requires: list[PatchPath] = Field(default_factory=list)

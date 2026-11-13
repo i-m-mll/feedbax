@@ -8,10 +8,11 @@ from hashlib import sha256
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_attachment import (
     MODEL_ATTACHMENTS,
-    MODEL_ATTACHMENT_BATCHES,
+    MODEL_DIFFERENCE_BATCHES,
     AddModelAttachment,
     ChangeModelAttachment,
     RemoveModelAttachment,
+    SetField,
 )
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis,
@@ -156,7 +157,7 @@ def _batch_path(patches, parent, default):
 
 def _local_records(scope):
     value = scope.records()
-    return MODEL_ATTACHMENT_BATCHES.validate_python({"local": value})["local"]
+    return MODEL_DIFFERENCE_BATCHES.validate_python({"local": value})["local"]
 
 
 def _apply(records, difference):
@@ -193,13 +194,15 @@ def read_evaluate_attachments(folders, project_id, body):
     data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     scope, _ = _scope(snapshot.project, data, body)
     _selected_rows(selected, body)
-    effective = MODEL_ATTACHMENT_BATCHES.validate_python(
+    effective = MODEL_DIFFERENCE_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
     )
     return EvaluateAttachmentState(
         revision=body.revision,
-        records=tuple(_local_records(scope)),
-        effective=tuple(record for batch in effective.values() for record in batch),
+        records=tuple(record for record in _local_records(scope) if not isinstance(record, SetField)),
+        effective=tuple(
+            record for batch in effective.values() for record in batch if not isinstance(record, SetField)
+        ),
     )
 
 

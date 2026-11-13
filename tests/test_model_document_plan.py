@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
-from feedbax.compiler.model_attachment import resolve_model_attachments
+from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
@@ -492,9 +492,8 @@ def test_evaluate_attachment_order_and_identity_follow_effective_graph():
     raw["steps"]["baseline"]["model_attachments"] = {"step": records}
     source = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
     components = ComponentRegistry()
-    lowered = lower_model_document("reach-model", source, components)
-    resolved = resolve_model_attachments(
-        "reach-model", source, lowered.graph, tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
+    resolved = resolve_effective_model(
+        "reach-model", source, components, tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
     )
     def chain(model):
         wrapper = model.interior.components["wrapper"]

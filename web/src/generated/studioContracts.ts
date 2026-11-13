@@ -2995,7 +2995,7 @@ export type Link = {
 };
 
 export type ListedAxis = {
-  "path": PatchPath;
+  "path": SweepTarget;
   "values": Array<JsonValue>;
 };
 
@@ -3147,7 +3147,7 @@ export type ProjectConfiguration = {
 export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
 
 export type RangeAxis = {
-  "path": PatchPath;
+  "path": SweepTarget;
   "range": RangeValues;
 };
 
@@ -3209,7 +3209,7 @@ export type SampleValues = {
 };
 
 export type SampledAxis = {
-  "path": PatchPath;
+  "path": SweepTarget;
   "sampler": SampleValues;
   "draws"?: Record<string, JsonValue> | null;
 };
@@ -3264,7 +3264,7 @@ export type Step = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3334,7 +3334,7 @@ export type StudioAnalyzeStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3653,7 +3653,7 @@ export type StudioReportStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3730,7 +3730,7 @@ export type StudioTrainStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3777,6 +3777,8 @@ export type SweepSample = {
   "draw": DrawValue;
   "count": number;
 };
+
+export type SweepTarget = string;
 
 export type TaskDocument = {
   "id": string;
@@ -8572,7 +8574,7 @@ export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
-    "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
   }).strict()
@@ -8982,7 +8984,7 @@ export const LinkSchema: z.ZodType<Link> = z.lazy(() =>
 
 export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   z.object({
-    "path": PatchPathSchema,
+    "path": SweepTargetSchema,
     "values": z.array(jsonValueSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<ListedAxis>;
@@ -9196,15 +9198,15 @@ export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
 
 export const RangeAxisSchema: z.ZodType<RangeAxis> = z.lazy(() =>
   z.object({
-    "path": PatchPathSchema,
+    "path": SweepTargetSchema,
     "range": RangeValuesSchema,
   }).strict()
 ) as unknown as z.ZodType<RangeAxis>;
 
 export const RangeValuesSchema: z.ZodType<RangeValues> = z.lazy(() =>
   z.object({
-    "start": z.number().finite(),
-    "stop": z.number().finite(),
+    "start": z.union([z.number().int().safe(), z.number().finite()]),
+    "stop": z.union([z.number().int().safe(), z.number().finite()]),
     "count": z.number().int().safe().min(1),
     "scale": z.union([z.literal("linear"), z.literal("log")]).optional(),
   }).strict()
@@ -9255,7 +9257,7 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
 
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
-    "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
     "from": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
@@ -9284,7 +9286,7 @@ export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
 
 export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
   z.object({
-    "path": PatchPathSchema,
+    "path": SweepTargetSchema,
     "sampler": SampleValuesSchema,
     "draws": z.union([z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), jsonValueSchema), z.null()]).optional(),
   }).strict()
@@ -9359,7 +9361,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9449,7 +9451,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9860,7 +9862,7 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9959,7 +9961,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -9989,7 +9991,7 @@ export const SweepSchema: z.ZodType<Sweep> = z.lazy(() =>
 
 export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
   z.object({
-    "patches": z.record(PatchPathSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "where": z.union([SubsetTermsSchema, z.null()]).optional(),
     "exclude": z.boolean().optional(),
   }).strict()
@@ -10019,6 +10021,10 @@ export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
     "count": z.number().int().safe().gt(0),
   }).strict()
 ) as unknown as z.ZodType<SweepSample>;
+
+export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
+  z.string().regex(new RegExp("^(?:(?:steps\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
+) as unknown as z.ZodType<SweepTarget>;
 
 export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
   z.object({

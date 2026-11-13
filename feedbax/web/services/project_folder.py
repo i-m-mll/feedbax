@@ -558,7 +558,9 @@ class ProjectFolderService:
             "document": payload, "positions": positions or {},
         })
         authority = ModelRegistryPorts(components)
-        result = apply_model_edit(body.document, state, body.command, ports=authority.port, accepts=authority.accepts)
+        result = apply_model_edit(
+            body.document, state, body.command, ports=authority.port, accepts=authority.accepts, functions=self.functions,
+        )
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         token = None
