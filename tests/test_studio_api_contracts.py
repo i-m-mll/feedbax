@@ -33,11 +33,7 @@ from feedbax.contracts.studio_api import (
     ComponentListResponse,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
-    StudioApiModel,
-    TrainingErrorEvent,
-    TrainingProgressEvent,
-    TrainingResyncEvent,
-    TrainingStartPayload,
+    SuccessPayload,
 )
 from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
@@ -70,14 +66,8 @@ GENERATED_STUDIO_PREFIXES = (
     "/api/penzai",
     "/api/projects",
     "/api/runs",
-    "/api/training",
     "/api/trajectories",
 )
-
-NON_GENERATED_STUDIO_RESPONSE_ROUTES = {
-    "/api/training/loss/validate",
-}
-
 
 def _response_model_members(response_model: object) -> list[type[BaseModel]]:
     origin = get_origin(response_model)
@@ -274,74 +264,6 @@ def test_analysis_bundle_dry_run_endpoint_returns_stage_status() -> None:
     assert payload["stages"][0]["reason"] == "disabled for this bundle"
 
 
-def test_training_progress_event_contract_accepts_worker_shape() -> None:
-    event = TrainingProgressEvent.model_validate(
-        {
-            "type": "training_progress",
-            "job_id": "job-1",
-            "seq": 3,
-            "emitted_at_ms": 1783430000000,
-            "worker_seq": 9,
-            "batch": 1,
-            "total_batches": 10,
-            "loss": 0.5,
-            "loss_terms": {"position": 0.4},
-            "grad_norm": 1.5,
-            "step_time_ms": 12.0,
-            "status": "running",
-            "execution": "generic_graph",
-        }
-    )
-
-    assert event.job_id == "job-1"
-    assert event.seq == 3
-    assert event.worker_seq == 9
-    assert event.loss_terms["position"] == 0.4
-    assert event.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-
-
-def test_training_error_and_resync_events_have_stable_coordinates() -> None:
-    error = TrainingErrorEvent.model_validate(
-        {
-            "type": "training_error",
-            "job_id": "job-1",
-            "seq": 4,
-            "emitted_at_ms": 1783430000100,
-            "worker_seq": 10,
-            "batch": 2,
-            "error": "worker failed",
-            "diagnostics": [
-                {
-                    "severity": "error",
-                    "code": "graph.missing_subgraph",
-                    "message": "Network node has no subgraph",
-                    "node_ids": ["network"],
-                }
-            ],
-        }
-    )
-    resync = TrainingResyncEvent.model_validate(
-        {
-            "type": "training_resync",
-            "job_id": "job-1",
-            "seq": 5,
-            "emitted_at_ms": 1783430000200,
-            "expected_worker_seq": 11,
-            "observed_worker_seq": 14,
-            "missed_events": 3,
-            "reason": "gap",
-            "message": "Training stream resumed after reconnect with 3 missed event(s).",
-        }
-    )
-
-    assert error.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-    assert error.diagnostics[0].code == "graph.missing_subgraph"
-    assert error.diagnostics[0].node_ids == ["network"]
-    assert error.job_id == resync.job_id
-    assert resync.reason == "gap"
-    assert resync.missed_events == 3
-
-
 def test_component_api_serves_representation_contract() -> None:
     class ApiRepresentedGain(Gain):
         """API represented component fixture."""
@@ -454,16 +376,16 @@ def test_component_refresh_failure_preserves_published_state(
 
 def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:
     with pytest.raises(ValidationError, match="literal_error"):
-        TrainingStartPayload.model_validate(
+        SuccessPayload.model_validate(
             {
                 "schema_id": STUDIO_API_TRANSPORT_SCHEMA_ID,
                 "schema_version": "feedbax.spec.studio.api_transport.v0",
-                "job_id": "job-1",
+                "success": True,
             }
         )
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        TrainingStartPayload.model_validate({"job_id": "job-1", "unexpected": True})
+        SuccessPayload.model_validate({"success": True, "unexpected": True})
 
     family = default_spec_registry.resolve("StudioApiTransport")
     assert family.identity == STUDIO_API_TRANSPORT_SCHEMA_ID
@@ -474,7 +396,6 @@ def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() 
             {"schema_version": "feedbax.spec.studio.api_transport.v0"},
         )
 
-    assert issubclass(TrainingProgressEvent, StudioApiModel)
 
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:
@@ -487,8 +408,6 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
         if not isinstance(route, APIRoute):
             continue
         if not route.path.startswith(GENERATED_STUDIO_PREFIXES):
-            continue
-        if route.path in NON_GENERATED_STUDIO_RESPONSE_ROUTES:
             continue
         if route.response_model is None:
             continue

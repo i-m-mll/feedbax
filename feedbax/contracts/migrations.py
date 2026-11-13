@@ -6004,7 +6004,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.contracts.studio_api",
             emitted_by=("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
             consumed_by=("Studio frontend", "provider HTTP API"),
-            description="Shared schema identity for Studio HTTP/WebSocket transport models.",
+            description="Shared schema identity for Studio HTTP transport models.",
             rejected_old_versions=("feedbax.spec.studio.api_transport.v0",),
             required_tests=(
                 "tests/test_studio_api_contracts.py",

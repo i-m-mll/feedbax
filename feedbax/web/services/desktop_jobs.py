@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.training_service import TrainingService
@@ -14,10 +14,6 @@ if TYPE_CHECKING:
     from feedbax.jobs import JobService
 
 StopDisposition = Literal["defer", "checkpoint", "force"]
-
-
-class TrainingJobsUnavailable(RuntimeError):
-    """The desktop service cannot accept a new training attempt."""
 
 
 class StudioJobLifecycle:
@@ -33,12 +29,6 @@ class StudioJobLifecycle:
         self._hosted = hosted
         self._lock = asyncio.Lock()
         self._closing = False
-
-    async def start_legacy(self, *args: Any, **kwargs: Any) -> str:
-        async with self._lock:
-            if self._closing:
-                raise TrainingJobsUnavailable("Studio is stopping and cannot launch training")
-            return await self._legacy.start_training(*args, **kwargs)
 
     def snapshot(self) -> dict:
         return {

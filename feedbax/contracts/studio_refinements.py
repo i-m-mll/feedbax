@@ -312,19 +312,6 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
 }
 
 
-_TRAINING_POSITION_FIELDS = ("batch", "program_step")
-_TRAINING_POSITION_MODELS = ("TrainingProgressEvent", "TrainingLogEvent", "TrainingTrajectoryEvent")
-_TRAINING_POSITION_REFINEMENT = CrossFieldRefinement(
-    "training.position",
-    "A training event requires a completed batch count or a program step",
-    lambda value: all(getattr(value, field) is None for field in _TRAINING_POSITION_FIELDS),
-    " && ".join(f"value.{field} == null" for field in _TRAINING_POSITION_FIELDS),
-)
-CROSS_FIELD_REFINEMENTS.update(
-    dict.fromkeys(_TRAINING_POSITION_MODELS, (_TRAINING_POSITION_REFINEMENT,))
-)
-
-
 CROSS_FIELD_REFINEMENTS["RemoveModelAttachment"] = CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"]
 CROSS_FIELD_REFINEMENTS["ChangeModelAttachment"] = (
     *CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"],
@@ -613,7 +600,6 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "PhysicalInterior": frozenset({"_unique_elements"}),
     "CompositeComponent": frozenset({"_physical_interface"}),
     "ModelDocument": frozenset({"_physical_interface"}),
-    **dict.fromkeys(_TRAINING_POSITION_MODELS, frozenset({"require_position"})),
     "SparseCooArrayValueSpec": frozenset({"validate_entries"}),
     "ConstantArrayValueSpec": frozenset({"validate_value"}),
     "AcausalConnectionSpec": frozenset({"validate_and_canonicalize"}),

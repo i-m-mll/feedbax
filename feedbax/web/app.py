@@ -28,7 +28,6 @@ from feedbax.web.api import (
     provider,
     runs,
     statistics,
-    training,
     trajectories,
 )
 from feedbax.web.config import BASE_DIR
@@ -38,8 +37,6 @@ from feedbax.web.services.desktop_jobs import StudioJobLifecycle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.services.training_service import training_service
-from feedbax.web.ws import training as ws_training
-from feedbax.web.ws import simulation as ws_simulation
 
 STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 logger = logging.getLogger(__name__)
@@ -121,7 +118,6 @@ def create_app(
     app.include_router(domains.router, prefix="/api/domains", tags=["domains"])
     app.include_router(penzai.router, prefix="/api/penzai", tags=["penzai"])
     app.include_router(provider.router, prefix="/api/provider", tags=["provider"])
-    app.include_router(training.router, prefix="/api/training", tags=["training"])
     app.include_router(jobs.router)
     app.include_router(projects.router)
     app.include_router(execution.router, prefix="/api/execution", tags=["execution"])
@@ -147,9 +143,6 @@ def create_app(
 
     app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
     app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
-
-    app.include_router(ws_training.router, prefix="/ws", tags=["websocket"])
-    app.include_router(ws_simulation.router, prefix="/ws", tags=["websocket"])
 
     return app
 
