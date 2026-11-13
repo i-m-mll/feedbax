@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from feedbax.bin.project_commands import CommandOutput
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
+from feedbax.plugins.composition import compose_application
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
@@ -52,7 +53,6 @@ def _select(catalog: StudioAuthoringCatalog, selector: str) -> tuple[str, str]:
 
 def run(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.plugins.bootstrap import BootstrapError
-    from feedbax.plugins.composition import compose_application
     from feedbax.studio.authoring import authoring_surface
 
     try:

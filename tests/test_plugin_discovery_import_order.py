@@ -61,8 +61,8 @@ def test_typed_compose_discovers_once_after_import(monkeypatch, compose) -> None
 @pytest.mark.parametrize(
     "module_name",
     (
-        "feedbax.__main__",
         "feedbax.bin.analysis",
+        "feedbax.bin.describe",
         "feedbax.bin.figure",
         "feedbax.bin.run",
         "feedbax.bin.studio_pipeline",
