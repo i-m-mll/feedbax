@@ -295,3 +295,52 @@ def test_document_open_intents_wait_for_gui_and_acknowledge_exact_batches(tmp_pa
     assert control.post(report, json=starting).json()["documents"]["batches"] == [folder]
     assert control.post(acknowledge, json={"generation": generation, "through": 2}).status_code == 200
     assert control.post(report, json=starting).json()["documents"] is None
+
+
+def test_service_signal_waits_for_runtime_release_and_exits_successfully(tmp_path):
+    import subprocess
+
+    marker = tmp_path / "ready"
+    completed = tmp_path / "released"
+    with subprocess.Popen([sys.executable, "-c", """
+import asyncio
+import signal
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from feedbax.desktop.__main__ import _serve_until_stopped
+
+ready, released = map(Path, sys.argv[1:])
+
+class Server:
+    started = False
+    should_exit = False
+
+    async def serve(self, *, sockets):
+        self.started = True
+        ready.touch()
+        while not self.should_exit:
+            await asyncio.sleep(0.01)
+        assert released.exists()
+
+class Runtime:
+    async def stop(self, disposition, *, timeout_seconds):
+        assert disposition == "interrupt"
+        released.touch()
+        return {"status": "ready_to_stop"}
+
+async def run():
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    app = SimpleNamespace(state=SimpleNamespace(desktop_jobs=Runtime()))
+    await _serve_until_stopped(Server(), app, [], stop)
+
+asyncio.run(run())
+""", str(marker), str(completed)]) as process:
+        try:
+            wait_until(marker.exists, timeout=5)
+            process.terminate()
+            assert process.wait(timeout=5) == 0 and completed.exists()
+        finally:
+            if process.poll() is None:
+                process.kill()
