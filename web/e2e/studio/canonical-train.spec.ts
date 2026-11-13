@@ -207,7 +207,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     const saved = page.waitForResponse((response) => {
       const request = response.request();
       return request.method() === 'PATCH' && new URL(response.url()).pathname === projectPath
-        && request.postDataJSON().files?.some((file: { address: { id: string } }) => file.address.id === 'train');
+        && request.postDataJSON().address?.id === 'train';
     });
     await field.fill(String(value));
     await field.press('Enter');
