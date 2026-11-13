@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from time import monotonic
 from typing import Annotated
 
@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from feedbax.contracts.jobs import (
     StudioActivityJob,
+    StudioEvaluationObjectiveSeries,
     StudioEventReset,
     StudioEventWatermark,
     StudioJobEventHistory,
@@ -21,6 +22,7 @@ from feedbax.contracts.jobs import (
     StudioJobStopRequest,
     StudioJobSubmission,
     StudioLocalSession,
+    StudioSavedEvaluationRead,
     StudioSavedEvaluationReplayRequest,
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
@@ -92,10 +94,23 @@ def run_saved_train(
 def saved_evaluation_replay(
     project_id: ProjectName, body: StudioSavedEvaluationReplayRequest, request: Request, response: Response,
 ) -> WorkspaceReplayTrial:
+    return _evaluation_response(
+        response, lambda: request.app.state.project_plan.evaluation_replay(project_id, body),
+    )
+
+
+@router.post("/projects/{project_id}/evaluate-objective")
+def saved_evaluation_objective(
+    project_id: ProjectName, body: StudioSavedEvaluationRead, request: Request, response: Response,
+) -> StudioEvaluationObjectiveSeries:
+    return _evaluation_response(
+        response, lambda: request.app.state.project_plan.evaluation_objective(project_id, body),
+    )
+
+
+def _evaluation_response[T](response: Response, read: Callable[[], T]) -> T:
     try:
-        return _project_response(
-            response, lambda: request.app.state.project_plan.evaluation_replay(project_id, body)
-        )
+        return _project_response(response, read)
     except JobNotFound as exc:
         raise HTTPException(404, detail="Evaluate receipt is absent from the saved Plan.") from exc
     except JobConflict as exc:

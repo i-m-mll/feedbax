@@ -29,6 +29,8 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapStep,
     StudioProjectWindowMapSubset,
     StudioEvaluationCheckpointSeries,
+    StudioEvaluationObjectiveSeries,
+    StudioSavedEvaluationRead,
     StudioSavedEvaluationReplayRequest,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
@@ -65,7 +67,7 @@ from feedbax.jobs import (
     saved_request_status,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.studio.canonical_evaluate import CannotRun
+from feedbax.studio.canonical_evaluate import CannotRun, EvaluationResult
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
@@ -365,9 +367,9 @@ class ProjectPlanService:
         evaluation_tasks = self.jobs.registries.python_tasks if self.jobs.evaluation_candidate_enabled else None
         return view.response(include_window_map=include_window_map, evaluation_tasks=evaluation_tasks)
 
-    def evaluation_replay(
-        self, project_id: str, body: StudioSavedEvaluationReplayRequest,
-    ) -> WorkspaceReplayTrial:
+    def _evaluation_result(
+        self, project_id: str, body: StudioSavedEvaluationRead,
+    ) -> tuple[ProjectPlanRead, StudioSavedEvaluationRow, EvaluationResult]:
         view = self.read(project_id, revision=body.revision)
         key = RunKey(body.key.variant, body.key.step, body.key.row)
         row = view.evaluations.get(key)
@@ -377,19 +379,42 @@ class ProjectPlanService:
         ), None)
         if row is None or receipt is None:
             raise JobNotFound(body.job_id)
-        if body.trial not in row.trials:
+        if isinstance(body, StudioSavedEvaluationReplayRequest) and body.trial not in row.trials:
             raise ProjectFolderInvalid("The selected trial is absent from the saved Evaluate request.")
         result = self.jobs.read_evaluation_result(
             project=project_id, store=view.settled.store_path, job_id=body.job_id,
         )
         if result.receipt != receipt:
             raise JobConflict("The selected Evaluate receipt changed.")
+        return view, row, result
+
+    def evaluation_replay(
+        self, project_id: str, body: StudioSavedEvaluationReplayRequest,
+    ) -> WorkspaceReplayTrial:
+        _, _, result = self._evaluation_result(project_id, body)
         try:
             return result.replay_trial(body.trial, anchor_id="effector", checkpoint=body.checkpoint)
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
             raise JobConflict("The retained data for the selected Evaluate trial could not be read and authenticated.") from error
+
+    def evaluation_objective(
+        self, project_id: str, body: StudioSavedEvaluationRead,
+    ) -> StudioEvaluationObjectiveSeries:
+        view, row, result = self._evaluation_result(project_id, body)
+        if (series := row.checkpoint_series) is None:
+            raise JobNotFound(body.job_id)
+        try:
+            plan = view.settled.plan
+            subject = RunKey(series.subject.variant, series.subject.step, series.subject.row)
+            run = next(run for run in plan.runs if run.key == subject)
+            train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+            if not isinstance(train, (DocumentTrainingRequestSpec, TrainingRequestSpec)) or train.trial_documents is None:
+                raise ValueError("Evaluate subject has no authored Objective.")
+            return result.objective_series(series.requested, objective=train.trial_documents.objective)
+        except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:
+            raise JobConflict("The retained Evaluate objective could not be read and authenticated.") from error
 
 
 def read_settled_project_plan(

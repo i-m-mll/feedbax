@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
-  StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow, StudioSavedTrainRuns, WorkspaceReplayTrial,
+  StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
+  StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
 import { captureStudioWindow, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -283,14 +284,14 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   await expect(field).toHaveValue('every 2');
   await field.fill('2, 2');
   await expect(page.getByRole('button', { name: 'Apply checkpoints' })).toBeDisabled();
-  const explicit = await saveRule('4, 1, 2');
+  const explicit = await saveRule('4, 3, 2');
   expect(explicit.project.steps.evaluate.inputs?.subject).toMatchObject({
-    step: 'train', checkpoint: [{ at: 4 }, { at: 1 }, { at: 2 }],
+    step: 'train', checkpoint: [{ at: 4 }, { at: 3 }, { at: 2 }],
   });
   const revised = await plan(explicit.revision);
   const [series] = revised.window_map!.evaluations!;
   expect(series.request_id).not.toBe(planned.request_id);
-  expect(series.checkpoint_series?.requested).toEqual([4, 1, 2]);
+  expect(series.checkpoint_series?.requested).toEqual([4, 3, 2]);
   expect(revised.rows.find(({ key }) => key.step === 'train')!.request_id).toBe(trainRequest);
   const [evaluate] = await submit(page, runsPath);
   expect(evaluate.disposition).toBe('admitted');
@@ -299,12 +300,12 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(completed.result).toMatchObject({
     job_id: evaluate.job_id, placement: 'ordinary',
     checkpoint_sources: [4, 2].map((completed_updates) => ({ job_id: train.job_id, completed_updates })),
-    checkpoint_gaps: [{ update: 1, reason: 'checkpoint_unavailable' }],
+    checkpoint_gaps: [{ update: 3, reason: 'checkpoint_unavailable' }],
   });
   await tab(page, 'Results').click();
   const results = page.getByRole('table', { name: 'Checkpoint results' });
-  await expect(results.getByRole('rowheader')).toHaveText(['4', '1', '2']);
-  await expect(results.getByRole('row').filter({ has: page.getByRole('rowheader', { name: '1', exact: true }) }))
+  await expect(results.getByRole('rowheader')).toHaveText(['4', '3', '2']);
+  await expect(results.getByRole('row').filter({ has: page.getByRole('rowheader', { name: '3', exact: true }) }))
     .toContainText('Checkpoint unavailable');
   await expect(page.getByText('From saved checkpoints', { exact: true })).toBeVisible();
   await captureStudioWindow(page, info, 'checkpoint-results');
@@ -315,8 +316,35 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(replayed.request().postDataJSON()).toMatchObject({ checkpoint: 2, job_id: evaluate.job_id });
   await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
   await expect(footer(page).getByRole('slider', { name: 'Playback Position' })).toBeVisible();
+
+  async function observeObjective() {
+    const reading = posted(page, projectPath + '/evaluate-objective');
+    await chooseStep(page, 'train');
+    await plans(page).getByRole('button').first().click();
+    await page.getByRole('button', { name: 'Open Run', exact: true }).click();
+    const read = await reading;
+    expect(read.ok(), await read.text()).toBe(true);
+    expect(read.request().postDataJSON()).toEqual({
+      revision: explicit.revision, key: completed.key, job_id: evaluate.job_id,
+    });
+    const curve = await read.json() as StudioEvaluationObjectiveSeries;
+    expect(curve.lineage).toEqual([train.job_id]);
+    expect(curve.gaps.map(({ update }) => update)).toEqual([3]);
+    const group = page.locator('svg g[aria-label="evaluate · effort"]');
+    const marks = group.locator('circle');
+    await expect(marks).toHaveCount(2);
+    await expect(group.locator('polyline')).toHaveCount(0);
+    const sorted = [...curve.points].sort((left, right) =>
+      left.checkpoint.completed_updates - right.checkpoint.completed_updates);
+    await expect(marks.locator('title')).toHaveText(sorted.map(({ checkpoint, terms: [term] }) =>
+      `evaluate · effort · Updates ${checkpoint.completed_updates} · ${term.value} · Coverage ${term.coverage}`));
+    return curve;
+  }
+  const curve = await observeObjective();
+  await page.reload();
+  expect(await observeObjective()).toEqual(curve);
   await info.attach('checkpoint-series-lineage', {
-    body: JSON.stringify({ train, planned, series, completed }),
+    body: JSON.stringify({ train, planned, series, completed, curve }),
     contentType: 'application/json',
   });
 });

@@ -117,12 +117,55 @@ export interface StudioJobSubmission {
   actor?: StudioSubmissionActor | null;
 }
 
+export interface StudioSavedEvaluationRead {
+  revision: string;
+  key: StudioSavedTrainKey;
+  job_id: string;
+}
+
 export interface StudioSavedEvaluationReplayRequest {
   revision: string;
   key: StudioSavedTrainKey;
   job_id: string;
   trial: string;
   checkpoint?: number | null;
+}
+
+export interface StudioEvaluationObjectiveSeries {
+  job_id: string;
+  request_id: string;
+  receipt: JobReceipt;
+  lineage: string[];
+  condition: string | null;
+  trials: string[];
+  seed: number;
+  objective: string;
+  requested: number[];
+  points: StudioEvaluationObjectivePoint[];
+  gaps: StudioEvaluationCheckpointGap[];
+}
+
+export interface StudioEvaluationObjectivePoint {
+  checkpoint: StudioEvaluationCheckpoint;
+  total: number;
+  terms: StudioEvaluationObjectiveTerm[];
+}
+
+export interface StudioEvaluationObjectiveTerm {
+  path: string;
+  name: string;
+  value: number;
+  coverage: number;
+}
+
+export interface StudioEvaluationCheckpoint {
+  job_id: string;
+  request_id: string;
+  completed_updates: number;
+  transaction: JobReceipt;
+  transaction_root_sha256: string;
+  binding_sha256: string;
+  publication_cursor: number;
 }
 
 export interface StudioEvaluationCheckpointGap {
@@ -4563,6 +4606,16 @@ export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmission>;
 
+export const StudioSavedEvaluationReadSchema: z.ZodType<StudioSavedEvaluationRead> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationRead>;
+
 export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEvaluationReplayRequest> = z.lazy(() =>
   z
     .object({
@@ -4574,6 +4627,59 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
+
+export const StudioEvaluationObjectiveSeriesSchema: z.ZodType<StudioEvaluationObjectiveSeries> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "request_id": z.string(),
+      "receipt": JobReceiptSchema,
+      "lineage": z.array(z.string()),
+      "condition": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable(),
+      "trials": z.array(z.string()),
+      "seed": z.number().int().safe(),
+      "objective": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "requested": z.array(z.number().int().safe()),
+      "points": z.array(StudioEvaluationObjectivePointSchema),
+      "gaps": z.array(StudioEvaluationCheckpointGapSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationObjectiveSeries>;
+
+export const StudioEvaluationObjectivePointSchema: z.ZodType<StudioEvaluationObjectivePoint> = z.lazy(() =>
+  z
+    .object({
+      "checkpoint": StudioEvaluationCheckpointSchema,
+      "total": z.number().finite(),
+      "terms": z.array(StudioEvaluationObjectiveTermSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationObjectivePoint>;
+
+export const StudioEvaluationObjectiveTermSchema: z.ZodType<StudioEvaluationObjectiveTerm> = z.lazy(() =>
+  z
+    .object({
+      "path": z.string().regex(new RegExp("^/(?:[^~/]|~[01])*$")),
+      "name": z.string(),
+      "value": z.number().finite(),
+      "coverage": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationObjectiveTerm>;
+
+export const StudioEvaluationCheckpointSchema: z.ZodType<StudioEvaluationCheckpoint> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "request_id": z.string(),
+      "completed_updates": z.number().int().safe().gte(0),
+      "transaction": JobReceiptSchema,
+      "transaction_root_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "binding_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "publication_cursor": z.number().int().safe().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpoint>;
 
 export const StudioEvaluationCheckpointGapSchema: z.ZodType<StudioEvaluationCheckpointGap> = z.lazy(() =>
   z
@@ -11156,7 +11262,12 @@ export const contractSchemas = {
   StudioJobStopItem: StudioJobStopItemSchema,
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
+  StudioSavedEvaluationRead: StudioSavedEvaluationReadSchema,
   StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequestSchema,
+  StudioEvaluationObjectiveSeries: StudioEvaluationObjectiveSeriesSchema,
+  StudioEvaluationObjectivePoint: StudioEvaluationObjectivePointSchema,
+  StudioEvaluationObjectiveTerm: StudioEvaluationObjectiveTermSchema,
+  StudioEvaluationCheckpoint: StudioEvaluationCheckpointSchema,
   StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGapSchema,
   StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeriesSchema,
   StudioSavedEvaluationResult: StudioSavedEvaluationResultSchema,
@@ -11297,7 +11408,12 @@ export interface ContractTypeMap {
   StudioJobStopItem: StudioJobStopItem;
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;
+  StudioSavedEvaluationRead: StudioSavedEvaluationRead;
   StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequest;
+  StudioEvaluationObjectiveSeries: StudioEvaluationObjectiveSeries;
+  StudioEvaluationObjectivePoint: StudioEvaluationObjectivePoint;
+  StudioEvaluationObjectiveTerm: StudioEvaluationObjectiveTerm;
+  StudioEvaluationCheckpoint: StudioEvaluationCheckpoint;
   StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGap;
   StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeries;
   StudioSavedEvaluationResult: StudioSavedEvaluationResult;

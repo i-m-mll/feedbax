@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { StudioActivityJob, StudioJobEvent } from '@/generated/studioContracts';
 import { useElementSize } from '@/hooks/useElementSize';
+import type { ObjectiveTrack } from './heldOutObjective';
 import { PlotTrack, formatTrainingLoss } from './studioPlot';
 import { studioFormat, studioName } from './studioVocabulary';
 
@@ -48,11 +49,13 @@ export function studioRunHistory(
     }
   }
   const attemptCutoffs = new Map([[job.job_id, Infinity]]);
+  const attemptStarts = new Map([[job.job_id, startByAttempt.get(job.job_id)]]);
   let cutoff = startByAttempt.get(job.job_id) ?? Infinity;
   let root = job;
   let previous = root.continues;
   while (previous && !attemptCutoffs.has(previous)) {
     attemptCutoffs.set(previous, cutoff);
+    attemptStarts.set(previous, startByAttempt.get(previous));
     cutoff = Math.min(cutoff, startByAttempt.get(previous) ?? Infinity);
     const predecessor = byId.get(previous);
     if (!predecessor) break;
@@ -97,18 +100,22 @@ export function studioRunHistory(
   return {
     loss: [...loss.values()].sort((first, second) => first.end - second.end),
     stageStart: root.continues ? undefined : startByAttempt.get(root.job_id),
+    attemptStarts,
+    attemptCutoffs,
     log: log.join('\n'),
     trajectory,
   };
 }
 
-export function LossPlot({ stages }: { stages: LossStage[] }) {
+export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; objectives?: ObjectiveTrack[] }) {
   const { ref, width } = useElementSize<HTMLElement>();
   const chained = stages.length > 1;
   const samples = stages.flatMap((stage) => stage.points.map((point) => ({
     ...point, stage, update: stage.offset + point.end,
   })));
   const ranges = samples.flatMap((sample) => sample.interval ? [{ ...sample, ...sample.interval }] : []);
+  const heldOut = objectives.flatMap(({ segments }) => segments.flat());
+  const hasPoints = samples.length > 0 || heldOut.length > 0;
   const latest = samples.at(-1);
   const plotWidth = width || 320;
   const plotHeight = 148;
@@ -116,11 +123,14 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
   const right = Math.max(left + 1, plotWidth - 16);
   const top = 12;
   const bottom = plotHeight - 26;
-  const endUpdate = Math.max(latest?.update ?? 0, ...stages.map(({ offset, completed }) => offset + completed));
+  const stageEnd = stages.reduce((end, { offset, completed }) => Math.max(end, offset + completed), latest?.update ?? 0);
+  const endUpdate = heldOut.reduce((end, { update }) => Math.max(end, update), stageEnd);
   const x = (update: number) => left + (right - left) * update / Math.max(1, endUpdate);
+  const bounds = heldOut.reduce(([min, max], { value }) =>
+    [Math.min(min, value), Math.max(max, value)], [Infinity, -Infinity]);
   const [minLoss, maxLoss] = samples.reduce(([min, max], { value, interval }) =>
     [Math.min(min, value, interval?.min ?? value), Math.max(max, value, interval?.max ?? value)],
-  [Infinity, -Infinity]);
+  bounds);
   const log = minLoss > 0;
   const transform = log ? Math.log10 : (value: number) => value;
   const low = transform(minLoss);
@@ -128,7 +138,7 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
   const y = (value: number) => span > 0
     ? bottom - (bottom - top) * (transform(value) - low) / span
     : (top + bottom) / 2;
-  const yTicks = !latest ? [] : span > 0
+  const yTicks = !hasPoints ? [] : span > 0
     ? [minLoss, log ? 10 ** (low + span / 2) : minLoss + span / 2, maxLoss] : [minLoss];
   const xTicks = [...new Set([0, Math.round(endUpdate / 3), Math.round(endUpdate * 2 / 3), endUpdate])];
   return (
@@ -155,13 +165,13 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
               <text x={left - 6} y={y(value)} dominantBaseline="middle" textAnchor="end">{formatTrainingLoss(value)}</text>
             </g>
           ))}
-          {latest && <line x1={left} x2={right} y1={bottom} y2={bottom} className="stroke-shell-divider" />}
-          {latest && xTicks.map((update) => (
+          {hasPoints && <line x1={left} x2={right} y1={bottom} y2={bottom} className="stroke-shell-divider" />}
+          {hasPoints && xTicks.map((update) => (
             <text key={update} x={x(update)} y={plotHeight - 8}
               textAnchor={update === endUpdate ? 'end' : update === 0 ? 'start' : 'middle'}>{update.toLocaleString()}</text>
           ))}
         </g>
-        {latest && stages.slice(1).map(({ offset }) => (
+        {hasPoints && stages.slice(1).map(({ offset }) => (
           <line key={offset} x1={x(offset)} x2={x(offset)} y1={top} y2={bottom}
             className="text-shell-divider" stroke="currentColor" strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke" />
@@ -187,8 +197,32 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
           </line>
         ))}
         <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} />
+        {objectives.map(({ id, label, segments }, index) => (
+          <g key={id} role="group" aria-label={label} style={{ color: objectiveColor(index) }}>
+            {segments.map((segment) => (
+              <g key={segment[0].id}>
+                {segment.length > 1 && <polyline
+                  points={segment.map(({ update, value }) => `${x(update)},${y(value)}`).join(' ')}
+                  fill="none" stroke="currentColor" strokeWidth={1.5} strokeDasharray="4 3"
+                  vectorEffect="non-scaling-stroke"
+                />}
+                {segment.map(({ id, update, value, coverage }) => (
+                  <circle key={id} cx={x(update)} cy={y(value)} r={2.5} fill="currentColor">
+                    <title>{[
+                      label, `${studioName('updates')} ${update}`, String(value),
+                      coverage === undefined ? undefined : `${studioName('coverage')} ${coverage}`,
+                    ].filter(Boolean).join(' · ')}</title>
+                  </circle>
+                ))}
+              </g>
+            ))}
+          </g>
+        ))}
       </svg>
       <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
+        {objectives.length > 0 && <ul aria-label={studioName('objective')} className="mr-auto flex flex-wrap gap-x-3">
+          {objectives.map(({ id, label }, index) => <li key={id} style={{ color: objectiveColor(index) }}>{label}</li>)}
+        </ul>}
         {chained && (
           <ol aria-label={studioName('trainStages')} className="mr-auto flex flex-wrap gap-x-3">
             {stages.map(({ label, offset, completed }) => (
@@ -202,4 +236,8 @@ export function LossPlot({ stages }: { stages: LossStage[] }) {
       </div>
     </section>
   );
+}
+
+function objectiveColor(index: number) {
+  return `oklch(0.59 0.16 ${(305 + 137.508 * index) % 360})`;
 }
