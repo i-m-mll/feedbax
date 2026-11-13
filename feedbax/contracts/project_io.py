@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from os import fdopen
+from os import fdopen, listdir, stat as stat_at
 from os.path import lexists
 from pathlib import Path
 import stat
@@ -167,8 +167,12 @@ def _one_declaration(root: Path, candidates: list[str]) -> str:
     return name
 
 
-def _declaration_candidates(root: Path) -> list[str]:
-    return [path.name for path in _directory_entries(root) if path.name.endswith(PROJECT_DECLARATION_SUFFIX)]
+def _declaration_candidates(root: Path, directory: int | None = None) -> list[str]:
+    if directory is None:
+        names = (path.name for path in _directory_entries(root))
+    else:
+        names = iter(listdir(directory))
+    return sorted(name for name in names if name.endswith(PROJECT_DECLARATION_SUFFIX))
 
 
 def _regular_declaration(root: Path, candidates: list[str]) -> Path:
@@ -180,6 +184,24 @@ def _regular_declaration(root: Path, candidates: list[str]) -> Path:
 
 def text_project_declaration(root: Path) -> Path:
     return _regular_declaration(root, _declaration_candidates(root))
+
+
+def read_text_project_declaration(root: Path, directory: int) -> Path:
+    """Read the sole declaration through an already verified directory descriptor."""
+    name = _one_declaration(root, _declaration_candidates(root, directory))
+    path = root / name
+    descriptor, before = open_existing_file(
+        name, dir_fd=directory, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+        error_factory=lambda message: ProjectReadError(path, message), context="Project declaration",
+    )
+    with fdopen(descriptor, "rb") as stream:
+        _parse_manifest(stream.read(), path)
+    after = stat_at(name, dir_fd=directory, follow_symlinks=False)
+    if _declaration_candidates(root, directory) != [name] or (before.st_dev, before.st_ino, before.st_ctime_ns) != (
+        after.st_dev, after.st_ino, after.st_ctime_ns,
+    ):
+        raise ProjectReadError(path, "project declaration changed while it was being read")
+    return path
 
 
 def text_project_paths(root: Path) -> tuple[Path, ...]:
@@ -270,6 +292,18 @@ def load_text_project(root: Path | str) -> TextProject:
     return parse_text_project_files(root, files)
 
 
+def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
+    manifest = _parse(TextProjectManifest, data, path)
+    variants = manifest.variants
+    if len(set(variants)) != len(variants):
+        raise ProjectReadError(path, "variant names must be unique")
+    if manifest.sweep is None and variants:
+        raise ProjectReadError(path, "variant files require a project sweep")
+    if manifest.sweep is not None and manifest.sweep.rows:
+        raise ProjectReadError(path, "variant rows belong in variants/*.json")
+    return manifest
+
+
 def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProject:
     """Validate the complete set of files enumerated by the text codec."""
     declaration = _one_declaration(root, [
@@ -281,14 +315,8 @@ def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProj
     def read[Model: StrictModel](model: type[Model], name: str) -> Model:
         return _parse(model, files[name], root / name)
 
-    manifest = read(TextProjectManifest, declaration)
+    manifest = _parse_manifest(files[declaration], path)
     variants = manifest.variants
-    if len(set(variants)) != len(variants):
-        raise ProjectReadError(path, "variant names must be unique")
-    if manifest.sweep is None and variants:
-        raise ProjectReadError(path, "variant files require a project sweep")
-    if manifest.sweep is not None and manifest.sweep.rows:
-        raise ProjectReadError(path, "variant rows belong in variants/*.json")
     found_variants = {file.stem for file in named_paths if file.parent.name == "variants"}
     if found_variants != set(variants):
         missing = sorted(set(variants) - found_variants)

@@ -474,7 +474,7 @@ pub async fn studio_window_action(
 
 fn apply_window_action(window: &WebviewWindow, action: WindowAction) -> Result<(), String> {
     let url = window.url().map_err(|error| error.to_string())?;
-    let project = {
+    {
         let state = window.state::<StudioMenu>();
         let routing = state.routing.lock().unwrap();
         routing
@@ -483,15 +483,12 @@ fn apply_window_action(window: &WebviewWindow, action: WindowAction) -> Result<(
             .filter(|target| target.permits(&url))
             .ok_or(
                 "Studio window action requires its registered service origin and project window",
-            )?
-            .project_id
-            .clone()
-    };
+            )?;
+    }
     let run = || -> tauri::Result<()> {
         match action {
             WindowAction::Title { title } if valid_project_title(&title) => {
-                window.set_title(&title)?;
-                crate::rename_recent(window.app_handle(), &project, &title)?;
+                crate::project_document::ProjectDocuments::refresh(window);
             }
             WindowAction::Title { .. } => {
                 return Err(std::io::Error::other("Invalid Studio project title").into());

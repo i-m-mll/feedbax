@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 mod native_frame;
+#[cfg(target_os = "macos")]
+mod project_document;
 mod service;
 mod studio_menu;
 mod window_session;
@@ -58,6 +60,7 @@ struct StudioTicket {
     generation: String,
     project: OpenedProject,
     folder: Folder,
+    declaration: PathBuf,
 }
 
 impl StudioTicket {
@@ -269,6 +272,13 @@ fn show_studio(
         .saved_size(&ticket.project.id, &project_folder);
     if let Some(window) = app.get_webview_window(&label) {
         refresh_project_session(&window, &ticket, &ticket.project.id, reconnect)?;
+        project_document::ProjectDocuments::bind(
+            &window,
+            &ticket.project.id,
+            ticket.folder.clone(),
+            ticket.generation.clone(),
+            ticket.declaration.clone(),
+        )?;
         window.set_title(title)?;
         focus(&window)?;
     } else {
@@ -325,6 +335,16 @@ fn show_studio(
             .inspect_err(|_| studio_menu::clear(app, &label, true))?;
         #[cfg(target_os = "macos")]
         if let Err(error) = frame.install(&window) {
+            window.destroy()?;
+            return Err(error);
+        }
+        if let Err(error) = project_document::ProjectDocuments::bind(
+            &window,
+            &ticket.project.id,
+            ticket.folder,
+            ticket.generation,
+            ticket.declaration,
+        ) {
             window.destroy()?;
             return Err(error);
         }
@@ -814,6 +834,7 @@ fn start_windows(app: &AppHandle) {
         .and_then(|release| release.paths())
         .and_then(|paths| {
             let path = paths.settings.join("studio-windows.json");
+            project_document::ProjectDocuments::start(app, paths.control)?;
             let open = window_session::read(&path)?;
             let recents_path = paths.settings.join("studio-recents.json");
             let recents = window_session::read(&recents_path);
@@ -1062,6 +1083,7 @@ fn main() {
                 studio_menu::refresh_on_main_thread(window.app_handle())
             }
             tauri::WindowEvent::Destroyed => {
+                project_document::ProjectDocuments::detach(window.app_handle(), window.label());
                 studio_menu::clear(window.app_handle(), window.label(), true);
                 if let Err(error) = close_project(window) {
                     eprintln!("Studio could not record a closed project: {error}");
@@ -1187,6 +1209,7 @@ mod tests {
             "generation": "a",
             "project": { "id": id, "title": title },
             "folder": { "path": format!("/projects/{id}"), "identity": [1, 2] },
+            "declaration": format!("/projects/{id}/{title}.feedbax"),
         }))
         .unwrap()
     }
