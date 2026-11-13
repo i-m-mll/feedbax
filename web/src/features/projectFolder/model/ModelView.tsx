@@ -216,9 +216,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projectedFields = fields.data?.fields ?? [];
   const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
     address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
-  const fieldControls = projectedFields.map((field) => <StudioFieldControl key={addressKey(field.address)} field={field}
+  const fieldControls = projectedFields.map((field) => <StudioFieldControl
+    key={JSON.stringify([saved.project_id, projectionRun?.variant, projectionRun?.step, fieldRows, addressKey(field.address)])}
+    field={field}
     commit={fieldEditable && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined}
     rowSelection={!!fieldRows?.length}
+    multipleRows={(fieldRows?.length ?? 0) > 1}
     selectedValues={field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined} />);
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {

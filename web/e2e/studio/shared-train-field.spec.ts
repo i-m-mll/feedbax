@@ -63,6 +63,10 @@ test('Training and Runs edit the same saved values and project the selected sour
   await expect(batches.getByLabel(`N Batches selected value ${override}`, { exact: true })).toBeVisible();
   const scoped = (await plan()).rows;
   expect(scoped.filter((row, index) => row.request_id !== after[index].request_id)).toHaveLength(1);
+  await batchText.fill('77');
+  await rate.getByRole('button', { name: 'Select Learning Rate 0.001', exact: true }).click({ modifiers: ['Shift'] });
+  await expect(batchText).toHaveValue('');
+  await expect(batches.locator('output')).toHaveCount(0);
   await rate.getByRole('button', { name: 'Select Learning Rate 0.001', exact: true }).click();
   await expect(batchText).toHaveValue(initialBatches);
   await expect(batches.locator('output')).toHaveCount(0);

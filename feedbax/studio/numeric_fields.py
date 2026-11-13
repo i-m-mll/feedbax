@@ -281,5 +281,3 @@ def _prepare(
     if "exceptions" in authored.model_fields_set:
         return [SetProjectValue(op="add", path=pointer(("sweep", "exceptions", name)), value=payload)]
     return [SetProjectValue(op="add", path="/sweep/exceptions", value={name: payload})]
-
-

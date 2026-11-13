@@ -8,11 +8,12 @@ const inputClass = 'min-w-0 rounded border border-shell-divider bg-shell-chrome 
 const buttonClass = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 const kindLabel = (kind: string) => kind[0].toUpperCase() + kind.slice(1);
 
-export function StudioFieldControl({ field, commit, selectedValues, rowSelection = false, onChooseValue }: {
+export function StudioFieldControl({ field, commit, selectedValues, rowSelection = false, multipleRows = false, onChooseValue }: {
   field: StudioFieldView;
   commit?: Commit;
   selectedValues?: ReadonlySet<string>;
   rowSelection?: boolean;
+  multipleRows?: boolean;
   onChooseValue?: (id: string, extend: boolean) => void;
 }) {
   const { label, sweep } = field;
@@ -29,6 +30,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
   const [newValue, setNewValue] = useState('');
   const [members, setMembers] = useState<Record<string, string>>({});
   const readOnly = !commit || busy;
+  const ruleReadOnly = readOnly || rowSelection || !field.can_change_axis;
   const kind = sweep ? 'Sweep' : 'Value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
@@ -37,6 +39,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
   const authored = list ? list.values.map(({ value }) => value).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
   const picked = selectedValues ?? new Set<string>();
+  const effective = multipleRows ? undefined : field.effective;
 
   useEffect(() => {
     if (menu) menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
@@ -102,7 +105,8 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
           onClick={() => choose(value)}>{kindLabel(value)}</button>)}
       </div>}
       <input ref={textInput} id={fieldId} type="text" className={inputClass}
-        value={draft ?? (rowSelection && !sweep ? field.effective ?? authored : authored)}
+        value={draft ?? (rowSelection && !sweep ? multipleRows ? '' : effective ?? authored : authored)}
+        placeholder={multipleRows && !sweep ? 'Selected runs' : undefined}
         readOnly={readOnly} aria-invalid={!!reason || undefined} aria-describedby={reason ? reasonId : undefined}
         onChange={(event) => { setDraft(event.currentTarget.value); setReason(undefined); }}
         onKeyDown={(event) => {
@@ -123,8 +127,8 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
             void submit({ kind: 'text', text: draft });
           }
         }} />
-      {field.effective != null && <output className="text-shell-muted" title={`Selected value ${field.effective}`}
-        aria-label={`${label} selected value ${field.effective}`}>◆</output>}
+      {effective != null && <output className="text-shell-muted" title={`Selected value ${effective}`}
+        aria-label={`${label} selected value ${effective}`}>◆</output>}
     </div>
     {reason && <p role="alert" id={reasonId} className="text-xs">{reason}</p>}
     {list && <div className="grid gap-1 border-l border-shell-divider pl-2">
@@ -168,14 +172,14 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
     {range && <div className="grid gap-1 border-l border-shell-divider pl-2">
       {([['start', 'First'], ['stop', 'Last'], ['count', 'Count']] as const).map(([key, name]) =>
         <label key={key} className="grid grid-cols-[auto_1fr] gap-2">{name}
-          <input type="text" className={inputClass} key={range[key]} defaultValue={range[key]} readOnly={readOnly}
+          <input type="text" className={inputClass} key={range[key]} defaultValue={range[key]} readOnly={ruleReadOnly}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') { event.preventDefault(); updateRange(key, event.currentTarget.value); }
+              if (event.key === 'Enter' && !ruleReadOnly) { event.preventDefault(); updateRange(key, event.currentTarget.value); }
               if (event.key === 'Escape') event.currentTarget.value = String(range[key]);
             }} />
         </label>)}
       <label className="grid grid-cols-[auto_1fr] gap-2">Spacing
-        <select className={inputClass} value={range.scale ?? 'linear'} disabled={readOnly}
+        <select className={inputClass} value={range.scale ?? 'linear'} disabled={ruleReadOnly}
           onChange={(event) => updateRange('scale', event.currentTarget.value)}>
           <option value="linear">Linear</option><option value="log">Logarithmic</option>
         </select>
@@ -183,9 +187,9 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
     </div>}
     {sampler && typeof sampler.distribution !== 'string' && <div className="grid gap-1 border-l border-shell-divider pl-2">
       <label className="grid grid-cols-[auto_1fr] gap-2">Count
-        <input className={inputClass} key={sampler.count} defaultValue={sampler.count} readOnly={readOnly}
+        <input className={inputClass} key={sampler.count} defaultValue={sampler.count} readOnly={ruleReadOnly}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' && !ruleReadOnly) {
               const text = field.text.replace(/\d+\)$/, `${event.currentTarget.value})`);
               void submit({ kind: 'text', text });
             }
@@ -193,8 +197,8 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
       </label>
       <label className="grid grid-cols-[auto_1fr] gap-2">Seed
         <input className={inputClass} key={sampler.seed} type="number" min={0} max={2 ** 32 - 1} step={1}
-          defaultValue={sampler.seed} readOnly={readOnly} onKeyDown={(event) => {
-            if (event.key === 'Enter' && event.currentTarget.validity.valid) {
+          defaultValue={sampler.seed} readOnly={ruleReadOnly} onKeyDown={(event) => {
+            if (event.key === 'Enter' && !ruleReadOnly && event.currentTarget.validity.valid) {
               void submit({ kind: 'text', text: field.text, seed: event.currentTarget.valueAsNumber });
             }
           }} />

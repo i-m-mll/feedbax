@@ -303,9 +303,10 @@ export function StudioTrainAuthoringForm(props: Props) {
       {error && !(numeric.data && loadError === error) && <p role="alert">{error}</p>}
       {showNumeric && numeric.isError && <p role="alert">{apiErrorMessage(numeric.error)}</p>}
       {shared.length > 0 && <div ref={numericRegion} className="grid gap-2 px-3 py-2">
-        {shared.map((field) => <StudioFieldControl key={field.id} field={field}
+        {shared.map((field) => <StudioFieldControl key={JSON.stringify([projectId, stepId, props.fieldRows, field.id])} field={field}
           commit={!numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined}
           rowSelection={!!props.fieldRows?.length}
+          multipleRows={(props.fieldRows?.length ?? 0) > 1}
           selectedValues={new Set(props.step && field.sweep && selection.kind !== 'steps'
             ? selectedRuns(props.step, selection).map((row) => row.values[field.sweep!.id]).filter(Boolean) : [])}
           onChooseValue={field.sweep && onChooseSweepValue
