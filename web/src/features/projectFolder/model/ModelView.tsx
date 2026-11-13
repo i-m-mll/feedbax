@@ -490,7 +490,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   function armInitial(address: ModelAddress, item: Attachment) {
     if (item.kind !== 'delay') return;
     state.setState({ pick: {
-      accepts: (candidate, port) => inGraph(candidate, address) && port.direction === 'output' && port.end.owner === 'component',
+      accepts: (candidate, port) => {
+        if (!inGraph(candidate, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
+        const component = interior?.components?.[port.end.component];
+        return component?.kind === 'leaf' && component.fields?.stateful !== false &&
+          !!registry.get(component.type)?.reset_outputs?.includes(port.end.port);
+      },
       choose: (candidate) => updateAttachment(address, { ...item, initial: { kind: 'name', reference: addressKey(candidate) } }),
     } });
   }
@@ -625,8 +630,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   return {
     documentId: model?.id,
-    header: model && <nav className="flex min-w-0 items-center gap-1" aria-label="Model Path">
-      <button type="button" className={button} onClick={() => go([])}>{model.id}</button>
+    header: model && <button type="button" className={button} onClick={() => go([])}>{model.id}</button>,
+    path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label="Model Path">
+      <button type="button" className={button} aria-label="Model Root" onClick={() => go([])}>⌂</button>
       {resolved?.entries.map(({ id, name }, index) => <button key={id} type="button" className={button}
         onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</button>)}
     </nav>,

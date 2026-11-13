@@ -574,6 +574,7 @@ class ComponentRegistry:
             supported_revisions=meta.supported_revisions,
             migrations=list(meta.migrations),
             trainable_by_default=meta.trainable_by_default,
+            reset_outputs=list(meta.compiler.reset_outputs),
             representation=meta.representation,
         )
 

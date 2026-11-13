@@ -60,6 +60,7 @@ export interface ManagedProjectDetail {
   readonly inspector?: ReactNode;
   readonly commands?: readonly StudioCommand[];
   readonly overlay?: ReactNode;
+  readonly path?: ReactNode;
 }
 
 interface DetailInputs {

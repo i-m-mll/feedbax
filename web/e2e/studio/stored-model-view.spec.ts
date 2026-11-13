@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
-import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
 
@@ -113,4 +113,40 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(cell).toHaveCount(1);
   expect(await cell.evaluate((node) => node.style.transform)).toBe(before);
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
+});
+
+test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request }) => {
+  test.setTimeout(45_000);
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.stored_model'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await page.goto(url);
+  await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await model.locator('[data-id="controller"] header').dblclick();
+  await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
+  const [first] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
+    inspector.getByRole('button', { name: 'Add Intervention', exact: true }).click(),
+  ]);
+  expect(first.ok(), await first.text()).toBe(true);
+  await expect(inspector.getByRole('spinbutton', { name: 'Factor', exact: true })).toHaveValue('1');
+  const [changed] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
+    enter(inspector.getByRole('spinbutton', { name: 'Factor', exact: true }), '0.5'),
+  ]);
+  expect(changed.ok(), await changed.text()).toBe(true);
+  const saved = await changed.json() as StudioProjectDocument['snapshot'];
+  expect(saved.project.documents).toEqual(snapshot.project.documents);
+  expect(saved.project.steps?.baseline).toMatchObject({ model_attachments: expect.any(Object) });
+  await page.reload();
+  await mapStep(page, 'baseline').click();
+  await expect(model.getByRole('button', { name: 'Scale', exact: true })).toBeVisible();
+  await model.getByRole('button', { name: 'Scale', exact: true }).click();
+  await expect(inspector.getByRole('spinbutton', { name: 'Factor', exact: true })).toHaveValue('0.5');
 });

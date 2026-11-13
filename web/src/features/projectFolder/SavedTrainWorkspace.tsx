@@ -671,6 +671,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
           return { ...details[view], header: <>
             {header}
+            {details[view].path}
             {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
               {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
             </span>}

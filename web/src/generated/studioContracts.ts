@@ -1778,6 +1778,7 @@ export interface ComponentDefinition {
   supported_revisions?: number[];
   migrations?: ComponentMigrationInfo[];
   trainable_by_default?: boolean;
+  reset_outputs?: string[];
   representation?: RepresentationSpec | null;
 }
 
@@ -7118,6 +7119,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "supported_revisions": z.array(z.number().int().safe().gt(0)).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
       "trainable_by_default": z.boolean().optional(),
+      "reset_outputs": z.array(z.string()).optional(),
       "representation": RepresentationSpecSchema.nullable().optional(),
     })
     .strict()
