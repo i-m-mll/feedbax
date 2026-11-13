@@ -348,6 +348,8 @@ test('authors checkpoint rules and replays covered updates from Results', async 
     contentType: 'application/json',
   });
 
+  await chooseStep(page, 'evaluate');
+  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
   await tab(page, 'Runs').click();
   async function edit(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
@@ -360,12 +362,12 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   const swept = await edit(() => page.getByRole('button', { name: 'To Sweep', exact: true }).click());
   const definition = swept.project.steps.evaluate;
   expect(definition.inputs?.subject).not.toHaveProperty('checkpoint');
-  expect(definition.sweep?.axes?.update).toMatchObject({ checkpoint_rule: [{ at: 4 }, { at: 1 }, { at: 2 }] });
+  expect(definition.sweep?.axes?.update).toMatchObject({ checkpoint_rule: [{ at: 4 }, { at: 3 }, { at: 2 }] });
   const split = await plan(swept.revision);
   const points = split.window_map!.evaluations!;
-  expect(points.map((point) => point.checkpoint_series!.requested)).toEqual([[4], [1], [2]]);
+  expect(points.map((point) => point.checkpoint_series!.requested)).toEqual([[4], [3], [2]]);
   expect(split.window_map!.rows.filter(({ key }) => key.step === 'evaluate')
-    .map(({ coordinates }) => coordinates.update.value_id)).toEqual(['4', '1', '2']);
+    .map(({ coordinates }) => coordinates.update.value_id)).toEqual(['4', '3', '2']);
   const gap = points[1];
   const gapRow = split.window_map!.rows.find(({ key }) => key.row === gap.key.row && key.step === 'evaluate')!;
   await plans(page).getByRole('button', { name: gapRow.label, exact: true }).click();
@@ -373,14 +375,14 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(gapJob.disposition).toBe('admitted');
   await expect.poll(async () => (await plan(swept.revision)).window_map!.evaluations!
     .find(({ key }) => key.row === gap.key.row)?.result?.checkpoint_gaps, { timeout: 14_000 })
-    .toEqual([{ update: 1, reason: 'checkpoint_unavailable' }]);
+    .toEqual([{ update: 3, reason: 'checkpoint_unavailable' }]);
   const undone = await edit(() => page.keyboard.press('Meta+Z'));
-  expect(undone.project.steps.evaluate.inputs?.subject).toMatchObject({ checkpoint: [{ at: 4 }, { at: 1 }, { at: 2 }] });
+  expect(undone.project.steps.evaluate.inputs?.subject).toMatchObject({ checkpoint: [{ at: 4 }, { at: 3 }, { at: 2 }] });
   expect(undone.project.steps.evaluate.sweep?.axes?.update).toBeUndefined();
   await page.reload();
   await chooseStep(page, 'evaluate');
   if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
-  await expect(field).toHaveValue('4, 1, 2');
+  await expect(field).toHaveValue('4, 3, 2');
 });
 
 test('edits the checkpoint rule in the selected authored variant', async ({ page, request }, info) => {
