@@ -2519,6 +2519,7 @@ export type FunctionInfo = {
   "requires_period"?: boolean;
   "random"?: boolean;
   "stateful"?: boolean;
+  "reset"?: StateReset;
 };
 
 export type GroupCombination = {
@@ -2804,6 +2805,8 @@ export type SiteProjection = {
   "kinds": Array<FieldKind>;
   "functions": Array<FunctionInfo>;
 };
+
+export type StateReset = "trial" | "epoch";
 
 export type Step = {
   "kind": StepKind;
@@ -7628,6 +7631,7 @@ export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
     "requires_period": z.boolean().optional(),
     "random": z.boolean().optional(),
     "stateful": z.boolean().optional(),
+    "reset": StateResetSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<FunctionInfo>;
 
@@ -8032,6 +8036,10 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
     "functions": z.array(FunctionInfoSchema),
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
+
+export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
+  z.union([z.literal("trial"), z.literal("epoch")])
+) as unknown as z.ZodType<StateReset>;
 
 export const StepSchema: z.ZodType<Step> = z.lazy(() =>
   z.object({

@@ -28,7 +28,7 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.expression_builtins import CallContext
 from feedbax.expression_check import Checked, check
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.expression_registry import Evaluation, FunctionRegistry, StateReset
 from feedbax.runtime._graph_key_schedule import derive_key
 
 
@@ -42,6 +42,8 @@ class Inputs(NamedTuple):
     trial_key: jax.Array
     repeat: int | jax.Array | None = None
     step: int | jax.Array = 0
+    epoch_entry: bool | jax.Array = False
+    defined: Mapping[str, Any] | None = None
 
 
 class State(NamedTuple):
@@ -56,7 +58,7 @@ class Compiled:
     initial_state: State
     evaluate_run: Callable[[Inputs], dict[str, Any]]
     evaluate_trial: Callable[[Inputs, dict[str, Any]], dict[str, Any]]
-    evaluate_step: Callable[[Inputs, State], tuple[Any, State]]
+    evaluate_step: Callable[[Inputs, State], tuple[Evaluation, State]]
 
     def with_trial(self, inputs: Inputs, run_values: dict[str, Any]) -> State:
         return State(self.evaluate_trial(inputs, run_values), self.initial_state.slots)
@@ -73,6 +75,7 @@ def compile_expression(
     *,
     field_address: tuple[str, ...],
     period_seconds: float | None = None,
+    reset_on_epoch: bool = False,
     path: NodePath = (),
 ) -> Compiled | tuple[Problem, ...]:
     """Compile with dynamic literal operands, independently of the authored spelling."""
@@ -132,15 +135,18 @@ def compile_expression(
             parameters.append(jnp.asarray(value, dtype=dtype))
 
             def evaluate(inputs, _values, _slots):
-                return inputs.parameters[index]
+                return Evaluation(inputs.parameters[index], True)
         elif isinstance(node, NameValue):
 
             def evaluate(inputs, _values, _slots):
-                return inputs.values[node.reference]
+                defined = inputs.defined.get(node.reference, True) if inputs.defined else True
+                return Evaluation(inputs.values[node.reference], defined)
         else:
             key = node.family if isinstance(node, DrawValue) else node.function
             function = functions.resolve(key)
             assert function is not None
+            if at in checked.calls:
+                function, node = checked.calls[at]
             if function.info.requires_period and period_seconds is None:
                 problems.append(
                     Problem(
@@ -169,8 +175,11 @@ def compile_expression(
                 if name != "T" or "over" not in kwargs
             }
             implementation = function.evaluate
+            stateful = function.initial_state is not None
             if function.initial_state is not None:
                 slots[slot] = function.initial_state(node_type.type)
+            resets = stateful and reset_on_epoch and function.info.reset == StateReset.EPOCH
+            initial = slots.get(slot)
 
             def evaluate(inputs, values, state):
                 source = inputs.run_key if node_type.level == Level.RUN else inputs.trial_key
@@ -181,20 +190,42 @@ def compile_expression(
                     )
                     if not isinstance(node, DrawValue) and node_type.level == Level.STEP:
                         key_value = random.fold_in(key_value, inputs.step)
+                previous = state.get(slot)
+                if resets:
+                    previous = jax.tree.map(
+                        lambda start, old: jnp.where(inputs.epoch_entry, start, old),
+                        initial,
+                        previous,
+                    )
+                positional = tuple(argument(inputs, values, state) for argument in args)
+                named = {name: arg(inputs, values, state) for name, arg in kwargs.items()}
+                defined = tuple(arg.defined for arg in positional)
                 context = CallContext(
                     {name: inputs.values[ref] for name, ref in implicit.items()},
                     key_value,
-                    state.get(slot),
+                    previous,
                     period_seconds,
+                    defined,
+                    inputs.step,
                 )
                 result = implementation(
                     context,
-                    *(argument(inputs, values, state) for argument in args),
-                    **{name: argument(inputs, values, state) for name, argument in kwargs.items()},
+                    *(arg.value for arg in positional),
+                    **{name: arg.value for name, arg in named.items()},
                 )
-                if function.initial_state is not None:
+                if stateful:
                     result, state[slot] = result
-                return result
+                valid = True
+                for arg in named.values():
+                    valid = valid & arg.defined
+                if inputs.defined:
+                    for ref in implicit.values():
+                        valid = valid & inputs.defined.get(ref, True)
+                if isinstance(result, Evaluation):
+                    return Evaluation(result.value, valid & result.defined)
+                for available in defined:
+                    valid = valid & available
+                return Evaluation(result, valid)
 
         if isinstance(node, (LiteralValue, NameValue)) or node_type.level == Level.STEP:
             return evaluate
@@ -220,8 +251,8 @@ def compile_expression(
 
     def step(inputs: Inputs, state: State):
         next_slots = dict(state.slots)
-        value = evaluate(inputs, state.values, next_slots)
-        return jnp.asarray(value, dtype=_DTYPES[site.expected.base]), State(
+        value, defined = evaluate(inputs, state.values, next_slots)
+        return Evaluation(jnp.asarray(value, dtype=_DTYPES[site.expected.base]), defined), State(
             state.values, next_slots
         )
 

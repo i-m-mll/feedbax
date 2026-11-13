@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
@@ -11,19 +11,23 @@ from feedbax.contracts.expression_values import (
     ANGLE,
     DIMENSIONLESS,
     TIME,
+    CallValue,
     Dimensions,
     Level,
+    LiteralValue,
     ProblemCode,
     ValueBase,
     ValueType,
 )
 from feedbax.expression_registry import (
+    Evaluation,
     Function,
     FunctionClass,
     FunctionInfo,
     FunctionRegistry,
     OperandHint,
     SignatureError,
+    StateReset,
 )
 
 
@@ -41,6 +45,8 @@ class CallContext:
     key: Any
     state: Any
     period_seconds: Any
+    defined: tuple[Any, ...]
+    step: Any
 
 
 def _type(reason: str) -> SignatureError:
@@ -297,13 +303,23 @@ def _sample(family: str, context: CallContext, *args):
     raise AssertionError(family)
 
 
+def _choose(context: CallContext, condition, yes, no):
+    import jax.numpy as jnp
+
+    test_defined, yes_defined, no_defined = context.defined
+    return Evaluation(
+        jnp.where(condition, yes, no),
+        test_defined & jnp.all(jnp.where(condition, yes_defined, no_defined)),
+    )
+
+
 def _held_value(context: CallContext, condition, duration):
     import jax.numpy as jnp
 
-    start = jnp.where(
-        condition, jnp.where(context.state < 0, context.axis["t"], context.state), -1.0
-    )
-    return condition & (context.axis["t"] >= start + duration), start
+    condition = condition & context.defined[0] & context.defined[1]
+    start = jnp.where(condition, jnp.where(context.state < 0, context.step, context.state), -1)
+    elapsed = (context.step - start) * context.period_seconds
+    return condition & (elapsed >= duration), start
 
 
 def _filtered(ou: bool, context: CallContext, value, tau):
@@ -318,7 +334,249 @@ def _filtered(ou: bool, context: CallContext, value, tau):
         )
     else:
         result = previous + mix * (value - previous)
-    return result, result
+    return result, jnp.where(context.defined[0] & context.defined[1], result, previous)
+
+
+def _difference_type(order, derivative, args, _kwargs):
+    (value,) = args
+    if value.base == _BOOL or len(value.shape) > 1:
+        return _type("A backward difference needs a numeric scalar or vector.")
+    if not derivative:
+        return value
+    return ValueType(
+        base=_REAL, shape=value.shape, dimensions=value.dimensions.combine(TIME, -order)
+    )
+
+
+def _difference_state(order, value):
+    import jax.numpy as jnp
+
+    return (
+        jnp.zeros((order, *value.shape), dtype=int if value.base == _INT else float),
+        jnp.zeros(order, dtype=bool),
+    )
+
+
+def _difference(order, derivative, context, value):
+    import jax.lax as lax
+    import jax.numpy as jnp
+
+    history, present = context.state
+
+    def subtract(current, predecessor):
+        value, defined = current
+        previous, available = predecessor
+        return (value - previous, defined & available), current
+
+    current = (jnp.asarray(value, dtype=history.dtype), context.defined[0])
+    (value, defined), history = lax.scan(subtract, current, (history, present))
+    if derivative:
+        value = value / context.period_seconds**order
+    return Evaluation(value, defined), history
+
+
+def _difference_context(order, derivative, expected, _known, _keywords):
+    dimensions = expected.dimensions
+    if derivative and dimensions is not None:
+        dimensions = dimensions.combine(TIME, order)
+    return (OperandHint(dimensions, expected.base),), {}
+
+
+def _difference_dimensions(order, derivative, known):
+    (dimension,) = known
+    if derivative and dimension is not None:
+        return dimension.combine(TIME, -order)
+    return dimension
+
+
+def _bind_difference(derivative, function, node):
+    if len(node.args) == 2 and "n" in node.kwargs:
+        return SignatureError(
+            ProblemCode.ARITY, "Difference order was supplied twice.", ("kwargs", "n")
+        )
+    order_path = ("args", 1) if len(node.args) == 2 else ("kwargs", "n")
+    size = node.args[1] if len(node.args) == 2 else node.kwargs.get("n", LiteralValue(value=1))
+    if (
+        not isinstance(size, LiteralValue)
+        or type(size.value) is not int
+        or size.value < 1
+        or size.unit is not None
+    ):
+        return SignatureError(
+            ProblemCode.STRUCTURE,
+            "Difference order must be a positive integer literal.",
+            order_path,
+        )
+    order = size.value
+    return replace(
+        function,
+        infer=partial(_difference_type, order, derivative),
+        evaluate=partial(_difference, order, derivative),
+        initial_state=partial(_difference_state, order),
+        argument_context=partial(_difference_context, order, derivative),
+        result_dimensions=partial(_difference_dimensions, order, derivative),
+    ), node.model_copy(update={"args": node.args[:1], "kwargs": {}})
+
+
+def _pulse_type(args, kwargs):
+    low, high, at, width = args
+    durations = (at, width, *kwargs.values())
+    for duration in durations:
+        if error := _duration(duration):
+            return error
+    return _elementwise((low, high), {}, boolean=low.base == _BOOL)
+
+
+def _pulse(context, low, high, at, width, *, every=None):
+    import jax.numpy as jnp
+
+    def steps(seconds):
+        return jnp.rint(seconds / context.period_seconds)
+
+    offset = steps(context.axis["t"]) - steps(at)
+    local = offset
+    rounded_width = steps(width)
+    valid = (width == 0) | (rounded_width > 0)
+    if every is not None:
+        interval = steps(every)
+        valid = valid & (interval > 0)
+        local = jnp.mod(offset, jnp.maximum(interval, 1))
+    high_now = (offset >= 0) & (local < rounded_width)
+    return Evaluation(jnp.where(high_now, high, low), valid & _all_defined(context))
+
+
+def _points_type(mode, args, kwargs):
+    at, values = args
+    if len(at.shape) != 1 or at.base == _BOOL or at.dimensions != DIMENSIONLESS:
+        return _type("Point positions must be a vector of dimensionless numbers.")
+    if not values.shape:
+        return _type("Point values must be a list.")
+    if at.shape[0] != values.shape[0]:
+        return SignatureError(
+            ProblemCode.LIST_COUNT, "Point positions and values need the same count."
+        )
+    if "over" in kwargs and (error := _duration(kwargs["over"])):
+        return error
+    if mode != "hold" and values.base == _BOOL:
+        return _type("Interpolated point values must be numeric.")
+    return ValueType(
+        base=values.base if mode == "hold" else _REAL,
+        shape=values.shape[1:],
+        dimensions=values.dimensions,
+    )
+
+
+POINT_INTERPOLATIONS = ("linear", "hold", "cubic")
+
+
+def _bind_points(function, node):
+    mode = node.kwargs.get("interp", CallValue(function="linear"))
+    if (
+        not isinstance(mode, CallValue)
+        or mode.function not in POINT_INTERPOLATIONS
+        or mode.args
+        or mode.kwargs
+    ):
+        return SignatureError(
+            ProblemCode.STRUCTURE,
+            "Point interpolation must be linear, hold, or cubic.",
+            ("kwargs", "interp"),
+        )
+    positions = node.args[0]
+    if (
+        isinstance(positions, CallValue)
+        and positions.function == "vector"
+        and all(
+            isinstance(item, LiteralValue) and item.unit is None and type(item.value) is not bool
+            for item in positions.args
+        )
+    ):
+        values = [item.value for item in positions.args]
+        if any(left >= right for left, right in zip(values, values[1:])):
+            return SignatureError(
+                ProblemCode.STRUCTURE, "Point positions must be strictly increasing.", ("args", 0)
+            )
+    return replace(
+        function,
+        infer=partial(_points_type, mode.function),
+        evaluate=partial(_points, mode.function),
+    ), node.model_copy(
+        update={"kwargs": {key: value for key, value in node.kwargs.items() if key != "interp"}}
+    )
+
+
+def _all_defined(context):
+    valid = True
+    for available in context.defined:
+        valid = valid & available
+    return valid
+
+
+def _points(mode, context, at, values, *, over=None):
+    import jax.numpy as jnp
+
+    from feedbax._interpolation import catmull_rom
+
+    duration = context.axis["T"] if over is None else over
+    u = jnp.clip(context.axis["t"] / duration, at[0], at[-1])
+    count = at.shape[0]
+    valid = (duration > 0) & jnp.all(at[1:] > at[:-1]) & _all_defined(context)
+    if count == 1:
+        return Evaluation(values[0], valid)
+    left = jnp.searchsorted(at, u, side="right") - 1
+    if mode == "hold":
+        return Evaluation(values[left], valid)
+    left = jnp.minimum(left, count - 2)
+    right = left + 1
+    interval = at[right] - at[left]
+    fraction = (u - at[left]) / jnp.where(interval > 0, interval, 1)
+    start, stop = values[left], values[right]
+    if mode == "linear":
+        value = start + (stop - start) * fraction
+    else:
+        value = catmull_rom(
+            values[jnp.maximum(left - 1, 0)],
+            start,
+            stop,
+            values[jnp.minimum(right + 1, count - 1)],
+            fraction,
+        )
+    return Evaluation(value, valid)
+
+
+def _sines_type(args, _kwargs):
+    center, amp, frequencies, phases = args
+    if any(arg.base == _BOOL for arg in args):
+        return _type("Sines requires numeric arguments.")
+    if len(frequencies.shape) != 1 or amp.shape not in ((), center.shape):
+        return _type("Sines needs a frequency vector and an amplitude compatible with the centre.")
+    if phases.shape not in (frequencies.shape, frequencies.shape + center.shape):
+        return _type("Phase must have one value or one array per frequency.")
+    if (
+        amp.dimensions != center.dimensions
+        or frequencies.dimensions != TIME.raised(-1)
+        or phases.dimensions != ANGLE
+    ):
+        return _unit(
+            "Amplitude must match the centre's units, with frequencies in Hz and phases as angles."
+        )
+    return ValueType(base=_REAL, shape=center.shape, dimensions=center.dimensions)
+
+
+def _sines(context, center, amp, frequencies, phases):
+    import jax.numpy as jnp
+
+    phase = 2 * jnp.pi * frequencies * context.axis["t"]
+    phase = phase.reshape(phase.shape + (1,) * (phases.ndim - 1))
+    return center + amp * jnp.sum(jnp.sin(phase + phases), axis=0)
+
+
+def _noise(context, mean, sd):
+    import jax.numpy as jnp
+    import jax.random as random
+
+    shape = jnp.broadcast_shapes(mean.shape, sd.shape)
+    return mean + sd * random.normal(context.key, shape)
 
 
 def _filter_state(value: ValueType):
@@ -361,7 +619,7 @@ def _operand_context(
         for i in range(len(known))
     )
     return tuple((fixed or {}).get(i, hint) for i, hint in enumerate(hints)), {
-        key: OperandHint(TIME, _REAL) for key in keywords if key == "over"
+        key: OperandHint(TIME, _REAL) for key in keywords if key in ("over", "every")
     }
 
 
@@ -401,6 +659,8 @@ def register_builtins(registry: FunctionRegistry) -> None:
         requires_period=False,
         argument_context=_operand_context,
         result_dimensions=_known_result,
+        reset=StateReset.TRIAL,
+        bind=None,
     ):
         minimum, maximum = count if isinstance(count, tuple) else (count, count)
         registry.register(
@@ -417,12 +677,14 @@ def register_builtins(registry: FunctionRegistry) -> None:
                     random=random,
                     stateful=initial_state is not None,
                     requires_period=requires_period,
+                    reset=reset,
                 ),
                 infer,
                 evaluate,
                 initial_state,
                 argument_context,
                 result_dimensions,
+                bind,
             )
         )
 
@@ -493,7 +755,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         "condition, yes, no",
         3,
         _where,
-        partial(_operation, "where"),
+        _choose,
         argument_context=partial(_operand_context, start=1),
         result_dimensions=partial(_known_result, start=1),
     )
@@ -557,6 +819,83 @@ def register_builtins(registry: FunctionRegistry) -> None:
             argument_context=partial(_operand_context, base=_REAL, dimensionless=True),
             result_dimensions=lambda _: DIMENSIONLESS,
         )
+    for name in ("diff", "ddt"):
+        derivative = name == "ddt"
+        add(
+            name,
+            "x, n=1",
+            (1, 2),
+            partial(_difference_type, 1, derivative),
+            partial(_difference, 1, derivative),
+            keywords=("n",),
+            level=Level.STEP,
+            initial_state=partial(_difference_state, 1),
+            requires_period=derivative,
+            bind=partial(_bind_difference, derivative),
+        )
+    time = ValueType(base=_REAL, dimensions=TIME)
+    add(
+        "pulse",
+        "low, high, at, width, every=none",
+        4,
+        _pulse_type,
+        _pulse,
+        keywords=("every",),
+        implicit_names={"t": time},
+        level=Level.STEP,
+        display_class=_SHAPE,
+        requires_period=True,
+        result_dimensions=partial(_known_result, stop=2),
+        argument_context=partial(
+            _operand_context,
+            stop=2,
+            fixed={2: OperandHint(TIME, _REAL), 3: OperandHint(TIME, _REAL)},
+        ),
+    )
+    add(
+        "points",
+        "at, values, interp=linear, over=T",
+        2,
+        partial(_points_type, "linear"),
+        partial(_points, "linear"),
+        keywords=("interp", "over"),
+        implicit_names={"t": time, "T": time},
+        display_class=_SHAPE,
+        level=Level.STEP,
+        bind=_bind_points,
+        argument_context=partial(
+            _operand_context, start=1, fixed={0: OperandHint(DIMENSIONLESS, _REAL)}
+        ),
+        result_dimensions=partial(_known_result, start=1),
+    )
+    add(
+        "sines",
+        "center, amp, frequencies, phases",
+        4,
+        _sines_type,
+        _sines,
+        implicit_names={"t": time},
+        display_class=_SHAPE,
+        level=Level.STEP,
+        argument_context=partial(
+            _operand_context,
+            stop=2,
+            base=_REAL,
+            fixed={2: OperandHint(TIME.raised(-1), _REAL), 3: OperandHint(ANGLE, _REAL)},
+        ),
+        result_dimensions=partial(_known_result, stop=2),
+    )
+    add(
+        "noise",
+        "mean, sd",
+        2,
+        partial(_elementwise, base=_REAL),
+        _noise,
+        display_class=_SHAPE,
+        level=Level.STEP,
+        random=True,
+        argument_context=partial(_operand_context, base=_REAL),
+    )
     add("hold", "value", 1, lambda args, _: args[0], _hold, display_class=_SHAPE, level=Level.STEP)
     for name in ("ramp", "minjerk"):
         add(
@@ -603,9 +942,10 @@ def register_builtins(registry: FunctionRegistry) -> None:
         2,
         _held,
         _held_value,
-        implicit_names={"t": ValueType(base=_REAL, dimensions=TIME)},
         level=Level.STEP,
-        initial_state=lambda _: -1.0,
+        initial_state=lambda _: -1,
+        requires_period=True,
+        reset=StateReset.EPOCH,
         argument_context=partial(_operand_context, start=2, fixed={1: OperandHint(TIME, _REAL)}),
         result_dimensions=lambda _: DIMENSIONLESS,
     )
@@ -618,6 +958,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
             partial(_filtered, name == "ou"),
             level=Level.STEP,
             random=name == "ou",
+            reset=StateReset.EPOCH if name == "ou" else StateReset.TRIAL,
             initial_state=_filter_state,
             requires_period=True,
             argument_context=partial(

@@ -27,7 +27,13 @@ from feedbax.contracts.expression_values import (
     children,
     scope_problems,
 )
-from feedbax.expression_registry import FunctionClass, FunctionRegistry, OperandHint, SignatureError
+from feedbax.expression_registry import (
+    Function,
+    FunctionClass,
+    FunctionRegistry,
+    OperandHint,
+    SignatureError,
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,7 @@ class TypedNode:
 class Checked:
     root: TypedNode
     nodes: Mapping[NodePath, TypedNode]
+    calls: Mapping[NodePath, tuple[Function, CallValue]]
 
 
 def references(tree: Expression) -> frozenset[str]:
@@ -101,6 +108,12 @@ def _known_dimension(
             if function.info.min_args <= len(node.args) and (
                 function.info.max_args is None or len(node.args) <= function.info.max_args
             ):
+                if function.bind is not None and isinstance(node, CallValue):
+                    bound = function.bind(function, node)
+                    if isinstance(bound, SignatureError):
+                        return None
+                    function, node = bound
+                assert function.result_dimensions is not None
                 return function.result_dimensions(
                     tuple(_known_dimension(child, scope, functions) for child in node.args)
                 )
@@ -123,6 +136,7 @@ def check(
     by_name = {value.name: value for value in site.names}
     problems: list[Problem] = []
     checked: dict[NodePath, TypedNode] = {}
+    calls: dict[NodePath, tuple[Function, CallValue]] = {}
 
     def problem(node: Expression, code: ProblemCode, reason: str, at: NodePath) -> None:
         problems.append(
@@ -205,6 +219,14 @@ def check(
                     node, ProblemCode.ARITY, f"Unknown arguments {sorted(unknown)} for {key!r}.", at
                 )
                 return None
+            if isinstance(node, CallValue) and function.bind is not None:
+                bound = function.bind(function, node)
+                if isinstance(bound, SignatureError):
+                    problem(node, bound.code, bound.reason, (*at, *bound.path))
+                    return None
+                function, node = bound
+                calls[at[len(path) :]] = bound
+                kwargs = node.kwargs
             implicit = tuple(
                 name for name in info.implicit_names if name != "T" or "over" not in kwargs
             )
@@ -301,4 +323,4 @@ def check(
     if problems:
         return tuple(problems)
     assert root is not None
-    return Checked(root, MappingProxyType(checked))
+    return Checked(root, MappingProxyType(checked), MappingProxyType(calls))

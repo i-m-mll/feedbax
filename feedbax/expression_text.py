@@ -33,6 +33,7 @@ from feedbax.contracts.expression_values import (
     TextSpan,
     scope_problems,
 )
+from feedbax.expression_builtins import POINT_INTERPOLATIONS
 from feedbax.expression_registry import FunctionClass, FunctionRegistry
 
 
@@ -301,10 +302,17 @@ class _Reader:
             function=str(name),
             args=tuple(args),
             kwargs={
-                key: self.expr(child, (*path, "kwargs", key))
+                key: self._keyword(str(name), key, child, (*path, "kwargs", key))
                 for key, child in sorted(kwargs.items())
             },
         )
+
+    def _keyword(self, function: str, key: str, node: Tree, path: NodePath) -> Expression:
+        if function == "points" and key == "interp" and node.data == "name":
+            mode = str(node.children[0])
+            self.spans[path] = _span(node)
+            return CallValue(function=mode)
+        return self.expr(node, path)
 
 
 def parse(
@@ -360,7 +368,18 @@ def _print(node: Expression, names: Mapping[str, str]) -> str:
             parts = [_print(arg, names) for arg in args]
             if function == "vector" and args and not kwargs:
                 return "[" + ", ".join(parts) + "]"
-            parts.extend(f"{key}={_print(child, names)}" for key, child in sorted(kwargs.items()))
+            for key, child in sorted(kwargs.items()):
+                if (
+                    function == "points"
+                    and key == "interp"
+                    and isinstance(child, CallValue)
+                    and child.function in POINT_INTERPOLATIONS
+                    and not child.args
+                    and not child.kwargs
+                ):
+                    parts.append(f"{key}={child.function}")
+                else:
+                    parts.append(f"{key}={_print(child, names)}")
             return f"{function}({', '.join(parts)})"
 
 

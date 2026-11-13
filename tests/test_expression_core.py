@@ -58,9 +58,16 @@ def parsed(text, expected):
     return result.value
 
 
-def compiled(text, expected, registry, *, field=("task", "target"), period=None):
+def compiled(
+    text, expected, registry, *, field=("task", "target"), period=None, reset_on_epoch=False
+):
     result = compile_expression(
-        parsed(text, expected), expected, registry, field_address=field, period_seconds=period
+        parsed(text, expected),
+        expected,
+        registry,
+        field_address=field,
+        period_seconds=period,
+        reset_on_epoch=reset_on_epoch,
     )
     assert isinstance(result, Compiled), result
     return result
@@ -171,7 +178,7 @@ def test_bad_documents_return_path_addressed_problems(functions):
 def evaluate(implementation, inputs):
     run = implementation.evaluate_run(inputs)
     trial = implementation.with_trial(inputs, run)
-    return implementation.evaluate_step(inputs, trial)[0]
+    return implementation.evaluate_step(inputs, trial)[0].value
 
 
 def test_literal_edits_keep_real_operands_and_do_not_retrace(functions):
@@ -250,7 +257,7 @@ def test_plugin_state_is_a_pytree_and_run_randomness_uses_the_run_key():
     step = jax.jit(counter.evaluate_step)
     first, state = step(inputs, counter.initial_state)
     second, _ = step(inputs, state)
-    assert (float(first), float(second)) == (0.0, 1.0)
+    assert (float(first.value), float(second.value)) == (0.0, 1.0)
     run_random = compiled("demo.run_random()", site(), registry)
     assert evaluate(run_random, Inputs((), {}, run, a)) == evaluate(
         run_random, Inputs((), {}, run, b)
@@ -284,16 +291,16 @@ def test_held_waits_for_elapsed_time_and_resets(functions):
         ScopedValue(id="condition", name="near", type=boolean, level=Level.STEP),
     )
     expected = site(ValueBase.BOOLEAN, level=Level.STEP, names=names)
-    implementation = compiled("held(near, 0.1 s)", expected, functions)
+    implementation = compiled("held(near, 0.1 s)", expected, functions, period=0.05)
     key = jax.random.key(0)
     state = implementation.initial_state
     observed = []
-    for clock, near in ((0.0, True), (0.05, True), (0.1, True), (0.15, False), (0.2, True)):
+    for step, near in enumerate((True, True, True, False, True)):
         value, state = implementation.evaluate_step(
-            Inputs(implementation.parameters, {"clock": clock, "condition": near}, key, key),
+            Inputs(implementation.parameters, {"condition": near}, key, key, step=step),
             state,
         )
-        observed.append(bool(value))
+        observed.append(bool(value.value))
     assert observed == [False, False, True, False, False]
 
 
@@ -343,3 +350,127 @@ def test_plugin_function_uses_application_provenance():
         check(tree, site(), absent.bundle.expression_functions)[0].code
         == ProblemCode.PLUGIN_MISSING
     )
+
+
+def scan_expression(implementation, values, entries):
+    key = jax.random.key(0)
+    count = len(entries)
+
+    def run(values):
+        def step(state, data):
+            k, environment, epoch_entry = data
+            result, state = implementation.evaluate_step(
+                Inputs(
+                    implementation.parameters,
+                    environment,
+                    key,
+                    key,
+                    step=k,
+                    epoch_entry=epoch_entry,
+                ),
+                state,
+            )
+            return state, result
+
+        inputs = Inputs(implementation.parameters, {}, key, key)
+        state = implementation.with_trial(inputs, implementation.evaluate_run(inputs))
+        return jax.lax.scan(step, state, (jnp.arange(count), values, entries))[1]
+
+    return jax.jit(run)(values)
+
+
+def test_backward_difference_has_trial_history_and_time_dimensions(functions):
+    vector = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
+    names = (ScopedValue(id="source", name="x", type=vector, level=Level.STEP),)
+    x = jnp.asarray([[0.0, 1.0], [1.0, 4.0], [4.0, 9.0], [9.0, 16.0], [16.0, 25.0]])
+    epoch_entries = jnp.asarray([True, False, True, False, False])
+    for spelling, dimensions, scale in (
+        ("diff(x, 2)", LENGTH, 1.0),
+        ("ddt(x, n=2)", LENGTH.combine(TIME, -2), 4.0),
+    ):
+        expected = site(shape=(2,), dimensions=dimensions, level=Level.STEP, names=names)
+        form = compiled(spelling, expected, functions, period=0.5, reset_on_epoch=True)
+        result = scan_expression(form, {"source": x}, epoch_entries)
+        assert result.defined.tolist() == [False, False, True, True, True]
+        assert jnp.allclose(result.value[result.defined], scale * jnp.diff(x, n=2, axis=0))
+        assert form.checked.root.type.dimensions == dimensions
+        empty = scan_expression(form, {"source": x[:0]}, epoch_entries[:0])
+        assert empty.defined.shape == (0,)
+    assert read_field("diff(x, 0)", expected, functions)[0].path == ("args", 1)
+    assert read_field("diff(x, n=x)", expected, functions)[0].path == ("kwargs", "n")
+
+
+def test_selected_branch_and_chained_temporal_validity(functions):
+    numeric = ValueType(base=ValueBase.REAL)
+    names = (ScopedValue(id="source", name="x", type=numeric, level=Level.STEP),)
+    expected = site(level=Level.STEP, names=names)
+    x = jnp.arange(4.0)
+    entries = jnp.asarray([True, False, False, False])
+    form = compiled("where(x == 0, 7, diff(diff(x)))", expected, functions)
+    result = scan_expression(form, {"source": x}, entries)
+    assert result.defined.tolist() == [True, False, True, True]
+    assert result.value[result.defined].tolist() == [7.0, 0.0, 0.0]
+
+
+def test_held_restarts_on_epoch_entry_only_at_epoch_sites(functions):
+    names = (
+        ScopedValue(
+            id="condition", name="near", type=ValueType(base=ValueBase.BOOLEAN), level=Level.STEP
+        ),
+    )
+    expected = site(ValueBase.BOOLEAN, level=Level.STEP, names=names)
+    entries = jnp.asarray([True, False, False, True, False, False])
+    for reset_on_epoch, values in (
+        (True, [False, False, True, False, False, True]),
+        (False, [False, False, True, True, True, True]),
+    ):
+        form = compiled(
+            "held(near, 2 st)", expected, functions, period=0.05, reset_on_epoch=reset_on_epoch
+        )
+        result = scan_expression(form, {"condition": jnp.ones(6, dtype=bool)}, entries)
+        assert result.value.tolist() == values
+
+
+def test_shapes_on_the_local_axis(functions):
+    clock = ValueType(base=ValueBase.REAL, dimensions=TIME)
+    names = (
+        ScopedValue(id="local", name="t", type=clock, level=Level.STEP),
+        ScopedValue(id="duration", name="T", type=clock, level=Level.TRIAL),
+    )
+    expected = site(level=Level.STEP, names=names)
+    timeline = jnp.arange(9) * 0.1
+    env = {"local": timeline, "duration": jnp.ones_like(timeline)}
+    entries = jnp.zeros(9, dtype=bool)
+    repeating = compiled("pulse(1, 8, 0.19 s, 0.21 s, every=4 st)", expected, functions, period=0.1)
+    assert scan_expression(repeating, env, entries).value.tolist() == [1, 1, 8, 8, 1, 1, 8, 8, 1]
+    once = compiled("pulse(1, 8, 0.19 s, 0.21 s)", expected, functions, period=0.1)
+    assert scan_expression(once, env, entries).value.tolist() == [1, 1, 8, 8, 1, 1, 1, 1, 1]
+
+    for mode, value in (("hold", 0.0), ("linear", 2.5), ("cubic", 1.796875)):
+        text = f"points([0.2, 0.4, 0.6], [0, 10, 20], interp={mode})"
+        form = compiled(text, expected, functions)
+        result = scan_expression(form, env, entries)
+        assert result.defined.all()
+        assert jnp.allclose(result.value[jnp.asarray([0, 1, 7, 8])], jnp.asarray([0, 0, 20, 20]))
+        sample_env = {"local": jnp.asarray([0.25]), "duration": jnp.ones(1)}
+        sample = scan_expression(form, sample_env, entries[:1])
+        assert float(sample.value[0]) == pytest.approx(value)
+        tree = parsed(text, expected)
+        assert parsed(print_field(tree, expected), expected) == tree
+
+    bad = read_field("points([0, 1], [1])", expected, functions)
+    assert bad[0].code == ProblemCode.LIST_COUNT
+    bad = read_field("points([0.5, 0.5], [1, 2])", expected, functions)
+    assert bad[0].path == ("args", 0)
+    bad = read_field("points([0, 1], [1, 2], interp=other)", expected, functions)
+    assert bad[0].path == ("kwargs", "interp")
+    assert "data" not in functions.keys()
+
+    sines = compiled("sines(2, 3, [1 Hz], [90°])", expected, functions)
+    assert jnp.allclose(
+        scan_expression(sines, env, entries).value, 2 + 3 * jnp.cos(2 * jnp.pi * timeline)
+    )
+    noise = compiled("noise(0, 1)", expected, functions)
+    observed = scan_expression(noise, env, entries).value
+    assert len(jnp.unique(observed)) == len(timeline)
+    assert jnp.array_equal(scan_expression(noise, env, entries).value, observed)

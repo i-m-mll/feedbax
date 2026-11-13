@@ -5,13 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import Field
 
 from feedbax.contracts.expression_values import (
+    CallValue,
     Dimensions,
     Level,
+    NodePath,
     ProblemCode,
     ValueBase,
     ValueRecord,
@@ -27,6 +29,16 @@ class FunctionClass(StrEnum):
     SWEEP_RULE = "sweep_rule"
 
 
+class Evaluation(NamedTuple):
+    value: Any
+    defined: Any
+
+
+class StateReset(StrEnum):
+    TRIAL = "trial"
+    EPOCH = "epoch"
+
+
 class FunctionInfo(ValueRecord):
     id: str
     signature: str
@@ -39,12 +51,14 @@ class FunctionInfo(ValueRecord):
     requires_period: bool = False
     random: bool = False
     stateful: bool = False
+    reset: StateReset = StateReset.TRIAL
 
 
 @dataclass(frozen=True)
 class SignatureError:
     code: ProblemCode
     reason: str
+    path: NodePath = ()
 
 
 type Signature = Callable[
@@ -73,6 +87,7 @@ class Function:
     initial_state: Callable[[ValueType], Any] | None = None
     argument_context: ArgumentContext | None = None
     result_dimensions: ResultDimensions | None = None
+    bind: Callable[[Function, CallValue], tuple[Function, CallValue] | SignatureError] | None = None
 
 
 class FunctionRegistry:
