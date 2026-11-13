@@ -110,8 +110,9 @@ _KEYWORDS = frozenset({"true", "false", "and", "or", "not"})
 
 @lru_cache(maxsize=1)
 def _parser() -> Lark:
+    units = sorted(filter(None, UNITS), key=len, reverse=True)
     unit_pattern = (
-        "(?:" + "|".join(sorted(filter(None, UNITS), key=len, reverse=True)) + r")(?![\w.])"
+        "(?:" + "|".join(re.escape(unit).replace("/", r"\/") for unit in units) + r")(?![\w.])"
     )
     return Lark(
         _GRAMMAR.replace("UNIT_PATTERN", unit_pattern),

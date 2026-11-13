@@ -197,6 +197,10 @@ class RolloutStepContext(Module):
     node_name: str = field(static=True)
     node_inputs: dict[str, PyTree]
 
+    @property
+    def period_seconds(self) -> float | None:
+        return self.graph.period_seconds
+
 
 class RolloutStepHookResult(Module):
     """Replacement values returned by a graph rollout-step hook.
@@ -336,8 +340,14 @@ class Graph(GraphNode):
         default=None, static=True
     )
     checkpoint: bool = eqx.field(default=False, static=True)
+    step_seconds: float | None = field(default=None, static=True)
+    inherited_period: float | None = field(default=None, static=True, repr=False)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
+
+    @property
+    def period_seconds(self) -> float | None:
+        return self.step_seconds if self.step_seconds is not None else self.inherited_period
 
     @property
     def _scoped_schedule(self) -> SignalSchedule | None:
@@ -1341,7 +1351,17 @@ class Graph(GraphNode):
             initializer = wire.recurrent_initializer or {}
             if "model_delay_id" in initializer:
                 delay = ModelDelayCarry.model_validate(initializer)
-                init_values[target_key] = jnp.full(delay.carry_shape, delay.initial, dtype=delay.dtype)
+                if delay.reset_output is None:
+                    value = jnp.full(delay.shape, delay.initial, dtype=delay.dtype)
+                else:
+                    end = delay.reset_output
+                    outputs = self.nodes[end.component].initial_outputs(node_states.get(end.component))
+                    if end.port not in outputs:
+                        raise ValueError(f"{wire} reset output {end.component}.{end.port} is unavailable")
+                    value = jnp.asarray(outputs[end.port], dtype=delay.dtype)
+                    if value.shape != delay.shape:
+                        raise ValueError(f"{wire} reset output shape {value.shape} differs from {delay.shape}")
+                init_values[target_key] = jnp.broadcast_to(value, delay.carry_shape)
                 continue
             if initializer.get("kind") == "state_output" and (
                 "source_node" in initializer or "source_port" in initializer

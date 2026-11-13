@@ -23,6 +23,7 @@ from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import (
     SourcePayload,
     derive_acausal_interface,
+    is_acausal_type,
     normalize_acausal_interfaces_for_graph,
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -447,7 +448,19 @@ class _Completion:
         if name in self.children:
             outputs = self.children[name].graph_outputs()
         elif required_interior_domain(node.type, self.registry) not in (None, CAUSAL_DOMAIN_ID):
-            outputs = {port: jnp.zeros(()) for port in node.output_ports}
+            subgraph = (self.graph.subgraphs or {}).get(name)
+            if isinstance(subgraph, AcausalGraphSpec) and subgraph.physical_domain == "planar_multibody":
+                outputs = {
+                    sensor.params.get("port_name", "y"): jnp.zeros((2,))
+                    for sensor in subgraph.nodes.values()
+                    if is_acausal_type(sensor.type, "SensorOutput")
+                    and sensor.params.get("quantity", "position") in {"position", "velocity"}
+                }
+                outputs.update({
+                    port: jnp.zeros(()) for port in node.output_ports if port not in outputs
+                })
+            else:
+                outputs = {port: jnp.zeros(()) for port in node.output_ports}
         else:
             fn = _lookup_output_prototype_fn(self.registry, node.type)
             if fn is None:

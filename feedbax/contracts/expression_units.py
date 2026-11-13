@@ -19,6 +19,7 @@ UNITS = MappingProxyType(
         "ms": Unit(TIME, 0.001),
         "st": Unit(TIME),
         "m": Unit(LENGTH),
+        "m/s": Unit(LENGTH.combine(TIME, -1)),
         "cm": Unit(LENGTH, 0.01),
         "mm": Unit(LENGTH, 0.001),
         "rad": Unit(ANGLE),
@@ -26,6 +27,7 @@ UNITS = MappingProxyType(
         "kg": Unit(Dimensions(mass=1)),
         "N": Unit(Dimensions(length=1, mass=1, time=-2)),
         "Hz": Unit(Dimensions(time=-1)),
+        "1": Unit(DIMENSIONLESS),
         "": Unit(DIMENSIONLESS),
     }
 )

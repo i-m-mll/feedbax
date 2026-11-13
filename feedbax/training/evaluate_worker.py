@@ -120,7 +120,7 @@ def _rollouts(
     variant = resolve_evaluation_variant(slot.graph, spec.task, params.variation)
     leaves = dict(graph_leaf_specs(variant.graph))
     effector_owners = [
-        scope for scope, port in graph_output_sources(variant.graph)
+        scope for scope, port in graph_output_sources(slot.graph)
         if (node := leaves.get(scope)) is not None
         and (declaration := MODEL_OWNERS.get(node.type)) is not None
         and declaration.scene_effector_port == port
@@ -167,13 +167,15 @@ def _rollouts(
     except ModelCheckpointError as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
 
-    root_clock = MODEL_OWNERS[leaves[owner].type].clock
-    if root_clock is None:
-        raise CannotRun("/inputs/subject/graph/output_bindings", "effector owner lacks a declared clock")
-    effector = graph
-    for occurrence in owner:
-        effector = effector.nodes[occurrence]
-    period = getattr(effector, root_clock)
+    period = graph.step_seconds
+    if period is None:
+        root_clock = MODEL_OWNERS[leaves[owner].type].clock
+        if root_clock is None:
+            raise CannotRun("/inputs/subject/graph/output_bindings", "effector owner lacks a declared clock")
+        effector = graph
+        for occurrence in owner:
+            effector = effector.nodes[occurrence]
+        period = getattr(effector, root_clock)
     for scope, node in graph_leaf_specs(executable.resolved.graph):
         component = graph
         for name in scope:

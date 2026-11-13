@@ -6,7 +6,9 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse, ModelUndoRequest
+from feedbax.contracts.model_edit import (
+    EvaluateAttachmentEdit, EvaluateAttachmentRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
+)
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_authoring import (
@@ -200,6 +202,23 @@ def undo_model(
     return _project_response(
         response, lambda: request.app.state.project_folders.undo_model(project_id, body)
     )
+
+
+@router.post("/{project_id}/model/evaluate-attachment")
+def evaluate_attachment(
+    project_id: ProjectName, body: EvaluateAttachmentRequest, request: Request, response: Response,
+) -> EvaluateAttachmentEdit:
+    from feedbax.web.services.evaluate_attachment import EvaluateAttachmentRefused, prepare_evaluate_attachment
+
+    try:
+        return _project_response(
+            response, lambda: prepare_evaluate_attachment(
+                request.app.state.project_folders, project_id, body,
+                request.app.state.bootstrap_state.bundle.components,
+            ),
+        )
+    except EvaluateAttachmentRefused as error:
+        raise HTTPException(422, detail=error.problem.model_dump(mode="json"), headers=_NO_STORE) from error
 
 
 @router.put("/{project_id}/presentation", response_model_exclude_unset=True)

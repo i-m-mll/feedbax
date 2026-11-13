@@ -488,6 +488,36 @@ export interface DuplicateComponents {
   op: "duplicate";
 }
 
+export interface EvaluateAttachmentAxis {
+  kind: "axis_value";
+  axis: string;
+  value: string;
+}
+
+export interface EvaluateAttachmentEdit {
+  revision: unknown;
+  changed: ModelAddress;
+  file: StudioProjectFilePatch;
+}
+
+export interface EvaluateAttachmentRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  owner: ModelAddress;
+  attachment: InterventionAttachment;
+  index: number;
+  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows;
+}
+
+export interface EvaluateAttachmentRows {
+  kind: "rows";
+  rows: string[];
+}
+
+export interface EvaluateAttachmentStep {
+  kind: "step";
+}
+
 export interface PasteComponents {
   op: "paste";
   graph: ModelAddress;
@@ -861,6 +891,7 @@ export interface GraphMetadata {
 export interface GraphSpec {
   schema_id?: "feedbax.spec.graph";
   schema_version?: "feedbax.spec.graph.v6";
+  step_seconds?: number | null;
   nodes?: Record<string, ComponentSpec>;
   wires?: WireSpec[];
   additive_channel_adapters?: AdditiveGraphChannelAdapterSpec[];
@@ -4657,6 +4688,56 @@ export const DuplicateComponentsSchema: z.ZodType<DuplicateComponents> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<DuplicateComponents>;
 
+export const EvaluateAttachmentAxisSchema: z.ZodType<EvaluateAttachmentAxis> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("axis_value"),
+      "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentAxis>;
+
+export const EvaluateAttachmentEditSchema: z.ZodType<EvaluateAttachmentEdit> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "changed": ModelAddressSchema,
+      "file": StudioProjectFilePatchSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentEdit>;
+
+export const EvaluateAttachmentRequestSchema: z.ZodType<EvaluateAttachmentRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "owner": ModelAddressSchema,
+      "attachment": InterventionAttachmentSchema,
+      "index": z.number().int().safe().gte(0),
+      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentRequest>;
+
+export const EvaluateAttachmentRowsSchema: z.ZodType<EvaluateAttachmentRows> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("rows"),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentRows>;
+
+export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("step"),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentStep>;
+
 export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
   z
     .object({
@@ -5314,6 +5395,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
     .object({
       "schema_id": z.literal("feedbax.spec.graph").optional(),
       "schema_version": z.literal("feedbax.spec.graph.v6").optional(),
+      "step_seconds": z.number().finite().gt(0).nullable().optional(),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "wires": z.array(WireSpecSchema).optional(),
       "additive_channel_adapters": z.array(AdditiveGraphChannelAdapterSpecSchema).optional(),
@@ -9736,6 +9818,8 @@ export const contractSchemas = {
   ModelDocument: ModelDocumentSchema,
   ModelEditRequest: ModelEditRequestSchema,
   ModelEditResponse: ModelEditResponseSchema,
+  EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
+  EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   FieldTextResult: FieldTextResultSchema,
@@ -9850,6 +9934,8 @@ export interface ContractTypeMap {
   ModelDocument: ModelDocument;
   ModelEditRequest: ModelEditRequest;
   ModelEditResponse: ModelEditResponse;
+  EvaluateAttachmentRequest: EvaluateAttachmentRequest;
+  EvaluateAttachmentEdit: EvaluateAttachmentEdit;
   ModelUndoRequest: ModelUndoRequest;
   AnalysisDocument: AnalysisDocument;
   FieldTextResult: FieldTextResult;

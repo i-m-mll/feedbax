@@ -7,10 +7,15 @@ import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 import pytest
+from fastapi.testclient import TestClient
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
+from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_graph
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
+from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.component_registry import ComponentPack, ComponentRegistry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
@@ -36,7 +41,10 @@ from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.studio_training import StudioGraphMethodPayload
 from feedbax.contracts.training import TrainingSpec
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.evaluate_attachment import prepare_evaluate_attachment
+from feedbax.contracts.model_edit import EvaluateAttachmentRequest
 from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.web.app import create_app
 from feedbax.web.worker.execution import compile_training_run, prototypes_from_task_bindings
 from tests.test_canonical_evaluate_admission import _save_project, authored_evaluation_project
 from tests.test_local_job_host import host as host_fixture, job_row, wait_until
@@ -247,6 +255,8 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
         input_prototypes=prototypes_from_task_bindings(spec.task_binding_spec),
         initialization_key=jax.random.key(42),
     ).graph
+    assert graph.period_seconds == spec.graph.step_seconds == graph.nodes["plant"].dt
+    assert graph.nodes["wrapper"].nodes["controller"].period_seconds == graph.period_seconds
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     prepared = compile_training_run(
@@ -355,6 +365,59 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
         reader.evaluation_parameters(invalid, evaluate)
 
 
+@pytest.mark.parametrize(("kind", "scope"), [
+    ("wire", {"kind": "step"}),
+    ("port", {"kind": "rows", "rows": ["seed=control"]}),
+    ("port", {"kind": "axis_value", "axis": "seed", "value": "control"}),
+])
+def test_addressed_evaluate_attachment_is_a_step_edit(tmp_path, kind, scope):
+    raw = _model_project()
+    selected = "default"
+    if scope["kind"] != "step":
+        raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
+            "control": {"patches": {"params.seed": {"op": "replace", "value": 2}}},
+            "comparison": {"patches": {"params.seed": {"op": "replace", "value": 3}}},
+        }}}}
+        selected = "seed=control"
+    project = Project.model_validate(raw)
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "nested", project)
+    before = folders.read_plan("nested", revision=None)
+    element = (
+        {"kind": "wire", "id": "decode"} if kind == "wire" else
+        {"kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"}}
+    )
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        base = "/api/projects/nested"
+        body = {
+            "revision": before.revision,
+            "run": {"step": "baseline", "row": selected, "variant": "default"},
+            "owner": {"document": "reach-model", "composites": ["wrapper", "controller"], "element": element},
+            "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}},
+            "index": 0,
+            "scope": scope,
+        }
+        reply = client.post(f"{base}/model/evaluate-attachment", json=body)
+        assert reply.status_code == 200, reply.text
+        edited = reply.json()
+        assert edited["changed"]["element"]["id"] == "condition"
+        assert folders.read("nested").project == project
+        invalid = deepcopy(body)
+        invalid["owner"]["composites"].append("missing")
+        refused = client.post(f"{base}/model/evaluate-attachment", json=invalid)
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["address"] == invalid["owner"]
+        committed = client.patch(base, json={"revision": before.revision, **edited["file"]})
+        assert committed.status_code == 200, committed.text
+        assert client.post(f"{base}/model/evaluate-attachment", json=body).status_code == 409
+    after = folders.read_plan("nested", revision=None)
+    prior = {run.key: run.request_id for run in before.plan.runs}
+    result = {run.key: run.request_id for run in after.plan.runs}
+    assert result.keys() == prior.keys()
+    assert {key for key in prior if result[key] != prior[key]} == {RunKey("default", "baseline", selected)}
+    assert folders.read("nested").project.documents == project.documents
+
+
 def test_group_keeps_delay_on_a_crossing_gru_output():
     raw = _model_project()
     registry = ComponentRegistry()
@@ -458,6 +521,154 @@ def test_stored_equations_use_the_scalar_solver_and_free_boundary():
     assert exc.value.address.composites == ("equations",)
 
 
+def test_linked_delay_repeats_the_completed_reset_state():
+    raw = _model_project()
+    model = raw["documents"]["reach-model"]["payload"]
+    scope = ("wrapper", "controller")
+    controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    delay = controller["interior"]["wires"]["carry"]["attachments"][0]
+    delay["delay"]["value"] = 3
+    reference = ModelAddress.model_validate({
+        "document": "reach-model", "composites": scope,
+        "element": {"kind": "port", "end": {**_end("cell", "hidden"), "direction": "output"}},
+    })
+    delay["initial"] = {"kind": "name", "reference": reference.to_text()}
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics
+    train = next(run for run in plan.runs if run.kind == "train")
+    request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
+    graph = compile_graph(
+        GraphDocument(graph=request.graph), ComponentRegistry(),
+        input_prototypes=prototypes_from_task_bindings(request.task_binding_spec),
+    ).graph
+    state = graph.init_state(key=jax.random.key(3))
+    cell = graph.nodes["wrapper"].nodes["controller"].nodes["cell"]
+    state = cell.replace_state_value(state, ("hidden",), jnp.full((cell.hidden_size,), 2.0, dtype=jnp.float32))
+    carry = graph.initial_cycle_port_values(state)[("__nested__", "wrapper")][("__nested__", "controller")]
+    (queue,) = carry.values()
+    np.testing.assert_array_equal(queue, np.full((3, cell.hidden_size), 2.0))
+    delay["initial"]["reference"] = reference.model_copy(update={"composites": ()}).to_text()
+    refused = compile_project(Project.model_validate(raw))
+    assert refused.diagnostics[0].model_address.element.id == "carry"
+
+
+@pytest.mark.parametrize(("tau", "alpha"), [
+    (1, 1),
+    ({"kind": "literal", "value": 1, "unit": "st"}, 1),
+    ({"kind": "literal", "value": 0.05, "unit": "s"}, 0.2),
+])
+def test_root_period_resolves_leaky_cell_tau_and_model_interface(tau, alpha):
+    payload = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{**_port("setpoint", "setpoint", shape=[2]), "default": {"value": [0, 0]}}],
+            "outputs": [{"id": "estimate", "name": "estimate", "type": {"shape": [2], "unit": "m/s"}}],
+        },
+        "interior": {
+            "components": {"cell": {
+                "kind": "leaf", "name": "Cell", "type": "feedbax.VanillaRNN",
+                "fields": {"input_size": 2, "hidden_size": 2, "tau": tau},
+            }},
+            "wires": {
+                "drive": _wire({"owner": "inputs", "port": "setpoint"}, _end("cell", "input")),
+                "read": _wire(_end("cell", "output"), {"owner": "outputs", "port": "estimate"}),
+            },
+        },
+    }
+    registry = ComponentRegistry()
+    model = ModelDocument.model_validate(payload)
+    lowered = lower_model_document("model", model, registry, StudioTaskBindingSpec())
+    interface = lowered.interface("model", model, registry)
+    assert interface.period_seconds == 0.01
+    assert not interface.inputs[0].required
+    output, = interface.outputs
+    assert ModelAddress.from_text(output.id).element.end.port == "estimate"
+    assert output.type == ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1))
+    executable = compile_graph(GraphDocument(graph=lowered.graph), registry)
+    assert executable.graph.nodes["cell"].cell.alpha == pytest.approx(alpha)
+
+
+def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
+    pytest.importorskip("mujoco.mjx")
+    spec = two_link_arm_6muscle_template_graph()
+    nodes = {
+        key: {"kind": "leaf", "name": key, "type": node.type, "fields": dict(node.params)}
+        for key, node in spec.nodes.items() if key not in {"effector", "state"}
+    }
+    nodes["sensor"] = {
+        "kind": "leaf", "name": "Position", "type": "feedbax.SensorOutput",
+        "fields": {"quantity": "position"},
+    }
+    plant = {
+        "kind": "composite", "name": "Arm", "substeps": 2,
+        "ports": {"inputs": [_port("drive", "Drive", shape=[6])], "outputs": [_port("pos", "Position", shape=[2])]},
+        "interior": {
+            "physical_domain": "planar_multibody", "components": nodes,
+            "connections": {
+                f"frame-{i}": {"a": _end(*edge.a), "b": _end(*edge.b)}
+                for i, edge in enumerate(spec.connections)
+            },
+            "wires": {
+                "actuate": _wire({"owner": "inputs", "port": "drive"}, _end("excitation", "u")),
+                "sense": _wire(_end("sensor", "y"), {"owner": "outputs", "port": "pos"}),
+            },
+        },
+    }
+    hold = {
+        "kind": "leaf", "name": "Hold", "type": "feedbax.ZeroOrderHold",
+        "fields": {"hold_steps": 1, "n_dims": 2},
+    }
+    linear = {
+        "kind": "leaf", "name": "Readout", "type": "feedbax.Linear",
+        "fields": {"input_size": 2, "output_size": 6, "initialization": "zeros"},
+    }
+    payload = {
+        "step_seconds": 0.01,
+        "world": {"gravity": [0.0, -9.81, 0.0]},
+        "ports": {"outputs": [_port("pos", "position", shape=[2])]},
+        "interior": {"components": {"arm": plant, "hold": hold, "linear": linear}, "wires": {
+            "sample": _wire(_end("arm", "pos"), _end("hold", "input")),
+            "sampled": _wire(_end("hold", "output"), _end("linear", "input")),
+            "drive": _wire(_end("linear", "output"), _end("arm", "drive")),
+            "observed": _wire(_end("arm", "pos"), {"owner": "outputs", "port": "pos"}),
+        }},
+    }
+    registry = ComponentRegistry()
+    lowered = lower_model_document("model", ModelDocument.model_validate(payload), registry)
+    graph = compile_graph(GraphDocument(graph=lowered.graph), registry).graph
+    key = jax.random.key(7)
+    state = graph.init_state(key=key)
+    initial = graph.nodes["arm"].initial_outputs(graph.nodes["arm"].state_view(state))["pos"]
+    outputs, _, traces = graph.rollout_with_trace(
+        {}, state, n_steps=3, key=key,
+        trace=(GraphTraceRequest("port", "sample", node="hold", port="output"),),
+    )
+    np.testing.assert_array_equal(traces["sample"][0], initial)
+    np.testing.assert_array_equal(traces["sample"][1:], outputs["position"][:-1])
+    assert graph.nodes["arm"].backend.n_substeps == 2
+    assert graph.nodes["arm"].backend.sub_dt == pytest.approx(0.005)
+
+    reference = ModelAddress.model_validate({
+        "document": "model", "composites": [],
+        "element": {"kind": "port", "end": {**_end("arm", "pos"), "direction": "output"}},
+    })
+    payload["interior"]["wires"]["sample"]["attachments"] = [{
+        "kind": "delay", "id": "lag", "delay": {"value": 2, "unit": "st"},
+        "initial": {"kind": "name", "reference": reference.to_text()},
+    }]
+    linked = lower_model_document("model", ModelDocument.model_validate(payload), registry)
+    delayed = compile_graph(GraphDocument(graph=linked.graph), registry).graph
+    carries = delayed.initial_cycle_port_values(delayed.init_state(key=key))
+    np.testing.assert_array_equal(carries["hold", "input"], np.stack([initial, initial]))
+    payload["interior"]["wires"]["sample"]["attachments"] = []
+    payload["interior"]["components"].pop("hold")
+    payload["interior"]["wires"].pop("sampled")
+    payload["interior"]["wires"]["sample"]["target"] = _end("linear", "input")
+    with pytest.raises(ModelCompilationProblem, match="within-step") as error:
+        lower_model_document("model", ModelDocument.model_validate(payload), registry)
+    assert error.value.address.element.id == "drive"
+
+
 @pytest.mark.parametrize("grouped", [False, True])
 def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys, grouped):
     registry = new_application_registry_bundle()
@@ -469,10 +680,23 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
         controller["interior"]["wires"]["carry"]["attachments"][0]["delay"]["value"] = 3
-        raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = _nested_scale_variation()
     project = "nested"
     _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
+    if grouped:
+        edit = prepare_evaluate_attachment(folders, project, EvaluateAttachmentRequest.model_validate({
+            "revision": plan.revision,
+            "run": {"step": "baseline", "row": "default", "variant": "default"},
+            "owner": {
+                "document": "reach-model", "composites": ["wrapper", "controller"],
+                "element": {"kind": "wire", "id": "decode"},
+            },
+            "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}},
+            "index": 0, "scope": {"kind": "step"},
+        }), registry.components)
+        raw["steps"]["baseline"][edit.file.patches[0].path.removeprefix("/")] = edit.file.patches[0].value
+        _save_project(folders, project, Project.model_validate(raw))
+        plan = folders.read_plan(project, revision=None)
     assert main(["plan", str(folders.root / project)]) == 0
     assert set(line.split()[1] for line in capsys.readouterr().out.splitlines()) == {
         run.request_id for run in plan.plan.runs

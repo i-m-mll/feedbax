@@ -178,6 +178,14 @@ def resolve_evaluation_variant(
                     if field not in WireSpec.model_fields:
                         raise ValueError("unknown wire field")
                     raw["wires"][wire_id]["id"] = wire_id
+                case ["output_bindings", name], "replace":
+                    if name not in current.output_bindings:
+                        raise ValueError("output patch must retain the declared port")
+                    if (
+                        not isinstance(patch.value, (list, tuple)) or len(patch.value) != 2
+                        or not all(isinstance(part, str) for part in patch.value)
+                    ):
+                        raise ValueError("output binding requires a node and port")
                 case ["nodes", name], "add":
                     if name in raw["nodes"]:
                         raise ValueError("cannot replace a retained owner with an addition")

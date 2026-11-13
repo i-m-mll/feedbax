@@ -22,6 +22,7 @@ ACTUATION_INPUT_TYPE = "ActuationInput"
 SENSOR_OUTPUT_TYPE = "SensorOutput"
 BOUNDARY_PORT_TYPE = "BoundaryPort"
 ACAUSAL_SYSTEM_TYPE = "AcausalSystem"
+PLANAR_STATE_ONLY_QUANTITIES = frozenset({"position", "velocity", "effector", "state"})
 
 
 class AcausalInterfaceError(ValueError):

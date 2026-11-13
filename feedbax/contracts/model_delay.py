@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.model_address import ModelElementId
+from feedbax.contracts.model_address import ComponentPortEnd, ModelElementId
 
 
 class ModelDelayCarry(StrictModel):
@@ -16,6 +16,7 @@ class ModelDelayCarry(StrictModel):
     units: str | None = Field(default=None, exclude_if=lambda value: value is None)
     steps: Annotated[int, Field(strict=True, ge=1)] = Field(default=1, exclude_if=lambda value: value == 1)
     initial: Annotated[float, Field(allow_inf_nan=False)] = Field(default=0, exclude_if=lambda value: value == 0)
+    reset_output: ComponentPortEnd | None = Field(default=None, exclude_if=lambda value: value is None)
     model_delay_id: ModelElementId
     model_wire_id: ModelElementId
 

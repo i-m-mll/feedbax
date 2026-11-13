@@ -326,6 +326,9 @@ class ComponentOptions:
     domain: str = "feedbax.domain.causal"
     interior_domain: str | None = None
     is_composite: bool = False
+    instantaneous: bool = False
+    state_only_outputs: tuple[str, ...] = ()
+    reset_outputs: tuple[str, ...] = ()
     output_prototype_fn: Any = None
     prototype_depends_on_connected_inputs: bool = False
     input_prototype_parameter: InputPrototypeParameter | None = None

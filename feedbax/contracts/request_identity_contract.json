@@ -1156,6 +1156,9 @@
       "retained_observables": {
         "absent": null
       },
+      "step_seconds": {
+        "absent": null
+      },
       "subgraphs": {
         "absent": null,
         "families": [

@@ -155,7 +155,28 @@ class _Edit:
         port = _listed_port(component, direction, end["port"])
         if port is None:
             return None
-        return Port(port["type"] if direction == "physical" else SignalType.model_validate(port["type"]))
+        state_only = False
+        if direction == "output" and end["owner"] == "component":
+            child = component["interior"]
+            source = next((
+                wire["source"] for wire in child["wires"].values()
+                if wire["target"] == _card("outputs", end["port"]) and not wire["attachments"]
+            ), None)
+            if source is not None and source["owner"] == "component":
+                leaf = child["components"].get(source["component"])
+                if child["physical_domain"] == "planar_multibody" and leaf is not None:
+                    from feedbax.contracts.acausal_interface import PLANAR_STATE_ONLY_QUANTITIES, is_acausal_type
+
+                    state_only = leaf["kind"] == "leaf" and is_acausal_type(leaf["type"], "SensorOutput") and (
+                        leaf["fields"].get("quantity", "position") in PLANAR_STATE_ONLY_QUANTITIES
+                    )
+                else:
+                    upstream = self.port(component, child, source, "output")
+                    state_only = upstream is not None and upstream.reads_state_only
+        return Port(
+            port["type"] if direction == "physical" else SignalType.model_validate(port["type"]),
+            reads_state_only=state_only,
+        )
 
     def component(self, address: ModelAddress) -> tuple[Record, Record]:
         _, graph = self.context(address)

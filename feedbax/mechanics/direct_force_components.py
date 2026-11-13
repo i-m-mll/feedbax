@@ -64,7 +64,9 @@ def mechanics_state_output_prototype(owner_type, params, inputs):
 
 for _owner in (PointMass, TwoLinkArm):
     _owner.component_options = ComponentOptions(
-        output_prototype_fn=partial(mechanics_state_output_prototype, _owner)
+        output_prototype_fn=partial(mechanics_state_output_prototype, _owner),
+        state_only_outputs=("effector", "state"),
+        reset_outputs=("effector", "state"),
     )
 
 

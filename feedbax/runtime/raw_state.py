@@ -171,6 +171,9 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         node = wire.target_node
         target = (node, wire.target_port)
         initializer = wire.recurrent_initializer or {}
+        if initializer.get("model_state_sample") is True and initializer.get("kind") == "state_output":
+            expected[target] = wire
+            continue
         if "model_delay_id" in initializer:
             try:
                 declaration = ModelDelayCarry.model_validate(initializer)
@@ -219,7 +222,8 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
             f"{'/'.join((*scope, node))}:unit", "1", None, _carry_reader((node, port), scope),
             legacy_carry=True,
         )
-        for node, port in expected if (node, port) not in model_delays
+        for (node, port), wire in expected.items()
+        if (node, port) not in model_delays and not (wire.recurrent_initializer or {}).get("model_state_sample")
     )
 
 

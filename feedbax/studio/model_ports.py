@@ -25,9 +25,11 @@ class ModelRegistryPorts:
             return False
         if component.get("revision") not in (None, declaration.revision):
             return False
-        return (
-            declaration.domain == "feedbax.domain.causal"
-            if domain is None else declaration.domain == "feedbax.domain.acausal"
+        if domain is None:
+            return declaration.domain == "feedbax.domain.causal"
+        return declaration.domain == "feedbax.domain.acausal" or (
+            domain in {"planar_multibody", "spatial_multibody"}
+            and declaration.domain == "feedbax.domain.mechanics"
         )
 
     def port(self, component: Record, direction: Direction, port: str) -> Port | None:
@@ -62,8 +64,11 @@ class ModelRegistryPorts:
                     if spec.physical_domain:
                         result["physical", port] = Port(spec.physical_domain)
                     continue
-                result[direction, port] = Port(SignalType(
-                    base=spec.dtype if spec else None,
-                    shape=tuple(spec.shape) if spec and spec.shape is not None else None,
-                ))
+                result[direction, port] = Port(
+                    SignalType(
+                        base=spec.dtype if spec else None,
+                        shape=tuple(spec.shape) if spec and spec.shape is not None else None,
+                    ),
+                    reads_state_only=direction == "output" and port in declaration.compiler.state_only_outputs,
+                )
         return result

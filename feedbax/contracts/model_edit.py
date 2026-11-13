@@ -10,11 +10,13 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput,
+    InterventionAttachment, ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput,
 )
+from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_inputs import ProjectName, RowKey
 from feedbax.contracts.studio_project import StudioProjectSnapshot
+from feedbax.contracts.studio_project import StudioProjectFilePatch
 
 
 class ModelPosition(StrictModel):
@@ -161,6 +163,39 @@ class ModelUndoRequest(StrictModel):
     revision: Sha256
     presentation_revision: Sha256
     token: ModelUndoToken
+
+
+class EvaluateAttachmentStep(StrictModel):
+    kind: Literal["step"]
+
+
+class EvaluateAttachmentAxis(StrictModel):
+    kind: Literal["axis_value"]
+    axis: ProjectName
+    value: ProjectName
+
+
+class EvaluateAttachmentRows(StrictModel):
+    kind: Literal["rows"]
+    rows: Annotated[tuple[RowKey, ...], Field(min_length=1)]
+
+
+class EvaluateAttachmentRequest(StrictModel):
+    revision: Sha256
+    run: StudioSavedTrainKey
+    owner: ModelAddress
+    attachment: InterventionAttachment
+    index: Annotated[int, Field(strict=True, ge=0)]
+    scope: Annotated[
+        EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows,
+        Field(discriminator="kind"),
+    ]
+
+
+class EvaluateAttachmentEdit(StrictModel):
+    revision: Sha256
+    changed: ModelAddress
+    file: StudioProjectFilePatch
 
 
 class ModelEditApplied(StrictModel):

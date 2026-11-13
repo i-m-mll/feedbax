@@ -441,6 +441,9 @@ class GraphSpec(BaseModel):
         default=GRAPH_SPEC_SCHEMA_VERSION,
         description="Machine-readable GraphSpec schema version.",
     )
+    step_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     nodes: Dict[str, ComponentSpec] = Field(default_factory=dict)
     wires: List[WireSpec] = Field(default_factory=list)
     additive_channel_adapters: List[AdditiveGraphChannelAdapterSpec] = Field(default_factory=list)

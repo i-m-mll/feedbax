@@ -422,6 +422,7 @@ class Gain(Component):
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_passthrough_output_prototype
     )
 
@@ -457,6 +458,7 @@ class Input(Component):
         ),
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_node_output_prototype
     )
 
@@ -482,6 +484,7 @@ class Sum(Component):
         outputs={"output": PortType(dtype="any")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=sum_output_prototype
     )
 
@@ -503,6 +506,7 @@ class Subtract(Component):
         outputs={"out": PortType(dtype="any")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=subtract_output_prototype
     )
 
@@ -519,6 +523,7 @@ class Multiply(Component):
         outputs={"output": PortType(dtype="any")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=binary_elementwise_output_prototype
     )
 
@@ -542,6 +547,7 @@ class Reshape(Component):
         inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="array")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=reshape_output_prototype
     )
 
@@ -565,6 +571,7 @@ class MatMul(Component):
         outputs={"out": PortType(dtype="array")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=matmul_output_prototype
     )
 
@@ -588,6 +595,7 @@ class Scale(Component):
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_passthrough_output_prototype
     )
 
@@ -615,6 +623,7 @@ class Sigmoid(Component):
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_passthrough_output_prototype
     )
 
@@ -668,6 +677,7 @@ class Activation(CallableActivation, Component):
     config: ClassVar[type[BaseModel]] = _ActivationConfig
 
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_passthrough_output_prototype
     )
 
@@ -785,6 +795,7 @@ class Saturation(Component):
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_passthrough_output_prototype
     )
 
@@ -833,6 +844,7 @@ class Ravel(Component):
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="vector")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=ravel_output_prototype
     )
 
@@ -1046,6 +1058,7 @@ class Spring(Component):
         outputs={"force": PortType(dtype="vector")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=spring_output_prototype
     )
 
@@ -1066,6 +1079,7 @@ class Damper(Component):
         inputs={"velocity": PortType(dtype="vector")}, outputs={"force": PortType(dtype="vector")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=damper_output_prototype
     )
 
@@ -1229,6 +1243,7 @@ class Linear(LinearLayer, Component):
     config: ClassVar[type[BaseModel]] = _LinearConfig
 
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=linear_output_prototype,
         build_context_fields=("key",),
         trainable_by_default=True,
@@ -1265,6 +1280,7 @@ class MLP(Component):
         inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=linear_output_prototype,
         build_context_fields=("key",),
         trainable_by_default=True,
@@ -1351,6 +1367,7 @@ class GRU(Component):
         outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        reset_outputs=("hidden", "output"),
         output_prototype_fn=recurrent_output_prototype,
         build_context_fields=("key",),
         trainable_by_default=True,
@@ -1528,6 +1545,7 @@ class Mux(Component):
         ),
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=mux_output_prototype
     )
 
@@ -1593,6 +1611,7 @@ class Demux(Component):
         ),
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=demux_output_prototype
     )
 
@@ -1653,6 +1672,7 @@ class Switch(Component):
         outputs={"output": PortType(dtype="any")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=switch_output_prototype
     )
 
@@ -1699,6 +1719,7 @@ class DeadZone(Component):
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
         output_prototype_fn=input_passthrough_output_prototype
     )
 
