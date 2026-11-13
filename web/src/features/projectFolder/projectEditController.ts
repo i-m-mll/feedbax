@@ -654,7 +654,8 @@ export class ProjectEditController {
   }
 
   private async drain() {
-    this.requireEditable();
+    this.signal.throwIfAborted();
+    if (this.outside) throw new ProjectEditConflictError();
     if (!this.queued.length) return;
     this.saving = true;
     this.error = null;
