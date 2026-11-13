@@ -34,6 +34,7 @@ class BoundStateValue:
     units: str
     frame: str | None
     read: Callable[[State, dict | None], jax.Array]
+    legacy_carry: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,7 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         BoundStateValue(
             semantic_key("model", "carry", scope, "hidden", wire=f"{node}:hidden"),
             f"{'/'.join((*scope, node))}:unit", "1", None, _carry_reader((node, port), scope),
+            legacy_carry=True,
         )
         for node, port in expected if (node, port) not in model_delays
     )

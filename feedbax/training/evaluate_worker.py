@@ -34,7 +34,6 @@ from feedbax.studio.canonical_evaluate import (
     decode_rollout_request,
     evaluation_manifest_id,
     evaluation_subject_provenance,
-    state_key,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
@@ -83,7 +82,7 @@ def _rollouts(
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.graph import GraphSpec
-    from feedbax.contracts.model_occurrence import graph_leaf_specs
+    from feedbax.contracts.model_occurrence import graph_leaf_specs, graph_output_sources
     from feedbax.contracts.rollout import authored_variation
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.contracts.training import TrainingSpec
@@ -119,11 +118,11 @@ def _rollouts(
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
     variant = resolve_evaluation_variant(slot.graph, spec.task, params.variation)
-    outputs = variant.graph.output_bindings
+    leaves = dict(graph_leaf_specs(variant.graph))
     effector_owners = [
-        node for node, port in outputs.values()
-        if node in variant.graph.nodes
-        and (declaration := MODEL_OWNERS.get(variant.graph.nodes[node].type)) is not None
+        scope for scope, port in graph_output_sources(variant.graph)
+        if (node := leaves.get(scope)) is not None
+        and (declaration := MODEL_OWNERS.get(node.type)) is not None
         and declaration.scene_effector_port == port
     ]
     if len(effector_owners) != 1:
@@ -168,10 +167,13 @@ def _rollouts(
     except ModelCheckpointError as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
 
-    root_clock = MODEL_OWNERS[executable.resolved.graph.nodes[owner].type].clock
+    root_clock = MODEL_OWNERS[leaves[owner].type].clock
     if root_clock is None:
         raise CannotRun("/inputs/subject/graph/output_bindings", "effector owner lacks a declared clock")
-    period = getattr(graph.nodes[owner], root_clock)
+    effector = graph
+    for occurrence in owner:
+        effector = effector.nodes[occurrence]
+    period = getattr(effector, root_clock)
     for scope, node in graph_leaf_specs(executable.resolved.graph):
         component = graph
         for name in scope:
@@ -204,8 +206,8 @@ def _rollouts(
         path = location.get("path", "") if location else ""
         raise CannotRun(variant.edit_location(path) or "/params/variation" + path, str(error)) from error
     graph = compiled.graph
-    position = state_key(owner, "effector/position")
-    velocity = state_key(owner, "effector/velocity")
+    position = semantic_key("model", "state", owner, "effector/position")
+    velocity = semantic_key("model", "state", owner, "effector/velocity")
     raw = params.retention == "raw_states"
     try:
         layout = bind_raw_state(
@@ -274,7 +276,7 @@ def _rollouts(
                 ).hexdigest(),
                 "variation_sha256": variation_sha256,
             })
-        if any(name.startswith("/v1/model/carry/") for name in variables):
+        if any(value.legacy_carry for value in layout.values):
             attrs["carry_address_migration"] = "legacy-gru-hidden-self-loop.v1"
     return Dataset.from_arrays(
         variables,

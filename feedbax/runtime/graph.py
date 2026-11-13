@@ -32,6 +32,7 @@ from feedbax.runtime._graph_key_schedule import (
     step_keys,
 )
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
+from feedbax.runtime._signal_schedule import ScopedPort, SignalSchedule
 from feedbax.runtime.selectors import Selection, select
 
 _NESTED_CYCLE_NODE = "__nested__"
@@ -325,6 +326,10 @@ class Graph(GraphNode):
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
 
+    @property
+    def _scoped_schedule(self) -> SignalSchedule | None:
+        return None
+
     def __check_init__(
         self,
     ):  # Bug: 4e75416 — ensures validation runs even when subclass overrides __init__
@@ -372,20 +377,12 @@ class Graph(GraphNode):
         self._validate_node_output_recurrent_initializers()
 
     @property
-    def _cycle_analysis(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
-        return self._analyze_cycles()
-
-    @property
     def _execution_order(self) -> tuple[str, ...]:
-        return self._cycle_analysis[0]
+        return self._analyze_execution_order()
 
     @property
     def _cycle_wires(self) -> tuple[Wire, ...]:
-        return self._cycle_analysis[1]
-
-    @property
-    def _cycle_wire_set(self) -> set[Wire]:
-        return set(self._cycle_wires)
+        return tuple(wire for wire in self.wires if wire.temporality == "recurrent")
 
     @property
     def _needs_iteration(self) -> bool:
@@ -624,7 +621,7 @@ class Graph(GraphNode):
             outgoing.setdefault((wire.source_node, wire.source_port), []).append(wire)
         return outgoing
 
-    def _analyze_cycles(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
+    def _analyze_execution_order(self) -> tuple[str, ...]:
         adjacency = {name: set() for name in self.nodes}
         for wire in self.wires:
             if wire.temporality == "recurrent":
@@ -639,9 +636,7 @@ class Graph(GraphNode):
                 f"Mark one cycle edge recurrent: {cycle_text}"
             )
 
-        cycle_wires = [wire for wire in self.wires if wire.temporality == "recurrent"]
-
-        return tuple(execution_order), tuple(cycle_wires)
+        return tuple(execution_order)
 
     def state_view(self, state: State) -> PyTree:
         return self._view_from_state_and_carry(state, {})
@@ -909,15 +904,22 @@ class Graph(GraphNode):
             if ext_port in inputs and ext_port not in trial_scope_sources:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
-        port_values, new_state = self._execute_step(
-            port_values,
-            state,
-            key=key,
-            step_inputs=inputs,
-            t=t,
-            initializer_upstream_nodes=initializer_upstream_nodes,
-            rollout_step_hook=rollout_step_hook,
-        )
+        if self._scoped_schedule is None:
+            port_values, new_state = self._execute_step(
+                port_values,
+                state,
+                key=key,
+                step_inputs=inputs,
+                t=t,
+                initializer_upstream_nodes=initializer_upstream_nodes,
+                rollout_step_hook=rollout_step_hook,
+            )
+        else:
+            if rollout_step_hook is not None:
+                raise ValueError("A composite rollout hook requires a contiguous composite schedule")
+            port_values, new_state = self._execute_scoped_step(
+                self._scoped_schedule, port_values, state, key=key,
+            )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
         if cycle_port_values is not None:
@@ -945,6 +947,85 @@ class Graph(GraphNode):
             )
         return outputs, new_state, new_cycle_port_values, trace_values
 
+    def _execute_scoped_step(
+        self,
+        schedule: SignalSchedule,
+        root_values: dict[tuple[str, str], PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[tuple[str, str], PyTree], State]:
+        """Interleave leaves while retaining hierarchical state and carry addresses."""
+        owners = {(): self}
+        keys = {(): key}
+        for scope in schedule.order:
+            for depth in range(1, len(scope) + 1):
+                path = scope[:depth]
+                if path in keys:
+                    continue
+                keys[path] = derive_key(keys[path[:-1]], "occurrence", path[-1])
+                node = owners[path[:-1]].nodes[path[-1]]
+                if isinstance(node, Graph):
+                    owners[path] = node
+
+        previous = {(): root_values}
+        for owner in sorted(owners):
+            if owner:
+                previous[owner] = previous[owner[:-1]].get(_nested_cycle_key(owner[-1]), {})
+        values: dict[ScopedPort, PyTree] = {}
+        for name, target in schedule.inputs:
+            binding = self.input_bindings[name]
+            if binding in root_values:
+                values[target] = root_values[binding]
+
+        outgoing: dict[ScopedPort, list[ScopedPort]] = {}
+        for route in schedule.routes:
+            if route.temporality == "instant":
+                outgoing.setdefault(route.source, []).append(route.target)
+            else:
+                wire = owners[route.wire.owner].wires[route.wire.index]
+                values[route.target] = previous[route.wire.owner][wire.target_node, wire.target_port]
+
+        for scope in schedule.order:
+            node = owners[scope[:-1]].nodes[scope[-1]]
+            inputs = {
+                port: values[endpoint]
+                for port in node.input_ports if (endpoint := ScopedPort(scope, port)) in values
+            }
+            outputs, state = node(inputs, state, key=keys[scope])
+            for port, value in outputs.items():
+                endpoint = ScopedPort(scope, port)
+                values[endpoint] = value
+                for target in outgoing.get(endpoint, ()):
+                    values[target] = value
+
+        for alias, source in schedule.output_aliases:
+            if source in values:
+                values[alias] = values[source]
+        for endpoint, value in values.items():
+            if len(endpoint.node) == 1:
+                root_values[endpoint.node[0], endpoint.port] = value
+        for name, source in schedule.outputs:
+            root_values[self.output_bindings[name]] = values[source]
+
+        next_carry: dict[tuple[str, ...], dict[tuple[str, str], PyTree]] = {}
+        for route in schedule.routes:
+            wire_owner = route.wire.owner
+            wire = owners[wire_owner].wires[route.wire.index]
+            if route.temporality == "recurrent" and wire_owner:
+                next_carry.setdefault(wire_owner, {})[wire.target_node, wire.target_port] = (
+                    values[route.source]
+                )
+            if not wire_owner and route.target in values:
+                root_values.setdefault((wire.target_node, wire.target_port), values[route.target])
+        for owner in sorted(owners, reverse=True):
+            if owner and owner in next_carry:
+                next_carry.setdefault(owner[:-1], {})[_nested_cycle_key(owner[-1])] = next_carry[owner]
+        for name in self.nodes:
+            root_values.pop(_nested_cycle_key(name), None)
+        root_values.update(next_carry.get((), {}))
+        return root_values, state
+
     def _execute_step(
         self,
         port_values: dict[tuple[str, str], PyTree],
@@ -956,8 +1037,8 @@ class Graph(GraphNode):
         initializer_upstream_nodes: set[str],
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
-        execution_order, cycle_wires = self._cycle_analysis
-        cycle_wire_set = set(cycle_wires)
+        execution_order = self._execution_order
+        cycle_wire_set = set(self._cycle_wires)
         outgoing_wires = self._outgoing_wires
         nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
         for port_key in tuple(port_values):
@@ -1786,6 +1867,16 @@ class Graph(GraphNode):
             return isinstance(x, types)
 
         return select(self).at(lambda g: g.nodes).at_instances_of(*types)
+
+
+class _InterleavedGraph(Graph):
+    """A causal graph whose leaf dependencies cross its composite boundaries."""
+
+    schedule: SignalSchedule = field(kw_only=True, static=True, repr=False)
+
+    @property
+    def _scoped_schedule(self) -> SignalSchedule:
+        return self.schedule
 
 
 from pydantic import BaseModel, ConfigDict

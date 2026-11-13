@@ -5,18 +5,25 @@ from copy import deepcopy
 import jax
 import numpy as np
 import equinox as eqx
+import jax.numpy as jnp
+import pytest
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.jobs import JobService
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import lower_canonical_train
+from feedbax.studio.model_edit import apply_model_edit
+from feedbax.studio.model_ports import ModelRegistryPorts
+from feedbax.runtime.graph import GraphTraceRequest
+from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.training.checkpoint_custody import open_published_model_slot
 from feedbax.training.invocation import prepare_training_invocation
 from feedbax.training.preparation import ExecutionPreparationResult
@@ -42,6 +49,93 @@ def _wire(source, target, attachments=()):
 
 def _port(id_, name, *, shape=None):
     return {"id": id_, "name": name, "type": {"shape": shape}}
+
+
+def test_noncontiguous_group_preserves_rollout_and_gradient():
+    scale = {
+        "kind": "leaf", "name": "Scale", "type": "feedbax.Scale",
+        "fields": {"scale": 2.0, "fixed": True},
+    }
+    boundary = {"owner": "inputs", "port": "signal"}
+    source_wire = _wire(boundary, _end("a", "input"), [
+        {"kind": "delay", "id": "delay", "delay": {"value": 1, "unit": "st"}},
+        {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 3.0}},
+    ])
+    model = ModelDocument.model_validate({
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [_port("signal", "signal", shape=[])],
+            "outputs": [_port("result", "result", shape=[])],
+        },
+        "interior": {
+            "components": {name: scale for name in ("a", "b", "c")},
+            "wires": {
+                "input": source_wire,
+                "ab": _wire(_end("a", "output"), _end("b", "input")),
+                "bc": _wire(_end("b", "output"), _end("c", "input")),
+                "result": _wire(_end("c", "output"), {"owner": "outputs", "port": "result"}),
+            },
+        },
+    })
+    registry = ComponentRegistry()
+    ports = ModelRegistryPorts(registry)
+    command = ModelEditCommand.model_validate({"operation": {
+        "op": "group",
+        "name": "Group",
+        "selection": [
+            {"document": "model", "composites": [], "element": {"kind": "component", "id": name}}
+            for name in ("a", "c")
+        ],
+    }})
+    grouped = apply_model_edit(
+        "model", ModelEditState(document=model), command, ports=ports.port, accepts=ports.accepts,
+    )
+    assert isinstance(grouped, ModelEditResult), grouped
+    group = grouped.changed[-1].element.id
+    flat = lower_model_document("model", model, registry).graph
+    lowered = lower_model_document("model", grouped.state.document, registry).graph
+    assert [scope for scope in resolve_signal_schedule(lowered).order if scope[-1] in {"a", "b", "c"}] == [
+        (group, "a"), ("b",), (group, "c"),
+    ]
+    initial = {flat.input_bindings["signal"]: jax.ShapeDtypeStruct((), jnp.float32)}
+    first = compile_graph(GraphDocument(graph=flat), registry, input_prototypes=initial)
+    second = compile_graph(GraphDocument(graph=lowered), registry, input_prototypes=initial)
+    assert second.record.key_schedule.scoped_node_order == resolve_signal_schedule(lowered).order
+
+    def run(graph, signal):
+        outputs, _, trace = graph.rollout_with_trace(
+            {"signal": signal}, graph.init_state(key=jax.random.key(5)), n_steps=signal.size,
+            key=jax.random.key(5),
+            trace=(GraphTraceRequest("graph_output", "result", port="result"),),
+        )
+        return outputs["result"], trace["result"]
+
+    signal = jnp.arange(1, 5, dtype=jnp.float32)
+    for graph in (first.graph, second.graph):
+        output, trace = run(graph, signal)
+        np.testing.assert_array_equal(output, [0.0, 24.0, 48.0, 72.0])
+        np.testing.assert_array_equal(trace, output)
+        gradient = jax.grad(lambda data: run(graph, data)[0].sum())(signal)
+        np.testing.assert_array_equal(gradient, [24.0, 24.0, 24.0, 0.0])
+
+    command = ModelEditCommand.model_validate({"operation": {
+        "op": "ungroup", "address": grouped.changed[-1].model_dump(mode="json"),
+    }})
+    ungrouped = apply_model_edit(
+        "model", grouped.state, command, ports=ports.port, accepts=ports.accepts,
+    )
+    assert isinstance(ungrouped, ModelEditResult), ungrouped
+    assert ungrouped.state.document == model
+
+    cycle = lower_model_document("model", grouped.state.document, registry).graph
+    first_cut = next(wire for wire in cycle.subgraphs[group].wires if wire.temporality == "recurrent")
+    first_cut.temporality = "instant"
+    upstream = next(wire for wire in cycle.wires if wire.source_node == flat.input_bindings["signal"][0])
+    last = cycle.output_bindings["result"]
+    upstream.source_node, upstream.source_port = last
+    with pytest.raises(SignalScheduleError, match="same-step cycle") as exc:
+        resolve_signal_schedule(cycle)
+    assert exc.value.authored_path.startswith("/graph/")
 
 
 def _model_project() -> dict:
@@ -94,6 +188,35 @@ def _rename_components(model):
                 for port in ports:
                     port["name"] += " display name"
             _rename_components(component)
+
+
+def _group_reaching_pipeline(raw, registry):
+    payload = raw["documents"]["reach-model"]["payload"]
+    payload["interior"]["components"]["relay"] = {
+        "kind": "leaf", "name": "Input relay", "type": "feedbax.Input",
+    }
+    payload["interior"]["wires"]["task-wire"]["target"] = _end("relay", "input")
+    payload["interior"]["wires"]["relay-wire"] = _wire(
+        _end("relay", "output"), _end("wrapper", "target"),
+    )
+    ports = ModelRegistryPorts(registry)
+    state = ModelEditState(document=ModelDocument.model_validate(payload))
+    command = ModelEditCommand.model_validate({"operation": {
+        "op": "group", "name": "Group",
+        "selection": [
+            {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": name}}
+            for name in ("relay", "plant")
+        ],
+    }})
+    result = apply_model_edit(
+        "reach-model", state, command, ports=ports.port, accepts=ports.accepts,
+    )
+    assert isinstance(result, ModelEditResult), result
+    raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
+    group = result.changed[-1].element.id
+    term = raw["steps"]["train"]["base"]["inline"]["objective"]["loss"]
+    term["selector"] = f"path:{group}.plant.effector.pos"
+    return group
 
 
 def test_nested_model_plans_with_stable_identity_and_compiles():
@@ -155,11 +278,13 @@ def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     )
 
 
-def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys):
+@pytest.mark.parametrize("grouped", [False, True])
+def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, capsys, grouped):
     registry = new_application_registry_bundle()
     jobs = JobService(host, registry, enable_evaluation_candidate=True)
     folders = ProjectFolderService(tmp_path / "projects")
     raw = _model_project()
+    group = _group_reaching_pipeline(raw, registry.components) if grouped else None
     project = "nested"
     _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
@@ -194,6 +319,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
         assert dataset.data("/v1/model/state/wrapper/controller/cell/hidden").shape[-2] == 101
         assert dataset.data("/v1/model/carry/wrapper/controller/carry/carry").shape[-2] == 101
         assert np.isfinite(dataset.data("objective/total")).all()
+        if group is not None:
+            assert dataset.data(f"/v1/model/state/{group}/plant/effector~1position").shape[-2] == 101
 
     _rename_components(raw["documents"]["reach-model"]["payload"])
     _save_project(folders, project, Project.model_validate(raw))

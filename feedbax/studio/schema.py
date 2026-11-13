@@ -35,6 +35,11 @@ from feedbax.compiler.prototypes import (
     prototypes_from_task_bindings,
 )
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
+from feedbax.runtime._signal_schedule import (
+    SignalScheduleError,
+    needs_signal_schedule,
+    resolve_signal_schedule,
+)
 from feedbax.compiler.studio_taps import TapLoweringError, lower_studio_taps
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -520,7 +525,17 @@ def validate_graph_connection_schema(
 
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
     issues.extend(_parameter_resolution_issues(resolution, base_path))
-    issues.extend(_instant_cycle_issues(graph, base_path))
+    if needs_signal_schedule(graph):
+        try:
+            resolve_signal_schedule(graph)
+        except SignalScheduleError as error:
+            issues.append(SchemaValidationIssue(
+                type=error.issue_type,
+                message=str(error),
+                location={"path": base_path + error.authored_path.removeprefix("/graph")},
+            ))
+    else:
+        issues.extend(_instant_cycle_issues(graph, base_path))
     return issues
 
 

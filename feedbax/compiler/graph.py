@@ -43,13 +43,14 @@ from feedbax.compiler.serialization import (
     _instantiate_graph,
 )
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
+from feedbax.runtime._signal_schedule import needs_signal_schedule, resolve_signal_schedule
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "5"
+GRAPH_COMPILER_VERSION = "6"
 
 
 class CompilerPhase(StrEnum):
@@ -146,6 +147,9 @@ class GraphKeySchedule(BaseModel):
 
     schedule_id: Literal[KEY_SCHEDULE_ID]
     node_order: tuple[str, ...]
+    scoped_node_order: tuple[tuple[str, ...], ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @field_validator("schedule_id", mode="before")
     @classmethod
@@ -635,13 +639,14 @@ def compile_graph(
         ),
     )
 
-    def build_schedule() -> tuple[Graph, tuple[str, ...]]:
+    def build_schedule() -> tuple[Graph, GraphKeySchedule]:
         leaf_keys = {}
         for name, key in (initialization_keys or {}).items():
             path = (name,) if isinstance(name, str) else name
             if not path or path in leaf_keys:
                 raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
             leaf_keys[path] = key
+        scoped_schedule = resolve_signal_schedule(graph) if needs_signal_schedule(graph) else None
         instantiated = _instantiate_graph(
             graph,
             component_registry,
@@ -649,11 +654,17 @@ def compile_graph(
             construction_key=jr.PRNGKey(0) if initialization_key is None else initialization_key,
             initialization_keys=leaf_keys,
             artifact_provider=artifact_provider,
+            scoped_schedule=scoped_schedule,
         )
         executable = apply_parameter_constraints(instantiated).prepare()
-        return executable, tuple(executable._execution_order)
+        key_schedule = GraphKeySchedule(
+            schedule_id=KEY_SCHEDULE_ID,
+            node_order=executable._execution_order if scoped_schedule is None else (),
+            scoped_node_order=scoped_schedule.order if scoped_schedule is not None else None,
+        )
+        return executable, key_schedule
 
-    executable, node_order = _compile_phase(
+    executable, key_schedule = _compile_phase(
         phase=CompilerPhase.SCHEDULING,
         code="compiler.scheduling.invalid_executable_schedule",
         anchor=graph_anchor,
@@ -671,7 +682,6 @@ def compile_graph(
 
     def emit_resolved_ir() -> tuple[ResolvedGraph, CompilationRecord]:
         source_map = _source_map(document, authored_graph, graph, document_sha256, tap_origins)
-        key_schedule = GraphKeySchedule(schedule_id=KEY_SCHEDULE_ID, node_order=node_order)
         resolved_sha256 = _resolved_digest(graph, source_map, key_schedule)
         resolved = ResolvedGraph(
             schema_id=RESOLVED_GRAPH_SCHEMA_ID,

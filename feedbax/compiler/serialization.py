@@ -11,6 +11,7 @@ from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime._signal_schedule import SignalSchedule
 from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import (
     AuthoredArrayEncoding,
@@ -19,6 +20,7 @@ from feedbax.runtime.graph import (
     Graph,
     GraphNode,
     Wire,
+    _InterleavedGraph,
 )
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -288,6 +290,7 @@ def _instantiate_graph(
     construction_key: PRNGKeyArray,
     initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
+    scoped_schedule: SignalSchedule | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
     keys_by_node: dict[str, dict[tuple[str, ...], PRNGKeyArray]] = {}
@@ -501,7 +504,7 @@ def _instantiate_graph(
         name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
     }
 
-    return Graph(
+    graph_fields = dict(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
@@ -515,6 +518,9 @@ def _instantiate_graph(
             nodes, wires, input_bindings=input_bindings, output_bindings=output_bindings
         ),
     )
+    if scoped_schedule is not None:
+        return _InterleavedGraph(**graph_fields, schedule=scoped_schedule)
+    return Graph(**graph_fields)
 
 
 def _split_lowering_metadata(
