@@ -645,6 +645,7 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
     )
     np.testing.assert_array_equal(traces["sample"][0], initial)
     np.testing.assert_array_equal(traces["sample"][1:], outputs["position"][:-1])
+    assert not np.array_equal(outputs["position"][0], initial)
     assert graph.nodes["arm"].backend.n_substeps == 2
     assert graph.nodes["arm"].backend.sub_dt == pytest.approx(0.005)
 

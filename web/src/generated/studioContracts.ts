@@ -9844,6 +9844,7 @@ export const contractSchemas = {
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
+  StudioProjectFilePatch: StudioProjectFilePatchSchema,
   StudioProjectRename: StudioProjectRenameSchema,
   StudioProjectRevision: StudioProjectRevisionSchema,
   StudioProjectSnapshot: StudioProjectSnapshotSchema,
@@ -9960,6 +9961,7 @@ export interface ContractTypeMap {
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;
+  StudioProjectFilePatch: StudioProjectFilePatch;
   StudioProjectRename: StudioProjectRename;
   StudioProjectRevision: StudioProjectRevision;
   StudioProjectSnapshot: StudioProjectSnapshot;

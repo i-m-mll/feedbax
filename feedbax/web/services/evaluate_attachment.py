@@ -115,7 +115,8 @@ def prepare_evaluate_attachment(
 
 
 def _prepare(folders, project_id, body, components, key, project):
-    plan = folders.read_plan(project_id, revision=body.revision).plan
+    settled = folders.read_plan(project_id, revision=body.revision)
+    plan = settled.plan
     selected = next((run for run in plan.runs if run.key == key and run.kind == "evaluate"), None)
     if selected is None or "subject" not in selected.inputs:
         raise ValueError("Select an Evaluate run with a planned Train subject")
@@ -166,6 +167,8 @@ def _prepare(folders, project_id, body, components, key, project):
         if any(run.variant != key.variant for run in affected):
             raise ValueError("Select a single project variant before authoring a row exception")
         affected = {run for run in affected if run.row in scope.rows}
+        if {run.row for run in affected} != set(scope.rows):
+            raise ValueError("The row scope contains an unknown Evaluate row")
         if step.get("sweep") is None:
             step["sweep"] = {}
         sweep = step["sweep"]
@@ -189,7 +192,10 @@ def _prepare(folders, project_id, body, components, key, project):
 
     data = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     data["steps"][key.step] = step
-    candidate = compile_project(Project.model_validate(data), components=components)
+    candidate = compile_project(
+        Project.model_validate(data), readers=settled.readers,
+        operations=folders.operations, components=components,
+    )
     previous = {run.key: run for run in plan.runs}
     current = {run.key: run for run in candidate.runs}
     if current.keys() != previous.keys() or {
