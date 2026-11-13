@@ -124,6 +124,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   });
   expect(evidence.successor.resumed_from).toBeGreaterThan(0);
   expect(evidence.successor.resumed_from).toBeLessThan(1200);
+  await openResultsSlot(page);
   await expect(loss.locator('polyline')).toHaveCount(1);
   await expect(results.getByText('Cumulative updates')).toBeVisible();
   await expect(results.getByRole('list', { name: 'Train stages' }).getByRole('listitem')).toHaveText([
