@@ -410,6 +410,7 @@ from feedbax.web.models.trajectory import (
 )
 from feedbax.contracts.expression_values import FieldTextResult, Problem
 from feedbax.expression_site import SiteProjection
+from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.studio_field import (
     FieldKindEdit, FieldNameEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
     StudioFieldView, StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue,
@@ -485,7 +486,9 @@ AUTHORED_CONTRACT_MODELS = (
     TrialDocuments,
     FieldTextResult,
     Problem,
+    RangeValues,
     ReportDocument,
+    SampleValues,
     SiteProjection,
     StudioAnalyzeAuthoring,
     StudioAnalyzeRequest,

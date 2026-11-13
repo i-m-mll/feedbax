@@ -10685,7 +10685,9 @@ export const contractSchemas = {
   TrialDocuments: TrialDocumentsSchema,
   FieldTextResult: FieldTextResultSchema,
   Problem: ProblemSchema,
+  RangeValues: RangeValuesSchema,
   ReportDocument: ReportDocumentSchema,
+  SampleValues: SampleValuesSchema,
   SiteProjection: SiteProjectionSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
@@ -10815,7 +10817,9 @@ export interface ContractTypeMap {
   TrialDocuments: TrialDocuments;
   FieldTextResult: FieldTextResult;
   Problem: Problem;
+  RangeValues: RangeValues;
   ReportDocument: ReportDocument;
+  SampleValues: SampleValues;
   SiteProjection: SiteProjection;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
