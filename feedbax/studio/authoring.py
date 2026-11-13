@@ -87,6 +87,7 @@ _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _TARGET_STATE = TargetStateLossSpec.model_fields["type"].default
 _GRAPH_BATCH_SIZE = 1
 _DEFAULT_OPTIMIZER = "adam"
+_OPTIMIZER_RATE = ("method_payload", "payload", "optimizer", "params", "learning_rate")
 type _Path = tuple[str, ...]
 type _Scalar = str | int | float
 type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
@@ -595,6 +596,10 @@ class _TrainFields:
     def training(self, task: TaskSpec | None, read_plan: _ReadPlan | None) -> None:
         raw_config = self.payload.get("training_config")
         config = None if _read(DocumentReference, raw_config) else _read(TrainingConfig, raw_config)
+        managed_rate = (
+            self.payload.get("trial_documents") is not None
+            and isinstance(raw_config, dict) and "learning_rate" not in raw_config
+        )
         n_steps = infer_task_n_steps(task)
         defaults = TrainingConfig(batch_size=_GRAPH_BATCH_SIZE)
         if n_steps is not None:
@@ -665,6 +670,14 @@ class _TrainFields:
                 ),
                 lambda value: [self.set(seed_path, value)],
             )
+            if managed_rate and method.optimizer.lr_schedule is None:
+                rate = _get(self.payload, _OPTIMIZER_RATE)
+                if type(rate) in (int, float):
+                    self.field(
+                        _OPTIMIZER_RATE, "Learning Rate",
+                        rate, StudioAuthoringNumber(kind="number", min=0),
+                        lambda value: [self.set(_OPTIMIZER_RATE, value)],
+                    )
 
         rate_path = ("method_payload", "payload", "optimizer", "params")
         raw_params = _get(self.payload, rate_path)
@@ -684,7 +697,7 @@ class _TrainFields:
                 if method.continuation is not None else method.target_total
             )
             rate = method.optimizer.params.get("learning_rate")
-            if type(rate) in (int, float) and 0 < rate <= sys.float_info.max:
+            if not managed_rate and type(rate) in (int, float) and 0 < rate <= sys.float_info.max:
                 initial_config["learning_rate"] = rate
 
         def settings_change(
@@ -717,6 +730,8 @@ class _TrainFields:
         }
         if self.field_editor and config is not None:
             names.update(batch_size=None, grad_clip=None)
+        if managed_rate:
+            del names["learning_rate"]
         for name, mirror in names.items():
             schema = settings[name]
             path = ("training_config", name)
@@ -906,7 +921,7 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
         or (control.max is not None and value > control.max)
     ):
         raise ValueError(f"{field.label} requires a number in the supported range")
-    if field.id == "/training_config/learning_rate" and value <= 0:
+    if field.id in {"/training_config/learning_rate", pointer(_OPTIMIZER_RATE)} and value <= 0:
         raise ValueError(f"{field.label} requires a positive number")
     if field.id == "/training_config/grad_clip" and value <= 0:
         raise ValueError(f"{field.label} requires a positive number")

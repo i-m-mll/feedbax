@@ -359,6 +359,53 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         assert sampled["sampler"]["distribution"]["family"] == "choice"
 
 
+def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
+    raw = _model_project()
+    train = raw["steps"]["train"]["base"]["inline"]
+    train["training_config"].pop("learning_rate")
+    train["trial_documents"] = {
+        "model": train.pop("graph"), "task": train.pop("task"), "objective": train.pop("objective"),
+    }
+    raw["steps"].pop("baseline")
+    _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
+    url = "/api/projects/managed-rate"
+    field_path = "/method_payload/payload/optimizer/params/learning_rate"
+    endpoint = url + "/authoring/train/train/fields"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        initial = client.get(url).json()
+        body = {"revision": initial["revision"]}
+        fields = client.post(endpoint, json=body).json()["fields"]
+        rate, = [field for field in fields if field["label"] == "Learning Rate"]
+        assert rate["id"] == field_path and rate["can_sweep"]
+        response = client.post(endpoint, json=body | {
+            "field": field_path, "edit": {"kind": "text", "text": "geomspace(1e-4, 1e-2, 5)"},
+        })
+        assert response.status_code == 200, response.text
+        recipe = response.json()
+        assert not recipe["problems"], recipe
+        updated = client.patch(url, json=body | {"files": recipe["files"]})
+        assert updated.status_code == 200, updated.text
+        reopened = client.get(url + "/open").json()["snapshot"]
+        step = reopened["project"]["steps"]["train"]
+        assert "learning_rate" not in step["base"]["inline"]["training_config"]
+        assert step["sweep"]["axes"]["learning-rate"] == {
+            "path": field_path[1:].replace("/", "."),
+            "range": {"start": 1e-4, "stop": 1e-2, "count": 5, "scale": "log"},
+        }
+        fields = client.post(endpoint, json={"revision": reopened["revision"]}).json()["fields"]
+        assert next(field["text"] for field in fields if field["id"] == field_path) == "geomspace(0.0001, 0.01, 5)"
+        folders = ProjectFolderService(tmp_path)
+        plan = folders.read_plan("managed-rate", revision=reopened["revision"]).plan
+        keys = tuple(row.key for row in plan.rows)
+        assert len(keys) == 5
+        plan = folders.read_plan("managed-rate", revision=reopened["revision"], source_runs=keys).plan
+        for key, expected in zip(keys, np.geomspace(1e-4, 1e-2, 5), strict=True):
+            resolved = plan.selected_definitions[key]
+            assert "learning_rate" not in resolved.payload["training_config"]
+            assert resolved.payload["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
+            assert resolved.sources["/payload" + field_path].kind == "sweep_value"
+
+
 def _group_reaching_pipeline(raw, registry):
     payload = raw["documents"]["reach-model"]["payload"]
     payload["interior"]["components"]["relay"] = {
