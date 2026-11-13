@@ -499,3 +499,75 @@ def test_native_declaration_entry_and_rename_preserve_folder_and_plan(tmp_path):
     assert control.post("/_desktop/ticket", json={"project_file": str(other)}).json()["project"] == {
         "id": project_id, "title": "other",
     }
+
+
+def test_represented_declaration_uses_the_private_window_binding(tmp_path):
+    projects = tmp_path / "projects"
+    repo = projects / "checkout"
+    _write_train(repo)
+    transport, control, browser = _desktop_clients(create_app(projects_dir=projects))
+    origin = {"Origin": transport.endpoint.origin}
+    original = repo / "same_title.feedbax"
+    opened = control.post("/_desktop/ticket", json={"project_file": str(original)})
+    assert opened.status_code == 200, opened.text
+    ticket = opened.json()
+    assert Path(ticket["declaration"]) == original
+    binding = {
+        "project_id": ticket["project"]["id"],
+        "folder_identity": ticket["folder"]["identity"],
+        "generation": transport.endpoint.generation,
+    }
+    route = "/_desktop/represented-project"
+
+    def represented():
+        reply = control.post(route, json=binding)
+        assert reply.status_code == 200, reply.text
+        declaration = reply.json()["declaration"]
+        return Path(declaration) if declaration is not None else None
+
+    assert represented() == original
+    assert control.post(route, json={**binding, "generation": "stale"}).status_code == 409
+    authenticated = browser.post(
+        "/_desktop/exchange", headers={**origin, "X-Feedbax-Ticket": ticket["ticket"]},
+    )
+    assert authenticated.status_code == 204 and "declaration" not in authenticated.headers
+    assert browser.post(route, headers=origin, json=binding).status_code == 403
+    url = f"/api/projects/{binding['project_id']}"
+    current = browser.get(f"{url}/open").json()
+    assert "declaration" not in current and str(repo) not in str(current)
+    renamed = browser.post(f"{url}/rename", headers=origin, json={
+        "revision": current["snapshot"]["revision"], "name": "Same_title",
+    })
+    assert renamed.status_code == 200, renamed.text
+    case_only = repo / "Same_title.feedbax"
+    assert represented() == case_only
+
+    outside = repo / "outside.feedbax"
+    case_only.rename(outside)
+    assert represented() == outside
+    copied = repo / "other.feedbax"
+    copied.write_bytes(outside.read_bytes())
+    assert represented() is None
+    copied.unlink()
+    assert represented() == outside
+    raw = outside.read_bytes()
+    outside.write_text("invalid")
+    assert represented() is None
+    outside.write_bytes(raw)
+    assert represented() == outside
+    outside.unlink()
+    unrelated = tmp_path / "declaration.json"
+    unrelated.write_bytes(raw)
+    assert represented() is None
+    outside.symlink_to(unrelated)
+    assert represented() is None
+    outside.unlink()
+    outside.write_bytes(raw)
+
+    restored = control.post("/_desktop/ticket", json={
+        "project_folder": ticket["folder"]["path"], "folder_identity": binding["folder_identity"],
+    })
+    assert restored.status_code == 200 and Path(restored.json()["declaration"]) == outside
+    repo.rename(projects / "moved")
+    _write_train(repo)
+    assert represented() is None

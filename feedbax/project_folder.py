@@ -45,6 +45,7 @@ from feedbax.contracts.project_io import (
     dump_text_project,
     parse_text_project_files,
     project_declaration_name,
+    read_text_project_declaration,
     read_text_project_snapshot,
     project_semantic_root,
     replay_text_project_declaration,
@@ -713,6 +714,21 @@ class ProjectFolder:
 
     def open(self, project_id: str) -> StudioProjectDocument:
         return self._open_folder(project_id, self._folder(project_id))
+
+    def represented_declaration(self, project_id: str, identity: tuple[int, int]) -> Path:
+        location = self._folder(project_id)
+        if location.identity != identity:
+            raise ProjectFolderNotFound("The saved project folder was replaced")
+        with _project_directory_chain(location.path) as chain:
+            _, directory, info = chain[-1]
+            if (info.st_dev, info.st_ino) != identity:
+                raise ProjectFolderNotFound("The saved project folder was replaced")
+            try:
+                declaration = read_text_project_declaration(location.path, directory)
+            except ProjectReadError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            recheck_directory_chain(chain, error_factory=ProjectFolderInvalid, context="Project folder")
+            return declaration
 
     def _open_folder(
         self, project_id: str, location: ProjectFolderLocation, *, declaration: str | None = None,

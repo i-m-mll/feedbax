@@ -15,6 +15,8 @@ from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_io import project_declaration_name
 from feedbax.desktop.control import CONTROL_ROUTE, Endpoint
 from feedbax.web.services.project_folder import ProjectFolderNotFound
 
@@ -55,6 +57,12 @@ class _TicketRequest(StrictModel):
     project_id: str | None = None
     folder_identity: tuple[int, int] | None = None
     activity: bool = False
+
+
+class _RepresentedProject(StrictModel):
+    project_id: ProjectName
+    folder_identity: tuple[int, int]
+    generation: str
 
 
 @dataclass(frozen=True)
@@ -117,7 +125,21 @@ class DesktopTransport:
                 "ticket": self.issue_ticket(project_id),
                 "project": {"id": project_id, "title": document.configuration.project},
                 "folder": {"path": str(location.path), "identity": location.identity},
+                "declaration": str(location.path / project_declaration_name(document.configuration.project)),
             }
+
+        @self.app.post(CONTROL_ROUTE + "/represented-project", include_in_schema=False)
+        async def represented_project(request: _RepresentedProject):
+            if is_stopping() or request.generation != self.endpoint.generation:
+                raise HTTPException(409, "The project window needs to reconnect.")
+            try:
+                path = await run_in_threadpool(
+                    self.app.state.project_folders.represented_declaration,
+                    request.project_id, request.folder_identity,
+                )
+            except (OSError, ValueError):
+                return {"declaration": None}
+            return {"declaration": str(path)}
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "lifespan":
