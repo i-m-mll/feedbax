@@ -33,11 +33,11 @@ The existing libraries remain the implementation foundation: Pydantic for host-s
 
 ### Authored scientific documents
 
-The project owns named model, task, objective, and training/evaluation documents. The model document contains a literal graph with stable local component IDs and explicit typed interiors. Referenced imported assets are immutable, content-addressed inputs. Presentation, selection, viewport, and inspection poses remain outside scientific meaning.
+The project owns named model, task, objective, and training/evaluation documents. A model is a root composite with one step period, its port list and its interior. A nested composite owns its port list and interior as fields. Its outside card and the boundary cards inside project that list. A leaf uses the ports declared by its registered type. Wires belong to one interior and join local component ports or that interior's boundary ports. Referenced imported assets are immutable, content-addressed inputs. Presentation and the path shown by a window are stored separately from the model. [issue:a1bdcee] [issue:6204d45] [issue:6a2760f]
 
-A complete component occurrence is addressed by its graph path plus local ID. A component type is not an occurrence, and a display label is neither. Renaming or moving an occurrence is a semantic edit unless an explicit migration maps its identity. Parent and child may use the same local ID without sharing state, bindings, selection, or edits.
+A typed address contains the model document name, the composite IDs leading to the containing graph, and the element's local address. A port selects its owner and a declared port ID. An attachment selects its wire or port and its local ID. A field extends its owner's address. Python and TypeScript consume the generated contract. Parent and child may use the same local ID and have separate state, bindings, selections, positions and edits. [issue:a1bdcee] [issue:0d12b4f]
 
-The identity encoder follows the schema, not property-name heuristics. Graph element IDs and map keys referenced by wires, bindings, selectors, initializers, or checkpoint paths are semantic and remain in the request preimage. A field named label or position inside an open plugin payload is also semantic unless that payload's declared schema explicitly places it in presentation. Only known presentation documents/fields are excluded. Editing a human-facing display name preserves the ID. Renaming an ID is one atomic graph edit that rewrites every dependent reference and changes scientific identity; an explicit schema migration may map an old ID/path to a new one when reading historical content, with that mapping recorded and no mutation of the old checkpoint.
+The identity encoder uses declared schema fields. Graph element IDs, topology, and the root port names used in task pairing enter request identity. Component names and interior port names leave it unchanged. Element IDs are assigned at creation and stay fixed across renames and retargeting. Grouping and ungrouping change addresses as a whole operation. An explicit schema migration may map old addresses to new ones when reading historical content, with that mapping recorded on the interpretation of the checkpoint.
 
 Authored component IDs, types, configuration and explicit connections are authoritative. Inferred port widths, executable order, StateIndex markers, flattened state addresses and generated intervention component IDs are derived projections. Their descriptors carry enough origin and schema information to resolve checkpoint values back to the authored occurrence; they are not independently authored IDs. A change to their generation can require an explicit descriptor migration even when the scientific graph is unchanged. Kernel identity and aliases remain owned by [issue:d601693], not by a second runtime hash.
 
@@ -51,13 +51,13 @@ Resolution produces one immutable scientific program, with:
 
 - resolved component declarations and expanded templates;
 - typed interfaces, inferred shapes, units where declared, parameter bindings and ownership;
-- deterministic causal schedule and explicit recurrent edges/initializers;
-- qualified state and parameter paths, task bindings, objective observations, intervention ordering, and source maps;
+- deterministic causal schedule and ordered wire attachments, including delay initializers;
+- declared state and parameter addresses, task bindings, objective observations, and source maps;
 - domain-lowering descriptions, asset references, and capability requirements.
 
 This is the model compiler's IR. It is derived from authored documents and is not a second editable graph. The project plan may refer to its structural validation and source map, but neither a process-local executable nor a JIT cache becomes an authored document.
 
-Keep the existing GraphDocument → resolved → executable separation, while separating host-side resolution from runtime realization. Today compile_graph constructs runtime objects during scheduling. The M2 planning path must resolve names, dimensions, source anchors, and supported domain structure without allocating device training state or compiling XLA. Domain-specific structural preparation may produce reusable metadata, as compile_acausal_authoring_report already does; expensive engine construction belongs to worker preparation.
+Keep the authored → resolved → executable separation. The host-side planning path resolves declarations, dimensions, source addresses and domain structure without allocating device training state or compiling XLA. Domain-specific resolution can produce reusable structural metadata. Worker preparation constructs the numerical runtime.
 
 A compiler version can identify the format of compiler evidence. It is not a substitute for the kernel's observed dependency trace, and no manually maintained compiler revision decides freshness.
 
@@ -93,9 +93,9 @@ Extend the existing ComponentOwner, typed configuration, Ports, ConfigBinding, a
 
 A registry catalogs declarations; it does not restate their parameter semantics. Cache its immutable catalog per locked environment/plugin set. Forms, serialization, migration, validation, and constructor bindings are projections. Type/schema revision records authored meaning, while code freshness remains the kernel trace's job.
 
-Signal ports and conserving ports are distinct typed variants; a string field with optional physical metadata must not imply that any pair is connectable. Conserving connections are resolved inside a physical domain and never scheduled as causal wires.
+Signal ports and conserving ports are distinct typed variants. Conserving connections resolve inside a physical domain and have no causal schedule. Registered declarations also identify authoritative source and learned values, inference values and public component states by stable symbols. Each public state has its value schema, lifetime and reset semantics. Plan reports missing declarations on the owning component's address. Runtime state indices and private buffers are implementation details. [issue:6b6a44b] [issue:6204d45]
 
-Unknown type, invalid parameter, missing shape input, mismatched ports, duplicate input drivers, and unsupported capabilities yield structured diagnostics with document, scoped occurrence, authored path, phase, expected condition, and observed condition. Expected refusal returns typed error data at the public boundary. Numerical solver failures return typed status with the affected trial/condition when possible. Programming invariants still fail loudly. No hidden default model, no silent shape truncation, no backend substitution.
+Unknown type, invalid parameter, missing shape input, mismatched ports, duplicate input drivers, and unsupported capabilities yield Problems with the typed model address and the authored source path when both are available. A Problem carries its phase, expected condition and observed condition. Expected refusal returns typed error data at the public boundary. Numerical solver failures carry the affected trial or condition where possible. [issue:7449df8]
 
 ### Compilation phases and ownership
 
@@ -133,7 +133,7 @@ RunCarry contains component state, local and nested recurrent carry, the next ro
 
 Keep Equinox State/StateIndex for component-owned state. Runtime checkpoint descriptors give slots stable scoped names; Python object identity and private StateIndex marker representation are not durable identity. The run carry is an ordinary typed pytree around the existing component state, not a replacement state library.
 
-At step k, inputs refer to interval [time(k), time(k+1)). The incoming state is state k. Instant wires use values produced during this transition in schedule order. Recurrent wires read the previous produced value, seeded by their explicit initializer at reset; their updated values enter the next carry. The returned state is state k+1. An ordinary nested graph advances exactly once with its parent's step and uses its own scoped recurrence.
+At step k, inputs refer to the interval [time(k), time(k+1)). A wire with no delay carries the current signal. Attachments act in order from source to target. A delay reads its initialized or previously written value and adds the incoming value to its carry for later steps. A mechanism's state-only output is available at the start of the interval. An ordinary nested graph advances once per parent step and inherits the root clock. [issue:b390808] [issue:6204d45]
 
 A component needing time receives an explicit StepContext projection: root step index, interval start/end or dt, and declared execution mode. It does not discover time by reading a global or maintain a duplicate counter. A Clock component may expose this context as graph signals for ordinary wiring. Components can own a local clock only when it represents a distinct reset/elapsed-time state. Manual step and scanned rollout use the same carry and context; no implicit default back to step zero.
 
@@ -143,7 +143,7 @@ State history is a named observation projection, not a second runtime state syst
 
 ### Randomness and mapping
 
-The [shared trial-key contract](shared_core_executor_contract.md#4-paired-trial-streams) defines stream purposes, pairing, and independence. The runtime supplies named occurrence scopes and accepts explicit trial keys.
+The [shared trial-key contract](shared_core_executor_contract.md#4-paired-trial-streams) defines stream purposes, pairing, and independence. The runtime derives random scopes from stable occurrence addresses and declared random-site purposes. State, parameter and delay checkpoint paths derive from the same addresses and declared member IDs. Renaming a component or interior port preserves those paths and its stream. Grouping moves occurrences to a new path.
 
 Plan-level sweep rows are runs. Within one request, trial, condition, ensemble, and a method's population axes are declared mapped dimensions. The preparation layer presents their names, coordinates, leaf broadcast/mapped status and valid shapes once; methods do not infer them from tree position. Same-shape groups may be vmapped or mapped/chunked without changing scientific identity, provided their math and reduction order contract remain the same. A reduction or batch change that changes training mathematics belongs in the request.
 
@@ -151,27 +151,29 @@ Plan-level sweep rows are runs. Within one request, trial, condition, ensemble, 
 
 ### Task and objective boundaries
 
-The task is a typed trial source: sampling/validation rules, external input schema, initial-state assignments, timeline/epochs/events, targets, and coordinates. The model needs the task's input/initialization interface at resolution, not a live task object or its sampled values at construction. Changing a target position with the same schema does not require a new neural topology.
+The task interface is `AbstractTask`. The task document runtime supplies signals, variables, initialization and epoch bounds through `init` and `step`. Plan pairs its signals with the model's root inputs by compatible name and type, applies explicit exceptions, and resolves Links. An input with a default can remain unbound. Plan resolves time lengths at the model's root step period. [issue:b584e17] [issue:6a2760f]
 
-Task-to-model bindings use scoped typed paths and graph ports. A task cannot read or rewrite an arbitrary component subtree through a serialized Python lambda. Python selection ergonomics may resolve a supported selector into this same path representation at authoring time; arbitrary code remains registered implementation code.
+Task-to-model bindings use typed model addresses and declared ports. Python selectors for portable projects resolve to these same declarations.
 
-Within-trial reactive behavior is ordinary graph computation. For a live adversary, the previous mechanics state output, recurrently initialized from the trial reset state, supplies the current pre-mechanics state; current target/time and controller action arrive on declared ports; the policy output feeds the mechanics input in the same transition. This expresses linear and affine finite policies without replaying a precomputed clean trajectory or reading global runtime state.
+An in-rollout task composes its `step` into the lowered graph and supplies the recorded epoch bounds from its final state. A live model-side policy is ordinary graph computation over declared signals and the current step's mechanism outputs. [issue:b584e17] [issue:6204d45]
 
-Objectives are typed functions/reducers over named observations, trial targets/timelines, and explicit model-value inputs. They are not causal nodes unless their output actually feeds the model's dynamics. The compiler derives a single observation plan for objective terms, requested retention, and diagnostics. Streaming evaluation is used only when the objective declares an equivalent recurrence; otherwise the required trajectory is retained. No approximate or different loss is selected silently to save memory. Training and built-in evaluation call the same objective implementation and report the same term IDs and reduction semantics.
+An objective term is a typed measure expression, window, reduction and weight. The measure names its targets. The compiler derives one observation plan for objective terms, requested retention and diagnostics. Train and Evaluate call the same term executor. Evaluate uses the trained objective and adds no authored terms. [issue:74f00a0] [issue:a1382d5]
 
 ### Evaluation variants and binding
 
-The [shared evaluation contract](shared_core_executor_contract.md#1-evaluation-uses-the-existing-project-variation-model) defines the authorized model/task diff, owner compatibility and value precedence. The [finite set contract](shared_core_executor_contract.md#9-finite-checkpoint-sets-bind-by-coordinate) owns plan-time candidate coordinates, readiness and exact binding. Core validates authored paths, required runtime capabilities, task binding, state alignment and variable stackability. Plan exposes the resulting diagnostics. The worker validates the authenticated selected model before realization.
+The [shared evaluation contract](shared_core_executor_contract.md#1-evaluation-uses-the-existing-project-variation-model) defines the authorized model/task diff, owner compatibility and value precedence. Train and Evaluate compile the same stored document recursively. A compatible nested variant retains authoritative values at their declared addresses. The [finite set contract](shared_core_executor_contract.md#9-finite-checkpoint-sets-bind-by-coordinate) owns candidate coordinates, readiness and exact binding. Plan validates known interfaces, task binding, attachments and runtime capabilities with authored diagnostics. The worker authenticates the selected checkpoint and verifies its actual stored layout before realization.
 
 ### Intervention semantics
 
-Use one typed selector plus operation/value/schedule schema. M2 supplies set, offset, scale, clamp, and noise on declared numeric port/edge/carry targets, with scalar broadcasting or explicitly validated array subsets. Schedules use the task timeline and StepContext. Noise has its own reproducible stream. Existing typed taps lower into this mechanism, and hardcoded network-unit variants become presets only where their behavior is equivalent.
+M2 provides registered Scale and Clamp interventions on wires and source ports. Each owns its typed fields and application window. A wire intervention affects its one reader. A source-port intervention affects every reader of the port. Train stores the attachment on the model document. Evaluate authors it as a diff at the same address. [issue:b390808]
 
-Preserve the distinction among a producer output, one consumer edge, and a recurrent read or write: they affect different computations. Recurrent write changes what the next step reads; read changes only the current consumption and preserves the recorded reset value. Multiple interventions on one target form an explicit ordered chain; unspecified competing writers are a compile refusal.
+An intervention before a delay changes the value carried to a later step. An intervention after it changes the value consumed on the current step. The list order establishes execution order. Delay and Initial fields define the step count and the reset values; a Link initializer may read a task variable or a local port at reset. [issue:b390808]
 
-For a component-owned state intervention, the declaration must expose an eligible state projection and a before-transition transform. It transforms that owner's incoming state before the owner executes; all derived output follows from that state. Arbitrary post-output state mutation with stale outputs is not supported. Parameter interventions between evaluation conditions follow the load/apply order above. Within-trial adaptive weights are explicit component state, initialized from base model values, with reset and persistence declared; changing immutable model structure inside a scan is not an intervention feature.
+Between-condition parameter overrides follow the shared load and realization order. A component with within-trial adaptive weights declares them as state with initialization and reset semantics.
 
-The existing rollout hook may remain for the protected old downstream path until M5. New built-in evaluation and reusable policies use typed components/transforms. This is not an automatic hook fallback when a graph fails to compile.
+### Probe observation
+
+A probe names the signal at its port or at its ordered point on a wire. It reads the value left by preceding attachments. Objective measures and analysis can select its observation by declaration. Retention is selected by the step, with M3 adding probe retention and folds. Public state without a port is available through the raw-state projection. [issue:b390808] [issue:e5adc22]
 
 ### Built-in evaluation and analysis boundary
 
@@ -306,11 +308,11 @@ These are proposed dispositions with explicit carriers. Do not close an issue as
 | [issue:e0686e7] Named neural axes | Named axes are required at trial/condition/dataset boundaries. No Haliax-wide numerical rewrite for M2 without a concrete component need. Close this broad adoption question as not scheduled or retain a specific future component proposal |
 | [issue:12e94bc] Constant input variants | Move equivalent behavior into the generic operation plus explicit subset selector; preserve unit masking semantics before deleting a variant. Carried by [issue:b3ad156] |
 | [issue:3fb7f56] Runtime timestep | RunCarry owns next step; StepContext exposes physical time and mode; nested graphs share parent tick. Runtime continuation gate carries manual/scan/reset/restore agreement |
-| [issue:2f45ef8] Dynamic policies | Current state through recurrently initialized observations and declared current action/target/time wires; policy executes before mechanics. Prove linear and affine live policy traces against a direct reference. New reusable policies need no hook |
+| [issue:2f45ef8] Dynamic policies | A policy reads the current mechanism state and declared action, target and time signals before mechanics advance. Prove linear and affine live policy traces against a direct reference |
 | [issue:3fae4f8] Analytical lowering | Keep separate from M2. Later registered lowering may expose LTI/LTV plus explicit assumptions; approximate linearization must not be labeled an exact representation. Runtime observation/linearization capabilities provide its seam |
 | [issue:56dfd97] Nested inner iteration | Ordinary subgraphs execute once. Explicit iteration operators need named inner time, reset and carry semantics; deferred implementation, with a diagnostic preventing accidental nested rollout. Mechanics substepping remains supported |
 | [issue:2f8dd61] Parametric composites | Pure template configuration generates the sole concrete interior. Derived versus detached is explicit and regeneration one undoable operation. Core owns generation semantics; Studio owns editing/history |
-| [issue:b3ad156] Generic interventions | Core implements typed operations, selectors, schedule and timing; current source only executes restricted scale/clamp tap forms. M2 must not claim existing authoring metadata means runtime support. Condition/intervention gate carries execution and masking |
+| [issue:b3ad156] Generic interventions | M2 qualifies ordered wire and source-port Scale and Clamp attachments, including application windows and delay-relative timing. The condition/intervention gate exercises the resulting execution and masking |
 | [issue:3b2affb] Penzai canvas | Explicit user deferral remains in force. Do not schedule or close as absorbed. Existing foreign components retain their declared runtime capability boundary |
 | [issue:c58dd36] Recurrent initializer deletion | All semantic references participate in compiler/edit dependency inventory. Deleting an initializer source is rejected with its dependency or an explicit dependent edit; include nested history routes |
 | [issue:008332e] Subgraph editor isolation | Immediate task-binding case was fixed, broad invariant remains open. Scoped occurrence identity is core's contract; Studio [issue:ed09a0a] carries tests for equal local IDs across components, edges, bindings, selection, dynamic ports, undo and navigation |
