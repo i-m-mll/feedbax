@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
 import json
@@ -32,7 +34,8 @@ from feedbax.plugins.bootstrap import BootstrapState, PluginProvenance
 from feedbax.studio.authoring import authoring_surface, project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
-from web.e2e.studio.fixtures.canonical_train import legacy_graph_files
+from tests.support.managed_train_fixture import managed_train_project
+from web.e2e.studio.fixtures.canonical_train import successor_file
 from web.e2e.studio.fixtures.reaching_project import reaching_project
 
 
@@ -312,8 +315,10 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         assert projection.status_code == 200, projection.text
         assert projection.headers["Cache-Control"] == "no-store"
         fields = {field["id"]: field for field in projection.json()["fields"]}
-        assert fields["/graph"]["control"]["options"] == [{"label": "model", "value": "model"}]
-        assert fields["/task"]["control"] is None
+        assert fields["/method_ref/name"]["control"]["options"] == [
+            {"label": "Studio graph", "value": STUDIO_GRAPH_METHOD.key},
+        ]
+        assert "/graph" not in fields and "/task" not in fields
         invalid = client.post(url, json={
             "revision": revision, "change": {"field": "/task", "value": "model"},
         })
@@ -378,23 +383,21 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
-    model, task, train, successor = legacy_graph_files()
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    train = raw["steps"]["train"]
     carry_path = "method_payload.payload.checkpoint_initialization"
     total_path = "method_payload.payload.target_total"
-    train["step"]["sweep"] = {"axes": {"rate": {"values": {
-        "slow": {"patches": {"training_config.learning_rate": {"value": 0.001},
-                            "method_payload.payload.optimizer.params.learning_rate": {"value": 0.001}}},
-        "fast": {"patches": {"training_config.learning_rate": {"value": 0.003},
-                            "method_payload.payload.optimizer.params.learning_rate": {"value": 0.003}}},
+    rate_path = "method_payload.payload.optimizer.params.learning_rate"
+    train["sweep"] = {"axes": {"rate": {"values": {
+        "slow": {"patches": {rate_path: {"value": 0.001}}},
+        "fast": {"patches": {rate_path: {"value": 0.003}}},
         "long": {"patches": {"training_config.n_batches": {"value": 3}, total_path: {"value": 3}}},
     }}}}
-    child = successor["step"]
+    child = successor_file()["step"]
     child["deltas"][0]["patches"] = child["deltas"][0]["patches"][:1]
     child["inputs"]["checkpoint"]["where"] = {"axes": {"rate": ["slow", "fast"]}}
-    project = Project.model_validate({
-        "documents": {"model": model["document"], "task": task["document"]},
-        "steps": {"train": train["step"], "successor": child},
-    })
+    raw["steps"]["successor"] = child
+    project = Project.model_validate(raw)
     root = tmp_path / "reach"
     for relative, data in dump_text_project(
         project, ProjectConfiguration(project="reach", store="results"),
@@ -409,6 +412,8 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         before = _read(client)
         initial = _read_plan(client, root, before)
+        assert not initial.diagnostics
+        assert all(run.admission_problem is None for run in initial.runs)
         change = {"field": field_id, "value": "continue_from"}
         response = client.post(url, json={"revision": before["revision"], "change": change})
         assert response.status_code == 200, response.text
@@ -661,10 +666,15 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
 
 
 def _plan_dependencies(root: Path) -> None:
-    original = load_text_project(root)
-    authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    authored = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    authored["steps"]["fit"] = authored["steps"].pop("train")
     fit = authored["steps"]["fit"]
-    fit["sweep"]["axes"]["seed"]["values"]["10"]["label"] = "First"
+    seed_path = "method_payload.payload.seed"
+    fit["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    fit["sweep"] = {"axes": {"seed": {"values": {
+        "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
+        "2": {"patches": {seed_path: {"value": 2}}},
+    }}}}
     authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": ["seed=10"]}}
     authored["steps"]["follow"] = {
         "kind": "train",
@@ -672,18 +682,24 @@ def _plan_dependencies(root: Path) -> None:
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
     }
-    independent = dict(fit["base"]["inline"], seed=88)
+    independent = deepcopy(fit["base"]["inline"])
+    independent["method_payload"]["payload"]["seed"] = 88
     authored["steps"]["independent"] = {"kind": "train", "base": {"inline": independent}}
     project = Project.model_validate(authored)
-    for relative, data in dump_text_project(project, original.configuration).items():
+    for relative, data in dump_text_project(
+        project, ProjectConfiguration(project="reach", store="results"),
+    ).items():
         path = root / relative
-        path.parent.mkdir(exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
 
-def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(study, monkeypatch):
-    root, client = study
+def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(tmp_path, monkeypatch, request):
+    root = tmp_path / "reach"
     _plan_dependencies(root)
+    lifespan = ExitStack()
+    request.addfinalizer(lifespan.close)
+    client = lifespan.enter_context(TestClient(create_app(projects_dir=tmp_path)))
     work = Counter()
 
     def count(owner, name):
@@ -719,12 +735,14 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(stu
         return response.json()
 
     cold, counts = check(first)
+    assert not cold.diagnostics
+    assert all(run.admission_problem is None for run in cold.runs)
     assert counts["compose_step"] == 3 and counts["encode_request"] == 4
     [follow] = [run.key for run in cold.runs if run.key.step == "follow"]
     assert counts["resolve"] >= 4
     warm, counts = check(first)
     assert not counts
-    warm.selected_definitions[first].payload["graph"]["nodes"]["gain"]["params"]["gain"] = 999
+    warm.selected_definitions[first].payload["trial_documents"]["model"]["step_seconds"] = 999
     assert check(first)[0] == cold
 
     selected, counts = check(second)
@@ -741,22 +759,33 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(stu
     assert renamed_row.coordinates["seed"].label == "Renamed"
     assert renamed_row.label != old_row.label
 
-    snapshot = patch(7, path=f"{prefix}/patches/seed/value")
+    snapshot = patch(7, path=f"{prefix}/patches/method_payload.payload.seed/value")
     edited, counts = check(first)
     assert counts["encode_request"] == 2 and counts["compose_step"] == 2
     before_ids = {run.key: run.request_id for run in cold.runs}
     assert {run.key for run in edited.runs if run.request_id != before_ids[run.key]} == {first, follow}
 
-    model = load_text_project(root).project.documents["model"].payload
-    snapshot = patch(model, path="/base/inline/graph")
+    model = load_text_project(root).project.documents["point-mass"].payload
+    snapshot = patch(model, path="/base/inline/trial_documents/model")
     inlined, counts = check(first)
     assert counts["encode_request"] == 0 and inlined.requests == edited.requests
-    assert inlined.sources[first]["/payload/graph/schema_id"].kind == "step"
-    assert edited.sources[first]["/payload/graph/schema_id"].kind == "document"
+    source_path = "/payload/trial_documents/model/step_seconds"
+    assert inlined.sources[first][source_path].kind == "step"
+    assert edited.sources[first][source_path].kind == "document"
 
-    response = _patch(client, snapshot["revision"], 4)
+    response = client.post(f"{_URL}/model/edit", json={
+        "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+        "document": "point-mass",
+        "command": {"operation": {
+            "op": "set_field", "value": 2,
+            "address": {"document": "point-mass", "composites": [], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+            }},
+        }},
+    })
     assert response.status_code == 200, response.text
-    snapshot = response.json()
+    assert response.json()["result"]["status"] == "applied", response.text
+    snapshot = response.json()["result"]["snapshot"]
     document_edit, counts = check(first)
     assert counts["encode_request"] == 1 and counts["resolve"] == 1
     assert {
@@ -783,14 +812,10 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(stu
     snapshot = patch("fit", name="follow", path="/base/step")
     assert check(first)[0] == reordered
 
-    descriptor = request_identity.REQUEST_KINDS["train"]
-    monkeypatch.setitem(
-        request_identity.REQUEST_KINDS, "train",
-        replace(descriptor, documents=descriptor.documents[:-1]),
-    )
+    count(project_plan, "source_shape")
     updated_authority, counts = check(first)
     assert counts["encode_request"] == 5 and counts["compose_step"] == 3
-    assert set(updated_authority.requests).isdisjoint(reordered.requests)
+    assert updated_authority == reordered
 
 
 def test_new_projects_are_durable_openable_and_distinct(tmp_path):

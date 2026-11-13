@@ -25,11 +25,9 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
-from feedbax.host import HostClient
-from feedbax.jobs import JobService, PlanJobReader
+from feedbax.jobs import JobService
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import lower_canonical_train
-from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.studio.model_edit import apply_model_edit
 from feedbax.studio.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
@@ -37,8 +35,7 @@ from feedbax.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.training.checkpoint_custody import open_published_model_slot
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
-from feedbax.training.invocation import prepare_training_invocation
-from feedbax.training.preparation import ExecutionPreparationResult
+from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.studio_training import StudioGraphMethodPayload
 from feedbax.contracts.training import TrainingSpec
@@ -533,14 +530,23 @@ def _nested_scale_variation():
 
 
 def test_nested_evaluate_variation_uses_scoped_wire_ids():
-    raw = _model_project()
+    from tests.test_document_train_pair import authored_documents, document_project
+
+    raw = document_project(authored_documents(), evaluation=True)
+    settings = raw["steps"]["baseline"]["base"]["inline"]["params"]
+    settings["variation"] = _nested_scale_variation()
     plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics
     train = next(run for run in plan.runs if run.kind == "train")
     request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
-    params = RolloutParameters.model_validate({
-        "seed": 1, "trials": ["one"], "trial_policy": "paired", "variation": _nested_scale_variation(),
-    })
-    variant = resolve_evaluation_variant(request.graph, request.task, params.variation)
+    documents = request.trial_documents
+    registry = ComponentRegistry()
+    graph = lower_model_document(documents.model_name, documents.model, registry).graph
+    evaluate = next(run for run in plan.runs if run.kind == "evaluate")
+    params = RolloutParameters.model_validate(
+        decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__).spec.params,
+    )
+    variant = resolve_evaluation_variant(graph, documents.task_source, params.variation)
     child = variant.graph.subgraphs["wrapper"].subgraphs["controller"]
     assert next(wire for wire in child.wires if wire.id == "decode").target_node == "scale"
     assert next(wire for wire in child.wires if wire.id == "scaled").target_node == "readout"
@@ -549,19 +555,18 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
         f"/graph/subgraphs/wrapper/subgraphs/controller/wires/{index}/target_port",
     ) == "/params/variation/outgoing"
     executable = compile_graph(
-        GraphDocument(graph=variant.graph), ComponentRegistry(),
-        input_prototypes=prototypes_from_task_bindings(request.task_binding_spec),
+        GraphDocument(graph=variant.graph), registry,
+        input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
     )
     assert executable.graph.nodes["wrapper"].nodes["controller"].nodes["scale"].scale == 0.5
-    params.variation["outgoing"].value["target_port"] = "missing"
-    raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {
-        name: edit.model_dump(mode="json") for name, edit in params.variation.items()
-    }
+    settings["variation"]["outgoing"]["path"] = settings["variation"]["outgoing"]["path"].replace(
+        ".subgraphs.controller.", ".subgraphs.missing.",
+    )
     invalid = compile_project(Project.model_validate(raw))
-    evaluate = next(run for run in invalid.runs if run.kind == "evaluate")
-    reader = PlanJobReader(HostClient(), enable_evaluation_candidate=True)
-    with pytest.raises(CannotRun, match="/params/variation/outgoing"):
-        reader.evaluation_parameters(invalid, evaluate)
+    assert not any(run.kind == "evaluate" for run in invalid.runs)
+    problem, = invalid.diagnostics
+    assert problem.path == "/params/variation/outgoing"
+    assert "unknown causal composite" in problem.detail
 
 
 @pytest.mark.parametrize(("kind", "scope"), [
@@ -1107,16 +1112,17 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
 
 
 def test_same_seed_nested_rename_preserves_values_and_batch_loss():
-    raw = _model_project()
+    from tests.test_document_train_pair import authored_documents, document_project
+
+    raw = document_project(authored_documents())
     registry = new_application_registry_bundle()
 
     def trained():
         plan = compile_project(Project.model_validate(raw))
         row = next(run for run in plan.runs if run.kind == "train")
         request = decode_request(plan.requests[row.request_id], plan.documents.__getitem__).spec
-        run = lower_canonical_train(request, registry.training_programs)
-        prepared = prepare_training_invocation(run, registry, run_id=None, resume=False)
-        assert isinstance(prepared, ExecutionPreparationResult)
+        run = lower_canonical_train(request, registry.training_programs, registries=registry)
+        prepared = prepare_managed_training(run, registry)
         update = prepared.kernel_context["studio_graph_update"].reported_update
         state, losses = prepared.initial_slots, []
         for _ in range(2):
