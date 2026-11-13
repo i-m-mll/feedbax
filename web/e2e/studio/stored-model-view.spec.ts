@@ -8,7 +8,7 @@ test('authors and reopens an addressed Model through the project history', async
   test.setTimeout(50_000);
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
-  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const mutation = (kind: 'edit' | 'undo') => page.waitForResponse((response) =>
@@ -74,9 +74,17 @@ test('authors and reopens an addressed Model through the project history', async
   const delayed = await apply(() => enter(inspector.getByRole('textbox', { name: 'Delay', exact: true }), '0.06 s'));
   expect(stored(delayed.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ delay: { value: 0.06, unit: 's' } });
   await expect(inspector.getByText('3 st')).toBeVisible();
+  await model.getByRole('button', { name: 'Split Details', exact: true }).click();
+  const secondary = page.locator('[data-slot="secondary"]');
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const secondaryModel = secondary.getByRole('tabpanel', { name: 'Model', exact: true });
+  await secondaryModel.getByRole('button', { name: 'Fit View', exact: true }).click();
+  const otherHidden = secondaryModel.locator(`.react-flow__node[data-id="${component.id}"] [data-handleid="output:hidden"]`);
+  await model.focus();
   const linked = await apply(async () => {
     await inspector.getByRole('button', { name: 'Pick Initial', exact: true }).click();
-    await handle('output', 'hidden').click();
+    await expect(otherHidden.locator('..')).toHaveAttribute('data-verdict', 'allowed');
+    await otherHidden.click();
   });
   expect(stored(linked.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
     initial: { kind: 'name', reference: expect.stringContaining(component.id) },
@@ -91,6 +99,7 @@ test('authors and reopens an addressed Model through the project history', async
   });
 
   const before = await cell.evaluate((node) => node.style.transform);
+  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
   const group = await apply(async () => {
     await cell.locator('header').click();
     await page.keyboard.press('Meta+G');
