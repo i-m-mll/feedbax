@@ -37,6 +37,7 @@ import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as Save
 import { problemReason, problemTarget, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
+import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, TrialTaskPicker, useTrialAuthoring } from './StudioTrialAuthoring';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 
@@ -165,6 +166,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [reportChoices, setReportChoices] = useState<{ revision: string; figures: ReportFigureSource[] }>();
   const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
+  const [selectedTerm, setSelectedTerm] = useState<{ step: string; term: string }>();
   const submission = useRef<{ intent: string; token: string }>();
   const projection = useQuery({
     queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor],
@@ -261,6 +263,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
   const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
     selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
+  const direct = authored?.base && 'inline' in authored.base ? authored.base.inline : undefined;
+  const managedTrial = step?.kind === 'evaluate' || Boolean(direct?.trial_documents || step?.documentIds?.['payload.trial_documents.model']);
+  const trialVisible = windowState.mode !== 'map' &&
+    [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
+  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, Boolean(managedTrial && trialVisible),
+    Boolean(wholeStep && !pending && !outside && !snapshot.saving && !saved.project.sweep && !authored?.sweep &&
+      !authored?.deltas?.length && step?.kind === 'train'));
   const selectedSweepValues = new Map<string, Set<string>>();
   if (state.selection && state.selection.kind !== 'steps') {
     for (const row of selectedDefinitionRows) {
@@ -679,8 +688,26 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const detail = analyze[view];
           return { ...detail, body: withProblem(<StudioErrorBoundary region={studioName(view)}>{detail.body}</StudioErrorBoundary>) };
         }
+        if ((view === 'task' || view === 'objective') && managedTrial) {
+          if (!trial.view) return { body: trial.error
+            ? withProblem(<p className="p-3 text-sm" role="alert">{trial.error}</p>)
+            : <div aria-busy="true" /> };
+          const value = trial.view;
+          const commit = trial.commit;
+          if (view === 'task') return {
+            header: <TrialTaskPicker view={value} commit={commit} />,
+            body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+          };
+          const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
+          const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };
+          return {
+            header: value.objective_document,
+            body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose} />),
+            inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
+          };
+        }
         if (view === 'model' || view === 'task' || view === 'scene') {
-          const header = view !== 'scene' && authoring && wholeStep
+          const header = view !== 'scene' && authoring && wholeStep && !managedTrial
             ? <StudioTrainAuthoringForm {...authoring} view={view} documentPicker />
             : details[view].header;
           const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;

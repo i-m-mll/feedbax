@@ -2,6 +2,8 @@
 
 from enum import StrEnum
 
+from pydantic import Field
+
 from feedbax.contracts.expression_values import (
     Expression,
     LiteralValue,
@@ -29,6 +31,7 @@ class ObjectiveTerm(ValueRecord):
     reduction: Reduction = Reduction.MEAN
     epochs: tuple[str, ...] = ()
     enabled: bool = True
+    name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
 
 
 class ObjectiveDocument(ValueRecord):

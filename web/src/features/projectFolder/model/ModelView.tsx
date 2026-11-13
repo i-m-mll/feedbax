@@ -111,7 +111,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
     if (!groups.has(definition.category)) groups.set(definition.category, group);
     group.push(definition);
   }
-  return <>{[...groups].map(([category, items]) => <section key={category} className="space-y-0.5">
+  return <>{[...groups].map(([category, items]) => <section key={category} aria-label={category} className="space-y-0.5">
     <h3 className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
     {items.map((definition) => <button key={definition.name} className={`${button} block w-full`} type="button"
       aria-label={`Add ${shortName(definition.name)}`} disabled={disabled && !browse}

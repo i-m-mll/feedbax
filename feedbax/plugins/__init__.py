@@ -10,6 +10,7 @@ _PUBLIC_ATTR_MODULES = {
     "TrainingProgramCatalog": ".application",
     "COMPONENTS": ".application",
     "CONFORMANCE_CHECKS": ".application",
+    "PYTHON_TASKS": ".application",
     "DRIVERS": ".application",
     "EVALUATION_BATCH_CONSUMERS": ".application",
     "EVALUATION_PRODUCT_UNION_FINALIZERS": ".application",
@@ -97,6 +98,7 @@ _PUBLIC_SUBMODULES = ("application", "bootstrap", "registry")
 
 _NON_GUARANTEED_PLUGIN_EXPORTS = (
     "CONFORMANCE_CHECKS",
+    "PYTHON_TASKS",
     "EXPERIMENT_PACKAGES",
     "FIGURES",
     "REPORT_RECIPES",

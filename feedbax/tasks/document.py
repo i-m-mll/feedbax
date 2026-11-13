@@ -79,6 +79,10 @@ class TrialSource(Protocol):
     @property
     def n_steps(self) -> int: ...
     @property
+    def period(self) -> float: ...
+    @property
+    def epochs(self) -> tuple[str, ...]: ...
+    @property
     def reads_model(self) -> bool: ...
     def init(self, parameters: TaskParameters, run_key: jax.Array, trial_key: jax.Array): ...
     def step(self, parameters: TaskParameters, variables, state, k: jax.Array, model_outputs): ...
@@ -301,12 +305,54 @@ def _zero(base, shape):
     return CallValue(function="vector", args=(child,) * shape[0])
 
 
+def bind_task_inputs(
+    model: ResolvedModelInterface,
+    signals: tuple[ScopedValue, ...],
+    input_overrides: Mapping[str, str] | None,
+) -> tuple[tuple[tuple[str, str], ...], tuple[Problem, ...]]:
+    """Resolve model input names to task signal names and describe refused bindings."""
+    problems = []
+
+    def problem(code, reason, path):
+        problems.append(Problem(code=code, reason=reason, path=path))
+
+    bindings = []
+    signal_names = {value.name: value for value in signals}
+    overrides = input_overrides or {}
+    for port in model.inputs:
+        signal_name = overrides.get(port.name, port.name)
+        signal = signal_names.get(signal_name)
+        path = ("model", "inputs", port.id)
+        if signal is None:
+            if port.required or port.name in overrides:
+                problem(
+                    ProblemCode.UNKNOWN_NAME,
+                    f"Model input {port.name!r} needs signal {signal_name!r}.",
+                    path,
+                )
+        elif not port.type.accepts(signal.type):
+            problem(
+                ProblemCode.TYPE_MISMATCH,
+                f"Signal {signal_name!r} has an incompatible sample type.",
+                path,
+            )
+        else:
+            bindings.append((port.name, signal.name))
+    for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
+        problem(
+            ProblemCode.UNKNOWN_NAME, f"Unknown model input {port!r}.", ("model", "inputs", port)
+        )
+
+    return tuple(bindings), tuple(problems)
+
+
 def compile_task(
     document: TaskDocument,
     functions: FunctionRegistry,
     *,
     model: ResolvedModelInterface,
     input_overrides: Mapping[str, str] | None = None,
+    sites: dict[tuple[str | int, ...], Site] | None = None,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types."""
     problems = []
@@ -342,9 +388,12 @@ def compile_task(
         return tuple(problems)
 
     def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False):
+        site = Site(expected=expected, finest=finest, names=tuple(scope))
+        if sites is not None:
+            sites[address] = site
         code = compile_expression(
             tree,
-            Site(expected=expected, finest=finest, names=tuple(scope)),
+            site,
             functions,
             field_address=(document.id, *map(str, address)),
             period_seconds=period,
@@ -488,32 +537,8 @@ def compile_task(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
 
-    bindings = []
-    signal_names = {value.name: value for value in declared_signals}
-    overrides = input_overrides or {}
-    for port in model.inputs:
-        signal_name = overrides.get(port.name, port.name)
-        signal = signal_names.get(signal_name)
-        path = ("model", "inputs", port.id)
-        if signal is None:
-            if port.required or port.name in overrides:
-                problem(
-                    ProblemCode.UNKNOWN_NAME,
-                    f"Model input {port.name!r} needs signal {signal_name!r}.",
-                    path,
-                )
-        elif not port.type.accepts(signal.type):
-            problem(
-                ProblemCode.TYPE_MISMATCH,
-                f"Signal {signal_name!r} has an incompatible sample type.",
-                path,
-            )
-        else:
-            bindings.append((port.name, signal.name))
-    for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
-        problem(
-            ProblemCode.UNKNOWN_NAME, f"Unknown model input {port!r}.", ("model", "inputs", port)
-        )
+    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_overrides)
+    problems.extend(input_problems)
 
     writable = {field.address.to_text(): field for field in model.reset.fields}
     links = {}

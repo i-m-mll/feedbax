@@ -8,13 +8,14 @@ const inputClass = 'min-w-0 rounded border border-shell-divider bg-shell-chrome 
 const buttonClass = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 const kindLabel = (kind: string) => kind[0].toUpperCase() + kind.slice(1);
 
-export function StudioFieldControl({ field, commit, selectedValues, rowSelection = false, multipleRows = false, onChooseValue }: {
+export function StudioFieldControl({ field, commit, selectedValues, rowSelection = false, multipleRows = false, onChooseValue, valueKind = 'value' }: {
   field: StudioFieldView;
   commit?: Commit;
   selectedValues?: ReadonlySet<string>;
   rowSelection?: boolean;
   multipleRows?: boolean;
   onChooseValue?: (id: string, extend: boolean) => void;
+  valueKind?: StudioFieldView['site']['kinds'][number];
 }) {
   const { label, sweep } = field;
   const fieldId = useId();
@@ -31,7 +32,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
   const [members, setMembers] = useState<Record<string, string>>({});
   const readOnly = !commit || busy;
   const ruleReadOnly = readOnly || rowSelection || !field.can_change_axis;
-  const kind = sweep ? 'Sweep' : 'Value';
+  const kind = sweep ? 'Sweep' : kindLabel(valueKind);
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
   const range = sweep?.kind === 'range' ? sweep.rule : undefined;
@@ -85,7 +86,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
     <div className="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1">
       <button type="button" className={`${buttonClass} ${sweep ? '' : 'text-shell-muted'}`}
         aria-label={`${label} kind: ${kind}`} aria-haspopup="menu" aria-expanded={menu}
-        onClick={() => setMenu(!menu)}>{sweep ? '◇' : '·'}</button>
+        onClick={() => setMenu(!menu)}>{sweep ? '◇' : valueKind === 'formula' ? 'ƒ' : valueKind === 'link' ? '↗' : '·'}</button>
       {menu && <div ref={menuRef} role="menu" aria-label={`${label} kinds`}
         className="absolute left-0 top-full z-10 grid rounded border border-shell-divider bg-shell-chrome p-1 shadow-md"
         onKeyDown={(event) => {

@@ -119,8 +119,8 @@ def lower_canonical_train(
 
     graph_spec = lower_model_document(documents.model_name, documents.model, registries.components).graph
     paired = compile_trial_execution(
-        documents.model_name, documents.model, documents.task,
-        registries.components, registries.expression_functions, objective=documents.objective,
+        documents.model_name, documents.model, documents.task_source,
+        registries.components, registries.expression_functions, python_tasks=registries.python_tasks, objective=documents.objective,
         input_overrides=documents.input_overrides,
         artifact_provider=model_artifact_provider(graph_spec),
     )
@@ -140,7 +140,9 @@ def lower_canonical_train(
     batches = continuation.additional_batches if continuation is not None else method.target_total
     if authored_config.n_batches != batches:
         raise ValueError("/training_config/n_batches: does not match the method target")
-    if authored_config.n_reach_steps <= 0 or authored_config.n_reach_steps != paired.execution.task.n_steps:
+    if isinstance(authored_config, TrainingConfig) and (
+        authored_config.n_reach_steps <= 0 or authored_config.n_reach_steps != paired.execution.task.n_steps
+    ):
         raise ValueError("/training_config/n_reach_steps: does not match the authored task horizon")
     if authored_config.batch_size <= 0 or authored_config.snapshot_interval <= 0:
         raise ValueError("/training_config: batch size and snapshot interval must be positive")
@@ -158,7 +160,11 @@ def lower_canonical_train(
             raise ValueError(
                 "/method_payload/payload/optimizer/params/learning_rate: the schedule owns the rate"
             )
-        config = TrainingConfig(**authored_config.model_dump(), learning_rate=rate)
+        config = TrainingConfig(
+            **authored_config.model_dump(exclude={"n_reach_steps"}),
+            learning_rate=rate,
+            n_reach_steps=paired.execution.task.n_steps,
+        )
     if isinstance(execution, TrainingProgramRegistry):
         resolved = execution.resolve_execution(request.method_ref, payload)
         contract, phase = resolved.contract, resolved.effective_phase

@@ -921,7 +921,7 @@ def review_model_connections(
     accepts: AcceptComponent = lambda *_: False,
 ) -> edits.ModelConnectionReview:
     address = review.graph
-    edit = _Edit(
+    edit = ModelEditDraft(
         address.document, edits.ModelEditState(document=document),
         lambda component, direction, port: layout(component).get((direction, port)),
         lambda *_: False,

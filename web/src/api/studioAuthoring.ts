@@ -1,6 +1,8 @@
 import { asApiRequestError, requestJson } from '@/api/request';
 import {
   parseContract,
+  type StudioTrialAuthoring,
+  type StudioTrialAuthoringRequest,
   type StudioTrainAuthoring,
   type StudioTrainAuthoringRequest,
   type TrainFieldRequest,
@@ -37,5 +39,24 @@ export async function projectTrainFields(
     return parseContract('TrainFieldResponse', response);
   } catch (error) {
     throw asApiRequestError(error, path, 'The Train field response did not match its contract');
+  }
+}
+
+export async function readStudioTrialAuthoring(
+  projectId: string, body: StudioTrialAuthoringRequest, signal: AbortSignal,
+): Promise<StudioTrialAuthoring> {
+  const path = '/api/projects/' + encodeURIComponent(projectId) + '/authoring/trials';
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioTrialAuthoringRequest', body)), cache: 'no-store', signal,
+    });
+    const projection = parseContract('StudioTrialAuthoring', response);
+    if (projection.revision !== body.revision || projection.run.step !== body.run.step ||
+        projection.run.row !== body.run.row || projection.run.variant !== body.run.variant) {
+      throw new Error('Trial authoring response does not match the selected revision and row');
+    }
+    return projection;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The trial authoring response did not match its contract');
   }
 }

@@ -394,7 +394,9 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const namedField = activeView === 'model' ? 'graph' : activeView === 'task' ? 'task' : undefined;
   const namedDocument = namedField && input.step?.documentIds?.[`payload.${namedField}`];
   const base = stepId ? directTrainStep(draft, stepId) : null;
-  const direct = DocumentReferenceSchema.safeParse(base?.graph);
+  const trial = base?.trial_documents;
+  const managedModel = trial && typeof trial === 'object' && !Array.isArray(trial) ? trial.model : undefined;
+  const direct = DocumentReferenceSchema.safeParse(managedModel ?? base?.graph);
   const storedId = modelDocumentId(input.step?.documentIds) ?? input.modelSource ?? (direct.success ? direct.data.document : undefined);
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const stored = useMemo(() => {

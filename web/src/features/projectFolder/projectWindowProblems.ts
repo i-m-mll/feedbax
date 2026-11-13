@@ -22,6 +22,11 @@ export function problemTarget(problem: StudioProjectWindowMapProblem): ProblemRe
     : problem.path.split('.');
   if (parts[0] === 'payload') parts.shift();
   const [field, group, id] = parts;
+  if (field === 'trial_documents') {
+    if (group === 'model') return { view: 'model', label: parts[3] === 'components' ? studioName('components') : studioName('model') };
+    if (group === 'task' || group === 'python_task') return { view: 'task', label: studioName('task') };
+    if (group === 'objective') return { view: 'objective', label: studioName('objective') };
+  }
   if (problem.element && (field === 'operations' || field === 'views')) {
     return {
       view: 'analysis', label: group ? humanizeLabel(group) : studioName('analysis'),

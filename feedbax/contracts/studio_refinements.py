@@ -32,7 +32,17 @@ _INTERIOR_IDS = CrossFieldRefinement(
 )
 
 
+_ONE_TRIAL_SOURCE = CrossFieldRefinement(
+    "trial-source.exclusive",
+    "Select one Task document or registered Python task.",
+    lambda value: (value.task is None) == (value.python_task is None),
+    "(value.task == null) === (value.python_task == null)",
+)
+
+
 CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
+    "TaskTrialSampleRequest": (_ONE_TRIAL_SOURCE,),
+    "TrialDocuments": (_ONE_TRIAL_SOURCE,),
     "AddModelAttachment": (
         CrossFieldRefinement(
             "model-attachment.owner",
@@ -607,6 +617,8 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "SparseCooArrayValueSpec": frozenset({"validate_entries"}),
     "ConstantArrayValueSpec": frozenset({"validate_value"}),
     "AcausalConnectionSpec": frozenset({"validate_and_canonicalize"}),
+    "TaskTrialSampleRequest": frozenset({"_one_task"}),
+    "TrialDocuments": frozenset({"_one_task"}),
     "ContentObjectRef": frozenset({"_validate_identity"}),
     "AcausalGraphSpec": frozenset(
         {"validate_subgraph_family", "reject_component_param_array_values"}

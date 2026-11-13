@@ -6,13 +6,14 @@ from typing import Any
 
 import jax
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.runtime._graph_key_schedule import sample_training_trials
 from feedbax.tasks.document import TaskParameters
 
@@ -33,10 +34,16 @@ async def simulate(_: SimulationRequest):
 class TaskTrialSampleRequest(BaseModel):
     model_name: ProjectName
     model: ModelDocument
-    task: TaskDocument
+    task: TaskDocument | None = None
+    python_task: PythonTaskSelection | None = None
     input_overrides: dict[str, str] = Field(default_factory=dict)
     seed: int = 0
     count: int = Field(default=8, ge=1, le=64)
+
+    @model_validator(mode="after")
+    def _one_task(self):
+        validate_cross_field_refinements("TaskTrialSampleRequest", self)
+        return self
 
 
 class TaskTimelineCue(BaseModel):
@@ -71,12 +78,15 @@ async def sample_task_trials(
     request: Request,
 ) -> TaskTrialSampleResponse:
     bundle = request.app.state.bootstrap_state.bundle
+    selected = payload.task if payload.task is not None else payload.python_task
+    assert selected is not None
     paired = compile_trial_execution(
         payload.model_name,
         payload.model,
-        payload.task,
+        selected,
         bundle.components,
         bundle.expression_functions,
+        python_tasks=bundle.python_tasks,
         input_overrides=payload.input_overrides,
     )
     if not isinstance(paired, PreparedTrialExecution):
@@ -97,19 +107,20 @@ async def sample_task_trials(
             payload.count,
         )
     )
+    labels = {epoch.id: epoch.name for epoch in selected.epochs} if isinstance(selected, TaskDocument) else {}
     trials = []
     for index in range(payload.count):
         trial = jax.tree.map(lambda values: values[index], samples)
         timeline = [
             TaskTimelineCue(
-                epoch=epoch.id,
-                label=epoch.name,
+                epoch=epoch,
+                label=labels.get(epoch, epoch),
                 start=int(start),
                 end=int(end),
                 outcome=int(outcome),
             )
             for epoch, start, end, outcome in zip(
-                payload.task.epochs,
+                task.epochs,
                 *trial.epochs,
                 strict=True,
             )
@@ -128,5 +139,6 @@ async def sample_task_trials(
             )
         )
     return TaskTrialSampleResponse(
-        task=payload.task.id, seed=payload.seed, n_steps=task.n_steps, trials=trials
+        task=selected.id if isinstance(selected, TaskDocument) else selected.type,
+        seed=payload.seed, n_steps=task.n_steps, trials=trials,
     )

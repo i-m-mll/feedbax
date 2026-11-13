@@ -282,6 +282,7 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
         candidate = compile_project(
             Project.model_validate(data), readers=settled.readers,
             operations=folders.operations, components=components, functions=folders.functions,
+            python_tasks=folders.python_tasks,
         )
         previous = {run.key: run.request_id for run in plan.runs}
         current = {run.key: run.request_id for run in candidate.runs}

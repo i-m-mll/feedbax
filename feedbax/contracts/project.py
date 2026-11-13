@@ -9,7 +9,9 @@ from pydantic import Field, JsonValue, StringConstraints, model_validator
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import ModelDifference
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
+from feedbax.contracts.task_document import (
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
+)
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project_inputs import InputBinding, NonemptyText, ProjectName, RowKey
@@ -91,6 +93,8 @@ class Document(StrictModel):
             ModelDocument.model_validate(self.payload)
         elif self.schema_id == TASK_DOCUMENT_SCHEMA_ID:
             TaskDocument.model_validate(self.payload)
+        elif self.schema_id == PYTHON_TASK_SCHEMA_ID:
+            PythonTaskSelection.model_validate(self.payload)
         elif self.schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
             ObjectiveDocument.model_validate(self.payload)
         return self

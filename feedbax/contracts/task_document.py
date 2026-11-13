@@ -1,6 +1,6 @@
 """Stored task document values."""
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from feedbax.contracts.expression_values import Expression, Scalar, ValueRecord, ValueType
 
@@ -59,3 +59,11 @@ class TaskDocument(ValueRecord):
     validation_trials: tuple[ValidationTrial, ...] = Field(
         default=(ValidationTrial(),), min_length=1
     )
+
+
+PYTHON_TASK_SCHEMA_ID = "feedbax.spec.python_task"
+
+
+class PythonTaskSelection(ValueRecord):
+    type: str
+    params: dict[str, JsonValue] = Field(default_factory=dict)

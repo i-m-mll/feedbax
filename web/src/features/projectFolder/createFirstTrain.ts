@@ -1,4 +1,3 @@
-import { defaultTaskSpec } from '@/features/scenario/defaultTaskSpec';
 import type { CreateNamedDocument, Document, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
@@ -7,8 +6,12 @@ const model: Document = {
   payload: { step_seconds: 0.01, ports: {}, interior: {} },
 };
 const task: Document = {
-  schema: 'feedbax.spec.task',
-  payload: { type: defaultTaskSpec.type, params: defaultTaskSpec.params },
+  schema: 'feedbax.spec.python_task',
+  payload: { type: 'feedbax.task.reaching.v1', params: {} },
+};
+const objective: Document = {
+  schema: 'feedbax.spec.objective_document',
+  payload: { id: 'objective', terms: [] },
 };
 const methodSchema = 'feedbax.spec.training_method.studio_graph';
 
@@ -35,9 +38,10 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
     throw new ProjectEditConflictError();
   }
 
-  // Publish the step after both references are durable. A retry can reuse the starter documents.
+  // Publish the step after the documents are durable so creation can be retried.
   const graph = await ensureDocument(editor, saved, 'model', model);
   const taskDocument = await ensureDocument(editor, graph.saved, 'task', task);
+  const objectiveDocument = await ensureDocument(editor, taskDocument.saved, 'objective', objective);
   const id = 'train';
   const nBatches = 1000;
   const learningRate = 0.001;
@@ -46,15 +50,15 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
     step: {
       kind: 'train',
       base: { inline: {
-        graph: { document: graph.id },
-        task: { document: taskDocument.id },
-        task_binding_spec: {},
-        objective: { kind: 'loss_term', loss: { type: 'Composite', label: 'Loss', children: {} } },
+        trial_documents: {
+          model_name: graph.id,
+          model: { document: graph.id },
+          python_task: { document: taskDocument.id },
+          objective: { document: objectiveDocument.id },
+        },
         training_config: {
           n_batches: nBatches,
           batch_size: 64,
-          learning_rate: learningRate,
-          n_reach_steps: defaultTaskSpec.params.n_steps,
         },
         method_ref: { package: 'feedbax', name: 'studio_graph', version: 'v1' },
         method_payload: {
@@ -68,6 +72,6 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
         },
       } },
     },
-  }, taskDocument.saved.revision);
+  }, objectiveDocument.saved.revision);
   return id;
 }

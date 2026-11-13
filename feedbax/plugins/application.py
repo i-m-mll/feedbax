@@ -25,6 +25,8 @@ from feedbax.orchestration.conformance import CheckRegistry, build_core_check_re
 from feedbax.orchestration.drivers.builtins import build_builtin_driver_registry
 from feedbax.orchestration.drivers.capabilities import DriverRegistry
 from feedbax.plot.constructors import FigureRegistry, register_default_figure_constructors
+from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.preparation import (
     ExecutionPreparationProviderRegistry,
     ExecutionPreparationRegistration,
@@ -78,6 +80,7 @@ class ApplicationRegistryBundle:
     analysis_recipes: AnalysisRecipeRegistry
     operations: OperationRegistry
     expression_functions: FunctionRegistry
+    python_tasks: PythonTaskRegistry
     evaluation_recipes: EvaluationRecipeRegistry
     evaluation_batch_consumers: EvaluationBatchConsumerRegistry
     evaluation_product_union_finalizers: EvaluationCompactProductUnionFinalizerRegistry
@@ -95,6 +98,7 @@ class ApplicationRegistryBundle:
         self.analysis_recipes.seal()
         self.operations.seal()
         self.expression_functions.seal()
+        self.python_tasks.seal()
         self.evaluation_recipes.seal()
         self.evaluation_batch_consumers.seal()
         self.evaluation_product_union_finalizers.seal()
@@ -131,6 +135,9 @@ OPERATIONS = RegistryKey(
 EXPRESSION_FUNCTIONS = RegistryKey(
     "expression_functions", "expression_functions", FunctionRegistry,
     registered_keys=lambda value: value.keys(),
+)
+PYTHON_TASKS = RegistryKey(
+    "python_tasks", "python_tasks", PythonTaskRegistry, registered_keys=lambda value: value.keys()
 )
 EVALUATION_RECIPES = RegistryKey(
     "evaluation_recipes",
@@ -179,6 +186,7 @@ APPLICATION_REGISTRY_KEYS = (
     ANALYSIS_RECIPES,
     OPERATIONS,
     EXPRESSION_FUNCTIONS,
+    PYTHON_TASKS,
     EVALUATION_RECIPES,
     EVALUATION_BATCH_CONSUMERS,
     EVALUATION_PRODUCT_UNION_FINALIZERS,
@@ -226,6 +234,7 @@ def _new_registry_bundle(
         analysis_recipes=AnalysisRecipeRegistry(),
         operations=operations,
         expression_functions=expression_functions,
+        python_tasks=builtin_python_tasks(),
         evaluation_recipes=evaluations,
         evaluation_batch_consumers=evaluation_consumers,
         evaluation_product_union_finalizers=EvaluationCompactProductUnionFinalizerRegistry(),

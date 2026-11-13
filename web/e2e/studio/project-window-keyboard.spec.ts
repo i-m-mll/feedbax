@@ -77,19 +77,23 @@ test('an empty saved project starts its first Train by keyboard and pointer', as
       const { snapshot: saved } = await created.json() as StudioProjectDocument;
       expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
       expect(saved.project.steps?.train).toMatchObject({
-        kind: 'train', base: { inline: { graph: { document: 'model' }, task: { document: 'task' } } },
+        kind: 'train', base: { inline: { trial_documents: {
+          model_name: 'model', model: { document: 'model' }, python_task: { document: 'task' },
+          objective: { document: 'objective' },
+        } } },
       });
       expect(saved.project.documents).toMatchObject({
-        model: { schema: 'feedbax.spec.graph', payload: { nodes: {}, wires: [] } },
-        task: { schema: 'feedbax.spec.task', payload: { type: 'SimpleReaches', params: { n_steps: 200 } } },
+        model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
+        task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.task.reaching.v1', params: {} } },
+        objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
       });
 
       const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
       await expect(chooser).toBeHidden();
       await expect(model).toBeFocused();
       await expect(model.locator('.react-flow')).toBeVisible();
-      await expect(model.locator('.react-flow__node')).toHaveCount(0);
-      await expect(model.getByRole('combobox', { name: 'Edit Model' }).locator('option:checked')).toHaveText('model');
+      await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
+      await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
       const card = page.getByRole('article', { name: 'Train train', exact: true });
       await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
 
@@ -103,14 +107,14 @@ test('an empty saved project starts its first Train by keyboard and pointer', as
       const [run] = plan.rows;
       expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
       expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
-      expect(plan.window_map?.problems).toMatchObject([{ path: '/graph/nodes', document: 'model' }]);
+      expect(plan.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
       if (input === 'pointer') {
         const refused = await request.post(`${projectPath}/train-runs`, {
           data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
         });
         expect(refused.status(), await refused.text()).toBe(202);
         expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
-          { disposition: 'rejected', reason: '/graph/nodes: Model has no components.' },
+          { disposition: 'rejected', reason: '/trial_documents/model/interior/components: Model has no components.' },
         ]);
       }
 
@@ -119,8 +123,8 @@ test('an empty saved project starts its first Train by keyboard and pointer', as
       await expect(page.getByRole('textbox', { name: 'N Batches', exact: true })).toBeEnabled();
       await tab('Task').click();
       const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-      const reach = task.getByRole('spinbutton', { name: 'Edit Eval Reach Length', exact: true });
-      await expect(reach).toHaveValue('0.5');
+      const reach = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+      await expect(reach).toHaveValue('0.15');
       await expect(task.getByRole('alert')).toHaveCount(0);
       const edit = page.waitForResponse((response) =>
         response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
@@ -132,14 +136,14 @@ test('an empty saved project starts its first Train by keyboard and pointer', as
 
       await page.reload();
       await expect(model.locator('.react-flow')).toBeVisible();
-      await expect(model.getByRole('combobox', { name: 'Edit Model' }).locator('option:checked')).toHaveText('model');
+      await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
       await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
       const persisted = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
       expect(persisted).toMatchObject({ revision: current.revision, project: current.project });
-      expect(persisted.project.documents?.task).toMatchObject({ payload: { params: { eval_reach_length: 0.6 } } });
+      expect(persisted.project.documents?.task).toMatchObject({ payload: { params: { x: 0.6 } } });
       const reopened = await readPlan(persisted.revision);
       expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
-      expect(reopened.window_map?.problems).toMatchObject([{ path: '/graph/nodes', document: 'model' }]);
+      expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
     });
   }
 });
