@@ -30,6 +30,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
 from feedbax.web.services.project_folder import (
     ProjectFileExists,
@@ -133,6 +134,18 @@ def read_document_authoring(
             components=request.app.state.bootstrap_state.bundle.components,
         ),
     )
+
+
+@router.post("/{project_id}/authoring/trials")
+def read_trial_authoring(
+    project_id: ProjectName, body: StudioTrialAuthoringRequest, request: Request, response: Response,
+) -> StudioTrialAuthoring:
+    from feedbax.web.services.trial_authoring import trial_authoring
+
+    return _project_response(response, lambda: trial_authoring(
+        request.app.state.project_folders, project_id, body,
+        request.app.state.bootstrap_state.bundle,
+    ))
 
 
 @router.post("/{project_id}/authoring/analyze")

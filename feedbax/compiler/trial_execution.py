@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import jax
 import jax.numpy as jnp
+from pydantic import BaseModel, ValidationError
 
 from feedbax.compiler.graph import (
     ExecutableGraph,
@@ -14,18 +15,24 @@ from feedbax.compiler.graph import (
     GraphDocument,
     compile_graph,
 )
-from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
+from feedbax.compiler.model_document import (
+    LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document,
+)
+from feedbax.compiler.resolution import ParameterResolutionError
 from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
-from feedbax.contracts.expression_values import Problem, ProblemCode, ValueBase
+from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueBase
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import json_pointer_parts
+from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.trial_execution import TrialExecution
-from feedbax.tasks.document import DocumentTask, TaskDocument, compile_task
+from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
+from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.tasks.registry import PythonTaskDefinition, PythonTaskRegistry, PythonTaskTemplate
 
 
 @dataclass(frozen=True)
@@ -38,42 +45,142 @@ class PreparedTrialExecution:
 _DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase.REAL: jnp.float32}
 
 
-def compile_trial_execution(
+@dataclass(frozen=True)
+class TrialPair:
+    model: ResolvedModelInterface
+    task: TrialSource
+    lowered: LoweredModelDocument
+    prototypes: dict
+    input_bindings: tuple[tuple[str, str], ...]
+    problems: tuple[Problem, ...]
+
+
+def validate_python_task(
+    selection: PythonTaskSelection, registry: PythonTaskRegistry,
+) -> tuple[PythonTaskDefinition, BaseModel] | tuple[Problem, ...]:
+    definition = registry.resolve(selection.type)
+    if definition is None:
+        return (Problem(code=ProblemCode.UNKNOWN_NAME, path=("python_task", "type"),
+                        reason=f"Python task {selection.type!r} is not registered."),)
+    try:
+        params = definition.parameters.model_validate(selection.params)
+    except ValidationError as error:
+        return tuple(Problem(code=ProblemCode.TYPE_MISMATCH,
+                             path=("python_task", "params", *item["loc"]), reason=item["msg"])
+                     for item in error.errors(include_url=False))
+    return definition, params
+
+
+def resolve_python_task(
+    selection: PythonTaskSelection, registry: PythonTaskRegistry,
+) -> PythonTaskTemplate | tuple[Problem, ...]:
+    resolved = validate_python_task(selection, registry)
+    if isinstance(resolved[0], Problem):
+        return resolved
+    definition, params = resolved
+    return definition.template(params)
+
+
+def pair_trial_source(
     model_name: str,
     model: ModelDocument,
-    task: TaskDocument,
+    task: TaskDocument | PythonTaskSelection,
     components: ComponentRegistry,
     functions: FunctionRegistry,
     *,
+    python_tasks: PythonTaskRegistry | None = None,
+    input_overrides: Mapping[str, str] | None = None,
+    graph_override: GraphSpec | None = None,
+    task_sites: dict[tuple[str | int, ...], Site] | None = None,
+) -> TrialPair | tuple[Problem, ...]:
+    overrides = input_overrides or {}
+    if isinstance(task, PythonTaskSelection):
+        template = resolve_python_task(task, python_tasks or builtin_python_tasks())
+        if isinstance(template, tuple):
+            return template
+        signal_types = template.signals
+    else:
+        template = None
+        signal_types = {signal.name: signal.type for signal in task.signals}
+    supplied = frozenset(
+        port.name for port in model.ports.inputs
+        if overrides.get(port.name, port.name) in signal_types
+    )
+    declared_prototypes = {}
+    for port in model.ports.inputs:
+        shape = port.type.shape
+        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
+            continue
+        base = port.type.base
+        dtype = (
+            jnp.bool_ if base in ("bool", "boolean") else
+            jnp.int32 if base in ("int", "int32", "integer") else jnp.float32
+        )
+        declared_prototypes[port.name] = jax.ShapeDtypeStruct(shape, dtype)
+    try:
+        lowered = lower_model_document(model_name, model, components, supplied_inputs=supplied)
+        prototypes = {
+            target: (
+                jax.ShapeDtypeStruct(value.shape, _DTYPES[value.base])
+                if (value := signal_types.get(overrides.get(port, port))) is not None
+                else declared_prototypes[port]
+            )
+            for port, target in lowered.graph.input_bindings.items()
+            if port in supplied or port in declared_prototypes
+        }
+        if graph_override is not None:
+            if graph_override.input_bindings != lowered.graph.input_bindings:
+                return (Problem(
+                    code=ProblemCode.STRUCTURE, path=("model", "inputs"),
+                    reason="The selected task changes which optional inputs use the trained model's defaults.",
+                ),)
+            lowered = replace(lowered, graph=graph_override)
+        interface = lowered.interface(
+            model_name, model, components, input_prototypes=prototypes,
+        )
+    except ModelCompilationProblem as error:
+        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error),
+                        path=("model", *error.address.stored_path())),)
+    except ParameterResolutionError as error:
+        address = lowered.source_address(error.authored_path)
+        path = address.stored_path() if address else json_pointer_parts(error.authored_path)
+        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("model", *path)),)
+    if isinstance(task, TaskDocument):
+        compiled = compile_task(task, functions, model=replace(interface, inputs=()), sites=task_sites)
+    else:
+        assert template is not None
+        compiled = template.prepare(interface, functions)
+    if isinstance(compiled, tuple):
+        return compiled
+    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, overrides)
+    return TrialPair(interface, compiled, lowered, prototypes, bindings, problems)
+
+
+def compile_trial_execution(
+    model_name: str,
+    model: ModelDocument,
+    task: TaskDocument | PythonTaskSelection,
+    components: ComponentRegistry,
+    functions: FunctionRegistry,
+    *,
+    python_tasks: PythonTaskRegistry | None = None,
     objective: ObjectiveDocument | None = None,
     input_overrides: Mapping[str, str] | None = None,
     initialization_key: jax.Array | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
     graph_override: GraphSpec | None = None,
 ) -> PreparedTrialExecution | tuple[Problem, ...]:
-    """Use authored task signal types to resolve the model's numeric sample ports."""
-    overrides = input_overrides or {}
-    signal_types = {signal.name: signal.type for signal in task.signals}
+    """Bind a trial source and compile the paired model and optional objective."""
     try:
-        lowered = lower_model_document(model_name, model, components)
-        prototypes = {
-            target: jax.ShapeDtypeStruct(value.shape, _DTYPES[value.base])
-            for port, target in lowered.graph.input_bindings.items()
-            if (value := signal_types.get(overrides.get(port, port))) is not None
-        }
-        if graph_override is not None:
-            from dataclasses import replace
-
-            lowered = replace(lowered, graph=graph_override)
-        interface = lowered.interface(
-            model_name,
-            model,
-            components,
-            input_prototypes=prototypes,
+        pairing = pair_trial_source(
+            model_name, model, task, components, functions, python_tasks=python_tasks,
+            input_overrides=input_overrides, graph_override=graph_override,
         )
-        compiled_task = compile_task(task, functions, model=interface, input_overrides=overrides)
-        if not isinstance(compiled_task, DocumentTask):
-            return compiled_task
+        if isinstance(pairing, tuple):
+            return pairing
+        if pairing.problems:
+            return pairing.problems
+        interface, compiled_task = pairing.model, pairing.task
         scorer = None
         observations = ()
         if objective is not None:
@@ -92,9 +199,9 @@ def compile_trial_execution(
                 if output.id in referenced
             )
         executable = compile_graph(
-            GraphDocument(graph=lowered.graph),
+            GraphDocument(graph=pairing.lowered.graph),
             components,
-            input_prototypes=prototypes,
+            input_prototypes=pairing.prototypes,
             initialization_key=initialization_key,
             artifact_provider=artifact_provider,
         )
@@ -117,6 +224,6 @@ def compile_trial_execution(
         )
     return PreparedTrialExecution(
         executable,
-        TrialExecution(compiled_task, interface.reset, compiled_task.input_bindings, observations),
+        TrialExecution(compiled_task, interface.reset, pairing.input_bindings, observations),
         scorer,
     )

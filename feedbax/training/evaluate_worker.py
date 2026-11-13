@@ -109,11 +109,11 @@ def _rollouts(
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
-    variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation)
+    variant = resolve_evaluation_variant(slot.graph, documents.task_source, params.variation)
     key = studio_training_key(method.seed, "model")
     source_pair = compile_trial_execution(
-        documents.model_name, documents.model, documents.task,
-        registry.components, registry.expression_functions, objective=documents.objective,
+        documents.model_name, documents.model, documents.task_source,
+        registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
         input_overrides=documents.input_overrides, artifact_provider=slot.provider,
         initialization_key=key,
     )
@@ -121,10 +121,10 @@ def _rollouts(
         problem = source_pair[0]
         raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
     paired = source_pair
-    if variant.graph != slot.graph or variant.task != documents.task:
+    if variant.graph != slot.graph or variant.task != documents.task_source:
         paired = compile_trial_execution(
             documents.model_name, documents.model, variant.task,
-            registry.components, registry.expression_functions, objective=documents.objective,
+            registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
             input_overrides=documents.input_overrides, artifact_provider=slot.provider,
             initialization_key=key, graph_override=variant.graph,
         )

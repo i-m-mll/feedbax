@@ -79,9 +79,9 @@ def prepare_managed_training(
         raise ValueError("/trial_documents: Managed Train requires a document pair.")
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     paired = compile_trial_execution(
-        documents.model_name, documents.model, documents.task,
+        documents.model_name, documents.model, documents.task_source,
         registries.components, registries.expression_functions,
-        objective=documents.objective, input_overrides=documents.input_overrides,
+        python_tasks=registries.python_tasks, objective=documents.objective, input_overrides=documents.input_overrides,
         initialization_key=studio_training_key(method.seed, "model"),
         artifact_provider=model_assets,
     )

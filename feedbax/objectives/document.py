@@ -29,7 +29,7 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.objectives.base import AbstractLoss, TermTree
 from feedbax.runtime.epoch_windows import whole_window
-from feedbax.tasks.document import DocumentTask, Trial
+from feedbax.tasks.document import Trial, TrialSource
 
 
 class ObjectiveInputs(NamedTuple):
@@ -223,7 +223,8 @@ def compile_objective(
     names: tuple[ScopedValue, ...],
     functions: FunctionRegistry,
     *,
-    task: DocumentTask,
+    task: TrialSource,
+    sites: dict[tuple[str | int, ...], Site] | None = None,
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile objective expressions and whole-epoch windows against a paired task."""
     period = task.period
@@ -253,6 +254,10 @@ def compile_objective(
             )
             continue
         seen.add(term.id)
+        measure_site = Site(expected=term.measure_type, names=names, finest=Level.STEP)
+        if sites is not None:
+            sites[(*path, "measure")] = measure_site
+            sites[(*path, "weight")] = Site(expected=scalar, names=weight_names, finest=Level.STEP)
         if not term.enabled:
             continue
         if term.measure_type.shape or term.measure_type.base != ValueBase.REAL:
@@ -266,7 +271,7 @@ def compile_objective(
             continue
         measure = compile_expression(
             term.measure,
-            Site(expected=term.measure_type, names=names, finest=Level.STEP),
+            measure_site,
             functions,
             field_address=(document.id, *path, "measure"),
             period_seconds=period,
@@ -285,9 +290,12 @@ def compile_objective(
             )
             continue
         limit = Level.STEP if measure.checked.root.level == Level.STEP else Level.TRIAL
+        weight_site = Site(expected=scalar, names=weight_names, finest=limit)
+        if sites is not None:
+            sites[(*path, "weight")] = weight_site
         weight = compile_expression(
             term.weight,
-            Site(expected=scalar, names=weight_names, finest=limit),
+            weight_site,
             functions,
             field_address=(document.id, *path, "weight"),
             period_seconds=period,

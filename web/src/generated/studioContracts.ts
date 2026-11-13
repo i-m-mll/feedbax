@@ -3054,6 +3054,7 @@ export type ObjectiveTerm = {
   "reduction"?: Reduction;
   "epochs"?: Array<string>;
   "enabled"?: boolean;
+  "name"?: string | null;
 };
 
 export type OmittedReference = {
@@ -3145,6 +3146,11 @@ export type ProjectConfiguration = {
 };
 
 export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
+
+export type PythonTaskSelection = {
+  "type": string;
+  "params"?: Record<string, JsonValue>;
+};
 
 export type RangeAxis = {
   "path": PatchPath;
@@ -3700,6 +3706,12 @@ export type StudioSweepValue = {
   "value": number;
 };
 
+export type StudioTaskType = {
+  "type": string;
+  "label": string;
+  "parameter_schema": Record<string, JsonValue>;
+};
+
 export type StudioToField = {
   "kind": "toField";
   "sweep_id": string;
@@ -3736,6 +3748,71 @@ export type StudioTrainStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
+};
+
+export type StudioTrialAuthoring = {
+  "revision": Sha256;
+  "run": StudioSavedTrainKey;
+  "model": string;
+  "task_document": string | null;
+  "objective_document": string | null;
+  "task": TaskDocument | PythonTaskSelection;
+  "objective": ObjectiveDocument | null;
+  "task_types": Array<StudioTaskType>;
+  "variables": Array<ScopedValue>;
+  "signals": Array<ScopedValue>;
+  "epochs": Array<Epoch>;
+  "period_seconds": number;
+  "n_steps": number | null;
+  "inputs": Array<StudioTrialInput>;
+  "outputs": Array<StudioTrialOutput>;
+  "resets": Array<StudioTrialReset>;
+  "fields": Array<StudioTrialField>;
+  "problems": Array<Problem>;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioTrialAuthoringRequest = {
+  "revision": Sha256;
+  "run": StudioSavedTrainKey;
+  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | null;
+};
+
+export type StudioTrialBindingEdit = {
+  "kind": "binding";
+  "input": ModelAddress;
+  "signal": string | null;
+};
+
+export type StudioTrialDocumentEdit = {
+  "kind": "task" | "objective";
+  "edits": Array<ProjectValueEdit>;
+};
+
+export type StudioTrialField = {
+  "path": string;
+  "projection": SiteProjection;
+};
+
+export type StudioTrialInput = {
+  "address": ModelAddress;
+  "name": string;
+  "type": ValueType | null;
+  "required": boolean;
+  "signal": string | null;
+  "explicit": boolean;
+};
+
+export type StudioTrialOutput = {
+  "address": ModelAddress;
+  "value": ScopedValue;
+};
+
+export type StudioTrialReset = {
+  "address": ModelAddress;
+  "type": ValueType;
+  "finest": Level;
+  "variable": string | null;
 };
 
 export type SubsetTerms = {
@@ -3796,9 +3873,10 @@ export type TextSpan = {
 export type TrialDocuments = {
   "model_name": string;
   "model": ModelDocument;
-  "task": TaskDocument;
+  "task": TaskDocument | null;
   "objective": ObjectiveDocument;
   "input_overrides"?: Record<string, string>;
+  "python_task"?: PythonTaskSelection | null;
 };
 
 export type ValidationTrial = {
@@ -9065,6 +9143,7 @@ export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
     "reduction": ReductionSchema.optional(),
     "epochs": z.array(z.string()).optional(),
     "enabled": z.boolean().optional(),
+    "name": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ObjectiveTerm>;
 
@@ -9193,6 +9272,13 @@ export const ProjectConfigurationSchema: z.ZodType<ProjectConfiguration> = z.laz
 export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
   z.union([SetProjectValueSchema, RemoveProjectValueSchema])
 ) as unknown as z.ZodType<ProjectValueEdit>;
+
+export const PythonTaskSelectionSchema: z.ZodType<PythonTaskSelection> = z.lazy(() =>
+  z.object({
+    "type": z.string(),
+    "params": z.record(z.string(), jsonValueSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<PythonTaskSelection>;
 
 export const RangeAxisSchema: z.ZodType<RangeAxis> = z.lazy(() =>
   z.object({
@@ -9920,6 +10006,14 @@ export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioSweepValue>;
 
+export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
+  z.object({
+    "type": z.string(),
+    "label": z.string(),
+    "parameter_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskType>;
+
 export const StudioToFieldSchema: z.ZodType<StudioToField> = z.lazy(() =>
   z.object({
     "kind": z.literal("toField"),
@@ -9967,6 +10061,87 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainStep>;
+
+export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "run": StudioSavedTrainKeySchema,
+    "model": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
+    "objective": z.union([ObjectiveDocumentSchema, z.null()]),
+    "task_types": z.array(StudioTaskTypeSchema),
+    "variables": z.array(ScopedValueSchema),
+    "signals": z.array(ScopedValueSchema),
+    "epochs": z.array(EpochSchema),
+    "period_seconds": z.number().finite(),
+    "n_steps": z.union([z.number().int().safe(), z.null()]),
+    "inputs": z.array(StudioTrialInputSchema),
+    "outputs": z.array(StudioTrialOutputSchema),
+    "resets": z.array(StudioTrialResetSchema),
+    "fields": z.array(StudioTrialFieldSchema),
+    "problems": z.array(ProblemSchema),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialAuthoring>;
+
+export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "run": StudioSavedTrainKeySchema,
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema]), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
+
+export const StudioTrialBindingEditSchema: z.ZodType<StudioTrialBindingEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("binding"),
+    "input": ModelAddressSchema,
+    "signal": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialBindingEdit>;
+
+export const StudioTrialDocumentEditSchema: z.ZodType<StudioTrialDocumentEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("task"), z.literal("objective")]),
+    "edits": z.array(ProjectValueEditSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialDocumentEdit>;
+
+export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
+  z.object({
+    "path": z.string(),
+    "projection": SiteProjectionSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioTrialField>;
+
+export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "name": z.string(),
+    "type": z.union([ValueTypeSchema, z.null()]),
+    "required": z.boolean(),
+    "signal": z.union([z.string(), z.null()]),
+    "explicit": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialInput>;
+
+export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "value": ScopedValueSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioTrialOutput>;
+
+export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "type": ValueTypeSchema,
+    "finest": LevelSchema,
+    "variable": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialReset>;
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
@@ -10043,9 +10218,10 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
   z.object({
     "model_name": z.string(),
     "model": ModelDocumentSchema,
-    "task": TaskDocumentSchema,
+    "task": z.union([TaskDocumentSchema, z.null()]),
     "objective": ObjectiveDocumentSchema,
     "input_overrides": z.record(z.string(), z.string()).optional(),
+    "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TrialDocuments>;
 
@@ -10141,6 +10317,8 @@ export const contractSchemas = {
   TaskDocument: TaskDocumentSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
   TrialDocuments: TrialDocumentsSchema,
+  StudioTrialAuthoring: StudioTrialAuthoringSchema,
+  StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
   FieldTextResult: FieldTextResultSchema,
   Problem: ProblemSchema,
   ReportDocument: ReportDocumentSchema,
@@ -10263,6 +10441,8 @@ export interface ContractTypeMap {
   TaskDocument: TaskDocument;
   ObjectiveDocument: ObjectiveDocument;
   TrialDocuments: TrialDocuments;
+  StudioTrialAuthoring: StudioTrialAuthoring;
+  StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
   FieldTextResult: FieldTextResult;
   Problem: Problem;
   ReportDocument: ReportDocument;

@@ -2036,6 +2036,9 @@
           "base": "real"
         }
       },
+      "name": {
+        "absent": null
+      },
       "reduction": {
         "absent": "mean",
         "values": [
@@ -2360,6 +2363,12 @@
       "model_field": {},
       "variable": {}
     },
+    "feedbax.contracts.task_document.PythonTaskSelection": {
+      "params": {
+        "absent": {}
+      },
+      "type": {}
+    },
     "feedbax.contracts.task_document.Signal": {
       "absent": {
         "absent": null,
@@ -2609,6 +2618,9 @@
       "model": {},
       "model_name": {},
       "objective": {},
+      "python_task": {
+        "absent": null
+      },
       "task": {}
     },
     "feedbax.contracts.value_schema.ValueSchema": {

@@ -16,6 +16,7 @@ from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import StudioTaskBindingSpec
@@ -84,6 +85,7 @@ from feedbax.contracts.request_specs import (
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.expression_registry import FunctionRegistry
 
@@ -408,18 +410,35 @@ def _encode_row(
     sources: Mapping[str, ValueSource] | None = None,
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
+    python_tasks: PythonTaskRegistry | None = None,
 ) -> _LoweredRow:
     document_train = kind == "train" and payload.get("trial_documents") is not None
     if document_train:
-        from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+        from feedbax.compiler.trial_execution import (
+            PreparedTrialExecution, compile_trial_execution, validate_python_task,
+        )
+        from feedbax.tasks.reaching import builtin_python_tasks
         from feedbax.contracts.request_specs import TrialDocuments
 
         try:
             authored = TrialDocuments.model_validate(payload["trial_documents"])
+            if authored.python_task is not None:
+                resolved = validate_python_task(authored.python_task, python_tasks or builtin_python_tasks())
+                if isinstance(resolved[0], Problem):
+                    return _LoweredRow(None, tuple(ProjectDiagnostic(
+                        ResolutionCode.INVALID_PAYLOAD,
+                        ".".join(("payload.trial_documents", *map(str, problem.path))),
+                        problem.reason, key.step, row=key.row, variant=key.variant,
+                    ) for problem in resolved), encoding_stamp)
+                _, params = resolved
+                authored = authored.model_copy(update={"python_task": authored.python_task.model_copy(
+                    update={"params": params.model_dump(mode="json")},
+                )})
+                payload = payload | {"trial_documents": authored.model_dump(mode="json")}
             paired = compile_trial_execution(
-                authored.model_name, authored.model, authored.task,
+                authored.model_name, authored.model, authored.task_source,
                 components or _builtin_model_registry(), functions or _builtin_expression_registry(),
-                objective=authored.objective, input_overrides=authored.input_overrides,
+                python_tasks=python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
             )
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
@@ -580,11 +599,11 @@ class ProjectPlanMemo:
 
 def _compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
-    functions: FunctionRegistry | None,
+    functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
 ) -> tuple[object, ...]:
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
-        request_identity.request_codec_authority(), components, operations, functions,
+        request_identity.request_codec_authority(), components, operations, functions, python_tasks,
     )
 
 
@@ -598,6 +617,7 @@ class _Compiler:
         operations: OperationRegistry | None = None,
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
+        python_tasks: PythonTaskRegistry | None = None,
     ):
         self.project = project
         self.readers = readers
@@ -605,6 +625,7 @@ class _Compiler:
         self.operations = operations
         self.components = components
         self.functions = functions
+        self.python_tasks = python_tasks
         self.work = _PlanWork()
         if previous is not None:
             self.work.inline_origins.update(previous.inline_origins)
@@ -921,7 +942,7 @@ class _Compiler:
                     self.work.request_documents if self.previous is not None else None,
                     document_ids.get("payload.graph"),
                     definition.sources if definition is not None else None,
-                    self.components, self.functions,
+                    self.components, self.functions, self.python_tasks,
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,
@@ -972,7 +993,7 @@ class _Compiler:
                 model = documents.model
                 binding = None
                 base_graph = lower_model_document(document, model, components).graph
-                base_task = documents.task
+                base_task = documents.task_source
             else:
                 assert isinstance(train, TrainingRequestSpec)
                 if model_source is None:
@@ -1466,6 +1487,7 @@ def compile_project(
     operations: OperationRegistry | None = None,
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
+    python_tasks: PythonTaskRegistry | None = None,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
     readers = replace(
@@ -1476,12 +1498,12 @@ def compile_project(
     if memo is None or any(
         reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)
     ):
-        return _Compiler(project, readers, source_runs, operations=operations, components=components, functions=functions).plan()
-    authority = _compiler_authority(components, operations, functions)
+        return _Compiler(project, readers, source_runs, operations=operations, components=components, functions=functions, python_tasks=python_tasks).plan()
+    authority = _compiler_authority(components, operations, functions, python_tasks)
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions)
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations, functions):
+    if authority == _compiler_authority(components, operations, functions, python_tasks):
         memo._publish(ticket, authority, compiler.work)
     return plan
 

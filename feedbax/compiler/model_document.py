@@ -804,11 +804,12 @@ def _scoped_ports(
 def lower_model_document(
     document: ProjectName, model: ModelDocument, components: ComponentRegistry,
     task: StudioTaskBindingSpec | None = None,
+    *, supplied_inputs: frozenset[str] = frozenset(),
 ) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
     lower = _Lower(document, model, components)
     names = frozenset(item.id for item in task.exposed_data if item.bindable) if task else frozenset()
-    graph = lower.graph(model.interior, model.ports, (), available=names)
+    graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
     lower.reject_within_step_paths(graph)
     binding = lower.root_inputs(task, graph) if task is not None else None
     return LoweredModelDocument(graph, binding, lower.origins, tuple(lower.links), tuple(sorted(lower.plugins)))

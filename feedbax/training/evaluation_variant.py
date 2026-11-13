@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
 from feedbax.contracts.model_attachment import is_generated_attachment_node
 from feedbax.contracts.model_occurrence import graph_leaf_specs
@@ -22,7 +22,7 @@ from feedbax.studio.canonical_evaluate import CannotRun
 @dataclass(frozen=True)
 class EvaluationVariant:
     graph: GraphSpec
-    task: TaskSpec | TaskDocument
+    task: TaskSpec | TaskDocument | PythonTaskSelection
     source_overrides: dict[str, float]
     edit_origins: dict[tuple[str, ...], str] = field(compare=False)
 
@@ -139,7 +139,7 @@ def _qualify_task(source: TaskSpec, task: TaskSpec, path: str) -> None:
 
 
 def resolve_evaluation_variant(
-    graph: GraphSpec, task: TaskSpec | TaskDocument, patches: VariationEdits,
+    graph: GraphSpec, task: TaskSpec | TaskDocument | PythonTaskSelection, patches: VariationEdits,
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     graph_payload, wire_ids = _addressable_graph(graph)
