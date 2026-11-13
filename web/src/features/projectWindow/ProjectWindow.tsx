@@ -21,6 +21,7 @@ import {
 import { StudioCommandPalette } from './StudioCommandPalette';
 import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
+import { useStudioTitleBar } from './studioTitleBar';
 import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
@@ -280,6 +281,7 @@ export function ProjectWindow({
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
   useStudioNativeMenu([palette, ...paletteCommands], paletteScope !== null);
+  const titleBar = useStudioTitleBar(projectName);
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing || event.repeat) return;
@@ -315,8 +317,8 @@ export function ProjectWindow({
 
   return (
     <div ref={root} className="shell-frame studio-project-window" style={frameStyle}>
-      <header className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-tauri-drag-region>
-        <div className="shell-frame__cell studio-window-bar__controls" data-tauri-drag-region>
+      <header className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-studio-drag-region {...titleBar}>
+        <div className="shell-frame__cell studio-window-bar__controls" data-studio-drag-region>
           {layoutModes.map(({ mode, icon, command }) => (
             <WindowButton key={mode} command={command} icon={icon} pressed={state.mode === mode} />
           ))}
@@ -324,8 +326,8 @@ export function ProjectWindow({
           <WindowButton command={forward} icon={ArrowRight} />
           <WindowButton command={steps} icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} />
         </div>
-        <div className="shell-frame__cell studio-window-bar__project" data-separated="" data-tauri-drag-region>
-          <h1 className="min-w-0 truncate text-sm font-semibold" data-tauri-drag-region>{projectName}</h1>
+        <div className="shell-frame__cell studio-window-bar__project" data-separated="" data-studio-drag-region>
+          <h1 className="min-w-0 truncate text-sm font-semibold" data-studio-drag-region>{projectName}</h1>
           {saveStatus}
           {variant}
         </div>

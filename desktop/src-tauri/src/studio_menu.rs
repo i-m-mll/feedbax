@@ -1,3 +1,4 @@
+use crate::window_session::{RecentProject, RecentProjects};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{
@@ -8,6 +9,10 @@ use tauri::{
 
 const PREFIX: &str = "studio-command:";
 pub const OPEN_PROJECT_ID: &str = "open-project";
+pub const NEW_PROJECT_ID: &str = "new-project";
+pub const CLOSE_PROJECT_ID: &str = "close-project";
+pub const CLEAR_RECENT_ID: &str = "clear-recent-projects";
+const RECENT_PREFIX: &str = "recent-project:";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,8 +71,9 @@ pub fn is_project_route(url: &Url, project: &str) -> bool {
     url.path() == "/"
         && url
             .query_pairs()
-            .find(|(key, _)| key == "project")
-            .is_some_and(|(_, value)| value == project)
+            .filter(|(key, _)| key == "project")
+            .map(|(_, value)| value)
+            .eq([project])
 }
 
 struct Presented {
@@ -121,7 +127,31 @@ struct StudioMenu {
     service: Submenu<tauri::Wry>,
     file: Submenu<tauri::Wry>,
     open: MenuItem<tauri::Wry>,
+    new: MenuItem<tauri::Wry>,
+    close: MenuItem<tauri::Wry>,
+    recent: Submenu<tauri::Wry>,
+    recents: Mutex<RecentMenu>,
     routing: Mutex<Routing>,
+}
+
+#[derive(Default)]
+struct RecentMenu {
+    generation: u64,
+    entries: Vec<RecentProject>,
+}
+
+impl RecentMenu {
+    fn id(&self, index: usize) -> String {
+        format!("{RECENT_PREFIX}{}:{index}", self.generation)
+    }
+
+    fn resolve(&self, command: &str) -> Option<&RecentProject> {
+        let (generation, index) = command.strip_prefix(RECENT_PREFIX)?.split_once(':')?;
+        if generation.parse::<u64>().ok()? != self.generation {
+            return None;
+        }
+        self.entries.get(index.parse::<usize>().ok()?)
+    }
 }
 
 fn edit_menu(
@@ -197,27 +227,82 @@ fn build_menu(
 
 pub fn install(app: &AppHandle, service: Submenu<tauri::Wry>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, OPEN_PROJECT_ID, "Open…", true, Some("CmdOrCtrl+O"))?;
-    let file = Submenu::with_items(app, "File", true, &[&open])?;
+    let new = MenuItem::with_id(app, NEW_PROJECT_ID, "New", true, Some("CmdOrCtrl+N"))?;
+    let close = MenuItem::with_id(app, CLOSE_PROJECT_ID, "Close", false, Some("CmdOrCtrl+W"))?;
+    let recent = Submenu::new(app, "Open Recent", false)?;
+    let file = Submenu::with_items(app, "File", true, &[&new, &open, &recent, &close])?;
     app.set_menu(build_menu(app, &service, &file, None, 0)?)?;
     app.manage(StudioMenu {
         service,
         file,
         open,
+        new,
+        close,
+        recent,
+        recents: Mutex::new(RecentMenu::default()),
         routing: Mutex::new(Routing::default()),
     });
     Ok(())
 }
 
 pub fn set_open_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
-    app.state::<StudioMenu>().open.set_enabled(enabled)
+    let state = app.state::<StudioMenu>();
+    state.open.set_enabled(enabled)?;
+    state.new.set_enabled(enabled)?;
+    state
+        .recent
+        .set_enabled(enabled && !state.recents.lock().unwrap().entries.is_empty())
 }
 
-pub fn attach(
-    app: &AppHandle,
-    label: &str,
-    url: &Url,
-    project_id: &str,
-) -> tauri::Result<String> {
+pub fn set_recent(app: &AppHandle, projects: &RecentProjects) -> tauri::Result<()> {
+    let state = app.state::<StudioMenu>();
+    let mut menu = state.recents.lock().unwrap();
+    if menu.entries == projects.entries() {
+        return Ok(());
+    }
+    let next = RecentMenu {
+        generation: menu.generation + 1,
+        entries: projects.entries().to_vec(),
+    };
+    let items = next
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            MenuItem::with_id(app, next.id(index), &entry.title, true, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    for item in state.recent.items()? {
+        state.recent.remove(&item)?;
+    }
+    for item in &items {
+        state.recent.append(item)?;
+    }
+    state.recent.append(&PredefinedMenuItem::separator(app)?)?;
+    state.recent.append(&MenuItem::with_id(
+        app,
+        CLEAR_RECENT_ID,
+        "Clear Menu",
+        true,
+        None::<&str>,
+    )?)?;
+    state
+        .recent
+        .set_enabled(state.open.is_enabled()? && !next.entries.is_empty())?;
+    *menu = next;
+    Ok(())
+}
+
+pub fn recent_project(app: &AppHandle, command: &str) -> Option<RecentProject> {
+    app.state::<StudioMenu>()
+        .recents
+        .lock()
+        .unwrap()
+        .resolve(command)
+        .cloned()
+}
+
+pub fn attach(app: &AppHandle, label: &str, url: &Url, project_id: &str) -> tauri::Result<String> {
     let origin = url.origin().ascii_serialization();
     app.add_capability(capability(label, &origin))?;
     app.state::<StudioMenu>()
@@ -238,7 +323,8 @@ pub fn attach(
         "if (location.origin === {origin}) {{\
            Object.defineProperty(window, '__FEEDBAX_STUDIO_MENU__', {{\
              value: Object.freeze({{publish: snapshot =>\
-               window.__TAURI_INTERNALS__.invoke('publish_studio_menu', {{snapshot}})}})\
+               window.__TAURI_INTERNALS__.invoke('publish_studio_menu', {{snapshot}}),\
+               windowAction: action => window.__TAURI_INTERNALS__.invoke('studio_window_action', {{action}})}})\
            }});\
          }}"
     ))
@@ -250,6 +336,7 @@ fn capability(label: &str, origin: &str) -> CapabilityBuilder {
         .remote(format!("{origin}/*"))
         .webview(label)
         .permission("allow-publish-studio-menu")
+        .permission("allow-studio-window-action")
 }
 
 pub fn focused_webview(app: &AppHandle) -> Option<WebviewWindow> {
@@ -262,6 +349,10 @@ fn refresh(app: &AppHandle) -> tauri::Result<()> {
     let focused = focused_webview(app);
     let state = app.state::<StudioMenu>();
     let mut routing = state.routing.lock().unwrap();
+    let closable = focused
+        .as_ref()
+        .is_some_and(|window| routing.windows.contains_key(window.label()));
+    state.close.set_enabled(closable)?;
     let target = focused.as_ref().and_then(|window| {
         let snapshot = routing.windows.get(window.label())?.snapshot.as_ref()?;
         Some((window.label(), snapshot))
@@ -337,6 +428,82 @@ pub fn publish_studio_menu(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum WindowAction {
+    Drag {},
+    Zoom {},
+    Title { title: String },
+}
+
+#[tauri::command]
+pub async fn studio_window_action(
+    window: WebviewWindow,
+    action: WindowAction,
+) -> Result<(), String> {
+    let (reply, result) = tauri::async_runtime::channel(1);
+    let app = window.app_handle().clone();
+    app.run_on_main_thread(move || {
+        let _ = reply.try_send(apply_window_action(&window, action));
+    })
+    .map_err(|error| error.to_string())?;
+    let mut result = result;
+    result
+        .recv()
+        .await
+        .ok_or_else(|| "Studio window action was not completed".to_owned())?
+}
+
+fn apply_window_action(window: &WebviewWindow, action: WindowAction) -> Result<(), String> {
+    let url = window.url().map_err(|error| error.to_string())?;
+    let project = {
+        let state = window.state::<StudioMenu>();
+        let routing = state.routing.lock().unwrap();
+        routing
+            .windows
+            .get(window.label())
+            .filter(|target| target.permits(&url))
+            .ok_or(
+                "Studio window action requires its registered service origin and project window",
+            )?
+            .project_id
+            .clone()
+    };
+    let run = || -> tauri::Result<()> {
+        match action {
+            WindowAction::Title { title } if valid_project_title(&title) => {
+                window.set_title(&title)?;
+                crate::rename_recent(window.app_handle(), &project, &title)?;
+            }
+            WindowAction::Title { .. } => {
+                return Err(std::io::Error::other("Invalid Studio project title").into());
+            }
+            action if window.is_focused()? && !window.is_fullscreen()? => match action {
+                WindowAction::Drag {} => window.start_dragging()?,
+                WindowAction::Zoom {} if window.is_resizable()? => {
+                    if window.is_maximized()? {
+                        window.unmaximize()?
+                    } else {
+                        window.maximize()?
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        Ok(())
+    };
+    run().map_err(|error| error.to_string())
+}
+
+fn valid_project_title(title: &str) -> bool {
+    let mut bytes = title.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 pub fn dispatch(app: &AppHandle, menu_id: &str) -> tauri::Result<()> {
     if !menu_id.starts_with(PREFIX) {
         return Ok(());
@@ -381,7 +548,15 @@ mod tests {
         assert!(!permission.local);
         assert!(permission.windows.is_empty());
         assert_eq!(permission.webviews, ["studio-one"]);
-        assert_eq!(permission.permissions.len(), 1);
+        let ids: Vec<_> = permission
+            .permissions
+            .iter()
+            .map(|p| p.identifier().get())
+            .collect();
+        assert_eq!(
+            ids,
+            ["allow-publish-studio-menu", "allow-studio-window-action"]
+        );
         let [pattern]: [String; 1] = permission.remote.unwrap().urls.try_into().unwrap();
         let pattern: RemoteUrlPattern = pattern.parse().unwrap();
         assert!(pattern.test(&"http://127.0.0.1:41000/?project=one".parse().unwrap()));
@@ -422,11 +597,59 @@ mod tests {
         for url in [
             "http://127.0.0.1:41000/",
             "http://127.0.0.1:41000/?project=two",
+            "http://127.0.0.1:41000/?project=one&project=two",
             "http://127.0.0.1:41000/_desktop/connect#ticket",
             "http://127.0.0.1:41001/?project=one",
         ] {
             assert!(!window.permits(&url.parse().unwrap()));
         }
+    }
+
+    #[test]
+    fn window_action_cannot_name_another_target() {
+        for kind in ["drag", "zoom"] {
+            assert!(
+                serde_json::from_value::<WindowAction>(serde_json::json!({"kind": kind})).is_ok()
+            );
+        }
+        for action in [
+            serde_json::json!({"kind":"drag","label":"another-window"}),
+            serde_json::json!({"kind":"title","title":"project","path":"/another/project"}),
+            serde_json::json!({"kind":"close"}),
+        ] {
+            assert!(
+                serde_json::from_value::<WindowAction>(action.clone()).is_err(),
+                "{action}"
+            );
+        }
+        assert!(valid_project_title("untitled-0123"));
+        assert!(!valid_project_title("invalid\nTitle"));
+        assert!(!valid_project_title("-title"));
+    }
+
+    #[test]
+    fn recent_menu_events_cannot_select_a_reordered_entry() {
+        let entry = RecentProject {
+            id: "project".into(),
+            title: "Project".into(),
+            folder: crate::window_session::Folder {
+                path: "/project".into(),
+                identity: [1, 2],
+            },
+        };
+        let menu = RecentMenu {
+            generation: 2,
+            entries: vec![entry.clone()],
+        };
+        assert_eq!(menu.resolve(&menu.id(0)), Some(&entry));
+        assert!(menu.resolve("recent-project:1:0").is_none());
+        assert!(menu.resolve("recent-project:2:1").is_none());
+        assert!(RecentMenu {
+            generation: 3,
+            entries: vec![]
+        }
+        .resolve(&menu.id(0))
+        .is_none());
     }
 
     #[test]

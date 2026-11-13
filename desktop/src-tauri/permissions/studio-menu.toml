@@ -2,3 +2,8 @@
 identifier = "allow-publish-studio-menu"
 description = "Publish commands for the registered Studio project webview."
 commands.allow = ["publish_studio_menu"]
+
+[[permission]]
+identifier = "allow-studio-window-action"
+description = "Drag, zoom, or name the registered Studio project webview."
+commands.allow = ["studio_window_action"]

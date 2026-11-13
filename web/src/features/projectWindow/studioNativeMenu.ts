@@ -55,8 +55,10 @@ export function studioMenuPresentation(commands: readonly StudioCommand[], conte
 }
 
 type Snapshot = ReturnType<typeof studioMenuPresentation> & { scope: string };
+export type StudioWindowAction = { kind: 'drag' | 'zoom' } | { kind: 'title'; title: string };
 interface NativeMenuHost {
   publish(snapshot: Snapshot | null): Promise<void>;
+  windowAction?(action: StudioWindowAction): Promise<void>;
 }
 
 declare global {

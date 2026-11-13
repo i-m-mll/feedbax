@@ -21,7 +21,7 @@ use tauri::{
     webview::NewWindowResponse,
     App, AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
-use window_session::{Folder, OpenWindows, SavedWindow, Size};
+use window_session::{Folder, OpenWindows, RecentProject, RecentProjects, SavedWindow, Size};
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 const TITLE: &str = "Feedbax Studio";
@@ -33,6 +33,8 @@ struct Windows {
     projects_root: Option<PathBuf>,
     status: Option<(String, String)>,
     session_file: Option<PathBuf>,
+    recents_file: Option<PathBuf>,
+    recents: RecentProjects,
     open: OpenWindows,
     pending: VecDeque<Entry>,
     restore_problems: Vec<String>,
@@ -71,6 +73,7 @@ enum Entry {
     Folder(PathBuf),
     Reconnect(String, SavedWindow),
     Restore(String, SavedWindow),
+    Recent(RecentProject),
 }
 
 impl Windows {
@@ -332,6 +335,46 @@ fn show_studio(
     Ok(())
 }
 
+fn record_recent(app: &AppHandle, project: RecentProject) -> tauri::Result<()> {
+    let windows = app.state::<Mutex<Windows>>();
+    let mut state = windows.lock().unwrap();
+    let mut recents = state.recents.clone();
+    recents.record(project);
+    set_recents(app, &mut state, recents)
+}
+
+pub fn rename_recent(app: &AppHandle, id: &str, title: &str) -> tauri::Result<()> {
+    let windows = app.state::<Mutex<Windows>>();
+    let mut state = windows.lock().unwrap();
+    let mut recents = state.recents.clone();
+    if recents.rename(id, title) {
+        if let Err(error) = set_recents(app, &mut state, recents) {
+            drop(state);
+            status(
+                app,
+                "Could not update the recent project name.",
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn set_recents(app: &AppHandle, state: &mut Windows, recents: RecentProjects) -> tauri::Result<()> {
+    if let Some(path) = &state.recents_file {
+        window_session::write(path, &recents)?;
+    }
+    state.recents = recents;
+    studio_menu::set_recent(app, &state.recents)
+}
+
+fn clear_recents(app: &AppHandle) -> tauri::Result<()> {
+    let windows = app.state::<Mutex<Windows>>();
+    let mut state = windows.lock().unwrap();
+    set_recents(app, &mut state, RecentProjects::default())
+}
+
 type ServiceResult = service::Result<(Value, service::Paths)>;
 
 fn reserve_operation(app: &AppHandle) -> bool {
@@ -428,13 +471,10 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
             let args = match &request {
                 Entry::NewProject => Vec::new(),
                 Entry::Folder(folder) => vec!["--project-folder".into(), path_argument(folder)?],
-                Entry::Restore(_, saved) | Entry::Reconnect(_, saved) => vec![
-                    "--project-folder".into(),
-                    path_argument(&saved.folder.path)?,
-                    "--folder-identity".into(),
-                    saved.folder.identity[0].to_string(),
-                    saved.folder.identity[1].to_string(),
-                ],
+                Entry::Restore(_, saved) | Entry::Reconnect(_, saved) => {
+                    folder_arguments(&saved.folder)?
+                }
+                Entry::Recent(recent) => folder_arguments(&recent.folder)?,
             };
             let arguments: Vec<_> = args.iter().map(String::as_str).collect();
             let paths = release.paths()?;
@@ -447,15 +487,32 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
             if answer["url"].is_string() {
                 let ticket: StudioTicket =
                     serde_json::from_value(answer).map_err(io::Error::other)?;
-                if let Entry::Restore(id, saved) | Entry::Reconnect(id, saved) = &entry {
-                    if ticket.project.id != *id || ticket.folder != saved.folder {
+                if let Some((id, folder)) = match &entry {
+                    Entry::Restore(id, saved) | Entry::Reconnect(id, saved) => {
+                        Some((id, &saved.folder))
+                    }
+                    Entry::Recent(recent) => Some((&recent.id, &recent.folder)),
+                    _ => None,
+                } {
+                    if ticket.project.id != *id || ticket.folder != *folder {
                         return Err(io::Error::other(
                             "The saved project no longer identifies the same folder.",
                         )
                         .into());
                     }
                 }
+                let recent = RecentProject {
+                    id: ticket.project.id.clone(),
+                    title: ticket.project.title.clone(),
+                    folder: ticket.folder.clone(),
+                };
                 show_studio(app, ticket, paths.storage_id, reconnect)?;
+                if matches!(
+                    entry,
+                    Entry::NewProject | Entry::Folder(_) | Entry::Recent(_)
+                ) {
+                    record_recent(app, recent)?;
+                }
                 if let Some(window) = app.get_webview_window("status") {
                     let state = app.state::<Mutex<Windows>>();
                     let mut state = state.lock().unwrap();
@@ -515,6 +572,26 @@ fn path_argument(folder: &Path) -> service::Result<String> {
         .to_str()
         .map(str::to_owned)
         .ok_or("The selected folder path is not valid Unicode.".into())
+}
+
+fn folder_arguments(folder: &Folder) -> service::Result<Vec<String>> {
+    Ok(vec![
+        "--project-folder".into(),
+        path_argument(&folder.path)?,
+        "--folder-identity".into(),
+        folder.identity[0].to_string(),
+        folder.identity[1].to_string(),
+    ])
+}
+
+fn queue_open(app: &AppHandle, entry: Entry) {
+    let windows = app.state::<Mutex<Windows>>();
+    let mut state = windows.lock().unwrap();
+    if state.ready && !state.quitting && !state.flushing_exit {
+        state.pending.push_back(entry);
+    }
+    drop(state);
+    drain_entries(app);
 }
 
 fn drain_entries(app: &AppHandle) {
@@ -727,11 +804,24 @@ fn start_windows(app: &AppHandle) {
         .and_then(|paths| {
             let path = paths.settings.join("studio-windows.json");
             let open = window_session::read(&path)?;
+            let recents_path = paths.settings.join("studio-recents.json");
+            let recents = window_session::read(&recents_path);
             let windows = app.state::<Mutex<Windows>>();
             let mut state = windows.lock().unwrap();
             state.projects_root = Some(paths.projects);
+            state.recents_file = Some(recents_path);
             state.restore(path, open);
             state.ready = true;
+            match recents {
+                Ok(recents) => {
+                    studio_menu::set_recent(app, &recents)?;
+                    state.recents = recents;
+                }
+                Err(error) => {
+                    drop(state);
+                    status(app, "Could not read recent projects.", &error.to_string())?;
+                }
+            }
             Ok(())
         });
     if let Err(error) = result {
@@ -950,7 +1040,10 @@ fn main() {
     let application = tauri::Builder::default()
         .manage(Mutex::new(Windows::default()))
         .setup(|app| Ok(setup(app)?))
-        .invoke_handler(tauri::generate_handler![studio_menu::publish_studio_menu])
+        .invoke_handler(tauri::generate_handler![
+            studio_menu::publish_studio_menu,
+            studio_menu::studio_window_action
+        ])
         .on_window_event(|window, event| match event {
             #[cfg(target_os = "macos")]
             tauri::WindowEvent::CloseRequested { api, .. } => request_project_close(window, api),
@@ -974,6 +1067,21 @@ fn main() {
             "reconnect" => reconnect(app),
             #[cfg(target_os = "macos")]
             studio_menu::OPEN_PROJECT_ID => open_project(app),
+            studio_menu::NEW_PROJECT_ID => queue_open(app, Entry::NewProject),
+            studio_menu::CLOSE_PROJECT_ID => {
+                if let Some(window) = studio_menu::focused_webview(app)
+                    .filter(|window| window.label().starts_with(PROJECT_PREFIX))
+                {
+                    if let Err(error) = window.close() {
+                        eprintln!("{error}");
+                    }
+                }
+            }
+            studio_menu::CLEAR_RECENT_ID => {
+                if let Err(error) = clear_recents(app) {
+                    let _ = status(app, "Could not clear recent projects.", &error.to_string());
+                }
+            }
             "stop" => stop(app, "defer"),
             "checkpoint" => stop(app, "checkpoint"),
             "force" => stop(app, "force"),
@@ -999,7 +1107,9 @@ fn main() {
                 |_, _, _| Ok(()),
             ),
             id => {
-                if let Err(error) = studio_menu::dispatch(app, id) {
+                if let Some(recent) = studio_menu::recent_project(app, id) {
+                    queue_open(app, Entry::Recent(recent));
+                } else if let Err(error) = studio_menu::dispatch(app, id) {
                     eprintln!("Studio menu command could not be delivered: {error}");
                 }
             }

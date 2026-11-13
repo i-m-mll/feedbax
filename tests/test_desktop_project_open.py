@@ -423,3 +423,26 @@ def test_restore_revalidates_both_windows_after_a_service_restart(tmp_path):
     assert refused.status_code == 404, refused.text
     assert not (repo / STUDIO_WRITE_LOCK_FILENAME).exists()
     assert control.post("/_desktop/ticket", json={"project_id": external_id}).status_code == 404
+
+def test_recent_ticket_returns_the_latest_acknowledged_title(tmp_path):
+    projects = tmp_path / "projects"
+    transport, control, browser = _desktop_clients(create_app(projects_dir=projects))
+    origin = {"Origin": transport.endpoint.origin}
+    issued = control.post("/_desktop/ticket", json={}).json()
+    project_id = issued["project"]["id"]
+    assert list(projects.iterdir()) == [projects / project_id]
+    assert browser.post(
+        "/_desktop/exchange", headers={**origin, "X-Feedbax-Ticket": issued["ticket"]},
+    ).status_code == 204
+    url = f"/api/projects/{project_id}"
+    revision = browser.get(f"{url}/open").json()["snapshot"]["revision"]
+    renamed = browser.post(f"{url}/rename", json={"revision": revision, "name": "renamed"}, headers=origin)
+    assert renamed.status_code == 200, renamed.text
+    location = issued["folder"]
+    request = {"project_folder": location["path"], "folder_identity": location["identity"]}
+    assert browser.post("/_desktop/ticket", json=request, headers=origin).status_code == 403
+    reopened = control.post("/_desktop/ticket", json=request)
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["project"] == {"id": project_id, "title": "renamed"}
+    assert reopened.json()["folder"] == location
+    assert list(projects.iterdir()) == [projects / project_id]

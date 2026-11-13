@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -56,14 +56,53 @@ pub struct SavedWindow {
 
 pub type OpenWindows = BTreeMap<String, SavedWindow>;
 
-pub fn read(path: &Path) -> io::Result<OpenWindows> {
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecentProject {
+    pub id: String,
+    pub title: String,
+    pub folder: Folder,
+}
+
+#[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RecentProjects(Vec<RecentProject>);
+
+impl RecentProjects {
+    pub const LIMIT: usize = 10;
+
+    pub fn entries(&self) -> &[RecentProject] {
+        &self.0
+    }
+
+    pub fn record(&mut self, project: RecentProject) {
+        self.0
+            .retain(|entry| entry.id != project.id && entry.folder.path != project.folder.path);
+        self.0.insert(0, project);
+        self.0.truncate(Self::LIMIT);
+    }
+
+    pub fn rename(&mut self, id: &str, title: &str) -> bool {
+        let Some(entry) = self
+            .0
+            .iter_mut()
+            .find(|entry| entry.id == id && entry.title != title)
+        else {
+            return false;
+        };
+        entry.title = title.to_owned();
+        true
+    }
+}
+
+pub fn read<T: Default + DeserializeOwned>(path: &Path) -> io::Result<T> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
     {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
@@ -88,8 +127,8 @@ pub fn read(path: &Path) -> io::Result<OpenWindows> {
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
-pub fn write(path: &Path, windows: &OpenWindows) -> io::Result<()> {
-    let bytes = serde_json::to_vec(windows).map_err(io::Error::other)?;
+pub fn write(path: &Path, state: &impl Serialize) -> io::Result<()> {
+    let bytes = serde_json::to_vec(state).map_err(io::Error::other)?;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -126,7 +165,7 @@ mod tests {
             std::env::temp_dir().join(format!("feedbax-window-session-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("windows.json");
-        let mut windows = read(&path).unwrap();
+        let mut windows: OpenWindows = read(&path).unwrap();
         assert!(windows.is_empty());
         for (index, width) in [(1, 1100.), (2, 980.)] {
             windows.insert(
@@ -144,10 +183,56 @@ mod tests {
             );
         }
         write(&path, &windows).unwrap();
-        assert_eq!(read(&path).unwrap(), windows);
+        assert_eq!(read::<OpenWindows>(&path).unwrap(), windows);
         windows.remove("project-2");
         write(&path, &windows).unwrap();
-        assert_eq!(read(&path).unwrap(), windows);
+        assert_eq!(read::<OpenWindows>(&path).unwrap(), windows);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn recents_are_bounded_deduplicated_and_independent_of_window_restore() {
+        let directory = std::env::temp_dir().join(format!("feedbax-recent-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let windows_path = directory.join("windows.json");
+        let recent_path = directory.join("recent.json");
+        let mut projects = RecentProjects::default();
+        let project = |number: u64| RecentProject {
+            id: format!("p-{number}"),
+            title: format!("Name-{number}"),
+            folder: Folder {
+                path: directory.join(number.to_string()),
+                identity: [3, number],
+            },
+        };
+        for number in 1..=11 {
+            projects.record(project(number));
+        }
+        assert_eq!(projects.entries().len(), RecentProjects::LIMIT);
+        assert_eq!(projects.entries().last().unwrap().id, "p-2");
+        projects.record(project(2));
+        assert!(projects.rename("p-11", "Renamed"));
+        assert_eq!(projects.entries()[0].id, "p-2");
+        assert_eq!(projects.entries()[1].title, "Renamed");
+        write(&recent_path, &projects).unwrap();
+        let restored: RecentProjects = read(&recent_path).unwrap();
+        assert!(restored == projects);
+        let windows = OpenWindows::from([(
+            "p-2".into(),
+            SavedWindow {
+                folder: project(2).folder,
+                size: Size::DEFAULT,
+            },
+        )]);
+        write(&windows_path, &windows).unwrap();
+        let mut cleared = RecentProjects::default();
+        assert!(!cleared.rename("p-2", "New-name"));
+        write(&recent_path, &cleared).unwrap();
+        assert!(read::<RecentProjects>(&recent_path)
+            .unwrap()
+            .entries()
+            .is_empty());
+        assert_eq!(read::<OpenWindows>(&windows_path).unwrap(), windows);
         fs::remove_dir_all(directory).unwrap();
     }
 }
