@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 import json
 from enum import Enum
 from functools import cache
@@ -186,20 +187,62 @@ def same_typed_value(left: Any, right: Any) -> bool:
     return False
 
 
+@dataclass(slots=True)
+class _EncodingField:
+    name: str
+    annotation: Any
+    wire_default: str | None
+    wide_integer: bool
+    array_parameters: bool
+    absent: Any
+    projected_absence: tuple[Any, bytes] | None = None
+
+
+_NO_ABSENCE = object()
+
+
+def _encoding_field(
+    model: type[BaseModel], name: str, *, absent: Any = _NO_ABSENCE,
+) -> _EncodingField:
+    return _EncodingField(
+        name,
+        _field_annotation(model, name),
+        model.model_fields[name].default if _wire(model, name) else None,
+        _wide_integer(model, name),
+        model is ComponentSpec and name == "params",
+        absent,
+    )
+
+
+def _encoding_fields(model: type[BaseModel], rows: Mapping) -> tuple[_EncodingField, ...]:
+    return tuple(
+        _encoding_field(model, name, absent=rows.get(name, {}).get("absent", _NO_ABSENCE))
+        for name in model.model_fields
+        if (model, name) not in _PRESENTATION
+    )
+
+
 class PinnedFields:
     """Reuse verified absent projections within one codec invocation or compile."""
 
     def __init__(self, fields: Mapping) -> None:
         self.fields = fields
-        self._absences: dict[tuple[type[BaseModel], str], tuple[Any, bytes]] = {}
+        self._model_fields: dict[type[BaseModel], tuple[object, tuple[_EncodingField, ...]]] = {}
 
-    def is_absent(self, model: type[BaseModel], name: str, pin: Any, projected: Any) -> bool:
-        key = (model, name)
-        cached = self._absences.get(key)
-        if cached is None:
-            absent = _project_absent(model, name, pin, self)
-            cached = self._absences[key] = (absent, canonical_json_v2_bytes(absent))
-        absent, data = cached
+    def encoding_fields(self, model: type[BaseModel]) -> tuple[_EncodingField, ...]:
+        validator = model.__pydantic_validator__
+        cached = self._model_fields.get(model)
+        if cached is not None and cached[0] is validator:
+            return cached[1]
+        fields = _encoding_fields(model, self.fields[_model_key(model)])
+        self._model_fields[model] = (validator, fields)
+        return fields
+
+    def is_absent(self, field: _EncodingField, projected: Any) -> bool:
+        if field.projected_absence is None:
+            absent = _project_absent(field, self)
+            field.projected_absence = (absent, canonical_json_v2_bytes(absent))
+        absent, data = field.projected_absence
         if same_typed_value(projected, absent):
             return True
 
@@ -220,13 +263,13 @@ class PinnedFields:
 
 
 def _encode_field(
-    model: type[BaseModel], name: str, value: Any, pins: PinnedFields | None, *, explicit: bool = False
+    field: _EncodingField, value: Any, pins: PinnedFields | None, *, explicit: bool = False
 ) -> Any:
-    if value is not None and _wide_integer(model, name):
+    if value is not None and field.wide_integer:
         return str(value) if abs(value) > _SAFE_INT else value
-    if model is ComponentSpec and name == "params":
+    if field.array_parameters:
         return _array_parameters(value, decode=False)
-    return encode(value, _field_annotation(model, name), pins, explicit=explicit)
+    return encode(value, field.annotation, pins, explicit=explicit)
 
 
 def encode(
@@ -241,27 +284,27 @@ def encode(
     annotation = _annotation(annotation)
     if isinstance(value, BaseModel):
         model = type(value)
-        rows = {} if pins is None else pins.fields[_model_key(model)]
+        fields = _encoding_fields(model, {}) if pins is None else pins.encoding_fields(model)
         result = {}
         if _tagged(annotation):
             result[_FAMILY] = _family(model)
-        for name in model.model_fields:
+        for field in fields:
+            name = field.name
             item = getattr(value, name)
-            if _wire(model, name) and item != model.model_fields[name].default:
-                raise ValueError(
-                    f"Normalize the wire version before encoding {model.__name__}.{name}"
-                )
-            if _omitted(model, name) or (explicit and name not in value.model_fields_set):
+            if field.wire_default is not None:
+                if item != field.wire_default:
+                    raise ValueError(
+                        f"Normalize the wire version before encoding {model.__name__}.{name}"
+                    )
                 continue
-            row = rows.get(name, {})
+            if explicit and name not in value.model_fields_set:
+                continue
             projected = (
                 projected_fields[name]
                 if projected_fields is not None and name in projected_fields
-                else _encode_field(model, name, item, pins, explicit=explicit)
+                else _encode_field(field, item, pins, explicit=explicit)
             )
-            if pins is not None and "absent" in row and pins.is_absent(
-                model, name, row["absent"], projected
-            ):
+            if pins is not None and field.absent is not _NO_ABSENCE and pins.is_absent(field, projected):
                 continue
             result[name] = projected
         return result
@@ -281,13 +324,14 @@ def encode(
     return value
 
 
-def _project_absent(model: type[BaseModel], name: str, value: Any, pins: PinnedFields) -> Any:
-    annotation = _field_annotation(model, name)
+def _project_absent(field: _EncodingField, pins: PinnedFields) -> Any:
+    annotation = field.annotation
+    value = field.absent
     if not isinstance(value, (dict, list)) or not value and not _model_choices(annotation):
         return value
     restored = decode(value, annotation, pins.fields)
     validated = TypeAdapter(annotation).validate_json(json.dumps(restored))
-    return _encode_field(model, name, validated, pins)
+    return _encode_field(field, validated, pins)
 
 
 def _decode_model(model: type[BaseModel], value: dict, pins: Mapping) -> dict:
@@ -405,21 +449,22 @@ def describe_models(roots: Iterable[type[BaseModel]]) -> dict[str, Any]:
             if values := _enumerated_values(member):
                 row["values"] = sorted(values, key=canonical_json_v2_bytes)
             if not field.is_required() and (annotation, name) not in _REQUIRED_STORED:
+                encoding_field = _encoding_field(annotation, name)
                 absence = next(
                     (item for item in field.metadata if isinstance(item, IdentityAbsent)), None
                 )
                 if absence is None:
                     default = field.get_default(call_default_factory=True)
                     second = field.get_default(call_default_factory=True)
-                    if canonical_json_v2_bytes(_encode_field(annotation, name, default, None)) != (
-                        canonical_json_v2_bytes(_encode_field(annotation, name, second, None))
+                    if canonical_json_v2_bytes(_encode_field(encoding_field, default, None)) != (
+                        canonical_json_v2_bytes(_encode_field(encoding_field, second, None))
                     ):
                         raise ValueError(
                             f"Non-deterministic default needs a pinned absent value: {key}.{name}"
                         )
                 else:
                     default = absence.value
-                row["absent"] = _encode_field(annotation, name, default, None, explicit=True)
+                row["absent"] = _encode_field(encoding_field, default, None, explicit=True)
             fields[name] = row
             visit(member)
 
