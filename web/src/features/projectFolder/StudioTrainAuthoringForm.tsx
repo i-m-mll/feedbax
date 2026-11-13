@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
-import { readStudioTrainAuthoring } from '@/api/studioAuthoring';
+import { projectTrainFields, readStudioTrainAuthoring } from '@/api/studioAuthoring';
 import { studioName } from '@/components/activity/studioVocabulary';
 import {
   StudioDefinitionForm,
@@ -10,11 +11,12 @@ import {
   type StudioFieldCommand,
 } from '@/components/pipeline/StudioDefinitionForm';
 import { StudioSweepPicker } from '@/components/pipeline/StudioSweepOverview';
+import { StudioFieldControl } from '@/components/values/StudioFieldControl';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
 import type {
-  AuthoredFileAddress, StudioReachTargetAuthoring, StudioReachTargetEdit, StudioTrainAuthoring,
-  StudioTrainAuthoringRequest,
+  AuthoredFileAddress, StudioReachTargetAuthoring, StudioReachTargetEdit, StudioSavedTrainKey, StudioTrainAuthoring,
+  StudioTrainAuthoringRequest, TrainFieldRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
@@ -23,6 +25,8 @@ interface Props {
   readonly editor: ProjectEditController;
   readonly stepId: string;
   readonly selection?: PipelineSelection;
+  readonly run?: StudioSavedTrainKey;
+  readonly fieldRows?: readonly string[];
   readonly step?: PlanStepView;
   readonly component?: string;
   readonly picker?: () => void;
@@ -183,17 +187,46 @@ export function StudioTrainAuthoringForm(props: Props) {
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
   const fieldSet = useRef<HTMLFieldSetElement | null>(null);
+  const numericRegion = useRef<HTMLDivElement | null>(null);
   const shown = projection?.project_id === projectId && projection.step_id === stepId ? projection : null;
   const current = shown?.revision === revision ? shown : null;
   const disabled = !current || editing || pending > 0 || outside !== null;
+  const showNumeric = !props.component && !picker && !documentPicker && !taskBinding && (!props.view || props.view === 'training');
+  const numericBody = { revision, run: props.run };
+  const numeric = useQuery({
+    queryKey: ['train-fields', projectId, stepId, numericBody],
+    queryFn: ({ signal }) => projectTrainFields(projectId, stepId, numericBody, signal),
+    enabled: showNumeric,
+    retry: false,
+    placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
+  });
+
+  async function editNumeric(field: string, edit: NonNullable<TrainFieldRequest['edit']>) {
+    try {
+      const recipe = await projectTrainFields(projectId, stepId, { ...numericBody, field, edit, rows: [...props.fieldRows ?? []] }, editor.signal);
+      if (recipe.problems.length) return recipe.problems[0].reason;
+      if (recipe.files.length) {
+        editor.editFiles('Set Field', recipe.files, {
+          reviewedRevision: revision,
+          dependencies: recipe.dependencies.map((id) => ({ kind: 'document', id })),
+          validate: validateRecipe(saved.project, { kind: 'step', id: stepId }, recipe.dependencies),
+        });
+        await editor.flush();
+      }
+      return undefined;
+    } catch (error) {
+      return apiErrorMessage(error);
+    }
+  }
 
   useLayoutEffect(() => {
-    if (!focusFirstField || !current || disabled) return;
-    const first = fieldSet.current?.querySelector<HTMLElement>('input:enabled, select:enabled');
+    if (!focusFirstField || !current || disabled || showNumeric && numeric.isFetching) return;
+    const first = numericRegion.current?.querySelector<HTMLElement>('input:not([readonly])') ??
+      fieldSet.current?.querySelector<HTMLElement>('input:enabled, select:enabled');
     if (!first) return;
     first.focus();
     onFirstFieldFocused?.();
-  }, [focusFirstField, current, disabled, onFirstFieldFocused]);
+  }, [focusFirstField, current, disabled, onFirstFieldFocused, showNumeric, numeric.isFetching]);
 
   useEffect(() => {
     const lifetime = new AbortController();
@@ -253,7 +286,10 @@ export function StudioTrainAuthoringForm(props: Props) {
     {shown?.reach_target && <ReachTargetForm key={shown.revision}
       target={shown.reach_target} stepId={stepId} disabled={disabled} onEdit={(change) => { void apply(change); }} />}
   </>;
-  const fields = shown ? formFields(shown, picker ? { ...props, component: undefined, selection: undefined } : props) : [];
+  const shared = showNumeric ? numeric.data?.fields ?? [] : [];
+  const projected = new Set(shared.map(({ id }) => id));
+  const fields = shown ? formFields(shown, picker ? { ...props, component: undefined, selection: undefined } : props)
+    .filter(({ id }) => !projected.has(id)) : [];
   const onEdit = ({ fieldId, edit }: StudioFieldCommand) => { void apply(changeRequest(fieldId, edit)); };
   if (documentPicker) return <>
     {fields[0] && <fieldset ref={fieldSet} disabled={disabled} className="studio-window-slot__document">
@@ -264,7 +300,17 @@ export function StudioTrainAuthoringForm(props: Props) {
   </>;
   return (
     <>
-      {error && <p role="alert">{error}</p>}
+      {error && !(numeric.data && loadError === error) && <p role="alert">{error}</p>}
+      {showNumeric && numeric.isError && <p role="alert">{apiErrorMessage(numeric.error)}</p>}
+      {shared.length > 0 && <div ref={numericRegion} className="grid gap-2 px-3 py-2">
+        {shared.map((field) => <StudioFieldControl key={field.id} field={field}
+          commit={!numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined}
+          rowSelection={!!props.fieldRows?.length}
+          selectedValues={new Set(props.step && field.sweep && selection.kind !== 'steps'
+            ? selectedRuns(props.step, selection).map((row) => row.values[field.sweep!.id]).filter(Boolean) : [])}
+          onChooseValue={field.sweep && onChooseSweepValue
+            ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined} />)}
+      </div>}
       {shown
         ? (
           <fieldset ref={fieldSet} disabled={disabled}>
@@ -275,7 +321,7 @@ export function StudioTrainAuthoringForm(props: Props) {
               onEdit={onEdit} />}
           </fieldset>
         )
-        : !error && <p role="status">Loading Train definition</p>}
+        : !error && !numeric.data && <p role="status">Loading Train definition</p>}
       {shown && renderAdditionalFields?.(new Set(fields.map(({ id }) => id)))}
     </>
   );

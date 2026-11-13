@@ -102,7 +102,7 @@ export function ComponentFields({ component, definition, change, projected }: {
 }) {
   if (component.kind === 'composite') {
     const domain = component.interior.physical_domain;
-    return domain === 'planar_multibody' || domain === 'spatial_multibody'
+    return !projected?.has('substeps') && (domain === 'planar_multibody' || domain === 'spatial_multibody')
       ? <Field label="Substeps" value={String(component.substeps ?? 1)} type="number"
         parse={(raw) => { const value = numeric(raw); return value && value > 0 && Number.isInteger(value) ? value : undefined; }}
         commit={change && ((value) => change(['substeps'], value))} /> : null;
@@ -119,9 +119,10 @@ export function PortFields({ port }: { port: Port }) {
   return type ? <span>{type}</span> : null;
 }
 
-export function AttachmentFields({ item, step, change, arm, linkLabel }: {
+export function AttachmentFields({ item, step, change, arm, linkLabel, projected }: {
   item: Attachment; step: number; change?: (value: Attachment) => void; arm?: () => void;
   linkLabel?: (address: ModelAddress) => string;
+  projected?: ReadonlySet<string>;
 }) {
   if (item.kind === 'delay') {
     const initial = item.initial;
@@ -130,12 +131,12 @@ export function AttachmentFields({ item, step, change, arm, linkLabel }: {
     const parsed = linked ? linkedAddress(linked) : undefined;
     const label = parsed ? linkLabel?.(parsed) || addressKey(parsed) : linked;
     return <>
-      <Field label="Delay" value={`${item.delay.value} ${item.delay.unit}`} parse={duration}
+      {projected?.has('delay') ? <small>{conversion(item.delay, step)}</small> : <Field label="Delay" value={`${item.delay.value} ${item.delay.unit}`} parse={duration}
         suffix={<small>{conversion(item.delay, step)}</small>}
-        commit={change && ((delay) => change({ ...item, delay: delay as unknown as ModelTime }))} />
+        commit={change && ((delay) => change({ ...item, delay: delay as unknown as ModelTime }))} />}
       {linked ? <div>Initial <output>{label}</output>
         {change && <button className={action} type="button" onClick={() => change({ ...item, initial: 0 })}>Clear Link</button>}
-      </div> : <Field label="Initial" value={String(initial ?? 0)} type="number" parse={numeric}
+      </div> : !projected?.has('initial') && <Field label="Initial" value={String(initial ?? 0)} type="number" parse={numeric}
         commit={change && ((value) => change({ ...item, initial: value }))} />}
       {arm && <button className={action} type="button" onClick={arm}>Pick Initial</button>}
     </>;
@@ -153,7 +154,7 @@ export function AttachmentFields({ item, step, change, arm, linkLabel }: {
         <option value="clamp">Clamp</option><option value="scale">Scale</option>
       </select>
     </label>
-    {names.map((name) => <Field key={name} label={humanizeLabel(name)} type="number"
+    {names.filter((name) => !projected?.has(name)).map((name) => <Field key={name} label={humanizeLabel(name)} type="number"
       value={String(item.fields?.[name] ?? '')} parse={numeric}
       commit={change && ((value) => change({ ...item, fields: { ...item.fields, [name]: value } }))} />)}
     <div>Window <output>Whole trial</output></div>

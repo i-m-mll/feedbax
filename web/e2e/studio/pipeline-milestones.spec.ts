@@ -103,7 +103,7 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '30'));
   await page.goto('/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
-  const rate = page.getByRole('group', { name: 'Learning Rate', exact: true });
+  const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await authorLearningRateSweep(rate);
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   const picked = runs(page).getByRole('button', { name: /Medium/ });

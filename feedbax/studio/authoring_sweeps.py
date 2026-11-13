@@ -26,12 +26,9 @@ from feedbax.contracts.studio_authoring import (
     StudioNameSweepValue,
     StudioSetSweepValue,
     StudioSweepEdit,
-    StudioSweepList,
-    StudioSweepRange,
-    StudioSweepSampler,
-    StudioSweepValue,
     StudioToField,
 )
+from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue
 from feedbax.contracts.studio_project import SetProjectValue
 
 
@@ -42,6 +39,15 @@ class SweepTarget:
     value: int | float
     writes: Callable[[int | float], list[SetProjectValue]]
     patch_path: str | None = None
+
+    @property
+    def generated_path(self) -> str | None:
+        patches = self.entry(self.value).patches
+        if len(patches) == 1:
+            path, patch = next(iter(patches.items()))
+            if isinstance(patch, SetValue) and patch.op == "replace":
+                return path
+        return None
 
     def entry(self, value: int | float, label: str | None = None) -> AxisValue:
         if self.patch_path is not None:
@@ -98,8 +104,16 @@ class TrainFieldSweeps:
             step.sweep is None or (
                 step.sweep.combination in (None, "cross")
                 and not step.sweep.rows
-                and not step.sweep.exceptions
+                and all(exception is None for exception in step.sweep.exceptions.values())
             )
+        )
+
+    def may_edit_member(self, axis: NamedAxis) -> bool:
+        return all(
+            entry is not None
+            and type(entry.value) in (int, float)
+            and entry.patches == self.target.entry(entry.value).patches
+            for entry in axis.values.values()
         )
 
     @property
@@ -107,12 +121,7 @@ class TrainFieldSweeps:
         return self.simple and not self.covering
 
     def _editable_list(self, axis: NamedAxis) -> bool:
-        return self.simple and all(
-            entry is not None
-            and type(entry.value) in (int, float)
-            and entry.patches == self.target.entry(entry.value).patches
-            for entry in axis.values.values()
-        )
+        return self.simple and self.may_edit_member(axis)
 
     def _can_list(self, axis: GeneratedAxis) -> bool:
         return self.simple and _axis_paths(axis) == self.paths
@@ -127,7 +136,7 @@ class TrainFieldSweeps:
             return StudioSweepSampler(
                 kind="sampler", id=name, rule=axis.sampler, can_list=axis.draws is not None and self._can_list(axis),
             )
-        editable = isinstance(axis, NamedAxis) and self._editable_list(axis)
+        editable = isinstance(axis, NamedAxis) and self.may_edit_member(axis)
         if isinstance(axis, ListedAxis):
             axis = axis_to_list(axis)
         if not isinstance(axis, NamedAxis) or not axis.values:
@@ -200,10 +209,12 @@ class TrainFieldSweeps:
     ) -> list[SetProjectValue]:
         if edit.kind == "toList" and isinstance(axis, (RangeAxis, SampledAxis, ListedAxis)) and self._can_list(axis):
             return [self._axis_write(name, axis_to_list(axis))]
-        if not isinstance(axis, NamedAxis) or not self._editable_list(axis):
+        if not isinstance(axis, NamedAxis) or not self.may_edit_member(axis):
             raise ValueError(f"{self.label} has no editable list")
         values = axis.values
         if edit.kind == "addValue":
+            if not self.simple:
+                raise ValueError("This sweep has explicit row edits.")
             value_id = self._fresh_id("value", values)
             return [SetProjectValue(
                 op="add", path=pointer(("sweep", "axes", name, "values", value_id)),
@@ -226,6 +237,8 @@ class TrainFieldSweeps:
                 op="replace" if "label" in entry.model_fields_set else "add",
                 path=pointer((*path, "label")), value=edit.label,
             )]
+        if not self.simple:
+            raise ValueError("This sweep has explicit row edits.")
         # A null axis preserves the authored position and the inverse edit.
         # It is omitted from the compiled product by the sweep grammar.
         return [

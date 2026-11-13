@@ -410,7 +410,11 @@ from feedbax.web.models.trajectory import (
 )
 from feedbax.contracts.expression_values import FieldTextResult, Problem
 from feedbax.expression_site import SiteProjection
-from feedbax.contracts.studio_field import FieldKindEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, StudioFieldView
+from feedbax.contracts.studio_field import (
+    FieldKindEdit, FieldNameEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
+    StudioFieldView, StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue,
+    TrainFieldRequest, TrainFieldResponse, TrainFieldView,
+)
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
@@ -592,8 +596,13 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelFieldRequest,
     ModelFieldResponse,
     FieldKindEdit,
+    FieldNameEdit,
     FieldTextEdit,
     StudioFieldView,
+    ModelFieldView,
+    TrainFieldView,
+    TrainFieldRequest,
+    TrainFieldResponse,
     SparseCooEntrySpec,
     SparseCooArrayValueSpec,
     ConstantArrayValueSpec,
@@ -914,6 +923,8 @@ CONTRACT_MODEL_NAMES = [
     "ModelProjection",
     "ModelFieldRequest",
     "ModelFieldResponse",
+    "TrainFieldRequest",
+    "TrainFieldResponse",
     "EvaluateAttachmentRequest",
     "EvaluateAttachmentReadRequest",
     "EvaluateAttachmentState",

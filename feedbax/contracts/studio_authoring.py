@@ -14,7 +14,7 @@ from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import DocumentOverridePath, Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
-from feedbax.contracts.project_sweep import RangeValues, SampleValues
+from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler
 from feedbax.contracts.studio_project import PresentationPosition, ProjectValueEdit, StudioProjectFilePatch
 
 
@@ -134,33 +134,6 @@ class StudioDocumentAuthoring(StrictModel):
     files: list[StudioProjectFilePatch]
     created_component: str | None = None
     presentation_revision: Sha256 | None = None
-
-
-class StudioSweepValue(StrictModel):
-    id: ProjectName
-    label: str | None
-    value: int | float
-
-
-class StudioSweepList(StrictModel):
-    kind: Literal["list"]
-    id: ProjectName
-    values: list[StudioSweepValue]
-    editable: bool
-
-
-class StudioSweepRange(StrictModel):
-    kind: Literal["range"]
-    id: ProjectName
-    rule: RangeValues
-    can_list: bool
-
-
-class StudioSweepSampler(StrictModel):
-    kind: Literal["sampler"]
-    id: ProjectName
-    rule: SampleValues
-    can_list: bool
 
 
 class StudioAuthoringField(StrictModel):

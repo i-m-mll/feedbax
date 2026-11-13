@@ -223,10 +223,10 @@ export function applyAuthoredEdits(
   };
 }
 
-export function directTrainStep(project: AuthoredProject, stepId: string) {
+export function directTrainStep(project: AuthoredProject, stepId: string, includeRowEdits = false) {
   const step = project.steps?.[stepId];
   if (step?.kind !== 'train' || !('inline' in step.base) || project.sweep ||
       step.deltas?.length || Object.keys(step.inputs ?? {}).length ||
-      Object.keys(step.sweep?.rows ?? {}).length || Object.keys(step.sweep?.exceptions ?? {}).length) return null;
+      !includeRowEdits && (Object.keys(step.sweep?.rows ?? {}).length || Object.keys(step.sweep?.exceptions ?? {}).length)) return null;
   return step.base.inline;
 }

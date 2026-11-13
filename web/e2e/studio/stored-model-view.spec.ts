@@ -87,6 +87,8 @@ test('authors and reopens an addressed Model through the project history', async
     { kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 },
   ]);
   await model.getByRole('button', { name: 'Delay', exact: true }).click();
+  await expect(inspector.getByRole('button', { name: 'Delay kind: Value' })).toBeVisible();
+  await expect(inspector.getByRole('button', { name: 'Initial kind: Value' })).toBeVisible();
   const delayed = await apply(() => enter(inspector.getByRole('textbox', { name: 'Delay', exact: true }), '0.06 s'));
   expect(stored(delayed.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ delay: { value: 0.06, unit: 's' } });
   await expect(inspector.getByText('3 st')).toBeVisible();

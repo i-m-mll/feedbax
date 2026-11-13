@@ -724,11 +724,11 @@ export interface ModelFieldRequest {
   address?: ModelAddress | null;
   lit_steps?: string[];
   rows?: string[];
-  edit?: FieldTextEdit | FieldKindEdit | null;
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
 }
 
 export interface ModelFieldResponse {
-  fields?: StudioFieldView[];
+  fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   problems?: Problem[];
   command?: ModelEditCommand | null;
@@ -739,6 +739,12 @@ export interface FieldKindEdit {
   value_id?: string | null;
 }
 
+export interface FieldNameEdit {
+  kind: "name_value";
+  value_id: string;
+  label: string | null;
+}
+
 export interface FieldTextEdit {
   kind: "text";
   text: string;
@@ -747,7 +753,6 @@ export interface FieldTextEdit {
 }
 
 export interface StudioFieldView {
-  address: ModelAddress;
   label: string;
   text: string;
   effective?: string | null;
@@ -755,7 +760,49 @@ export interface StudioFieldView {
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
+  can_change_axis?: boolean;
   members?: StudioSweepValue[];
+}
+
+export interface ModelFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+  address: ModelAddress;
+}
+
+export interface TrainFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+  id: string;
+}
+
+export interface TrainFieldRequest {
+  revision: unknown;
+  run?: StudioSavedTrainKey | null;
+  field?: string | null;
+  rows?: string[];
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+}
+
+export interface TrainFieldResponse {
+  fields?: TrainFieldView[];
+  files?: StudioProjectFilePatch[];
+  dependencies?: string[];
+  problems?: Problem[];
 }
 
 export interface SparseCooEntrySpec {
@@ -5300,7 +5347,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "address": ModelAddressSchema.nullable().optional(),
       "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "rows": z.array(z.string()).optional(),
-      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema]).nullable().optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelFieldRequest>;
@@ -5308,7 +5355,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
 export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(() =>
   z
     .object({
-      "fields": z.array(StudioFieldViewSchema).optional(),
+      "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "problems": z.array(ProblemSchema).optional(),
       "command": ModelEditCommandSchema.nullable().optional(),
@@ -5325,6 +5372,16 @@ export const FieldKindEditSchema: z.ZodType<FieldKindEdit> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<FieldKindEdit>;
 
+export const FieldNameEditSchema: z.ZodType<FieldNameEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("name_value"),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "label": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldNameEdit>;
+
 export const FieldTextEditSchema: z.ZodType<FieldTextEdit> = z.lazy(() =>
   z
     .object({
@@ -5339,7 +5396,6 @@ export const FieldTextEditSchema: z.ZodType<FieldTextEdit> = z.lazy(() =>
 export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
   z
     .object({
-      "address": ModelAddressSchema,
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
@@ -5347,10 +5403,68 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
       "members": z.array(StudioSweepValueSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioFieldView>;
+
+export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldView>;
+
+export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldView>;
+
+export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "field": z.string().nullable().optional(),
+      "rows": z.array(z.string()).optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldRequest>;
+
+export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(() =>
+  z
+    .object({
+      "fields": z.array(TrainFieldViewSchema).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "problems": z.array(ProblemSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldResponse>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -10350,6 +10464,8 @@ export const contractSchemas = {
   ModelProjection: ModelProjectionSchema,
   ModelFieldRequest: ModelFieldRequestSchema,
   ModelFieldResponse: ModelFieldResponseSchema,
+  TrainFieldRequest: TrainFieldRequestSchema,
+  TrainFieldResponse: TrainFieldResponseSchema,
   EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
@@ -10475,6 +10591,8 @@ export interface ContractTypeMap {
   ModelProjection: ModelProjection;
   ModelFieldRequest: ModelFieldRequest;
   ModelFieldResponse: ModelFieldResponse;
+  TrainFieldRequest: TrainFieldRequest;
+  TrainFieldResponse: TrainFieldResponse;
   EvaluateAttachmentRequest: EvaluateAttachmentRequest;
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
   EvaluateAttachmentState: EvaluateAttachmentState;

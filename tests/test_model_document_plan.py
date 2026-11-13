@@ -295,6 +295,48 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         assert list(sampled_axis.draws.values()) == expected
 
 
+def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
+    raw = _model_project()
+    model = raw["documents"]["reach-model"]["payload"]
+    components = model["interior"]["components"]
+    components["rnn"] = {
+        "kind": "leaf", "name": "RNN", "type": "feedbax.VanillaRNN",
+        "fields": {"tau": 2, "input_size": 4, "hidden_size": 4},
+    }
+    _save_project(ProjectFolderService(tmp_path), "duration", Project.model_validate(raw))
+    url = "/api/projects/duration"
+    owner = {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "rnn"}}
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def prepare(label, text):
+            snapshot = client.get(url).json()
+            body = {"revision": snapshot["revision"], "owner": owner, "lit_steps": ["train"],
+                    "run": {"variant": "default", "step": "train", "row": "default"}}
+            response = client.post(url + "/model/fields", json=body)
+            assert response.status_code == 200, response.text
+            field = next(item for item in response.json()["fields"] if item["label"] == label)
+            result = client.post(url + "/model/fields", json=body | {
+                "address": field["address"], "edit": {"kind": "text", "text": text},
+            })
+            assert result.status_code == 200, result.text
+            recipe = result.json()
+            assert not recipe["problems"], recipe
+            changed = client.post(url + "/model/edit", json={
+                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+                "document": "reach-model", "command": recipe["command"],
+            })
+            assert changed.status_code == 200, changed.text
+            assert changed.json()["result"]["status"] == "applied", changed.text
+            return field, recipe["command"]["operation"]["value"]
+
+        field, value = prepare("Tau", "30 ms")
+        assert field["text"] == "2 st"
+        assert value == {"kind": "literal", "value": 0.03, "unit": "s"}
+        field, value = prepare("Hidden size", "8")
+        assert field["text"] == "4"
+        assert value == 8
+
+
 def _group_reaching_pipeline(raw, registry):
     payload = raw["documents"]["reach-model"]["payload"]
     payload["interior"]["components"]["relay"] = {

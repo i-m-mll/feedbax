@@ -182,7 +182,7 @@ test('authors, reopens, and trains a reaching Model from an empty folder', async
   expect(train(restoredLoss).objective).toEqual(train(withLoss).objective);
 
   await tab('Training').click();
-  const shortened = await edit(() => enter(view('Training').getByRole('spinbutton', { name: 'Edit N Batches', exact: true }), '2'));
+  const shortened = await edit(() => enter(view('Training').getByRole('textbox', { name: 'N Batches', exact: true }), '2'));
   expect(shortened.project.documents).toEqual(tuned.project.documents);
   expect(train(shortened)).toMatchObject({
     training_config: { n_batches: 2, n_reach_steps: 200 },

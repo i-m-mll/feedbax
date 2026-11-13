@@ -1,5 +1,6 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ModelFieldRequest, StudioFieldView } from '@/generated/studioContracts';
+import { selectionButton } from '@/features/pipeline/selection';
 
 type Edit = NonNullable<ModelFieldRequest['edit']>;
 type Commit = (edit: Edit) => Promise<string | undefined>;
@@ -7,16 +8,18 @@ const inputClass = 'min-w-0 rounded border border-shell-divider bg-shell-chrome 
 const buttonClass = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 const kindLabel = (kind: string) => kind[0].toUpperCase() + kind.slice(1);
 
-export function StudioFieldControl({ field, commit, selectedValues, rowSelection = false }: {
+export function StudioFieldControl({ field, commit, selectedValues, rowSelection = false, onChooseValue }: {
   field: StudioFieldView;
   commit?: Commit;
   selectedValues?: ReadonlySet<string>;
   rowSelection?: boolean;
+  onChooseValue?: (id: string, extend: boolean) => void;
 }) {
   const { label, sweep } = field;
   const fieldId = useId();
   const reasonId = useId();
   const textInput = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<string>();
   const [reason, setReason] = useState<string>();
   const [menu, setMenu] = useState(false);
@@ -34,6 +37,10 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
   const authored = list ? list.values.map(({ value }) => value).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
   const picked = selectedValues ?? new Set<string>();
+
+  useEffect(() => {
+    if (menu) menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, [menu]);
 
   async function submit(edit: Edit) {
     if (!commit || busy) return false;
@@ -75,7 +82,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
       <button type="button" className={`${buttonClass} ${sweep ? '' : 'text-shell-muted'}`}
         aria-label={`${label} kind: ${kind}`} aria-haspopup="menu" aria-expanded={menu}
         onClick={() => setMenu(!menu)}>{sweep ? '◇' : '·'}</button>
-      {menu && <div role="menu" aria-label={`${label} kinds`}
+      {menu && <div ref={menuRef} role="menu" aria-label={`${label} kinds`}
         className="absolute left-0 top-full z-10 grid rounded border border-shell-divider bg-shell-chrome p-1 shadow-md"
         onKeyDown={(event) => {
           if (event.key === 'Escape') { event.stopPropagation(); setMenu(false); textInput.current?.focus(); }
@@ -90,7 +97,8 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
         {field.site.kinds.map((value) => <button key={value} type="button" role="menuitem"
           className={buttonClass}
           disabled={readOnly || rowSelection && value !== kind.toLowerCase() ||
-            value === 'sweep' && !sweep && !field.can_sweep || value === 'value' && !!sweep && !choices.length}
+            value === 'sweep' && !sweep && !field.can_sweep ||
+            value === 'value' && !!sweep && (!choices.length || !field.can_change_axis)}
           onClick={() => choose(value)}>{kindLabel(value)}</button>)}
       </div>}
       <input ref={textInput} id={fieldId} type="text" className={inputClass}
@@ -120,8 +128,12 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
     </div>
     {reason && <p role="alert" id={reasonId} className="text-xs">{reason}</p>}
     {list && <div className="grid gap-1 border-l border-shell-divider pl-2">
-      {list.values.map(({ id, label: memberLabel, value }, index) => <label key={id} className="grid grid-cols-[auto_1fr] items-center gap-1">
-        <span aria-hidden="true" className={picked.has(id) ? 'font-bold' : 'text-shell-muted'}>{picked.has(id) ? '◆' : '·'}</span>
+      {list.values.map(({ id, label: memberLabel, value }, index) => <div key={id} className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-1">
+        {onChooseValue ? <button type="button" className={buttonClass} aria-pressed={picked.has(id)}
+          aria-label={`Select ${label} ${memberLabel ?? value}`}
+          {...selectionButton((extend) => onChooseValue(id, extend))}>
+          {picked.has(id) ? '◆' : '·'}
+        </button> : <span aria-hidden="true" className={picked.has(id) ? 'font-bold' : 'text-shell-muted'}>{picked.has(id) ? '◆' : '·'}</span>}
         <input type="text" className={inputClass} aria-label={memberLabel ?? `${label} value ${index + 1}`}
           value={members[id] ?? String(value)} readOnly={readOnly || !list.editable}
           onChange={(event) => { setMembers({ ...members, [id]: event.currentTarget.value }); setReason(undefined); }}
@@ -132,7 +144,16 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
             }
             if (event.key === 'Escape') { setMembers({}); setReason(undefined); }
           }} />
-      </label>)}
+        {list.editable && <input className={inputClass} type="text" readOnly={readOnly}
+          aria-label={`${label} value ${index + 1} name`} placeholder="Name" key={memberLabel ?? ''}
+          defaultValue={memberLabel ?? ''} onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void submit({ kind: 'name_value', value_id: id, label: event.currentTarget.value });
+            }
+            if (event.key === 'Escape') event.currentTarget.value = memberLabel ?? '';
+          }} />}
+      </div>)}
       {adding && <form className="grid grid-cols-[1fr_auto] gap-1" onSubmit={(event) => {
         event.preventDefault();
         void submit({ kind: 'text', text: `${authored.replace(/,$/, '')}, ${newValue}` });
@@ -141,7 +162,7 @@ export function StudioFieldControl({ field, commit, selectedValues, rowSelection
           onChange={(event) => setNewValue(event.currentTarget.value)} />
         <button type="submit" className={buttonClass} disabled={readOnly || !newValue.trim()}>Add</button>
       </form>}
-      {!adding && list.editable && !rowSelection && <button type="button" className={`${buttonClass} justify-self-start`}
+      {!adding && field.can_change_axis && !rowSelection && <button type="button" className={`${buttonClass} justify-self-start`}
         disabled={readOnly} onClick={() => setAdding(true)}>Add Value</button>}
     </div>}
     {range && <div className="grid gap-1 border-l border-shell-divider pl-2">

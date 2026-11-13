@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { authorLearningRateSweep, openSweepEditor, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -27,11 +27,10 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await mapStep(page, 'train').click();
   const card = page.getByRole('article', { name: 'Train train' });
   const table = page.getByRole('table', { name: 'Runs' });
-  const rate = page.getByRole('group', { name: 'Learning Rate', exact: true });
+  const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rows = table.locator('tbody tr[data-index]');
   await expect(table).toHaveAttribute('aria-rowcount', '2');
-  await expect(rate.getByRole('spinbutton')).toHaveValue('0.001');
-  await expect(rate.getByText('train', { exact: true })).toBeVisible();
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.001');
 
   await authorLearningRateSweep(rate);
   await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 3');
@@ -47,8 +46,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
 
   const pending = (await readPlan(request, projectPath)).plan;
   const medium = pending.window_map!.rows.find(({ coordinates }) => coordinates['learning-rate']?.label === 'Medium')!;
-  await openSweepEditor(rate, 'Learning Rate Medium');
-  await enter(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Medium' }), '0.0025');
+  await enter(rate.getByRole('textbox', { name: 'Medium', exact: true }), '0.0025');
   await expect(table.getByRole('cell', { name: 'Medium · 0.0025' })).toBeVisible();
   const changedBeforeRun = (await readPlan(request, projectPath)).plan.rows;
   expect(changedBeforeRun.map(({ key }) => key)).toEqual(pending.rows.map(({ key }) => key));
@@ -63,16 +61,14 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await expect(table.getByText('Done', { exact: true })).toHaveCount(3, { timeout: 25_000 });
   const done = (await readPlan(request, projectPath)).plan.rows;
 
-  await openSweepEditor(rate, 'Learning Rate Medium');
-  await enter(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Medium' }), '0.00275');
+  await enter(rate.getByRole('textbox', { name: 'Medium', exact: true }), '0.00275');
   await expect(table.getByText('Out of date', { exact: true })).toHaveCount(1);
   await expect(card.getByText('1 Out of date')).toBeVisible();
   await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByText('0.0025 → 0.00275', { exact: false })).toBeVisible();
   await page.reload();
-  await openSweepEditor(rate, 'Learning Rate Medium');
-  await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Medium' })).toHaveValue('0.00275');
+  await expect(rate.getByRole('textbox', { name: 'Medium', exact: true })).toHaveValue('0.00275');
   await expect(table.getByText('Done', { exact: true })).toHaveCount(2);
   const { plan: reopened } = await readPlan(request, projectPath);
   expect(reopened.rows.map(({ key }) => key)).toEqual(done.map(({ key }) => key));
@@ -89,13 +85,10 @@ test('the saved Train field, map and Runs share named sweep values and row ident
 
   await card.getByRole('button', { name: 'Add Sweep train' }).click();
   await page.getByRole('dialog', { name: 'Add Sweep' }).getByRole('button', { name: 'Seed', exact: true }).click();
-  const seed = page.getByRole('group', { name: 'Seed', exact: true });
-  await seed.getByRole('button', { name: 'Add Value Seed' }).click();
-  const seedEdits = seed.getByRole('button', { name: /^Edit Seed / });
-  await expect(seedEdits).toHaveCount(2);
-  await seedEdits.last().click();
-  await enter(seed.getByRole('spinbutton'), '9');
-  await expect(seed.getByRole('spinbutton', { name: 'Edit Seed 9' })).toBeEnabled();
+  const seed = page.getByRole('region', { name: 'Seed field', exact: true });
+  await expect(seed.getByRole('textbox', { name: 'Seed value 1', exact: true })).toBeVisible();
+  const firstSeed = await seed.getByRole('textbox', { name: 'Seed value 1', exact: true }).inputValue();
+  await enter(seed.getByRole('textbox', { name: 'Seed', exact: true }), `${firstSeed}, 9`);
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
   await expect(card).toContainText(/learning-rate 3\s*×\s*seed 2/);
@@ -113,9 +106,12 @@ test('the saved Train field, map and Runs share named sweep values and row ident
     coordinates['learning-rate']?.value_id === medium.coordinates['learning-rate'].value_id,
   ).map(({ key, coordinates }) => [coordinates.seed.value_id,
     crossed.rows.find((row) => row.key.row === key.row)!.request_id]));
-  await openSweepEditor(rate, 'Learning Rate Medium');
-  await rate.getByRole('button', { name: 'To Field Learning Rate Medium', exact: true }).click();
-  await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate', exact: true })).toHaveValue('0.00275');
+  await mapStep(page, 'train').click();
+  await rate.getByRole('button', { name: 'Learning Rate kind: Sweep' }).click();
+  await rate.getByRole('menuitem', { name: 'Value' }).click();
+  await rate.getByRole('combobox', { name: 'Keep Learning Rate value' }).selectOption({ label: '0.00275' });
+  await rate.getByRole('button', { name: 'Keep Value' }).click();
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');
   await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Back', exact: true }).click();

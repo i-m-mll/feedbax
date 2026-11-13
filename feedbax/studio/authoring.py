@@ -14,6 +14,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from feedbax.component_registry.registry import ComponentRegistry
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
@@ -48,6 +49,8 @@ from feedbax.contracts.studio_authoring import (
     StudioReachTargetEdit,
 )
 from feedbax.contracts.studio_project import SetProjectValue
+from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
+from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     STUDIO_INDEPENDENT_KEY_SCHEDULE,
@@ -66,10 +69,12 @@ from feedbax.contracts.training import (
     TrainingProgramRegistry,
 )
 from feedbax.contracts.value_schema import ValueSchema
+from feedbax.expression_registry import FunctionRegistry
 from feedbax.objectives.spec import TargetStateLossSpec
 from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERATIONS, TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
+from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.studio.reaching_authoring import REACH_TARGET_ID, reach_target_recipe, reaching_endpoint
 from feedbax.studio.schema import retained_observable_selector
@@ -263,13 +268,13 @@ def _loss_choices(
 
 
 class _TrainFields:
-    def __init__(self, project: Project, step_id: str, registry: TrainingProgramRegistry) -> None:
+    def __init__(self, project: Project, step_id: str, registry: TrainingProgramRegistry, *, field_editor: bool = False) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
         direct = isinstance(step.base, InlineBase) and not (
             step.deltas or step.inputs
-            or (step.sweep is not None and (step.sweep.rows or step.sweep.exceptions))
+            or (not field_editor and step.sweep is not None and (step.sweep.rows or step.sweep.exceptions))
         )
         checkpoint = step.inputs.get("checkpoint")
         linked = (
@@ -283,6 +288,7 @@ class _TrainFields:
         self.step_id = step_id
         self.step = step
         self.linked = linked
+        self.field_editor = field_editor
         self.direct_unswept = direct and step.sweep is None and not step.document_overrides
         self.registry = registry
         template = compose_step(project, step_id, track_sources=True)
@@ -704,21 +710,28 @@ class _TrainFields:
             return patches
 
         settings = TrainingConfig.model_json_schema()["properties"]
-        for name, mirror in {
+        names = {
             "n_batches": ("target_total",),
             "learning_rate": ("optimizer", "params", "learning_rate"),
             "snapshot_interval": None,
-        }.items():
+        }
+        if self.field_editor and config is not None:
+            names.update(batch_size=None, grad_clip=None)
+        for name, mirror in names.items():
             schema = settings[name]
             path = ("training_config", name)
+            integer = schema.get("type") == "integer"
+            value = _get(self.payload, path)
+            if self.field_editor and config is not None and not (name == "grad_clip" and name in raw_config) and value is None:
+                value = getattr(config, name)
             self.field(
                 path,
                 schema["title"],
-                _get(self.payload, path),
+                value,
                 StudioAuthoringNumber(
                     kind="number",
-                    min=1 if schema["type"] == "integer" else 0,
-                    step=1 if schema["type"] == "integer" else None,
+                    min=1 if integer else 0,
+                    step=1 if integer else None,
                 )
                 if name != "learning_rate" or params_ref is None
                 else None,
@@ -818,6 +831,70 @@ def project_train_fields(
     return [field.view for field in definition.fields.values()], patches, sorted(documents), reach_target
 
 
+def project_training_numeric_fields(
+    project: Project, step_id: str, registry: TrainingProgramRegistry, functions: FunctionRegistry,
+    body: TrainFieldRequest, read_plan: _ReadPlan,
+) -> TrainFieldResponse:
+    definition = _TrainFields(project, step_id, registry, field_editor=True)
+    definition.training(definition.document("task", TaskSpec, "Task"), read_plan)
+    selected = effective = None
+    if body.run is not None:
+        key = RunKey(body.run.variant, body.run.step, body.run.row)
+        if key.step != step_id:
+            raise ValueError("Choose a run of this Train step.")
+        plan = read_plan((key,))
+        selected = next((row for row in plan.rows if row.key == key), None)
+        effective = plan.selected_definitions.get(key)
+        available = {row.key.row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step_id)}
+        if not set(body.rows) <= available or len(set(body.rows)) != len(body.rows):
+            raise ValueError("The selected rows no longer belong to this Train step.")
+    elif body.rows:
+        raise ValueError("Choose a run of this Train step.")
+    fields = []
+    targets = {}
+    for field_id, field in definition.fields.items():
+        view = field.view
+        if not isinstance(view.control, StudioAuthoringNumber) or type(view.value) not in (float, int):
+            continue
+        path = json_pointer_parts(field_id)
+        target = SweepTarget.from_field(view.value, view.control, field.write) if not definition.linked else None
+        axis = TrainFieldSweeps(definition.step, target, view.label) if target is not None else None
+        numeric = NumericField(
+            path, view.label, view.value,
+            Site(expected=ValueType(base=ValueBase.INTEGER if view.control.step == 1 else ValueBase.REAL),
+                 finest=Level.RUN, structural=True),
+            target is not None, lambda value, view=view: _number(view, value),
+        )
+        fields.append(project_numeric_field(
+            TrainFieldView, numeric, axis, functions, selected,
+            _get(effective.payload, path) if effective else None, id=field_id,
+        ))
+        targets[field_id] = field, numeric, axis
+    if body.edit is None:
+        return TrainFieldResponse(fields=fields)
+    if body.field not in targets:
+        raise ValueError("Choose a supported numeric Train field.")
+    field, numeric, axis = targets[body.field]
+    result = prepare_numeric_field(
+        numeric, axis, body.edit, functions, rows=tuple(body.rows), keep_value=field.write,
+    )
+    if isinstance(result, tuple):
+        return TrainFieldResponse(problems=list(result))
+    if isinstance(result, list):
+        patches = result
+    elif definition.step.sweep and axis is None:
+        return TrainFieldResponse(problems=[Problem(
+            code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",
+        )])
+    else:
+        assert not isinstance(result, LiteralValue)
+        patches = definition.authored_edits(body.field, field.write(result))
+    return TrainFieldResponse(
+        files=[StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=patches)] if patches else [],
+        dependencies=list(field.documents),
+    )
+
+
 def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
     control = field.control
     if not isinstance(control, StudioAuthoringNumber) or (
@@ -830,5 +907,7 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
     ):
         raise ValueError(f"{field.label} requires a number in the supported range")
     if field.id == "/training_config/learning_rate" and value <= 0:
+        raise ValueError(f"{field.label} requires a positive number")
+    if field.id == "/training_config/grad_clip" and value <= 0:
         raise ValueError(f"{field.label} requires a positive number")
     return int(value) if control.step == 1 else value

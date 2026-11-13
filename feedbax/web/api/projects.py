@@ -33,7 +33,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
-from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse
+from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, TrainFieldRequest, TrainFieldResponse
 from feedbax.web.services.project_folder import (
     ProjectFileExists,
     ProjectFolderInvalid,
@@ -120,6 +120,27 @@ def read_train_authoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision,
             fields=fields, patches=patches, documents=documents, reach_target=reach_target,
         )
+
+    return _project_response(response, project_fields)
+
+
+@router.post("/{project_id}/authoring/train/{step_id}/fields")
+def project_train_numeric_fields(
+    project_id: ProjectName, step_id: ProjectName, body: TrainFieldRequest, request: Request, response: Response,
+) -> TrainFieldResponse:
+    from feedbax.studio.authoring import project_training_numeric_fields
+
+    def project_fields() -> TrainFieldResponse:
+        folders = request.app.state.project_folders
+        snapshot = folders.read(project_id, revision=body.revision)
+        bundle = request.app.state.bootstrap_state.bundle
+        try:
+            return project_training_numeric_fields(
+                snapshot.project, step_id, bundle.training_programs, bundle.expression_functions, body,
+                lambda keys: folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan,
+            )
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
 
     return _project_response(response, project_fields)
 

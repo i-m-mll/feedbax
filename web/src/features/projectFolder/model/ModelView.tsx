@@ -181,7 +181,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
-  const fieldOwner = selection?.element.kind === 'component' ? selection : !selection ? graph : undefined;
+  const fieldOwner = selection?.element.kind === 'component' || selection?.element.kind === 'attachment' && !evaluate
+    ? selection : !selection ? graph : undefined;
   const fieldBody = model && fieldOwner && !libraryItem
     ? { owner: fieldOwner, revision: saved.revision, run: projectionRun } : undefined;
   const fields = useQuery({
@@ -214,7 +215,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   }
   const projectedFields = fields.data?.fields ?? [];
   const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
-    address.element.kind === 'field' && typeof address.element.path[1] === 'string' ? [address.element.path[1]] : []));
+    address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
   const fieldControls = projectedFields.map((field) => <StudioFieldControl key={addressKey(field.address)} field={field}
     commit={fieldEditable && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined}
     rowSelection={!!fieldRows?.length}
@@ -719,7 +720,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         parse={(raw) => raw.trim() || undefined} commit={(name) => void apply('Rename', { op: 'rename', address: selection, name: String(name) }, false)} />}
     </> : attachment && selection ? <>
       <strong>{attachmentName(attachment)}</strong>
+      {fieldControls}
       <AttachmentFields item={attachment} step={model.value.step_seconds}
+        projected={projectedNames}
         change={editTopology || canEvaluate && !busy ? (item) => updateAttachment(selection, item) : undefined}
         arm={attachment.kind === 'delay' && editTopology ? () => armInitial(selection, attachment) : undefined}
         linkLabel={labelOfPort} />

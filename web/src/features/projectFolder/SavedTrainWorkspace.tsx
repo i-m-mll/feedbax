@@ -192,7 +192,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const linked = wholeStep && !saved.project.sweep && authored?.kind === 'train' &&
     'step' in authored.base && authored.base.row == null && checkpoint &&
     'step' in checkpoint && checkpoint.step === authored.base.step && checkpoint.checkpoint === 'last';
-  const authoring = step && (canAuthorSweep(step.id) || linked) && state.selection ? {
+  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null || linked) && state.selection ? {
     editor, stepId: step.id, step, selection: state.selection,
     onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
@@ -708,7 +708,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' ? runCommands : undefined}
               pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
             drawer: (authoring || step.inputs.length > 0) ? <div className="space-y-3 text-sm">
-              {authoring && <StudioTrainAuthoringForm {...authoring}
+              {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
                   focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
                   onDetachedEditError={setCommandError}
                   onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
@@ -732,7 +732,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           };
         }
         if ((view === 'training' || view === 'objective') && authoring) {
-          return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} />) };
+          return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} run={namedRun}
+            fieldRows={detailInputs.fieldRows} />) };
         }
         if (view === 'results' && row && ready) return { body: <div className="p-3">
           {attempt && <StudioTrainResults project={saved.project_id} rows={data!.rows} row={row} attempt={attempt} />}

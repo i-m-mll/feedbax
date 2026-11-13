@@ -31,18 +31,18 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await inspector.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await expect(hidden).toHaveValue('64,');
   await enter(hidden, '64, 96, 128');
-  await expect(inspector.getByRole('textbox', { name: 'Hidden size value 3' })).toHaveValue('128');
+  await expect(inspector.getByRole('textbox', { name: 'Hidden size value 3', exact: true })).toHaveValue('128');
   const saved = async () => (await (await request.get(projectPath + '/open')).json() as StudioProjectDocument).snapshot;
   const axis = (value: StudioProjectSnapshot) => value.project.steps?.train.sweep?.axes?.['hidden-size'];
   await expect.poll(async () => Object.keys((axis(await saved()) as { values: object })?.values ?? {}).length).toBe(3);
   const ids = Object.keys((axis(await saved()) as { values: object }).values);
-  await enter(inspector.getByRole('textbox', { name: 'Hidden size value 2' }), '100');
+  await enter(inspector.getByRole('textbox', { name: 'Hidden size value 2', exact: true }), '100');
   await expect.poll(async () => JSON.stringify(axis(await saved()))).toContain('"value":100');
   expect(Object.keys((axis(await saved()) as { values: object }).values)).toEqual(ids);
 
   const select = page.getByRole('button', { name: /Select hidden-size/ }).first();
   await select.click();
-  await expect(inspector.getByRole('textbox', { name: 'Hidden size value 2' })).toHaveValue('100');
+  await expect(inspector.getByRole('textbox', { name: 'Hidden size value 2', exact: true })).toHaveValue('100');
   await mapStep(page, 'train').click();
   await model.focus();
   await page.keyboard.press('Meta+Z');
