@@ -999,7 +999,7 @@ def _project_event(
     if kind in {"result", "terminal"}:
         data = {
             key: value for key, value in data.items()
-            if key not in {"completion", "completion_error"}
+            if key not in {"completion", "completion_error", "model_product", "store_success", "store_publication_error"}
         }
     if kind == "publication":
         data = {
