@@ -43,6 +43,7 @@ from feedbax.persistence.content_retention import (
 )
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.receipt_content import ClosureVisitors
+from feedbax.persistence.store_damage import inspect_without_recording
 
 
 FRESH_OBJECT_GRACE_SECONDS = 24 * 60 * 60
@@ -323,6 +324,7 @@ def store_roots(
             errors.append(str(error))
 
 
+@inspect_without_recording()
 def measure_store(
     store: ImmutableArtifactBlobProvider,
     *,

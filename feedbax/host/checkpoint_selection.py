@@ -98,7 +98,7 @@ def verify_selected_publication(
             != pointer["manifest_sha256"]
         ):
             raise CompletionFileError("Publication lacks its exact binding or transaction bytes.")
-        verify_completion_files(product)
+        verify_completion_files(product, checkpoint_model=True)
         return product
     except (KeyError, TypeError, ValueError) as error:
         raise CompletionFileError(f"Invalid selected checkpoint publication: {error}") from error
@@ -121,7 +121,8 @@ def selected_coordinates(selection: dict) -> tuple[int, ...]:
 def verify_dependency_files(binding: dict) -> None:
     try:
         if "checkpoint_selection" not in binding:
-            verify_completion_files(binding["completion"])
+            completion = binding["completion"]
+            verify_completion_files(completion, checkpoint_model=completion["request_id"].startswith("train:"))
             return
         selection = binding["checkpoint_selection"]
         requested = finite_coordinates(selection["requested"])
@@ -160,7 +161,7 @@ def verify_dependency_files(binding: dict) -> None:
                 raise CompletionFileError(
                     "Selected checkpoint does not belong to its exact lineage."
                 )
-            verify_completion_files(product)
+            verify_completion_files(product, checkpoint_model=True)
     except CompletionFileError:
         raise
     except (KeyError, TypeError, ValueError) as error:

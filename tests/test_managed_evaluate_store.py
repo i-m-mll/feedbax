@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
+from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.project import Project
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.contracts.store_check import StoreCheckResult
@@ -177,6 +178,41 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         assert any(finding.code == "check_incomplete" for finding in report.findings)
     finally:
         parked_request.rename(producer_request)
+    checked(["--attempt", train.job_id], 0)
+    from feedbax.host.checkpoint_selection import verify_dependency_files
+    from feedbax.host.completion import CompletionFileError
+    from feedbax.persistence.receipt_content import success_content_objects
+
+    (model,) = train_success.receipt.products["checkpoint"]
+    members = success_content_objects(store, model)
+    model_tree = store.get_tree(success_content_ref(model.content))
+    model_array = next(file.object for file in model_tree.files if file.relative_path == "model.safetensors")
+    assert model_array in members
+    model_path = store.object_path(model_array)
+    model_raw = model_path.read_bytes()
+    with writable_store_object(model_path):
+        model_path.write_bytes(model_raw[:-1] + bytes([model_raw[-1] ^ 1]))
+    try:
+        checked(["--attempt", train.job_id], 1)
+        binding = next(edge["binding"] for edge in result["edges"] if edge["authenticated_completion"])
+        with pytest.raises(CompletionFileError, match=model_array.sha256):
+            verify_dependency_files(binding)
+        new_definition = definition("last")
+        new_definition["steps"]["baseline"]["base"]["inline"]["params"]["seed"] += 1
+        _save_project(folders, project, Project.model_validate(new_definition))
+        new_plan = folders.read_plan(project, revision=None)
+        new_evaluate = next(run for run in new_plan.plan.runs if run.kind == "evaluate")
+        (new_reader,) = jobs.admit_plan(folders, new_plan, run_keys=(new_evaluate.key,), token="blocked").items
+        assert new_reader.disposition == "admitted"
+        blocked = wait_until(lambda: job_row(host, new_reader.job_id, "blocked"))
+        assert blocked["delivery"] == 0 and model_array.sha256 in blocked["outcome"]["error"]["message"]
+        requests = {runs["train"].request_id, runs["evaluate"].request_id}
+        attempts = jobs.read_plan_attempts(project=project, store=plan.store_path, requests=requests)
+        assert any(row.job_id == attempt and row.status == "succeeded"
+                   for row in attempts.by_request[runs["evaluate"].request_id])
+    finally:
+        assert store.store_object(model_raw) == model_array
+        _save_project(folders, project, Project.model_validate(definition("last")))
     with writable_store_object(train_path):
         damaged_train = train_raw[:-1] + bytes([train_raw[-1] ^ 1])
         try:
@@ -186,8 +222,15 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
             assert [entry["path"] for entry in diagnostics] == [str(train_path)]
             assert train_path.read_bytes() == damaged_train
             assert store.read_ref(INDEX_REF) == before
+            requests = {runs["train"].request_id, runs["evaluate"].request_id}
+            attempts = jobs.read_plan_attempts(project=project, store=plan.store_path, requests=requests)
+            (train_result,) = attempts.by_request[runs["train"].request_id]
+            assert train_result.status == "corrupt" and train_slot.sha256 in train_result.reason
+            assert all(row.status == "succeeded" for row in attempts.by_request[runs["evaluate"].request_id]
+                       if row.job_id in {attempt, prior["id"]})
         finally:
             train_path.write_bytes(train_raw)
+    checked(["--attempt", train.job_id], 0)
     with original.open_states(verify=True) as dataset:
         position = dataset.descriptor.attrs["scene_position"]
         trial = dataset.data("trial")[1]
@@ -246,12 +289,35 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
             assert [entry.address for entry in report.findings] == [states_binding.object_ref.object_id]
             assert [entry["path"] for entry in diagnostics] == [str(path)]
         assert path.read_bytes() == altered and store.read_ref(INDEX_REF) == before
+        from feedbax.jobs import JobConflict
+        from feedbax.persistence.store_damage import read_damage
+
+        restart(host)
+        reopened = ImmutableArtifactBlobProvider(plan.store_path)
+        assert read_damage(reopened, states.content.sha256) is not None
+        requests = {runs["train"].request_id, runs["evaluate"].request_id}
+        attempts = jobs.read_plan_attempts(project=project, store=plan.store_path, requests=requests)
+        saved = next(row for row in attempts.by_request[runs["evaluate"].request_id] if row.job_id == attempt)
+        assert saved.status == "corrupt" and states.content.sha256 in saved.reason
+        with pytest.raises(JobConflict, match=states.content.sha256):
+            jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=attempt)
         with pytest.raises(ArtifactBlobIntegrityError):
             sync_store(store, destination, closure, destination_ref="proof/evaluate-closure")
         assert destination.read_ref("proof/evaluate-closure") is None
     finally:
         path.write_bytes(raw)
         path.chmod(mode)
+    # A read of restored bytes does not clear an outstanding observation.
+    with pytest.raises(ArtifactBlobIntegrityError, match=states.content.sha256):
+        with original.open_states():
+            pytest.fail("known damaged result was opened")
+    (recomputed,) = submit("recompute-damaged").items
+    assert recomputed.disposition == "admitted" and recomputed.job_id != attempt
+    verified = wait_until(lambda: job_row(host, recomputed.job_id, "succeeded"), timeout=22)
+    latest = SuccessView(store).read_receipt(ContentObjectRef.model_validate(verified["outcome"]["store_success"]))
+    assert latest.supersedes == committed.ref and latest.products == committed.receipt.products
+    assert read_damage(store, states.content.sha256) is None
+    checked(["--attempt", attempt], 0)
     sync_store(store, destination, closure, destination_ref="proof/evaluate-closure")
     refs = ReceiptClosure(destination).walk(closure)
     assert committed.receipt.evaluation_manifest in refs

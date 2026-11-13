@@ -217,12 +217,20 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
 
 
 def test_corrupt_receipt_bytes_never_admit_an_index_hit(tmp_path):
+    from feedbax.persistence.store_damage import read_damage
+
     store = ImmutableArtifactBlobProvider(tmp_path)
     case = prepare(store, SUPPLIER, ANALYSIS)
     with writable_store_object(store.object_path(case.original.ref)) as path:
         path.write_bytes(b"x" * case.original.ref.size_bytes)
     with pytest.raises(ArtifactBlobIntegrityError):
         SuccessView(store).lookup(case.frozen)
+    recomputed = SuccessView(store).publish(
+        case.rule, attempt="recomputed", products=case.original.receipt.products,
+    )
+    assert recomputed.receipt.supersedes == case.original.ref
+    assert read_damage(store, case.original.ref.sha256) is not None
+    assert SuccessView(store).lookup(case.frozen) == recomputed
 
 
 def test_digest_frozen_input_keeps_its_result_when_the_rule_resolves_to_new_bytes(tmp_path):

@@ -67,7 +67,7 @@ def publish_train_success(
     with store._exclusive_lock():
         view = SuccessView(store)
         if existing := view.attempt_ref(attempt):
-            committed = view.read_success(existing).receipt
+            committed = view.read_owned_success(existing).receipt
             if (
                 committed.attempt != attempt or committed.request != request
                 or committed.products != {"checkpoint": (product,)}

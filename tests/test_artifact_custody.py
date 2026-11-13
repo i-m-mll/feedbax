@@ -658,7 +658,7 @@ def test_hash_truncation_and_extension_tampering_are_rejected(
         provider.get_bytes(artifact)
 
 
-def test_corrupt_preexisting_canonical_blob_is_not_overwritten(tmp_path: Path) -> None:
+def test_verified_publication_replaces_corrupt_canonical_blob(tmp_path: Path) -> None:
     provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
     intended = b"right"
     corrupt = b"wrong"
@@ -667,10 +667,59 @@ def test_corrupt_preexisting_canonical_blob_is_not_overwritten(tmp_path: Path) -
     path.parent.mkdir(parents=True)
     path.write_bytes(corrupt)
 
-    with pytest.raises(ArtifactBlobIntegrityError):
-        provider.store_bytes(intended, role="payload", logical_name="blob")
+    old_inode = path.stat().st_ino
+    artifact = provider.store_bytes(intended, role="payload", logical_name="blob")
+    assert artifact.sha256 == digest
+    assert path.read_bytes() == intended
+    assert path.stat().st_ino != old_inode
 
-    assert path.read_bytes() == corrupt
+
+def test_repair_keeps_damage_until_the_verified_object_commits(tmp_path, monkeypatch):
+    from feedbax.persistence.store_damage import KnownDamage, observe_failure, occurrence, read_damage
+
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    another = ImmutableArtifactBlobProvider(tmp_path / "another")
+    data = b"retained bytes"
+    ref = store.store_object(data)
+    assert another.store_object(data) == ref
+    with writable_store_object(store.object_path(ref)) as path:
+        path.write_bytes(b"x" * len(data))
+    old_occurrence = occurrence(store, ref)
+    with pytest.raises(ArtifactBlobIntegrityError) as detected:
+        store.verify_object(ref)
+    assert read_damage(another, ref.sha256) is None
+    observation = read_damage(store, ref.sha256)
+    assert observation.found_sha256 == hashlib.sha256(b"x" * len(data)).hexdigest()
+    assert observation.found_size == len(data)
+    with pytest.raises(KnownDamage):
+        store.get_object(ref)
+
+    original_replace = os.replace
+
+    def fail_install(source, destination, **kwargs):
+        if destination == ref.sha256:
+            raise OSError("interrupt before replacement")
+        return original_replace(source, destination, **kwargs)
+
+    with monkeypatch.context() as probe:
+        probe.setattr(os, "replace", fail_install)
+        with pytest.raises(OSError, match="interrupt before replacement"):
+            store.store_object(data)
+    assert store.object_path(ref).read_bytes() == b"x" * len(data)
+    assert read_damage(store, ref.sha256) is not None
+
+    def fail_clear(*args):
+        raise OSError("interrupt before clearing observation")
+
+    with monkeypatch.context() as probe:
+        probe.setattr(custody_module, "clear_damage", fail_clear)
+        with pytest.raises(OSError, match="interrupt before clearing"):
+            store.store_object(data)
+    assert store.object_path(ref).read_bytes() == data
+    assert read_damage(store, ref.sha256) is not None
+    assert store.store_object(data) == ref
+    observe_failure(store, ref, old_occurrence, detected.value, verifier="stale reader")
+    assert read_damage(store, ref.sha256) is None
 
 
 def test_shared_writer_parent_swap_cannot_write_outside_custody(

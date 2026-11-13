@@ -158,14 +158,12 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     report_bytes = source.get_object(report_ref)
     with writable_store_object(report_path):
         report_path.write_bytes(b"x" * len(report_bytes))
-    with pytest.raises(ArtifactBlobIntegrityError):
-        sync_store(source, destination, ancestry, destination_ref="packets/corrupt")
-    assert destination.read_ref("packets/corrupt") is None
     with pytest.raises(ArtifactBlobIntegrityError, match=report_ref.sha256):
         sync_store(destination, source, "packets/ancestry", destination_ref="corrupt-source")
     assert source.read_ref("corrupt-source") is None
-    with writable_store_object(report_path):
-        report_path.write_bytes(report_bytes)
+    repaired = sync_store(source, destination, ancestry, destination_ref="packets/repaired")
+    assert repaired.cloned == 1
+    assert destination.get_object(report_ref) == report_bytes
 
     sibling_ref = success_content_ref(sibling.content)
     with writable_store_object(source.object_path(sibling_ref)) as path:

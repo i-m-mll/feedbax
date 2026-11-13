@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from pathlib import Path
 
@@ -14,11 +14,14 @@ from feedbax.contracts.request_refs import ContentRef
 from feedbax.dataset import Dataset, Index, TensorLoader
 from feedbax.persistence.array_container import (
     ArrayContainerDescriptor,
+    ArrayContainerReader,
     EncodedArrayContainer,
+    TensorDigestError,
     encode_array_container,
     open_array_container,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.store_damage import ObjectVerificationError, observe_failure, occurrence, require_sound
 
 
 def encode_dataset(dataset: Dataset) -> EncodedArrayContainer:
@@ -79,23 +82,13 @@ def _bind_dataset(container: ArrayContainerDescriptor, load: TensorLoader) -> Da
 @contextmanager
 def open_dataset(path: str | Path, *, expected_descriptor_sha256: str) -> Iterator[Dataset]:
     """Authenticate each selected tensor from a file before applying any slice."""
-    with _open_dataset(path, descriptor_sha256=expected_descriptor_sha256, verify=True) as dataset:
-        yield dataset
+    with open_array_container(path, expected_descriptor_sha256=expected_descriptor_sha256) as reader:
+        yield _bind_dataset(reader.descriptor, partial(_read_verified_slice, reader))
 
 
-@contextmanager
-def _open_dataset(path: str | Path, *, descriptor_sha256: str, verify: bool) -> Iterator[Dataset]:
-    with open_array_container(
-        path, expected_descriptor_sha256=descriptor_sha256
-    ) as reader:
-
-        def load(name: str, index: Index) -> np.ndarray:
-            if not verify:
-                return np.asarray(reader.read_unverified_slice(name, index))
-            array = reader.read_tensor(name)
-            return np.asarray(array[index]) if index else array
-
-        yield _bind_dataset(reader.descriptor, load)
+def _read_verified_slice(reader: ArrayContainerReader, name: str, index: Index) -> np.ndarray:
+    array = reader.read_tensor(name)
+    return np.asarray(array[index]) if index else array
 
 
 @contextmanager
@@ -112,8 +105,30 @@ def open_stored_dataset(
     each selected whole tensor before slicing. Use the store's verify_object
     method with ref.object_ref to scrub the entire object.
     """
-    with (
-        store.open_owned_object(ref.object_ref) as path,
-        _open_dataset(path, descriptor_sha256=ref.descriptor_sha256, verify=verify) as dataset,
-    ):
-        yield dataset
+    object_ref = ref.object_ref
+    before = occurrence(store, object_ref) if verify else None
+    with ExitStack() as stack:
+        try:
+            path = stack.enter_context(store.open_owned_object(object_ref, allow_damaged=verify))
+        except (FileNotFoundError, ObjectVerificationError):
+            if verify:
+                store.verify_object(object_ref, verifier="dataset read")
+            raise
+        reader = stack.enter_context(open_array_container(
+            path, expected_descriptor_sha256=ref.descriptor_sha256,
+        ))
+
+        def load(name: str, index: Index) -> np.ndarray:
+            if not verify:
+                require_sound(store, object_ref)
+                return np.asarray(reader.read_unverified_slice(name, index))
+            try:
+                return _read_verified_slice(reader, name, index)
+            except TensorDigestError as error:
+                observe_failure(
+                    store, object_ref, before, error, verifier="dataset read",
+                    descriptor_sha256=ref.descriptor_sha256,
+                )
+                raise
+
+        yield _bind_dataset(reader.descriptor, load)
