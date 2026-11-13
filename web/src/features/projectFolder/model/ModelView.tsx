@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, readEvaluateAttachments, reviewModelConnections } from '@/api/projectFolders';
-import { apiErrorMessage } from '@/api/request';
+import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { Dialog } from '@/components/ui/Dialog';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
@@ -12,6 +12,7 @@ import type {
   ComponentDefinition, DocumentPresentation, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
   ModelAddress, ModelClipboard, ModelDocument, ModelEditCommand, ModelPosition, StudioProjectSnapshot,
 } from '@/generated/studioContracts';
+import { ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { authoredPointer, presentationAddress } from '../authoredEdits';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
@@ -208,7 +209,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       }
       return true;
     } catch (error) {
-      setIssue({ reason: apiErrorMessage(error) });
+      const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
+      setIssue(problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) });
       return false;
     } finally {
       requestBusy.current = false;
@@ -398,20 +400,25 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   }
 
   const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)), makeCard(outputCard, 0)];
+  const selfLoops = new Map<string, number>();
   const makeEdge = (id: string, from: Parameters<typeof idFor>[0] & { port: string },
     to: Parameters<typeof idFor>[0] & { port: string }, type: ModelEdge['type']): ModelEdge => {
     const isPhysical = type === 'physical';
     const address = at(graph, { kind: isPhysical ? 'physical_connection' : 'wire', id });
     const key = addressKey(address);
+    const source = idFor(from);
+    const target = idFor(to);
+    const self = !isPhysical && source === target ? selfLoops.get(source) ?? 0 : undefined;
+    if (self !== undefined) selfLoops.set(source, self + 1);
     return {
-      id, source: idFor(from), target: idFor(to), type,
+      id, source, target, type,
       sourceHandle: `${isPhysical ? 'physical' : 'output'}:${from.port}`,
       targetHandle: `${isPhysical ? 'physical' : 'input'}:${to.port}`,
       markerEnd: isPhysical ? undefined : { type: MarkerType.Arrow, width: 12, height: 12, color: '#555860' },
       selected: selectedIds.has(key),
       data: {
         address, selected: selectedIds.has(key), waypoints: waypoints?.[key],
-        self: idFor(from) === idFor(to) ? { left: 0, right: 0, bottom: 0 } : undefined,
+        self,
         attachments: effective.get(key)?.map((item) => ({
           id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds ?? 0.01),
           delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),

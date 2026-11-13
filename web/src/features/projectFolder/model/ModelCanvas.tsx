@@ -1,6 +1,6 @@
 import {
   Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
-  getBezierPath, useReactFlow, useUpdateNodeInternals,
+  getBezierPath, useReactFlow, useStore, useUpdateNodeInternals,
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
 } from '@xyflow/react';
 import { memo, useEffect, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
@@ -38,7 +38,7 @@ export type ModelEdgeData = {
   selected?: boolean;
   waypoints?: readonly ModelPosition[];
   attachments?: readonly { id: string; label: string; mark: string; delay: boolean; select(): void }[];
-  self?: { left: number; right: number; bottom: number };
+  self?: number;
 };
 export type ModelEdge = Edge<ModelEdgeData, 'signal' | 'physical'>;
 
@@ -113,13 +113,19 @@ function rounded(points: readonly ModelPosition[]) {
   return `${path} L ${last.x},${last.y}`;
 }
 
-const Wire = memo(function Wire({ id, data, type, sourceX, sourceY, targetX, targetY,
+const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, markerEnd }: EdgeProps<ModelEdge>) {
   const physical = type === 'physical';
   const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
   const a = { x: sourceX + (sourcePosition === Position.Left ? -16 : 16), y: sourceY };
   const b = { x: targetX + (targetPosition === Position.Left ? -16 : 16), y: targetY };
-  const bend = data?.self ? Math.max(sourceY, targetY, data.self.bottom) + 24 : (sourceY + targetY) / 2;
+  const self = data?.self;
+  const bottom = useStore((state) => {
+    if (self === undefined) return 0;
+    const node = state.nodeLookup.get(source);
+    return node ? node.internals.positionAbsolute.y + (node.measured.height ?? 0) : 0;
+  });
+  const bend = self === undefined ? (sourceY + targetY) / 2 : Math.max(sourceY, targetY, bottom) + 20 + self * 10;
   const pivots = data?.waypoints?.length ? data.waypoints
     : [{ x: a.x, y: bend }, { x: b.x, y: bend }];
   const points = [start, a];
@@ -138,7 +144,8 @@ const Wire = memo(function Wire({ id, data, type, sourceX, sourceY, targetX, tar
     {data?.attachments?.length ? <EdgeLabelRenderer>
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
         {data.attachments.map(({ id, label, mark, select }) =>
-          <button key={id} type="button" aria-label={label} title={label} onClick={select}>{mark}</button>)}
+          <button key={id} type="button" aria-label={label} title={label}
+            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</button>)}
       </div>
     </EdgeLabelRenderer> : null}
   </>;

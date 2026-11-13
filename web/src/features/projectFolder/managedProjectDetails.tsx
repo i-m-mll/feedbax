@@ -80,6 +80,7 @@ interface DetailInputs {
   readonly modelPath?: { document: string; path: string[] };
   readonly setModelPath: (document: string, path: string[]) => void;
   readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
+  readonly modelSource?: string;
 }
 
 const rootModelPath: string[] = [];
@@ -389,7 +390,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const namedDocument = namedField && input.step?.documentIds?.[`payload.${namedField}`];
   const base = stepId ? directTrainStep(draft, stepId) : null;
   const direct = DocumentReferenceSchema.safeParse(base?.graph);
-  const storedId = input.step?.documentIds?.['payload.graph'] ?? (direct.success ? direct.data.document : undefined);
+  const storedId = input.step?.documentIds?.['payload.graph'] ?? input.modelSource ?? (direct.success ? direct.data.document : undefined);
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const stored = useMemo(() => {
     if (!storedId || storedDocument?.schema !== modelSchema) return undefined;

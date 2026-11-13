@@ -262,6 +262,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
     selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
   const evaluated = step?.kind === 'evaluate' && namedRun && state.selection;
+  const modelSource = step?.kind === 'evaluate' ? plan.steps.find(({ id }) =>
+    id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds?.['payload.graph'] : undefined;
   const axis = evaluated && state.selection?.kind === 'values' && state.selection.terms.length === 1
     ? state.selection.terms[0] : undefined;
   const evaluateScope = evaluated && (state.selection?.kind === 'steps'
@@ -282,7 +284,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined,
+    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({

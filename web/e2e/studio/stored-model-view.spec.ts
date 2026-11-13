@@ -14,9 +14,7 @@ test('authors and reopens an addressed Model through the project history', async
   const mutation = (kind: 'edit' | 'undo') => page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === `${projectPath}/model/${kind}`);
   async function apply(action: () => Promise<unknown>, kind: 'edit' | 'undo' = 'edit') {
-    const committed = mutation(kind);
-    await action();
-    const response = await committed;
+    const [response] = await Promise.all([mutation(kind), action()]);
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
     expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
@@ -46,6 +44,18 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(cell).toBeVisible();
   await expect(cell.getByText('GRU', { exact: true }).first()).toBeVisible();
   await model.getByRole('button', { name: 'Fit View', exact: true }).click();
+  const initialPosition = await cell.evaluate((node) => node.style.transform);
+  const moved = await apply(async () => {
+    const bounds = await cell.locator('header').boundingBox();
+    if (!bounds) throw new Error('The cell header is not measurable');
+    const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 45, y + 35, { steps: 8 });
+    await page.mouse.up();
+  });
+  expect(moved.snapshot.semantic_root).toBe(added.snapshot.semantic_root);
+  await expect.poll(() => cell.evaluate((node) => node.style.transform)).not.toBe(initialPosition);
   const handle = (direction: 'input' | 'output', name: string) => cell.locator(`[data-handleid="${direction}:${name}"]`);
   const reviewed = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/connections`);
   const wired = await apply(async () => {
