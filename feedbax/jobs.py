@@ -692,6 +692,35 @@ class JobService(PlanJobReader):
             sessions=[StudioLocalSession()],
         )
 
+    def background_activity(self, after: int | None) -> tuple[int | None, list[str], tuple[str, str, str, JobStatus] | None]:
+        """Read active attempts and new terminal Activity rows without starting the Host."""
+        try:
+            snapshot = self.host.jobs_snapshot(start_host=False)
+        except HostError as error:
+            if isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError)):
+                return after, [], None
+            raise
+        active = [row["id"] for row in snapshot["jobs"] if _is_studio_job(row) and row["state"] in _LIVE_STATES]
+        cursor = snapshot["cursor"]
+        if after is None or after >= cursor:
+            return cursor, active, None
+        page = self.host.events(after=after, start_host=False)
+        terminal = {
+            row["id"]: row for row in snapshot["jobs"]
+            if _is_studio_job(row) and row["state"] in {"succeeded", "failed"}
+        }
+        for event in page["events"]:
+            if event["cursor"] > cursor:
+                break
+            if event["kind"] != "terminal" or (row := terminal.get(event["job_id"])) is None:
+                continue
+            status, _ = _job_status(
+                row, progress=None, receipt_intact=row["state"] != "succeeded" or self._receipt_matches(row),
+            )
+            if status in {JobStatus.SUCCEEDED, JobStatus.FAILED}:
+                return event["cursor"], active, (row["id"], row["project"], row["data"]["label"], status)
+        return min(cursor, page["cursor"]), active, None
+
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[StudioJobStopItem]:
         ids = tuple(dict.fromkeys(job_ids))
         eligible = tuple(

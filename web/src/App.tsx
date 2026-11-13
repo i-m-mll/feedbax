@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { createProjectFolder } from '@/api/projectFolders';
 import { apiErrorMessage } from '@/api/request';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
+import { StudioActivityPane } from '@/components/activity/StudioActivity';
+import { studioName } from '@/components/activity/studioVocabulary';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
@@ -44,6 +46,14 @@ function NewProject() {
   return <main aria-busy="true" />;
 }
 
-export default function App({ projectId }: { projectId: string | null }) {
+export default function App({ projectId, activity }: { projectId: string | null; activity?: boolean }) {
+  if (activity) return (
+    <StudioJobsProvider projectId={null}>
+      <main className="h-screen overflow-auto bg-shell-surface p-3 text-shell-foreground">
+        <h1 className="mb-2 font-medium">{studioName('activity')}</h1>
+        <StudioActivityPane standalone projectNames={new Map()} onOpenRun={async () => false} onClose={() => {}} />
+      </main>
+    </StudioJobsProvider>
+  );
   return projectId ? <Project id={projectId} /> : <NewProject />;
 }

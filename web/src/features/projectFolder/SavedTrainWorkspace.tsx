@@ -153,6 +153,15 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [commandError, setCommandError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState<WindowPanel | null>(null);
+  useEffect(() => {
+    const openActivity = () => {
+      delete document.documentElement.dataset.studioOpenActivity;
+      setPanel({ kind: 'activity' });
+    };
+    window.addEventListener('studio-native-open-activity', openActivity);
+    if (document.documentElement.dataset.studioOpenActivity) openActivity();
+    return () => window.removeEventListener('studio-native-open-activity', openActivity);
+  }, []);
   const [focusRequest, requestSlotFocus] = useState(0);
   const [pivotSlots, setPivotSlots] = useState<Partial<Record<ProjectWindowSlot, string>>>({});
   const [problemReveal, setProblemReveal] = useState<{

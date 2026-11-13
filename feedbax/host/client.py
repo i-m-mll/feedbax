@@ -195,11 +195,13 @@ class HostClient:
         projects: Sequence[str] = (),
         limit: int = 256,
         wait: float = 0,
+        start_host: bool = True,
     ) -> EventPage:
         return cast(
             EventPage,
             self._call(
                 "events",
+                start_host=start_host,
                 after=after,
                 projects=list(projects),
                 limit=limit,
