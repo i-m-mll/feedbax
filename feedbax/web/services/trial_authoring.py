@@ -29,7 +29,7 @@ from feedbax.contracts.training import TrialDocuments
 from feedbax.expression_check import references
 from feedbax.expression_site import project_site, read_field
 from feedbax.expression_text import ParsedField, print_field
-from feedbax.objectives.document import ObjectiveExecutor, compile_objective
+from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.document_authoring import _step_difference
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
@@ -46,7 +46,10 @@ class _Projection:
     problems: tuple[Problem, ...]
 
 
-def _project(documents, bundle, *, show_objective=True, graph_override=None) -> _Projection:
+def _project(
+    documents, bundle, *, show_objective=True, graph_override=None,
+    objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
+) -> _Projection:
     task = documents.task_source
     fields = {}
     if isinstance(task, PythonTaskSelection):
@@ -82,7 +85,7 @@ def _project(documents, bundle, *, show_objective=True, graph_override=None) -> 
     objective_sites = {}
     objective = compile_objective(
         documents.objective, (*paired.model.outputs, *variables, *signals), bundle.expression_functions,
-        task=source, sites=objective_sites if show_objective else None,
+        task=source, sites=objective_sites if show_objective else None, use=objective_use,
     )
     fields.update({("objective", *path): site for path, site in objective_sites.items()})
     problems = paired.problems
@@ -305,7 +308,7 @@ def _evaluate_documents(plan, key, definition, bundle):
         raise ProjectFolderInvalid("The selected Evaluate has no managed Train pairing.")
     documents = request.trial_documents
     projection = _project(documents, bundle, show_objective=False)
-    if projection.pair is None:
+    if projection.pair is None or projection.problems:
         return documents, projection, None
     try:
         request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
@@ -323,7 +326,9 @@ def _evaluate_documents(plan, key, definition, bundle):
             )),
         ), None
     documents = _with_task(documents, variant.task)
-    return documents, _project(documents, bundle, show_objective=False, graph_override=variant.graph), variant.graph
+    return documents, _project(
+        documents, bundle, show_objective=False, graph_override=variant.graph, objective_use=ObjectiveUse.INHERITED,
+    ), variant.graph
 
 
 def _pairing(plan, key, bundle):
@@ -559,6 +564,7 @@ def trial_authoring(
         tasks=[
             StudioTaskChoice(document=name, problems=list(_project(
                 _with_task(documents, other), bundle, show_objective=step.kind == "train", graph_override=graph,
+                objective_use=ObjectiveUse.INHERITED if step.kind == "evaluate" else ObjectiveUse.TRAIN,
             ).problems))
             for name, entry in sorted(snapshot.project.documents.items())
             if (other := _selected_task(entry)) is not None

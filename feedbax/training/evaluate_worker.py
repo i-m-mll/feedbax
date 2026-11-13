@@ -19,7 +19,6 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.request_refs import BatchSetMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -31,6 +30,7 @@ from feedbax.studio.canonical_evaluate import (
     CannotRun,
     RolloutParameters,
     decode_rollout_request,
+    evaluation_checkpoint_coordinates,
     evaluation_manifest_id,
     evaluation_subject_provenance,
 )
@@ -49,10 +49,10 @@ def _bound_subject(
 
     subject = request.canonical_request.checkpoint
     binding = read_host_completion_binding()
-    if isinstance(subject.select, BatchSetMember):
+    if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
         return load_bound_checkpoint_selection(
             binding, root=request.manifest_root, producer_request=subject.request_id,
-            coordinates=subject.select.batches, project=request.project_id,
+            coordinates=coordinates, project=request.project_id,
         ), binding
     completion = binding["completion"]
     if (
@@ -91,6 +91,7 @@ def _rollouts(
     from feedbax.contracts.rollout import trial_indices
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.dataset import Dataset, Variable
+    from feedbax.objectives.document import ObjectiveUse
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state, scene_position_key
     from feedbax.tasks.document import TaskParameters
@@ -127,6 +128,7 @@ def _rollouts(
         paired = compile_trial_execution(
             documents.model_name, documents.model, variant.task,
             registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
+            objective_use=ObjectiveUse.INHERITED,
             input_overrides=documents.input_overrides, artifact_provider=slot.provider,
             initialization_key=key, graph_override=variant.graph,
         )

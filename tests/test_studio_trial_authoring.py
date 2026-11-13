@@ -1,11 +1,13 @@
 """Selected-run authoring uses the same task and objective as local Host."""
 
 
+from copy import deepcopy
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.contracts.expression_values import CallValue, LiteralValue, NameValue
+from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey, compile_project
@@ -50,14 +52,20 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
             "schema": "feedbax.spec.python_task",
             "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
         }
-        task = reaching_document(ReachingParameters(n_steps=12)).model_dump(mode="json")
+        task = reaching_document(ReachingParameters(n_steps=12, x=0.22)).model_dump(mode="json")
         task["epochs"][0]["id"] = "probe"
-        task["signals"][0]["cells"][0].update(first_epoch="probe", last_epoch="probe")
+        task["variables"][0].update(id="probe_target", name="probe_target")
+        task["signals"][0]["cells"][0].update(
+            first_epoch="probe", last_epoch="probe", value={"kind": "name", "reference": "probe_target"},
+        )
         raw["documents"]["probe-task"] = {"schema": "feedbax.spec.task_document", "payload": task}
+        invalid_task = deepcopy(task)
+        invalid_task["signals"] = []
+        raw["documents"]["unbound-task"] = {"schema": "feedbax.spec.task_document", "payload": invalid_task}
         raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {}
         raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
             "control": {"patches": {"params.seed": {"value": 1}}},
-            "test": {"patches": {"params.seed": {"value": 2}}},
+            "test": {"patches": {"params.seed": {"value": 1}}},
         }}}}
         _save_project(folders, project, Project.model_validate(raw))
         revision = folders.read(project).revision
@@ -84,7 +92,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert [(signal.id, signal.name) for signal in initial.signals] == [("reach_target", "reach_target")]
         assert [epoch.id for epoch in initial.epochs] == ["move"]
         assert not initial.inputs
-        assert {choice.document for choice in initial.tasks} == {"probe-task", "task", "test-task"}
+        assert {choice.document for choice in initial.tasks} == {"probe-task", "task", "test-task", "unbound-task"}
         assert any(field.path == "/python_task/params/n_steps" for field in initial.fields)
         edited = author(revision, {"kind": "task", "edits": [
             {"op": "add", "path": "/params/x", "value": 0.22},
@@ -118,9 +126,20 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert isinstance(output.address, ModelAddress)
         term = {"id": "effort", "name": "Control effort", "measure": CallValue(
             kind="call", function="sqnorm", args=(NameValue(kind="name", reference=output.value.id),)
-        ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json"), "epochs": ["move"]}
+        ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json")}
+        windowed = term | {"id": "move-effort", "epochs": ["move"]}
+
+        def squared_target(identifier, source):
+            return {
+                "id": identifier,
+                "measure": CallValue(
+                    kind="call", function="sqnorm", args=(NameValue(kind="name", reference=source),),
+                ).model_dump(mode="json"),
+                "measure_type": {"base": "real", "dimensions": LENGTH.raised(2).model_dump(mode="json")},
+            }
         revised = author(revision, {"kind": "objective", "edits": [
-            {"op": "add", "path": "/terms/-", "value": term},
+            {"op": "add", "path": "/terms/-", "value": value}
+            for value in (term, windowed, squared_target("target-variable", "target"), squared_target("target-signal", "reach_target"))
         ]})
         revision = save(revised)
         view = author(revision)
@@ -145,10 +164,13 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
         scope = {"kind": "rows", "rows": ["seed=test"]}
-        incompatible = author(revision, {"kind": "select_task", "document": "probe-task"},
+        choices = {choice.document: choice.problems for choice in evaluated_task.tasks}
+        assert not choices["probe-task"]
+        assert any("reach_target" in problem.reason for problem in choices["unbound-task"])
+        incompatible = author(revision, {"kind": "select_task", "document": "unbound-task"},
                               selected=test_run, scope=scope)
         assert not incompatible.files
-        assert any("move" in problem.reason for problem in incompatible.problems)
+        assert any("reach_target" in problem.reason for problem in incompatible.problems)
         revision = save(author(revision, {"kind": "select_task", "document": "test-task"},
                                selected=test_run, scope=scope))
         chosen = author(revision, selected=test_run)
@@ -159,6 +181,11 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         ]}, selected=test_run, scope=scope))
         assert author(revision, selected=test_run).task.params["x"] == 0.38
         assert folders.read(project).project.documents["test-task"].payload["params"]["x"] == 0.31
+        revision = save(author(revision, {"kind": "select_task", "document": "probe-task"},
+                               selected=test_run, scope=scope))
+        probe = author(revision, selected=test_run)
+        assert not probe.problems and probe.objective is None
+        assert [epoch.id for epoch in probe.epochs] == ["probe"]
         after = ids()
         assert {key for key in before if before[key] != after[key]} == {RunKey("default", "baseline", "seed=test")}
 
@@ -181,15 +208,37 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
             assert item["disposition"] == "admitted", item
             return item["job_id"]
 
-        trained, evaluated = submit(run, "train"), submit(test_run, "baseline")
-        for job in (trained, evaluated):
+        trained, control, evaluated = submit(run, "train"), submit(control_run, "control"), submit(test_run, "probe")
+        finished = {}
+        for job in (trained, control, evaluated):
             row = wait_until(lambda: job_row(host, job, "succeeded") or job_row(host, job, "failed"), timeout=24)
             assert row["state"] == "succeeded", row.get("outcome")
+            finished[job] = row
+        checkpoint = finished[trained]["outcome"]["completion"]
+        assert all(finished[job]["edges"][0]["binding"]["completion"] == checkpoint for job in (control, evaluated))
+        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=control).open_states() as dataset:
+            assert dataset.data("trial").tolist() == ["0"]
+            assert all(dataset.data(f"objective/coverage/{term}").item() == 1
+                       for term in ("effort", "move-effort", "target-variable", "target-signal"))
+            position = "/v1/model/state/plant/effector~1position"
+            control_positions = dataset.data(position).copy()
+            control_effort = dataset.data("objective/terms/effort").item()
         result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated)
         with result.open_states() as dataset:
-            assert np.isfinite(dataset.data("objective/total")).all()
-            assert int(dataset.data("objective/coverage/effort").item()) == 1
-            np.testing.assert_allclose(dataset.data("/v1/task/output/reach_target")[..., 0], 0.38)
+            assert dataset.data("trial").tolist() == ["0"]
+            for key in ("effort", "target-signal"):
+                assert dataset.data(f"objective/coverage/{key}").item() == 1
+            for key in ("move-effort", "target-variable"):
+                assert dataset.data(f"objective/coverage/{key}").item() == 0
+                assert dataset.data(f"objective/terms/{key}").item() == 0
+            np.testing.assert_allclose(dataset.data("/v1/task/output/reach_target")[..., 0], 0.22)
+            np.testing.assert_allclose(dataset.data("objective/terms/target-signal"), 0.22**2)
+            np.testing.assert_array_equal(dataset.data(position), control_positions)
+            np.testing.assert_allclose(dataset.data("objective/terms/effort"), control_effort)
+            np.testing.assert_allclose(
+                dataset.data("objective/total"),
+                dataset.data("objective/terms/effort") + dataset.data("objective/terms/target-signal"),
+            )
 
         revision = save(author(revision, {"kind": "objective", "edits": [
             {"op": "replace", "path": "/terms/0/name", "value": "Effort"},

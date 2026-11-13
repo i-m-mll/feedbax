@@ -234,7 +234,7 @@ class PlanJobReader:
                     continues=job["continues"],
                     checkpoint_source=_train_checkpoint_source(job, by_id),
                     output_size_bytes=size,
-                    checkpoint_sources=_finite_checkpoint_sources(job) if evaluate and receipt is not None else (),
+                    checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
                 )
             )
         return PlanJobAttempts(
@@ -1012,7 +1012,7 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
 
 def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobReceipt, int] | None:
     from feedbax.studio.canonical_evaluate import (
-        evaluation_subject_provenance, read_evaluation_manifest, states_ref,
+        evaluation_checkpoint_coordinates, evaluation_subject_provenance, read_evaluation_manifest, states_ref,
     )
 
     try:
@@ -1022,10 +1022,10 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
         if not edge["satisfied"]:
             return None
         binding = edge["binding"]
-        if isinstance(subject.select, BatchSetMember):
+        if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
             selection = binding["checkpoint_selection"]
             members = selection["members"]
-            if list(subject.select.batches) != selection["requested"] or list(subject.select.batches) != [
+            if list(coordinates) != selection["requested"] or list(coordinates) != [
                 member["checkpoint"]["completed_updates"] for member in members
             ]:
                 return None
@@ -1050,7 +1050,7 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobRe
         return None
 
 
-def _finite_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckpointSource, ...]:
+def _selected_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckpointSource, ...]:
     return tuple(
         StudioTrainCheckpointSource(
             job_id=member["producer_job_id"], request_id=member["request_id"],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import NamedTuple
 
 import jax
@@ -48,6 +49,13 @@ class ObjectiveResult(NamedTuple):
     terms: Mapping[str, TermValue]
 
 
+class ObjectiveUse(Enum):
+    """Only a strictly validated Train objective may be inherited by Evaluate."""
+
+    TRAIN = "train"
+    INHERITED = "inherited"
+
+
 @dataclass(frozen=True)
 class _Term:
     id: str
@@ -58,11 +66,16 @@ class _Term:
     references: frozenset[str]
 
 
+@dataclass(frozen=True)
+class _UncoveredTerm:
+    id: str
+
+
 class ObjectiveExecutor(AbstractLoss):
     """One implementation for per-trial reduction and covered-trial means."""
 
     label: str
-    terms: tuple[_Term, ...] = ()
+    terms: tuple[_Term | _UncoveredTerm, ...] = ()
     names: tuple[ScopedValue, ...] = ()
     period: float = 1.0
     n_steps: int = 0
@@ -135,7 +148,7 @@ class ObjectiveExecutor(AbstractLoss):
 
         supplied = fixed.keys() | traces.keys()
         for term in self.terms:
-            if term.references - supplied:
+            if isinstance(term, _UncoveredTerm) or term.references - supplied:
                 results[term.id] = TermValue(jnp.asarray(0.0), jnp.asarray(False))
                 continue
             selected = whole_window(trial.epochs, n_steps, term.epochs)
@@ -225,8 +238,9 @@ def compile_objective(
     *,
     task: TrialSource,
     sites: dict[tuple[str | int, ...], Site] | None = None,
+    use: ObjectiveUse = ObjectiveUse.TRAIN,
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
-    """Compile objective expressions and whole-epoch windows against a paired task."""
+    """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
     indexes = {epoch: index for index, epoch in enumerate(task.epochs)}
     problems = []
@@ -241,6 +255,8 @@ def compile_objective(
             for name, kind in (("t", time), ("T", time), ("u", scalar))
         ),
     )
+    measure_ids = {name.id for name in names}
+    weight_ids = {name.id for name in weight_names}
     referenced = set()
     for term in document.terms:
         path = ("terms", term.id)
@@ -269,6 +285,14 @@ def compile_objective(
                 )
             )
             continue
+        measure_refs = references(term.measure)
+        weight_refs = references(term.weight)
+        absent = set(term.epochs) - indexes.keys()
+        if use is ObjectiveUse.INHERITED and (
+            absent or measure_refs - measure_ids or weight_refs - weight_ids
+        ):
+            terms.append(_UncoveredTerm(term.id))
+            continue
         measure = compile_expression(
             term.measure,
             measure_site,
@@ -280,7 +304,6 @@ def compile_objective(
         if not isinstance(measure, Compiled):
             problems.extend(measure)
             continue
-        absent = set(term.epochs) - indexes.keys()
         if absent or term.epochs and measure.checked.root.level != Level.STEP:
             reason = (
                 f"Unknown epochs {sorted(absent)}." if absent else "This measure has no time axis."
@@ -304,7 +327,7 @@ def compile_objective(
         if not isinstance(weight, Compiled):
             problems.extend(weight)
             continue
-        used = (references(term.measure) | references(term.weight)) - {"t", "T", "u"}
+        used = (measure_refs | weight_refs) - {"t", "T", "u"}
         terms.append(
             _Term(
                 term.id,

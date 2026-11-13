@@ -79,7 +79,7 @@ def attest_checkpoint_publication(
         "prng": STANDARD_TRAIN_STATE_MEDIA_TYPE,
         "batch_counter": STANDARD_TRAIN_STATE_MEDIA_TYPE,
     }:
-        raise ValueError("/slots: finite qualification requires the typed standard Train profile")
+        raise ValueError("/slots: checkpoint selection requires the typed standard Train profile")
     root = launch.manifest_root
     binding_path = training_binding_path(root, checkpoint.pointer.run_id)
     files = [
@@ -310,7 +310,7 @@ def load_bound_checkpoint_selection(
     """Open exactly the ordered checkpoint publications already bound by the Host."""
     selection = binding["checkpoint_selection"]
     if selection["requested"] != list(coordinates):
-        raise CompletionFileError("Host selection differs from the authored finite batch set.")
+        raise CompletionFileError("Host selection differs from the authored checkpoint coordinates.")
     verify_dependency_files(binding)
     pinned = []
     for update, member in zip(coordinates, selection["members"], strict=True):

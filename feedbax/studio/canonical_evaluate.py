@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
 from feedbax.contracts.dataset import DatasetProductRef
@@ -20,7 +21,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BatchSetMember, ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
@@ -69,6 +70,14 @@ def _unexpected_document(digest: str) -> bytes:
     raise CannotRun("/params", f"this candidate does not support a factored document {digest}")
 
 
+def evaluation_checkpoint_coordinates(subject: ProductRef) -> tuple[int, ...] | None:
+    if isinstance(subject.select, BatchMember):
+        return finite_coordinates((subject.select.batch,))
+    if isinstance(subject.select, BatchSetMember):
+        return subject.select.batches
+    return None
+
+
 def decode_rollout_request(
     request_id: str, raw: bytes,
 ) -> tuple[EvaluationRequestSpec, RolloutParameters, ProductRef]:
@@ -88,9 +97,16 @@ def decode_rollout_request(
         not isinstance(subject, ProductRef)
         or subject.role != "checkpoint"
         or not subject.request_id.startswith("train:")
-        or not isinstance(subject.select, (LastMember, BatchSetMember))
+        or not isinstance(subject.select, (LastMember, BatchMember, BatchSetMember))
     ):
-        raise CannotRun("/inputs/subject/checkpoint", "requires a Train checkpoint selected by last or a complete batch set")
+        raise CannotRun(
+            "/inputs/subject/checkpoint",
+            "requires a Train checkpoint selected by last, an exact batch, or a complete batch set",
+        )
+    try:
+        evaluation_checkpoint_coordinates(subject)
+    except ValueError as error:
+        raise CannotRun("/inputs/subject/checkpoint", str(error)) from error
     try:
         params = RolloutParameters.model_validate(spec.params)
     except ValidationError as error:

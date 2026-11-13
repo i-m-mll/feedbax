@@ -606,6 +606,39 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
     np.testing.assert_array_equal(derivative[1:], 0)
 
 
+def test_inherited_objective_preserves_term_ids_without_observing_missing_values(functions):
+    from feedbax.objectives.document import ObjectiveUse
+
+    x, y = name("x", REAL), name("y", REAL)
+    task = compile_task(
+        TaskDocument(id="replacement", variables=(), signals=(), epochs=(Epoch(id="probe", name="Probe"),),
+                     fixed_steps=2),
+        functions, model=PORTLESS,
+    )
+    assert isinstance(task, DocumentTask), task
+    document = ObjectiveDocument(id="inherited", terms=(
+        ObjectiveTerm(id="covered", measure=expression("x", (x,))),
+        ObjectiveTerm(id="missing-measure", measure=expression("y", (y,))),
+        ObjectiveTerm(id="missing-weight", measure=expression("x", (x,)), weight=expression("y", (y,))),
+        ObjectiveTerm(id="missing-epoch", measure=expression("x", (x,)), epochs=("probe", "move")),
+    ))
+    strict = compile_objective(document, (x,), functions, task=task)
+    assert not isinstance(strict, ObjectiveExecutor)
+    assert {problem.path[:2] for problem in strict} == {
+        ("terms", "missing-measure"), ("terms", "missing-weight"), ("terms", "missing-epoch"),
+    }
+    scorer = compile_objective(document, (x,), functions, task=task, use=ObjectiveUse.INHERITED)
+    assert isinstance(scorer, ObjectiveExecutor), scorer
+    assert [item.id for item in scorer.names] == ["x"]
+    key = jr.key(0)
+    batch = task.validation(TaskParameters(), key)
+    result = scorer.evaluate({"x": jnp.asarray([[1.0, 3.0]])}, batch, run_key=key, trial_keys=key[None])
+    assert float(result.loss) == 2
+    assert {name: int(value.covered) for name, value in result.terms.items()} == {
+        "covered": 1, "missing-measure": 0, "missing-weight": 0, "missing-epoch": 0,
+    }
+
+
 def test_temporal_variable_can_leave_a_cell_absent(functions):
     time_name = name("time", TIME_TYPE)
     velocity = name("velocity", REAL)
