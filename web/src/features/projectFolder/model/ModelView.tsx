@@ -3,18 +3,17 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
-import { editEvaluateAttachment, readEvaluateAttachments, reviewModelConnections } from '@/api/projectFolders';
+import { editEvaluateAttachment, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { Dialog } from '@/components/ui/Dialog';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
-  ComponentDefinition, DocumentPresentation, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
-  ModelAddress, ModelClipboard, ModelDocument, ModelEditCommand, ModelPosition, StudioProjectSnapshot,
+  ComponentDefinition, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
+  ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
-import { ModelEditProblemSchema } from '@/generated/studioContracts';
+import { ModelAddressSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
-import { authoredPointer, presentationAddress } from '../authoredEdits';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { AttachmentFields, ComponentFields, Field, ModelFields, PortFields, type Attachment } from './ModelInspector';
 import {
@@ -34,6 +33,8 @@ type Props = {
   editable: boolean;
   evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
+  problems?: readonly { address: ModelAddress; reason: string }[];
+  projectionRun?: StudioSavedTrainKey;
   path: readonly string[];
   setPath(path: string[]): void;
 };
@@ -84,6 +85,16 @@ function searchable(definition: ComponentDefinition, query: string) {
   return (shortName(definition.name) + ' ' + definition.category).toLowerCase().includes(query.toLowerCase().trim());
 }
 
+function signalFits(source: Port, target: Port) {
+  if (typeof source.type === 'string' || typeof target.type === 'string') return false;
+  const left = source.type;
+  const right = target.type;
+  if (left.base && right.base && left.base !== right.base || left.unit && right.unit && left.unit !== right.unit) return false;
+  const shape = right.shape;
+  return !left.shape || !shape || (left.shape.length === shape.length && left.shape.every((axis, index) =>
+    typeof axis !== 'number' || typeof shape[index] !== 'number' || axis === shape[index]));
+}
+
 function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: {
   definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void;
   disabled: boolean; browse?: boolean; inspect?: (definition: ComponentDefinition) => void;
@@ -109,7 +120,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, window: state, active, editable, evaluate, problem, path, setPath }: Props) {
+export function useStoredModelView({ model, saved, editor, window: state, active, editable, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
   const selected = useStore(state, (current) => current.selection);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -117,6 +128,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const cursor = useRef<ModelPosition>();
   const dragSource = useRef<Port>();
   const connectionReview = useRef<AbortController>();
+  const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const requestBusy = useRef(false);
   const [busy, setBusy] = useState(false);
   const [issue, setIssue] = useState<{ address?: ModelAddress; reason: string }>();
@@ -125,6 +137,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
   const [search, setSearch] = useState<ModelPosition>();
   const [searchSource, setSearchSource] = useState<Port>();
+  const [searchLibrary, setSearchLibrary] = useState<ModelConnectionReview['library']>();
   const [searchText, setSearchText] = useState('');
   const [locked, setLocked] = useState(false);
   const [rename, setRename] = useState<string>();
@@ -143,6 +156,17 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
+  const projectionBody = projectionRun && model && { run: projectionRun, document: model.id, revision: saved.revision };
+  const projection = useQuery({
+    queryKey: ['model-projection', saved.project_id, projectionBody],
+    queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
+    enabled: active && !!projectionBody, retry: false,
+  });
+  const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
+  const markedPorts = useMemo(() => new Map([
+    ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'Task'] as const),
+    ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'Objective'] as const),
+  ]), [projection.data]);
   const attachments = useQuery({
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
@@ -152,17 +176,37 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
+  const addressedProblems = new Map<string, string>();
+  for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {
+    let address = item.address;
+    if (address.document !== graph.document || !currentPath.every((id, index) => address.composites[index] === id)) continue;
+    const child = address.composites[currentPath.length];
+    if (child) address = at(graph, { kind: 'component', id: child });
+    else if (address.element.kind === 'field') address = at(address, address.element.parent);
+    if (address.element.kind === 'attachment') address = at(address, address.element.parent);
+    addressedProblems.set(addressKey(address), item.reason);
+  }
   const portMap = useMemo(() => {
     const ports = owner ? boundaryPorts(owner.ports) : emptyPorts;
+    const unused = currentPath.length ? [] : (projection.data?.task_signals ?? []).filter((signal) =>
+      !owner?.ports.inputs?.some((input) => input.name === signal.id)).map((signal): Port => ({
+      end: { owner: 'inputs', port: `@task:${signal.id}` }, direction: 'output', name: signal.label,
+      type: signal.type, taskSignal: signal.id,
+    }));
     const map = new Map<string, Port[]>([
-      [inputCard, ports.filter((port) => idFor(port.end) === inputCard)],
+      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]],
       [outputCard, ports.filter((port) => idFor(port.end) === outputCard)],
     ]);
     for (const [id, component] of Object.entries(interior?.components ?? {})) {
       map.set(id, componentPorts(id, component, registry));
     }
+    for (const [id, items] of map) map.set(id, items.map((port) => {
+      const key = addressKey(at(graph, { kind: 'port', end: port.end }));
+      const type = projectedPorts.get(key);
+      return type || markedPorts.has(key) ? { ...port, type: type ?? port.type, mark: markedPorts.get(key) } : port;
+    }));
     return map;
-  }, [owner, interior, registry]);
+  }, [owner, interior, registry, graph, projectedPorts, markedPorts, currentPath.length, projection.data]);
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
   const persisted = model && positionsOf(saved, model.id);
   const presentation = model && saved.presentation?.documents?.[model.id];
@@ -243,20 +287,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     }
   }
 
-  function changeLayout<K extends 'collapsed' | 'flipped' | 'waypoints'>(name: string, key: K, next: DocumentPresentation[K]) {
-    if (!model || !saved.presentation || requestBusy.current) return;
-    const documents = saved.presentation.documents;
-    const patch = !documents ? { op: 'add', path: '/documents', value: { [model.id]: { [key]: next } } } as const
-      : !presentation ? { op: 'add', path: authoredPointer(['documents', model.id]), value: { [key]: next } } as const
-        : { op: presentation[key] === undefined ? 'add' : 'replace', path: authoredPointer(['documents', model.id, key]), value: next } as const;
-    try {
-      editor.editFiles(name, [{ address: presentationAddress, patches: [patch] }], {
-        reviewedRevision: saved.revision, reviewedPresentationRevision: saved.presentation_revision,
-      });
-      void editor.flush().catch((error) => setIssue({ reason: apiErrorMessage(error) }));
-    } catch (error) {
-      setIssue({ reason: apiErrorMessage(error) });
-    }
+  function route(address: ModelAddress, points: ModelPosition[], name: string) {
+    void apply(name, { op: 'route_wire', address, waypoints: points }, false);
   }
 
   function select(address: ModelAddress, extend = false) {
@@ -273,11 +305,38 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     setMenu(undefined);
     setPath(path);
   }
+  function keyboardConnect(port: Port) {
+    if (locked || !editTopology || port.direction !== 'output' || port.taskSignal) return;
+    const source = wireEnd(port);
+    if (source.owner !== 'inputs' && source.owner !== 'component') return;
+    const request = new AbortController();
+    connectionReview.current?.abort();
+    connectionReview.current = request;
+    void reviewModelConnections(saved.project_id, { revision: saved.revision, graph, source }, request.signal).then(({ targets }) => {
+      if (request.signal.aborted) return;
+      const verdicts = new Map(targets.map(({ target, reason }) => [endKey(target), reason]));
+      state.setState({ pick: {
+        accepts: (address, candidate) => inGraph(address, graph) && candidate.direction === 'input' &&
+          verdicts.get(endKey(wireEnd(candidate))) === null,
+        choose: (address) => {
+          if (address.element.kind !== 'port') return;
+          const { end } = address.element;
+          const id = idFor(end);
+          const target = portMap.get(id)?.find((item) => item.direction === 'input' && item.end.port === end.port);
+          if (target) connect(idFor(port.end), portId(port), id, portId(target));
+        },
+      } });
+    }).catch((error) => { if (!request.signal.aborted) setIssue({ reason: apiErrorMessage(error) }); });
+  }
   function openSearch(point = cursor.current ?? positionAt(objects.length), source?: Port) {
     if (!editTopology) return;
     setSearchText('');
     setSearch(point);
     setSearchSource(source);
+    setSearchLibrary(undefined);
+    if (source) void libraryReview.current?.then((result) => setSearchLibrary(result.library)).catch((error) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ reason: apiErrorMessage(error) });
+    });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
     const occupied = objects.map(([id], index) => persisted?.[addressKey(at(graph, { kind: 'component', id }))] ?? positionAt(index));
@@ -292,12 +351,15 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       op: 'add_component', graph, position,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
         ? { connect_from: source, connect_to_port: to } : {}),
-      component: {
-        kind: 'leaf', name: shortName(definition.name), type: definition.identity?.type_id ?? definition.name,
-        revision: definition.revision, fields: Object.fromEntries(Object.entries(definition.default_params ?? {})
-          .filter(([name]) => name !== 'dt' && name !== 'control_dt')) as Record<string, JsonValue>,
-      },
+      component: leaf(definition),
     }).then((ok) => { if (ok) setSearch(undefined); });
+  }
+  function leaf(definition: ComponentDefinition) {
+    return {
+      kind: 'leaf', name: shortName(definition.name), type: definition.identity?.type_id ?? definition.name,
+      revision: definition.revision, fields: Object.fromEntries(Object.entries(definition.default_params ?? {})
+        .filter(([name]) => name !== 'dt' && name !== 'control_dt')) as Record<string, JsonValue>,
+    } as const;
   }
   function matchesSource(definition: ComponentDefinition, name: string, source: Port) {
     const target = definition.port_types?.inputs?.[name];
@@ -307,6 +369,23 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     return !shape || !target?.shape || (shape.length === target.shape.length &&
       shape.every((axis, index) => typeof axis !== 'number' || axis === target.shape?.[index]));
   }
+  function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
+    const address = edge.data?.address;
+    if (address?.element.kind !== 'wire') return;
+    const source = portAt(edge.source, edge.sourceHandle ?? null);
+    const target = portAt(edge.target, edge.targetHandle ?? null);
+    const candidate = componentPorts('new', leaf(definition), registry);
+    const input = source && candidate.find((port) => port.direction === 'input' && matchesSource(definition, port.end.port, source));
+    const output = target && candidate.find((port) => port.direction === 'output' && signalFits(port, target));
+    if (!input || !output) {
+      setIssue({ address, reason: 'This component has no matching ports for the wire.' });
+      return;
+    }
+    void apply('Insert Component', {
+      op: 'insert_component', address, component: leaf(definition), position: point, flipped,
+      input_port: input.end.port, output_port: output.end.port,
+    });
+  }
   function portAt(node: string, handle: string | null) {
     return handle ? portMap.get(node)?.find((port) => portId(port) === handle) : undefined;
   }
@@ -315,13 +394,15 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     if (!editTopology || locked || !nodeId) return;
     const port = portAt(nodeId, handleId);
     dragSource.current = port;
-    if (!port || port.direction !== 'output') return;
+    if (!port || port.direction !== 'output' || port.taskSignal) return;
     const source = wireEnd(port);
     if (source.owner !== 'inputs' && source.owner !== 'component') return;
     connectionReview.current?.abort();
     const request = new AbortController();
     connectionReview.current = request;
-    void reviewModelConnections(saved.project_id, { revision: saved.revision, graph, source }, request.signal)
+    const reviewed = reviewModelConnections(saved.project_id, { revision: saved.revision, graph, source }, request.signal);
+    libraryReview.current = reviewed;
+    void reviewed
       .then(({ targets }) => {
         if (!request.signal.aborted) setVerdict(new Map(targets.map(({ target, reason }) => [endKey(target), reason])));
       })
@@ -331,47 +412,34 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const a = portAt(sourceNode, sourceHandle), b = portAt(targetNode, targetHandle);
     if (!a || !b || locked) return;
     const left = wireEnd(a), right = wireEnd(b);
+    if (a.taskSignal && projectionRun && b.direction === 'input' && (right.owner === 'component' || right.owner === 'outputs')) {
+      void apply('Connect Task Signal', { op: 'connect_task_signal', graph, run: projectionRun, signal: a.taskSignal, target: right });
+      return;
+    }
     if (a.direction === 'physical' && b.direction === 'physical' && physical &&
         (left.owner === 'component' || left.owner === 'boundary') && (right.owner === 'component' || right.owner === 'boundary')) {
       void apply('Connect Ports', { op: 'connect_physical', graph, connection: { a: left, b: right } });
     } else if (a.direction === 'output' && b.direction === 'input' &&
         (left.owner === 'component' || left.owner === 'inputs') && (right.owner === 'component' || right.owner === 'outputs') &&
         !verdict?.get(endKey(right))) {
-      void apply('Connect Ports', { op: 'connect', graph, source: left, target: right });
+      void apply('Connect Ports', { op: 'connect', graph, source: left, target: right, ...(b.growing ? { grow_target: true } : {}) });
     }
   }
 
-  const effective = new Map<string, Attachment[]>();
-  for (const [id, wire] of wires) effective.set(addressKey(at(graph, { kind: 'wire', id })), [...(wire.attachments ?? [])]);
+  const effectiveInterior = attachments.data?.resolved_model
+    ? modelPath(attachments.data.resolved_model, currentPath).owner.interior : interior;
+  const effective = new Map<string, readonly Attachment[]>();
+  for (const [id, wire] of Object.entries(effectiveInterior?.wires ?? {})) {
+    effective.set(addressKey(at(graph, { kind: 'wire', id })), wire.attachments ?? []);
+  }
   const portOwners = new Map<string, ModelAddress>();
   for (const ports of portMap.values()) for (const port of ports) {
-    if (port.direction === 'physical') continue;
+    if (port.direction === 'physical' || port.taskSignal || port.growing) continue;
     const address = at(graph, { kind: 'port', end: port.end });
     portOwners.set(addressKey(address), address);
     const end = port.end;
-    const store = end.owner === 'component' ? interior?.components?.[end.component]?.attachments : interior?.attachments;
-    effective.set(addressKey(address), [...((port.direction === 'output' ? store?.sources : store?.sinks)?.[end.port] ?? [])]);
-  }
-  for (const difference of attachments.data?.effective ?? []) {
-    const owner = difference.op === 'add' ? difference.owner :
-      difference.address.element.kind === 'attachment' ? at(difference.address, difference.address.element.parent) : undefined;
-    const list = owner && effective.get(addressKey(owner));
-    if (!list) continue;
-    if (difference.op === 'add') {
-      const index = difference.after === null ? -1 : list.findIndex(({ id }) => id === difference.after);
-      if (difference.after === null || index >= 0) list.splice(index + 1, 0, difference.attachment);
-    } else if (difference.address.element.kind === 'attachment') {
-      const id = difference.address.element.id;
-      const index = list.findIndex((item) => item.id === id);
-      if (index < 0) continue;
-      if (difference.op === 'remove') list.splice(index, 1);
-      else if (difference.after === undefined) list[index] = difference.attachment;
-      else {
-        list.splice(index, 1);
-        const after = list.findIndex((item) => item.id === difference.after);
-        list.splice(after + 1, 0, difference.attachment);
-      }
-    }
+    const store = end.owner === 'component' ? effectiveInterior?.components?.[end.component]?.attachments : effectiveInterior?.attachments;
+    effective.set(addressKey(address), (port.direction === 'output' ? store?.sources : store?.sinks)?.[end.port] ?? []);
   }
 
   function move(nodes: ModelCard[]) {
@@ -405,13 +473,17 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         selected: !!definition && selectedIds.has(key),
         holdsSelection: definition?.kind === 'composite' && selected.some((item) => item.document === graph.document &&
           currentPath.every((parent, offset) => item.composites[offset] === parent) && item.composites[currentPath.length] === id),
-        problem: issue?.address && addressKey(issue.address) === key ? issue.reason :
-          problemAddress && addressKey(problemAddress) === key ? problem?.reason : undefined,
-        onPort: (port) => select(at(graph, { kind: 'port', end: port.end })),
+        problem: addressedProblems.get(key),
+        onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
+        keyboardConnect,
         canPick: pick ? (port) => pick.accepts(at(graph, { kind: 'port', end: port.end }), port) : undefined,
         pickPort: pick ? (port) => { pick.choose(at(graph, { kind: 'port', end: port.end })); state.setState({ pick: null }); } : undefined,
         portReasons: verdict && new Map(ports.filter((port) => port.direction === 'input').map((port) =>
-          [portId(port), verdict.get(endKey(wireEnd(port))) ?? null])),
+          [portId(port), verdict.get(endKey(wireEnd(port)))]).filter((entry): entry is [string, string | null] => entry[1] !== undefined)),
+        portProblems: new Map(ports.flatMap((port) => {
+          const reason = addressedProblems.get(addressKey(at(graph, { kind: 'port', end: port.end })));
+          return reason ? [[portId(port), reason] as const] : [];
+        })),
         enter: definition?.kind === 'composite' ? () => go([...currentPath, id]) : undefined,
         renaming: rename === key, endRename: () => setRename(undefined),
         rename: (name) => { void apply('Rename', { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
@@ -439,11 +511,15 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       markerEnd: isPhysical ? undefined : { type: MarkerType.Arrow, width: 12, height: 12, color: '#555860' },
       selected: selectedIds.has(key),
       data: {
-        address, selected: selectedIds.has(key), waypoints: waypoints?.[key],
+        address, selected: selectedIds.has(key), waypoints: waypoints?.[key], problem: addressedProblems.get(key),
         self,
+        moveWaypoint: editTopology && !locked ? (index, point) => {
+          route(address, (waypoints?.[key] ?? []).map((previous, offset) => offset === index ? point : previous), 'Move Waypoint');
+        } : undefined,
         attachments: effective.get(key)?.map((item) => ({
           id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds ?? 0.01),
           delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
+          drag: editTopology && !locked ? attachmentAddress(address, item.id) : undefined,
         })),
       },
     };
@@ -657,14 +733,15 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     body: model ? <div className="flex h-full min-h-0 flex-col" onKeyDown={(event) => {
       if (event.key === 'Escape' && state.getState().pick) { event.stopPropagation(); clear(); }
     }}>
-      {(issue || problem || attachments.error) && <p className="px-2 text-sm" role="alert">
-        {issue?.reason ?? problem?.reason ?? apiErrorMessage(attachments.error)}
+      {(issue || problem || attachments.error || projection.error) && <p className="px-2 text-sm" role="alert">
+        {issue?.reason ?? problem?.reason ?? apiErrorMessage(attachments.error ?? projection.error)}
       </p>}
       <div className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
           collapsed={!!collapsed?.[graphId]} viewportRef={viewport}
           onToggleLock={() => setLocked((current) => !current)}
-          onToggleCollapse={() => changeLayout('Collapse All', 'collapsed', { ...collapsed, [graphId]: !collapsed?.[graphId] })}
+          onToggleCollapse={() => void apply(collapsed?.[graphId] ? 'Expand All' : 'Collapse All',
+            { op: 'collapse_graph', graph, collapsed: !collapsed?.[graphId] }, false)}
           onCanvasPoint={(point) => { cursor.current = point; }}
           onSearch={openSearch} onNode={(node, extend) => {
             if (!pick && node.data.address.element.kind === 'component') select(node.data.address, extend);
@@ -673,13 +750,33 @@ export function useStoredModelView({ model, saved, editor, window: state, active
             selection: cards.filter((node) => node.data.address.element.kind === 'component').map((node) => node.data.address),
           })} onMove={move} onContext={contextual} onConnectStart={connectStart} onConnect={connect}
           onConnectEnd={(point, valid, empty) => {
-            connectionReview.current?.abort();
             setVerdict(undefined);
-            if (!valid && empty && dragSource.current?.direction === 'output') openSearch(point, dragSource.current);
+            if (!valid && empty && dragSource.current?.direction === 'output' && !dragSource.current.taskSignal) openSearch(point, dragSource.current);
+            else connectionReview.current?.abort();
             dragSource.current = undefined;
-          }} onLibraryDrop={(type, point) => {
+          }} onLibraryDrop={(type, point, edge, reversed) => {
+            if (locked) return;
             const definition = registry.get(type);
-            if (definition && definitions.includes(definition)) add(definition, point);
+            if (!definition || !definitions.includes(definition)) return;
+            if (edge) insert(definition, point, edge, reversed);
+            else add(definition, point);
+          }} onAttachmentDrop={(raw, edge) => {
+            if (!editTopology || locked || !edge.data) return;
+            let value: unknown;
+            try {
+              value = JSON.parse(raw);
+            } catch (error) {
+              if (error instanceof SyntaxError) return;
+              throw error;
+            }
+            const parsed = ModelAddressSchema.safeParse(value);
+            if (!parsed.success || parsed.data.element.kind !== 'attachment' || !inGraph(parsed.data, graph)) return;
+            const address = parsed.data;
+            const id = parsed.data.element.id;
+            const destination = edge.data.address;
+            const after = effective.get(addressKey(destination))?.filter((item) => item.id !== id).at(-1)?.id ?? null;
+            void apply('Move Attachment', { op: 'move_wire_attachment', address, destination, after })
+              .then((ok) => { if (ok) select(attachmentAddress(destination, id)); });
           }} />
       </div>
     </div> : null,
@@ -700,33 +797,35 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     overlay: search ? <Dialog ariaLabel="Add Component" onClose={() => setSearch(undefined)} manageFocus panelClassName={panel}>
       <input data-dialog-autofocus aria-label="Components" className="border border-shell-divider px-2 py-1"
         value={searchText} onChange={(event) => setSearchText(event.currentTarget.value)} />
-      {searchSource ? definitions.filter((item) => searchable(item, searchText)).flatMap((item) =>
-        (item.input_ports ?? []).filter((port) => matchesSource(item, port, searchSource)).map((port) =>
+      {searchSource ? searchLibrary?.flatMap(({ component, target_port: port }) => {
+        const item = registry.get(component);
+        return item && searchable(item, searchText) ?
           <button key={JSON.stringify([item.name, port])} type="button" className={button} disabled={!editTopology}
-            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</button>))
+            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</button> : [];
+      })
         : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
     </Dialog> : addPort ? <Dialog ariaLabel="Add Port" onClose={() => setAddPort(undefined)} manageFocus panelClassName={panel}>
       <Field label="Name" value="" parse={(raw) => raw.trim() || undefined} commit={(name) => {
         void apply('Add Port', { op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name: String(name), type: {} } }, false)
           .then((ok) => { if (ok) setAddPort(undefined); });
       }} />
-      {addPort === 'input' && currentPath.length > 0 && (() => {
-        const outerPath = currentPath.slice(0, -1);
-        const outer = model && modelPath(model.value, outerPath).owner;
-        const candidates = outer && [
+      {addPort === 'input' && model && currentPath.flatMap((excluded, depth) => {
+        const outerPath = currentPath.slice(0, depth);
+        const outer = modelPath(model.value, outerPath).owner;
+        const candidates = [
           ...boundaryPorts(outer.ports).filter(({ direction }) => direction === 'output'),
-          ...Object.entries(outer.interior.components ?? {}).filter(([id]) => id !== currentPath.at(-1)).flatMap(([id, component]) =>
+          ...Object.entries(outer.interior.components ?? {}).filter(([id]) => id !== excluded).flatMap(([id, component]) =>
             componentPorts(id, component, registry).filter(({ direction }) => direction === 'output')),
         ];
-        return candidates?.map((port) => {
+        return candidates.map((port) => {
           const source = wireEnd(port);
           if (source.owner !== 'inputs' && source.owner !== 'component') return null;
-          return <button key={endKey(source)} className={button} type="button" onClick={() => {
+          return <button key={`${depth}:${endKey(source)}`} className={button} type="button" onClick={() => {
             void apply('Bring Signal In', { op: 'bring_signal_in', source_graph: currentGraph(graph.document, outerPath),
               source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
-          }}>{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</button>;
+          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</button>;
         });
-      })()}
+      })}
     </Dialog> : menu && <Dialog ariaLabel="Model Commands" onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
       <div role="menu" className="fixed grid rounded border border-shell-divider bg-shell-chrome p-1 text-sm shadow-lg"
         style={{ left: Math.min(menu.x, window.innerWidth - 160), top: Math.min(menu.y, window.innerHeight - 240) }}>
@@ -734,16 +833,16 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           <button className={button} role="menuitem" type="button" key={command.id} {...commandAttributes(command)}
             onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</button>)}
         {menu.address.element.kind === 'component' && editTopology && <button className={button} role="menuitem" type="button"
-          onClick={() => { const key = addressKey(menu.address); changeLayout('Flip', 'flipped', { ...flipped, [key]: !flipped?.[key] }); setMenu(undefined); }}>Flip</button>}
+          onClick={() => { void apply('Flip', { op: 'flip_component', address: menu.address }, false); setMenu(undefined); }}>Flip</button>}
         {menu.address.element.kind === 'wire' && editTopology && <>
           <button className={button} role="menuitem" type="button" onClick={() => {
             const key = addressKey(menu.address);
-            changeLayout('Add Waypoint', 'waypoints', { ...waypoints, [key]: [...(waypoints?.[key] ?? []), menu.point] });
+            route(menu.address, [...(waypoints?.[key] ?? []), menu.point], 'Add Waypoint');
             setMenu(undefined);
           }}>Add Waypoint</button>
           {!!waypoints?.[addressKey(menu.address)]?.length && <button className={button} role="menuitem" type="button" onClick={() => {
             const key = addressKey(menu.address);
-            changeLayout('Remove Waypoint', 'waypoints', { ...waypoints, [key]: waypoints![key].slice(0, -1) });
+            route(menu.address, waypoints![key].slice(0, -1), 'Remove Waypoint');
             setMenu(undefined);
           }}>Remove Waypoint</button>}
         </>}

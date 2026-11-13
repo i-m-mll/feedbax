@@ -264,6 +264,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const evaluated = step?.kind === 'evaluate' && namedRun && state.selection;
   const modelSource = step?.kind === 'evaluate' ? plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds?.['payload.graph'] : undefined;
+  const modelProblems = data?.window_map?.problems.filter((problem) => problem.model_address &&
+    (problem.step === step?.id || step?.kind === 'evaluate' && problem.document === modelSource) &&
+    (problem.variant === null || problem.variant === variant) &&
+    (!problem.row || !namedRun || problem.step !== step?.id || problem.row === namedRun.row));
   const axis = evaluated && state.selection?.kind === 'values' && state.selection.terms.length === 1
     ? state.selection.terms[0] : undefined;
   const evaluateScope = evaluated && (state.selection?.kind === 'steps'
@@ -284,7 +288,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource,
+    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({

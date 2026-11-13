@@ -186,20 +186,42 @@ def _apply(records, difference):
     return [*records, difference]
 
 
-def read_evaluate_attachments(folders, project_id, body):
+def read_evaluate_attachments(folders, project_id, body, components):
     snapshot = folders.read(project_id, revision=body.revision)
-    selected = folders.read_plan(project_id, revision=body.revision, source_runs=(_key(body),)).plan
-    definition = selected.selected_definitions.get(_key(body))
+    key = _key(body)
+    selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    definition = selected.selected_definitions.get(key)
     data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     scope, _ = _scope(snapshot.project, data, body)
     _selected_rows(selected, body)
     effective = MODEL_ATTACHMENT_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
     )
+    differences = tuple(record for batch in effective.values() for record in batch)
+    resolved = None
+    if differences:
+        from feedbax.compiler.model_attachment import resolve_model_attachments
+        from feedbax.compiler.model_document import lower_model_document
+        from feedbax.contracts.graph import StudioTaskBindingSpec
+        from feedbax.contracts.model_document import ModelDocument
+
+        planned = next((run for run in selected.runs if run.key == key), None)
+        subject = planned.inputs.get("subject") if planned else None
+        if subject is None:
+            raise ValueError("The selected Evaluate row has no planned Train subject")
+        train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(subject.producer,)).plan
+        train = train_plan.selected_definitions.get(subject.producer)
+        if train is None or not (document := train.document_ids.get("payload.graph")):
+            raise ValueError("The selected Evaluate row has no authored Model")
+        model = ModelDocument.model_validate(train.payload["graph"])
+        binding = StudioTaskBindingSpec.model_validate(train.payload.get("task_binding_spec") or {})
+        lowered = lower_model_document(document, model, components, binding)
+        resolved = resolve_model_attachments(document, model, lowered.graph, differences)
     return EvaluateAttachmentState(
         revision=body.revision,
         records=tuple(_local_records(scope)),
-        effective=tuple(record for batch in effective.values() for record in batch),
+        effective=differences,
+        resolved_model=resolved,
     )
 
 

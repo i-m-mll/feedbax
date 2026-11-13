@@ -13,6 +13,9 @@ export type Port = {
   readonly direction: Direction;
   readonly name: string;
   readonly type: SignalType | string;
+  readonly mark?: 'Task' | 'Objective';
+  readonly taskSignal?: string;
+  readonly growing?: boolean;
 };
 export type Registry = ReadonlyMap<string, ComponentDefinition>;
 
@@ -81,12 +84,17 @@ function leafPorts(id: string, component: LeafComponent, definition: ComponentDe
       names = [...fixed, ...Array.from({ length: count }, (_, index) =>
         template.replace('{index}', String(index + (policy.generated_index_origin ?? 0))))];
     }
-    return names.map((port) => {
+    const grow = direction === 'input' && policy?.direction === 'input' && policy.auto_resize_minimum != null &&
+      policy.generated_name_template ? policy.generated_name_template.replace(
+        '{index}', String(names.length - fixed.length + (policy.generated_index_origin ?? 0)),
+      ) : undefined;
+    return (grow ? [...names, grow] : names).map((port) => {
       const type = types?.[port] ?? policy?.dynamic_port_type;
       const kind = type?.kind === 'conserving' ? 'physical' : direction;
       return {
         end: { owner: 'component', component: id, direction: kind, port },
-        direction: kind, name: port, type: kind === 'physical' ? type?.physical_domain ?? '' : signalType(type),
+        direction: kind, name: grow === port ? 'Add Input' : port, growing: grow === port,
+        type: kind === 'physical' ? type?.physical_domain ?? '' : signalType(type),
       } satisfies Port;
     });
   }).filter((port, index, all) => port.direction !== 'physical' || all.findIndex((item) =>

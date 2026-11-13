@@ -6,6 +6,7 @@ from functools import cache
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
 from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.studio.model_edit import Direction, Port, Record
@@ -41,6 +42,26 @@ class ModelRegistryPorts:
             canonical_json_v2_bytes(component["port_counts"]),
         )
 
+    def next_input(self, component: Record) -> tuple[str, str, int] | None:
+        if component["kind"] != "leaf":
+            return None
+        declaration = self.registry.get(component["type"])
+        policy = declaration.dynamic_port_policy if declaration else None
+        if policy is None or policy.count_param is None or policy.auto_resize_minimum is None:
+            return None
+        name = policy.count_param
+        fields = dict(component["fields"])
+        if name in component["port_counts"]:
+            fields[name] = component["port_counts"][name]
+        params = declaration.params.require(fields).model_dump(mode="python")
+        count = derive_dynamic_port_count(policy, params) + 1
+        try:
+            params = declaration.params.require(params | {name: count}).model_dump(mode="python")
+        except ValueError:
+            return None
+        layout = derive_dynamic_port_layout(policy, params)
+        return layout.input_ports[-1], name, count
+
     def _derive_layout(
         self, type_id: str, fields: bytes, port_counts: bytes,
     ) -> dict[tuple[Direction, str], Port]:
@@ -50,6 +71,9 @@ class ModelRegistryPorts:
         policy = declaration.dynamic_port_policy
         params = strict_json_loads(fields)
         counts = strict_json_loads(port_counts)
+        for period in ("dt", "control_dt"):
+            if period in declaration.params.model.model_fields:
+                params.setdefault(period, declaration.params.model.model_fields[period].default)
         if policy and policy.count_param in counts:
             params[policy.count_param] = counts[policy.count_param]
         dynamic = self.registry.dynamic_port_layout(type_id, params)

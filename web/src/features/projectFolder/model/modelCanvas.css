@@ -18,6 +18,7 @@
 .studio-model-port[data-collapsed="true"] { position: absolute; inset: 0; pointer-events: none; padding: 0; }
 .studio-model-port .react-flow__handle { width: 9px; height: 9px; border: 1px solid #555860; border-radius: 1px; background: var(--shell-chrome, #fff); }
 .studio-model-port .react-flow__handle[data-physical="true"] { border-radius: 50%; }
+.studio-model-port[data-hollow="true"] .react-flow__handle { border-style: dashed; }
 .studio-model-port[data-verdict="allowed"] .react-flow__handle { width: 13px; height: 13px; border-width: 2px; }
 .studio-model-port[data-verdict="refused"] .react-flow__handle { opacity: .35; }
 .studio-model-port-reason { position: absolute; z-index: 2; top: 0; right: calc(100% + 7px); max-width: 12rem; width: max-content; background: var(--shell-chrome, white); }
@@ -25,3 +26,4 @@
 .studio-model-wire { stroke: #555860; }
 .studio-model-attachments { position: absolute; pointer-events: all; display: flex; gap: 2px; }
 .studio-model-attachments button { min-width: 16px; height: 16px; border: 1px solid #777; border-radius: 2px; background: var(--shell-chrome, white); font-size: 10px; }
+.studio-model-waypoint { position: absolute; pointer-events: all; width: 10px; height: 10px; border: 1px solid currentColor; background: var(--shell-chrome, white); cursor: move; }

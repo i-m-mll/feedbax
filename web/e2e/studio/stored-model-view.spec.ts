@@ -100,6 +100,17 @@ test('authors and reopens an addressed Model through the project history', async
 
   const before = await cell.evaluate((node) => node.style.transform);
   await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await cell.locator('header').click({ button: 'right' });
+  const flipped = await apply(() => page.getByRole('menuitem', { name: 'Flip', exact: true }).click());
+  expect(flipped.snapshot.semantic_root).toBe(redone.snapshot.semantic_root);
+  await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
+  const collapsed = await apply(() => model.getByRole('button', { name: 'Collapse All', exact: true }).click());
+  expect(collapsed.snapshot.semantic_root).toBe(flipped.snapshot.semantic_root);
+  await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-collapsed', 'true');
+  await model.focus();
+  const expanded = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
+  expect(expanded.snapshot.semantic_root).toBe(collapsed.snapshot.semantic_root);
+  await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-collapsed', 'false');
   const group = await apply(async () => {
     await cell.locator('header').click();
     await page.keyboard.press('Meta+G');
@@ -111,6 +122,7 @@ test('authors and reopens an addressed Model through the project history', async
   await page.reload();
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
   await expect(cell).toHaveCount(1);
+  await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
   expect(await cell.evaluate((node) => node.style.transform)).toBe(before);
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
 });
@@ -119,7 +131,7 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   test.setTimeout(45_000);
   const seeded = await seedManagedProject(request, []);
   const { projectPath } = seeded;
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.snapshot.project_id);
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.snapshot.project_id, 'sweep');
   const opened = await request.get(`${projectPath}/open`);
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
@@ -134,10 +146,18 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await model.locator('[data-id="controller"] header').dblclick();
   await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  const [first] = await Promise.all([
-    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
-    inspector.getByRole('button', { name: 'Add Intervention', exact: true }).click(),
-  ]);
+  async function addIntervention(scope: object) {
+    const [prepared, committed] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === 'POST' &&
+        new URL(response.url()).pathname === `${projectPath}/model/evaluate-attachment`),
+      page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
+      inspector.getByRole('button', { name: 'Add Intervention', exact: true }).click(),
+    ]);
+    expect(prepared.request().postDataJSON().scope).toEqual(scope);
+    expect(committed.ok(), await committed.text()).toBe(true);
+    return committed;
+  }
+  const first = await addIntervention({ kind: 'step' });
   expect(first.ok(), await first.text()).toBe(true);
   await expect(inspector.getByRole('spinbutton', { name: 'Factor', exact: true })).toHaveValue('1');
   const [changed] = await Promise.all([
@@ -153,4 +173,38 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await expect(model.getByRole('button', { name: 'Scale', exact: true })).toBeVisible();
   await model.getByRole('button', { name: 'Scale', exact: true }).click();
   await expect(inspector.getByRole('spinbutton', { name: 'Factor', exact: true })).toHaveValue('0.5');
+  const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
+  await evaluation.getByRole('button', { name: 'Sweep seed', exact: true }).click();
+  await evaluation.getByRole('listitem').getByRole('button', { name: 'Select seed control', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
+  await addIntervention({ kind: 'axis_value', axis: 'seed', value: 'control' });
+  await mapStep(page, 'baseline').click();
+  await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
+  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
+  await addIntervention({ kind: 'rows', rows: ['seed=comparison'] });
+});
+
+test('persists an attachment in the selected project variant', async ({ page, request }, info) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, []);
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, snapshot.project_id, 'variant');
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('treated');
+  await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await model.locator('[data-id="controller"] header').dblclick();
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
+  const [prepared, saved] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `${projectPath}/model/evaluate-attachment`),
+    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
+    page.getByRole('button', { name: 'Add Intervention', exact: true }).click(),
+  ]);
+  expect(prepared.request().postDataJSON().scope).toEqual({ kind: 'variant', variant: 'treated' });
+  expect(saved.ok(), await saved.text()).toBe(true);
+  await expect(model.getByRole('button', { name: 'Scale', exact: true })).toBeVisible();
 });

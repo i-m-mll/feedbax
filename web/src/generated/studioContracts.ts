@@ -423,6 +423,15 @@ export interface ConnectSignal {
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd;
   target: ComponentPortEnd | OutputBoundaryEnd;
+  grow_target?: boolean;
+}
+
+export interface ConnectTaskSignal {
+  op: "connect_task_signal";
+  graph: ModelAddress;
+  run: StudioSavedTrainKey;
+  signal: string;
+  target: ComponentPortEnd | OutputBoundaryEnd;
 }
 
 export interface ConnectPhysical {
@@ -469,10 +478,13 @@ export interface BringSignalIn {
 }
 
 export interface ModelClipboard {
+  positions?: Record<string, ModelPosition>;
+  flipped?: Record<string, boolean>;
+  collapsed?: Record<string, boolean>;
+  waypoints?: Record<string, ModelPosition[]>;
   components: Record<string, LeafComponent | CompositeComponent>;
   wires: Record<string, ModelWire>;
   connections: Record<string, ModelPhysicalConnection>;
-  positions?: Record<string, ModelPosition>;
 }
 
 export interface CopyComponents {
@@ -524,6 +536,7 @@ export interface EvaluateAttachmentState {
   revision: unknown;
   records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
+  resolved_model?: ModelDocument | null;
 }
 
 export interface EvaluateAttachmentStep {
@@ -570,6 +583,40 @@ export interface MoveComponents {
   placements: PlaceComponent[];
 }
 
+export interface CollapseGraph {
+  op: "collapse_graph";
+  graph: ModelAddress;
+  collapsed: boolean;
+}
+
+export interface FlipComponent {
+  op: "flip_component";
+  address: ModelAddress;
+}
+
+export interface InsertComponentOnWire {
+  op: "insert_component";
+  address: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  input_port: string;
+  output_port: string;
+  position: ModelPosition;
+  flipped?: boolean;
+}
+
+export interface MoveWireAttachment {
+  op: "move_wire_attachment";
+  address: ModelAddress;
+  destination: ModelAddress;
+  after?: string | null;
+}
+
+export interface RouteWire {
+  op: "route_wire";
+  address: ModelAddress;
+  waypoints: ModelPosition[];
+}
+
 export interface SetModelAttachment {
   op: "set_attachment";
   difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment;
@@ -587,7 +634,7 @@ export interface UngroupComposite {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | MoveComponents | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
 }
 
 export interface ModelEditProblem {
@@ -636,8 +683,38 @@ export interface ModelConnectionVerdict {
   reason: string | null;
 }
 
+export interface ModelLibraryConnection {
+  component: string;
+  target_port: string;
+}
+
 export interface ModelConnectionReview {
   targets: ModelConnectionVerdict[];
+  library?: ModelLibraryConnection[];
+}
+
+export interface ModelPortProjection {
+  address: ModelAddress;
+  type: SignalType;
+}
+
+export interface ModelProjection {
+  ports?: ModelPortProjection[];
+  task_signals?: ModelTaskSignal[];
+  task_inputs?: ModelAddress[];
+  objective_ports?: ModelAddress[];
+}
+
+export interface ModelProjectionRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  document: string;
+}
+
+export interface ModelTaskSignal {
+  id: string;
+  label: string;
+  type: SignalType;
 }
 
 export interface SparseCooEntrySpec {
@@ -4651,9 +4728,22 @@ export const ConnectSignalSchema: z.ZodType<ConnectSignal> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "grow_target": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ConnectSignal>;
+
+export const ConnectTaskSignalSchema: z.ZodType<ConnectTaskSignal> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect_task_signal"),
+      "graph": ModelAddressSchema,
+      "run": StudioSavedTrainKeySchema,
+      "signal": z.string(),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectTaskSignal>;
 
 export const ConnectPhysicalSchema: z.ZodType<ConnectPhysical> = z.lazy(() =>
   z
@@ -4729,10 +4819,13 @@ export const BringSignalInSchema: z.ZodType<BringSignalIn> = z.lazy(() =>
 export const ModelClipboardSchema: z.ZodType<ModelClipboard> = z.lazy(() =>
   z
     .object({
+      "positions": z.record(z.string(), ModelPositionSchema).optional(),
+      "flipped": z.record(z.string(), z.boolean()).optional(),
+      "collapsed": z.record(z.string(), z.boolean()).optional(),
+      "waypoints": z.record(z.string(), z.array(ModelPositionSchema)).optional(),
       "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])),
       "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema),
       "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema),
-      "positions": z.record(z.string(), ModelPositionSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelClipboard>;
@@ -4820,6 +4913,7 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "revision": z.unknown(),
       "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
+      "resolved_model": ModelDocumentSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentState>;
@@ -4930,6 +5024,60 @@ export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<MoveComponents>;
 
+export const CollapseGraphSchema: z.ZodType<CollapseGraph> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("collapse_graph"),
+      "graph": ModelAddressSchema,
+      "collapsed": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<CollapseGraph>;
+
+export const FlipComponentSchema: z.ZodType<FlipComponent> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("flip_component"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<FlipComponent>;
+
+export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("insert_component"),
+      "address": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "input_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "position": ModelPositionSchema,
+      "flipped": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InsertComponentOnWire>;
+
+export const MoveWireAttachmentSchema: z.ZodType<MoveWireAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_wire_attachment"),
+      "address": ModelAddressSchema,
+      "destination": ModelAddressSchema,
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<MoveWireAttachment>;
+
+export const RouteWireSchema: z.ZodType<RouteWire> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("route_wire"),
+      "address": ModelAddressSchema,
+      "waypoints": z.array(ModelPositionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<RouteWire>;
+
 export const SetModelAttachmentSchema: z.ZodType<SetModelAttachment> = z.lazy(() =>
   z
     .object({
@@ -4961,7 +5109,7 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveComponentsSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveComponentsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -5044,13 +5192,63 @@ export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z
     .strict()
 ) as unknown as z.ZodType<ModelConnectionVerdict>;
 
+export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
+  z
+    .object({
+      "component": z.string(),
+      "target_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelLibraryConnection>;
+
 export const ModelConnectionReviewSchema: z.ZodType<ModelConnectionReview> = z.lazy(() =>
   z
     .object({
       "targets": z.array(ModelConnectionVerdictSchema),
+      "library": z.array(ModelLibraryConnectionSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionReview>;
+
+export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPortProjection>;
+
+export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
+  z
+    .object({
+      "ports": z.array(ModelPortProjectionSchema).optional(),
+      "task_signals": z.array(ModelTaskSignalSchema).optional(),
+      "task_inputs": z.array(ModelAddressSchema).optional(),
+      "objective_ports": z.array(ModelAddressSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelProjection>;
+
+export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelTaskSignalSchema: z.ZodType<ModelTaskSignal> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTaskSignal>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -10046,6 +10244,8 @@ export const contractSchemas = {
   ModelEditResponse: ModelEditResponseSchema,
   ModelConnectionReviewRequest: ModelConnectionReviewRequestSchema,
   ModelConnectionReview: ModelConnectionReviewSchema,
+  ModelProjectionRequest: ModelProjectionRequestSchema,
+  ModelProjection: ModelProjectionSchema,
   EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
@@ -10167,6 +10367,8 @@ export interface ContractTypeMap {
   ModelEditResponse: ModelEditResponse;
   ModelConnectionReviewRequest: ModelConnectionReviewRequest;
   ModelConnectionReview: ModelConnectionReview;
+  ModelProjectionRequest: ModelProjectionRequest;
+  ModelProjection: ModelProjection;
   EvaluateAttachmentRequest: EvaluateAttachmentRequest;
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
   EvaluateAttachmentState: EvaluateAttachmentState;

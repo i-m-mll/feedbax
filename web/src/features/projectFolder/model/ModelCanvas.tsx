@@ -1,6 +1,6 @@
 import {
   Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
-  getBezierPath, useReactFlow, useStore, useUpdateNodeInternals,
+  getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
 } from '@xyflow/react';
 import { memo, useEffect, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
@@ -25,7 +25,9 @@ export type ModelCardData = {
   pickPort?: (port: Port) => void;
   canPick?: (port: Port) => boolean;
   portReasons?: ReadonlyMap<string, string | null>;
+  portProblems?: ReadonlyMap<string, string>;
   onPort(port: Port): void;
+  keyboardConnect(port: Port): void;
   enter?: () => void;
   rename?: (name: string) => void;
   renaming?: boolean;
@@ -37,9 +39,11 @@ export type ModelEdgeData = {
   address: ModelAddress;
   selected?: boolean;
   waypoints?: readonly ModelPosition[];
-  attachments?: readonly { id: string; label: string; mark: string; delay: boolean; select(): void }[];
+  attachments?: readonly { id: string; label: string; mark: string; delay: boolean; select(): void; drag?: ModelAddress }[];
   self?: number;
   bundleCount?: number;
+  moveWaypoint?: (index: number, point: ModelPosition) => void;
+  problem?: string;
 };
 export type ModelEdge = Edge<ModelEdgeData, 'signal' | 'physical'>;
 
@@ -79,7 +83,8 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       const reason = data.portReasons?.get(portId(port));
       const available = data.canPick?.(port);
       return <div key={portId(port)} className="studio-model-port" data-collapsed={data.collapsed}
-        data-direction={port.direction} data-side={location} data-verdict={reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined}>
+        data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
+        data-verdict={reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined}>
         <Handle id={portId(port)} type={port.direction === 'input' ? 'target' : 'source'}
           position={location} isConnectable={!data.locked && !data.canPick} tabIndex={data.collapsed ? -1 : 0}
           aria-label={port.name} className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
@@ -90,9 +95,13 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
             if (event.key !== 'Enter') return;
             event.stopPropagation();
             if (available) data.pickPort?.(port);
+            else if (!data.canPick && port.direction === 'output') data.keyboardConnect(port);
             else if (!data.canPick) data.onPort(port);
           }} data-physical={physical} />
         {!data.collapsed && <span>{port.name}</span>}
+        {!data.collapsed && port.mark && <span role="img" aria-label={port.mark} title={port.mark}>{port.mark === 'Task' ? '▥' : '◇'}</span>}
+        {!data.collapsed && data.portProblems?.get(portId(port)) && <span role="img"
+          title={data.portProblems.get(portId(port))} aria-label={data.portProblems.get(portId(port))}>◆</span>}
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
@@ -116,6 +125,8 @@ function rounded(points: readonly ModelPosition[]) {
 
 const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, markerEnd }: EdgeProps<ModelEdge>) {
+  const { screenToFlowPosition } = useReactFlow();
+  const [moving, setMoving] = useState<{ index: number; point: ModelPosition }>();
   const physical = type === 'physical';
   const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
   const a = { x: sourceX + (sourcePosition === Position.Left ? -16 : 16), y: sourceY };
@@ -127,7 +138,8 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
     return node ? node.internals.positionAbsolute.y + (node.measured.height ?? 0) : 0;
   });
   const bend = self === undefined ? (sourceY + targetY) / 2 : Math.max(sourceY, targetY, bottom) + 20 + self * 10;
-  const pivots = data?.waypoints?.length ? data.waypoints
+  const waypoints = data?.waypoints?.map((point, index) => moving?.index === index ? moving.point : point);
+  const pivots = waypoints?.length ? waypoints
     : [{ x: a.x, y: bend }, { x: b.x, y: bend }];
   const points = [start, a];
   for (const pivot of pivots) {
@@ -136,17 +148,49 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
   }
   points.push({ x: b.x, y: points.at(-1)!.y }, b, end);
   const turns = points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
-  const path = physical ? getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition })[0] : rounded(turns);
-  const mid = { x: (a.x + b.x) / 2, y: bend };
+  const geometry = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
+  const [path, labelX, labelY] = physical ? getBezierPath(geometry)
+    : self === undefined && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
+      : [rounded(turns), (a.x + b.x) / 2, bend];
+  const mid = { x: labelX, y: labelY };
   const delayed = data?.attachments?.some((item) => item.delay);
+  const pathRef = useRef<SVGPathElement>(null);
+  const [dash, setDash] = useState<string>();
+  useEffect(() => {
+    if (!delayed) return;
+    const length = pathRef.current?.getTotalLength() ?? 0;
+    const half = length / 2;
+    setDash(`${half} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil(half / 8)))}0 ${length}`);
+  }, [delayed, path]);
   return <>
+    {delayed && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
-      style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3, strokeDasharray: delayed ? '5 3' : undefined }} />
-    {data?.attachments?.length || data?.bundleCount ? <EdgeLabelRenderer>
+      style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
+        strokeDasharray: delayed ? dash : undefined }} />
+    {data?.attachments?.length || data?.bundleCount || data?.problem || data?.selected && waypoints?.length ? <EdgeLabelRenderer>
+      {data.selected && waypoints?.map((point, index) => <button key={index} type="button" aria-label={`Waypoint ${index + 1}`}
+        className="studio-model-waypoint nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` }}
+        disabled={!data.moveWaypoint}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setMoving({ index, point });
+        }} onPointerMove={(event) => {
+          if (moving?.index === index) setMoving({ index, point: screenToFlowPosition({ x: event.clientX, y: event.clientY }) });
+        }} onPointerUp={(event) => {
+          if (moving?.index !== index) return;
+          event.stopPropagation();
+          setMoving(undefined);
+          data.moveWaypoint?.(index, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        }} onPointerCancel={() => setMoving(undefined)} />)}
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
+        {data.problem && <span role="img" title={data.problem} aria-label={data.problem}>◆</span>}
         {data.bundleCount && <span className="rounded border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
-        {data.attachments?.map(({ id, label, mark, select }) =>
+        {data.attachments?.map(({ id, label, mark, select, drag }) =>
           <button key={id} type="button" aria-label={label} title={label}
+            draggable={!!drag} onDragStart={(event) => {
+              if (drag) event.dataTransfer.setData('application/x-feedbax-attachment', JSON.stringify(drag));
+            }}
             onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</button>)}
       </div>
     </EdgeLabelRenderer> : null}
@@ -178,7 +222,8 @@ type Props = {
   onConnectStart: OnConnectStart;
   onConnect(source: string, sourceHandle: string | null, target: string, targetHandle: string | null): void;
   onConnectEnd(point: ModelPosition, valid: boolean, empty: boolean): void;
-  onLibraryDrop(type: string, point: ModelPosition): void;
+  onLibraryDrop(type: string, point: ModelPosition, edge: ModelEdge | undefined, reversed: boolean): void;
+  onAttachmentDrop(raw: string, edge: ModelEdge): void;
 };
 
 export function ModelCanvas(props: Props) {
@@ -186,8 +231,9 @@ export function ModelCanvas(props: Props) {
 }
 
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, onToggleLock, onToggleCollapse, onCanvasPoint,
-  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd, onLibraryDrop }: Props) {
-  const { screenToFlowPosition, setNodes, setEdges } = useReactFlow<ModelCard, ModelEdge>();
+  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
+  onLibraryDrop, onAttachmentDrop }: Props) {
+  const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge } = useReactFlow<ModelCard, ModelEdge>();
   const viewport = useRef<CanvasViewport>(null);
   useImperativeHandle(viewportRef, () => ({
     fitView: () => viewport.current?.fitView(),
@@ -221,10 +267,22 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
       onDoubleClick={(event) => {
         if (event.target instanceof Element && event.target.classList.contains('react-flow__pane')) onSearch(point(event));
       }} onDragOver={(event) => {
-        if (event.dataTransfer.types.includes('application/x-feedbax-component')) event.preventDefault();
+        if (event.dataTransfer.types.some((type) => type === 'application/x-feedbax-component' || type === 'application/x-feedbax-attachment')) {
+          event.preventDefault();
+        }
       }} onDrop={(event) => {
+        const id = event.target instanceof Element ? event.target.closest('.react-flow__edge')?.getAttribute('data-id') : null;
+        const edge = id ? getEdge(id) : undefined;
         const type = event.dataTransfer.getData('application/x-feedbax-component');
-        if (type) { event.preventDefault(); onLibraryDrop(type, point(event)); }
+        const attachment = event.dataTransfer.getData('application/x-feedbax-attachment');
+        if (attachment && edge?.type === 'signal') {
+          event.preventDefault();
+          onAttachmentDrop(attachment, edge);
+        } else if (type) {
+          event.preventDefault();
+          const reversed = !!edge && (getNode(edge.source)?.position.x ?? 0) > (getNode(edge.target)?.position.x ?? 0);
+          onLibraryDrop(type, point(event), edge, reversed);
+        }
       }}>
       <StudioCanvas defaultNodes={initial.nodes} defaultEdges={initial.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         viewportRef={viewport} fitReady={false} defaultViewport={origin} minZoom={0.06}

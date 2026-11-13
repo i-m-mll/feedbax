@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentEdit, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentState,
     ModelConnectionReview, ModelConnectionReviewRequest,
+    ModelProjection, ModelProjectionRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
 )
 from feedbax.contracts.project_inputs import ProjectName
@@ -197,6 +198,18 @@ def review_model_connections(
     )
 
 
+@router.post("/{project_id}/model/projection", response_model_exclude_unset=True)
+def read_model_projection(
+    project_id: ProjectName, body: ModelProjectionRequest, request: Request, response: Response,
+) -> ModelProjection:
+    from feedbax.web.services.model_projection import model_projection
+
+    components = request.app.state.bootstrap_state.bundle.components
+    return _project_response(
+        response, lambda: model_projection(request.app.state.project_folders, project_id, body, components)
+    )
+
+
 @router.post("/{project_id}/model/edit", response_model_exclude_unset=True)
 def edit_model(
     project_id: ProjectName, body: ModelEditRequest, request: Request, response: Response,
@@ -241,7 +254,9 @@ def evaluate_attachments(
 
     try:
         return _project_response(
-            response, lambda: read_evaluate_attachments(request.app.state.project_folders, project_id, body),
+            response, lambda: read_evaluate_attachments(
+                request.app.state.project_folders, project_id, body, request.app.state.bootstrap_state.bundle.components,
+            ),
         )
     except (KeyError, ValueError) as error:
         raise HTTPException(422, detail=str(error), headers=_NO_STORE) from error

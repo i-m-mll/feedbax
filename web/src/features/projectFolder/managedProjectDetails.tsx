@@ -25,6 +25,7 @@ import {
   type EvaluateAttachmentReadRequest, type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type StudioSavedEvaluationRow, type TaskSpec, type WireSpec,
   type PresentationPosition, type StudioDocumentAuthoring, type StudioDocumentAuthoringRequest,
   type StudioSavedTrainKey, type WorkspaceReplayTrial,
+  type StudioProjectWindowMapProblem,
 } from '@/generated/studioContracts';
 import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
 import type { ProblemReveal } from './projectWindowProblems';
@@ -82,6 +83,7 @@ interface DetailInputs {
   readonly setModelPath: (document: string, path: string[]) => void;
   readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
   readonly modelSource?: string;
+  readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
 }
 
 const rootModelPath: string[] = [];
@@ -469,12 +471,15 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const storedView = useStoredModelView({
     model: activeView === 'model' ? stored : undefined, editor, saved, window: input.modelWindow,
     active: activeView === 'model',
+    projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
     editable: canEdit && !pending && !saving && !!saved.presentation && input.step?.kind === 'train' &&
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
     problem: reveal?.problem.model_address && reveal.problem.model_address.document === storedId
       ? { address: reveal.problem.model_address, reason: reveal.problem.detail } : undefined,
+    problems: input.modelProblems?.flatMap((item) => item.model_address?.document === storedId
+      ? [{ address: item.model_address, reason: item.detail }] : []),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
   });

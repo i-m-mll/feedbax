@@ -89,28 +89,29 @@ class _ModelInverse(StrictModel):
     project: ProjectName
     document: ProjectName
     payload: tuple[ProjectValueEdit, ...]
-    positions: tuple[ProjectValueEdit, ...]
+    layout: tuple[ProjectValueEdit, ...]
     changed: tuple[ModelAddress, ...]
     before: Sha256
     had_entry: bool
     had_documents: bool
 
 
+_MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
+
+
 def _model_edit_source(
     snapshot: StudioProjectSnapshot, document: ProjectName,
-) -> tuple[dict[str, JsonValue], dict[str, JsonValue] | None]:
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     source = snapshot.project.documents.get(document)
     if source is None or source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderNotFound(document)
     if snapshot.presentation is None:
         raise ProjectFolderInvalid("The project presentation document is unreadable")
     entry = snapshot.presentation.documents.get(document)
-    positions = (
-        {key: value.model_dump(mode="json") for key, value in entry.positions.items()}
-        if entry is not None and "positions" in entry.model_fields_set else None
-    )
+    present = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
+    layout = {key: present[key] for key in _MODEL_LAYOUT_FIELDS if key in present}
     assert isinstance(source.payload, dict)
-    return source.payload, positions
+    return source.payload, layout
 
 
 
@@ -551,7 +552,15 @@ class ProjectFolderService:
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = _model_edit_source(snapshot, body.graph.document)
         try:
-            return review_model_connections(ModelDocument.model_validate(payload), body, layout=ModelRegistryPorts(components).layout)
+            authority = ModelRegistryPorts(components)
+            library = tuple({
+                "kind": "leaf", "type": item.identity.type_id if item.identity else item.name,
+                "revision": item.revision, "fields": {}, "port_counts": {},
+            } for item in components.list_all() if not item.is_composite)
+            return review_model_connections(
+                ModelDocument.model_validate(payload), body, layout=authority.layout, next_input=authority.next_input,
+                library=library, accepts=authority.accepts,
+            )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
 
@@ -559,32 +568,45 @@ class ProjectFolderService:
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
     ) -> ModelEditResponse:
         from feedbax.contracts.model_edit import (
+            ModelProjectionRequest,
             ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse, ModelEditState,
         )
         from feedbax.studio.model_edit import apply_model_edit
         from feedbax.studio.model_ports import ModelRegistryPorts
+        from feedbax.web.services.model_projection import selected_task_signal
 
         snapshot = self.read(project_id, revision=body.revision)
         _check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
-        payload, positions = _model_edit_source(snapshot, body.document)
+        payload, layout = _model_edit_source(snapshot, body.document)
         state = ModelEditState.model_validate({
-            "document": payload, "positions": positions or {},
+            "document": payload, **layout,
         })
         authority = ModelRegistryPorts(components)
-        result = apply_model_edit(body.document, state, body.command, ports=authority.port, accepts=authority.accepts)
+        result = apply_model_edit(
+            body.document, state, body.command, ports=authority.port, accepts=authority.accepts,
+            next_input=authority.next_input,
+            task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
+                revision=body.revision, run=command.run, document=body.document,
+            ), command.signal),
+        )
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         token = None
         if result.state != state:
-            next_payload = result.state.document.model_dump(mode="json")
-            next_positions = (
-                {key: value.model_dump(mode="json") for key, value in result.state.positions.items()}
-                if result.state.positions != state.positions else positions
-            )
+            next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
+            next_layout = layout.copy()
+            updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
+            for key in _MODEL_LAYOUT_FIELDS:
+                if getattr(result.state, key) == getattr(state, key):
+                    continue
+                if updated_layout[key]:
+                    next_layout[key] = updated_layout[key]
+                else:
+                    next_layout.pop(key, None)
             token = self._model_inverse(
-                snapshot, body.document, (payload, positions), (next_payload, next_positions), result.changed,
+                snapshot, body.document, (payload, layout), (next_payload, next_layout), result.changed,
             )
-            snapshot = self._write_model_change(snapshot, body.document, next_payload, next_positions)
+            snapshot = self._write_model_change(snapshot, body.document, next_payload, next_layout)
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=snapshot, changed=result.changed, clipboard=result.clipboard,
             undo_token=token,
@@ -609,13 +631,12 @@ class ProjectFolderService:
         current = _model_edit_source(snapshot, edit.document)
         if self._model_edit_digest(current) != edit.before:
             raise ProjectRevisionConflict("project", snapshot.revision)
-        payload, positions = deepcopy(current[0]), {"positions": deepcopy(current[1])}
+        payload, layout = deepcopy(current)
         apply_delta(payload, edit.payload)
-        apply_delta(positions, edit.positions)
-        next_positions = positions["positions"]
-        token = self._model_inverse(snapshot, edit.document, current, (payload, next_positions), edit.changed)
+        apply_delta(layout, edit.layout)
+        token = self._model_inverse(snapshot, edit.document, current, (payload, layout), edit.changed)
         snapshot = self._write_model_change(
-            snapshot, edit.document, payload, next_positions,
+            snapshot, edit.document, payload, layout,
             had_entry=edit.had_entry, had_documents=edit.had_documents,
         )
         return ModelEditResponse(result=ModelEditApplied(
@@ -623,12 +644,12 @@ class ProjectFolderService:
         ))
 
     @staticmethod
-    def _model_edit_digest(value: tuple[dict, dict | None]) -> str:
+    def _model_edit_digest(value: tuple[dict, dict]) -> str:
         return sha256_bytes(canonical_json_v2_bytes(list(value)))
 
     def _model_inverse(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,
-        before: tuple[dict, dict | None], after: tuple[dict, dict | None],
+        before: tuple[dict, dict], after: tuple[dict, dict],
         changed: tuple[ModelAddress, ...],
     ) -> str:
         from feedbax.studio.model_undo import inverse_delta
@@ -637,7 +658,7 @@ class ProjectFolderService:
         inverse = _ModelInverse(
             project=snapshot.project_id, document=document, before=self._model_edit_digest(after),
             payload=tuple(inverse_delta(before[0], after[0])),
-            positions=tuple(inverse_delta({"positions": before[1]}, {"positions": after[1]})),
+            layout=tuple(inverse_delta(before[1], after[1])),
             changed=changed,
             had_entry=document in snapshot.presentation.documents,
             had_documents="documents" in snapshot.presentation.model_fields_set,
@@ -647,39 +668,32 @@ class ProjectFolderService:
 
     def _write_model_change(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,
-        payload: dict[str, JsonValue], positions: dict[str, JsonValue] | None,
+        payload: dict[str, JsonValue], layout: dict[str, JsonValue],
         *, had_entry: bool = True, had_documents: bool = True,
     ) -> StudioProjectSnapshot:
         from feedbax.contracts.project_sources import pointer
 
         assert snapshot.presentation is not None
-        before, old_positions = _model_edit_source(snapshot, document)
+        before, old_layout = _model_edit_source(snapshot, document)
         files: list[StudioProjectFilePatch] = []
         if canonical_json_v2_bytes(before) != canonical_json_v2_bytes(payload):
             files.append(StudioProjectFilePatch(
                 address=AuthoredFileAddress(kind="document", id=document),
                 patches=[SetProjectValue(op="replace", path="/payload", value=payload)],
             ))
-        if positions != old_positions:
+        if layout != old_layout:
             entry = snapshot.presentation.documents.get(document)
-            if positions is None:
-                assert entry is not None
-                path = ("documents", document, "positions")
-                if not had_entry and entry.model_fields_set == {"positions"}:
-                    path = ("documents", document)
-                    if not had_documents and snapshot.presentation.documents.keys() == {document}:
-                        path = ("documents",)
-                path = pointer(path)
+            current = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
+            next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | layout
+            path = pointer(("documents", document))
+            if not next_entry and not had_entry:
+                if not had_documents and snapshot.presentation.documents.keys() == {document}:
+                    path = "/documents"
                 patch = RemoveProjectValue(op="remove", path=path)
             elif "documents" not in snapshot.presentation.model_fields_set:
-                patch = SetProjectValue(op="add", path="/documents", value={document: {"positions": positions}})
-            elif entry is None:
-                patch = SetProjectValue(op="add", path=pointer(("documents", document)), value={"positions": positions})
+                patch = SetProjectValue(op="add", path="/documents", value={document: next_entry})
             else:
-                patch = SetProjectValue(
-                    op="replace" if "positions" in entry.model_fields_set else "add",
-                    path=pointer(("documents", document, "positions")), value=positions,
-                )
+                patch = SetProjectValue(op="replace" if entry is not None else "add", path=path, value=next_entry)
             files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=[patch]))
         if not files:
             return snapshot
