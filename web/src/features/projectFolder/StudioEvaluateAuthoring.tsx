@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
+import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ProjectValueEdit, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import {
@@ -31,7 +32,7 @@ export function CheckpointRuleEditor({ initial, disabled, readOnly, onSave, onTo
 
   return <fieldset className="grid gap-1" disabled={disabled}>
     <label className="grid gap-1 font-semibold">
-      Checkpoints
+      {studioName('checkpoints')}
       <input className={field + ' font-normal'} type="text" value={draft} spellCheck={false} readOnly={readOnly}
         aria-invalid={reason !== undefined}
         aria-describedby={reason ? errorId : undefined}
@@ -44,8 +45,8 @@ export function CheckpointRuleEditor({ initial, disabled, readOnly, onSave, onTo
         }} />
     </label>
     {reason && <p id={errorId} className="text-shell-muted" role="status">{reason}</p>}
-    {!readOnly && <button type="button" className={apply} disabled={!changed} onClick={save}>Apply checkpoints</button>}
-    {onToSweep && <button type="button" className={apply} disabled={draft !== saved} onClick={onToSweep}>To Sweep</button>}
+    {!readOnly && <button type="button" className={apply} disabled={!changed} onClick={save}>{studioName('applyCheckpoints')}</button>}
+    {onToSweep && <button type="button" className={apply} disabled={draft !== saved} onClick={onToSweep}>{studioName('toSweep')}</button>}
   </fieldset>;
 }
 
@@ -79,9 +80,9 @@ function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }:
       onFocused();
     }
   }, [focus, disabled, onFocused]);
-  return <fieldset aria-label="Trial set" className="grid gap-1" disabled={disabled}>
+  return <fieldset aria-label={studioName('trialSet')} className="grid gap-1" disabled={disabled}>
     <label className="grid gap-1 font-semibold">
-      Trial set
+      {studioName('trialSet')}
       <select ref={select} className={field + ' font-normal'} value={rule.kind}
         onChange={(event) => {
           switch (event.currentTarget.value) {
@@ -91,25 +92,25 @@ function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }:
           }
         }}>
         {!validTrialSet(rule, domain) && domain.kind === 'sampler' && rule.kind !== 'sample' &&
-          <option value={rule.kind} disabled>Choose a sample count</option>}
-        {domain.kind === 'fixed' && rule.kind === 'sample' && <option value="sample" disabled>Choose conditions</option>}
+          <option value={rule.kind} disabled>{studioReason('unavailable', studioName('conditions'))}</option>}
+        {domain.kind === 'fixed' && rule.kind === 'sample' && <option value="sample" disabled>{studioReason('unavailable', studioName('sample'))}</option>}
         {domain.kind === 'fixed' ? <>
-          <option value="every_condition">Every condition</option>
-          <option value="conditions" disabled={!domain.conditions.length}>Selected conditions</option>
-        </> : <option value="sample">Sample</option>}
+          <option value="every_condition">{studioName('everyCondition')}</option>
+          <option value="conditions" disabled={!domain.conditions.length}>{studioName('selectedConditions')}</option>
+        </> : <option value="sample">{studioName('sample')}</option>}
       </select>
     </label>
     {rule.kind === 'conditions' && domain.kind === 'fixed' && <Checkboxes
       options={domain.conditions.map((id) => ({ id, label: id }))}
       selected={rule.ids} onToggle={(id, checked) => setRule({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />}
     {rule.kind === 'sample' && domain.kind === 'sampler' && <label className="grid gap-1">
-      Sample count
+      {studioName('sampleCount')}
       <input type="number" className={field} min={1} max={10_000}
         value={Number.isNaN(rule.count) ? '' : rule.count}
         onChange={(event) => setRule({ kind: 'sample', count: event.currentTarget.valueAsNumber })} />
     </label>}
     <button type="button" className={apply} disabled={!validTrialSet(rule, domain) || JSON.stringify(rule) === JSON.stringify(initial)}
-      onClick={() => onSave(rule)}>Apply trial set</button>
+      onClick={() => onSave(rule)}>{studioName('applyTrials')}</button>
   </fieldset>;
 }
 
@@ -139,8 +140,8 @@ export function StudioEvaluateAuthoring({
   const editRows = terms.rows !== undefined;
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
   return <div className="grid gap-3">
-    {editSubject && (editRows || sweeps.length > 0) && <fieldset aria-label="Subject subset" className="grid gap-1" disabled={disabled}>
-      <legend className="font-semibold">Subject subset</legend>
+    {editSubject && (editRows || sweeps.length > 0) && <fieldset className="grid gap-1" disabled={disabled}>
+      <legend className="font-semibold">{studioName('subjectSubset')}</legend>
       {editRows && <Checkboxes options={rows} selected={draft.rows ?? []}
         onToggle={(id, checked) => setDraft({ ...draft, rows: toggle(draft.rows ?? [], id, checked) })} />}
       {sweeps.map(({ id, label, values }) => {
@@ -154,12 +155,12 @@ export function StudioEvaluateAuthoring({
         </fieldset>;
       })}
       <button type="button" className={apply} disabled={!canApplySubject}
-        onClick={() => onEdit('Set Evaluate subject subset', {
+        onClick={() => onEdit(studioName('applySubset'), {
           op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where', value: { ...draft },
-        })}>Apply subject subset</button>
-      {changed && !canApplySubject && <p role="status">Select at least one Train run.</p>}
+        })}>{studioName('applySubset')}</button>
+      {changed && !canApplySubject && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
     </fieldset>}
     {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled} focus={focusTrialSet} onFocused={onTrialSetFocused}
-      onSave={(rule) => onEdit('Set Evaluate trial set', { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
+      onSave={(rule) => onEdit(studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
   </div>;
 }

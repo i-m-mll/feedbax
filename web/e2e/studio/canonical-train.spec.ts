@@ -96,7 +96,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await openResultsSlot(page);
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
-  await expect(loss.locator('line title').filter({ hasText: stoppedJob }).first()).toBeAttached({ timeout: 14_000 });
+  await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: 14_000 });
   const stop = await request.post('/api/jobs/stop', { data: { job_ids: [stoppedJob], mode: 'checkpoint' } });
   expect(stop.status(), await stop.text()).toBe(202);
   await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -127,29 +127,30 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await openResultsSlot(page);
   await expect(loss.locator('polyline')).toHaveCount(1);
   await expect(results.getByText('Cumulative updates')).toBeVisible();
-  await expect(results.getByRole('list', { name: 'Train stages' }).getByRole('listitem')).toHaveText([
+  await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
     'train 1–2', 'successor 3–1202',
   ]);
-  await expect(loss.locator('line title').filter({ hasText: job }).last()).toHaveText(
+  await expect(loss.locator(`line[data-attempt="${job}"] title`).last()).toHaveText(
     /Updates [12]–2 .*train · Local updates [12]–2/,
   );
-  await expect(loss.locator('line title').filter({ hasText: stoppedJob }).last()).toContainText(
-    `–${evidence.successor.resumed_from} · Attempt ${stoppedJob}`,
+  await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).last()).toContainText(
+    `–${evidence.successor.resumed_from}`,
   );
-  await expect(loss.locator('line title').filter({ hasText: successorJob }).first()).toContainText(
+  await expect(loss.locator(`line[data-attempt="${successorJob}"] title`).first()).toContainText(
     `Local updates ${evidence.successor.resumed_from + 1}–`,
   );
-  await expect(loss.locator('line title').filter({ hasText: successorJob }).last()).toHaveText(
+  await expect(loss.locator(`line[data-attempt="${successorJob}"] title`).last()).toHaveText(
     /Updates \d+–1202 .*successor · Local updates \d+–1200/,
   );
   const { last } = evidence.successor.terminal_loss.metrics.train_loss;
-  await expect(results.getByTitle('Last loss at update 1202')).toHaveText(
+  await expect(results.locator('[aria-description="Last loss at update 1202"]')).toHaveText(
     formatTrainingLoss(last),
   );
-  await page.locator('summary').filter({ hasText: /^Current result$/ }).click();
-  const successorResult = page.getByRole('region', { name: 'Current result' });
-  await expect(successorResult).toContainText(evidence.successor.request);
-  await expect(successorResult).toContainText(evidence.successor.receipt.manifest_sha256);
+  await page.locator('summary').filter({ hasText: /^Current Result$/ }).click();
+  const successorResult = page.getByRole('region', { name: 'Current Result' });
+  await expect(successorResult).not.toContainText(evidence.successor.request);
+  await expect(successorResult).not.toContainText(evidence.successor.receipt.manifest_sha256);
+  await expect(successorResult.getByRole('button', { name: 'Copy Details', exact: true })).toBeEnabled();
 
   await mapStep(page, 'train').click();
   await table.getByRole('button').first().click();
@@ -276,9 +277,16 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await page.reload();
   await select('train');
   await openResultsSlot(page);
-  await page.getByText('Compare receipts', { exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Current result' })).toContainText(changed.result!.receipt.manifest_sha256);
-  await expect(page.getByRole('region', { name: 'Previous result' })).toContainText(first.receipt.manifest_sha256);
+  await page.getByText('Compare Results', { exact: true }).click();
+  const current = page.getByRole('region', { name: 'Current Result' });
+  const previous = page.getByRole('region', { name: 'Previous Result' });
+  await expect(current).not.toContainText(changed.result!.receipt.manifest_sha256);
+  await expect(previous).not.toContainText(first.receipt.manifest_sha256);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  for (const [section, result] of [[current, changed.result!], [previous, first]] as const) {
+    await section.getByRole('button', { name: 'Copy Details', exact: true }).click();
+    await expect.poll(() => page.evaluate(async () => JSON.parse(await navigator.clipboard.readText()))).toEqual(result);
+  }
   const evidence = await fixture('observe-history', String(info.config.metadata.home), id, snapshot.revision);
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   console.info('Mounted saved Train history', JSON.stringify(evidence));
@@ -516,12 +524,12 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     }
     await expect(loss.locator('polyline')).toHaveCount(1);
     await expect(loss.locator('polyline')).toHaveCSS('stroke', await loss.evaluate((node) => getComputedStyle(node).color));
-    await expect(results.getByRole('list', { name: 'Train stages' }).getByRole('listitem')).toHaveText([
+    await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
       'train 1–2', `${childId} 3–6`,
     ]);
-    await expect(loss.locator('line title').filter({ hasText: producer.job_id }).last()).toHaveText(/Updates \d+–2 .*Local updates \d+–2/);
-    await expect(loss.locator('line title').filter({ hasText: attempt.job_id }).last()).toHaveText(/Updates \d+–6 .*Local updates \d+–4/);
-    await expect(results.getByTitle('Last loss at update 6')).toHaveText(
+    await expect(loss.locator(`line[data-attempt="${producer.job_id}"] title`).last()).toHaveText(/Updates \d+–2 .*Local updates \d+–2/);
+    await expect(loss.locator(`line[data-attempt="${attempt.job_id}"] title`).last()).toHaveText(/Updates \d+–6 .*Local updates \d+–4/);
+    await expect(results.locator('[aria-description="Last loss at update 6"]')).toHaveText(
       formatTrainingLoss(evidence[attempt.job_id].last_loss),
     );
   }

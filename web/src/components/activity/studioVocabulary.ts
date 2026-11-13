@@ -1,5 +1,5 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
-import type { StudioActivityJob } from '@/generated/studioContracts';
+import type { FieldKind, StudioActivityJob, StudioSavedEvaluationResult } from '@/generated/studioContracts';
 import vocabulary from './vocabulary.json';
 
 export type StudioNameId = keyof typeof vocabulary.name;
@@ -18,12 +18,30 @@ export function studioName(id: StudioNameId) {
   return vocabulary.name[id];
 }
 
-export function studioAccessibleName(id: StudioNameId, authoredName?: string) {
-  return authoredName ? `${studioName(id)} ${authoredName}` : studioName(id);
+export function studioAccessibleName(id: StudioNameId, value?: string | number) {
+  return value === undefined || value === '' ? studioName(id) : `${studioName(id)} ${value}`;
 }
 
 export function studioUnit(id: keyof typeof vocabulary.unit) {
   return vocabulary.unit[id];
+}
+
+export function studioFieldLabel(id: StudioNameId, label: string) {
+  return studioFormat('fieldLabel', { label, name: studioName(id).toLowerCase() });
+}
+
+export function studioFieldValueLabel(label: string, index: number, naming = false) {
+  const values = { label, name: studioName('value').toLowerCase(), index };
+  return naming ? studioFormat('fieldValueName', { ...values, nameField: studioName('name').toLowerCase() })
+    : studioFormat('fieldValue', values);
+}
+
+export function studioFieldKindLabel(label: string, kind: FieldKind) {
+  return studioFormat('fieldKind', { label, name: studioName('kind').toLowerCase(), value: studioName(kind) });
+}
+
+export function studioReplayLabel(update: number) {
+  return studioFormat('replayUpdate', { name: studioName('replay'), update });
 }
 
 const countFormat = new Intl.NumberFormat();
@@ -53,6 +71,14 @@ export function studioMachineStatus(status: keyof typeof vocabulary.status.machi
 
 export function studioDefinitionStatus(status: keyof typeof vocabulary.status.definition) {
   return vocabulary.status.definition[status];
+}
+
+export function studioEvaluationPlacement(placement: NonNullable<StudioSavedEvaluationResult['placement']>) {
+  return vocabulary.status.evaluationPlacement[placement];
+}
+
+export function studioCheckpointStatus(status: keyof typeof vocabulary.status.checkpoint) {
+  return vocabulary.status.checkpoint[status];
 }
 
 export function studioRunPhase(phase: string | null | undefined) {

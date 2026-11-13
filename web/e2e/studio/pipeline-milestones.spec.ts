@@ -247,7 +247,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   });
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
   await expect(inputs).toContainText('learning-rate Slow · 0.001, Medium · 0.002 · 2 of 3');
-  const trialSet = drawer.getByRole('group', { name: 'Trial set', exact: true });
+  const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
   await expect(trialSet.getByRole('combobox')).toBeFocused();
   await trialSet.getByRole('combobox').selectOption('conditions');
   for (const condition of conditionIds) await trialSet.getByRole('checkbox', { name: condition, exact: true }).check();
@@ -257,7 +257,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
       JSON.stringify(request.postDataJSON()).includes(path);
   });
   const trialEdit = edited('/base/inline/params/trial_set');
-  await trialSet.getByRole('button', { name: 'Apply trial set', exact: true }).click();
+  await trialSet.getByRole('button', { name: 'Apply Trials', exact: true }).click();
   const savedTrials = await trialEdit;
   expect(savedTrials.ok(), await savedTrials.text()).toBe(true);
   const step = (await savedTrials.json() as StudioProjectSnapshot).project.steps.evaluate;
@@ -283,10 +283,10 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
-  const subset = drawer.getByRole('group', { name: 'Subject subset', exact: true });
+  const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
   await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
   const subsetEdit = edited('/inputs/subject/where');
-  await subset.getByRole('button', { name: 'Apply subject subset', exact: true }).click();
+  await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
   const savedSubset = await subsetEdit;
   expect(savedSubset.ok(), await savedSubset.text()).toBe(true);
   await expect(inputs).toContainText('3 of 3');
@@ -335,7 +335,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(trialSet.getByRole('combobox')).toHaveValue('conditions');
   await select(page, 'evaluate-2');
   await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
-  await expect(trialSet.getByRole('button', { name: 'Apply trial set', exact: true })).toBeDisabled();
+  await expect(trialSet.getByRole('button', { name: 'Apply Trials', exact: true })).toBeDisabled();
   console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
 });
 

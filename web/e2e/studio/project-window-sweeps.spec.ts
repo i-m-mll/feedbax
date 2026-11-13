@@ -109,7 +109,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await mapStep(page, 'train').click();
   await rate.getByRole('button', { name: 'Learning Rate kind: Sweep' }).click();
   await rate.getByRole('menuitem', { name: 'Value' }).click();
-  await rate.getByRole('combobox', { name: 'Keep Learning Rate value' }).selectOption({ label: '0.00275' });
+  await rate.getByRole('combobox', { name: 'Keep Value Learning Rate' }).selectOption({ label: '0.00275' });
   await rate.getByRole('button', { name: 'Keep Value' }).click();
   await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');

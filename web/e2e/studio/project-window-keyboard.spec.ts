@@ -246,12 +246,12 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
     expect(result.status, result.problem?.detail).toBe('applied');
   }
   const source = linear.locator('[data-handleid="output:output"]');
-  await connect(model.locator('[aria-label="reach_target"].react-flow__handle'), linear.locator('[data-handleid="input:input"]'));
+  await connect(model.locator('[aria-label="Port reach_target"].react-flow__handle'), linear.locator('[data-handleid="input:input"]'));
   await connect(source, plant.locator('[data-handleid="input:force"]'));
-  await connect(source, output.locator('[aria-label="Command"].react-flow__handle'));
+  await connect(source, output.locator('[aria-label="Port Command"].react-flow__handle'));
 
   await page.keyboard.press('Meta+4');
-  const measure = objective.getByRole('combobox', { name: 'Measure source', exact: true });
+  const measure = objective.getByRole('combobox', { name: 'Measure Source', exact: true });
   await expect(measure.locator('option:checked')).toHaveText('Command');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');

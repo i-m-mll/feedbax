@@ -3,8 +3,10 @@ import {
   getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
 } from '@xyflow/react';
-import { memo, useEffect, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
+import { memo, useEffect, useId, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
 import { Scan, Lock, Minus, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
+import { appTip } from '@window-shell/browser/tooltip';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { portId, type Port } from './modelGraph';
@@ -54,29 +56,31 @@ function side(port: Port, flipped: boolean) {
 
 const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   const update = useUpdateNodeInternals();
+  const nameId = useId();
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => { update(id); }, [id, update, data.ports, data.flipped, data.collapsed]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <article className="studio-model-card" data-stacked={data.stacked} data-selected={data.selected}
     data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'graph'}
-    aria-label={data.name} onKeyDown={(event) => {
+    aria-labelledby={nameId} onKeyDown={(event) => {
       if (event.target === event.currentTarget || event.target === event.currentTarget.parentElement) {
         if (event.key === 'Enter' && data.enter) { event.stopPropagation(); data.enter(); }
       }
     }}>
     <header className="studio-model-card-header">
-      {data.renaming ? <form className="nodrag" onSubmit={(event) => {
+      <strong id={nameId} className={data.renaming ? 'sr-only' : undefined}>{data.name}</strong>
+      {data.renaming && <form className="nodrag" onSubmit={(event) => {
         event.preventDefault();
         const name = input.current?.value.trim();
         if (name) data.rename?.(name);
       }}>
-        <input ref={input} autoFocus defaultValue={data.name} aria-label="Name"
+        <input ref={input} autoFocus defaultValue={data.name} aria-label={studioName('name')}
           onBlur={data.endRename} onKeyDown={(event) => {
             if (event.key === 'Escape') { event.stopPropagation(); data.endRename?.(); }
           }} />
-      </form> : <strong>{data.name}</strong>}
+      </form>}
       {data.caption && <span>{data.caption}</span>}
-      {data.problem && <span role="img" title={data.problem} aria-label={data.problem}>◆</span>}
+      {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
     </header>
     {data.ports.map((port) => {
       const location = side(port, Boolean(data.flipped));
@@ -91,7 +95,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
           tabIndex={data.collapsed ? -1 : 0}
           aria-disabled={!connectable && !available}
-          aria-label={port.name} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
+          aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
             event.stopPropagation();
             if (available) data.pickPort?.(port);
             else if (!data.canPick) data.onPort(port);
@@ -126,13 +130,14 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
             else if (!data.canPick) data.onPort(port);
           }} data-physical={physical} />
         {!data.collapsed && <span>{port.name}</span>}
-        {!data.collapsed && port.mark && <span role="img" aria-label={port.mark} title={port.mark}>{port.mark === 'Task' ? '▥' : '◇'}</span>}
+        {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
+          {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
         {!data.collapsed && data.portProblems?.get(portId(port)) && <span role="img"
-          title={data.portProblems.get(portId(port))} aria-label={data.portProblems.get(portId(port))}>◆</span>}
+          aria-description={data.portProblems.get(portId(port))} aria-label={studioName('problems')}>◆</span>}
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
-    {data.addPort && <button className="nodrag studio-model-add-port" type="button" aria-label="Add Port"
+    {data.addPort && <button className="nodrag studio-model-add-port" type="button" aria-label={studioName('addPort')}
       onClick={(event) => { event.stopPropagation(); data.addPort?.(); }}>+</button>}
   </article>;
 });
@@ -195,7 +200,7 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
       style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
         strokeDasharray: delayed ? dash : undefined }} />
     {data?.attachments?.length || data?.bundleCount || data?.problem || data?.selected && waypoints?.length ? <EdgeLabelRenderer>
-      {data.selected && waypoints?.map((point, index) => <button key={index} type="button" aria-label={`Waypoint ${index + 1}`}
+      {data.selected && waypoints?.map((point, index) => <button key={index} type="button" aria-label={studioAccessibleName('waypoint', index + 1)}
         className="studio-model-waypoint nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` }}
         disabled={!data.moveWaypoint}
         onPointerDown={(event) => {
@@ -211,10 +216,11 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
           data.moveWaypoint?.(index, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
         }} onPointerCancel={() => setMoving(undefined)} />)}
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
-        {data.problem && <span role="img" title={data.problem} aria-label={data.problem}>◆</span>}
+        {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
         {data.bundleCount && <span className="rounded border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
         {data.attachments?.map(({ id, label, mark, select, drag }) =>
-          <button key={id} type="button" aria-label={label} title={label}
+          <button key={id} type="button" aria-label={studioAccessibleName('attachment', label)}
+            {...appTip(studioAccessibleName('attachment', label))}
             draggable={!!drag} onDragStart={(event) => {
               if (drag) event.dataTransfer.setData('application/x-feedbax-attachment', JSON.stringify(drag));
             }}
@@ -282,12 +288,12 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
   useEffect(() => { setEdges(edges); }, [edges, setEdges]);
   return <div className="studio-model-canvas">
     <div className="studio-model-strip">
-      <button type="button" title="Collapse All" aria-label="Collapse All" aria-pressed={collapsed} onClick={onToggleCollapse}><ChevronsDownUp /></button>
-      <button type="button" title="Lock" aria-label="Lock" aria-pressed={locked} disabled={!canEdit} onClick={onToggleLock}>{locked ? <Lock /> : <Unlock />}</button>
+      <button type="button" {...appTip(studioName('collapseAll'))} aria-label={studioName('collapseAll')} aria-pressed={collapsed} onClick={onToggleCollapse}><ChevronsDownUp /></button>
+      <button type="button" {...appTip(studioName('lock'))} aria-label={studioName('lock')} aria-pressed={locked} disabled={!canEdit} onClick={onToggleLock}>{locked ? <Lock /> : <Unlock />}</button>
       <div />
-      <button type="button" title="Fit View" aria-label="Fit View" onClick={() => viewport.current?.fitView()}><Scan /></button>
-      <button type="button" title="Zoom In" aria-label="Zoom In" onClick={() => viewport.current?.zoomIn()}><Plus /></button>
-      <button type="button" title="Zoom Out" aria-label="Zoom Out" onClick={() => viewport.current?.zoomOut()}><Minus /></button>
+      <button type="button" {...appTip(studioName('fitView'))} aria-label={studioName('fitView')} onClick={() => viewport.current?.fitView()}><Scan /></button>
+      <button type="button" {...appTip(studioName('zoomIn'))} aria-label={studioName('zoomIn')} onClick={() => viewport.current?.zoomIn()}><Plus /></button>
+      <button type="button" {...appTip(studioName('zoomOut'))} aria-label={studioName('zoomOut')} onClick={() => viewport.current?.zoomOut()}><Minus /></button>
     </div>
     <div className="studio-model-surface" onPointerMove={(event) => onCanvasPoint(point(event))}
       onPointerLeave={() => onCanvasPoint(undefined)}

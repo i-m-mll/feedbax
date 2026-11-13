@@ -40,7 +40,7 @@ function NewProject() {
   if (project.isError && !project.isFetching) return (
     <main className="p-4">
       <p role="alert">{apiErrorMessage(project.error)}</p>
-      <button type="button" onClick={() => void project.refetch()}>Retry</button>
+      <button type="button" onClick={() => void project.refetch()}>{studioName('retry')}</button>
     </main>
   );
   return <main aria-busy="true" />;

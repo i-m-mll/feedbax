@@ -420,7 +420,7 @@ const StepCard = memo(function StepCard({
       )}
       {selection && (
         <p className="flex items-baseline justify-between gap-x-1 text-xs text-shell-muted">
-          {terms.length > 0 && <span className="min-w-0 truncate" title={terms.join(' · ')}>{terms.join(' · ')}</span>}
+          {terms.length > 0 && <span className="min-w-0 truncate">{terms.join(' · ')}</span>}
           <span className="shrink-0 whitespace-nowrap tabular-nums">{studioCountOf(selected.size, step.runs.length)}</span>
         </p>
       )}

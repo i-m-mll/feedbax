@@ -40,7 +40,7 @@ test('saves and runs managed optimizer and attachment sweeps', async ({ page, re
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await model.locator('[data-id="wrapper"] header').dblclick();
   await model.locator('[data-id="controller"] header').dblclick();
-  await model.getByRole('button', { name: 'Scale', exact: true }).click();
+  await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   const factor = inspector.getByRole('textbox', { name: 'Factor', exact: true });
   await expect(factor).toHaveValue('1.0');
   await enter(factor, 'linspace(0.5, 1, 2)');
@@ -64,7 +64,7 @@ test('saves and runs managed optimizer and attachment sweeps', async ({ page, re
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(rate).toHaveValue('geomspace(0.001, 0.004, 2)');
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await model.getByRole('button', { name: 'Scale', exact: true }).click();
+  await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(factor).toHaveValue('linspace(0.5, 1, 2)');
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });

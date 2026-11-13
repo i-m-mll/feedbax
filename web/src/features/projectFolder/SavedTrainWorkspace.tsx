@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit } from '@/api/studioAuthoring';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
-import { studioCountOf, studioName, studioStep } from '@/components/activity/studioVocabulary';
+import { studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
@@ -85,16 +85,35 @@ const control = 'rounded px-2 py-1 hover:bg-shell-hover focus-visible:outline-2'
 const { Icon: TrainIcon, tint: trainTint, name: trainName } = studioStep('train');
 const noView = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
 
-function TrainReceipts({ row }: { row: SavedRow }) {
+function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResult'; result: NonNullable<SavedRow['result']> }) {
+  const [copyError, setCopyError] = useState(false);
+  return <section aria-label={studioName(name)} className="min-w-0">
+    <h3 className="font-medium">{studioName(name)}</h3>
+    {result.progress && <dl className="space-y-1">
+      <div><dt>{studioName('updates')}</dt><dd>{result.progress.completed_updates}</dd></div>
+    </dl>}
+    <button type="button" className={control} onClick={async () => {
+      setCopyError(false);
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+      } catch {
+        setCopyError(true);
+      }
+    }}>{studioName('copyDetails')}</button>
+    {copyError && <p role="alert">{studioReason('copyFailed', studioName('details'))}</p>}
+  </section>;
+}
+
+function TrainResultsComparison({ row }: { row: SavedRow }) {
   const results = [
-    ...(row.result ? [{ label: 'Current result', result: row.result }] : []),
-    ...(row.previous ? [{ label: 'Previous result', result: row.previous }] : []),
+    ...(row.result ? [{ name: 'currentResult', result: row.result } as const] : []),
+    ...(row.previous ? [{ name: 'previousResult', result: row.previous } as const] : []),
   ];
   if (!results.length) return null;
   return (
     <details className="mt-3 rounded border border-shell-divider p-3 text-sm">
       <summary className="cursor-pointer font-medium">
-        {results.length === 2 ? 'Compare receipts' : results[0].label}
+        {studioName(results.length === 2 ? 'compareResults' : results[0].name)}
       </summary>
       {row.change && (
         <p className="mt-2 break-all">
@@ -103,17 +122,7 @@ function TrainReceipts({ row }: { row: SavedRow }) {
         </p>
       )}
       <div className="mt-2 grid gap-3 sm:grid-cols-2">
-        {results.map(({ label, result }) => (
-          <section key={label} aria-label={label} className="min-w-0">
-            <h3 className="font-medium">{label}</h3>
-            <dl className="space-y-1">
-              <div><dt>Request</dt><dd className="break-all"><code>{result.request_id}</code></dd></div>
-              <div><dt>Receipt</dt><dd className="break-all"><code>{result.receipt.manifest_id}</code></dd></div>
-              <div><dt>SHA-256</dt><dd className="break-all"><code>{result.receipt.manifest_sha256}</code></dd></div>
-              {result.progress && <div><dt>Completed updates</dt><dd>{result.progress.completed_updates}</dd></div>}
-            </dl>
-          </section>
-        ))}
+        {results.map(({ name, result }) => <ResultDetail key={name} name={name} result={result} />)}
       </div>
     </details>
   );
@@ -144,6 +153,7 @@ export default function StudioProjectWorkspace({
 }
 
 function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: EditorSession } & ProjectWindowCommands) {
+  const stoppedCheckpointId = useId();
   const { editor } = session;
   const snapshot = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { saved, configuration, pending, outside } = snapshot;
@@ -517,7 +527,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       {producer ? <button type="button" className="hover:underline" onClick={() => showRun(producer, exactSource.job_id)}>
         {label}
       </button> : <span>{label}</span>}
-      <p>Train attempt <code>{exactSource.job_id}</code></p>
     </div>;
   }
 
@@ -841,12 +850,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             });
           }}>
             <label className="grid gap-1">
-              Name
+              {studioName('name')}
               <input data-dialog-autofocus className={control} value={rename.name} disabled={busy} required
                 onChange={(event) => setRename({ ...rename, name: event.target.value })} />
             </label>
             {rename.revision !== saved.revision || outside
-              ? <div role="alert">The project changed. Reopen Rename to use the current revision.</div>
+              ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
               : commandError && <div role="alert">{commandError}</div>}
             <button type="submit" className={control} disabled={busy || !!outside || rename.revision !== saved.revision}>
               {studioName('rename')}
@@ -1021,16 +1030,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           }} />,
         };
         if (view === 'results' && row && ready) return { body: <div className="p-3">
-          {stoppedSubject && stoppedNewStep && <section aria-label={checkpointLabel(stoppedSubject.at)}
+          {stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
             className="flex items-baseline gap-2 text-sm">
-            <h3 className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
+            <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
             <button type="button" className={control} {...commandAttributes(stoppedNewStep)}
               disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</button>
           </section>}
           {attempt && <StudioTrainResults project={saved.project_id} revision={saved.revision}
             evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
             rows={data!.rows} row={row} attempt={attempt} />}
-          <TrainReceipts key={savedRunId(row.key)} row={row} />
+          <TrainResultsComparison key={savedRunId(row.key)} row={row} />
         </div> };
         return { body: withProblem(noView) };
       }}

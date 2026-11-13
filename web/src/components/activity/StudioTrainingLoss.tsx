@@ -3,7 +3,7 @@ import type { StudioActivityJob, StudioJobEvent } from '@/generated/studioContra
 import { useElementSize } from '@/hooks/useElementSize';
 import type { ObjectiveTrack } from './heldOutObjective';
 import { PlotTrack, formatTrainingLoss } from './studioPlot';
-import { studioFormat, studioName } from './studioVocabulary';
+import { studioAccessibleName, studioFormat, studioName } from './studioVocabulary';
 
 type Attempt = Pick<StudioActivityJob, 'job_id' | 'continues'>;
 
@@ -146,7 +146,7 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
       <div className="flex justify-between gap-2 text-xs font-medium">
         <h4>{studioName('loss')}</h4>
         {latest && (
-          <span className="tabular-nums" title={studioFormat('lastLossAtUpdate', { end: latest.update })}>
+          <span className="tabular-nums" aria-description={studioFormat('lastLossAtUpdate', { end: latest.update })}>
             {formatTrainingLoss(latest.last)}
           </span>
         )}
@@ -179,6 +179,7 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
         {ranges.map(({ update, end, start, count, min, max, stage, jobId }) => (
           <line
             key={update}
+            data-attempt={jobId}
             x1={x(update)}
             x2={x(update)}
             y1={y(min)}
@@ -192,13 +193,13 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
                 start: stage.offset + start + 1, end: update, count,
                 min: formatTrainingLoss(min), max: formatTrainingLoss(max),
               }),
-              chained && studioFormat('lossStageSample', { stage: stage.label, start: start + 1, end, attempt: jobId }),
+              chained && studioFormat('lossStepSample', { step: stage.label, start: start + 1, end }),
             ].filter(Boolean).join(' · ')}</title>
           </line>
         ))}
         <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} />
         {objectives.map(({ id, label, segments }, index) => (
-          <g key={id} role="group" aria-label={label} style={{ color: objectiveColor(index) }}>
+          <g key={id} role="group" aria-label={studioAccessibleName('objective', label)} style={{ color: objectiveColor(index) }}>
             {segments.map((segment) => (
               <g key={segment[0].id}>
                 {segment.length > 1 && <polyline
@@ -224,7 +225,7 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
           {objectives.map(({ id, label }, index) => <li key={id} style={{ color: objectiveColor(index) }}>{label}</li>)}
         </ul>}
         {chained && (
-          <ol aria-label={studioName('trainStages')} className="mr-auto flex flex-wrap gap-x-3">
+          <ol aria-label={studioName('trainSteps')} className="mr-auto flex flex-wrap gap-x-3">
             {stages.map(({ label, offset, completed }) => (
               <li key={offset}>
                 {label}{completed > 0 && ` ${offset + 1}–${offset + completed}`}

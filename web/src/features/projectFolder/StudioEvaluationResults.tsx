@@ -1,4 +1,5 @@
 import type { StudioSavedEvaluationRow } from '@/generated/studioContracts';
+import { studioCheckpointStatus, studioEvaluationPlacement, studioName, studioReason, studioReplayLabel } from '@/components/activity/studioVocabulary';
 
 export function StudioEvaluationResults({ evaluation, onReplay }: {
   evaluation: StudioSavedEvaluationRow;
@@ -11,15 +12,15 @@ export function StudioEvaluationResults({ evaluation, onReplay }: {
   const gaps = new Map(result?.checkpoint_gaps?.map(({ update, reason }) => [update, reason]));
   return <div className="space-y-2 p-3 text-sm">
     {result?.placement && <dl className="flex gap-2">
-      <dt className="font-medium">Ran</dt>
-      <dd>{result.placement === 'live' ? 'During training' : 'From saved checkpoints'}</dd>
+      <dt className="font-medium">{studioName('timing')}</dt>
+      <dd>{studioEvaluationPlacement(result.placement)}</dd>
     </dl>}
     {evaluation.reason && <p className="text-shell-muted">{evaluation.reason}</p>}
-    <table aria-label="Checkpoint results" className="w-full border-collapse text-left">
+    <table aria-label={studioName('checkpointResults')} className="w-full border-collapse text-left">
       <thead>
         <tr className="border-b border-shell-divider">
-          <th scope="col" className="py-1 pr-3 font-medium">Update</th>
-          <th scope="col" className="py-1 font-medium">Result</th>
+          <th scope="col" className="py-1 pr-3 font-medium">{studioName('update')}</th>
+          <th scope="col" className="py-1 font-medium">{studioName('result')}</th>
         </tr>
       </thead>
       <tbody>{series.requested.map((update) => <tr key={update} className="border-b border-shell-divider">
@@ -27,9 +28,10 @@ export function StudioEvaluationResults({ evaluation, onReplay }: {
         <td className="py-1">
           {sources.has(update) ? <button type="button"
             className="rounded px-1 underline underline-offset-2 hover:bg-shell-hover"
-            aria-label={`Replay update ${update}`} onClick={() => onReplay(update)}>Replay</button>
-            : gaps.get(update) === 'checkpoint_unavailable' ? 'Checkpoint unavailable'
-              : 'Requested'}
+            aria-label={studioReplayLabel(update)}
+            onClick={() => onReplay(update)}>{studioName('replay')}</button>
+            : gaps.get(update) === 'checkpoint_unavailable' ? studioReason('unavailable', studioName('checkpoint'))
+              : studioCheckpointStatus('requested')}
         </td>
       </tr>)}</tbody>
     </table>

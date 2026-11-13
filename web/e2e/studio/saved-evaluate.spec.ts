@@ -267,7 +267,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
     await field.fill(value);
     const saving = page.waitForResponse((response) =>
       response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-    await page.getByRole('button', { name: 'Apply checkpoints' }).click();
+    await page.getByRole('button', { name: 'Apply Checkpoints' }).click();
     const response = await saving;
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioProjectSnapshot;
@@ -283,7 +283,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
   await expect(field).toHaveValue('every 2');
   await field.fill('2, 2');
-  await expect(page.getByRole('button', { name: 'Apply checkpoints' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Apply Checkpoints' })).toBeDisabled();
   const explicit = await saveRule('4, 3, 2');
   expect(explicit.project.steps.evaluate.inputs?.subject).toMatchObject({
     step: 'train', checkpoint: [{ at: 4 }, { at: 3 }, { at: 2 }],
@@ -303,7 +303,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
     checkpoint_gaps: [{ update: 3, reason: 'checkpoint_unavailable' }],
   });
   await tab(page, 'Results').click();
-  const results = page.getByRole('table', { name: 'Checkpoint results' });
+  const results = page.getByRole('table', { name: 'Checkpoint Results' });
   await expect(results.getByRole('rowheader')).toHaveText(['4', '3', '2']);
   await expect(results.getByRole('row').filter({ has: page.getByRole('rowheader', { name: '3', exact: true }) }))
     .toContainText('Checkpoint unavailable');
@@ -408,7 +408,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   const saving = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
   await field.fill('every 2 from 3');
-  await drawer.getByRole('button', { name: 'Apply checkpoints' }).click();
+  await drawer.getByRole('button', { name: 'Apply Checkpoints' }).click();
   const response = await saving;
   expect(response.ok(), await response.text()).toBe(true);
   const after = await response.json() as StudioProjectSnapshot;
@@ -458,7 +458,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await page.getByRole('group', { name: 'replicate', exact: true }).getByRole('button', { name: 'left', exact: true }).click();
   await expect(field).toHaveValue('every 2');
   await field.fill('3');
-  const axis = await save(() => drawer.getByRole('button', { name: 'Apply checkpoints' }).click());
+  const axis = await save(() => drawer.getByRole('button', { name: 'Apply Checkpoints' }).click());
   const axisPlan = await plan(axis.revision);
   expect(axisPlan.left.checkpoint_series?.requested).toEqual([3]);
   expect(axisPlan.right.request_id).toBe(before.right.request_id);
@@ -467,7 +467,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await plans(page).getByRole('button', { name: /replicate=right/ }).click();
   await expect(field).toHaveValue('every 2');
   await field.fill('1, 4');
-  const row = await save(() => drawer.getByRole('button', { name: 'Apply checkpoints' }).click());
+  const row = await save(() => drawer.getByRole('button', { name: 'Apply Checkpoints' }).click());
   const rowPlan = await plan(row.revision);
   expect(rowPlan.right.checkpoint_series?.requested).toEqual([1, 4]);
   expect(rowPlan.left.request_id).toBe(axisPlan.left.request_id);
@@ -528,7 +528,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
     step: 'train', where: { rows: [train.key.row] }, checkpoint: { at },
   });
   await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
-  await expect(page.getByRole('combobox', { name: 'Trial set', exact: true })).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();
   const [consumer] = await submit(page, runsPath);
   expect(consumer.disposition).toBe('admitted');
   await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });

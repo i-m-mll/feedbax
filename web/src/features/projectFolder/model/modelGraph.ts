@@ -3,6 +3,7 @@ import type {
   PhysicalInterior, PortElement, PortType, SignalType,
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
+import { studioName } from '@/components/activity/studioVocabulary';
 
 export const modelSchema = 'feedbax.spec.model';
 export type Component = LeafComponent | CompositeComponent;
@@ -13,7 +14,7 @@ export type Port = {
   readonly direction: Direction;
   readonly name: string;
   readonly type: SignalType | string;
-  readonly mark?: 'Task' | 'Objective';
+  readonly mark?: 'task' | 'objective';
   readonly taskSignal?: string;
   readonly growing?: boolean;
 };
@@ -93,7 +94,7 @@ function leafPorts(id: string, component: LeafComponent, definition: ComponentDe
       const kind = type?.kind === 'conserving' ? 'physical' : direction;
       return {
         end: { owner: 'component', component: id, direction: kind, port },
-        direction: kind, name: grow === port ? 'Add Input' : port, growing: grow === port,
+        direction: kind, name: grow === port ? studioName('addInput') : port, growing: grow === port,
         type: kind === 'physical' ? type?.physical_domain ?? '' : signalType(type),
       } satisfies Port;
     });

@@ -95,7 +95,7 @@ test('places and connects a Model component for exactly the lit steps', async ({
   await button(drawer, 'Connect Ports').click();
   const connect = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
   await connect.getByRole('combobox', { name: 'Source Port' }).selectOption({ label: 'gru.hidden' });
-  await connect.getByRole('combobox', { name: 'Target Port' }).selectOption({ label: 'gru.hidden' });
+  await connect.getByRole('combobox', { name: 'Input Port' }).selectOption({ label: 'gru.hidden' });
   const wired = await edit(() => button(connect, 'Connect Ports').press('Enter'));
   await button(drawer, 'Expose Output').click();
   const expose = page.getByRole('dialog', { name: 'Expose Output', exact: true });
@@ -135,6 +135,7 @@ test('places and connects a Model component for exactly the lit steps', async ({
   const transform = await gru.evaluate((node) => (node as HTMLElement).style.transform);
   await page.reload();
   await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(gru).toBeVisible();
   expect(await gru.evaluate((node) => (node as HTMLElement).style.transform)).toBe(transform);
   const reopened = await request.get(projectPath);
