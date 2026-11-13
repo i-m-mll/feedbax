@@ -2,6 +2,12 @@
 
 from copy import deepcopy
 
+from feedbax.contracts.effective_success import EvaluationSubjectValue, success_content_ref
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.receipt_closure import ReceiptClosure
+from feedbax.persistence.store_sync import sync_store
+from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request, encode_request
@@ -102,6 +108,25 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
         manifest = result._manifest()
         assert manifest.provenance.metadata["checkpoint_selection"]["gaps"] == gaps
         assert manifest.metadata["placement"] == "ordinary"
+        store = ImmutableArtifactBlobProvider(plan.store_path)
+        success = SuccessView(store).read_attempt(item.job_id)
+        assert success.ref.model_dump(mode="json") == row["outcome"]["store_success"]
+        bound, = success.receipt.inputs["subject"]
+        value = EvaluationSubjectValue.model_validate(bound.descriptor)
+        assert value.requested == tuple(expected)
+        assert [gap.model_dump(mode="json") for gap in value.gaps] == gaps
+        tree = store.get_tree(success_content_ref(bound.content))
+        if observed:
+            assert [member.coordinate for member in value.resolved.members] == observed
+            assert len([file for file in tree.files if file.relative_path.endswith("/model.safetensors")]) == len(observed)
+        else:
+            assert value.resolved is None and bound.evaluation_subject.checkpoints == ()
+            assert [file.relative_path for file in tree.files] == ["binding.json"]
+        assert bound.evaluation_subject.closure.receipt.sha256 == finished["outcome"]["receipt"]["manifest_sha256"]
+        shallow = StoreClosureRef(roots=(ReceiptRoot(receipt=success.ref),))
+        destination = ImmutableArtifactBlobProvider(tmp_path / f"shallow-{item.job_id}")
+        sync_store(store, destination, shallow, destination_ref="proof/evaluate")
+        assert bound.evaluation_subject.closure.checkpoint.transaction in ReceiptClosure(destination).walk(shallow)
         assert [parent.id for parent in manifest.input_training_runs] == [finished["outcome"]["receipt"]["manifest_id"]]
         with result.open_states() as dataset:
             assert dataset.data("update").tolist() == observed

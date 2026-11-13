@@ -16,6 +16,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
+from feedbax.contracts.rollout import ResolvedRolloutBinding
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
     ContentRef,
@@ -59,8 +60,77 @@ class Selection(ReferenceValue):
     )
 
 
+EVALUATION_SUBJECT_MEDIA_TYPE = "application/vnd.feedbax.evaluate-subject.v1+tree"
+
+
+class EvaluationGap(ReferenceValue):
+    update: int = Field(gt=0)
+    reason: Literal["checkpoint_unavailable"]
+
+
+class EvaluationSubjectValue(ReferenceValue):
+    axis: Literal["checkpoint", "update"]
+    requested: Annotated[tuple[int, ...], Field(min_length=1)]
+    gaps: tuple[EvaluationGap, ...]
+    resolved: ResolvedRolloutBinding | None
+
+    @model_validator(mode="after")
+    def _ordered_coverage(self) -> EvaluationSubjectValue:
+        missing = tuple(gap.update for gap in self.gaps)
+        absent = set(missing)
+        observed = tuple(member.coordinate for member in self.resolved.members) if self.resolved else ()
+        if (
+            len(set(self.requested)) != len(self.requested) or any(update <= 0 for update in self.requested)
+            or missing != tuple(update for update in self.requested if update in absent)
+            or observed != tuple(update for update in self.requested if update not in absent)
+            or (self.gaps and self.axis != "update")
+        ):
+            raise ValueError("Evaluate subject does not account for its exact ordered coverage")
+        return self
+
+
+class EvaluationCheckpointSource(ReferenceValue):
+    occurrence: CheckpointOccurrenceRef
+    transaction: ContentObjectRef
+    train_binding: ContentObjectRef
+
+    @model_validator(mode="after")
+    def _exact_transaction(self) -> EvaluationCheckpointSource:
+        if self.transaction.sha256 != self.occurrence.manifest_sha256:
+            raise ValueError("Evaluate checkpoint occurrence differs from its retained transaction")
+        return self
+
+
+class EvaluationClosure(ReferenceValue):
+    kind: Literal["completion", "recovery"]
+    checkpoint: EvaluationCheckpointSource
+    receipt: ContentObjectRef | None = None
+
+    @model_validator(mode="after")
+    def _completion_receipt(self) -> EvaluationClosure:
+        if (self.kind == "completion") != (self.receipt is not None):
+            raise ValueError("Evaluate coverage must distinguish completion and recovery evidence")
+        return self
+
+
+class EvaluationSubjectSource(ReferenceValue):
+    producer: RequestObject
+    checkpoints: tuple[EvaluationCheckpointSource, ...]
+    closure: EvaluationClosure | None = None
+    terminal_receipt: ContentObjectRef | None = None
+
+
 class BoundMember(EffectiveInputMember):
     selection: Selection | None = None
+    evaluation_subject: EvaluationSubjectSource | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _one_source(self) -> BoundMember:
+        if self.evaluation_subject is not None and self.selection is not None:
+            raise ValueError("Evaluate subject has conflicting source evidence")
+        return self
 
 
 type Bindings = dict[Name, tuple[BoundMember, ...]]
@@ -76,6 +146,9 @@ class Success(ReferenceValue):
     inputs: Bindings
     products: Products = Field(min_length=1)
     supersedes: ContentObjectRef | None
+    evaluation_manifest: ContentObjectRef | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     continuation: ContinuationOccurrence | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
@@ -85,6 +158,18 @@ class Success(ReferenceValue):
 
     @model_validator(mode="after")
     def validate_products(self) -> Success:
+        projected = [
+            role for role, members in self.inputs.items() for member in members
+            if member.evaluation_subject is not None
+        ]
+        if projected or self.evaluation_manifest is not None:
+            if (
+                self.evaluation_manifest is None or projected != ["subject"]
+                or not self.request.id.startswith("evaluate:") or self.inputs.keys() != {"subject"}
+                or len(self.inputs["subject"]) != 1 or set(self.products) != {"states"}
+                or len(self.products["states"]) != 1
+            ):
+                raise ValueError("Evaluate success requires its accepted manifest, one subject and states product")
         if self.continuation is not None and (
             not self.request.id.startswith("train:")
             or len(self.products.get("checkpoint", ())) != 1

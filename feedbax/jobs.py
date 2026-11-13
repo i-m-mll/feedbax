@@ -55,7 +55,7 @@ from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
-from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoint_producer, selected_coordinates
+from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoint_producer
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -67,6 +67,7 @@ from feedbax.studio.canonical_train import (
 )
 
 if TYPE_CHECKING:
+    from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
     from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
@@ -215,7 +216,7 @@ class PlanJobReader:
             size = None
             if evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
-                receipt, size = result if result is not None else (None, None)
+                receipt, size = result[:2] if result is not None else (None, None)
             else:
                 receipt = _verified_training_receipt(job, store) if succeeded else None
             completion = (job.get("outcome") or {}).get("completion") or {}
@@ -583,8 +584,8 @@ class JobService(PlanJobReader):
         result = _verified_evaluation_result(job, store)
         if result is None:
             raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
-        receipt, _ = result
-        return EvaluationResult(store, job_id, job["request"], receipt)
+        receipt, _, manifest_object = result
+        return EvaluationResult(store, job_id, job["request"], receipt, manifest_object=manifest_object)
 
     def _training_item(
         self,
@@ -1068,49 +1069,32 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
     return catalogs
 
 
-def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobReceipt, int] | None:
-    from feedbax.studio.canonical_evaluate import (
-        evaluation_checkpoint_coordinates, evaluation_subject_provenance, read_evaluation_manifest, states_ref,
-    )
+def _verified_evaluation_result(job: dict[str, Any], store: Path) -> tuple[JobReceipt, int, ContentObjectRef | None] | None:
+    from feedbax.contracts.artifact_custody import ContentObjectRef
+    from feedbax.persistence.effective_success import SuccessView
+    from feedbax.studio.canonical_evaluate import states_product, states_ref, verify_evaluation_receipt
 
     try:
-        receipt = JobReceipt.model_validate((job.get("outcome") or {}).get("receipt"))
-        manifest, subject = read_evaluation_manifest(store, job["id"], job["request"], receipt)
-        (edge,) = (edge for edge in job["edges"] if edge.get("authenticated_completion"))
-        if not edge["satisfied"]:
-            return None
-        binding = edge["binding"]
-        if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
-            selection = binding["checkpoint_selection"]
-            members = selection["members"]
-            if (
-                list(coordinates) != selection["requested"]
-                or ("gaps" in selection and not isinstance(subject.select, UpdateSeriesMember))
-                or selected_coordinates(selection) != tuple(
-                    member["checkpoint"]["completed_updates"] for member in members
-                )
-            ):
+        outcome = job.get("outcome") or {}
+        receipt = JobReceipt.model_validate(outcome.get("receipt"))
+        (edge,) = (edge for edge in job["edges"] if edge.get("authenticated_completion") and edge["satisfied"])
+        manifest_object = None
+        if "store_success" in outcome:
+            view = SuccessView(ImmutableArtifactBlobProvider(store))
+            accepted = ContentObjectRef.model_validate(outcome["store_success"])
+            if view.attempt_ref(job["id"]) != accepted:
                 return None
-            if "gaps" in selection:
-                members = [*members, selection["closure"]["product"]]
-        else:
-            members = [binding["completion"]]
-        if any(
-            member["request_id"] != subject.request_id
-            or member["project_id"] != job["project"]
-            or member["manifest_root"] != str(store)
-            for member in members
-        ):
+            success = view.read_receipt(accepted)
+            if success.attempt != job["id"] or success.request.id != job["request"] or success.evaluation_manifest is None:
+                return None
+            manifest_object = success.evaluation_manifest
+        manifest, _ = verify_evaluation_receipt(
+            store, attempt=job["id"], request_id=job["request"], project=job["project"],
+            receipt=receipt, binding=edge["binding"], manifest_object=manifest_object,
+        )
+        if manifest_object is not None and success.products != {"states": (states_product(manifest),)}:
             return None
-        train, provenance = evaluation_subject_provenance(binding)
-        if (
-            ("live_evaluation_points" in binding) != (manifest.metadata.get("placement") == "live")
-            or manifest.input_training_runs != train
-            or manifest.provenance.parents != provenance.parents
-            or manifest.provenance.metadata != provenance.metadata
-        ):
-            return None
-        return receipt, states_ref(manifest).content.size
+        return receipt, states_ref(manifest).content.size, manifest_object
     except (OSError, TypeError, ValueError, KeyError):
         return None
 

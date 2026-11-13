@@ -9,6 +9,8 @@ import signal
 
 from feedbax.contracts.project import Project
 from feedbax.jobs import JobService
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -132,6 +134,12 @@ _Events.append = append
     assert ordinary_result._manifest().metadata["placement"] == "ordinary"
     assert ordinary_result._manifest().artifacts[0].sha256 == live._manifest().artifacts[0].sha256
     assert job_row(host, late.job_id)["request"] == result["request"] == rows["baseline"].request_id
+    view = SuccessView(ImmutableArtifactBlobProvider(plan.store_path))
+    first, second = view.read_attempt(evaluation), view.read_attempt(late.job_id)
+    assert first.receipt.effective == second.receipt.effective
+    assert first.receipt.products == second.receipt.products
+    assert first.receipt.evaluation_manifest != second.receipt.evaluation_manifest
+    assert second.receipt.supersedes == first.ref
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):

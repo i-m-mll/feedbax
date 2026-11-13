@@ -1131,12 +1131,12 @@ class ImmutableArtifactBlobProvider:
             directories=tuple(sorted(directories)),
             files=tuple(sorted(files, key=lambda entry: entry.relative_path)),
         )
-        descriptor_bytes = canonical_json_v1_bytes(tree.model_dump(mode="json"))
-        descriptor = self.store_object(descriptor_bytes)
-        return ContentTreeRef(
-            tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}",
-            descriptor=descriptor,
-        )
+        return self.store_tree(tree)
+
+    def store_tree(self, tree: ContentTree) -> ContentTreeRef:
+        """Store a canonical descriptor whose members already have exact content references."""
+        descriptor = self.store_object(canonical_json_v1_bytes(tree.model_dump(mode="json")))
+        return ContentTreeRef(tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}", descriptor=descriptor)
 
     def publish_rooted_tree(
         self,
@@ -1175,11 +1175,7 @@ class ImmutableArtifactBlobProvider:
                 directories=tuple(sorted(directories)),
                 files=tuple(files),
             )
-            descriptor = self.store_object(canonical_json_v1_bytes(tree.model_dump(mode="json")))
-            tree_ref = ContentTreeRef(
-                tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}",
-                descriptor=descriptor,
-            )
+            tree_ref = self.store_tree(tree)
             root = ContentRootRecord(
                 root_id=root_id,
                 root_kind=root_kind,
