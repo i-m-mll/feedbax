@@ -27,7 +27,6 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
-from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     load_checkpoint_custody_documents,
@@ -243,7 +242,7 @@ def _observe_worker(
         return training_host_worker.main([])
 
 
-def _authored_spec(*, batches=8, batch_size=1, sampled_hold=False):
+def _authored_request(*, batches=8, batch_size=1, sampled_hold=False):
     project = reaching_project(batches=batches)
     project.graph.nodes["readout"].params["trainable"] = False
     scenario = project.workspace.scenarios["scenario:train"]
@@ -279,8 +278,23 @@ def _authored_spec(*, batches=8, batch_size=1, sampled_hold=False):
                 },
             ],
         }
-    registries = new_application_registry_bundle()
-    return lower_canonical_train(reaching_train_request(project), registries.training_programs)
+    return reaching_train_request(project)
+
+
+def _authored_spec(**options):
+    request = _authored_request(**options)
+    registry = new_application_registry_bundle()
+    resolved = registry.training_programs.resolve_execution(request.method_ref, request.method_payload)
+    from feedbax.contracts.training import TrainingRunSpec, WorkerExecutionSpec
+
+    return TrainingRunSpec(
+        graph={"inline": request.graph.model_dump(mode="json", exclude_none=True)},
+        task=request.task, objective=request.objective, task_binding_spec=request.task_binding_spec,
+        method_ref=request.method_ref, method_payload=request.method_payload,
+        training_config=request.training_config,
+        worker_execution=WorkerExecutionSpec(method_contract=resolved.contract, effective_phase=resolved.effective_phase),
+        checkpoint_progress={"checkpoint_interval": request.training_config.snapshot_interval, "progress_interval": 1},
+    )
 
 
 def _launch(

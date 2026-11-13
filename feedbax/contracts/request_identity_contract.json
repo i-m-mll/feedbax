@@ -157,6 +157,119 @@
         "absent": null
       }
     },
+    "feedbax.contracts.expression_values.CallValue": {
+      "args": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "function": {},
+      "kind": {
+        "absent": "call",
+        "values": [
+          "call"
+        ]
+      },
+      "kwargs": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
+    "feedbax.contracts.expression_values.Dimensions": {
+      "amount": {
+        "absent": 0
+      },
+      "angle": {
+        "absent": 0
+      },
+      "current": {
+        "absent": 0
+      },
+      "length": {
+        "absent": 0
+      },
+      "luminosity": {
+        "absent": 0
+      },
+      "mass": {
+        "absent": 0
+      },
+      "temperature": {
+        "absent": 0
+      },
+      "time": {
+        "absent": 0
+      }
+    },
+    "feedbax.contracts.expression_values.DrawValue": {
+      "args": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "family": {},
+      "kind": {
+        "absent": "draw",
+        "values": [
+          "draw"
+        ]
+      },
+      "per": {
+        "absent": "trial",
+        "values": [
+          "run",
+          "trial"
+        ]
+      }
+    },
+    "feedbax.contracts.expression_values.LiteralValue": {
+      "kind": {
+        "absent": "literal",
+        "values": [
+          "literal"
+        ]
+      },
+      "unit": {
+        "absent": null
+      },
+      "value": {}
+    },
+    "feedbax.contracts.expression_values.NameValue": {
+      "kind": {
+        "absent": "name",
+        "values": [
+          "name"
+        ]
+      },
+      "reference": {}
+    },
+    "feedbax.contracts.expression_values.ValueType": {
+      "base": {
+        "values": [
+          "boolean",
+          "integer",
+          "real"
+        ]
+      },
+      "dimensions": {
+        "absent": {}
+      },
+      "shape": {
+        "absent": []
+      }
+    },
     "feedbax.contracts.expressions.AllOf": {
       "exprs": {
         "families": [
@@ -1270,6 +1383,32 @@
       "target_id": {},
       "value_spec": {}
     },
+    "feedbax.contracts.graph.StudioInterventionTransformSpec": {
+      "bounds": {
+        "absent": null
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "operation": {},
+      "parameters": {
+        "absent": null
+      },
+      "target_selector": {
+        "absent": null
+      },
+      "value": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.graph.StudioInterventionValueBounds": {
+      "max": {
+        "absent": null
+      },
+      "min": {
+        "absent": null
+      }
+    },
     "feedbax.contracts.graph.StudioSelectorRef": {
       "compact": {},
       "dtype": {
@@ -1598,6 +1737,327 @@
         ]
       }
     },
+    "feedbax.contracts.model_address.ComponentPortEnd": {
+      "component": {},
+      "owner": {
+        "values": [
+          "component"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_address.InputBoundaryEnd": {
+      "owner": {
+        "values": [
+          "inputs"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_address.OutputBoundaryEnd": {
+      "owner": {
+        "values": [
+          "outputs"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_address.PhysicalBoundaryEnd": {
+      "owner": {
+        "values": [
+          "boundary"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_document.CompositeComponent": {
+      "attachments": {
+        "absent": {}
+      },
+      "interior": {
+        "families": [
+          "feedbax.contracts.model_document.GraphInterior",
+          "feedbax.contracts.model_document.PhysicalInterior"
+        ]
+      },
+      "kind": {
+        "values": [
+          "composite"
+        ]
+      },
+      "name": {},
+      "ports": {},
+      "substeps": {
+        "absent": 1
+      }
+    },
+    "feedbax.contracts.model_document.DelayAttachment": {
+      "delay": {},
+      "id": {},
+      "initial": {
+        "absent": 0
+      },
+      "kind": {
+        "values": [
+          "delay"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.GraphInterior": {
+      "attachments": {
+        "absent": {}
+      },
+      "components": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.CompositeComponent",
+          "feedbax.contracts.model_document.LeafComponent"
+        ]
+      },
+      "physical_domain": {
+        "absent": null
+      },
+      "wires": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.model_document.InputDefault": {
+      "value": {}
+    },
+    "feedbax.contracts.model_document.InterventionAttachment": {
+      "fields": {
+        "absent": {}
+      },
+      "id": {},
+      "kind": {
+        "values": [
+          "intervention"
+        ]
+      },
+      "operation": {},
+      "window": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.model_document.LeafComponent": {
+      "attachments": {
+        "absent": {}
+      },
+      "fields": {
+        "absent": {}
+      },
+      "kind": {
+        "values": [
+          "leaf"
+        ]
+      },
+      "name": {},
+      "port_counts": {
+        "absent": {}
+      },
+      "revision": {
+        "absent": null
+      },
+      "type": {}
+    },
+    "feedbax.contracts.model_document.ModelDocument": {
+      "interior": {},
+      "ports": {},
+      "step_seconds": {},
+      "world": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.model_document.ModelPhysicalConnection": {
+      "a": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.PhysicalBoundaryEnd"
+        ]
+      },
+      "b": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.PhysicalBoundaryEnd"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ModelPortAttachments": {
+      "sinks": {
+        "absent": {}
+      },
+      "sources": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.InterventionAttachment",
+          "feedbax.contracts.model_document.ProbeAttachment"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ModelPorts": {
+      "inputs": {
+        "absent": []
+      },
+      "outputs": {
+        "absent": []
+      },
+      "physical": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.model_document.ModelTime": {
+      "unit": {
+        "values": [
+          "s",
+          "st"
+        ]
+      },
+      "value": {}
+    },
+    "feedbax.contracts.model_document.ModelWire": {
+      "attachments": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.model_document.DelayAttachment",
+          "feedbax.contracts.model_document.InterventionAttachment",
+          "feedbax.contracts.model_document.ProbeAttachment"
+        ]
+      },
+      "source": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.InputBoundaryEnd"
+        ]
+      },
+      "target": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.OutputBoundaryEnd"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ModelWorld": {
+      "gravity": {}
+    },
+    "feedbax.contracts.model_document.PhysicalInterior": {
+      "attachments": {
+        "absent": {}
+      },
+      "components": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.CompositeComponent",
+          "feedbax.contracts.model_document.LeafComponent"
+        ]
+      },
+      "connections": {
+        "absent": {}
+      },
+      "physical_domain": {
+        "values": [
+          "planar_multibody",
+          "rotational",
+          "spatial_multibody",
+          "translational"
+        ]
+      },
+      "wires": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.model_document.PhysicalPort": {
+      "id": {},
+      "name": {},
+      "type": {
+        "values": [
+          "frame",
+          "rotational",
+          "translational"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ProbeAttachment": {
+      "id": {},
+      "kind": {
+        "values": [
+          "probe"
+        ]
+      },
+      "name": {}
+    },
+    "feedbax.contracts.model_document.SignalInput": {
+      "default": {
+        "absent": null
+      },
+      "id": {},
+      "name": {},
+      "type": {}
+    },
+    "feedbax.contracts.model_document.SignalOutput": {
+      "id": {},
+      "name": {},
+      "type": {}
+    },
+    "feedbax.contracts.model_document.SignalType": {
+      "base": {
+        "absent": null
+      },
+      "shape": {
+        "absent": null
+      },
+      "unit": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.objective_document.ObjectiveDocument": {
+      "id": {},
+      "terms": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.objective_document.ObjectiveTerm": {
+      "enabled": {
+        "absent": true
+      },
+      "epochs": {
+        "absent": []
+      },
+      "id": {},
+      "measure": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "measure_type": {
+        "absent": {
+          "base": "real"
+        }
+      },
+      "reduction": {
+        "absent": "mean",
+        "values": [
+          "last",
+          "max",
+          "mean",
+          "sum"
+        ]
+      },
+      "weight": {
+        "absent": {
+          "$family": "feedbax.contracts.expression_values.LiteralValue",
+          "value": 1
+        },
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
     "feedbax.contracts.report_document.ReportDocument": {
       "blocks": {
         "families": [
@@ -1824,7 +2284,95 @@
       "task_binding_spec": {
         "absent": null
       },
-      "training_config": {}
+      "training_config": {},
+      "trial_documents": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.task_document.Cell": {
+      "first_epoch": {},
+      "last_epoch": {},
+      "value": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
+    "feedbax.contracts.task_document.Epoch": {
+      "id": {},
+      "length": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "max_steps": {
+        "absent": null
+      },
+      "name": {}
+    },
+    "feedbax.contracts.task_document.Link": {
+      "model_field": {},
+      "variable": {}
+    },
+    "feedbax.contracts.task_document.Signal": {
+      "absent": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "cells": {},
+      "id": {},
+      "name": {},
+      "type": {}
+    },
+    "feedbax.contracts.task_document.TaskDocument": {
+      "epochs": {},
+      "fixed_steps": {
+        "absent": null
+      },
+      "id": {},
+      "links": {
+        "absent": []
+      },
+      "signals": {},
+      "validation_trials": {
+        "absent": [
+          {}
+        ]
+      },
+      "variables": {}
+    },
+    "feedbax.contracts.task_document.ValidationTrial": {
+      "epoch_steps": {
+        "absent": {}
+      },
+      "variables": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.task_document.Variable": {
+      "id": {},
+      "name": {},
+      "type": {},
+      "value": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
     },
     "feedbax.contracts.training.LossTermSpec": {
       "children": {
@@ -2014,6 +2562,15 @@
       "snapshot_interval": {
         "absent": 100
       }
+    },
+    "feedbax.contracts.training.TrialDocuments": {
+      "input_overrides": {
+        "absent": {}
+      },
+      "model": {},
+      "model_name": {},
+      "objective": {},
+      "task": {}
     },
     "feedbax.contracts.value_schema.ValueSchema": {
       "dtype": {

@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, T
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.graph import (
     GraphSpec,
     ParamValue,
@@ -1494,6 +1497,14 @@ def default_training_program_registry() -> TrainingProgramRegistry:
     return registry
 
 
+class TrialDocuments(TrainingRunContractModel):
+    model_name: str
+    model: ModelDocument
+    task: TaskDocument
+    objective: ObjectiveDocument
+    input_overrides: dict[str, str] = Field(default_factory=dict)
+
+
 class TrainingRunSpec(TrainingRunContractModel):
     """Public durable request contract for one Feedbax training run."""
 
@@ -1501,12 +1512,13 @@ class TrainingRunSpec(TrainingRunContractModel):
     schema_version: str = TRAINING_RUN_SPEC_SCHEMA_VERSION
     on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
     graph: GraphTopologySourceSpec
-    task: TaskSpec
+    task: TaskSpec | None = Field(default=None, exclude_if=lambda value: value is None)
     task_binding_spec: StudioTaskBindingSpec | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
     training_config: TrainingConfig
-    objective: ObjectiveSlotSpec
+    objective: ObjectiveSlotSpec | None = Field(default=None, exclude_if=lambda value: value is None)
+    trial_documents: TrialDocuments | None = Field(default=None, exclude_if=lambda value: value is None)
     risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)
     method_ref: MethodRefSpec
     method_payload: MethodPayloadEnvelope
@@ -1530,6 +1542,12 @@ class TrainingRunSpec(TrainingRunContractModel):
                 "/schema_version unsupported TrainingRunSpec schema_version "
                 f"{self.schema_version!r}; expected {TRAINING_RUN_SPEC_SCHEMA_VERSION!r}"
             )
+
+        if self.trial_documents is None:
+            if self.task is None or self.objective is None:
+                raise ValueError("The retained envelope needs its task and objective.")
+        elif any(value is not None for value in (self.task, self.objective, self.task_binding_spec)):
+            raise ValueError("A managed run needs only the authored task and objective pair.")
 
         method_key = self.method_ref.key
         method_contract = self.worker_execution.method_contract

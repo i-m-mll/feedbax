@@ -23,7 +23,6 @@ from feedbax.contracts.jobs import StudioSavedEvaluationReplayRequest, StudioSav
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.request_specs import TrainingRequestSpec
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
@@ -45,12 +44,10 @@ host = host_fixture
 
 
 def authored_evaluation_project():
+    from tests.test_studio_training_host_worker import _authored_request
+
     spec = _authored_spec(batches=2, sampled_hold=True)
-    train_payload = TrainingRequestSpec(
-        graph=spec.graph.inline, task=spec.task, task_binding_spec=spec.task_binding_spec,
-        objective=spec.objective, method_ref=spec.method_ref, method_payload=spec.method_payload,
-        training_config=spec.training_config,
-    ).model_dump(mode="json", exclude_none=True)
+    train_payload = _authored_request(batches=2, sampled_hold=True).model_dump(mode="json", exclude_none=True)
     step = {
         "kind": "evaluate",
         "base": {"inline": {

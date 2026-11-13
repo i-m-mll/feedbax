@@ -111,6 +111,15 @@ def sample_training_trials(
     return _map_samples(sample, jnp.concatenate((update_key[None], additional)))
 
 
+def validation_trial_keys(key: PRNGKeyArray, count: int) -> PRNGKeyArray:
+    """Derive the streams for the fixed validation rows."""
+    return _derive_many(
+        lambda root, index: derive_key(root, "task", "validation", index=index),
+        key,
+        jnp.arange(count),
+    )
+
+
 def keyed_nodes(
     execution_order: Iterable[str], key: PRNGKeyArray | None
 ) -> Iterator[tuple[str, PRNGKeyArray]]:

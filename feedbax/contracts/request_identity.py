@@ -258,8 +258,10 @@ def encode_request(
     )
 
 
-def _read_object(data: bytes) -> dict:
+def _read_object(data: bytes, *, nullable: bool = False) -> dict | None:
     value = json.loads(data)
+    if value is None and nullable and data == b"null":
+        return None
     if not isinstance(value, dict) or canonical_json_v2_bytes(value) != data:
         raise ValueError("Expected a canonical request object")
     return value
@@ -305,7 +307,7 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         document = read_document(digest)
         if sha256_bytes(document) != digest:
             raise ValueError(f"Invalid request document bytes for {name}")
-        spec_payload[name] = _read_object(document)
+        spec_payload[name] = _read_object(document, nullable=kind == "train" and name != "method_payload")
     restored = decode(spec_payload, descriptor.spec_type, fields)
     spec = descriptor.spec_type.model_validate_json(json.dumps(restored))
     encoded = encode_request(spec, inputs)

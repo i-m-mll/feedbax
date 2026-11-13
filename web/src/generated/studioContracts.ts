@@ -1842,32 +1842,37 @@ export interface TrainingConfig {
 }
 
 export interface TaskTimelineCue {
+  epoch: string;
   label: string;
-  step: number;
-  kind: string;
+  start: number;
+  end: number;
+  outcome: number;
 }
 
 export interface SampledTaskTrial {
   id: string;
-  index: number;
-  start: number[];
-  goal: number[];
-  n_steps: number;
-  timeline?: TaskTimelineCue[];
-  metadata?: Record<string, unknown>;
+  inits: Record<string, unknown>;
+  inputs: Record<string, unknown>;
+  present: Record<string, unknown>;
+  variables: Record<string, unknown>;
+  variable_defined: Record<string, unknown>;
+  timeline: TaskTimelineCue[];
 }
 
 export interface TaskTrialSampleRequest {
-  task_spec: TaskSpec;
+  model_name: string;
+  model: ModelDocument;
+  task: TaskDocument;
+  input_overrides?: Record<string, string>;
   seed?: number;
   count?: number;
 }
 
 export interface TaskTrialSampleResponse {
   schema_version?: string;
-  task_type: string;
+  task: string;
   seed: number;
-  count: number;
+  n_steps: number;
   trials: SampledTaskTrial[];
 }
 
@@ -2746,6 +2751,12 @@ export type CallValue = {
   "kwargs"?: Record<string, Expression>;
 };
 
+export type Cell = {
+  "first_epoch": string;
+  "last_epoch": string;
+  "value": Expression;
+};
+
 export type CheckpointBatches = {
   "batches": Array<number>;
 };
@@ -2828,6 +2839,13 @@ export type EnsureDocumentCollection = {
   "op": "ensure";
   "path": DocumentOverridePath;
   "collection": "object" | "array";
+};
+
+export type Epoch = {
+  "id": string;
+  "name": string;
+  "length"?: Expression | null;
+  "max_steps"?: number | null;
 };
 
 export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
@@ -2971,6 +2989,11 @@ export type LineStyle = {
   "showlegend"?: boolean | null;
 };
 
+export type Link = {
+  "model_field": string;
+  "variable": string;
+};
+
 export type ListedAxis = {
   "path": PatchPath;
   "values": Array<JsonValue>;
@@ -3017,6 +3040,21 @@ export type NamedSubset = {
 };
 
 export type NodePath = Array<string | number>;
+
+export type ObjectiveDocument = {
+  "id": string;
+  "terms"?: Array<ObjectiveTerm>;
+};
+
+export type ObjectiveTerm = {
+  "id": string;
+  "measure": Expression;
+  "measure_type"?: ValueType;
+  "weight"?: Expression;
+  "reduction"?: Reduction;
+  "epochs"?: Array<string>;
+  "enabled"?: boolean;
+};
 
 export type OmittedReference = {
   "not_applicable": string;
@@ -3120,6 +3158,8 @@ export type RangeValues = {
   "scale"?: "linear" | "log";
 };
 
+export type Reduction = "mean" | "sum" | "last" | "max";
+
 export type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference;
 
 export type RemoveProjectValue = {
@@ -3195,6 +3235,14 @@ export type SetValue = {
 };
 
 export type Sha256 = string;
+
+export type Signal = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "cells": Array<Cell>;
+  "absent"?: Expression | null;
+};
 
 export type Site = {
   "expected": ValueType;
@@ -3730,10 +3778,35 @@ export type SweepSample = {
   "count": number;
 };
 
+export type TaskDocument = {
+  "id": string;
+  "variables": Array<Variable>;
+  "epochs": Array<Epoch>;
+  "signals": Array<Signal>;
+  "links"?: Array<Link>;
+  "fixed_steps"?: number | null;
+  "validation_trials"?: Array<ValidationTrial>;
+};
+
 export type TextSpan = {
   "start": number;
   "end": number;
 };
+
+export type TrialDocuments = {
+  "model_name": string;
+  "model": ModelDocument;
+  "task": TaskDocument;
+  "objective": ObjectiveDocument;
+  "input_overrides"?: Record<string, string>;
+};
+
+export type ValidationTrial = {
+  "variables"?: Record<string, ValidationValue>;
+  "epoch_steps"?: Record<string, number>;
+};
+
+export type ValidationValue = Scalar | Array<ValidationValue>;
 
 export type ValueBase = "real" | "integer" | "boolean";
 
@@ -3741,6 +3814,13 @@ export type ValueType = {
   "base": ValueBase;
   "shape"?: Array<number>;
   "dimensions"?: Dimensions;
+};
+
+export type Variable = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "value": Expression;
 };
 
 export type VariableBinding = {
@@ -7196,9 +7276,11 @@ export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
 export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
   z
     .object({
+      "epoch": z.string(),
       "label": z.string(),
-      "step": z.number().int().safe(),
-      "kind": z.string(),
+      "start": z.number().int().safe(),
+      "end": z.number().int().safe(),
+      "outcome": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
@@ -7207,12 +7289,12 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "index": z.number().int().safe(),
-      "start": z.array(z.number().finite()),
-      "goal": z.array(z.number().finite()),
-      "n_steps": z.number().int().safe(),
-      "timeline": z.array(TaskTimelineCueSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
+      "inits": z.record(z.string(), z.unknown()),
+      "inputs": z.record(z.string(), z.unknown()),
+      "present": z.record(z.string(), z.unknown()),
+      "variables": z.record(z.string(), z.unknown()),
+      "variable_defined": z.record(z.string(), z.unknown()),
+      "timeline": z.array(TaskTimelineCueSchema),
     })
     .strict()
 ) as unknown as z.ZodType<SampledTaskTrial>;
@@ -7220,9 +7302,12 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "task_spec": TaskSpecSchema,
+      "model_name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "model": ModelDocumentSchema,
+      "task": TaskDocumentSchema,
+      "input_overrides": z.record(z.string(), z.string()).optional(),
       "seed": z.number().int().safe().optional(),
-      "count": z.number().int().safe().optional(),
+      "count": z.number().int().safe().gte(1).lte(64).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTrialSampleRequest>;
@@ -7231,9 +7316,9 @@ export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> =
   z
     .object({
       "schema_version": z.string().optional(),
-      "task_type": z.string(),
+      "task": z.string(),
       "seed": z.number().int().safe(),
-      "count": z.number().int().safe(),
+      "n_steps": z.number().int().safe(),
       "trials": z.array(SampledTaskTrialSchema),
     })
     .strict()
@@ -8566,6 +8651,14 @@ export const CallValueSchema: z.ZodType<CallValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<CallValue>;
 
+export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
+  z.object({
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "value": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<Cell>;
+
 export const CheckpointBatchesSchema: z.ZodType<CheckpointBatches> = z.lazy(() =>
   z.object({
     "batches": z.array(z.number().int().safe().gt(0).max(9007199254740991)).min(1).max(64),
@@ -8683,6 +8776,15 @@ export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection>
     "collection": z.union([z.literal("object"), z.literal("array")]),
   }).strict()
 ) as unknown as z.ZodType<EnsureDocumentCollection>;
+
+export const EpochSchema: z.ZodType<Epoch> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "length": z.union([ExpressionSchema, z.null()]).optional(),
+    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Epoch>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
   z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
@@ -8871,6 +8973,13 @@ export const LineStyleSchema: z.ZodType<LineStyle> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<LineStyle>;
 
+export const LinkSchema: z.ZodType<Link> = z.lazy(() =>
+  z.object({
+    "model_field": z.string(),
+    "variable": z.string(),
+  }).strict()
+) as unknown as z.ZodType<Link>;
+
 export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   z.object({
     "path": PatchPathSchema,
@@ -8939,6 +9048,25 @@ export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
 export const NodePathSchema: z.ZodType<NodePath> = z.lazy(() =>
   z.array(z.union([z.string(), z.number().int().safe()]))
 ) as unknown as z.ZodType<NodePath>;
+
+export const ObjectiveDocumentSchema: z.ZodType<ObjectiveDocument> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "terms": z.array(ObjectiveTermSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<ObjectiveDocument>;
+
+export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "measure": ExpressionSchema,
+    "measure_type": ValueTypeSchema.optional(),
+    "weight": ExpressionSchema.optional(),
+    "reduction": ReductionSchema.optional(),
+    "epochs": z.array(z.string()).optional(),
+    "enabled": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<ObjectiveTerm>;
 
 export const OmittedReferenceSchema: z.ZodType<OmittedReference> = z.lazy(() =>
   z.object({
@@ -9082,6 +9210,10 @@ export const RangeValuesSchema: z.ZodType<RangeValues> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RangeValues>;
 
+export const ReductionSchema: z.ZodType<Reduction> = z.lazy(() =>
+  z.union([z.literal("mean"), z.literal("sum"), z.literal("last"), z.literal("max")])
+) as unknown as z.ZodType<Reduction>;
+
 export const ReferenceSchema: z.ZodType<Reference> = z.lazy(() =>
   z.union([StepReferenceSchema, RunReferenceSchema, StoreSubsetSchema, NamedSubsetSchema, OmittedReferenceSchema])
 ) as unknown as z.ZodType<Reference>;
@@ -9189,6 +9321,16 @@ export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
 ) as unknown as z.ZodType<Sha256>;
+
+export const SignalSchema: z.ZodType<Signal> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "type": ValueTypeSchema,
+    "cells": z.array(CellSchema),
+    "absent": z.union([ExpressionSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Signal>;
 
 export const SiteSchema: z.ZodType<Site> = z.lazy(() =>
   z.object({
@@ -9878,12 +10020,45 @@ export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SweepSample>;
 
+export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "variables": z.array(VariableSchema),
+    "epochs": z.array(EpochSchema).min(1),
+    "signals": z.array(SignalSchema),
+    "links": z.array(LinkSchema).optional(),
+    "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "validation_trials": z.array(ValidationTrialSchema).min(1).optional(),
+  }).strict()
+) as unknown as z.ZodType<TaskDocument>;
+
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
   z.object({
     "start": z.number().int().safe(),
     "end": z.number().int().safe(),
   }).strict()
 ) as unknown as z.ZodType<TextSpan>;
+
+export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
+  z.object({
+    "model_name": z.string(),
+    "model": ModelDocumentSchema,
+    "task": TaskDocumentSchema,
+    "objective": ObjectiveDocumentSchema,
+    "input_overrides": z.record(z.string(), z.string()).optional(),
+  }).strict()
+) as unknown as z.ZodType<TrialDocuments>;
+
+export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>
+  z.object({
+    "variables": z.record(z.string(), ValidationValueSchema).optional(),
+    "epoch_steps": z.record(z.string(), z.number().int().safe()).optional(),
+  }).strict()
+) as unknown as z.ZodType<ValidationTrial>;
+
+export const ValidationValueSchema: z.ZodType<ValidationValue> = z.lazy(() =>
+  z.union([ScalarSchema, z.array(ValidationValueSchema)])
+) as unknown as z.ZodType<ValidationValue>;
 
 export const ValueBaseSchema: z.ZodType<ValueBase> = z.lazy(() =>
   z.union([z.literal("real"), z.literal("integer"), z.literal("boolean")])
@@ -9896,6 +10071,15 @@ export const ValueTypeSchema: z.ZodType<ValueType> = z.lazy(() =>
     "dimensions": DimensionsSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<ValueType>;
+
+export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "type": ValueTypeSchema,
+    "value": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<Variable>;
 
 export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
   z.object({
@@ -9954,6 +10138,9 @@ export const contractSchemas = {
   EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
   AnalysisDocument: AnalysisDocumentSchema,
+  TaskDocument: TaskDocumentSchema,
+  ObjectiveDocument: ObjectiveDocumentSchema,
+  TrialDocuments: TrialDocumentsSchema,
   FieldTextResult: FieldTextResultSchema,
   Problem: ProblemSchema,
   ReportDocument: ReportDocumentSchema,
@@ -10073,6 +10260,9 @@ export interface ContractTypeMap {
   EvaluateAttachmentEdit: EvaluateAttachmentEdit;
   ModelUndoRequest: ModelUndoRequest;
   AnalysisDocument: AnalysisDocument;
+  TaskDocument: TaskDocument;
+  ObjectiveDocument: ObjectiveDocument;
+  TrialDocuments: TrialDocuments;
   FieldTextResult: FieldTextResult;
   Problem: Problem;
   ReportDocument: ReportDocument;

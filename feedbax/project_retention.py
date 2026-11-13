@@ -10,6 +10,8 @@ from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.project_io import TextProject
+from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import TrainingRequestSpec
@@ -71,6 +73,8 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
     roots = []
     graph_schemas = {GRAPH_SPEC_SCHEMA_ID: GraphSpec, ACAUSAL_GRAPH_SCHEMA_ID: AcausalGraphSpec}
     for name, document in text.project.documents.items():
+        if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID):
+            continue
         model = graph_schemas.get(document.schema_id)
         if model is None:
             gaps.append(f"document {name}: no Store-root traversal for {document.schema_id}")
@@ -99,7 +103,15 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
         if run.kind == "train":
             decoded = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
             assert isinstance(decoded.spec, TrainingRequestSpec)
-            assets = tuple(ref for _, ref in model_asset_refs(decoded.spec.graph))
+            graph = decoded.spec.graph
+            if decoded.spec.trial_documents is not None:
+                from feedbax.compiler.model_document import lower_model_document
+                from feedbax.component_registry import ComponentRegistry
+
+                documents = decoded.spec.trial_documents
+                graph = lower_model_document(documents.model_name, documents.model, ComponentRegistry()).graph
+            assert graph is not None
+            assets = tuple(ref for _, ref in model_asset_refs(graph))
             if assets:
                 key = run.key
                 roots.append(_observed(f"authored:{key.variant}/{key.step}/{key.row}", *assets))

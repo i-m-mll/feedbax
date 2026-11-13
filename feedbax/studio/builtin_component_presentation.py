@@ -5,7 +5,6 @@ from feedbax.compiler.muscle_templates import Arm6MuscleRigidTendon, PointMass8M
 from feedbax.mechanics.analytical_component import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.direct_force_components import PointMass, TwoLinkArm
 from feedbax.mechanics.muscle_config import default_6muscle_2link_segment_lengths
-from feedbax.tasks.reach_components import DelayedReaches, SimpleReaches
 
 from .acausal_representation import (
     _muscle_path_representation,
@@ -19,7 +18,6 @@ from .muscle_representation import (
     _point_mass_muscle_representation,
     _two_link_muscle_representation,
 )
-from .reach_presentation import _reach_task_representation
 
 
 def builtin_component_presentation() -> dict[type, PresentationOverride]:
@@ -35,8 +33,6 @@ def builtin_component_presentation() -> dict[type, PresentationOverride]:
                 self_link_lengths=[float(x) for x in default_6muscle_2link_segment_lengths()],
             )
         ),
-        SimpleReaches: PresentationOverride(representation=_reach_task_representation(delayed=False)),
-        DelayedReaches: PresentationOverride(representation=_reach_task_representation(delayed=True)),
         PlanarLink: PresentationOverride(representation=_planar_link_representation()),
         MusclePath: PresentationOverride(representation=_muscle_path_representation()),
         PointMarker: PresentationOverride(representation=_point_marker_representation()),

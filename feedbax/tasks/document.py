@@ -12,11 +12,9 @@ from feedbax.compiler.model_document import ResolvedModelInterface
 
 import jax
 import jax.numpy as jnp
-from pydantic import Field
 
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
-    Scalar,
     TIME,
     DrawValue,
     Expression,
@@ -28,67 +26,23 @@ from feedbax.contracts.expression_values import (
     ScopedValue,
     Site,
     ValueBase,
-    ValueRecord,
     ValueType,
+)
+from feedbax.contracts.task_document import (
+    Cell as Cell,
+    Epoch as Epoch,
+    Link as Link,
+    Signal as Signal,
+    TaskDocument as TaskDocument,
+    ValidationTrial as ValidationTrial,
+    ValidationValue,
+    Variable as Variable,
 )
 from feedbax.expression_check import dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.expression_registry import FunctionRegistry
-from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime._graph_key_schedule import validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
-
-
-class Variable(ValueRecord):
-    id: str
-    name: str
-    type: ValueType
-    value: Expression
-
-
-class Epoch(ValueRecord):
-    id: str
-    name: str
-    length: Expression | None
-    max_steps: int | None = Field(default=None, ge=0)
-
-
-class Cell(ValueRecord):
-    first_epoch: str
-    last_epoch: str
-    value: Expression
-
-
-class Signal(ValueRecord):
-    id: str
-    name: str
-    type: ValueType
-    cells: tuple[Cell, ...]
-    absent: Expression | None = None
-
-
-class Link(ValueRecord):
-    model_field: str
-    variable: str
-
-
-type ValidationValue = Scalar | tuple[ValidationValue, ...]
-
-
-class ValidationTrial(ValueRecord):
-    variables: dict[str, ValidationValue] = Field(default_factory=dict)
-    epoch_steps: dict[str, int] = Field(default_factory=dict)
-
-
-class TaskDocument(ValueRecord):
-    id: str
-    variables: tuple[Variable, ...]
-    epochs: tuple[Epoch, ...] = Field(min_length=1)
-    signals: tuple[Signal, ...]
-    links: tuple[Link, ...] = ()
-    fixed_steps: int | None = Field(default=None, ge=0)
-    validation_trials: tuple[ValidationTrial, ...] = Field(
-        default=(ValidationTrial(),), min_length=1
-    )
 
 
 @dataclass(frozen=True)
@@ -320,9 +274,7 @@ class DocumentTask:
 
     def validation(self, parameters, key) -> Trial:
         rows = self.validation_rows
-        keys = jax.vmap(lambda i: derive_key(key, "task", "validation", index=i))(
-            jnp.arange(len(rows))
-        )
+        keys = validation_trial_keys(key, len(rows))
         if not rows[0].variables and not rows[0].epoch_steps:
             return jax.vmap(self.ahead, in_axes=(None, None, 0))(parameters, key, keys)
         batch = jax.tree.map(lambda *samples: jnp.stack(samples), *rows)

@@ -46,7 +46,6 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
         component_presentation,
         direct_force_presentation,
         muscle_representation,
-        reach_presentation,
         representation,
     )
 
@@ -67,7 +66,6 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
             component_presentation,
             direct_force_presentation,
             muscle_representation,
-            reach_presentation,
             representation,
         )
     )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import sys
 from collections.abc import Callable
@@ -12,12 +11,15 @@ from typing import Any, Literal, get_args, overload
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 from feedbax.component_registry.registry import ComponentRegistry
+from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
-from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
-from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
@@ -55,31 +57,25 @@ from feedbax.contracts.studio_training import (
     StudioTrainContinuation,
 )
 from feedbax.contracts.training import (
-    LossTermSpec,
     MethodPayloadEnvelope,
     MethodRefSpec,
-    ObjectiveSlotSpec,
     OptimizerSpec,
-    TaskSpec,
-    TimeAggregationSpec,
     TrainingConfig,
     TrainingProgramRegistry,
 )
-from feedbax.contracts.value_schema import ValueSchema
-from feedbax.objectives.spec import TargetStateLossSpec
 from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERATIONS, TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
-from feedbax.studio.protocol import infer_task_n_steps
-from feedbax.studio.reaching_authoring import REACH_TARGET_ID, reach_target_recipe, reaching_endpoint
-from feedbax.studio.schema import retained_observable_selector
 from feedbax.training.optimizers import optimizer_types
 
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
-_TRAIN_DOCUMENT_MODELS = {"model": GraphSpec, "task": TaskSpec}
+_TRAIN_DOCUMENT_MODELS = {
+    "model": (MODEL_DOCUMENT_SCHEMA_ID, ModelDocument),
+    "task": (TASK_DOCUMENT_SCHEMA_ID, TaskDocument),
+    "objective": (OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument),
+}
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
-_TARGET_STATE = TargetStateLossSpec.model_fields["type"].default
 _GRAPH_BATCH_SIZE = 1
 _DEFAULT_OPTIMIZER = "adam"
 type _Path = tuple[str, ...]
@@ -138,8 +134,8 @@ def authoring_surface(
     ]
     project_grammar = Project.model_json_schema(by_alias=True)
     train_documents = {
-        name: (_document_schema(model), model.model_json_schema())
-        for name, model in _TRAIN_DOCUMENT_MODELS.items()
+        name: (schema, model.model_json_schema())
+        for name, (schema, model) in _TRAIN_DOCUMENT_MODELS.items()
     }
     if not catalog:
         return StudioAuthoringSurface(
@@ -153,7 +149,6 @@ def authoring_surface(
         name: StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=payload)
         for name, (schema_id, payload) in train_documents.items()
     } | {
-        "objective": _family(ObjectiveSlotSpec),
         "training-settings": _family(TrainingConfig),
         "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
         "figure": StudioAuthoredDocumentFamily(
@@ -178,7 +173,13 @@ def authoring_surface(
         document_families=documents,
         registries={
             COMPONENTS.family: StudioAuthoringRegistry(
-                entries=sorted(state.bundle.components.list_all(), key=lambda definition: definition.name),
+                entries=sorted(
+                    (definition for definition in state.bundle.components.list_all()
+                     if (owner := state.bundle.components.get(definition.name)) is not None
+                     and (owner.owner_class is None
+                          or owner.owner_class.__module__ != "feedbax.tasks.reach_components")),
+                    key=lambda definition: definition.name,
+                ),
                 origins=_origins(state, COMPONENTS.family),
             ),
             OPERATIONS.family: StudioAuthoringRegistry(
@@ -229,37 +230,6 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
     if source is None or source.kind not in ("document", "step"):
         return None
     return StudioAuthoringSource(kind=source.kind, name=source.name, path=source.path)
-
-
-def _loss_choices(
-    graph: GraphSpec | None, binding: StudioTaskBindingSpec | None, endpoint: ValueSchema | None,
-) -> dict[str, tuple[str, str]]:
-    if graph is None or binding is None:
-        return {}
-    sources: list[tuple[str, str, ValueSchema, str | None]] = []
-    for observable in graph.retained_observables or ():
-        selector = retained_observable_selector(observable)
-        schema = observable.value_schema
-        if not selector.startswith("path:") or schema is None or schema.shape is None:
-            continue
-        sources.append((selector, observable.label or schema.label, schema, None))
-    if endpoint is not None:
-        sources.append((endpoint.id, endpoint.label, endpoint, REACH_TARGET_ID))
-    choices = {}
-    for selector, label, schema, target_id in sources:
-        for target in binding.exposed_data:
-            if target_id is not None and target.id != target_id:
-                continue
-            shape = target.expected_shape
-            if shape is None or shape[:1] != ["time"] or shape[1:] != schema.shape:
-                continue
-            if schema.units and target.units and schema.units != target.units:
-                continue
-            if schema.frame and target.frame and schema.frame != target.frame:
-                continue
-            key = json.dumps([selector, f"task_data:{target.id}"])
-            choices.setdefault(key, (label, target.label))
-    return choices
 
 
 class _TrainFields:
@@ -404,73 +374,6 @@ class _TrainFields:
                     lambda value, path=path: [self.set(path, value)],
                 )
 
-    def objective(
-        self, graph: GraphSpec | None, binding: StudioTaskBindingSpec | None,
-        endpoint: ValueSchema | None,
-    ) -> None:
-        choices = _loss_choices(graph, binding, endpoint)
-        objective = _read(ObjectiveSlotSpec, self.payload.get("objective"))
-        loss = objective.loss if objective is not None and objective.kind == "loss_term" else None
-        key = json.dumps([loss.selector, loss.target_selector]) if loss else None
-        supported = (
-            loss is not None
-            and loss.type in (_TARGET_STATE, "TargetStateLoss")
-            and loss.time_agg is not None
-            and loss.time_agg.mode == "final"
-            and loss.target_value is None
-            and not loss.children
-            and key in choices
-            and isinstance(_get(self.payload, ("objective", "loss")), dict)
-        )
-        empty_composite = (
-            self.direct_unswept and loss is not None and loss.type in {"Composite", "composite"}
-            and not loss.children and loss == LossTermSpec(
-                type=loss.type, label=loss.label, children=loss.children,
-            )
-            and objective == ObjectiveSlotSpec(loss=loss)
-        )
-        path = ("objective", "loss", "selector")
-
-        def write(value: _Scalar) -> list[SetProjectValue]:
-            selector, target_selector = json.loads(str(value))
-            if supported:
-                return [
-                    self.set(path, selector),
-                    self.set(("objective", "loss", "target_selector"), target_selector),
-                ]
-            spec = ObjectiveSlotSpec(
-                loss=LossTermSpec(
-                    type=_TARGET_STATE,
-                    label=choices[str(value)][0],
-                    selector=selector,
-                    target_selector=target_selector,
-                    time_agg=TimeAggregationSpec(mode="final"),
-                ),
-            )
-            return [
-                self.set(
-                    ("objective",),
-                    spec.model_dump(mode="json", exclude_none=True, exclude_unset=True),
-                )
-            ]
-
-        self.field(
-            path,
-            "Final-state objective",
-            key
-            if supported
-            else loss.label
-            if loss
-            else "Authored objective"
-            if "objective" in self.payload
-            else None,
-            _options({key: f"{source} → {target}" for key, (source, target) in choices.items()})
-            if choices and (supported or empty_composite or "objective" not in self.payload)
-            else None,
-            write,
-            documents=(*self.named_documents("graph"), *self.named_documents("task")),
-        )
-
     def studio_method(self, payload: dict[str, JsonValue]) -> StudioGraphMethodPayload | None:
         method_ref = _read(MethodRefSpec, payload.get("method_ref"))
         envelope = _read(MethodPayloadEnvelope, payload.get("method_payload"))
@@ -586,10 +489,9 @@ class _TrainFields:
             documents=scope[1] if scope is not None else (),
         )
 
-    def training(self, task: TaskSpec | None, read_plan: _ReadPlan | None) -> None:
+    def training(self, n_steps: int | None, read_plan: _ReadPlan | None) -> None:
         raw_config = self.payload.get("training_config")
         config = None if _read(DocumentReference, raw_config) else _read(TrainingConfig, raw_config)
-        n_steps = infer_task_n_steps(task)
         defaults = TrainingConfig(batch_size=_GRAPH_BATCH_SIZE)
         if n_steps is not None:
             defaults.n_reach_steps = n_steps
@@ -740,26 +642,10 @@ def project_train_fields(
 ]:
     """Project the supported fields and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
-    graph = definition.document("graph", GraphSpec, "Model")
-    task = definition.document("task", TaskSpec, "Task")
-    binding = _read(StudioTaskBindingSpec, definition.payload.get("task_binding_spec", {}))
-    reach_target, edited_binding = None, None
+    reach_target = None
     reach_edit = change if isinstance(change, StudioReachTargetEdit) else None
-    if (
-        definition.direct_unswept and task is not None and task.type == "SimpleReaches"
-        and task.timeline is None and graph is not None and components is not None
-        and binding is not None
-    ):
-        reach_target, edited_binding = reach_target_recipe(graph, binding, components, reach_edit)
-    endpoint = (
-        reaching_endpoint(graph, components)
-        if reach_target is not None and reach_target.input is not None
-        and graph is not None and components is not None else None
-    )
-    definition.objective(graph, binding, endpoint)
-    definition.training(task, read_plan)
-    if graph is not None and components is not None and not definition.named_documents("graph"):
-        definition.inline_component_fields(graph, components)
+    task = _read(TaskDocument, _get(definition.payload, ("trial_documents", "task")))
+    definition.training(task.fixed_steps if task is not None else None, read_plan)
 
     sweeps = {}
     for field_id, field in definition.fields.items():
@@ -780,13 +666,7 @@ def project_train_fields(
     patches = []
     documents: set[str] = set()
     if reach_edit is not None:
-        if reach_target is None:
-            raise ValueError("This Train has no supported Reach Target binding")
-        if edited_binding is not None:
-            patches = [definition.set(
-                ("task_binding_spec",), edited_binding.model_dump(mode="json", exclude_none=True),
-            )]
-            documents.update((*definition.named_documents("graph"), *definition.named_documents("task")))
+        raise ValueError("Edit the target in the authored Task document.")
     elif isinstance(change, StudioAuthoringSweepChange):
         sweep = sweeps.get(change.field)
         if sweep is None:

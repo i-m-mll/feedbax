@@ -151,35 +151,11 @@ class PlanJobReader:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
         if (source := plan.requests.get(checkpoint.request_id)) is not None:
-            from feedbax.component_registry import ComponentRegistry
             from feedbax.contracts.request_specs import TrainingRequestSpec
-            from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
-            from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
 
             spec = decode_request(source, plan.documents.__getitem__).spec
-            if not isinstance(spec, TrainingRequestSpec):
-                raise CannotRun("/inputs/subject", "requires an authored Train request")
-            validate_evaluation_source(spec.graph)
-            if params.variation:
-                variant = resolve_evaluation_variant(spec.graph, spec.task, params.variation)
-                if variant.graph != spec.graph:
-                    if self._evaluation_components is None:
-                        self._evaluation_components = ComponentRegistry()
-                    components = self._evaluation_components
-                    binding = spec.task_binding_spec
-                    issues = validate_graph_connection_schema(
-                        variant.graph, "/graph", binding, component_registry=components,
-                    )
-                    if binding is not None:
-                        issues.extend(validate_task_binding_schema(
-                            binding, variant.graph, "/task_binding_spec", component_registry=components,
-                        ))
-                    if issue := next((issue for issue in issues if issue.severity == "error"), None):
-                        location = (issue.location or {}).get("path", "/graph")
-                        raise CannotRun(
-                            variant.edit_location(location) or "/inputs/subject" + location,
-                            issue.message,
-                        )
+            if not isinstance(spec, TrainingRequestSpec) or spec.trial_documents is None:
+                raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
         return params, checkpoint
 
     def read_plan_attempts(
@@ -403,7 +379,7 @@ class JobService(PlanJobReader):
                         current.plan.requests[run.request_id],
                         current.plan.documents,
                         self.registries.training_programs,
-                        store,
+                        store, registries=self.registries,
                     )
                 except (ValueError, KeyError) as error:
                     items[name] = _rejected(name, str(error))

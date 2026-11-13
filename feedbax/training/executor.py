@@ -773,6 +773,70 @@ def execute_training_run_spec(
     ``checkpoint_history_parent_roots`` locates ancestor transactions for
     self-contained history materialization when custody spans multiple roots.
     """
+    return _execute_training_run(
+        **{name: value for name, value in locals().items() if name != "spec"},
+        spec=spec, managed=False,
+    )
+
+
+def execute_managed_training_run(spec: TrainingRunSpec, **arguments):
+    """Drive a prepared document run through the shared lifecycle."""
+    return _execute_training_run(spec=spec, managed=True, **arguments)
+
+
+def _execute_training_run(
+    spec: TrainingRunSpec | Mapping[str, Any],
+    *,
+    managed: bool,
+    run_id: str | None = None,
+    preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
+    initial_slots: Mapping[str, Any] | None = None,
+    kernel_context: Mapping[str, Any] | None = None,
+    manifest_root: Path | str | None = None,
+    checkpoint_root: Path | str | None = None,
+    checkpoint_source_root: Path | str | None = None,
+    checkpoint_source_pointer: CheckpointLatestPointer | None = None,
+    checkpoint_history_parent_roots: Mapping[str, Path | str] | None = None,
+    checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
+    checkpoint_initialization_request: CheckpointInitializationRequest | None = None,
+    checkpoint_fork_plan: CheckpointForkPlan | None = None,
+    checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
+    checkpoint_fork_target_id: str | None = None,
+    checkpoint_content_provider: ArtifactBlobProvider | None = None,
+    semantic_model: SemanticModelWriter | None = None,
+    train_state_codec: TrainStateCodec = "legacy",
+    checkpoint_source_content_binding: ContentBinding | None = None,
+    registry: TrainingProgramRegistry,
+    loss_service: LossService | None = None,
+    environment: WorkerExecutabilityEnvironment | None = None,
+    training_spec_payload: Mapping[str, Any] | None = None,
+    training_spec_payload_kind: str = "TrainingRunSpec",
+    training_spec_payload_schema_id: str | None = None,
+    training_spec_payload_schema_version: str | None = None,
+    training_spec_payload_ref: str | None = None,
+    manifest_metadata_projection: TrainingManifestMetadataProjection
+    | Mapping[str, Any]
+    | None = None,
+    task_binding_spec: Mapping[str, Any] | None = None,
+    resume: bool = False,
+    resume_slot_transform: ResumeSlotTransform | None = None,
+    stop_after_barrier: str | None = None,
+    update_budget: int | None = None,
+    manifest_conflict_policy: ManifestConflictPolicy = "error",
+    issues: Sequence[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    retain_history: bool = True,
+    run_event_emitter: RunEventEmitter | None = None,
+    cancellation_probe: CancellationProbe | None = None,
+    stop_before_update: Callable[[], bool] | None = None,
+    start_callback: Callable[[int], None] | None = None,
+    committed_update_callback: CommittedUpdateCallback | None = None,
+    checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
+    before_finalize: Callable[[], None] | None = None,
+    execution_started_at_monotonic: float | None = None,
+    execution_start_semantics: str = "executor_entry",
+    execution_context: NativeExecutionProducerContext | Mapping[str, Any] | None = None,
+) -> TrainingRunExecutionResult:
     started_at = (
         time.perf_counter()
         if execution_started_at_monotonic is None
@@ -780,6 +844,8 @@ def execute_training_run_spec(
     )
     cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
+    if managed != (run_spec.trial_documents is not None):
+        raise TrainingRunExecutorError("/trial_documents: This entry point requires its own request family.")
     if run_spec.task_binding_spec is not None:
         bound_task = run_spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
         if task_binding_spec is not None and task_binding_spec != bound_task:
@@ -930,12 +996,19 @@ def execute_training_run_spec(
     method_contract = resolved_method.contract
     _validate_declarations_match_spec(run_spec, method_contract.method_ref)
 
-    graph_inline = _graph_inline(run_spec.graph)
-    lowered = _lower_objective(
-        run_spec,
-        graph_inline=graph_inline,
-        loss_service=loss_service or LossService(),
-    )
+    if managed:
+        if preparation is None or loss_service is not None:
+            raise TrainingRunExecutorError("Managed Train requires its prepared objective.")
+        # The prepared numerical kernel closes over its objective. The shared
+        # phase declaration still carries the legacy read-only objective slot.
+        lowered_objective = None
+        requirements = None
+    else:
+        lowered = _lower_objective(
+            run_spec, graph_inline=_graph_inline(run_spec.graph),
+            loss_service=loss_service or LossService(),
+        )
+        lowered_objective, requirements = lowered.loss, lowered.requirements
     kernels = dict(resolved_method.update_kernels)
     guards = dict(resolved_method.guard_predicates)
     effective_phase = validate_worker_contract(
@@ -944,7 +1017,7 @@ def execute_training_run_spec(
         update_kernels=kernels,
         guard_predicates=guards,
         task_binding_spec=task_binding_spec,
-        objective_requirements=lowered.requirements,
+        objective_requirements=requirements,
         active_mapping_axes=tuple(level.axis for level in mapping_levels),
     )
     if (
@@ -958,7 +1031,7 @@ def execute_training_run_spec(
     executor_owned_slots = executor_owned_initial_slot_names(run_spec, slot_axis_bindings)
     slots = _initial_slots(
         initial_slots,
-        lowered_objective=lowered.loss,
+        lowered_objective=lowered_objective,
         executor_owned_slots=executor_owned_slots,
     )
     slots = _normalize_batch_progress_slot(slots, program=program)

@@ -39,6 +39,8 @@ def prepare_training_invocation(
     model_assets: ArtifactBlobProvider | None = None,
     phase: Callable[[Literal["building", "compiling"]], None] | None = None,
 ) -> ExecutionPreparationResult | MaterializedExecutionPreparation | None:
+    if run_spec.trial_documents is not None:
+        raise ValueError("/trial_documents: The retained envelope cannot prepare managed requests.")
     resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
     if run_spec.graph.inline is None:
         raise ValueError("execute-training-run-spec requires an inline graph document")

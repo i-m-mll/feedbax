@@ -239,7 +239,7 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
         scope.store([record.model_dump(mode="json", exclude_unset=True) for record in records])
         candidate = compile_project(
             Project.model_validate(data), readers=settled.readers,
-            operations=folders.operations, components=components,
+            operations=folders.operations, components=components, functions=folders.functions,
         )
         previous = {run.key: run.request_id for run in plan.runs}
         current = {run.key: run.request_id for run in candidate.runs}

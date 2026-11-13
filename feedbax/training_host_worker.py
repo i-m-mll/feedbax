@@ -214,8 +214,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         bind_published_checkpoint_content,
         open_published_model_slot,
     )
-    from feedbax.training.executor import execute_training_run_spec
-    from feedbax.training.invocation import prepare_training_invocation
+    from feedbax.training.executor import execute_managed_training_run
     from feedbax.training.manifest_preflight import build_training_run_manifest_spec_payloads
     from feedbax.training.model_checkpoint import (
         ModelCheckpointError,
@@ -224,11 +223,13 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     )
     from feedbax.training.preparation import ExecutionPreparationResult
     from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
-    from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
+    from feedbax.training.studio_executor import StudioUpdateKernel, prepare_managed_training, studio_training_key
     from feedbax.web.model_assets import model_artifact_provider
 
     events.current_phase = "binding"
     launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
+    if launch.spec.trial_documents is None:
+        raise ValueError("/trial_documents: Managed Train requires authored documents.")
     if launch.spec.method_ref != STUDIO_GRAPH_METHOD:
         raise ValueError("Studio training jobs require the registered Studio graph method")
     method = StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
@@ -333,14 +334,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         )
         events.phase("building")
         registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
-        preparation = prepare_training_invocation(
-            launch.spec,
-            registries,
-            run_id=job_id,
-            resume=resume is not None,
-            model_assets=model_assets,
-            phase=lambda phase: events.phase(phase) if phase != events.current_phase else None,
-        )
+        events.phase("compiling")
+        preparation = prepare_managed_training(launch.spec, registries, model_assets=model_assets)
         if not isinstance(preparation, ExecutionPreparationResult):
             raise ValueError("Studio graph training requires scalar execution preparation")
         if source_model is not None and source_model.graph != effective_model_graph(
@@ -501,7 +496,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                     registry=registries.training_programs,
                     writer=semantic_model,
                 )
-        result = execute_training_run_spec(
+        result = execute_managed_training_run(
             spec,
             run_id=job_id,
             preparation=preparation,

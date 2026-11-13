@@ -416,6 +416,9 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.request_specs import TrialDocuments
+from feedbax.contracts.task_document import TaskDocument
 from scripts.studio_json_schema import emit_authored_contracts
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
@@ -455,6 +458,9 @@ JOB_MODELS = (
 
 AUTHORED_CONTRACT_MODELS = (
     AnalysisDocument,
+    TaskDocument,
+    ObjectiveDocument,
+    TrialDocuments,
     FieldTextResult,
     Problem,
     ReportDocument,

@@ -31,7 +31,7 @@ class TrainingRunManifestSpecPayloads:
 
     graph_spec: SpecPayload | None
     training_spec: SpecPayload
-    task_spec: SpecPayload
+    task_spec: SpecPayload | None
     task_binding_spec: SpecPayload | None
 
     def model_dump(self) -> dict[str, Any]:
@@ -117,7 +117,7 @@ def build_training_run_manifest_spec_payloads(
             schema_version=training_spec_payload_schema_version,
             ref=training_spec_payload_ref,
         ).model_copy(update={"migration_records": migration_records or []}),
-        task_spec=spec_payload("TaskSpec", spec.task.model_dump(mode="json")),
+        task_spec=spec_payload("TaskSpec", spec.task.model_dump(mode="json")) if spec.task is not None else None,
         task_binding_spec=(
             spec_payload("StudioTaskBindingSpec", dict(task_binding_spec))
             if task_binding_spec is not None
@@ -167,7 +167,7 @@ def _normalize_payload_fields(
     *,
     graph_spec: SpecPayload | None,
     training_spec: SpecPayload,
-    task_spec: SpecPayload,
+    task_spec: SpecPayload | None,
     task_binding_spec: SpecPayload | None,
 ) -> TrainingRunManifestSpecPayloads:
     manifest = TrainingRunManifest(

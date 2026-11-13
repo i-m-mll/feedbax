@@ -11,11 +11,10 @@ import time
 from typing import Any, Callable
 
 import equinox as eqx
-from equinox.nn import State, StateIndex
+from equinox.nn import State
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax.tree as jt
 import optax
 
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID, derive_key, sample_steps
@@ -57,7 +56,8 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.compiler.serialization import _component_owns_trainability, prototypes_from_task_bindings
+from feedbax.compiler.serialization import prototypes_from_task_bindings
+from feedbax.compiler.trainability import compile_trainability
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
 from feedbax.training.executor import execute_training_run_spec
@@ -252,7 +252,7 @@ def compile_training_run(
     if not loss_terms:
         raise _missing_loss_terms_error()
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
-    trainable_nodes, trainable_filter = _compile_trainability(
+    trainable_nodes, trainable_filter = compile_trainability(
         graph_model, graph, component_registry
     )
 
@@ -1119,59 +1119,6 @@ def _state_path_from_selector(selector: str) -> str:
     return path
 
 
-def _compile_trainability(
-    graph_spec: GraphSpec, graph: Graph, registry: Any
-) -> tuple[tuple[str, ...], Any]:
-    """Select inexact leaves of authored components outside frozen subtrees.
-
-    Causal interiors have their own parameter owners. Opaque runtimes are
-    selected as a single component, and compiler-generated nodes stay frozen.
-    """
-    trainable_paths: list[str] = []
-
-    def graph_filter(spec: GraphSpec, runtime: Graph, path: tuple[str, ...]) -> Any:
-        node_filters = dict.fromkeys(runtime.nodes, False)
-        subgraphs = spec.subgraphs or {}
-        for node_id, node in spec.nodes.items():
-            binding = runtime.component_bindings.get(node_id)
-            override = binding.trainable_override if binding is not None else None
-            declaration = registry.get(node.type)
-            if (
-                override is None
-                and isinstance(node.params.get("trainable"), bool)
-                and declaration is not None
-                and _component_owns_trainability(declaration)
-            ):
-                override = node.params["trainable"]
-            if override is False:
-                continue
-            component = runtime.nodes[node_id]
-            node_path = (*path, node_id)
-            interior = subgraphs.get(node_id)
-            if isinstance(interior, GraphSpec):
-                if not isinstance(component, Graph):
-                    raise TypeError(f"Expected a runtime graph at {'.'.join(node_path)!r}")
-                node_filters[node_id] = graph_filter(interior, component, node_path)
-                continue
-            if override is not True and not getattr(declaration, "trainable_by_default", False):
-                continue
-            leaves, structure = jt.flatten(
-                component, is_leaf=lambda value: isinstance(value, StateIndex)
-            )
-            mask = [eqx.is_inexact_array(leaf) for leaf in leaves]
-            if any(mask):
-                node_filters[node_id] = structure.unflatten(mask)
-                trainable_paths.append(".".join(node_path))
-
-        # Equinox accepts mask prefixes, so unselected node subtrees can share one False.
-        return jt.map(
-            lambda value: node_filters if value is runtime.nodes else False,
-            runtime,
-            is_leaf=lambda value: value is runtime.nodes,
-        )
-
-    filter_spec = graph_filter(graph_spec, graph, ())
-    return tuple(trainable_paths), filter_spec
 
 
 def _dry_run(compiled: CompiledTrainingRun) -> None:

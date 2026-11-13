@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import NamedTuple
 
 import jax
@@ -12,16 +11,18 @@ import jax.numpy as jnp
 
 from feedbax.contracts.expression_values import (
     TIME,
-    Expression,
     Level,
-    LiteralValue,
     Problem,
     ProblemCode,
     ScopedValue,
     Site,
     ValueBase,
-    ValueRecord,
     ValueType,
+)
+from feedbax.contracts.objective_document import (
+    ObjectiveDocument as ObjectiveDocument,
+    ObjectiveTerm as ObjectiveTerm,
+    Reduction as Reduction,
 )
 from feedbax.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
@@ -29,28 +30,6 @@ from feedbax.expression_registry import FunctionRegistry
 from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.runtime.epoch_windows import whole_window
 from feedbax.tasks.document import DocumentTask, Trial
-
-
-class Reduction(StrEnum):
-    MEAN = "mean"
-    SUM = "sum"
-    LAST = "last"
-    MAX = "max"
-
-
-class ObjectiveTerm(ValueRecord):
-    id: str
-    measure: Expression
-    measure_type: ValueType = ValueType(base=ValueBase.REAL)
-    weight: Expression = LiteralValue(value=1)
-    reduction: Reduction = Reduction.MEAN
-    epochs: tuple[str, ...] = ()
-    enabled: bool = True
-
-
-class ObjectiveDocument(ValueRecord):
-    id: str
-    terms: tuple[ObjectiveTerm, ...] = ()
 
 
 class ObjectiveInputs(NamedTuple):

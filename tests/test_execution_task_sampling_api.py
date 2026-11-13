@@ -4,7 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.web.app import create_app
-from feedbax.tasks.reach_components import SimpleReaches
+from tests.test_document_task_parity import _model_payload, _pair_model, example
+from feedbax.expression_builtins import register_builtins
+from feedbax.expression_registry import FunctionRegistry
+
+
+@pytest.fixture
+def expression_functions():
+    registry = FunctionRegistry()
+    register_builtins(registry)
+    registry.seal()
+    return registry
 
 
 @pytest.fixture
@@ -13,91 +23,43 @@ def client():
         yield test_client
 
 
-@pytest.mark.parametrize("task_type", ["SimpleReaches", f"feedbax.{SimpleReaches.__name__}"])
-def test_sample_task_trials_is_deterministic_for_simple_reaches(
-    client: TestClient, task_type: str
-) -> None:
-    request = {
-        "task_spec": {
-            "type": task_type,
-            "params": {
-                "n_steps": 12,
-                "workspace": [[-0.5, -0.25], [0.5, 0.25]],
-                "eval_reach_length": 0.4,
-            },
-        },
+def authored_preview(kind, expression_functions):
+    interface, _ = _pair_model()
+    document, _ = example(kind, expression_functions, interface=interface)
+    return {
+        "model_name": "reach-model",
+        "model": _model_payload(),
+        "task": document.model_dump(mode="json"),
+        "input_overrides": {"reach_target": "target_pos"},
         "seed": 17,
         "count": 4,
     }
 
-    first = client.post("/api/execution/task-trials/sample", json=request)
-    second = client.post("/api/execution/task-trials/sample", json=request)
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json() == second.json()
-    payload = first.json()
-    assert payload["schema_version"] == "feedbax.execution.sampled_task_trials.v1"
-    assert payload["task_type"] == "SimpleReaches"
-    assert len(payload["trials"]) == 4
-    assert payload["trials"][0]["n_steps"] == 12
-    assert len(payload["trials"][0]["start"]) == 2
-    assert len(payload["trials"][0]["goal"]) == 2
-
-
-def test_sample_task_trials_accepts_reaching_task_registry_alias(client: TestClient) -> None:
-    response = client.post(
-        "/api/execution/task-trials/sample",
-        json={
-            "task_spec": {
-                "type": "feedbax.task.ReachingTask",
-                "params": {
-                    "n_steps": 6,
-                    "workspace": [[-1.0, -1.0], [1.0, 1.0]],
-                },
-            },
-            "seed": 0,
-            "count": 1,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["task_type"] == "SimpleReaches"
+@pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
+def test_sample_task_trials_returns_the_authored_trial(client, expression_functions, kind):
+    payload = authored_preview(kind, expression_functions)
+    first = client.post("/api/execution/task-trials/sample", json=payload)
+    second = client.post("/api/execution/task-trials/sample", json=payload)
+    assert first.status_code == second.status_code == 200, first.text
+    result = first.json()
+    assert result == second.json()
+    assert result["schema_version"] == "feedbax.execution.sampled_task_trials.v2"
+    assert result["task"] == kind
+    assert result["n_steps"] == 80
+    assert len(result["trials"]) == 4
+    trial = result["trials"][0]
+    assert len(trial["inputs"]["target_pos"]) == result["n_steps"]
+    assert list(trial["inits"].values()) == [trial["variables"]["start"]]
+    assert trial["timeline"][0]["start"] == 0
+    assert trial["timeline"][-1]["end"] == result["n_steps"]
 
 
-def test_sample_task_trials_supports_delayed_center_out_timeline_cues(
-    client: TestClient,
-) -> None:
-    response = client.post(
-        "/api/execution/task-trials/sample",
-        json={
-            "task_spec": {
-                "type": "DelayedReaches",
-                "params": {
-                    "preset": "delayed_center_out",
-                    "n_control_stages": 8,
-                    "workspace": [[-1.0, -1.0], [1.0, 1.0]],
-                    "epoch_len_ranges": [[2, 2]],
-                    "p_catch_trial": 0.0,
-                },
-            },
-            "seed": 4,
-            "count": 2,
-        },
-    )
-
-    assert response.status_code == 200
-    trial = response.json()["trials"][0]
-    assert trial["n_steps"] == 9
-    assert {"label": "prep", "step": 0, "kind": "epoch"} in trial["timeline"]
-    assert {"label": "go_cue", "step": 2, "kind": "event"} in trial["timeline"]
-
-
-def test_sample_task_trials_rejects_unsupported_task_type(client: TestClient) -> None:
-    response = client.post(
-        "/api/execution/task-trials/sample",
-        json={"task_spec": {"type": "Stabilization", "params": {}}, "seed": 0, "count": 1},
-    )
-
+def test_sample_task_trials_reports_model_pairing_problem(client, expression_functions):
+    payload = authored_preview("simple", expression_functions)
+    payload["input_overrides"] = {"reach_target": "target_vel"}
+    response = client.post("/api/execution/task-trials/sample", json=payload)
     assert response.status_code == 422
-    assert "not supported" in response.json()["detail"]
+    (problem,) = response.json()["detail"]
+    assert problem["path"][:2] == ["model", "inputs"]
+    assert problem["code"] == "type_mismatch"

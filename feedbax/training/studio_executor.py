@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import equinox as eqx
@@ -12,6 +13,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 
+from feedbax.compiler.trainability import compile_trainability
+from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.contracts.artifact_custody import ArtifactBlobProvider
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     STUDIO_GRAPH_METHOD_PAYLOAD_ID,
@@ -33,6 +38,10 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
+from feedbax.objectives.document import ObjectiveExecutor
+from feedbax.runtime.graph import Graph
+from feedbax.runtime.trial_execution import TrialExecution
+from feedbax.tasks.document import TaskParameters
 from feedbax.runtime._graph_key_schedule import derive_key, sample_training_trials
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.training.optimizers import build_optimizer
@@ -119,12 +128,20 @@ class StudioUpdateKernel:
         *,
         compiled: Any,
         optimizer: optax.GradientTransformationExtraArgs,
-        rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
-        evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
+        score_batch: Callable[[Any, jax.Array, int], tuple[jax.Array, dict[str, jax.Array]]] | None = None,
+        rollout_fn: Callable[[Any, Any, Any], dict[str, Any]] | None = None,
+        evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]] | None = None,
+        snapshot: Callable[[Any, jax.Array], dict[str, Any]] | None = None,
     ) -> None:
-        self._compiled = compiled
+        if score_batch is None:
+            if rollout_fn is None or evaluate_loss_fn is None:
+                raise TypeError("Supply a batch score or the scenario worker's rollout and loss.")
+            score_batch = _score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn)
+        elif rollout_fn is not None or evaluate_loss_fn is not None:
+            raise TypeError("Supply exactly one scoring interface.")
+        self._snapshot = snapshot
         trainable_filter = compiled.trainable_filter
-        batch_size = compiled.training_spec.batch_size
+        batch_size = compiled.batch_size if isinstance(compiled, PairedUpdateInputs) else compiled.training_spec.batch_size
 
         @eqx.filter_jit
         def numerical_update(model, optimizer_state, key, batch_counter):
@@ -132,15 +149,7 @@ class StudioUpdateKernel:
             key, step_key = jr.split(key)
 
             def loss_from_trainable(candidate):
-                graph = eqx.combine(candidate, frozen)
-
-                def loss_on_trial(trial_key):
-                    return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, trial_key))
-
-                if batch_size == 1:
-                    return loss_on_trial(step_key)
-                trial_losses = sample_training_trials(loss_on_trial, step_key, batch_size)
-                return jax.tree.map(lambda values: jnp.mean(values, axis=0), trial_losses)
+                return score_batch(eqx.combine(candidate, frozen), step_key, batch_size)
 
             (loss, terms), grads = eqx.filter_value_and_grad(loss_from_trainable, has_aux=True)(
                 trainable
@@ -202,9 +211,27 @@ class StudioUpdateKernel:
         return updated
 
     def trajectory_snapshot(self, graph: Any, key: jax.Array) -> dict[str, Any]:
-        from feedbax.web.worker.execution import training_trajectory_snapshot
+        return self._snapshot(graph, key) if self._snapshot is not None else {}
 
-        return training_trajectory_snapshot(graph, self._compiled, key)
+
+def _score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn):
+    """Preserve the protected scenario worker's established batch reduction."""
+    def score(graph, key, count):
+        def one(trial_key):
+            return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, trial_key))
+
+        if count == 1:
+            return one(key)
+        trials = sample_training_trials(one, key, count)
+        return jax.tree.map(lambda values: jnp.mean(values, axis=0), trials)
+
+    return score
+
+
+def _legacy_snapshot(compiled):
+    from feedbax.web.worker.execution import training_trajectory_snapshot
+
+    return lambda graph, key: training_trajectory_snapshot(graph, compiled, key)
 
 
 def studio_training_registry(
@@ -221,8 +248,8 @@ def studio_training_registry(
     kernel = StudioUpdateKernel(
         compiled=compiled,
         optimizer=optimizer,
-        rollout_fn=rollout_fn,
-        evaluate_loss_fn=evaluate_loss_fn,
+        score_batch=_score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn),
+        snapshot=_legacy_snapshot(compiled),
     )
     compiled.metadata["numerical_compile_time_ms"] = kernel.compile_time_ms
 
@@ -308,8 +335,10 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
         optimizer = standard_train_optimizer(payload, gradient_clip=spec.training_config.grad_clip)
         kernel = StudioUpdateKernel(
             compiled=compiled, optimizer=optimizer,
-            rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
-            evaluate_loss_fn=_evaluate_loss,
+            score_batch=_score_legacy_batch(
+                compiled, lambda graph, plan, key: rollout_graph(graph, plan, key=key), _evaluate_loss,
+            ),
+            snapshot=_legacy_snapshot(compiled),
         )
         trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
 
@@ -364,4 +393,93 @@ def studio_graph_training_program(component_registry: Any) -> DeclaredTrainingPr
         optimizer_step_extractor=standard_train_optimizer_step,
         owner="feedbax.training.studio_executor",
         package="feedbax",
+    )
+
+
+@dataclass(frozen=True)
+class PairedUpdateInputs:
+    graph: Graph
+    trainable_filter: Any
+    batch_size: int
+
+
+def prepare_trial_update(
+    graph: Graph,
+    task_execution: TrialExecution,
+    objective: ObjectiveExecutor,
+    *,
+    parameters: TaskParameters,
+    run_key: jax.Array,
+    batch_size: int,
+    trainable_filter: Any,
+    optimizer: optax.GradientTransformationExtraArgs,
+) -> StudioUpdateKernel:
+    """Use the existing bounded optimizer step for a separate task and objective."""
+    if batch_size < 1:
+        raise ValueError("A training batch must contain at least one trial.")
+
+    def score(model, step_key, count):
+        result = task_execution.training_batch(
+            model, objective, parameters, run_key=run_key, update_key=step_key, count=count,
+        )
+        return result.loss, {name: term.value for name, term in result.terms.items()}
+
+    def snapshot(model, key):
+        trial = task_execution.task.ahead(parameters, key, key)
+        retained, _ = task_execution.rollout(model, trial, key)
+        return {"n_steps": task_execution.task.n_steps,
+                "outputs": {name: value.tolist() for name, value in retained.items()}}
+
+    return StudioUpdateKernel(
+        compiled=PairedUpdateInputs(graph, trainable_filter, batch_size),
+        snapshot=snapshot,
+        optimizer=optimizer,
+        score_batch=score,
+    )
+
+
+def prepare_managed_training(
+    spec: TrainingRunSpec, registries, *, model_assets: ArtifactBlobProvider | None = None,
+) -> ExecutionPreparationResult:
+    """Prepare the document pair through the existing bounded update kernel."""
+    documents = spec.trial_documents
+    if documents is None:
+        raise ValueError("/trial_documents: Managed Train requires a document pair.")
+    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
+    paired = compile_trial_execution(
+        documents.model_name, documents.model, documents.task,
+        registries.components, registries.expression_functions,
+        objective=documents.objective, input_overrides=documents.input_overrides,
+        initialization_key=studio_training_key(method.seed, "model"),
+        artifact_provider=model_assets,
+    )
+    if not isinstance(paired, PreparedTrialExecution):
+        problem = paired[0]
+        raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+    assert paired.objective is not None
+    graph = paired.executable.graph
+    _, mask = compile_trainability(paired.executable.resolved.graph, graph, registries.components)
+    optimizer = standard_train_optimizer(method, gradient_clip=spec.training_config.grad_clip)
+    kernel = prepare_trial_update(
+        graph, paired.execution, paired.objective, parameters=TaskParameters(),
+        run_key=studio_training_key(method.seed, "task-run"),
+        batch_size=spec.training_config.batch_size, trainable_filter=mask, optimizer=optimizer,
+    )
+
+    def bind_schedule(_slots, origin, current, count):
+        policy = method.continuation
+        assert policy is not None
+        authored = policy.progress.source_completed_batches if policy.schedule == "restart" else 0
+        if origin != authored or current != count:
+            raise ValueError("/slots/optimizer: restored schedule clock differs from the prepared clock")
+        return {}
+
+    return ExecutionPreparationResult(
+        initial_slots={
+            "model": graph, "optimizer": optimizer.init(eqx.filter(graph, mask)),
+            "prng": studio_training_key(method.seed, "update"),
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+        },
+        kernel_context={"studio_graph_update": kernel},
+        restored_schedule_context_binder=bind_schedule if method.continuation is not None else None,
     )

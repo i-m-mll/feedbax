@@ -23,6 +23,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import directory_open_flags, rename_no_replace
+from feedbax.expression_registry import FunctionRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
@@ -337,10 +338,12 @@ class ProjectFolderService:
     def __init__(
         self, root: Path, *, operations: OperationRegistry | None = None,
         components: ComponentRegistry | None = None,
+        functions: FunctionRegistry | None = None,
     ) -> None:
         self.root = root.resolve()
         self.operations = operations
         self.components = components
+        self.functions = functions
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
         self._model_undo_key = token_bytes(32)
 
@@ -455,7 +458,7 @@ class ProjectFolderService:
             project_id, text,
             compile_project(
                 text.project, source_runs=source_runs, memo=self._plan_memo(project_id),
-                operations=self.operations, components=self.components, readers=readers,
+                operations=self.operations, components=self.components, functions=self.functions, readers=readers,
             ),
             readers=readers,
         )

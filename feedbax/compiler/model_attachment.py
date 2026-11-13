@@ -137,17 +137,17 @@ def resolve_model_attachments(
 
 
 def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
-    for field in ("nodes", "wires", "output_bindings"):
-        old = getattr(before, field)
-        new = getattr(after, field)
-        if field == "wires":
+    for member in ("nodes", "wires", "output_bindings"):
+        old = getattr(before, member)
+        new = getattr(after, member)
+        if member == "wires":
             old = {wire.authored_id(): wire for wire in old}
             new = {wire.authored_id(): wire for wire in new}
         for name in sorted(old.keys() | new.keys()):
             previous, current = old.get(name), new.get(name)
             if previous == current:
                 continue
-            target = ".".join((*path, field, name))
+            target = ".".join((*path, member, name))
             if current is None:
                 yield OverridePatch(path=target, op="remove")
             else:
@@ -159,7 +159,7 @@ def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
 
 
 def lower_evaluate_attachments(
-    document: str, model: ModelDocument, binding: StudioTaskBindingSpec, components: ComponentRegistry,
+    document: str, model: ModelDocument, binding: StudioTaskBindingSpec | None, components: ComponentRegistry,
     differences: tuple[ModelAttachmentDifference, ...],
 ) -> tuple[LoweredModelDocument, tuple[OverridePatch, ...]]:
     """Derive the scoped wire/port variation from the resolved authored model."""

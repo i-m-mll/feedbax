@@ -7,7 +7,7 @@ import json
 from enum import Enum
 from functools import cache
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, ForwardRef, Literal, TypeAliasType, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -39,7 +39,13 @@ _REQUIRED_STORED = {(RetainedObservableSpec, "id"), (AnalysisInputRequirement, "
 
 
 def _annotation(annotation: Any) -> Any:
-    return get_args(annotation)[0] if get_origin(annotation) is Annotated else annotation
+    while True:
+        if isinstance(annotation, TypeAliasType):
+            annotation = annotation.__value__
+        elif get_origin(annotation) is Annotated:
+            annotation = get_args(annotation)[0]
+        else:
+            return annotation
 
 
 @cache
@@ -146,6 +152,12 @@ def _wide_integer(model: type[BaseModel], name: str) -> bool:
     return any(isinstance(item, IdentityWideInteger) for item in model.model_fields[name].metadata)
 
 
+@cache
+def _field_annotation(model: type[BaseModel], name: str) -> Any:
+    annotation = model.model_fields[name].annotation
+    return get_type_hints(model, include_extras=True)[name] if isinstance(annotation, ForwardRef) else annotation
+
+
 def _encode_field(
     model: type[BaseModel], name: str, value: Any, pins: Mapping | None, *, explicit: bool = False
 ) -> Any:
@@ -153,7 +165,7 @@ def _encode_field(
         return str(value) if abs(value) > _SAFE_INT else value
     if model is ComponentSpec and name == "params":
         return _array_parameters(value, decode=False)
-    return encode(value, model.model_fields[name].annotation, pins, explicit=explicit)
+    return encode(value, _field_annotation(model, name), pins, explicit=explicit)
 
 
 def encode(
@@ -209,7 +221,7 @@ def encode(
 
 
 def _project_absent(model: type[BaseModel], name: str, value: Any, pins: Mapping) -> Any:
-    annotation = model.model_fields[name].annotation
+    annotation = _field_annotation(model, name)
     if not isinstance(value, (dict, list)) or not value and not _model_choices(annotation):
         return value
     restored = decode(value, annotation, pins)
@@ -234,7 +246,7 @@ def _decode_model(model: type[BaseModel], value: dict, pins: Mapping) -> dict:
             item = int(item)
         if model is ComponentSpec and name == "params":
             item = _array_parameters(item, decode=True)
-        result[name] = decode(item, fields[name].annotation, pins)
+        result[name] = decode(item, _field_annotation(model, name), pins)
     for name in fields:
         if _wire(model, name):
             result[name] = fields[name].default
@@ -284,7 +296,11 @@ def _enumerated_values(annotation: Any) -> list[Any]:
     return []
 
 
-def _union_families(annotation: Any) -> set[str]:
+def _union_families(annotation: Any, aliases: frozenset[Any] = frozenset()) -> set[str]:
+    if isinstance(annotation, TypeAliasType):
+        if annotation in aliases:
+            return set()
+        aliases = aliases | {annotation}
     annotation = _annotation(annotation)
     choices = _model_choices(annotation)
     if _tagged(annotation):
@@ -294,14 +310,19 @@ def _union_families(annotation: Any) -> set[str]:
         if _opaque_mapping(annotation):
             names.add(_OPAQUE)
         return names
-    return {family for child in get_args(annotation) for family in _union_families(child)}
+    return {family for child in get_args(annotation) for family in _union_families(child, aliases)}
 
 
 def describe_models(roots: Iterable[type[BaseModel]]) -> dict[str, Any]:
     """Generate typed absent values and enumerated spellings for reachable models."""
     descriptions: dict[str, Any] = {}
+    visited_aliases: set[TypeAliasType] = set()
 
     def visit(annotation: Any) -> None:
+        if isinstance(annotation, TypeAliasType):
+            if annotation in visited_aliases:
+                return
+            visited_aliases.add(annotation)
         annotation = _annotation(annotation)
         if not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
             if get_origin(annotation) is not Literal:
@@ -314,12 +335,13 @@ def describe_models(roots: Iterable[type[BaseModel]]) -> dict[str, Any]:
         fields: dict[str, Any] = {}
         descriptions[key] = fields
         for name, field in annotation.model_fields.items():
+            member = _field_annotation(annotation, name)
             if _omitted(annotation, name):
                 continue
             row: dict[str, Any] = {}
-            if families := _union_families(field.annotation):
+            if families := _union_families(member):
                 row["families"] = sorted(families)
-            if values := _enumerated_values(field.annotation):
+            if values := _enumerated_values(member):
                 row["values"] = sorted(values, key=canonical_json_v2_bytes)
             if not field.is_required() and (annotation, name) not in _REQUIRED_STORED:
                 absence = next(
@@ -338,7 +360,7 @@ def describe_models(roots: Iterable[type[BaseModel]]) -> dict[str, Any]:
                     default = absence.value
                 row["absent"] = _encode_field(annotation, name, default, None, explicit=True)
             fields[name] = row
-            visit(field.annotation)
+            visit(member)
 
     for root in roots:
         visit(root)

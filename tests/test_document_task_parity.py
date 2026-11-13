@@ -81,7 +81,7 @@ def reset_position(interface):
     )
 
 
-def _pair_model(*, curl=False, writable_gru=False, rename=False):
+def _model_payload(*, curl=False, writable_gru=False, rename=False):
     payload = _model_project()["documents"]["reach-model"]["payload"]
     payload["step_seconds"] = PERIOD
     inputs = payload["ports"]["inputs"]
@@ -137,7 +137,11 @@ def _pair_model(*, curl=False, writable_gru=False, rename=False):
     if rename:
         payload["interior"]["components"]["plant"]["name"] = "Renamed plant"
         payload["interior"]["components"]["wrapper"]["name"] = "Renamed wrapper"
-    model = ModelDocument.model_validate(payload)
+    return payload
+
+
+def _pair_model(**options):
+    model = ModelDocument.model_validate(_model_payload(**options))
     registry = ComponentRegistry()
     lowered = lower_model_document("reach-model", model, registry)
     source = lowered.graph.input_bindings["reach_target"]

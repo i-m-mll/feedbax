@@ -137,7 +137,7 @@ def standard_train_optimizer_template(
     from feedbax.contracts.training import TrainingRunSpec
     from feedbax.training.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelSlot
     from feedbax.training.studio_executor import standard_train_optimizer
-    from feedbax.web.worker.execution import _compile_trainability
+    from feedbax.compiler.trainability import compile_trainability
 
     projection = manifest.run_contract_binding.canonical_projection
     if projection is None or "training_run_spec" not in projection:
@@ -151,7 +151,7 @@ def standard_train_optimizer_template(
     if model is None:
         model = SemanticModelSlot.open(transaction_dir, model_record).template()
     graph = GraphSpec.model_validate(spec.graph.inline)
-    _, filter_spec = _compile_trainability(graph, model, ComponentRegistry())
+    _, filter_spec = compile_trainability(graph, model, ComponentRegistry())
     payload = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     optimizer = standard_train_optimizer(payload, gradient_clip=spec.training_config.grad_clip)
     return optimizer.init(eqx.filter(model, filter_spec))

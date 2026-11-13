@@ -28,7 +28,6 @@ from feedbax.contracts.training import (
     WorkerExecutionSpec,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.studio.protocol import infer_task_n_steps
 
 
 class CanonicalTrainRequestBinding(StrictModel):
@@ -89,7 +88,7 @@ def _decode_train(
 
 
 def lower_canonical_train(
-    request: TrainingRequestSpec, execution: TrainingProgramRegistry | WorkerExecutionSpec
+    request: TrainingRequestSpec, execution: TrainingProgramRegistry | WorkerExecutionSpec, *, registries=None,
 ) -> TrainingRunSpec:
     """Project one authored request, using registered or already bound worker declarations."""
     if request.method_ref != STUDIO_GRAPH_METHOD:
@@ -102,11 +101,26 @@ def lower_canonical_train(
         raise ValueError(
             "/risk_aggregation: Studio graph Train uses its ordinary objective reduction"
         )
-    objective = request.objective
-    if objective.kind != "loss_term" or objective.loss is None or objective.payload is not None:
-        raise ValueError("/objective: Studio graph Train requires an authored loss term")
-    if request.task_binding_spec is None:
-        raise ValueError("/task_binding_spec: Studio graph Train requires task bindings")
+    documents = request.trial_documents
+    if documents is None:
+        raise ValueError("/trial_documents: Managed Train requires Model, Task, and Objective documents.")
+    from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+    from feedbax.plugins.application import new_application_registry_bundle
+
+    registries = registries or new_application_registry_bundle()
+    from feedbax.web.model_assets import model_artifact_provider
+    from feedbax.compiler.model_document import lower_model_document
+
+    graph_spec = lower_model_document(documents.model_name, documents.model, registries.components).graph
+    paired = compile_trial_execution(
+        documents.model_name, documents.model, documents.task,
+        registries.components, registries.expression_functions, objective=documents.objective,
+        input_overrides=documents.input_overrides,
+        artifact_provider=model_artifact_provider(graph_spec),
+    )
+    if not isinstance(paired, PreparedTrialExecution):
+        problem = paired[0]
+        raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
     raw = request.method_payload.payload
     if request.seed is not None and "seed" in raw and request.seed != raw["seed"]:
         raise ValueError("/seed: top-level and method seeds disagree")
@@ -120,7 +134,7 @@ def lower_canonical_train(
     batches = continuation.additional_batches if continuation is not None else method.target_total
     if config.n_batches != batches:
         raise ValueError("/training_config/n_batches: does not match the method target")
-    if config.n_reach_steps <= 0 or config.n_reach_steps != infer_task_n_steps(request.task):
+    if config.n_reach_steps <= 0 or config.n_reach_steps != paired.execution.task.n_steps:
         raise ValueError("/training_config/n_reach_steps: does not match the authored task horizon")
     if config.batch_size <= 0 or config.snapshot_interval <= 0:
         raise ValueError("/training_config: batch size and snapshot interval must be positive")
@@ -134,11 +148,9 @@ def lower_canonical_train(
     else:
         contract, phase = execution.method_contract, execution.effective_phase
     return TrainingRunSpec(
-        graph={"inline": request.graph.model_dump(mode="json", exclude_none=True)},
-        task=request.task,
-        task_binding_spec=request.task_binding_spec,
+        graph={"inline": paired.executable.resolved.graph.model_dump(mode="json", exclude_none=True)},
+        trial_documents=documents,
         training_config=config,
-        objective=objective,
         risk_aggregation=request.risk_aggregation,
         method_ref=request.method_ref,
         method_payload=payload,
@@ -158,6 +170,7 @@ def bind_canonical_train(
     documents: Mapping[str, bytes],
     registry: TrainingProgramRegistry,
     store: ImmutableArtifactBlobProvider,
+    *, registries=None,
 ) -> tuple[TrainingRunSpec, CanonicalTrainRequestBinding]:
     """Validate a compiler request and retain its exact factored objects in the project store."""
     closure: dict[str, bytes] = {}
@@ -168,7 +181,7 @@ def bind_canonical_train(
         return raw
 
     request, checkpoint = _decode_train(request_id, data, read_document)
-    spec = lower_canonical_train(request, registry)
+    spec = lower_canonical_train(request, registry, registries=registries)
     refs = tuple(
         store.store_rooted_object(raw, namespace="studio-train-document")
         for _, raw in sorted(closure.items())
@@ -216,7 +229,14 @@ def verify_training_request_binding(
         raise ValueError("Canonical Train binding does not match its checkpoint input.")
     if used != documents.keys():
         raise ValueError("Canonical Train binding does not name its exact document closure.")
-    expected = lower_canonical_train(request, launch.spec.worker_execution)
+    if launch.bootstrap_modules:
+        import asyncio
+        from feedbax.plugins.composition import compose_application
+
+        registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
+    else:
+        registries = None
+    expected = lower_canonical_train(request, launch.spec.worker_execution, registries=registries)
     if canonical_json_bytes(expected.model_dump(mode="json")) != canonical_json_bytes(
         launch.spec.model_dump(mode="json")
     ):

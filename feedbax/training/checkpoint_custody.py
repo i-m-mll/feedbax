@@ -6622,7 +6622,8 @@ def run_contract_binding(
     projection = run_contract_canonical_projection(run_spec, phase_program)
     training_run_spec = projection["training_run_spec"]
     method_payload = training_run_spec["method_payload"]
-    objective = training_run_spec["objective"]
+    objective = (training_run_spec["trial_documents"]["objective"]
+                 if "trial_documents" in training_run_spec else training_run_spec["objective"])
     graph = training_run_spec["graph"]
     optimizer_bindings = [
         binding.model_dump(mode="json", exclude_none=True)

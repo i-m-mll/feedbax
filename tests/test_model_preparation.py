@@ -16,13 +16,13 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import GRU, RateLimiter
 from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
-from feedbax.web.worker.execution import _compile_trainability
+from feedbax.compiler.trainability import compile_trainability
 
 
 def _prepare_studio_gru(key):
     graph = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
     registry = ComponentRegistry()
-    _, trainable_filter = _compile_trainability(graph_to_spec(graph, registry), graph, registry)
+    _, trainable_filter = compile_trainability(graph_to_spec(graph, registry), graph, registry)
     return SimpleNamespace(
         graph=graph,
         trainable_filter=trainable_filter,

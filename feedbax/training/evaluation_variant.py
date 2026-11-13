@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
 from feedbax.contracts.model_attachment import is_generated_attachment_node
 from feedbax.contracts.model_occurrence import graph_leaf_specs
@@ -21,7 +22,7 @@ from feedbax.studio.canonical_evaluate import CannotRun
 @dataclass(frozen=True)
 class EvaluationVariant:
     graph: GraphSpec
-    task: TaskSpec
+    task: TaskSpec | TaskDocument
     source_overrides: dict[str, float]
     edit_origins: dict[tuple[str, ...], str] = field(compare=False)
 
@@ -138,7 +139,7 @@ def _qualify_task(source: TaskSpec, task: TaskSpec, path: str) -> None:
 
 
 def resolve_evaluation_variant(
-    graph: GraphSpec, task: TaskSpec, patches: VariationEdits,
+    graph: GraphSpec, task: TaskSpec | TaskDocument, patches: VariationEdits,
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     graph_payload, wire_ids = _addressable_graph(graph)
@@ -239,10 +240,10 @@ def resolve_evaluation_variant(
         location = _edit_location(tokens, wire_ids, edit_origins) or "/inputs/subject" + pointer(tokens)
         raise CannotRun(location, first["msg"]) from error
     try:
-        replacement = TaskSpec.model_validate(payload["task"])
+        replacement = type(task).model_validate(payload["task"])
     except ValidationError as error:
         first = error.errors()[0]
         raise CannotRun(task_path or "/inputs/subject/task", first["msg"]) from error
-    if task_path is not None:
+    if task_path is not None and isinstance(task, TaskSpec):
         _qualify_task(task, replacement, task_path)
     return EvaluationVariant(variant, replacement, overrides, edit_origins)

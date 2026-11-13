@@ -81,6 +81,7 @@ from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSp
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.component_registry import ComponentRegistry
+    from feedbax.expression_registry import FunctionRegistry
 
 
 @cache
@@ -381,6 +382,17 @@ class _LoweredRow:
     model_source: _ModelSource | None = None
 
 
+@cache
+def _builtin_expression_registry():
+    from feedbax.expression_builtins import register_builtins
+    from feedbax.expression_registry import FunctionRegistry
+
+    registry = FunctionRegistry()
+    register_builtins(registry)
+    registry.seal()
+    return registry
+
+
 def _encode_row(
     key: RunKey,
     kind: StepKind,
@@ -391,7 +403,32 @@ def _encode_row(
     model_document: str | None = None,
     sources: Mapping[str, ValueSource] | None = None,
     components: ComponentRegistry | None = None,
+    functions: FunctionRegistry | None = None,
 ) -> _LoweredRow:
+    document_train = kind == "train" and payload.get("trial_documents") is not None
+    if document_train:
+        from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+        from feedbax.contracts.request_specs import TrialDocuments
+
+        try:
+            authored = TrialDocuments.model_validate(payload["trial_documents"])
+            paired = compile_trial_execution(
+                authored.model_name, authored.model, authored.task,
+                components or _builtin_model_registry(), functions or _builtin_expression_registry(),
+                objective=authored.objective, input_overrides=authored.input_overrides,
+            )
+        except ValueError as error:
+            return _LoweredRow(None, (ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents", str(error), key.step,
+                row=key.row, variant=key.variant,
+            ),), encoding_stamp)
+        if not isinstance(paired, PreparedTrialExecution):
+            return _LoweredRow(None, tuple(ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD,
+                ".".join(("payload.trial_documents", *map(str, problem.path))),
+                problem.reason, key.step, row=key.row, variant=key.variant,
+            ) for problem in paired), encoding_stamp)
+        payload = {"graph": None, "task": None, "objective": None} | payload
     if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
         from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
         from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
@@ -475,8 +512,10 @@ def _encode_row(
         problems = (("", str(error)),)
     else:
         problem = (
+            RunProblem("/trial_documents", "Managed Train requires a Model, Task, and Objective document.")
+            if kind == "train" and not document_train else
             RunProblem("/graph/nodes", "Model has no components.")
-            if isinstance(spec, TrainingRequestSpec) and not spec.graph.nodes
+            if isinstance(spec, TrainingRequestSpec) and spec.graph is not None and not spec.graph.nodes
             else None
         )
         return _LoweredRow(encoded, (), encoding_stamp, admission_problem=problem)
@@ -536,10 +575,11 @@ class ProjectPlanMemo:
 
 def _compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
+    functions: FunctionRegistry | None,
 ) -> tuple[object, ...]:
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
-        request_identity.request_codec_authority(), components, operations,
+        request_identity.request_codec_authority(), components, operations, functions,
     )
 
 
@@ -552,12 +592,14 @@ class _Compiler:
         previous: _PlanWork | None = None,
         operations: OperationRegistry | None = None,
         components: ComponentRegistry | None = None,
+        functions: FunctionRegistry | None = None,
     ):
         self.project = project
         self.readers = readers
         self.previous = previous
         self.operations = operations
         self.components = components
+        self.functions = functions
         self.work = _PlanWork()
         if previous is not None:
             self.work.inline_origins.update(previous.inline_origins)
@@ -874,7 +916,7 @@ class _Compiler:
                     self.work.request_documents if self.previous is not None else None,
                     document_ids.get("payload.graph"),
                     definition.sources if definition is not None else None,
-                    self.components,
+                    self.components, self.functions,
                 ),
                 document_ids=document_ids,
                 document_uses=document_uses,
@@ -907,7 +949,7 @@ class _Compiler:
             if not differences:
                 return stripped
             address = differences[0].address
-            if payload.get("evaluation_type") != ROLLOUT_TYPE or model_source is None:
+            if payload.get("evaluation_type") != ROLLOUT_TYPE:
                 raise ValueError("Attachment differences require a rollout Evaluate with an authored Train Model")
             if not isinstance(reference, ProductRef):
                 raise ValueError("Attachment differences require a planned Train subject")
@@ -916,11 +958,26 @@ class _Compiler:
             ).spec
             if not isinstance(train, TrainingRequestSpec):
                 raise ValueError("Attachment differences require a Train request")
-            document = model_source.document
             components = self.components or _builtin_model_registry()
-            binding = train.task_binding_spec or StudioTaskBindingSpec()
+            documents = train.trial_documents
+            if documents is not None:
+                from feedbax.compiler.model_document import lower_model_document
+
+                document = documents.model_name
+                model = documents.model
+                binding = None
+                base_graph = lower_model_document(document, model, components).graph
+                base_task = documents.task
+            else:
+                if model_source is None:
+                    raise ValueError("Attachment differences need a saved Model document")
+                document = model_source.document
+                model = ModelDocument.model_validate(model_source.model)
+                binding = train.task_binding_spec or StudioTaskBindingSpec()
+                base_graph = train.graph
+                base_task = train.task
             lowered, derived = lower_evaluate_attachments(
-                document, ModelDocument.model_validate(model_source.model), binding, components, differences,
+                document, model, binding, components, differences,
             )
             params = RolloutParameters.model_validate(payload["params"])
             if not derived:
@@ -929,7 +986,7 @@ class _Compiler:
             if isinstance(prior, dict):
                 prior = tuple(prior[name] for name in sorted(prior))
             variation = (*prior, *derived)
-            effective = resolve_evaluation_variant(train.graph, train.task, variation)
+            effective = resolve_evaluation_variant(base_graph, base_task, variation)
             issues = validate_graph_connection_schema(
                 effective.graph, "/graph", train.task_binding_spec, component_registry=components,
             )
@@ -1401,6 +1458,7 @@ def compile_project(
     memo: ProjectPlanMemo | None = None,
     operations: OperationRegistry | None = None,
     components: ComponentRegistry | None = None,
+    functions: FunctionRegistry | None = None,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
     readers = replace(
@@ -1411,12 +1469,12 @@ def compile_project(
     if memo is None or any(
         reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)
     ):
-        return _Compiler(project, readers, source_runs, operations=operations, components=components).plan()
-    authority = _compiler_authority(components, operations)
+        return _Compiler(project, readers, source_runs, operations=operations, components=components, functions=functions).plan()
+    authority = _compiler_authority(components, operations, functions)
     ticket, previous = memo._begin(authority)
-    compiler = _Compiler(project, readers, source_runs, previous, operations, components)
+    compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions)
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations):
+    if authority == _compiler_authority(components, operations, functions):
         memo._publish(ticket, authority, compiler.work)
     return plan
 

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Sequence
-from dataclasses import replace
-from hashlib import sha256
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
@@ -69,6 +67,14 @@ def _bound_subject(
     return ((checkpoint, source),), binding
 
 
+
+def score_paired_validation(
+    graph, task_execution, objective, parameters, *, key,
+):
+    """Score the fixed evaluation trials through the same objective as training."""
+    return task_execution.validation(graph, objective, parameters, key=key)
+
+
 def _rollouts(
     source: BoundStudioTrainingJobInput,
     checkpoint: PublishedTrainingCheckpoint,
@@ -78,225 +84,104 @@ def _rollouts(
     import jax
     import numpy as np
 
-    from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
+    from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
     from feedbax.contracts.authored_canonical import canonical_sha256
-    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-    from feedbax.contracts.graph import GraphSpec
-    from feedbax.contracts.model_occurrence import graph_leaf_specs, graph_output_sources
-    from feedbax.contracts.rollout import authored_variation
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
-    from feedbax.contracts.training import TrainingSpec
     from feedbax.dataset import Dataset, Variable
     from feedbax.plugins.composition import compose_application
-    from feedbax.runtime._graph_key_schedule import derive_key
-    from feedbax.runtime.model_values import MODEL_OWNERS
     from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
-    from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
-    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
+    from feedbax.tasks.document import TaskParameters
     from feedbax.training.checkpoint_custody import open_published_model_slot
+    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
+    from feedbax.training.evaluation_variant import resolve_evaluation_variant
     from feedbax.training.studio_executor import studio_training_key
-    from feedbax.web.worker.diagnostics import GraphCompilationError as WorkerCompilationError
-    from feedbax.web.worker.execution import (
-        _evaluate_loss,
-        compile_training_run,
-        prototypes_from_task_bindings,
-        rollout_graph,
-    )
 
     spec = source.spec
+    documents = spec.trial_documents
+    if documents is None or spec.method_ref != STUDIO_GRAPH_METHOD:
+        raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
     if jax.default_backend() != "cpu" or jax.config.jax_enable_x64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
-    if spec.method_ref != STUDIO_GRAPH_METHOD:
-        raise CannotRun("/inputs/subject/method_ref", "requires the shared Studio graph executor")
-    if spec.task_binding_spec is None:
-        raise CannotRun("/inputs/subject/task_binding_spec", "requires declared task bindings")
-    if spec.objective.loss is None:
-        raise CannotRun("/inputs/subject/objective", "requires a shared loss term plan")
-    authored_graph = GraphSpec.model_validate(spec.graph.inline)
-    validate_evaluation_source(authored_graph)
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
-    variant = resolve_evaluation_variant(slot.graph, spec.task, params.variation)
-    leaves = dict(graph_leaf_specs(variant.graph))
-    effector_owners = [
-        scope for scope, port in graph_output_sources(slot.graph)
-        if (node := leaves.get(scope)) is not None
-        and (declaration := MODEL_OWNERS.get(node.type)) is not None
-        and declaration.scene_effector_port == port
-    ]
-    if len(effector_owners) != 1:
-        raise CannotRun(
-            "/inputs/subject/graph/output_bindings",
-            "requires one declared root effector output and a single-clock graph",
-        )
-    [owner] = effector_owners
-    target_spec = next(
-        (item for item in spec.task_binding_spec.exposed_data if item.id == "reach_target"), None,
-    )
-    if target_spec is None or target_spec.units not in {None, "m"} or target_spec.frame not in {
-        None, "world",
-    }:
-        raise CannotRun(
-            "/inputs/subject/task_binding_spec/exposed_data",
-            "requires reach_target in the world Cartesian frame in metres",
-        )
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
-    prototypes = prototypes_from_task_bindings(spec.task_binding_spec)
+    variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation)
     key = studio_training_key(method.seed, "model")
-    source_executable = compile_graph(
-        GraphDocument(graph=slot.graph), registry.components,
-        input_prototypes=prototypes, initialization_key=key, artifact_provider=slot.provider,
+    source_pair = compile_trial_execution(
+        documents.model_name, documents.model, documents.task,
+        registry.components, registry.expression_functions, objective=documents.objective,
+        input_overrides=documents.input_overrides, artifact_provider=slot.provider,
+        initialization_key=key,
     )
-    executable = source_executable
-    if variant.graph != slot.graph:
-        try:
-            executable = compile_graph(
-                GraphDocument(graph=variant.graph), registry.components,
-                input_prototypes=prototypes, initialization_key=key, artifact_provider=slot.provider,
-            )
-        except GraphCompilationError as error:
-            path = error.record.diagnostics[0].source_anchor.authored_path
-            raise CannotRun(variant.edit_location(path) or "/params/variation" + path, str(error)) from error
-    target = None
-    if executable is not source_executable or variant.source_overrides:
-        target = ModelRestoreTarget(executable.resolved.graph, executable.graph, variant.source_overrides)
+    if not isinstance(source_pair, PreparedTrialExecution):
+        problem = source_pair[0]
+        raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
+    paired = source_pair
+    if variant.graph != slot.graph or variant.task != documents.task:
+        paired = compile_trial_execution(
+            documents.model_name, documents.model, variant.task,
+            registry.components, registry.expression_functions, objective=documents.objective,
+            input_overrides=documents.input_overrides, artifact_provider=slot.provider,
+            initialization_key=key, graph_override=variant.graph,
+        )
+    if not isinstance(paired, PreparedTrialExecution):
+        problem = paired[0]
+        raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
+    assert paired.objective is not None
     try:
-        graph = slot.restore(source_executable.graph, target=target)
-    except ModelCheckpointError as error:
+        target = None if paired is source_pair else ModelRestoreTarget(
+            paired.executable.resolved.graph, paired.executable.graph, variant.source_overrides,
+        )
+        graph = slot.restore(source_pair.executable.graph, target=target)
+        layout = bind_raw_state(graph, paired.executable.resolved.graph)
+    except (ModelCheckpointError, StateLayoutError) as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
-
-    period = graph.step_seconds
-    if period is None:
-        root_clock = MODEL_OWNERS[leaves[owner].type].clock
-        if root_clock is None:
-            raise CannotRun("/inputs/subject/graph/output_bindings", "effector owner lacks a declared clock")
-        effector = graph
-        for occurrence in owner:
-            effector = effector.nodes[occurrence]
-        period = getattr(effector, root_clock)
-    for scope, node in graph_leaf_specs(executable.resolved.graph):
-        component = graph
-        for name in scope:
-            component = component.nodes[name]
-        clock = MODEL_OWNERS[node.type].clock
-        if clock is not None and getattr(component, clock) != period:
-            raise CannotRun(
-                json_pointer(("inputs", "subject", "graph", *(
-                    token for parent in scope[:-1] for token in ("subgraphs", parent)
-                ), "nodes", scope[-1], "params", clock)),
-                "declared owner clock differs from the root control period",
-            )
-    try:
-        compiled = compile_training_run(
-            graph_spec=variant.graph,
-            training_spec=TrainingSpec(
-                optimizer=method.optimizer,
-                loss=spec.objective.loss,
-                n_batches=spec.training_config.n_batches,
-                batch_size=1,
-            ),
-            task_spec=variant.task.model_dump(mode="json", exclude_none=True),
-            task_binding_spec=spec.task_binding_spec,
-            cfg=spec.training_config,
-            component_registry=registry.components,
-            executable_graph=replace(executable, graph=graph),
-        )
-    except WorkerCompilationError as error:
-        location = error.diagnostics[0].location if error.diagnostics else None
-        path = location.get("path", "") if location else ""
-        raise CannotRun(variant.edit_location(path) or "/params/variation" + path, str(error)) from error
-    graph = compiled.graph
-    position = semantic_key("model", "state", owner, "effector/position")
-    velocity = semantic_key("model", "state", owner, "effector/velocity")
-    raw = params.retention == "raw_states"
-    try:
-        layout = bind_raw_state(
-            graph, executable.resolved.graph,
-            selected=None if raw else frozenset({position, velocity}),
-        )
-    except StateLayoutError as error:
-        raise CannotRun(error.path, str(error)) from error
-    histories, targets, totals = [], [], []
-    terms_by_id = {}
-    for trial in params.trials:
-        if stop.exists():
-            return None
-        key = derive_key(jax.random.PRNGKey(params.seed), "evaluate-trial", trial)
-        rollout = rollout_graph(graph, compiled, key=key, capture_state=layout.capture)
-        target = np.asarray(rollout["task_data"]["reach_target"])
-        if target.shape != (compiled.n_steps, 2):
-            raise CannotRun("/inputs/subject/task_binding_spec/exposed_data", "requires 2D targets")
-        histories.append(rollout["state_history"])
-        targets.append(target)
-        total, terms = _evaluate_loss(compiled, rollout)
-        totals.append(float(total))
-        for name, value in terms.items():
-            terms_by_id.setdefault(name, []).append(float(value))
-    fields = (*targets, totals, *terms_by_id.values())
-    if any(not np.isfinite(field).all() for field in fields):
-        raise FloatingPointError("Evaluation produced a nonfinite observation or objective.")
-
-    axes = ("checkpoint", "condition", "trial")
-    time = np.arange(compiled.n_steps + 1, dtype=np.float64) * float(period)
-
-    def field(values, *dims, units=None, frame=None):
-        return Variable(np.asarray(values)[None, None], (*axes, *dims), units=units, frame=frame)
-
-    variables, state_coordinates = layout.dataset_fields(histories, axes=axes)
-    target_key = semantic_key("task", "output", (), "reach_target")
-    variables.update({
-        target_key: field(targets, "transition", "xy", units="m", frame="world"),
-        "objective/total": field(totals),
-    })
-    variables.update({
-        "objective/terms" + json_pointer((name,)): field(values)
-        for name, values in terms_by_id.items()
-    })
-    variation_sha256 = canonical_sha256(params.model_dump(mode="json")["variation"])
-    attrs = {"scene_position": position}
-    if raw:
-        attrs.update({
-            "state_sampling": "reset_and_post_transition",
-            "state_lifetime": "trial",
-            "source_graph_sha256": sha256(
-                canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
-            ).hexdigest(),
-        })
-        if variant.task != spec.task or any(
-            patch.path.startswith("graph.") for _, patch in authored_variation(params.variation)
-        ):
-            attrs.update({
-                "effective_graph_sha256": canonical_sha256({
-                    "resolved_graph": executable.resolved.resolved_sha256,
-                    "checkpoint_values": slot.arrays.sha256,
-                    "source_overrides": variant.source_overrides,
-                }),
-                "effective_task_sha256": sha256(
-                    canonical_json_v2_bytes(variant.task.model_dump(mode="json"))
-                ).hexdigest(),
-                "variation_sha256": variation_sha256,
-            })
-        if any(value.legacy_carry for value in layout.values):
-            attrs["carry_address_migration"] = "legacy-gru-hidden-self-loop.v1"
+    if stop.exists():
+        return None
+    key = jax.random.PRNGKey(params.seed)
+    evaluated = paired.execution.validation(
+        graph, paired.objective, TaskParameters(), key=key, capture_state=layout.capture,
+    )
+    if stop.exists():
+        return None
+    history = evaluated.history
+    assert history is not None
+    n_trials = evaluated.trials.epochs.starts.shape[0]
+    trials = [jax.tree.map(lambda value: value[i], history) for i in range(n_trials)]
+    variables, state_coordinates = layout.dataset_fields(
+        trials, axes=("checkpoint", "condition", "trial"),
+    )
+    terms = evaluated.objective.terms
+    for name, term in terms.items():
+        if not np.isfinite(term.value):
+            raise FloatingPointError(f"Nonfinite objective value at {name}")
+        path = json_pointer((name,))
+        variables["objective/terms" + path] = Variable(np.asarray(term.value)[None, None], ("checkpoint", "condition"))
+        variables["objective/coverage" + path] = Variable(np.asarray(term.covered)[None, None], ("checkpoint", "condition"))
+    variables["objective/total"] = Variable(np.asarray(evaluated.objective.loss)[None, None], ("checkpoint", "condition"))
+    for name, samples in evaluated.trials.inputs.items():
+        axes = ("checkpoint", "condition", "trial", "transition", *(
+            f"{name}_component_{i}" for i in range(samples.ndim - 2)
+        ))
+        variables[semantic_key("task", "output", (), name)] = Variable(np.asarray(samples)[None, None], axes)
+    time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
+    variation = canonical_sha256(params.model_dump(mode="json")["variation"])
     return Dataset.from_arrays(
         variables,
         coords={
             "checkpoint": Variable(np.asarray([checkpoint.completed_updates]), ("checkpoint",)),
-            "condition": Variable(
-                np.asarray([variation_sha256]),
-                ("condition",),
-            ),
-            "trial": Variable(np.asarray(params.trials), ("trial",)),
+            "condition": Variable(np.asarray([variation]), ("condition",)),
+            "trial": Variable(np.arange(n_trials), ("trial",)),
             **state_coordinates,
             "state_time": Variable(time, ("state_time",), units="s"),
             "transition_start": Variable(time[:-1], ("transition",), units="s"),
             "transition_end": Variable(time[1:], ("transition",), units="s"),
         },
-        attrs=attrs,
+        attrs={"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"},
         schema_id=params.states_schema,
-    ), {"objective/total": float(np.mean(totals))}
+    ), {"objective/total": float(evaluated.objective.loss)}
 
 
 def _checkpoint_dataset(datasets):

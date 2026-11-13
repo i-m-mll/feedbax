@@ -62,6 +62,7 @@ def create_app(
         app.state.project_folders = ProjectFolderService(
             project_root, operations=app.state.bootstrap_state.bundle.operations,
             components=app.state.bootstrap_state.bundle.components,
+            functions=app.state.bootstrap_state.bundle.expression_functions,
         )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
