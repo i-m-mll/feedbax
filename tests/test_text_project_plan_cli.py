@@ -1,7 +1,10 @@
 """Compare the text CLI to a Plan compiled from the same Studio authoring."""
 
+from copy import deepcopy
 import json
 from pathlib import Path
+
+import pytest
 
 from feedbax.cli import main
 from feedbax.contracts.base import sha256_bytes
@@ -10,8 +13,10 @@ from feedbax.contracts.project_io import (
     ProjectConfiguration,
     dump_text_project,
 )
-from feedbax.contracts.project_plan import PlanRequests
-from feedbax.contracts.project_plan_io import load_plan_requests
+from feedbax.contracts.project_plan import PlanRequest, PlanRequests, RunKey, diff_plan_requests
+from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
+from feedbax.contracts.request_identity import encode_request
+from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_project_analyze_plan import _operations
 from tests.test_project_report_plan import _report_project
@@ -203,3 +208,48 @@ def test_cli_and_managed_plan_share_a_project_relative_figure_pin(tmp_path, caps
     assert not any(key.name == "profile" for key in refused.plan.elements)
     assert not any(run.kind == "report" for run in refused.plan.runs)
     assert {name: data for name, data in _files(root).items() if name != STUDIO_WRITE_LOCK_FILENAME} == files
+
+
+def test_portable_review_factors_nested_fields_and_keeps_null_and_arrays():
+    first = encode_request(EvaluationRequestSpec(
+        evaluation_type="rollout", params={"nested": {"shared": [None, True], "choice": None}},
+    ), {})
+    second = encode_request(EvaluationRequestSpec(
+        evaluation_type="rollout", params={"nested": {"shared": [None, True], "choice": [1, None]}},
+    ), {})
+    key = RunKey("default", "evaluate", "default")
+    sibling = RunKey("default", "evaluate", "sibling")
+    original = PlanRequests(
+        {current: PlanRequest(current, item.id, {}) for current, item in ((key, first), (sibling, second))},
+        {item.id: item.data for item in (first, second)},
+        {},
+    )
+    encoded = dump_plan_requests(original, ("default",))
+    data = json.loads(encoded)
+    group, = data["request_groups"]
+    assert data["schema_version"] == "feedbax.project-plan.v2"
+    assert group["common"]["spec"]["params"]["nested"] == {"shared": [None, True]}
+    assert group["requests"][first.id]["spec"]["params"]["nested"] == {"choice": None}
+    restored, scope = load_plan_requests(encoded)
+    assert restored == original
+    assert scope == ("default",)
+    assert list(restored.entries) == list(original.entries)
+    assert dump_plan_requests(restored, scope) == encoded
+    updated = PlanRequests({key: PlanRequest(key, second.id, {})}, {second.id: second.data}, {})
+    assert diff_plan_requests(restored, updated) == diff_plan_requests(original, updated)
+
+    shared_override = deepcopy(data)
+    residual = shared_override["request_groups"][0]["requests"][first.id]
+    residual["spec"]["params"]["nested"]["shared"] = [None, True]
+    with pytest.raises(ValueError, match="repeats shared field"):
+        load_plan_requests(json.dumps(shared_override).encode())
+
+    changed_identity = deepcopy(data)
+    residual = changed_identity["request_groups"][0]["requests"][first.id]
+    residual["spec"]["params"]["nested"]["choice"] = False
+    with pytest.raises(ValueError, match="does not match"):
+        load_plan_requests(json.dumps(changed_identity).encode())
+
+    old = {"schema_version": "feedbax.project-plan.v1", "entries": [], "requests": {}, "documents": {}}
+    with pytest.raises(ValueError, match="schema_version"):
+        load_plan_requests(json.dumps(old).encode())

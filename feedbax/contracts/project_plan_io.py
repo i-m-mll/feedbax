@@ -4,22 +4,34 @@ from collections.abc import Iterable
 import json
 from typing import Literal
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
-from feedbax.contracts.base import StrictModel
+from feedbax.contracts._request_codec import same_typed_value
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project_plan import ElementKey, PlanRequest, PlanRequests, RunKey
 from feedbax.contracts.request_identity import decode_request, stored_request_descriptor
-from feedbax.contracts.request_refs import ProductRef, RequestId, Sha256
+from feedbax.contracts.request_refs import ProductRef, RequestId, RequestKind, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
 
+_REVIEW_VERSION = "feedbax.project-plan.v2"
+JsonObject = dict[str, JsonValue]
+
+
+class _RequestGroup(StrictModel):
+    storage_schema: str = Field(alias="schema")
+    kind: RequestKind
+    common: JsonObject
+    requests: dict[RequestId, JsonObject]
+
+
 class _PlanFile(StrictModel):
-    schema_version: Literal["feedbax.project-plan.v1"]
+    schema_version: Literal["feedbax.project-plan.v2"]
     variants: tuple[str, ...] | None = None
     entries: list[PlanRequest]
-    requests: dict[RequestId, dict[str, JsonValue]]
-    documents: dict[Sha256, dict[str, JsonValue]]
+    request_groups: list[_RequestGroup]
+    documents: dict[Sha256, JsonObject | None]
 
 
 def run_key(key: RunKey | ElementKey) -> RunKey:
@@ -37,26 +49,99 @@ def select_plan_requests(plan: PlanRequests, variants: Iterable[str] | None) -> 
     )
 
 
+def _common_fields(left: JsonObject, right: JsonObject) -> JsonObject:
+    common = {}
+    for name, value in left.items():
+        if name not in right:
+            continue
+        other = right[name]
+        if same_typed_value(value, other):
+            common[name] = value
+        elif isinstance(value, dict) and isinstance(other, dict):
+            shared = _common_fields(value, other)
+            if shared:
+                common[name] = shared
+    return common
+
+
+def _remaining_fields(obj: JsonObject, common: JsonObject) -> JsonObject:
+    remaining = {}
+    for name, value in obj.items():
+        if name not in common:
+            remaining[name] = value
+        elif isinstance(value, dict) and isinstance(shared := common[name], dict):
+            extra = _remaining_fields(value, shared)
+            if extra:
+                remaining[name] = extra
+    return remaining
+
+
+def _restore_fields(common: JsonObject, remaining: JsonObject) -> JsonObject:
+    restored = common.copy()
+    for name, value in remaining.items():
+        if name not in common:
+            restored[name] = value
+        elif isinstance(value, dict) and isinstance(shared := common[name], dict):
+            restored[name] = _restore_fields(shared, value)
+        else:
+            raise ValueError(f"Saved request repeats shared field {name!r}")
+    return restored
+
+
 def dump_plan_requests(plan: PlanRequests, variants: tuple[str, ...] | None) -> bytes:
-    """Write a deterministic JSON review file with one copy of each stored object."""
+    """Write authored addresses and canonical objects, factoring shared request fields."""
     scoped = select_plan_requests(plan, variants)
-    requests = {
-        identity: json.loads(scoped.requests[identity])
-        for identity in sorted({entry.request_id for entry in scoped.entries.values()})
-    }
-    digests = {
-        request["spec"][name]
-        for request in requests.values()
-        for name in stored_request_descriptor(request["schema"], request["kind"]).documents
-    }
+    grouped: dict[tuple[str, RequestKind], dict[RequestId, JsonObject]] = {}
+    digests = set()
+    for identity in sorted({entry.request_id for entry in scoped.entries.values()}):
+        obj = json.loads(scoped.requests[identity])
+        schema, kind = obj.pop("schema"), obj.pop("kind")
+        grouped.setdefault((schema, kind), {})[identity] = obj
+        descriptor = stored_request_descriptor(schema, kind)
+        digests.update(obj["spec"][name] for name in descriptor.documents)
+
+    groups = []
+    for (schema, kind), objects in sorted(grouped.items()):
+        rows = iter(objects.values())
+        common = next(rows)
+        for obj in rows:
+            common = _common_fields(common, obj)
+        groups.append(_RequestGroup(
+            schema=schema,
+            kind=kind,
+            common=common,
+            requests={identity: _remaining_fields(obj, common) for identity, obj in objects.items()},
+        ))
+
     file = _PlanFile(
-        schema_version="feedbax.project-plan.v1",
+        schema_version=_REVIEW_VERSION,
         variants=variants,
         entries=list(scoped.entries.values()),
-        requests=requests,
+        request_groups=groups,
         documents={digest: json.loads(scoped.documents[digest]) for digest in sorted(digests)},
     )
-    return (file.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
+    return (file.model_dump_json(indent=1, exclude_none=True, by_alias=True) + "\n").encode()
+
+
+def _restore_requests(groups: list[_RequestGroup]) -> dict[RequestId, bytes]:
+    requests = {}
+    seen = set()
+    for group in groups:
+        key = (group.storage_schema, group.kind)
+        if key in seen or not group.requests:
+            raise ValueError(f"Duplicate or empty saved request group {key!r}")
+        seen.add(key)
+        stored_request_descriptor(*key)
+        for identity, remaining in group.requests.items():
+            if identity in requests:
+                raise ValueError(f"Duplicate saved request {identity}")
+            restored = _restore_fields(group.common, remaining)
+            if restored.keys() != {"spec", "inputs"}:
+                raise ValueError(f"Invalid saved request fields for {identity}")
+            requests[identity] = canonical_json_v2_bytes(
+                {"schema": group.storage_schema, "kind": group.kind, **restored}
+            )
+    return requests
 
 
 def load_plan_requests(data: bytes) -> tuple[PlanRequests, tuple[str, ...] | None]:
@@ -69,19 +154,30 @@ def load_plan_requests(data: bytes) -> tuple[PlanRequests, tuple[str, ...] | Non
         run_key(key).variant not in file.variants for key in entries
     ):
         raise ValueError("Request address is outside the saved variant selection")
-    if {entry.request_id for entry in entries.values()} != file.requests.keys():
+    requests = _restore_requests(file.request_groups)
+    if {entry.request_id for entry in entries.values()} != requests.keys():
         raise ValueError("Saved request objects differ from the authored request addresses")
-    requests = {identity: canonical_json_v2_bytes(obj) for identity, obj in file.requests.items()}
     documents = {digest: canonical_json_v2_bytes(obj) for digest, obj in file.documents.items()}
+    for digest, raw in documents.items():
+        if sha256_bytes(raw) != digest:
+            raise ValueError(f"Saved document does not match {digest}")
+    used_documents = set()
+
+    def read_document(digest: str) -> bytes:
+        used_documents.add(digest)
+        return documents[digest]
+
     decoded = {}
     for identity, raw in requests.items():
         try:
-            request = decode_request(raw, documents.__getitem__)
+            request = decode_request(raw, read_document)
         except KeyError as error:
             raise ValueError(f"Missing document {error.args[0]} for {identity}") from error
         if request.id != identity:
             raise ValueError(f"Saved request object does not match {identity}")
         decoded[identity] = request
+    if documents.keys() != used_documents:
+        raise ValueError("Saved documents differ from the referenced request documents")
     for key, entry in entries.items():
         if isinstance(key, ElementKey) != (entry.kind in {"analyze", "render"}):
             raise ValueError(f"Invalid address for {entry.request_id}")

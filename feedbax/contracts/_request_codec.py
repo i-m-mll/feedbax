@@ -19,7 +19,7 @@ from feedbax.contracts.array_values import (
     SparseCooArrayValueSpec,
     _parse_array_value_payload,
 )
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes, validate_canonical_json_v2
 from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     ComponentSpec,
@@ -202,6 +202,20 @@ class PinnedFields:
         absent, data = cached
         if same_typed_value(projected, absent):
             return True
+
+        # Only numbers can have the same canonical bytes across distinct JSON types.
+        actual_type, absent_type = type(projected), type(absent)
+        if actual_type in (int, float) and absent_type in (int, float):
+            validate_canonical_json_v2(projected)
+            return projected == absent
+        if (
+            actual_type is not absent_type
+            or actual_type not in (dict, list)
+            or (actual_type is dict and projected.keys() != absent.keys())
+            or (actual_type is list and len(projected) != len(absent))
+        ):
+            validate_canonical_json_v2(projected)
+            return False
         return canonical_json_v2_bytes(projected) == data
 
 
