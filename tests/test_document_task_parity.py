@@ -43,7 +43,6 @@ from feedbax.tasks.document import (
     Epoch,
     EpochEnd,
     Link,
-    ModelField,
     Signal,
     TaskDocument,
     TaskParameters,
@@ -52,12 +51,12 @@ from feedbax.tasks.document import (
     compile_task,
 )
 from feedbax.runtime.graph import GraphTraceRequest
+from feedbax.runtime.model_reset import ModelResetError
 from feedbax.tasks.task import (
     DelayedReaches,
     SimpleReaches,
     Stabilization,
     gen_epoch_lengths,
-    set_state_by_path,
 )
 from tests.test_model_document_plan import _model_project
 from feedbax.xabdeef.losses import delayed_reach_loss, simple_reach_loss
@@ -72,22 +71,17 @@ TIME_TYPE = ValueType(base=ValueBase.REAL, dimensions=TIME)
 BOOLEAN = ValueType(base=ValueBase.BOOLEAN)
 
 
-RESET_POSITION = ModelAddress.model_validate(
-    {
-        "document": "reach-model",
-        "composites": [],
-        "element": {
-            "kind": "field",
-            "parent": {"kind": "component", "id": "plant"},
-            "path": ["reset", "effector", "pos"],
-        },
-    }
-)
 PORTLESS = ResolvedModelInterface(PERIOD, (), (), (), ())
 
 
-@pytest.fixture(scope="module")
-def paired_model():
+def reset_position(interface):
+    return next(
+        field.address for field in interface.reset.fields
+        if field.address.element.path == ("reset", "effector", "position")
+    )
+
+
+def _pair_model(*, curl=False, writable_gru=False, rename=False):
     payload = _model_project()["documents"]["reach-model"]["payload"]
     payload["step_seconds"] = PERIOD
     inputs = payload["ports"]["inputs"]
@@ -99,6 +93,50 @@ def paired_model():
         "source": {"owner": "component", "component": "wrapper", "port": "force"},
         "target": {"owner": "outputs", "port": "command"},
     }
+    if curl:
+        payload["interior"]["components"]["curl"] = {
+            "kind": "leaf", "name": "Curl", "type": "feedbax.CurlField",
+        }
+        payload["interior"]["wires"]["plant-wire"]["target"] = {"owner": "component", "component": "curl", "port": "force"}
+        payload["interior"]["wires"]["curl-drive"] = {
+            "source": {"owner": "component", "component": "curl", "port": "force"},
+            "target": {"owner": "component", "component": "plant", "port": "force"},
+        }
+        payload["interior"]["wires"]["curl-feedback"] = {
+            "source": {"owner": "component", "component": "plant", "port": "effector"},
+            "target": {"owner": "component", "component": "curl", "port": "effector"},
+        }
+    if writable_gru:
+        wrapper = payload["interior"]["components"]["wrapper"]
+        cell_owner = wrapper["interior"]["components"]["controller"]
+        controller = cell_owner["interior"]
+        del controller["wires"]["carry"]
+        controller["components"]["cell"]["fields"]["stateful"] = True
+        hidden_port = {"id": "hidden", "name": "hidden", "type": {}}
+        payload["ports"]["outputs"].append(hidden_port)
+        for owner, name, output in (
+            (payload, "wrapper", "hidden"),
+            (wrapper, "controller", "hidden"),
+            (cell_owner, "cell", "output"),
+        ):
+            if owner is not payload:
+                owner["ports"]["outputs"].append(hidden_port)
+            owner["interior"]["wires"]["hidden-output"] = {
+                "source": {"owner": "component", "component": name, "port": output},
+                "target": {"owner": "outputs", "port": "hidden"},
+            }
+        controller["wires"]["decode"]["attachments"] = [{
+            "kind": "delay", "id": "read-delay", "delay": {"value": 2, "unit": "st"},
+            "initial": {"kind": "name", "reference": ModelAddress.model_validate({
+                "document": "reach-model", "composites": ["wrapper", "controller"],
+                "element": {"kind": "port", "end": {
+                    "owner": "component", "component": "cell", "port": "output", "direction": "output",
+                }},
+            }).to_text()},
+        }]
+    if rename:
+        payload["interior"]["components"]["plant"]["name"] = "Renamed plant"
+        payload["interior"]["components"]["wrapper"]["name"] = "Renamed wrapper"
     model = ModelDocument.model_validate(payload)
     registry = ComponentRegistry()
     lowered = lower_model_document("reach-model", model, registry)
@@ -112,6 +150,11 @@ def paired_model():
         initialization_key=jr.key(4),
     ).graph
     return interface, graph
+
+
+@pytest.fixture(scope="module")
+def paired_model():
+    return _pair_model()
 
 
 @pytest.fixture
@@ -196,7 +239,7 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, old=None):
         variables=tuple(variables),
         epochs=epochs,
         signals=tuple(signals),
-        links=(Link(model_field="reset_position", variable="start"),),
+        links=(Link(model_field=reset_position(interface).to_text(), variable="start"),) if interface.reset.fields else (),
         fixed_steps=STEPS,
         validation_trials=validation_rows(kind, old) if old else (ValidationTrial(),),
     )
@@ -204,7 +247,6 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, old=None):
         doc,
         functions,
         model=interface,
-        reset_fields={"reset_position": ModelField(RESET_POSITION, POINT)},
         input_overrides={"reach_target": "target_pos"} if interface.inputs else None,
     )
     assert isinstance(task, DocumentTask), task
@@ -355,7 +397,7 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
         trial.inputs["goal"], old_trials.targets["mechanics.effector.pos"].value
     )
     np.testing.assert_array_equal(
-        trial.inits[RESET_POSITION.to_text()], old_trials.inits["mechanics.effector"].pos
+        trial.variables["start"], old_trials.inits["mechanics.effector"].pos
     )
     np.testing.assert_array_equal(trial.epochs.starts, old_trials.timeline.epoch_bounds[:, :-1])
     np.testing.assert_array_equal(trial.epochs.ends, old_trials.timeline.epoch_bounds[:, 1:])
@@ -372,7 +414,7 @@ def test_document_trial_and_objective_match_legacy(kind, functions):
     assert validation.inputs["goal"].shape == (old.n_validation_trials, STEPS, 2)
     np.testing.assert_allclose(validation.inputs["goal"], target, rtol=0, atol=3e-7)
     np.testing.assert_allclose(
-        validation.inits[RESET_POSITION.to_text()],
+        validation.variables["start"],
         legacy_validation.inits["mechanics.effector"].pos,
         rtol=0,
         atol=3e-7,
@@ -601,6 +643,80 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
     np.testing.assert_array_equal(trial.inputs["seen"], [0.0, 1.0, 1.0, 1.0])
 
 
+def test_nested_reset_updates_observations_and_delay_queues():
+    interface, graph = _pair_model(writable_gru=True)
+    field, = (field for field in interface.reset.fields if field.address.composites)
+    assert field.address.composites == ("wrapper", "controller")
+    assert field.address.element.path == ("reset", "hidden")
+    identifier = field.address.to_text()
+    key = jr.key(32)
+    hidden = jnp.ones(field.type.shape, dtype=jnp.int32)
+    reset = interface.reset.prepare(graph, {identifier: hidden}, key=key)
+    controller = graph.nodes["wrapper"].nodes["controller"]
+    cell = controller.nodes["cell"]
+    state = cell.state_view(reset.state)
+    assert state.hidden.dtype == jnp.dtype(field.dtype)
+    np.testing.assert_array_equal(state.hidden, hidden)
+    np.testing.assert_array_equal(cell.initial_outputs(state)["output"], hidden)
+    np.testing.assert_array_equal(reset.outputs["hidden"], hidden)
+    carry = reset.cycle_init["__nested__", "wrapper"]["__nested__", "controller"]
+    np.testing.assert_array_equal(carry["readout", "input"], jnp.stack((hidden, hidden)))
+    default = interface.reset.prepare(graph, {}, key=key)
+    np.testing.assert_array_equal(cell.state_view(default.state).hidden, 0)
+    renamed, _ = _pair_model(writable_gru=True, rename=True)
+    assert renamed.reset.fields == interface.reset.fields
+
+
+def test_writable_reset_fields_refuse_read_only_shapes_and_dtypes(paired_model):
+    interface, graph = paired_model
+    writable = reset_position(interface)
+    unsupported = writable.model_copy(update={"element": writable.element.model_copy(update={
+        "path": ("reset", "effector", "force"),
+    })})
+    assert {field.address.element.path for field in interface.reset.fields} == {
+        ("reset", "effector", "position"), ("reset", "effector", "velocity"),
+    }
+    key = jr.key(0)
+    for address, value, message in (
+        (unsupported, [0.0, 0.0], "not a declared writable"),
+        (writable, [1.0], "shape"),
+        (writable, [True, False], "real"),
+    ):
+        with pytest.raises(ModelResetError, match=message) as error:
+            interface.reset.prepare(graph, {address.to_text(): value}, key=key)
+        assert error.value.address == address.to_text()
+
+
+def test_trial_configuration_changes_force_without_mutating_model():
+    interface, graph = _pair_model(curl=True)
+    fields = {field.address.element.path: field for field in interface.reset.fields}
+    assert {path for path in fields if path[0] == "fields"} == {
+        ("fields", "active"), ("fields", "scale"), ("fields", "amplitude"),
+    }
+    key = jr.key(11)
+    updates = {
+        ("reset", "effector", "position"): [0.5, -0.25],
+        ("reset", "effector", "velocity"): [2.0, 1.0],
+        ("fields", "active"): True,
+        ("fields", "scale"): 2,
+        ("fields", "amplitude"): 3,
+    }
+    inits = {fields[path].address.to_text(): value for path, value in updates.items()}
+    reset = interface.reset.prepare(graph, inits, key=key)
+    plant = graph.nodes["plant"]
+    curl = graph.nodes["curl"]
+    effector = plant.state_view(reset.state).effector
+    np.testing.assert_array_equal(effector.pos, updates["reset", "effector", "position"])
+    np.testing.assert_array_equal(effector.vel, updates["reset", "effector", "velocity"])
+    inputs = {"effector": effector, "force": jnp.zeros((2,), dtype=jnp.float32)}
+    active, _ = curl(inputs, reset.state, key=key)
+    default = interface.reset.prepare(graph, {}, key=key)
+    inactive, _ = curl(inputs, default.state, key=key)
+    np.testing.assert_array_equal(active["force"], [-6, 12])
+    np.testing.assert_array_equal(inactive["force"], 0)
+    assert not bool(curl.configuration_values()["active"])
+
+
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
 def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions, paired_model):
     interface, graph = paired_model
@@ -618,9 +734,18 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
         functions,
         model=interface,
         input_overrides={"reach_target": "target_vel"},
-        reset_fields={"reset_position": ModelField(RESET_POSITION, POINT)},
     )
     assert bad[0].code.value == "type_mismatch"
+    read_only = reset_position(interface)
+    read_only = read_only.model_copy(update={"element": read_only.element.model_copy(update={
+        "path": ("fields", "mass"),
+    })})
+    bad = compile_task(
+        doc.model_copy(update={"links": (Link(model_field=read_only.to_text(), variable="start"),)}),
+        functions, model=interface, input_overrides={"reach_target": "target_pos"},
+    )
+    assert bad[0].path == ("links", read_only.to_text())
+    assert bad[0].code.value == "unknown_name"
 
     run_key = jr.key(8)
     keys = jr.split(run_key, 6)
@@ -631,25 +756,21 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     )
 
     def run(trial, key):
-        state = graph.init_state(key=key)
-        (address,) = trial.inits
-        authored = ModelAddress.from_text(address)
-        element = authored.element
-        reset_path = ".".join((*authored.composites, element.parent.id, *element.path[1:]))
-        state = set_state_by_path(graph, state, reset_path, trial.inits[address])
-        state = graph.state_consistency_update(state)
-        before = graph.nodes["plant"].state_view(state).effector
+        inputs = task.model_inputs(trial)
+        prepared = interface.reset.prepare(graph, trial.inits, key=key, inputs=inputs)
+        before = graph.nodes["plant"].state_view(prepared.state).effector
         outputs, _, retained = graph.rollout_with_trace(
-            task.model_inputs(trial),
-            state,
+            inputs,
+            prepared.state,
             key=key,
             n_steps=task.n_steps,
             trace=trace,
+            cycle_init=prepared.cycle_init,
         )
         return before, outputs["command"], retained
 
     initial, output, retained = jax.jit(jax.vmap(run))(trials, keys)
-    np.testing.assert_array_equal(initial.pos, trials.inits[RESET_POSITION.to_text()])
+    np.testing.assert_array_equal(initial.pos, trials.inits[reset_position(interface).to_text()])
     np.testing.assert_array_equal(initial.vel, 0)
     np.testing.assert_array_equal(initial.force, 0)
     assert output.shape == (6, STEPS, 2)

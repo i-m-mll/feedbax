@@ -9,7 +9,6 @@ from math import isfinite
 from typing import Any, NamedTuple, Protocol
 
 from feedbax.compiler.model_document import ResolvedModelInterface
-from feedbax.contracts.model_address import ModelAddress
 
 import jax
 import jax.numpy as jnp
@@ -90,12 +89,6 @@ class TaskDocument(ValueRecord):
     validation_trials: tuple[ValidationTrial, ...] = Field(
         default=(ValidationTrial(),), min_length=1
     )
-
-
-@dataclass(frozen=True)
-class ModelField:
-    address: ModelAddress
-    type: ValueType
 
 
 @dataclass(frozen=True)
@@ -361,7 +354,6 @@ def compile_task(
     functions: FunctionRegistry,
     *,
     model: ResolvedModelInterface,
-    reset_fields: Mapping[str, ModelField] | None = None,
     input_overrides: Mapping[str, str] | None = None,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types."""
@@ -571,9 +563,7 @@ def compile_task(
             ProblemCode.UNKNOWN_NAME, f"Unknown model input {port!r}.", ("model", "inputs", port)
         )
 
-    # In the signed model interface, delay Initial links are reset-output
-    # references. A trial cannot write those computed values.
-    writable = reset_fields or {}
+    writable = {field.address.to_text(): field for field in model.reset.fields}
     links = {}
     for link in document.links:
         target = writable.get(link.model_field)
@@ -585,12 +575,12 @@ def compile_task(
                 "Link must resolve to a model field and a task variable.",
                 path,
             )
-        elif variable.level == Level.STEP or not target.type.accepts(variable.type):
+        elif variable.level > target.finest or not target.type.accepts(variable.type):
             problem(ProblemCode.TYPE_MISMATCH, "Link needs a compatible run or trial value.", path)
-        elif target.address.to_text() in links:
+        elif link.model_field in links:
             problem(ProblemCode.STRUCTURE, "A model field may be linked once.", path)
         else:
-            links[target.address.to_text()] = link.variable
+            links[link.model_field] = link.variable
     rows = []
     first = document.validation_trials[0]
     for index, row in enumerate(document.validation_trials):
