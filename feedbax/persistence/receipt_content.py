@@ -15,6 +15,7 @@ from feedbax.contracts.model_checkpoint import (
 )
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.store_damage import require_sound
 
 
 @dataclass(frozen=True)
@@ -104,4 +105,5 @@ def verify_success_content(
     store: ImmutableArtifactBlobProvider, value: ContentRef | Product
 ) -> None:
     for ref in success_content_objects(store, value):
+        require_sound(store, ref)
         store.verify_object(ref)

@@ -60,6 +60,7 @@ from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoi
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
@@ -69,6 +70,7 @@ from feedbax.studio.canonical_train import (
 
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
+    from feedbax.persistence.effective_success import SuccessView
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
     from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
@@ -181,6 +183,7 @@ class PlanJobReader:
                 raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
         return params, checkpoint
 
+    @inspect_without_recording()
     def read_plan_attempts(
         self, *, project: str, store: Path, requests: Collection[RequestId],
         stopped_checkpoint_jobs: Sequence[str] = (),
@@ -217,6 +220,9 @@ class PlanJobReader:
             if producers[job["request"]] == 1
             and is_checkpoint_producer(job["launch"], continues=job["continues"], manifest_root=manifest_root)
         }
+        from feedbax.persistence.effective_success import SuccessView
+
+        success_view = None
         for job in by_id.values():
             request_id = job["request"]
             if request_id not in wanted:
@@ -227,7 +233,14 @@ class PlanJobReader:
             succeeded = job["state"] == "succeeded"
             size = None
             result = None
-            if evaluate:
+            damage = None
+            if succeeded and (job.get("outcome") or {}).get("store_success") is not None:
+                if success_view is None:
+                    success_view = SuccessView(ImmutableArtifactBlobProvider(store))
+                damage = _owned_result_damage(success_view, job)
+            if damage is not None:
+                receipt = None
+            elif evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
                 receipt, size = (result.receipt, result.size) if result is not None else (None, None)
             else:
@@ -247,6 +260,8 @@ class PlanJobReader:
             status, reason = _job_status(
                 job, progress=progress, receipt_intact=not succeeded or receipt is not None
             )
+            if damage is not None:
+                reason = damage
             stopped_checkpoint = (
                 self.host.stopped_checkpoint(job["id"], project=project, manifest_root=manifest_root)
                 if not evaluate and status == JobStatus.STOPPED and job["id"] in stopped_jobs
@@ -584,6 +599,7 @@ class JobService(PlanJobReader):
     def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
         """Locate an authenticated candidate result by exact project and attempt."""
         from feedbax.studio.canonical_evaluate import EvaluationResult
+        from feedbax.persistence.effective_success import SuccessView
 
         if not self._enable_evaluation_candidate:
             raise JobNotFound(job_id)
@@ -596,6 +612,10 @@ class JobService(PlanJobReader):
             or not job["request"].startswith("evaluate:") or job["state"] != "succeeded"
         ):
             raise JobNotFound(job_id)
+        if (job.get("outcome") or {}).get("store_success") is not None:
+            damage = _owned_result_damage(SuccessView(ImmutableArtifactBlobProvider(store)), job)
+            if damage is not None:
+                raise JobConflict(damage)
         result = _verified_evaluation_result(job, store)
         if result is None:
             raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
@@ -908,19 +928,21 @@ class JobService(PlanJobReader):
     def _reusable(self, jobs: Sequence[dict[str, Any]]) -> str | None:
         if any(job["state"] in _LIVE_STATES for job in jobs):
             return None
-        return next(
-            (
-                job["id"]
-                for job in reversed(jobs)
-                if job["state"] == "succeeded" and self._receipt_matches(job)
-            ),
-            None,
-        )
+        for job in reversed(jobs):
+            if job["state"] == "succeeded":
+                return job["id"] if self._receipt_matches(job) else None
+        return None
 
     def _receipt_matches(self, job: dict[str, Any]) -> bool:
         receipt = (job.get("outcome") or {}).get("receipt")
         if not receipt:
             return False
+        if (job.get("outcome") or {}).get("store_success") is not None:
+            from feedbax.persistence.effective_success import SuccessView
+
+            store = ImmutableArtifactBlobProvider(Path(job["data"]["manifest_root"]))
+            if _owned_result_damage(SuccessView(store), job) is not None:
+                return False
         if job["request"].startswith("evaluate:"):
             return _verified_evaluation_result(job, Path(job["data"]["manifest_root"])) is not None
         path = canonical_manifest_path(
@@ -1083,6 +1105,16 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
             if isinstance(ref.select, BatchSetMember):
                 catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
     return catalogs
+
+
+def _owned_result_damage(view: SuccessView, job: dict[str, Any]) -> str | None:
+    from feedbax.contracts.artifact_custody import ContentObjectRef
+
+    try:
+        ref = ContentObjectRef.model_validate(job["outcome"]["store_success"])
+        return view.owned_damage(job["id"], ref)
+    except (OSError, ValueError, KeyError) as error:
+        return f"Cannot authenticate the committed result: {error}"
 
 
 def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEvaluation | None:

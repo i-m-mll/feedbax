@@ -436,6 +436,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     finally:
         with writable_store_object(data_path):
             data_path.write_bytes(raw)
+        assert store.store_object(raw) == ref.object_ref
 
     (rerun,) = launch(jobs, (baseline,), "evaluate-rerun").items
     assert rerun.disposition == "admitted" and rerun.job_id != submitted.items[0].job_id
@@ -446,11 +447,12 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     try:
         with writable_store_object(manifest_path):
             manifest_path.write_bytes(raw + b"\n")
-        with pytest.raises(JobConflict, match="cannot be authenticated"):
+        with pytest.raises(JobConflict, match="cannot be authenticated|Cannot authenticate"):
             jobs.read_evaluation_result(project=project, store=root, job_id=submitted.items[0].job_id)
     finally:
         with writable_store_object(manifest_path):
             manifest_path.write_bytes(raw)
+        assert store.store_object(raw) == manifest_ref.object
 
     authored_path = folders.root / project / "steps" / "baseline.json"
     changed = json.loads(authored_path.read_bytes())

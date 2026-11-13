@@ -37,6 +37,8 @@ from feedbax.persistence._store_metadata import (
     write_store_metadata,
 )
 
+from feedbax.persistence.store_damage import clear_damage, inspect_without_recording, read_damage
+
 if TYPE_CHECKING:
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
@@ -677,6 +679,7 @@ def _receipt(
     )
 
 
+@inspect_without_recording()
 def collect_garbage(
     provider: ImmutableArtifactBlobProvider,
     request: ContentGcRequest | None = None,
@@ -1043,6 +1046,7 @@ def _recover_locked(
     )
     quarantine = _quarantine_directory(provider, pending)
     marked = pending.stage == "marked"
+    collected_observations: set[str] = set()
     try:
         if pending.decisions:
             _ensure_store_directory(provider.root, quarantine)
@@ -1073,6 +1077,12 @@ def _recover_locked(
                     provider._verify_blob(
                         source, sha256=candidate.sha256, size_bytes=candidate.size_bytes
                     )
+                    observation = read_damage(provider, candidate.sha256)
+                    if observation is not None:
+                        from feedbax.persistence.artifact_custody import _file_state
+
+                        if observation.occurrence == tuple(map(str, _file_state(source.lstat()))):
+                            collected_observations.add(candidate.sha256)
                     os.replace(source, destination)
             for directory in sorted(source_directories):
                 sync_directory(directory)
@@ -1130,6 +1140,9 @@ def _recover_locked(
             ),
         )
         _write_receipt(provider, receipt)
+        for digest in collected_observations:
+            if not _entry_exists(provider._canonical_path(digest)):
+                clear_damage(provider, digest)
         expired_lease_ids = set(pending.expired_lease_ids)
         _write_index(
             provider,

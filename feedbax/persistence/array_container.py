@@ -45,6 +45,16 @@ class ArrayContainerError(ValueError):
     """A container violates its format or its supplied integrity binding."""
 
 
+class TensorDigestError(ArrayContainerError):
+    """Tensor bytes disagree with their authenticated descriptor."""
+
+    def __init__(self, name: str, expected: str, actual: str) -> None:
+        self.name = name
+        self.expected = expected
+        self.actual = actual
+        super().__init__(f"tensor {name!r} digest mismatch: expected {expected}, found {actual}")
+
+
 @dataclass(frozen=True)
 class TensorDescriptor:
     shape: tuple[int, ...]
@@ -206,8 +216,9 @@ def _tensor_descriptor(name: str, info: object, header: object) -> TensorDescrip
 def _authenticate_tensor(name: str, array: np.ndarray, record: TensorDescriptor) -> np.ndarray:
     if array.shape != record.shape or array.dtype.name != record.dtype:
         raise ArrayContainerError(f"unexpected shape or dtype for tensor {name!r}")
-    if _tensor_sha256(array) != record.sha256:
-        raise ArrayContainerError(f"tensor {name!r} digest mismatch")
+    actual = _tensor_sha256(array)
+    if actual != record.sha256:
+        raise TensorDigestError(name, record.sha256, actual)
     return array
 
 

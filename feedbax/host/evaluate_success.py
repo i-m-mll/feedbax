@@ -56,7 +56,8 @@ def publish_evaluate_success(
     worker_receipt = JobReceipt.model_validate(receipt)
     with store._exclusive_lock():
         view = SuccessView(store)
-        existing = view.read_attempt(attempt)
+        committed = view.attempt_ref(attempt)
+        existing = view.read_owned_success(committed) if committed is not None else None
         manifest_object = existing.receipt.evaluation_manifest if existing is not None else None
         if existing is not None and manifest_object is None:
             raise ValueError("Published Evaluate attempt lacks its accepted worker receipt")

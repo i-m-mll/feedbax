@@ -58,6 +58,19 @@ class ReceiptClosure:
             self._requests[ref.sha256] = read_effective_request(receipt, self.store.get_object)
         return self._requests[ref.sha256]
 
+    def owned_objects(self, ref: ContentObjectRef) -> tuple[ContentObjectRef, ...]:
+        """Resolve evidence owned by the result, independent of previously read inputs."""
+        receipt = self.receipt_at(ref)
+        objects = [ref, receipt.request.object, *receipt.request.documents]
+        if receipt.evaluation_manifest is not None:
+            objects.append(receipt.evaluation_manifest)
+        for group in receipt.products.values():
+            for product in group:
+                objects.extend(success_content_objects(self.store, product))
+        if receipt.continuation is not None:
+            objects.extend(continuation_objects(receipt.continuation))
+        return tuple(objects)
+
     def walk(
         self, closure: StoreClosureRef, *, visitors: ClosureVisitors | None = None,
     ) -> tuple[ContentObjectRef, ...]:

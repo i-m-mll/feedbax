@@ -165,9 +165,17 @@ def test_check_uses_the_anchored_tensor_digest_even_when_object_bytes_match(tmp_
     store.verify_object(ref.object_ref)
     assert store.compare_and_swap_ref("fixtures/dataset", expected=None, replacement=ref.model_dump(mode="json"))
 
+    with open_stored_dataset(store, ref) as ordinary, open_stored_dataset(store, ref, verify=True) as verifying:
+        with pytest.raises(ArrayContainerError, match="digest mismatch"):
+            verifying.data("controller.command")
+        with pytest.raises(ArtifactBlobIntegrityError, match="Damaged"):
+            ordinary.data("controller.command")
+
     result = check_store(store)
 
     (finding,) = result.findings
     assert finding.code == "damaged_object" and finding.address == ref.object_ref.object_id
     assert "digest mismatch" in finding.detail
-    assert store.get_object(ref.object_ref) == malformed
+    assert store.object_path(ref.object_ref).read_bytes() == malformed
+    with pytest.raises(ArtifactBlobIntegrityError, match="Damaged"):
+        store.get_object(ref.object_ref)

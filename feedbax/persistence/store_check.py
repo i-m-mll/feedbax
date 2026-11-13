@@ -6,12 +6,13 @@ from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, Conten
 from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
 from feedbax.contracts.store_check import StoreCheckFinding, StoreCheckResult
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
-from feedbax.persistence.array_container import open_array_container
+from feedbax.persistence.array_container import TensorDigestError, open_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_retention import _inventory_stats, _target_objects
 from feedbax.persistence.reachability import store_roots
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.receipt_content import ClosureVisitors
+from feedbax.persistence.store_damage import ObjectVerificationError, clear_damage, explicit_check, read_damage, record_damage
 
 
 class _Check:
@@ -31,12 +32,16 @@ class _Check:
     def verify(self, ref: ContentObjectRef) -> None:
         if previous := self.objects.get(ref.sha256):
             if previous[0] != ref:
-                self.object_problem(ref, ValueError(f"conflicting size for {ref.object_id}"))
+                self.incomplete(ref.object_id, f"conflicting size for {ref.object_id}")
             return
         try:
-            self.store.verify_object(ref)
-        except (ValueError, OSError) as error:
+            self.store.verify_object(ref, verifier="check")
+        except (ObjectVerificationError, FileNotFoundError) as error:
             self.object_problem(ref, error)
+            self.objects[ref.sha256] = ref, False
+            return
+        except (ValueError, OSError) as error:
+            self.incomplete(ref.object_id, str(error))
             self.objects[ref.sha256] = ref, False
             return
         self.objects[ref.sha256] = ref, True
@@ -49,13 +54,26 @@ class _Check:
         self.arrays.add(binding)
         try:
             with (
-                self.store.open_owned_object(ref) as path,
+                self.store._borrow_object(ref) as path,
                 open_array_container(path, expected_descriptor_sha256=descriptor) as reader,
             ):
                 reader.verify_tensors()
-        except (ValueError, OSError) as error:
+        except (TensorDigestError, ObjectVerificationError, FileNotFoundError) as error:
+            record_damage(self.store, ref, error, verifier="check", descriptor_sha256=descriptor)
             self.object_problem(ref, error)
             self.objects[ref.sha256] = ref, False
+        except (ValueError, OSError) as error:
+            self.incomplete(ref.object_id, str(error))
+            self.objects[ref.sha256] = ref, False
+
+    def settle_observations(self) -> None:
+        for ref, valid in tuple(self.objects.values()):
+            if not valid or (observation := read_damage(self.store, ref.sha256)) is None:
+                continue
+            if observation.descriptor_sha256 is not None:
+                self.verify_array(ref, observation.descriptor_sha256)
+            if self.objects[ref.sha256][1]:
+                clear_damage(self.store, ref.sha256)
 
     def incomplete(self, address: str, detail: str) -> None:
         self.findings.append(StoreCheckFinding(
@@ -106,12 +124,13 @@ class _Check:
 def check_store(store: ImmutableArtifactBlobProvider, *, attempt: str | None = None) -> StoreCheckResult:
     """Check exact Store bytes without changing refs, receipts, or object contents."""
     check = _Check(store)
-    with store._exclusive_lock(create=False):
+    with store._exclusive_lock(create=False), explicit_check(store):
         if attempt is None:
             check.inventory()
             receipt = None
         else:
             receipt = check.receipt(attempt)
+        check.settle_observations()
     verified = [ref for ref, valid in check.objects.values() if valid]
     return StoreCheckResult(
         store=str(store.root), attempt=attempt, receipt=receipt,

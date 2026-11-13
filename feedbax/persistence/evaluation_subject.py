@@ -205,6 +205,7 @@ def evaluation_subject_objects(
 
 def verify_evaluation_success_evidence(
     store: ImmutableArtifactBlobProvider, success: Success, *, visitors: ClosureVisitors | None = None,
+    verify_bound_closure: bool = True,
 ) -> tuple[ContentObjectRef, ...]:
     ref = success.evaluation_manifest
     assert ref is not None
@@ -241,7 +242,7 @@ def verify_evaluation_success_evidence(
     ):
         raise ValueError("Accepted Evaluate manifest names different checkpoint coverage")
     evidence = [ref]
-    if source.closure is not None:
+    if source.closure is not None and verify_bound_closure:
         evidence.append(source.closure.checkpoint.transaction)
         if visitors is not None:
             visitors.object(source.closure.checkpoint.transaction)

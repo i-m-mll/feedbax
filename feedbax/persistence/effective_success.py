@@ -38,6 +38,7 @@ from feedbax.contracts.request_refs import (
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.receipt_content import continuation_objects, verify_success_content
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
+from feedbax.persistence.store_damage import KnownDamage, require_sound
 
 
 class PublicationConflict(ValueError):
@@ -98,6 +99,7 @@ class SuccessView:
     def _verify_bound(self, decoded: DecodedRequest, member: InputMember, bound: BoundMember) -> None:
         if bound.evaluation_subject is not None:
             for ref in evaluation_subject_objects(self.store, decoded, member, bound):
+                require_sound(self.store, ref)
                 self.store.verify_object(ref)
         else:
             origin = bound.selection.receipt if bound.selection else None
@@ -133,8 +135,38 @@ class SuccessView:
                 verify_success_content(self.store, product)
         if receipt.continuation is not None:
             for slot_ref in continuation_objects(receipt.continuation):
+                require_sound(self.store, slot_ref)
                 self.store.verify_object(slot_ref)
         return PublishedSuccess(receipt_ref, receipt)
+
+    def read_owned_success(self, receipt_ref: ContentObjectRef) -> PublishedSuccess:
+        """Verify committed replay evidence without rereading historical inputs."""
+        from feedbax.persistence.receipt_closure import ReceiptClosure
+
+        closure = ReceiptClosure(self.store, self._index)
+        receipt = closure.receipt_at(receipt_ref)
+        for ref in closure.owned_objects(receipt_ref):
+            require_sound(self.store, ref)
+            self.store.verify_object(ref)
+        read_effective_request(receipt, self.store.get_object)
+        if receipt.evaluation_manifest is not None:
+            verify_evaluation_success_evidence(self.store, receipt, verify_bound_closure=False)
+        return PublishedSuccess(receipt_ref, receipt)
+
+    def owned_damage(self, attempt: str, ref: ContentObjectRef) -> str | None:
+        """Check only this result's current read dependencies for known damage."""
+        from feedbax.persistence.receipt_closure import ReceiptClosure
+        if self.attempt_ref(attempt) != ref:
+            raise ValueError(f"Receipt differs from the indexed attempt {attempt!r}")
+        closure = ReceiptClosure(self.store, self._index)
+        try:
+            closure.receipt_for_attempt(attempt)
+            for member in closure.owned_objects(ref):
+                require_sound(self.store, member)
+        except KnownDamage as error:
+            return str(error)
+        return None
+
 
     def authored(self, request_id: RequestId) -> PublishedSuccess | None:
         ref = self._index.authored.get(request_id)
@@ -189,7 +221,7 @@ class SuccessView:
             if existing := self._index.attempts.get(attempt):
                 if bindings is None:
                     raise ValueError("This attempt already published a success")
-                published = self.read_success(existing)
+                published = self.read_owned_success(existing)
                 if (
                     published.receipt.request, published.receipt.products, published.receipt.inputs,
                     published.receipt.continuation, published.receipt.recovery, published.receipt.evaluation_manifest,
@@ -206,8 +238,16 @@ class SuccessView:
                         self._verify_bound(decoded, member, bound)
                 inputs = bindings
             previous = self._index.authored.get(request.id)
-            if previous is not None and self.read_receipt(previous).request.id != request.id:
-                raise ValueError("Superseded receipt belongs to a different authored request")
+            if previous is not None:
+                try:
+                    prior = self.read_receipt(previous)
+                except KnownDamage as error:
+                    if error.observation.expected != previous:
+                        raise
+                    # The authenticated index still pins the exact superseded receipt.
+                else:
+                    if prior.request.id != request.id:
+                        raise ValueError("Superseded receipt belongs to a different authored request")
             receipt = Success(
                 request=request,
                 attempt=attempt,

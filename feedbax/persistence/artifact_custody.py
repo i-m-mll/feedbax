@@ -66,6 +66,9 @@ from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes, canonical_json_v2_bytes
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence._store_metadata import sync_directory, write_store_metadata
+from feedbax.persistence.store_damage import (
+    ObjectVerificationError, clear_damage, observe_failure, occurrence, read_damage, record_damage, require_sound,
+)
 
 if TYPE_CHECKING:
     from feedbax.contracts.project_io import TextProject
@@ -410,6 +413,7 @@ def _stage_blob(
     create_payload: Callable[[int, str], int],
     *,
     validate: Callable[[Path], None] | None = None,
+    on_corrupt: Callable[[Exception], None] | None = None,
 ) -> os.stat_result:
     records = _open_directory_chain(destination.parent, create=True)
     parent_descriptor = records[-1][1]
@@ -436,13 +440,9 @@ def _stage_blob(
                 temporary_parent_descriptor=staging_descriptor,
                 parent_descriptor=parent_descriptor,
             )
+            installed = True
         except FileExistsError:
-            pass
-        _remove_private_materialization_staging_name(
-            directory_descriptor=staging_descriptor,
-            temporary_name=temporary_name,
-        )
-        staging_descriptor = None
+            installed = False
         final_descriptor, before = open_existing_file(
             destination.name,
             rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
@@ -452,16 +452,36 @@ def _stage_blob(
         )
         stored_identity = _stream_file_descriptor(final_descriptor)
         after = os.fstat(final_descriptor)
-        if _file_state(before) != _file_state(after) or stored_identity != expected_identity:
-            raise ArtifactBlobIntegrityError(
-                f"canonical blob bytes do not match content identity: {destination}"
-            )
         path_stat = os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
-        if (path_stat.st_dev, path_stat.st_ino) != (after.st_dev, after.st_ino):
+        if _file_state(before) != _file_state(after) or _file_state(path_stat) != _file_state(after):
             raise ArtifactBlobIntegrityError(
                 f"canonical blob identity changed during publication: {destination}"
             )
         _recheck_directory_chain(records)
+        if stored_identity != expected_identity:
+            if stored_identity[0] == expected_identity[0]:
+                raise ArtifactBlobReferenceError(f"publication size differs from verified object: {destination}")
+            error = ObjectVerificationError(
+                f"canonical blob bytes do not match content identity: {destination}, found {stored_identity}",
+                found_sha256=stored_identity[0], found_size=stored_identity[1],
+            )
+            if on_corrupt is None:
+                raise error
+            on_corrupt(error)
+            incumbent = os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
+            if _file_state(incumbent) != _file_state(after):
+                raise ArtifactBlobIntegrityError(f"corrupt occupant changed before replacement: {destination}")
+            os.replace(
+                temporary_name, destination.name,
+                src_dir_fd=staging_descriptor, dst_dir_fd=parent_descriptor,
+            )
+            installed = True
+            after = os.fstat(temporary_descriptor)
+            if _file_state(os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)) != _file_state(after):
+                raise ArtifactBlobIntegrityError(f"verified replacement changed during publication: {destination}")
+        _recheck_directory_chain(records)
+        if installed:
+            os.fsync(parent_descriptor)
         if after.st_mode & 0o222:
             _remove_write_permissions(final_descriptor, after)
             os.fsync(final_descriptor)
@@ -495,24 +515,28 @@ def _stage_blob_bytes(
     *,
     identity: tuple[str, int] | None = None,
     validate: Callable[[Path], None] | None = None,
+    on_corrupt: Callable[[Exception], None] | None = None,
 ) -> os.stat_result:
     if identity is None:
         identity = hashlib.sha256(data).hexdigest(), len(data)
     writer = partial(_write_staged_file, write_payload=partial(_write_file_descriptor, data=data))
-    return _stage_blob(destination, identity, writer, validate=validate)
+    return _stage_blob(destination, identity, writer, validate=validate, on_corrupt=on_corrupt)
 
 
 def _stage_blob_file(
     source_descriptor: int,
     destination: Path,
     expected_identity: tuple[str, int],
+    *,
+    on_corrupt: Callable[[Exception], None],
+    validate: Callable[[Path], None] | None = None,
 ) -> os.stat_result:
     def write_payload(descriptor: int) -> None:
         if _stream_file_descriptor(source_descriptor, target=descriptor) != expected_identity:
             raise ArtifactBlobIntegrityError(f"artifact source changed during store: {destination}")
 
     writer = partial(_write_staged_file, write_payload=write_payload)
-    return _stage_blob(destination, expected_identity, writer)
+    return _stage_blob(destination, expected_identity, writer, validate=validate, on_corrupt=on_corrupt)
 
 
 def _object_identity(
@@ -545,12 +569,19 @@ def _object_identity(
     return digest, expected_size
 
 
+def _content_ref(digest: str, size: int) -> ContentObjectRef:
+    return ContentObjectRef(
+        object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}", sha256=digest, size_bytes=size,
+    )
+
+
 def _read_blob(target: Path, expected_size: int) -> bytes:
     with _open_blob_for_read(target, expected_size) as descriptor:
         data = _read_file_descriptor(descriptor)
     if len(data) != expected_size:
-        raise ArtifactBlobIntegrityError(
-            f"artifact read size mismatch: expected {expected_size}, found {len(data)}: {target}"
+        raise ObjectVerificationError(
+            f"artifact read size mismatch: expected {expected_size}, found {len(data)}: {target}",
+            found_size=len(data),
         )
     return data
 
@@ -559,17 +590,23 @@ def _verify_blob(
     target: Path, *, sha256: str, size_bytes: int, destination_descriptor: int | None = None,
     freeze: bool = False,
 ) -> None:
-    with _open_blob_for_read(target, size_bytes, freeze=freeze) as descriptor:
+    with _open_blob_for_read(target, None, freeze=freeze) as descriptor:
         actual_digest, actual_size = _stream_file_descriptor(
             descriptor, target=destination_descriptor
         )
+        if actual_digest == sha256 and actual_size != size_bytes:
+            raise ArtifactBlobReferenceError(
+                f"reference size mismatch for {target}: expected {size_bytes}, found {actual_size}"
+            )
         if actual_size != size_bytes:
-            raise ArtifactBlobIntegrityError(
-                f"artifact read size mismatch: expected {size_bytes}, found {actual_size}: {target}"
+            raise ObjectVerificationError(
+                f"artifact read size mismatch: expected {size_bytes}, found {actual_size}: {target}",
+                found_size=actual_size, found_sha256=actual_digest,
             )
         if actual_digest != sha256:
-            raise ArtifactBlobIntegrityError(
-                f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}: {target}"
+            raise ObjectVerificationError(
+                f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}: {target}",
+                found_size=actual_size, found_sha256=actual_digest,
             )
 
 
@@ -611,9 +648,10 @@ def _open_blob_for_read(
                 f"canonical artifact identity changed before read: {target}"
             )
         if expected_size is not None and file_stat_before.st_size != expected_size:
-            raise ArtifactBlobIntegrityError(
+            raise ObjectVerificationError(
                 "artifact size mismatch: "
-                f"expected {expected_size}, found {file_stat_before.st_size}: {target}"
+                f"expected {expected_size}, found {file_stat_before.st_size}: {target}",
+                found_size=file_stat_before.st_size,
             )
         yield file_descriptor
         file_stat_after = os.fstat(file_descriptor)
@@ -676,9 +714,18 @@ def _read_store_document(path: Path) -> tuple[bytes, dict[str, JsonValue]] | Non
 
 
 def _read_content_object(path: Path, digest: str, expected_size: int) -> bytes:
-    data = _read_blob(path, expected_size)
-    if hashlib.sha256(data).hexdigest() != digest:
-        raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}: {path}")
+    try:
+        data = _read_blob(path, expected_size)
+    except ObjectVerificationError as error:
+        # A size disagreement can come from the reference; verify before attributing damage.
+        _verify_blob(path, sha256=digest, size_bytes=expected_size)
+        raise ArtifactBlobIntegrityError(f"canonical object changed during read: {path}") from error
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != digest:
+        raise ObjectVerificationError(
+            f"content object SHA-256 mismatch: expected {digest}, found {actual}: {path}",
+            found_size=len(data), found_sha256=actual,
+        )
     return data
 
 
@@ -964,12 +1011,39 @@ class ImmutableArtifactBlobProvider:
         self._validate_store_target(destination)
         with self._exclusive_lock():
             self._validate_store_target(destination)
-            written = _stage_blob_bytes(data, destination, identity=identity, validate=validate)
-            return ContentObjectRef(
-                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}",
-                sha256=digest,
-                size_bytes=written.st_size,
+            ref = _content_ref(*identity)
+            _stage_blob_bytes(
+                data, destination, identity=identity,
+                validate=self._replacement_validator(ref, validate),
+                on_corrupt=partial(self._record_publication_damage, ref),
             )
+            self._settle_install(ref)
+            return ref
+
+    def _record_publication_damage(self, ref: ContentObjectRef, error: Exception) -> None:
+        record_damage(self, ref, error, verifier="publication")
+
+    def _settle_install(self, ref: ContentObjectRef) -> None:
+        if read_damage(self, ref.sha256) is not None:
+            sync_directory(self.object_path(ref).parent)
+            clear_damage(self, ref.sha256)
+
+    def _replacement_validator(
+        self, ref: ContentObjectRef, validate: Callable[[Path], None] | None = None,
+    ) -> Callable[[Path], None] | None:
+        observation = read_damage(self, ref.sha256)
+        if observation is None or observation.descriptor_sha256 is None:
+            return validate
+
+        def verify(path: Path) -> None:
+            from feedbax.persistence.array_container import open_array_container
+
+            if validate is not None:
+                validate(path)
+            with open_array_container(path, expected_descriptor_sha256=observation.descriptor_sha256) as reader:
+                reader.verify_tensors()
+
+        return verify
 
     def store_rooted_object(self, data: bytes, *, namespace: str) -> ContentObjectRef:
         """Store an imported object and retain its exact identity in one transaction."""
@@ -1018,45 +1092,26 @@ class ImmutableArtifactBlobProvider:
             self._validate_store_target(destination)
             with self._exclusive_lock():
                 self._validate_store_target(destination)
-                if destination.exists():
-                    destination_records = _open_directory_chain(destination.parent, create=False)
-                    destination_descriptor: int | None = None
-                    try:
-                        destination_descriptor, written = open_existing_file(
-                            destination.name,
-                            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
-                            error_factory=ArtifactBlobIntegrityError,
-                            context=f"canonical blob {destination}",
-                            dir_fd=destination_records[-1][1],
-                        )
-                        if _stream_file_descriptor(destination_descriptor) != identity or (
-                            _file_state(written) != _file_state(os.fstat(destination_descriptor))
-                        ):
-                            raise ArtifactBlobIntegrityError(
-                                f"canonical blob bytes do not match content identity: {destination}"
-                            )
-                        _recheck_directory_chain(destination_records)
-                        if written.st_mode & 0o222:
-                            _remove_write_permissions(destination_descriptor, written)
-                            os.fsync(destination_descriptor)
-                            written = os.fstat(destination_descriptor)
-                    finally:
-                        if destination_descriptor is not None:
-                            os.close(destination_descriptor)
-                        _close_directory_chain(destination_records)
-                else:
-                    written = _stage_blob_file(source_descriptor, destination, identity)
-            if _file_state(before) != _file_state(os.fstat(source_descriptor)):
-                raise ArtifactBlobIntegrityError(f"artifact source changed during store: {source}")
-            path_after = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
-            if (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino):
-                raise ArtifactBlobIntegrityError(f"artifact source identity changed: {source}")
-            _recheck_directory_chain(source_records)
-            return ContentObjectRef(
-                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{identity[0]}",
-                sha256=identity[0],
-                size_bytes=written.st_size,
-            )
+                ref = _content_ref(*identity)
+                validate = self._replacement_validator(ref)
+                if source != destination and not self._reuse_object(ref, validate):
+                    _stage_blob_file(
+                        source_descriptor, destination, identity,
+                        on_corrupt=partial(self._record_publication_damage, ref),
+                        validate=validate,
+                    )
+                if _file_state(before) != _file_state(os.fstat(source_descriptor)):
+                    raise ArtifactBlobIntegrityError(f"artifact source changed during store: {source}")
+                path_after = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
+                if (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino):
+                    raise ArtifactBlobIntegrityError(f"artifact source identity changed during store: {source}")
+                _recheck_directory_chain(source_records)
+                if source == destination:
+                    if validate is not None:
+                        validate(_descriptor_path(source_descriptor))
+                    _verify_blob(destination, sha256=ref.sha256, size_bytes=ref.size_bytes, freeze=True)
+                self._settle_install(ref)
+                return ref
         finally:
             if source_descriptor is not None:
                 os.close(source_descriptor)
@@ -1070,7 +1125,16 @@ class ImmutableArtifactBlobProvider:
     ) -> bytes:
         """Read one pinned role-free object and verify its exact identity."""
         digest, expected_size = _object_identity(object_ref, size_bytes=size_bytes)
-        return _read_content_object(self._canonical_path(digest), digest, expected_size)
+        ref = _content_ref(digest, expected_size)
+        require_sound(self, ref)
+        before = occurrence(self, ref)
+        try:
+            return _read_content_object(self._canonical_path(digest), digest, expected_size)
+        except (ObjectVerificationError, FileNotFoundError) as error:
+            # A missing Store has no local observation authority.
+            if (self.root / ".content-store.lock").exists():
+                observe_failure(self, ref, before, error, verifier="object read")
+            raise
 
     def object_path(self, object_ref: ContentObjectRef) -> Path:
         """Derive the canonical path for a pinned object without reading it."""
@@ -1078,20 +1142,45 @@ class ImmutableArtifactBlobProvider:
         return self._canonical_path(digest)
 
     @contextmanager
-    def open_owned_object(self, object_ref: ContentObjectRef) -> Iterator[Path]:
+    def open_owned_object(
+        self, object_ref: ContentObjectRef, *, allow_damaged: bool = False,
+    ) -> Iterator[Path]:
         """Borrow a verified store object's pinned file for a selective reader.
 
         Ingress establishes the byte identity. The borrow checks containment,
         size and stability without hashing payloads.
         """
+        if not allow_damaged:
+            require_sound(self, object_ref)
+        with self._borrow_object(object_ref) as path:
+            yield path
+
+    @contextmanager
+    def _borrow_object(self, object_ref: ContentObjectRef) -> Iterator[Path]:
         digest, size_bytes = _object_identity(object_ref)
         with _open_blob_for_read(self._canonical_path(digest), size_bytes) as descriptor:
             yield _descriptor_path(descriptor)
 
-    def verify_object(self, object_ref: ContentObjectRef) -> None:
+    def verify_object(
+        self, object_ref: ContentObjectRef, *, verifier: str = "object verification",
+    ) -> None:
         """Verify one pinned object in bounded chunks."""
         digest, size_bytes = _object_identity(object_ref)
-        _verify_blob(self._canonical_path(digest), sha256=digest, size_bytes=size_bytes)
+        before = occurrence(self, object_ref)
+        try:
+            _verify_blob(self._canonical_path(digest), sha256=digest, size_bytes=size_bytes)
+        except (ObjectVerificationError, FileNotFoundError) as error:
+            if (self.root / ".content-store.lock").exists():
+                observe_failure(self, object_ref, before, error, verifier=verifier)
+            raise
+
+    def verify_observed_object(self, object_ref: ContentObjectRef, *, verifier: str) -> None:
+        """Verify bytes and any known descriptor failure without clearing the observation."""
+        self.verify_object(object_ref, verifier=verifier)
+        validate = self._replacement_validator(object_ref)
+        if validate is not None:
+            with self._borrow_object(object_ref) as path:
+                validate(path)
 
     def _clone_object_from(
         self, source: ImmutableArtifactBlobProvider, object_ref: ContentObjectRef
@@ -1099,16 +1188,35 @@ class ImmutableArtifactBlobProvider:
         """Clone into canonical custody, or reuse a verified object, with both Stores locked."""
         digest, size_bytes = _object_identity(object_ref)
         target = self._canonical_path(digest)
-        if os.path.lexists(target):
-            source.verify_object(object_ref)
-            _verify_blob(target, sha256=digest, size_bytes=size_bytes, freeze=True)
+        source.verify_observed_object(object_ref, verifier="transfer source")
+        validate = self._replacement_validator(object_ref)
+        if self._reuse_object(object_ref, validate):
+            self._settle_install(object_ref)
             return False
 
         self._validate_store_target(target)
         with _open_blob_for_read(source.object_path(object_ref), size_bytes) as descriptor:
             _stage_blob(
-                target, (digest, size_bytes), partial(_clone_staged_file, source=descriptor)
+                target, (digest, size_bytes), partial(_clone_staged_file, source=descriptor),
+                on_corrupt=partial(self._record_publication_damage, object_ref),
+                validate=validate,
             )
+        self._settle_install(object_ref)
+        return True
+
+    def _reuse_object(
+        self, ref: ContentObjectRef, validate: Callable[[Path], None] | None,
+    ) -> bool:
+        """Reuse sound canonical bytes under the publication lock."""
+        target = self.object_path(ref)
+        try:
+            _verify_blob(target, sha256=ref.sha256, size_bytes=ref.size_bytes, freeze=True)
+        except (FileNotFoundError, ObjectVerificationError):
+            # The shared writer verifies the occupant again before installing anything.
+            return False
+        if validate is not None:
+            with self._borrow_object(ref) as path:
+                validate(path)
         return True
 
     def ingest_tree(self, source_root: Path | str) -> ContentTreeRef:
@@ -1499,13 +1607,14 @@ class ImmutableArtifactBlobProvider:
     ) -> bytes:
         """Read and validate exact bytes from a canonical artifact reference."""
         digest, expected_size = self._validated_reference(artifact, size_bytes=size_bytes)
-        data = self._read_canonical_blob(self._canonical_path(digest), expected_size)
-        actual_digest = hashlib.sha256(data).hexdigest()
-        if actual_digest != digest:
+        try:
+            return self.get_object(_content_ref(digest, expected_size))
+        except ObjectVerificationError as error:
+            if error.found_sha256 is None:
+                raise
             raise ArtifactBlobIntegrityError(
-                f"artifact sha256 mismatch: expected {digest}, found {actual_digest}"
-            )
-        return data
+                f"artifact sha256 mismatch: expected {digest}, found {error.found_sha256}"
+            ) from error
 
     def canonical_relative_path(
         self,
