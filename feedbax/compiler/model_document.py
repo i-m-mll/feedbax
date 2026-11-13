@@ -42,6 +42,16 @@ class ModelCompilationProblem(ValueError):
         self.address = address
 
 
+def model_tau_seconds(tau: object, period: float) -> float:
+    time = LiteralValue.model_validate(tau) if isinstance(tau, dict) else LiteralValue(value=tau, unit="st")
+    if time.unit not in {"st", "s"} or type(time.value) not in {float, int} or time.value <= 0:
+        raise ValueError("Tau requires a positive value in seconds or steps")
+    value = time.value * (period if time.unit == "st" else 1)
+    if not isfinite(value) or value <= 0:
+        raise ValueError("Tau does not resolve to a positive finite duration")
+    return value
+
+
 def _generated(role: str, *parts: str) -> str:
     return "_model_" + role + "_" + sha256(canonical_json_v2_bytes(list(parts))).hexdigest()
 
@@ -377,12 +387,7 @@ class _Lower:
                 if component.type == "feedbax.VanillaRNN":
                     tau = params.get("tau", definition.params.model.model_fields["tau"].default)
                     try:
-                        time = LiteralValue.model_validate(tau) if isinstance(tau, dict) else LiteralValue(value=tau, unit="st")
-                        if time.unit not in {"st", "s"} or type(time.value) not in {float, int} or time.value <= 0:
-                            raise ValueError("Tau requires a positive value in seconds or steps")
-                        params["tau"] = time.value * (self.model.step_seconds if time.unit == "st" else 1)
-                        if not isfinite(params["tau"]) or params["tau"] <= 0:
-                            raise ValueError("Tau does not resolve to a positive finite duration")
+                        params["tau"] = model_tau_seconds(tau, self.model.step_seconds)
                     except ValueError as error:
                         raise self.problem(
                             path, "field", str(error), parent={"kind": "component", "id": key}, path=("fields", "tau"),

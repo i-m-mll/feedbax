@@ -202,7 +202,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   async function editNumber(label: string, value: number, before: string) {
     await mapStep(page, 'train').click();
     await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
-    const field = page.getByRole('spinbutton', { name: `Edit ${label}` });
+    const field = page.getByRole('textbox', { name: label, exact: true });
     await expect(field).toHaveValue(before);
     const saved = page.waitForResponse((response) => {
       const request = response.request();
@@ -287,7 +287,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(drawer.getByRole('region', { name: 'Definition' })).toBeVisible();
   await expect(source).toHaveCSS('outline-width', '2px');
   await expect(mapStep(page, 'train')).toHaveCSS('background-color', await source.evaluate((node) => getComputedStyle(node).color));
-  await authorLearningRateSweep(drawer.getByRole('group', { name: 'Learning Rate', exact: true }));
+  await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
   const sweep = source.getByRole('button', { name: 'Sweep learning-rate', exact: true });
   await expect(sweep).toHaveText('learning-rate 3');
@@ -382,7 +382,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await runs.focus();
   const edit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  await drawer.getByRole('spinbutton', { name: 'Edit N Batches' }).fill('4');
+  const batches = drawer.getByRole('textbox', { name: 'N Batches', exact: true });
+  await batches.fill('4');
+  await batches.press('Enter');
   await page.getByRole('tabpanel', { name: 'Scene', exact: true }).focus();
   const acknowledged = await edit;
   expect(acknowledged.ok(), await acknowledged.text()).toBe(true);

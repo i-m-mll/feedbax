@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentEdit, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentState,
+    ModelConnectionReview, ModelConnectionReviewRequest,
+    ModelProjection, ModelProjectionRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
 )
 from feedbax.contracts.project_inputs import ProjectName
@@ -31,6 +33,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
+from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, TrainFieldRequest, TrainFieldResponse
 from feedbax.web.services.project_folder import (
     ProjectFileExists,
     ProjectFolderInvalid,
@@ -121,6 +124,27 @@ def read_train_authoring(
     return _project_response(response, project_fields)
 
 
+@router.post("/{project_id}/authoring/train/{step_id}/fields")
+def project_train_numeric_fields(
+    project_id: ProjectName, step_id: ProjectName, body: TrainFieldRequest, request: Request, response: Response,
+) -> TrainFieldResponse:
+    from feedbax.studio.authoring import project_training_numeric_fields
+
+    def project_fields() -> TrainFieldResponse:
+        folders = request.app.state.project_folders
+        snapshot = folders.read(project_id, revision=body.revision)
+        bundle = request.app.state.bootstrap_state.bundle
+        try:
+            return project_training_numeric_fields(
+                snapshot.project, step_id, bundle.training_programs, bundle.expression_functions, body,
+                lambda keys: folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan,
+            )
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+
+    return _project_response(response, project_fields)
+
+
 @router.post("/{project_id}/authoring/document", response_model_exclude_unset=True)
 def read_document_authoring(
     project_id: ProjectName, body: StudioDocumentAuthoringRequest, request: Request, response: Response,
@@ -186,6 +210,28 @@ def patch_project(
     )
 
 
+@router.post("/{project_id}/model/connections")
+def review_model_connections(
+    project_id: ProjectName, body: ModelConnectionReviewRequest, request: Request, response: Response,
+) -> ModelConnectionReview:
+    components = request.app.state.bootstrap_state.bundle.components
+    return _project_response(
+        response, lambda: request.app.state.project_folders.review_model_connections(project_id, body, components)
+    )
+
+
+@router.post("/{project_id}/model/projection", response_model_exclude_unset=True)
+def read_model_projection(
+    project_id: ProjectName, body: ModelProjectionRequest, request: Request, response: Response,
+) -> ModelProjection:
+    from feedbax.web.services.model_projection import model_projection
+
+    components = request.app.state.bootstrap_state.bundle.components
+    return _project_response(
+        response, lambda: model_projection(request.app.state.project_folders, project_id, body, components)
+    )
+
+
 @router.post("/{project_id}/model/edit", response_model_exclude_unset=True)
 def edit_model(
     project_id: ProjectName, body: ModelEditRequest, request: Request, response: Response,
@@ -193,6 +239,20 @@ def edit_model(
     components = request.app.state.bootstrap_state.bundle.components
     return _project_response(
         response, lambda: request.app.state.project_folders.edit_model(project_id, body, components)
+    )
+
+
+@router.post("/{project_id}/model/fields")
+def project_model_fields(
+    project_id: ProjectName, body: ModelFieldRequest, request: Request, response: Response,
+) -> ModelFieldResponse:
+    from feedbax.web.services.model_field import model_fields
+
+    bundle = request.app.state.bootstrap_state.bundle
+    return _project_response(
+        response, lambda: model_fields(
+            request.app.state.project_folders, project_id, body, bundle.components, bundle.expression_functions,
+        ),
     )
 
 
@@ -230,7 +290,9 @@ def evaluate_attachments(
 
     try:
         return _project_response(
-            response, lambda: read_evaluate_attachments(request.app.state.project_folders, project_id, body),
+            response, lambda: read_evaluate_attachments(
+                request.app.state.project_folders, project_id, body, request.app.state.bootstrap_state.bundle.components,
+            ),
         )
     except (KeyError, ValueError) as error:
         raise HTTPException(422, detail=str(error), headers=_NO_STORE) from error

@@ -116,7 +116,7 @@ test('an empty saved project starts its first Train by keyboard and pointer', as
 
       const tab = (name: string) => page.getByRole('tab', { name, exact: true });
       await tab('Training').click();
-      await expect(page.getByRole('spinbutton', { name: 'Edit N Batches', exact: true })).toBeEnabled();
+      await expect(page.getByRole('textbox', { name: 'N Batches', exact: true })).toBeEnabled();
       await tab('Task').click();
       const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
       const reach = task.getByRole('spinbutton', { name: 'Edit Eval Reach Length', exact: true });
@@ -398,19 +398,13 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Meta+5');
-  const rate = page.getByRole('group', { name: 'Learning Rate', exact: true });
-  await activate(page, rate.getByRole('button', { name: 'To Sweep Learning Rate', exact: true }));
-  for (const [index, value] of ['0.002', '0.003'].entries()) {
-    await page.keyboard.press('Meta+5');
-    const add = rate.getByRole('button', { name: 'Add Value Learning Rate', exact: true });
-    await expect(add).toBeEnabled();
-    await activate(page, add);
-    const edits = rate.getByRole('button', { name: /^Edit Learning Rate / });
-    await expect(edits).toHaveCount(index + 2);
-    await activate(page, edits.last());
-    await number(page, rate.getByRole('spinbutton'), value);
-    await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${value}`, exact: true })).toBeEnabled();
-  }
+  const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
+  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await expect(rateText).toHaveValue('0.001,');
+  await number(page, rateText, '0.001, 0.002, 0.003');
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
   await page.keyboard.press('Control+Meta+2');
   await activate(page, card.getByRole('button', { name: 'Sweep learning-rate', exact: true }));
   const value = (name: string) => card.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true });
@@ -456,7 +450,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await expect(drawer.getByRole('combobox', { name: 'Edit Model' })).toBeFocused();
-  const batches = drawer.getByRole('spinbutton', { name: 'Edit N Batches' });
+  const batches = drawer.getByRole('textbox', { name: 'N Batches' });
   await number(page, batches, '1200');
   await expect(batches).toBeEnabled();
   await page.keyboard.press('Meta+1');

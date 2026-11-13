@@ -61,26 +61,15 @@ export async function enter(field: Locator, value: string) {
   await field.press('Enter');
 }
 
-export async function openSweepEditor(field: Locator, name: string) {
-  const edit = field.getByRole('button', { name: `Edit ${name}`, exact: true });
-  await expect(edit).toBeEnabled();
-  if (await edit.getAttribute('aria-expanded') !== 'true') await edit.click();
-}
-
 export async function authorLearningRateSweep(rate: Locator) {
-  await rate.getByRole('button', { name: 'To Sweep Learning Rate', exact: true }).click();
-  await openSweepEditor(rate, 'Learning Rate 0.001');
-  await expect(rate.getByRole('spinbutton')).toHaveValue('0.001');
-  await enter(rate.getByRole('textbox'), 'Slow');
-  await expect(rate.getByRole('spinbutton', { name: 'Edit Learning Rate Slow' })).toBeEnabled();
-  for (const [index, [value, label]] of [['0.002', 'Medium'], ['0.003', 'Fast']].entries()) {
-    await rate.getByRole('button', { name: 'Add Value Learning Rate' }).click();
-    const edits = rate.getByRole('button', { name: /^Edit Learning Rate / });
-    await expect(edits).toHaveCount(index + 2);
-    await edits.last().click();
-    await enter(rate.getByRole('spinbutton'), value);
-    await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${value}`, exact: true })).toBeEnabled();
-    await enter(rate.getByRole('textbox'), label);
-    await expect(rate.getByRole('spinbutton', { name: `Edit Learning Rate ${label}`, exact: true })).toBeEnabled();
+  await rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }).click();
+  await rate.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  const text = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  await expect(text).toHaveValue('0.001,');
+  await enter(text, '0.001, 0.002, 0.003');
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
+  for (const [index, name] of ['Slow', 'Medium', 'Fast'].entries()) {
+    await enter(rate.getByRole('textbox', { name: `Learning Rate value ${index + 1} name`, exact: true }), name);
+    await expect(rate.getByRole('textbox', { name, exact: true })).toBeVisible();
   }
 }

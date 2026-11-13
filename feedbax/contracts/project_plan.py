@@ -21,11 +21,11 @@ from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
-from feedbax.contracts.matrix_core import apply_override_patch_in_place
+from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.operation import DatasetPort
-from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind
+from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -49,6 +49,7 @@ from feedbax.contracts.project_resolution import (
     StepComposition,
     StepTemplate,
     compose_step,
+    _select,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.project_sweep import (
@@ -386,12 +387,57 @@ def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference
     )
 
 
-def _with_train_model(payload: Payload, model: ModelDocument) -> Payload:
-    data = model.model_dump(mode="json")
-    managed = payload.get("trial_documents")
-    return payload | (
-        {"trial_documents": managed | {"model": data}} if isinstance(managed, dict) else {"graph": data}
-    )
+def _train_model_path(payload: Payload) -> tuple[str, ...]:
+    return ("trial_documents", "model") if "trial_documents" in payload else ("graph",)
+
+
+def _with_train_model(
+    payload: Payload, model: _ModelSource, document_ids: Mapping[str, str],
+    document_pointers: Mapping[str, str],
+) -> Payload:
+    data = model.model.model_dump(mode="json")
+    draft = deepcopy(payload)
+    main = _train_model_path(payload)
+    apply_value_patch_in_place(draft, main, "replace", data, path=pointer(main))
+    for slot, name in document_ids.items():
+        if name != model.document or not slot.startswith("payload."):
+            continue
+        path = tuple(slot.removeprefix("payload.").split("."))
+        if path != main:
+            selected = _select(data, json_pointer_parts(document_pointers.get(slot)))
+            apply_value_patch_in_place(draft, path, "replace", selected, path=slot)
+    return draft
+
+
+def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSource) -> SelectedRunDefinition:
+    payload = _with_train_model(definition.payload, model, definition.document_ids, definition.document_pointers)
+    prefix = _train_model_path(payload)
+    sources = dict(definition.sources)
+    batches = definition.payload.get(MODEL_ATTACHMENTS, {})
+    for batch, differences in batches.items():
+        for index, difference in enumerate(differences):
+            if difference["op"] != "set_field":
+                continue
+            address = ModelAddress.model_validate(difference["address"])
+            source = sources.get(pointer(("payload", MODEL_ATTACHMENTS, batch, str(index), "value")))
+            if source is None or address.element.parent.kind == "attachment":
+                continue
+            field = address.stored_path()
+            for slot, name in definition.document_ids.items():
+                if name != model.document or not slot.startswith("payload."):
+                    continue
+                root = json_pointer_parts(definition.document_pointers.get(slot))
+                target = tuple(slot.split("."))
+                if field[:len(root)] == root:
+                    path = pointer((*target, *field[len(root):]))
+                    sources[path] = source
+                    if path + "/value" in sources:
+                        sources[path + "/value"] = source
+                elif root == (*field, "value"):
+                    sources[pointer(target)] = source
+            if not definition.document_ids.get("payload." + ".".join(prefix)):
+                sources[pointer(("payload", *prefix, *field))] = source
+    return replace(definition, payload=payload, sources=MappingProxyType(sources))
 
 
 def _model_difference_problem(key: RunKey, address: ModelAddress | None, detail: str) -> ProjectDiagnostic:
@@ -728,7 +774,7 @@ class _Compiler:
                         return False
                     _, source = self.lower_train_model(
                         RunKey(DEFAULT_SWEEP_ROW, target.step, DEFAULT_SWEEP_ROW),
-                        resolved.payload, resolved.document_ids,
+                        resolved.payload, resolved.document_ids, resolved.document_pointers,
                     )
                     return source is not None and _integer_model_site(
                         source.document, source.model, address, self.components or _builtin_model_registry(),
@@ -941,7 +987,7 @@ class _Compiler:
                 if isinstance(resolved, ProjectDiagnostic):
                     return None
                 _, model = self.lower_train_model(
-                    RunKey(variant, name, DEFAULT_SWEEP_ROW), resolved.payload, resolved.document_ids,
+                    RunKey(variant, name, DEFAULT_SWEEP_ROW), resolved.payload, resolved.document_ids, resolved.document_pointers,
                 )
                 return model
 
@@ -1086,6 +1132,7 @@ class _Compiler:
                 payload = resolved.payload
                 document_ids = MappingProxyType(resolved.document_ids)
                 document_uses = resolved.document_uses
+                document_pointers = resolved.document_pointers
             else:
                 if reader is not None:
                     for name, _ in self.work.definitions[key].documents:
@@ -1093,6 +1140,7 @@ class _Compiler:
                 payload = definition.payload
                 document_ids = definition.document_ids
                 document_uses = definition.document_uses
+                document_pointers = definition.document_pointers
             authored_model = None
             has_differences = MODEL_ATTACHMENTS in payload
             encoding_stamp = (
@@ -1104,7 +1152,7 @@ class _Compiler:
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
             if kind == "train":
-                payload, authored_model = self.lower_train_model(key, payload, document_ids)
+                payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
             elif has_differences:
                 payload = self.lower_evaluate_model(
                     key, payload, model_source, subject.member.reference if subject is not None else None,
@@ -1136,7 +1184,7 @@ class _Compiler:
         )
 
     def lower_train_model(
-        self, key: RunKey, payload: Payload, document_ids: Mapping[str, str],
+        self, key: RunKey, payload: Payload, document_ids: Mapping[str, str], document_pointers: Mapping[str, str],
     ) -> tuple[Payload | ProjectDiagnostic, _ModelSource | None]:
         from feedbax.compiler.model_attachment import resolve_effective_model
         from feedbax.compiler.model_document import ModelCompilationProblem
@@ -1165,13 +1213,15 @@ class _Compiler:
                     document, model, self.components or _builtin_model_registry(), differences,
                     functions=self.functions,
                 )
-                payload = _with_train_model(payload, model)
-            return payload, _ModelSource(
+            model_source = _ModelSource(
                 document, model, sha256_bytes(to_json((document, model.model_dump(mode="json")))),
             )
+            if differences:
+                payload = _with_train_model(payload, model_source, document_ids, document_pointers)
+            return payload, model_source
         except ModelCompilationProblem as error:
             address, detail = error.address, str(error)
-        except ValueError as error:
+        except (KeyError, ValueError) as error:
             if not has_differences:
                 return payload, None  # The ordinary Train validator reports invalid model documents.
             detail = str(error)
@@ -1385,6 +1435,9 @@ class _Compiler:
             if row.kind == "report" and problem.document is None else problem
             for problem in lowered.diagnostics
         )
+        if lowered.model_source is not None and (definition := self.selected_definitions.get(key)):
+            if MODEL_ATTACHMENTS in definition.payload:
+                self.selected_definitions[key] = _train_model_definition(definition, lowered.model_source)
         if (encoded := lowered.request) is None:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
@@ -1394,10 +1447,6 @@ class _Compiler:
         self.documents.update(encoded.documents)
         if lowered.model_source is not None:
             self.model_sources[key] = lowered.model_source
-            if definition := self.selected_definitions.get(key):
-                self.selected_definitions[key] = replace(
-                    definition, payload=_with_train_model(definition.payload, lowered.model_source.model),
-                )
         run = PlannedRun(
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,

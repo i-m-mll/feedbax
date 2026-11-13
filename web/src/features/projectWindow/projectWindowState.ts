@@ -21,6 +21,7 @@ export interface ProjectWindowState {
   detailsDrawerWidth: number;
   inspectorWidth: number;
   secondaryWidth: number;
+  modelPaths?: Partial<Record<ProjectWindowSlot, { document: string; path: string[] }>>;
 }
 
 export const defaultProjectWindowState: Readonly<ProjectWindowState> = {
@@ -78,6 +79,12 @@ function windowArrangement(value: unknown): ProjectWindowState {
   function drawer(key: 'mapDrawerOpen' | 'detailsDrawerOpen' | 'inspectorOpen') {
     return typeof prefs[key] === 'boolean' ? prefs[key] : defaultProjectWindowState[key];
   }
+  const modelPaths: NonNullable<ProjectWindowState['modelPaths']> = {};
+  for (const slot of ['primary', 'secondary'] as const) {
+    const entry = prefs.modelPaths?.[slot];
+    if (entry && typeof entry.document === 'string' && Array.isArray(entry.path) &&
+        entry.path.every((id) => typeof id === 'string')) modelPaths[slot] = entry;
+  }
   return {
     mode: prefs.mode === 'map' || prefs.mode === 'details' ? prefs.mode : 'both',
     primaryView: isView(prefs.primaryView) ? prefs.primaryView : defaultProjectWindowState.primaryView,
@@ -91,6 +98,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     detailsDrawerWidth: preferredSize('detailsDrawerWidth'),
     inspectorWidth: preferredSize('inspectorWidth'),
     secondaryWidth: preferredSize('secondaryWidth'),
+    modelPaths,
   };
 }
 

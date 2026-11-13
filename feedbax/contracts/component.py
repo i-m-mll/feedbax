@@ -405,6 +405,7 @@ class ComponentDefinition(BaseModel):
     )
     migrations: List[ComponentMigrationInfo] = Field(default_factory=list)
     trainable_by_default: bool = False
+    reset_outputs: list[str] = Field(default_factory=list)
     representation: Optional[RepresentationSpec] = None
 
     @model_validator(mode="before")

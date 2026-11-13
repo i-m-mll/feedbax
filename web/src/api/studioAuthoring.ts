@@ -3,6 +3,8 @@ import {
   parseContract,
   type StudioTrainAuthoring,
   type StudioTrainAuthoringRequest,
+  type TrainFieldRequest,
+  type TrainFieldResponse,
 } from '@/generated/studioContracts';
 
 export async function readStudioTrainAuthoring(
@@ -21,5 +23,19 @@ export async function readStudioTrainAuthoring(
     return projection;
   } catch (error) {
     throw asApiRequestError(error, path, 'The Train authoring response did not match its contract');
+  }
+}
+
+export async function projectTrainFields(
+  projectId: string, stepId: string, body: TrainFieldRequest, signal: AbortSignal,
+): Promise<TrainFieldResponse> {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/train/${encodeURIComponent(stepId)}/fields`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('TrainFieldRequest', body)), cache: 'no-store', signal,
+    });
+    return parseContract('TrainFieldResponse', response);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The Train field response did not match its contract');
   }
 }

@@ -34,6 +34,15 @@ const shortcuts = {
   previousRegion: { key: 'F6', shift: true },
   clearFocus: { key: 'Escape' },
   addComponent: { key: 'A', shift: true },
+  modelSelectAll: primary('A'),
+  modelRemove: { key: 'Backspace' },
+  modelRename: { key: 'F2' },
+  modelDuplicate: primary('D'),
+  modelGroup: primary('G'),
+  modelUngroup: primary('G', { shift: true }),
+  modelCopy: primary('C'),
+  modelCut: primary('X'),
+  modelPaste: primary('V'),
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
@@ -45,6 +54,8 @@ export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
+  'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
+  'modelCopy', 'modelCut', 'modelPaste',
 ]);
 
 export interface StudioCommand {
@@ -120,7 +131,8 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
 
 export function commandInContext(command: StudioCommand, context: ReturnType<typeof studioCommandContext>) {
   if (context.dialog && !(context.paletteOpen && command.id === 'commandPalette')) return false;
-  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run' || command.id === 'addComponent')) return false;
+  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run' ||
+      command.id === 'addComponent' || command.id.startsWith('model'))) return false;
   return !(context.activity && command.selectionScoped);
 }
 

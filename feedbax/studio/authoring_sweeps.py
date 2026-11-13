@@ -18,20 +18,17 @@ from feedbax.contracts.project_sweep import (
     SampledAxis,
     SetValue,
     axis_to_list,
+    _paths_overlap,
 )
-from feedbax.contracts.run_matrix import _paths_overlap
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringNumber,
     StudioAuthoringSweepChange,
     StudioNameSweepValue,
     StudioSetSweepValue,
     StudioSweepEdit,
-    StudioSweepList,
-    StudioSweepRange,
-    StudioSweepSampler,
-    StudioSweepValue,
     StudioToField,
 )
+from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue
 from feedbax.contracts.studio_project import SetProjectValue
 
 
@@ -41,8 +38,20 @@ class SweepTarget:
 
     value: int | float
     writes: Callable[[int | float], list[SetProjectValue]]
+    patch_path: str | None = None
+
+    @property
+    def generated_path(self) -> str | None:
+        patches = self.entry(self.value).patches
+        if len(patches) == 1:
+            path, patch = next(iter(patches.items()))
+            if isinstance(patch, SetValue) and patch.op == "replace":
+                return path
+        return None
 
     def entry(self, value: int | float, label: str | None = None) -> AxisValue:
+        if self.patch_path is not None:
+            return AxisValue(label=label, value=value, patches={self.patch_path: SetValue(value=value)})
         return AxisValue(
             label=label,
             value=value,
@@ -81,11 +90,12 @@ def _matches(paths: set[str], other: set[str]) -> bool:
 
 
 class TrainFieldSweeps:
-    def __init__(self, step: Step, target: SweepTarget, label: str):
+    def __init__(self, step: Step, target: SweepTarget, label: str, *, integer: bool):
         self.step = step
         self.target = target
         self.label = label
         self.paths = set(target.entry(target.value).patches)
+        self.integer = integer
         self.axes = step.sweep.axes if step.sweep else {}
         self.covering = [
             (name, axis) for name, axis in self.axes.items()
@@ -95,8 +105,19 @@ class TrainFieldSweeps:
             step.sweep is None or (
                 step.sweep.combination in (None, "cross")
                 and not step.sweep.rows
-                and not step.sweep.exceptions
+                and all(exception is None for exception in step.sweep.exceptions.values())
             )
+        )
+
+    def to_list(self, axis: ListedAxis | GeneratedAxis) -> NamedAxis:
+        return axis_to_list(axis, integer_site=lambda path: self.integer and path in self.paths)
+
+    def may_edit_member(self, axis: NamedAxis) -> bool:
+        return all(
+            entry is not None
+            and type(entry.value) in (int, float)
+            and entry.patches == self.target.entry(entry.value).patches
+            for entry in axis.values.values()
         )
 
     @property
@@ -104,12 +125,7 @@ class TrainFieldSweeps:
         return self.simple and not self.covering
 
     def _editable_list(self, axis: NamedAxis) -> bool:
-        return self.simple and all(
-            entry is not None
-            and type(entry.value) in (int, float)
-            and entry.patches == self.target.entry(entry.value).patches
-            for entry in axis.values.values()
-        )
+        return self.simple and self.may_edit_member(axis)
 
     def _can_list(self, axis: GeneratedAxis) -> bool:
         return self.simple and _axis_paths(axis) == self.paths
@@ -124,9 +140,9 @@ class TrainFieldSweeps:
             return StudioSweepSampler(
                 kind="sampler", id=name, rule=axis.sampler, can_list=axis.draws is not None and self._can_list(axis),
             )
-        editable = isinstance(axis, NamedAxis) and self._editable_list(axis)
+        editable = isinstance(axis, NamedAxis) and self.may_edit_member(axis)
         if isinstance(axis, ListedAxis):
-            axis = axis_to_list(axis)
+            axis = self.to_list(axis)
         if not isinstance(axis, NamedAxis) or not axis.values:
             return None
         values = []
@@ -146,18 +162,19 @@ class TrainFieldSweeps:
         return f"{base}-{counter}"
 
     @staticmethod
-    def _axis_write(name: str, axis: NamedAxis) -> SetProjectValue:
+    def _axis_write(name: str, axis: Axis) -> SetProjectValue:
+        value = axis.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        if isinstance(axis, SampledAxis) and not isinstance(axis.sampler.distribution, str):
+            value["sampler"]["distribution"] = axis.sampler.distribution.model_dump(mode="json", exclude_none=True)
         return SetProjectValue(
             op="replace", path=pointer(("sweep", "axes", name)),
-            value=axis.model_dump(mode="json", exclude_none=True, exclude_defaults=True),
+            value=value,
         )
 
-    def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:
-        edit = command.edit
-        if edit.kind == "toSweep" and self.can_sweep:
+    def write_axis(self, axis: Axis) -> list[SetProjectValue]:
+        if self.can_sweep:
             base = re.sub(r"[^a-z0-9]+", "-", self.label.lower()).strip("-") or "value"
             name = self._fresh_id(base, self.axes)
-            axis = NamedAxis(values={"value": self.target.entry(self.target.value)})
             write = self._axis_write(name, axis)
             if self.step.sweep is None:
                 return [SetProjectValue(
@@ -167,6 +184,19 @@ class TrainFieldSweeps:
             if "axes" not in self.step.sweep.model_fields_set:
                 return [SetProjectValue(op="add", path="/sweep/axes", value={name: write.value})]
             return [SetProjectValue(op="add", path=write.path, value=write.value)]
+        if len(self.covering) == 1:
+            name, previous = self.covering[0]
+            editable = self._editable_list(previous) if isinstance(previous, NamedAxis) else (
+                isinstance(previous, GeneratedAxis) and self._can_list(previous)
+            )
+            if editable:
+                return [self._axis_write(name, axis)]
+        raise ValueError(f"{self.label} has no supported sweep edit")
+
+    def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:
+        edit = command.edit
+        if edit.kind == "toSweep" and self.can_sweep:
+            return self.write_axis(NamedAxis(values={"value": self.target.entry(self.target.value)}))
 
         if edit.kind != "toSweep" and len(self.covering) == 1:
             name, axis = self.covering[0]
@@ -182,11 +212,13 @@ class TrainFieldSweeps:
         validate_number: Callable[[int | float], int | float],
     ) -> list[SetProjectValue]:
         if edit.kind == "toList" and isinstance(axis, (RangeAxis, SampledAxis, ListedAxis)) and self._can_list(axis):
-            return [self._axis_write(name, axis_to_list(axis))]
-        if not isinstance(axis, NamedAxis) or not self._editable_list(axis):
+            return [self._axis_write(name, self.to_list(axis))]
+        if not isinstance(axis, NamedAxis) or not self.may_edit_member(axis):
             raise ValueError(f"{self.label} has no editable list")
         values = axis.values
         if edit.kind == "addValue":
+            if not self.simple:
+                raise ValueError("This sweep has explicit row edits.")
             value_id = self._fresh_id("value", values)
             return [SetProjectValue(
                 op="add", path=pointer(("sweep", "axes", name, "values", value_id)),
@@ -209,6 +241,8 @@ class TrainFieldSweeps:
                 op="replace" if "label" in entry.model_fields_set else "add",
                 path=pointer((*path, "label")), value=edit.label,
             )]
+        if not self.simple:
+            raise ValueError("This sweep has explicit row edits.")
         # A null axis preserves the authored position and the inverse edit.
         # It is omitted from the compiled product by the sweep grammar.
         return [

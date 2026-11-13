@@ -21,17 +21,21 @@ import { graphEdgeId } from '@/features/scenario/entities';
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
-  DocumentReferenceSchema, GraphSpecSchema, TaskSpecSchema,
-  type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type StudioSavedEvaluationRow, type TaskSpec, type WireSpec,
+  DocumentReferenceSchema, GraphSpecSchema, ModelDocumentSchema, TaskSpecSchema,
+  type EvaluateAttachmentReadRequest, type GraphSpec, type JsonPrimitive, type JsonValue, type ParamSchema, type StudioSavedEvaluationRow, type TaskSpec, type WireSpec,
   type PresentationPosition, type StudioDocumentAuthoring, type StudioDocumentAuthoringRequest,
   type StudioSavedTrainKey, type WorkspaceReplayTrial,
+  type StudioProjectWindowMapProblem,
 } from '@/generated/studioContracts';
-import { authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
+import { modelDocumentId, authoredPointer, directTrainStep, type AuthoredProject } from './authoredEdits';
 import type { ProblemReveal } from './projectWindowProblems';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { useModelAuthoring } from './useModelAuthoring';
 import { ManagedDocumentCanvas, useElementSelection } from './ManagedDocumentCanvas';
+import { useStoredModelView } from './model/ModelView';
+import { modelSchema } from './model/modelGraph';
+import type { ModelSelectionStore } from './model/modelSelection';
 
 type DetailName = 'model' | 'task' | 'scene';
 type DefinitionField = 'graph' | 'task';
@@ -57,6 +61,7 @@ export interface ManagedProjectDetail {
   readonly inspector?: ReactNode;
   readonly commands?: readonly StudioCommand[];
   readonly overlay?: ReactNode;
+  readonly path?: ReactNode;
 }
 
 interface DetailInputs {
@@ -71,9 +76,19 @@ interface DetailInputs {
   readonly evaluationReplay: ReturnType<typeof useSavedEvaluationScene>;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly namedRun?: StudioSavedTrainKey;
+  readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly fieldRows?: readonly string[];
   readonly documentScopes: Readonly<Record<DefinitionField, NamedDocumentScope | undefined>>;
   readonly problemReveal?: ProblemReveal;
+  readonly modelWindow: ModelSelectionStore;
+  readonly modelPath?: { document: string; path: string[] };
+  readonly setModelPath: (document: string, path: string[]) => void;
+  readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
+  readonly modelSource?: string;
+  readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
 }
+
+const rootModelPath: string[] = [];
 
 function authoredDefinition(project: AuthoredProject, stepId: string, field: DefinitionField): Definition | null {
   const inline = directTrainStep(project, stepId);
@@ -373,12 +388,22 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
 
 export function useManagedProjectDetails(input: DetailInputs): Record<DetailName, ManagedProjectDetail> {
   const { editor, stepId, selection, variantId, focus, activeView } = input;
-  const { saved, draft, outside, pending } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const { saved, draft, outside, pending, saving } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
   const scope = JSON.stringify([subjectScope, selection, focus]);
   const namedField = activeView === 'model' ? 'graph' : activeView === 'task' ? 'task' : undefined;
   const namedDocument = namedField && input.step?.documentIds?.[`payload.${namedField}`];
-  const reviewed: StudioDocumentAuthoringRequest | undefined = namedField && namedDocument && input.namedRun
+  const base = stepId ? directTrainStep(draft, stepId) : null;
+  const direct = DocumentReferenceSchema.safeParse(base?.graph);
+  const storedId = modelDocumentId(input.step?.documentIds) ?? input.modelSource ?? (direct.success ? direct.data.document : undefined);
+  const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
+  const stored = useMemo(() => {
+    if (!storedId || storedDocument?.schema !== modelSchema) return undefined;
+    const result = ModelDocumentSchema.safeParse(storedDocument.payload);
+    return result.success ? { id: storedId, value: result.data } : undefined;
+  }, [storedId, storedDocument]);
+  const reviewed: StudioDocumentAuthoringRequest | undefined = namedField && namedDocument && input.namedRun &&
+      !(namedField === 'graph' && stored)
     ? { revision: saved.revision, run: input.namedRun, field: namedField } : undefined;
   const named = useQuery({
     queryKey: ['named-definition', saved.project_id, reviewed],
@@ -445,6 +470,26 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const positions = useMemo(() => localPositions ? { ...sharedPositions, ...localPositions } : sharedPositions,
     [sharedPositions, localPositions]);
   const graphScope = input.documentScopes.graph;
+  const storedView = useStoredModelView({
+    model: activeView === 'model' ? stored : undefined, editor, saved, window: input.modelWindow,
+    active: activeView === 'model',
+    selectedSweepValues: input.selectedSweepValues,
+    fieldLitSteps: graphScope?.lit,
+    fieldRows: input.fieldRows,
+    fieldEditable: !outside && !pending && !saving && !saved.project.sweep && input.step?.kind === 'train' &&
+      Boolean(input.namedRun && (canEdit || selection?.kind === 'values' || selection?.kind === 'rows')),
+    projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
+    editable: canEdit && !pending && !saving && !!saved.presentation && input.step?.kind === 'train' &&
+      !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
+    evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
+      ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
+    problem: reveal?.problem.model_address && reveal.problem.model_address.document === storedId
+      ? { address: reveal.problem.model_address, reason: reveal.problem.detail } : undefined,
+    problems: input.modelProblems?.flatMap((item) => item.model_address?.document === storedId
+      ? [{ address: item.model_address, reason: item.detail }] : []),
+    path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
+    setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
+  });
   const authorModel = useModelAuthoring({
     editor, graph, registry: registry.data, onSelect: modelSelection.onSelect,
     review: !pending && activeView === 'model' && model?.id && graphScope && !graphScope.localVariant && input.namedRun && editable('graph', model)
@@ -484,7 +529,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const taskDocument = definitions.task;
   const taskParam = Object.entries(task?.params ?? {}).find(([name]) => taskSelection.selectedId === name);
   return {
-    model: {
+    model: stored ? storedView : {
       documentId: model?.id,
       header: detailHeader(model),
       body: graph ? <div className="flex h-full min-h-0 flex-col">

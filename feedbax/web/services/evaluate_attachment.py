@@ -22,9 +22,13 @@ from feedbax.contracts.model_edit import (
     EvaluateAttachmentVariant,
     ModelEditProblem,
 )
+from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_sweep import model_field_target
 from feedbax.contracts.studio_project import AuthoredFileAddress, SetProjectValue, StudioProjectFilePatch
+from feedbax.web.services.model_projection import selected_model
 
 
 class EvaluateAttachmentRefused(ValueError):
@@ -129,7 +133,10 @@ def _scope(project, data, body):
         matches = [
             name for name, exception in exceptions.items()
             if exception is not None and exception.get("where") == {"rows": rows}
-            and any(path.startswith(MODEL_ATTACHMENTS + ".") for path in exception.get("patches", {}))
+            and any(
+                path.startswith(MODEL_ATTACHMENTS + ".") or _addressed_field(path)
+                for path in exception.get("patches", {})
+            )
         ]
         name = matches[0] if len(matches) == 1 else batch
         exception = exceptions.setdefault(name, {"where": {"rows": rows}, "patches": {}})
@@ -147,6 +154,13 @@ def _scope(project, data, body):
     return _Scope(
         address, MODEL_ATTACHMENTS, batches, authored, batch=batch,
     ), step
+
+
+def _addressed_field(path: str) -> bool:
+    try:
+        return model_field_target(path) is not None
+    except ValueError:
+        return False
 
 
 def _batch_path(patches, parent, default):
@@ -167,6 +181,8 @@ def _apply(records, difference):
     for index, record in enumerate(records):
         if record.address != address:
             continue
+        if isinstance(difference, SetField):
+            return [*records[:index], difference, *records[index + 1:]]
         if isinstance(record, RemoveModelAttachment):
             raise ValueError("The addressed attachment is already removed in this scope")
         if isinstance(record, AddModelAttachment):
@@ -187,22 +203,38 @@ def _apply(records, difference):
     return [*records, difference]
 
 
-def read_evaluate_attachments(folders, project_id, body):
+def read_evaluate_attachments(folders, project_id, body, components=None):
     snapshot = folders.read(project_id, revision=body.revision)
-    selected = folders.read_plan(project_id, revision=body.revision, source_runs=(_key(body),)).plan
-    definition = selected.selected_definitions.get(_key(body))
+    key = _key(body)
+    selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    definition = selected.selected_definitions.get(key)
     data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     scope, _ = _scope(snapshot.project, data, body)
     _selected_rows(selected, body)
     effective = MODEL_DIFFERENCE_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
     )
+    differences = tuple(record for batch in effective.values() for record in batch)
+    resolved = None
+    planned = next((run for run in selected.runs if run.key == key), None)
+    subject = planned.inputs.get("subject") if planned else None
+    if subject is not None:
+        train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(subject.producer,)).plan
+        train = train_plan.selected_definitions.get(subject.producer)
+        if train is not None:
+            document = train.document_ids.get("payload.trial_documents.model") or train.document_ids.get("payload.graph")
+            if document and (model := selected_model(train, document)) is not None:
+                resolved = resolve_effective_model(
+                    document, ModelDocument.model_validate(model), components or folders.components,
+                    differences, functions=folders.functions,
+                )
     return EvaluateAttachmentState(
         revision=body.revision,
         records=tuple(record for record in _local_records(scope) if not isinstance(record, SetField)),
         effective=tuple(
             record for batch in effective.values() for record in batch if not isinstance(record, SetField)
         ),
+        resolved_model=resolved,
     )
 
 
@@ -238,8 +270,15 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
         selected = _selected_rows(plan, body)
         data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
         scope, raw = _scope(snapshot.project, data, body)
-        records = _apply(_local_records(scope), body.difference)
-        scope.store([record.model_dump(mode="json", exclude_unset=True) for record in records])
+        difference = body.difference
+        if isinstance(difference, SetField) and scope.patch is not None:
+            path = difference.address.to_text()
+            if isinstance(body.scope, EvaluateAttachmentVariant):
+                path = f"steps.{body.run.step}.{path}"
+            scope.target[path] = {"value": difference.value}
+        else:
+            records = _apply(_local_records(scope), difference)
+            scope.store([record.model_dump(mode="json", exclude_unset=True) for record in records])
         candidate = compile_project(
             Project.model_validate(data), readers=settled.readers,
             operations=folders.operations, components=components, functions=folders.functions,

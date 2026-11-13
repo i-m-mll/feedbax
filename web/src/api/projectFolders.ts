@@ -2,6 +2,13 @@ import { asApiRequestError, requestJson } from '@/api/request';
 import {
   parseContract,
   type ContractTypeMap,
+  type EvaluateAttachmentReadRequest,
+  type EvaluateAttachmentRequest,
+  type ModelConnectionReviewRequest,
+  type ModelEditRequest,
+  type ModelFieldRequest,
+  type ModelProjectionRequest,
+  type ModelUndoRequest,
   type StudioDocumentAuthoringRequest,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
@@ -32,7 +39,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioDocumentAuthoringRequest' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectCreateFile'>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioDocumentAuthoringRequest' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectCreateFile' | ModelRequest>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -88,4 +95,50 @@ export async function fetchDocumentAuthoring(id: string, body: StudioDocumentAut
 export async function writeProjectPresentation(id: string, body: StudioPresentationWrite, signal?: AbortSignal) {
   const path = `${projectPath(id)}/presentation`;
   return readFolder('StudioProjectSnapshot', id, path, { method: 'PUT', body: mutationBody('StudioPresentationWrite', body, path), signal });
+}
+
+type ModelRequest = 'ModelEditRequest' | 'ModelUndoRequest' | 'ModelConnectionReviewRequest' | 'ModelProjectionRequest' | 'ModelFieldRequest' | 'EvaluateAttachmentReadRequest' | 'EvaluateAttachmentRequest';
+type ModelResponse = 'ModelEditResponse' | 'ModelConnectionReview' | 'ModelProjection' | 'ModelFieldResponse' | 'EvaluateAttachmentState' | 'EvaluateAttachmentEdit';
+
+async function modelRequest<K extends ModelRequest, R extends ModelResponse>(
+  id: string, action: string, request: K, response: R, body: ContractTypeMap[K], signal?: AbortSignal,
+): Promise<ContractTypeMap[R]> {
+  const path = `${projectPath(id)}/model/${action}`;
+  try {
+    const raw = await requestJson(path, {
+      method: 'POST', body: mutationBody(request, body, path), signal, cache: 'no-store',
+    });
+    parseContract(response, raw);
+    return raw as ContractTypeMap[R];
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The Model response did not match its contract');
+  }
+}
+
+export function editModel(id: string, body: ModelEditRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'edit', 'ModelEditRequest', 'ModelEditResponse', body, signal);
+}
+
+export function undoModel(id: string, body: ModelUndoRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'undo', 'ModelUndoRequest', 'ModelEditResponse', body, signal);
+}
+
+export function reviewModelConnections(id: string, body: ModelConnectionReviewRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'connections', 'ModelConnectionReviewRequest', 'ModelConnectionReview', body, signal);
+}
+
+export function readModelProjection(id: string, body: ModelProjectionRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'projection', 'ModelProjectionRequest', 'ModelProjection', body, signal);
+}
+
+export function projectModelFields(id: string, body: ModelFieldRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'fields', 'ModelFieldRequest', 'ModelFieldResponse', body, signal);
+}
+
+export function readEvaluateAttachments(id: string, body: EvaluateAttachmentReadRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'evaluate-attachments', 'EvaluateAttachmentReadRequest', 'EvaluateAttachmentState', body, signal);
+}
+
+export function editEvaluateAttachment(id: string, body: EvaluateAttachmentRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'evaluate-attachment', 'EvaluateAttachmentRequest', 'EvaluateAttachmentEdit', body, signal);
 }

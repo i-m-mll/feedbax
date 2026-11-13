@@ -8,10 +8,10 @@ from pydantic import Field, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
-from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
+from feedbax.contracts.model_attachment import ModelAttachmentDifference, ModelDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput,
+    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType,
 )
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
@@ -30,10 +30,39 @@ class AddComponent(StrictModel):
     graph: ModelAddress
     component: LeafComponent | CompositeComponent
     position: ModelPosition
+    connect_from: SignalSource | None = None
+    connect_to_port: ModelElementId | None = None
 
 
 class ModelSelection(StrictModel):
     selection: Annotated[tuple[ModelAddress, ...], Field(min_length=1)]
+
+
+class PlaceComponent(StrictModel):
+    address: ModelAddress
+    position: ModelPosition
+
+
+class MoveComponents(StrictModel):
+    op: Literal["move_components"]
+    placements: Annotated[tuple[PlaceComponent, ...], Field(min_length=1)]
+
+
+class FlipComponent(StrictModel):
+    op: Literal["flip_component"]
+    address: ModelAddress
+
+
+class CollapseGraph(StrictModel):
+    op: Literal["collapse_graph"]
+    graph: ModelAddress
+    collapsed: bool
+
+
+class RouteWire(StrictModel):
+    op: Literal["route_wire"]
+    address: ModelAddress
+    waypoints: tuple[ModelPosition, ...]
 
 
 class DeleteElements(ModelSelection):
@@ -44,6 +73,15 @@ class ConnectSignal(StrictModel):
     op: Literal["connect"]
     graph: ModelAddress
     source: SignalSource
+    target: SignalTarget
+    grow_target: bool = False
+
+
+class ConnectTaskSignal(StrictModel):
+    op: Literal["connect_task_signal"]
+    graph: ModelAddress
+    run: StudioSavedTrainKey
+    signal: str
     target: SignalTarget
 
 
@@ -77,6 +115,28 @@ class MovePort(StrictModel):
     index: Annotated[int, Field(strict=True, ge=0)]
 
 
+class SetModelAttachment(StrictModel):
+    op: Literal["set_attachment"]
+    difference: ModelAttachmentDifference
+
+
+class MoveWireAttachment(StrictModel):
+    op: Literal["move_wire_attachment"]
+    address: ModelAddress
+    destination: ModelAddress
+    after: ModelElementId | None = None
+
+
+class InsertComponentOnWire(StrictModel):
+    op: Literal["insert_component"]
+    address: ModelAddress
+    component: LeafComponent | CompositeComponent
+    input_port: ModelElementId
+    output_port: ModelElementId
+    position: ModelPosition
+    flipped: bool = False
+
+
 class BringSignalIn(StrictModel):
     op: Literal["bring_signal_in"]
     source_graph: ModelAddress
@@ -84,11 +144,17 @@ class BringSignalIn(StrictModel):
     destination: ModelAddress
 
 
-class ModelClipboard(StrictModel):
+class ModelLayout(StrictModel):
+    positions: dict[str, ModelPosition] = Field(default_factory=dict)
+    flipped: dict[str, bool] = Field(default_factory=dict)
+    collapsed: dict[str, bool] = Field(default_factory=dict)
+    waypoints: dict[str, tuple[ModelPosition, ...]] = Field(default_factory=dict)
+
+
+class ModelClipboard(ModelLayout):
     components: dict[ModelElementId, LeafComponent | CompositeComponent]
     wires: dict[ModelElementId, ModelWire]
     connections: dict[ModelElementId, ModelPhysicalConnection]
-    positions: dict[str, ModelPosition] = Field(default_factory=dict)
 
 
 class CopyComponents(ModelSelection):
@@ -121,8 +187,10 @@ class UngroupComposite(StrictModel):
 
 class ModelEditCommand(StrictModel):
     operation: Annotated[
-        AddComponent | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort
-        | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents
+        AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire
+        | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort
+        | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire
+        | BringSignalIn | CopyComponents | CutComponents
         | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite,
         Field(discriminator="op"),
     ]
@@ -133,9 +201,54 @@ class ModelEditProblem(StrictModel):
     detail: str
 
 
-class ModelEditState(StrictModel):
+class ModelConnectionReviewRequest(StrictModel):
+    revision: Sha256
+    graph: ModelAddress
+    source: SignalSource
+
+
+class ModelConnectionVerdict(StrictModel):
+    target: SignalTarget
+    reason: str | None
+
+
+class ModelConnectionReview(StrictModel):
+    targets: tuple[ModelConnectionVerdict, ...]
+    library: tuple[ModelLibraryConnection, ...] = ()
+
+
+class ModelLibraryConnection(StrictModel):
+    component: str
+    target_port: ModelElementId
+
+
+class ModelProjectionRequest(StrictModel):
+    revision: Sha256
+    run: StudioSavedTrainKey
+    document: ProjectName
+
+
+class ModelPortProjection(StrictModel):
+    address: ModelAddress
+    type: SignalType
+
+
+class ModelTaskSignal(StrictModel):
+    id: str
+    label: str
+    type: SignalType
+
+
+class ModelProjection(StrictModel):
+    ports: tuple[ModelPortProjection, ...] = ()
+    task_signals: tuple[ModelTaskSignal, ...] = ()
+    task_inputs: tuple[ModelAddress, ...] = ()
+    objective_ports: tuple[ModelAddress, ...] = ()
+    resolved_model: ModelDocument | None = None
+
+
+class ModelEditState(ModelLayout):
     document: ModelDocument
-    positions: dict[str, ModelPosition] = Field(default_factory=dict)
 
 
 class ModelEditResult(StrictModel):
@@ -193,13 +306,14 @@ class EvaluateAttachmentReadRequest(StrictModel):
 
 
 class EvaluateAttachmentRequest(EvaluateAttachmentReadRequest):
-    difference: ModelAttachmentDifference
+    difference: ModelDifference
 
 
 class EvaluateAttachmentState(StrictModel):
     revision: Sha256
     records: tuple[ModelAttachmentDifference, ...]
     effective: tuple[ModelAttachmentDifference, ...]
+    resolved_model: ModelDocument | None = None
 
 
 class EvaluateAttachmentEdit(StrictModel):

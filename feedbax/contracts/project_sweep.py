@@ -16,6 +16,7 @@ from pydantic import Field, JsonValue, PrivateAttr, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.expression_values import DrawValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
@@ -171,7 +172,7 @@ class RangeAxis(GeneratedAxis):
 
 
 class SampleValues(StrictModel):
-    distribution: ProjectName
+    distribution: DrawValue | ProjectName
     count: int = Field(ge=1)
     seed: int
 

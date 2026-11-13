@@ -1,5 +1,5 @@
 import {
-  ReactFlow, getNodesBounds, getViewportForBounds, useReactFlow, useStore,
+  ReactFlow, getNodesBounds, getViewportForBounds, useReactFlow, useStore, useStoreApi,
   type ReactFlowProps, type Rect,
 } from '@xyflow/react';
 import {
@@ -67,9 +67,11 @@ export function StudioCanvas({
   children, onMove, minZoom = 0.5, maxZoom = 2, ...flow
 }: Props) {
   const { viewportInitialized, getViewport, setViewport, zoomIn, zoomOut } = useReactFlow();
+  const store = useStoreApi();
   const { width, height } = useStore((state) => ({ width: state.width, height: state.height }),
     (a, b) => a.width === b.width && a.height === b.height);
   const nodesBounds = useStore(({ nodeLookup }) => {
+    if (contentBounds !== undefined || !fitReady) return null;
     const nodes = [...nodeLookup.values()];
     return nodes.length && nodes.every((node) => !!node.measured.width && !!node.measured.height)
       ? getNodesBounds(nodes) : null;
@@ -82,9 +84,11 @@ export function StudioCanvas({
   const revealFrame = useRef<number>();
   const [menu, setMenu] = useState<{ x: number; y: number }>();
   const fit = useCallback(() => {
-    if (!bounds || !viewportInitialized || !width || !height) return;
-    void setViewport(getViewportForBounds(bounds, width, height, minZoom, fitNewContent ? maxZoom : Math.min(1, maxZoom), 0.14));
-  }, [bounds, viewportInitialized, width, height, minZoom, fitNewContent, maxZoom, setViewport]);
+    const liveBounds = contentBounds === undefined && !fitReady
+      ? getNodesBounds([...store.getState().nodeLookup.values()]) : bounds;
+    if (!liveBounds || !viewportInitialized || !width || !height) return;
+    void setViewport(getViewportForBounds(liveBounds, width, height, minZoom, fitNewContent ? maxZoom : Math.min(1, maxZoom), 0.14));
+  }, [bounds, contentBounds, fitReady, store, viewportInitialized, width, height, minZoom, fitNewContent, maxZoom, setViewport]);
   const viewport = {
     fitView: () => { moved.current = true; fit(); },
     zoomIn: () => { moved.current = true; void zoomIn(); },
@@ -150,8 +154,8 @@ export function StudioCanvas({
       event.preventDefault();
       setMenu({ x: event.clientX, y: event.clientY });
     } : undefined}>
-    <ReactFlow {...flow} nodesDraggable={false} nodesConnectable={false}
-      deleteKeyCode={null} minZoom={minZoom} maxZoom={maxZoom} proOptions={{ hideAttribution: true }}
+    <ReactFlow nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null}
+      {...flow} minZoom={minZoom} maxZoom={maxZoom} proOptions={{ hideAttribution: true }}
       onMove={(event, camera) => { if (event) moved.current = true; onMove?.(event, camera); }}>
       {children}
     </ReactFlow>

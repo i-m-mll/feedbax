@@ -109,7 +109,7 @@ def read_field(
         run_site = site.model_copy(update={"finest": Level.RUN})
         checks = [(("first",), value.first, run_site), (("last",), value.last, run_site)]
     elif isinstance(value, SweepSample):
-        run_site = site.model_copy(update={"finest": Level.RUN})
+        run_site = site.model_copy(update={"finest": Level.RUN, "structural": False})
         checks = [(("draw",), value.draw.model_copy(update={"per": "run"}), run_site)]
     problems = []
     for path, tree, check_site in checks:

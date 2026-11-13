@@ -132,18 +132,18 @@ test('Train authoring completes the real reaching Plan through the folder contro
   expect(redone).toBe(complete.revision);
   expect((await plan(root, redone)).requestId).toBe(complete.requestId);
 
-  const rate = page.getByRole('spinbutton', { name: 'Edit Learning Rate' });
+  const rate = page.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await rate.fill('0.002');
   await rate.press('Enter');
   await expect(rate).toHaveValue('0.002');
   const optimizer = page.getByRole('combobox', { name: 'Edit Optimizer' });
   await optimizer.selectOption({ label: 'sgd' });
-  const seed = page.getByRole('spinbutton', { name: 'Edit Seed' });
+  const seed = page.getByRole('textbox', { name: 'Seed', exact: true });
   await seed.fill('7');
   await seed.press('Enter');
   await expect(seed).toHaveValue('7');
   await expect(seed).toBeEnabled();
-  const interval = page.getByRole('spinbutton', { name: 'Edit Snapshot Interval' });
+  const interval = page.getByRole('textbox', { name: 'Snapshot Interval', exact: true });
   await interval.fill('12');
   await interval.press('Enter');
   await expect(interval).toHaveValue('12');

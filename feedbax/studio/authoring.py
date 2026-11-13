@@ -17,6 +17,7 @@ from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocumen
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
 from feedbax.contracts.graph import GraphSpec
@@ -30,6 +31,7 @@ from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, com
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS
+from feedbax.contracts.request_specs import DocumentTrainingConfig
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import (
@@ -50,6 +52,8 @@ from feedbax.contracts.studio_authoring import (
     StudioReachTargetEdit,
 )
 from feedbax.contracts.studio_project import SetProjectValue
+from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
+from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     STUDIO_INDEPENDENT_KEY_SCHEDULE,
@@ -60,12 +64,16 @@ from feedbax.contracts.training import (
     MethodPayloadEnvelope,
     MethodRefSpec,
     OptimizerSpec,
+    TaskSpec,
     TrainingConfig,
     TrainingProgramRegistry,
 )
+from feedbax.expression_registry import FunctionRegistry
 from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERATIONS, TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
+from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
+from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.training.optimizers import optimizer_types
 
 
@@ -78,6 +86,7 @@ _TRAIN_DOCUMENT_MODELS = {
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _GRAPH_BATCH_SIZE = 1
 _DEFAULT_OPTIMIZER = "adam"
+_OPTIMIZER_RATE = ("method_payload", "payload", "optimizer", "params", "learning_rate")
 type _Path = tuple[str, ...]
 type _Scalar = str | int | float
 type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
@@ -227,13 +236,13 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
 
 
 class _TrainFields:
-    def __init__(self, project: Project, step_id: str, registry: TrainingProgramRegistry) -> None:
+    def __init__(self, project: Project, step_id: str, registry: TrainingProgramRegistry, *, field_editor: bool = False) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
         direct = isinstance(step.base, InlineBase) and not (
             step.deltas or step.inputs
-            or (step.sweep is not None and (step.sweep.rows or step.sweep.exceptions))
+            or (not field_editor and step.sweep is not None and (step.sweep.rows or step.sweep.exceptions))
         )
         checkpoint = step.inputs.get("checkpoint")
         linked = (
@@ -247,6 +256,7 @@ class _TrainFields:
         self.step_id = step_id
         self.step = step
         self.linked = linked
+        self.field_editor = field_editor
         self.direct_unswept = direct and step.sweep is None and not step.document_overrides
         self.registry = registry
         template = compose_step(project, step_id, track_sources=True)
@@ -483,10 +493,28 @@ class _TrainFields:
             documents=scope[1] if scope is not None else (),
         )
 
+    def task_steps(self) -> int | None:
+        raw = _get(self.payload, ("trial_documents", "task"))
+        if ref := _read(DocumentReference, raw):
+            entry = self.project.documents.get(ref.document)
+            raw = entry.payload if entry is not None and not ref.pointer else None
+        task = _read(TaskDocument, raw)
+        if task is not None:
+            return task.fixed_steps
+        raw = self.payload.get("task")
+        if ref := _read(DocumentReference, raw):
+            entry = self.project.documents.get(ref.document)
+            raw = entry.payload if entry is not None and not ref.pointer else None
+        return infer_task_n_steps(_read(TaskSpec, raw))
+
     def training(self, n_steps: int | None, read_plan: _ReadPlan | None) -> None:
         raw_config = self.payload.get("training_config")
-        config = None if _read(DocumentReference, raw_config) else _read(TrainingConfig, raw_config)
-        defaults = TrainingConfig(batch_size=_GRAPH_BATCH_SIZE)
+        managed_rate = self.payload.get("trial_documents") is not None and (
+            raw_config is None or isinstance(raw_config, dict) and "learning_rate" not in raw_config
+        )
+        settings_type = DocumentTrainingConfig if managed_rate else TrainingConfig
+        config = _read(settings_type, raw_config)
+        defaults = settings_type(batch_size=_GRAPH_BATCH_SIZE)
         if n_steps is not None:
             defaults.n_reach_steps = n_steps
         method_ref = _read(MethodRefSpec, self.payload.get("method_ref"))
@@ -497,7 +525,9 @@ class _TrainFields:
             settings = config or defaults
             payload = StudioGraphMethodPayload(
                 optimizer=OptimizerSpec(
-                    type=_DEFAULT_OPTIMIZER, params={"learning_rate": settings.learning_rate}
+                    type=_DEFAULT_OPTIMIZER, params={"learning_rate": (
+                        settings.learning_rate if isinstance(settings, TrainingConfig) else TrainingConfig().learning_rate
+                    )}
                 ),
                 target_total=settings.n_batches,
                 key_schedule=STUDIO_INDEPENDENT_KEY_SCHEDULE,
@@ -555,6 +585,14 @@ class _TrainFields:
                 ),
                 lambda value: [self.set(seed_path, value)],
             )
+            if managed_rate and method.optimizer.lr_schedule is None:
+                rate = _get(self.payload, _OPTIMIZER_RATE)
+                if type(rate) in (int, float):
+                    self.field(
+                        _OPTIMIZER_RATE, "Learning Rate",
+                        rate, StudioAuthoringNumber(kind="number", min=0),
+                        lambda value: [self.set(_OPTIMIZER_RATE, value)],
+                    )
 
         rate_path = ("method_payload", "payload", "optimizer", "params")
         raw_params = _get(self.payload, rate_path)
@@ -574,7 +612,7 @@ class _TrainFields:
                 if method.continuation is not None else method.target_total
             )
             rate = method.optimizer.params.get("learning_rate")
-            if type(rate) in (int, float) and 0 < rate <= sys.float_info.max:
+            if not managed_rate and type(rate) in (int, float) and 0 < rate <= sys.float_info.max:
                 initial_config["learning_rate"] = rate
 
         def settings_change(
@@ -599,22 +637,33 @@ class _TrainFields:
                     patches.append(self.set(("method_payload", "payload", *mirror), value))
             return patches
 
-        settings = TrainingConfig.model_json_schema()["properties"]
-        for name, mirror in {
+        settings = settings_type.model_json_schema()["properties"]
+        names = {
             "n_batches": ("target_total",),
             "learning_rate": ("optimizer", "params", "learning_rate"),
             "snapshot_interval": None,
-        }.items():
+        }
+        if self.field_editor and config is not None:
+            names.update(batch_size=None, grad_clip=None)
+        if managed_rate:
+            del names["learning_rate"]
+        for name, mirror in names.items():
             schema = settings[name]
+            if "anyOf" in schema:
+                schema = schema | schema["anyOf"][0]
             path = ("training_config", name)
+            integer = schema.get("type") == "integer"
+            value = _get(self.payload, path)
+            if self.field_editor and config is not None and not (name == "grad_clip" and name in raw_config) and value is None:
+                value = getattr(config, name)
             self.field(
                 path,
                 schema["title"],
-                _get(self.payload, path),
+                value,
                 StudioAuthoringNumber(
                     kind="number",
-                    min=1 if schema["type"] == "integer" else 0,
-                    step=1 if schema["type"] == "integer" else None,
+                    min=1 if integer else 0,
+                    step=1 if integer else None,
                 )
                 if name != "learning_rate" or params_ref is None
                 else None,
@@ -638,14 +687,13 @@ def project_train_fields(
     definition = _TrainFields(project, step_id, registry)
     reach_target = None
     reach_edit = change if isinstance(change, StudioReachTargetEdit) else None
-    task = _read(TaskDocument, _get(definition.payload, ("trial_documents", "task")))
-    definition.training(task.fixed_steps if task is not None else None, read_plan)
+    definition.training(definition.task_steps(), read_plan)
 
     sweeps = {}
     for field_id, field in definition.fields.items():
         target = SweepTarget.from_field(field.view.value, field.view.control, field.write)
         if target is not None and not definition.linked:
-            sweep = TrainFieldSweeps(definition.step, target, field.view.label)
+            sweep = TrainFieldSweeps(definition.step, target, field.view.label, integer=field.view.control.step == 1)
             sweeps[field_id] = sweep
             field.view.sweep = sweep.view()
             field.view.can_sweep = sweep.can_sweep
@@ -692,6 +740,70 @@ def project_train_fields(
     return [field.view for field in definition.fields.values()], patches, sorted(documents), reach_target
 
 
+def project_training_numeric_fields(
+    project: Project, step_id: str, registry: TrainingProgramRegistry, functions: FunctionRegistry,
+    body: TrainFieldRequest, read_plan: _ReadPlan,
+) -> TrainFieldResponse:
+    definition = _TrainFields(project, step_id, registry, field_editor=True)
+    definition.training(definition.task_steps(), read_plan)
+    selected = effective = None
+    if body.run is not None:
+        key = RunKey(body.run.variant, body.run.step, body.run.row)
+        if key.step != step_id:
+            raise ValueError("Choose a run of this Train step.")
+        plan = read_plan((key,))
+        selected = next((row for row in plan.rows if row.key == key), None)
+        effective = plan.selected_definitions.get(key)
+        available = {row.key.row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step_id)}
+        if not set(body.rows) <= available or len(set(body.rows)) != len(body.rows):
+            raise ValueError("The selected rows no longer belong to this Train step.")
+    elif body.rows:
+        raise ValueError("Choose a run of this Train step.")
+    fields = []
+    targets = {}
+    for field_id, field in definition.fields.items():
+        view = field.view
+        if not isinstance(view.control, StudioAuthoringNumber) or type(view.value) not in (float, int):
+            continue
+        path = json_pointer_parts(field_id)
+        target = SweepTarget.from_field(view.value, view.control, field.write) if not definition.linked else None
+        axis = TrainFieldSweeps(definition.step, target, view.label, integer=view.control.step == 1) if target is not None else None
+        numeric = NumericField(
+            path, view.label, view.value,
+            Site(expected=ValueType(base=ValueBase.INTEGER if view.control.step == 1 else ValueBase.REAL),
+                 finest=Level.RUN, structural=True),
+            target is not None, lambda value, view=view: _number(view, value),
+        )
+        fields.append(project_numeric_field(
+            TrainFieldView, numeric, axis, functions, selected,
+            _get(effective.payload, path) if effective else None, id=field_id,
+        ))
+        targets[field_id] = field, numeric, axis
+    if body.edit is None:
+        return TrainFieldResponse(fields=fields)
+    if body.field not in targets:
+        raise ValueError("Choose a supported numeric Train field.")
+    field, numeric, axis = targets[body.field]
+    result = prepare_numeric_field(
+        numeric, axis, body.edit, functions, rows=tuple(body.rows), keep_value=field.write,
+    )
+    if isinstance(result, tuple):
+        return TrainFieldResponse(problems=list(result))
+    if isinstance(result, list):
+        patches = result
+    elif definition.step.sweep and axis is None:
+        return TrainFieldResponse(problems=[Problem(
+            code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",
+        )])
+    else:
+        assert not isinstance(result, LiteralValue)
+        patches = definition.authored_edits(body.field, field.write(result))
+    return TrainFieldResponse(
+        files=[StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=patches)] if patches else [],
+        dependencies=list(field.documents),
+    )
+
+
 def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
     control = field.control
     if not isinstance(control, StudioAuthoringNumber) or (
@@ -703,6 +815,8 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
         or (control.max is not None and value > control.max)
     ):
         raise ValueError(f"{field.label} requires a number in the supported range")
-    if field.id == "/training_config/learning_rate" and value <= 0:
+    if field.id in {"/training_config/learning_rate", pointer(_OPTIMIZER_RATE)} and value <= 0:
+        raise ValueError(f"{field.label} requires a positive number")
+    if field.id == "/training_config/grad_clip" and value <= 0:
         raise ValueError(f"{field.label} requires a positive number")
     return int(value) if control.step == 1 else value

@@ -409,6 +409,8 @@ export interface AddComponent {
   graph: ModelAddress;
   component: LeafComponent | CompositeComponent;
   position: ModelPosition;
+  connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
+  connect_to_port?: string | null;
 }
 
 export interface DeleteElements {
@@ -420,6 +422,15 @@ export interface ConnectSignal {
   op: "connect";
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd;
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  grow_target?: boolean;
+}
+
+export interface ConnectTaskSignal {
+  op: "connect_task_signal";
+  graph: ModelAddress;
+  run: StudioSavedTrainKey;
+  signal: string;
   target: ComponentPortEnd | OutputBoundaryEnd;
 }
 
@@ -467,10 +478,13 @@ export interface BringSignalIn {
 }
 
 export interface ModelClipboard {
+  positions?: Record<string, ModelPosition>;
+  flipped?: Record<string, boolean>;
+  collapsed?: Record<string, boolean>;
+  waypoints?: Record<string, ModelPosition[]>;
   components: Record<string, LeafComponent | CompositeComponent>;
   wires: Record<string, ModelWire>;
   connections: Record<string, ModelPhysicalConnection>;
-  positions?: Record<string, ModelPosition>;
 }
 
 export interface CopyComponents {
@@ -510,7 +524,7 @@ export interface EvaluateAttachmentRequest {
   revision: unknown;
   run: StudioSavedTrainKey;
   scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
-  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment;
+  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField;
 }
 
 export interface EvaluateAttachmentRows {
@@ -522,6 +536,7 @@ export interface EvaluateAttachmentState {
   revision: unknown;
   records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
+  resolved_model?: ModelDocument | null;
 }
 
 export interface EvaluateAttachmentStep {
@@ -558,6 +573,55 @@ export interface PasteComponents {
   clipboard: ModelClipboard;
 }
 
+export interface PlaceComponent {
+  address: ModelAddress;
+  position: ModelPosition;
+}
+
+export interface MoveComponents {
+  op: "move_components";
+  placements: PlaceComponent[];
+}
+
+export interface CollapseGraph {
+  op: "collapse_graph";
+  graph: ModelAddress;
+  collapsed: boolean;
+}
+
+export interface FlipComponent {
+  op: "flip_component";
+  address: ModelAddress;
+}
+
+export interface InsertComponentOnWire {
+  op: "insert_component";
+  address: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  input_port: string;
+  output_port: string;
+  position: ModelPosition;
+  flipped?: boolean;
+}
+
+export interface MoveWireAttachment {
+  op: "move_wire_attachment";
+  address: ModelAddress;
+  destination: ModelAddress;
+  after?: string | null;
+}
+
+export interface RouteWire {
+  op: "route_wire";
+  address: ModelAddress;
+  waypoints: ModelPosition[];
+}
+
+export interface SetModelAttachment {
+  op: "set_attachment";
+  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment;
+}
+
 export interface GroupComponents {
   selection: ModelAddress[];
   op: "group";
@@ -570,7 +634,7 @@ export interface UngroupComposite {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
 }
 
 export interface ModelEditProblem {
@@ -606,6 +670,171 @@ export interface ModelUndoRequest {
   revision: unknown;
   presentation_revision: unknown;
   token: unknown;
+}
+
+export interface ModelConnectionReviewRequest {
+  revision: unknown;
+  graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd;
+}
+
+export interface ModelConnectionVerdict {
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  reason: string | null;
+}
+
+export interface ModelLibraryConnection {
+  component: string;
+  target_port: string;
+}
+
+export interface ModelConnectionReview {
+  targets: ModelConnectionVerdict[];
+  library?: ModelLibraryConnection[];
+}
+
+export interface ModelPortProjection {
+  address: ModelAddress;
+  type: SignalType;
+}
+
+export interface ModelProjection {
+  ports?: ModelPortProjection[];
+  task_signals?: ModelTaskSignal[];
+  task_inputs?: ModelAddress[];
+  objective_ports?: ModelAddress[];
+  resolved_model?: ModelDocument | null;
+}
+
+export interface ModelProjectionRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  document: string;
+}
+
+export interface ModelTaskSignal {
+  id: string;
+  label: string;
+  type: SignalType;
+}
+
+export interface ModelFieldRequest {
+  revision: unknown;
+  owner: ModelAddress;
+  run?: StudioSavedTrainKey | null;
+  evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
+  address?: ModelAddress | null;
+  lit_steps?: string[];
+  rows?: string[];
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+}
+
+export interface ModelFieldResponse {
+  fields?: ModelFieldView[];
+  files?: StudioProjectFilePatch[];
+  problems?: Problem[];
+  command?: ModelEditCommand | null;
+}
+
+export interface FieldKindEdit {
+  kind: "to_sweep" | "to_value" | "to_list";
+  value_id?: string | null;
+}
+
+export interface FieldNameEdit {
+  kind: "name_value";
+  value_id: string;
+  label: string | null;
+}
+
+export interface FieldTextEdit {
+  kind: "text";
+  text: string;
+  value_id?: string | null;
+  seed?: number | null;
+}
+
+export interface StudioSweepValue {
+  id: string;
+  label: string | null;
+  value: number;
+}
+
+export interface StudioSweepList {
+  kind: "list";
+  id: string;
+  values: StudioSweepValue[];
+  editable: boolean;
+}
+
+export interface StudioSweepRange {
+  kind: "range";
+  id: string;
+  rule: RangeValues;
+  can_list: boolean;
+}
+
+export interface StudioSweepSampler {
+  kind: "sampler";
+  id: string;
+  rule: SampleValues;
+  can_list: boolean;
+}
+
+export interface StudioFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  unit?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+}
+
+export interface ModelFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  unit?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+  address: ModelAddress;
+}
+
+export interface TrainFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  unit?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+  id: string;
+}
+
+export interface TrainFieldRequest {
+  revision: unknown;
+  run?: StudioSavedTrainKey | null;
+  field?: string | null;
+  rows?: string[];
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+}
+
+export interface TrainFieldResponse {
+  fields?: TrainFieldView[];
+  files?: StudioProjectFilePatch[];
+  dependencies?: string[];
+  problems?: Problem[];
 }
 
 export interface SparseCooEntrySpec {
@@ -1753,6 +1982,7 @@ export interface ComponentDefinition {
   supported_revisions?: number[];
   migrations?: ComponentMigrationInfo[];
   trainable_by_default?: boolean;
+  reset_outputs?: string[];
   representation?: RepresentationSpec | null;
 }
 
@@ -2821,6 +3051,9 @@ export type DocumentOverrides = Record<string, JsonValue> | Array<DocumentEdit>;
 export type DocumentPresentation = {
   "positions"?: Record<string, PresentationPosition>;
   "camera"?: PresentationCamera | null;
+  "flipped"?: Record<string, boolean>;
+  "collapsed"?: Record<string, boolean>;
+  "waypoints"?: Record<string, Array<PresentationPosition>>;
 };
 
 export type DocumentReference = {
@@ -3203,7 +3436,7 @@ export type RunReference = {
 };
 
 export type SampleValues = {
-  "distribution": string;
+  "distribution": DrawValue | string;
   "count": number;
   "seed": number;
 };
@@ -3671,33 +3904,6 @@ export type StudioSetSweepValue = {
 export type StudioSweepEdit = {
   "kind": "addValue" | "toList";
   "sweep_id": string;
-};
-
-export type StudioSweepList = {
-  "kind": "list";
-  "id": string;
-  "values": Array<StudioSweepValue>;
-  "editable": boolean;
-};
-
-export type StudioSweepRange = {
-  "kind": "range";
-  "id": string;
-  "rule": RangeValues;
-  "can_list": boolean;
-};
-
-export type StudioSweepSampler = {
-  "kind": "sampler";
-  "id": string;
-  "rule": SampleValues;
-  "can_list": boolean;
-};
-
-export type StudioSweepValue = {
-  "id": string;
-  "label": string | null;
-  "value": number;
 };
 
 export type StudioToField = {
@@ -4675,6 +4881,8 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
       "position": ModelPositionSchema,
+      "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
+      "connect_to_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<AddComponent>;
@@ -4695,9 +4903,22 @@ export const ConnectSignalSchema: z.ZodType<ConnectSignal> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "grow_target": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ConnectSignal>;
+
+export const ConnectTaskSignalSchema: z.ZodType<ConnectTaskSignal> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect_task_signal"),
+      "graph": ModelAddressSchema,
+      "run": StudioSavedTrainKeySchema,
+      "signal": z.string(),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectTaskSignal>;
 
 export const ConnectPhysicalSchema: z.ZodType<ConnectPhysical> = z.lazy(() =>
   z
@@ -4773,10 +4994,13 @@ export const BringSignalInSchema: z.ZodType<BringSignalIn> = z.lazy(() =>
 export const ModelClipboardSchema: z.ZodType<ModelClipboard> = z.lazy(() =>
   z
     .object({
+      "positions": z.record(z.string(), ModelPositionSchema).optional(),
+      "flipped": z.record(z.string(), z.boolean()).optional(),
+      "collapsed": z.record(z.string(), z.boolean()).optional(),
+      "waypoints": z.record(z.string(), z.array(ModelPositionSchema)).optional(),
       "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])),
       "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema),
       "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema),
-      "positions": z.record(z.string(), ModelPositionSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelClipboard>;
@@ -4844,7 +5068,7 @@ export const EvaluateAttachmentRequestSchema: z.ZodType<EvaluateAttachmentReques
       "revision": z.unknown(),
       "run": StudioSavedTrainKeySchema,
       "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
-      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]),
+      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentRequest>;
@@ -4864,6 +5088,7 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "revision": z.unknown(),
       "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
+      "resolved_model": ModelDocumentSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentState>;
@@ -4956,6 +5181,87 @@ export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<PasteComponents>;
 
+export const PlaceComponentSchema: z.ZodType<PlaceComponent> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "position": ModelPositionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PlaceComponent>;
+
+export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_components"),
+      "placements": z.array(PlaceComponentSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<MoveComponents>;
+
+export const CollapseGraphSchema: z.ZodType<CollapseGraph> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("collapse_graph"),
+      "graph": ModelAddressSchema,
+      "collapsed": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<CollapseGraph>;
+
+export const FlipComponentSchema: z.ZodType<FlipComponent> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("flip_component"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<FlipComponent>;
+
+export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("insert_component"),
+      "address": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "input_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "position": ModelPositionSchema,
+      "flipped": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InsertComponentOnWire>;
+
+export const MoveWireAttachmentSchema: z.ZodType<MoveWireAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_wire_attachment"),
+      "address": ModelAddressSchema,
+      "destination": ModelAddressSchema,
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<MoveWireAttachment>;
+
+export const RouteWireSchema: z.ZodType<RouteWire> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("route_wire"),
+      "address": ModelAddressSchema,
+      "waypoints": z.array(ModelPositionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<RouteWire>;
+
+export const SetModelAttachmentSchema: z.ZodType<SetModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("set_attachment"),
+      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<SetModelAttachment>;
+
 export const GroupComponentsSchema: z.ZodType<GroupComponents> = z.lazy(() =>
   z
     .object({
@@ -4978,7 +5284,7 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveComponentsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -5041,6 +5347,259 @@ export const ModelUndoRequestSchema: z.ZodType<ModelUndoRequest> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<ModelUndoRequest>;
+
+export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReviewRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "graph": ModelAddressSchema,
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionReviewRequest>;
+
+export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z.lazy(() =>
+  z
+    .object({
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "reason": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionVerdict>;
+
+export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
+  z
+    .object({
+      "component": z.string(),
+      "target_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelLibraryConnection>;
+
+export const ModelConnectionReviewSchema: z.ZodType<ModelConnectionReview> = z.lazy(() =>
+  z
+    .object({
+      "targets": z.array(ModelConnectionVerdictSchema),
+      "library": z.array(ModelLibraryConnectionSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionReview>;
+
+export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPortProjection>;
+
+export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
+  z
+    .object({
+      "ports": z.array(ModelPortProjectionSchema).optional(),
+      "task_signals": z.array(ModelTaskSignalSchema).optional(),
+      "task_inputs": z.array(ModelAddressSchema).optional(),
+      "objective_ports": z.array(ModelAddressSchema).optional(),
+      "resolved_model": ModelDocumentSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelProjection>;
+
+export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelTaskSignalSchema: z.ZodType<ModelTaskSignal> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTaskSignal>;
+
+export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "owner": ModelAddressSchema,
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
+      "address": ModelAddressSchema.nullable().optional(),
+      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "rows": z.array(z.string()).optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldRequest>;
+
+export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(() =>
+  z
+    .object({
+      "fields": z.array(ModelFieldViewSchema).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "problems": z.array(ProblemSchema).optional(),
+      "command": ModelEditCommandSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldResponse>;
+
+export const FieldKindEditSchema: z.ZodType<FieldKindEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("to_sweep"), z.literal("to_value"), z.literal("to_list")]),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldKindEdit>;
+
+export const FieldNameEditSchema: z.ZodType<FieldNameEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("name_value"),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "label": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldNameEdit>;
+
+export const FieldTextEditSchema: z.ZodType<FieldTextEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("text"),
+      "text": z.string().max(8192),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "seed": z.number().int().safe().gte(0).lte(4294967295).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldTextEdit>;
+
+export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "label": z.string().nullable(),
+      "value": z.union([z.number().int().safe(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepValue>;
+
+export const StudioSweepListSchema: z.ZodType<StudioSweepList> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("list"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "values": z.array(StudioSweepValueSchema),
+      "editable": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepList>;
+
+export const StudioSweepRangeSchema: z.ZodType<StudioSweepRange> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("range"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rule": RangeValuesSchema,
+      "can_list": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepRange>;
+
+export const StudioSweepSamplerSchema: z.ZodType<StudioSweepSampler> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("sampler"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rule": SampleValuesSchema,
+      "can_list": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepSampler>;
+
+export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioFieldView>;
+
+export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldView>;
+
+export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldView>;
+
+export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "field": z.string().nullable().optional(),
+      "rows": z.array(z.string()).optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldRequest>;
+
+export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(() =>
+  z
+    .object({
+      "fields": z.array(TrainFieldViewSchema).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "problems": z.array(ProblemSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldResponse>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -7127,6 +7686,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "supported_revisions": z.array(z.number().int().safe().gt(0)).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
       "trainable_by_default": z.boolean().optional(),
+      "reset_outputs": z.array(z.string()).optional(),
       "representation": RepresentationSpecSchema.nullable().optional(),
     })
     .strict()
@@ -8752,6 +9312,9 @@ export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.laz
   z.object({
     "positions": z.record(z.string(), PresentationPositionSchema).optional(),
     "camera": z.union([PresentationCameraSchema, z.null()]).optional(),
+    "flipped": z.record(z.string(), z.boolean()).optional(),
+    "collapsed": z.record(z.string(), z.boolean()).optional(),
+    "waypoints": z.record(z.string(), z.array(PresentationPositionSchema)).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentPresentation>;
 
@@ -9278,7 +9841,7 @@ export const RunReferenceSchema: z.ZodType<RunReference> = z.lazy(() =>
 
 export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
   z.object({
-    "distribution": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "distribution": z.union([DrawValueSchema, z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))]),
     "count": z.number().int().safe().min(1),
     "seed": z.number().int().safe(),
   }).strict()
@@ -9887,41 +10450,6 @@ export const StudioSweepEditSchema: z.ZodType<StudioSweepEdit> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioSweepEdit>;
 
-export const StudioSweepListSchema: z.ZodType<StudioSweepList> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("list"),
-    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "values": z.array(StudioSweepValueSchema),
-    "editable": z.boolean(),
-  }).strict()
-) as unknown as z.ZodType<StudioSweepList>;
-
-export const StudioSweepRangeSchema: z.ZodType<StudioSweepRange> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("range"),
-    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "rule": RangeValuesSchema,
-    "can_list": z.boolean(),
-  }).strict()
-) as unknown as z.ZodType<StudioSweepRange>;
-
-export const StudioSweepSamplerSchema: z.ZodType<StudioSweepSampler> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("sampler"),
-    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "rule": SampleValuesSchema,
-    "can_list": z.boolean(),
-  }).strict()
-) as unknown as z.ZodType<StudioSweepSampler>;
-
-export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
-  z.object({
-    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "label": z.union([z.string(), z.null()]),
-    "value": z.union([z.number().int().safe(), z.number().finite()]),
-  }).strict()
-) as unknown as z.ZodType<StudioSweepValue>;
-
 export const StudioToFieldSchema: z.ZodType<StudioToField> = z.lazy(() =>
   z.object({
     "kind": z.literal("toField"),
@@ -10138,6 +10666,14 @@ export const contractSchemas = {
   ModelDocument: ModelDocumentSchema,
   ModelEditRequest: ModelEditRequestSchema,
   ModelEditResponse: ModelEditResponseSchema,
+  ModelConnectionReviewRequest: ModelConnectionReviewRequestSchema,
+  ModelConnectionReview: ModelConnectionReviewSchema,
+  ModelProjectionRequest: ModelProjectionRequestSchema,
+  ModelProjection: ModelProjectionSchema,
+  ModelFieldRequest: ModelFieldRequestSchema,
+  ModelFieldResponse: ModelFieldResponseSchema,
+  TrainFieldRequest: TrainFieldRequestSchema,
+  TrainFieldResponse: TrainFieldResponseSchema,
   EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
@@ -10260,6 +10796,14 @@ export interface ContractTypeMap {
   ModelDocument: ModelDocument;
   ModelEditRequest: ModelEditRequest;
   ModelEditResponse: ModelEditResponse;
+  ModelConnectionReviewRequest: ModelConnectionReviewRequest;
+  ModelConnectionReview: ModelConnectionReview;
+  ModelProjectionRequest: ModelProjectionRequest;
+  ModelProjection: ModelProjection;
+  ModelFieldRequest: ModelFieldRequest;
+  ModelFieldResponse: ModelFieldResponse;
+  TrainFieldRequest: TrainFieldRequest;
+  TrainFieldResponse: TrainFieldResponse;
   EvaluateAttachmentRequest: EvaluateAttachmentRequest;
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
   EvaluateAttachmentState: EvaluateAttachmentState;

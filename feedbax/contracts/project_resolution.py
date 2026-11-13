@@ -236,11 +236,13 @@ class _Documents:
         *,
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
+        row_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
         self.overrides = overrides or {}
+        self.row_patches = row_patches or {}
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
         self.edited_sources: dict[str, Any] = {}
@@ -261,17 +263,28 @@ class _Documents:
             )
         self.used.add(reference.document)
         payload = document.payload
-        if edits := self.overrides.get(reference.document):
+        edits = self.overrides.get(reference.document)
+        patches = self.row_patches.get(reference.document, ())
+        if edits or patches:
             if reference.document not in self.edited:
                 draft = deepcopy(payload)
                 try:
                     if not isinstance(draft, dict):
                         raise ValueError("Document differences require an object payload")
-                    apply_document_edits(draft, edits)
+                    if edits:
+                        apply_document_edits(draft, edits)
                 except ValueError as error:
                     raise _Problem(
                         ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
                     ) from error
+                for item in patches:
+                    try:
+                        draft = apply_override_patch_copy(draft, item.patch)
+                    except ValueError as error:
+                        raise _Problem(
+                            ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
+                            step=self.step, document=reference.document,
+                        ) from error
                 self.edited[reference.document] = draft
             payload = self.edited[reference.document]
         if (
@@ -341,8 +354,9 @@ class _Documents:
             )
         name = reference.document
         edits = self.overrides.get(name)
+        patches = self.row_patches.get(name, ())
         variant = source_at(self.variant_sources, ("documents", name, "payload"))
-        if not edits:
+        if not edits and not patches:
             return source_shape(
                 value, ValueSource("document", name, pointer(parts)), source_at(variant, parts),
             )
@@ -350,7 +364,7 @@ class _Documents:
             document = self.read_document(name)
             assert document is not None and self.step is not None
             shape = source_shape(document.payload, ValueSource("document", name), variant)
-            for index, edit in enumerate(document_edit_ops(edits)):
+            for index, edit in enumerate(document_edit_ops(edits) if edits else ()):
                 location = (edit.path,) if isinstance(edits, dict) else (str(index),)
                 if not isinstance(edits, dict) and isinstance(edit, SetProjectValue):
                     location += ("value",)
@@ -358,6 +372,9 @@ class _Documents:
                     "step", self.step, pointer(("document_overrides", name, *location)), step=self.step,
                 )
                 apply_document_edit(shape, edit, source_shape(document_edit_value(edit), source))
+            for item in patches:
+                assert item.source is not None
+                shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
             self.edited_sources[name] = shape
         return source_at(self.edited_sources[name], parts)
 
@@ -470,6 +487,13 @@ class _Documents:
         return cast(JsonValue, value)
 
 
+@dataclass(frozen=True)
+class _DocumentRowPatch:
+    patch: OverridePatch
+    source: ValueSource | None
+    override: Any = None
+
+
 @dataclass
 class _StepState:
     payload: dict[str, Any] | DocumentReference
@@ -480,6 +504,7 @@ class _StepState:
     origins: Any = None
     document_uses: frozenset[str] = frozenset()
     root_document: str | None = None
+    row_document_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] = field(default_factory=dict)
 
 
 class _Resolver:
@@ -697,8 +722,8 @@ class _Resolver:
             )
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
-        selected = self.finish(base.step, state)
-        documents = self.documents(base.step)
+        documents = self.row_documents(base.step, state)
+        selected = self.finish(base.step, state, documents=documents)
         origins = (
             documents.inline_sources(state.payload, state.origins, "payload")
             if state.origins is not None
@@ -763,6 +788,7 @@ class _Resolver:
     ) -> _StepState:
         payload = state.payload
         origins = state.origins
+        documents: dict[str, list[_DocumentRowPatch]] = {}
         path = "sweep"
         address = None
         fields = []
@@ -775,6 +801,15 @@ class _Resolver:
                     if model_field_target(path).step is not None:
                         raise ValueError("A step-scoped Model target belongs in the project sweep")
                     fields.append((path, patch))
+                    continue
+                parts = patch.path.split(".")
+                if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload":
+                    source, override = (None, None) if origins is None else self.row_source(
+                        row.patch_authors.get(patch.path, name), row, patch.path,
+                    )
+                    documents.setdefault(parts[1], []).append(_DocumentRowPatch(
+                        patch.model_copy(update={"path": ".".join(parts[3:])}), source, override,
+                    ))
                     continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
@@ -821,22 +856,36 @@ class _Resolver:
             ) from error
         return _StepState(
             payload, inputs=state.inputs, requires=state.requires, origins=origins, document_uses=state.document_uses,
-            root_document=state.root_document,
+            root_document=state.root_document, row_document_patches={
+                document: tuple(patches) for document, patches in documents.items()
+            },
+        )
+
+    def row_documents(self, name: str, state: _StepState, *, partial_figures: bool = False) -> _Documents:
+        return _Documents(
+            self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
+            external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
+            partial_figures=partial_figures,
+            row_patches=state.row_document_patches,
         )
 
     def finish(
         self, name: str, state: _StepState, *, check_requires: bool = True, partial_figures: bool = False,
+        documents: _Documents | None = None,
     ) -> ResolvedStep:
-        documents = _Documents(
-            self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
-            external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
-            partial_figures=partial_figures,
-        )
+        if documents is None:
+            documents = self.row_documents(name, state, partial_figures=partial_figures)
         document_ids = {"payload": state.root_document} if state.root_document is not None else {}
         document_pointers: dict[str, str] = {}
         payload = documents.inline(
             state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
         )
+        if unused := state.row_document_patches.keys() - documents.used:
+            document = min(unused)
+            raise _Problem(
+                ResolutionCode.INVALID_SWEEP, f"documents.{document}",
+                "The row does not read this named document", step=name, document=document,
+            )
         if not isinstance(payload, dict):
             raise _Problem(
                 ResolutionCode.INVALID_PAYLOAD,

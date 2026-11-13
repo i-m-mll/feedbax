@@ -1,0 +1,29 @@
+.studio-model-canvas { display: flex; height: 100%; min-height: 0; }
+.studio-model-strip { width: 28px; flex: 0 0 28px; display: flex; flex-direction: column; border-right: 1px solid var(--shell-divider); }
+.studio-model-strip > div { flex: 1; }
+.studio-model-strip button { display: grid; width: 27px; height: 27px; place-items: center; }
+.studio-model-strip button[aria-pressed="true"] { background: rgb(127 127 127 / 20%); }
+.studio-model-strip svg { width: 15px; height: 15px; }
+.studio-model-surface { flex: 1; min-width: 0; min-height: 0; }
+.studio-model-card { width: 180px; border: 1px solid #898b92; border-radius: 5px; background: var(--shell-chrome, #fff); font-size: 12px; }
+.studio-model-card[data-boundary="true"] { border-style: dashed; }
+.studio-model-card[data-stacked="true"] { box-shadow: 3px 3px 0 -1px #b2b3b7, 6px 6px 0 -2px #d4d5d8; }
+.studio-model-card[data-selected="true"] { outline: 2px solid currentColor; }
+.studio-model-card[data-holds-selection="true"] header { border-bottom: 3px solid currentColor; }
+.studio-model-card-header { display: flex; align-items: baseline; gap: 6px; justify-content: space-between; padding: 5px 8px; overflow-wrap: anywhere; }
+.studio-model-card-header > span { text-align: right; font-size: 10px; }
+.studio-model-card-header input { max-width: 155px; }
+.studio-model-port { position: relative; padding: 2px 10px; }
+.studio-model-port[data-side="right"] { text-align: right; }
+.studio-model-port[data-collapsed="true"] { position: absolute; inset: 0; pointer-events: none; padding: 0; }
+.studio-model-port .react-flow__handle { width: 9px; height: 9px; border: 1px solid #555860; border-radius: 1px; background: var(--shell-chrome, #fff); }
+.studio-model-port .react-flow__handle[data-physical="true"] { border-radius: 50%; }
+.studio-model-port[data-hollow="true"] .react-flow__handle { border-style: dashed; }
+.studio-model-port[data-verdict="allowed"] .react-flow__handle { width: 13px; height: 13px; border-width: 2px; }
+.studio-model-port[data-verdict="refused"] .react-flow__handle { opacity: .35; }
+.studio-model-port-reason { position: absolute; z-index: 2; top: 0; right: calc(100% + 7px); max-width: 12rem; width: max-content; background: var(--shell-chrome, white); }
+.studio-model-add-port { display: block; margin: 0 8px 2px; }
+.studio-model-wire { stroke: #555860; }
+.studio-model-attachments { position: absolute; pointer-events: all; display: flex; gap: 2px; }
+.studio-model-attachments button { min-width: 16px; height: 16px; border: 1px solid #777; border-radius: 2px; background: var(--shell-chrome, white); font-size: 10px; }
+.studio-model-waypoint { position: absolute; pointer-events: all; width: 10px; height: 10px; border: 1px solid currentColor; background: var(--shell-chrome, white); cursor: move; }
