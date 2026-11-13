@@ -1,6 +1,11 @@
 import { ApiRequestError, isHttpConflict } from '@/api/request';
 import type {
   AuthoredFileAddress,
+  ModelAddress,
+  ModelEditCommand,
+  ModelEditRequest,
+  ModelEditResponse,
+  ModelUndoRequest,
   PresentationDocument,
   ProjectValueEdit,
   StudioProjectCreateFile,
@@ -22,11 +27,13 @@ export interface ProjectEditTransport {
   write: (id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   create: (id: string, body: StudioProjectCreateFile, signal?: AbortSignal) => Promise<StudioProjectDocument>;
+  editModel?: (id: string, body: ModelEditRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
+  undoModel?: (id: string, body: ModelUndoRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
 }
 
 type NamedFileCreation = StudioProjectCreateFile['file'];
 
-interface Gesture {
+interface FileGesture {
   readonly name: string;
   readonly files: readonly StudioProjectFilePatch[];
   readonly inverse: readonly StudioProjectFilePatch[];
@@ -37,6 +44,14 @@ interface Gesture {
   readonly presentation?: { before: PresentationDocument; after: PresentationDocument };
 }
 
+interface ModelGesture {
+  readonly name: string;
+  readonly document: string;
+  readonly token: string;
+}
+
+type Gesture = FileGesture | ModelGesture;
+
 export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
 
 interface History {
@@ -46,7 +61,7 @@ interface History {
 
 interface PendingEdit {
   readonly base: ProjectEditContent;
-  readonly gesture: Gesture;
+  readonly gesture: FileGesture;
   readonly direction: 'edit' | 'undo' | 'redo';
   readonly files: readonly StudioProjectFilePatch[];
   readonly historyAfter: History;
@@ -104,13 +119,14 @@ function unchangedAuthoredCount(unchanged: ReadonlySet<string>) {
 }
 
 function withoutChangedFiles(history: History, unchanged: ReadonlySet<string>): History {
-  const usable = ({ files, dependencies }: Gesture) =>
-    files.every(({ address }) => address.kind === 'presentation' || unchanged.has(addressKey(address))) &&
-    dependencies.every((address) => unchanged.has(addressKey(address)));
+  const usable = (gesture: Gesture) => 'token' in gesture
+    ? unchanged.has(addressKey({ kind: 'document', id: gesture.document }))
+    : gesture.files.every(({ address }) => address.kind === 'presentation' || unchanged.has(addressKey(address))) &&
+      gesture.dependencies.every((address) => unchanged.has(addressKey(address)));
   return { undo: history.undo.filter(usable), redo: history.redo.filter(usable) };
 }
 
-function historyFiles(gesture: Gesture, direction: 'undo' | 'redo', draft: ProjectEditContent) {
+function historyFiles(gesture: FileGesture, direction: 'undo' | 'redo', draft: ProjectEditContent) {
   const files = direction === 'undo' ? gesture.inverse : gesture.files;
   if (!gesture.presentation) return files;
   if (!draft.presentation) throw new ProjectEditConflictError();
@@ -180,6 +196,7 @@ export class ProjectEditController {
   private outside: StudioProjectDocument | null = null;
   private error: unknown = null;
   private saving = false;
+  private modelWriting = false;
   private snapshot: ProjectEditSnapshot;
   private settle: ReturnType<typeof setTimeout> | undefined;
   private serial: Promise<unknown> = Promise.resolve();
@@ -239,21 +256,74 @@ export class ProjectEditController {
   }
 
   undo() {
-    this.requireEditable();
-    const gesture = this.history.undo[this.history.undo.length - 1];
-    if (!gesture) return;
-    const files = historyFiles(gesture, 'undo', this.draft);
-    const { project } = applyFiles(this.draft, files);
-    this.stage(gesture, 'undo', files, project);
+    return this.replay('undo');
   }
 
   redo() {
+    return this.replay('redo');
+  }
+
+  private replay(direction: 'undo' | 'redo'): Promise<readonly ModelAddress[]> | undefined {
     this.requireEditable();
-    const gesture = this.history.redo[this.history.redo.length - 1];
+    const gesture = this.history[direction].at(-1);
     if (!gesture) return;
-    const files = historyFiles(gesture, 'redo', this.draft);
+    if ('token' in gesture) {
+      return this.modelTransaction(async (before) => {
+        const undo = this.transport.undoModel;
+        if (!undo || this.history[direction].at(-1) !== gesture) throw new ProjectEditConflictError();
+        const { result } = await undo(before.project_id, {
+          revision: before.revision, presentation_revision: before.presentation_revision, token: gesture.token,
+        }, this.signal);
+        if (result.status !== 'applied' || typeof result.undo_token !== 'string') throw new ProjectEditConflictError();
+        const history = moveHistory(this.savedHistory, gesture, direction);
+        const destination = direction === 'undo' ? 'redo' : 'undo';
+        this.adopt({ ...this.document, snapshot: result.snapshot }, {
+          ...history, [destination]: [...history[destination].slice(0, -1), { ...gesture, token: result.undo_token }],
+        });
+        return result.changed;
+      });
+    }
+    const files = historyFiles(gesture, direction, this.draft);
     const { project } = applyFiles(this.draft, files);
-    this.stage(gesture, 'redo', files, project);
+    this.stage(gesture, direction, files, project);
+  }
+
+  editModel(name: string, document: string, command: ModelEditCommand, reviewed: StudioProjectRevision) {
+    return this.modelTransaction(async (before) => {
+      const edit = this.transport.editModel;
+      if (!edit || !versionsMatch(before, reviewed)) throw new ProjectEditConflictError();
+      const { result } = await edit(before.project_id, {
+        revision: before.revision, presentation_revision: before.presentation_revision, document, command,
+      }, this.signal);
+      if (result.status === 'applied') {
+        const history = typeof result.undo_token === 'string'
+          ? moveHistory(this.savedHistory, { name, document, token: result.undo_token }, 'edit') : this.savedHistory;
+        this.adopt({ ...this.document, snapshot: result.snapshot }, history);
+      }
+      return result;
+    });
+  }
+
+  private modelTransaction<T>(operation: (before: StudioProjectSnapshot) => Promise<T>): Promise<T> {
+    this.requireEditable();
+    this.cancelSettle();
+    this.modelWriting = true;
+    this.publish();
+    const work = this.sequence(async () => {
+      await this.refresh();
+      await this.drain();
+      if (this.outside) throw new ProjectEditConflictError();
+      try {
+        return await operation(this.saved);
+      } catch (error) {
+        if (isHttpConflict(error) || canRetryOnReconnect(error)) await this.refresh().catch(() => undefined);
+        throw error;
+      }
+    });
+    return work.finally(() => {
+      this.modelWriting = false;
+      this.publish();
+    });
   }
 
   flush(): Promise<string> {
@@ -429,7 +499,7 @@ export class ProjectEditController {
       configuration: this.document.configuration,
       draft,
       pending: this.queued.length,
-      saving: this.saving,
+      saving: this.saving || this.modelWriting,
       error: this.error,
       outside: this.outside?.snapshot ?? null,
       undoName: this.history.undo[this.history.undo.length - 1]?.name ?? null,
@@ -445,11 +515,11 @@ export class ProjectEditController {
 
   private requireEditable() {
     this.abort.signal.throwIfAborted();
-    if (this.outside) throw new ProjectEditConflictError();
+    if (this.outside || this.modelWriting) throw new ProjectEditConflictError();
   }
 
   private stage(
-    gesture: Gesture,
+    gesture: FileGesture,
     direction: PendingEdit['direction'],
     files: readonly StudioProjectFilePatch[],
     project: ProjectEditContent,

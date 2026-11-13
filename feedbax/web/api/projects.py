@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentEdit, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentState,
+    ModelConnectionReview, ModelConnectionReviewRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
 )
 from feedbax.contracts.project_inputs import ProjectName
@@ -183,6 +184,16 @@ def patch_project(
 ) -> StudioProjectSnapshot:
     return _project_response(
         response, lambda: request.app.state.project_folders.patch(project_id, body)
+    )
+
+
+@router.post("/{project_id}/model/connections")
+def review_model_connections(
+    project_id: ProjectName, body: ModelConnectionReviewRequest, request: Request, response: Response,
+) -> ModelConnectionReview:
+    components = request.app.state.bootstrap_state.bundle.components
+    return _project_response(
+        response, lambda: request.app.state.project_folders.review_model_connections(project_id, body, components)
     )
 
 

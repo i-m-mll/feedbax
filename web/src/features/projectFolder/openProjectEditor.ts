@@ -1,5 +1,6 @@
 import {
-  createProjectFile, createProjectFolder, openProjectFolder, patchProjectFolder, renameProjectFolder, writeProjectPresentation,
+  createProjectFile, createProjectFolder, editModel, openProjectFolder, patchProjectFolder, renameProjectFolder,
+  undoModel, writeProjectPresentation,
 } from '@/api/projectFolders';
 import type { PresentationDocument, StudioProjectDocument } from '@/generated/studioContracts';
 import { watchProjectFolder } from '@/jobs/watchProjectFolder';
@@ -18,6 +19,7 @@ function bindProjectEditor(initial: StudioProjectDocument, signal?: AbortSignal)
   const { project_id: projectId } = initial.snapshot;
   const editor = new ProjectEditController(initial, {
     read: openProjectFolder, write: patchProjectFolder, rename: renameProjectFolder, create: createProjectFile,
+    editModel, undoModel,
   });
   let unwatch: () => void;
   try {

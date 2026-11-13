@@ -36,6 +36,16 @@ class ModelSelection(StrictModel):
     selection: Annotated[tuple[ModelAddress, ...], Field(min_length=1)]
 
 
+class PlaceComponent(StrictModel):
+    address: ModelAddress
+    position: ModelPosition
+
+
+class MoveComponents(StrictModel):
+    op: Literal["move_components"]
+    placements: Annotated[tuple[PlaceComponent, ...], Field(min_length=1)]
+
+
 class DeleteElements(ModelSelection):
     op: Literal["delete"]
 
@@ -127,7 +137,7 @@ class UngroupComposite(StrictModel):
 
 class ModelEditCommand(StrictModel):
     operation: Annotated[
-        AddComponent | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort
+        AddComponent | MoveComponents | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort
         | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents
         | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite,
         Field(discriminator="op"),
@@ -137,6 +147,21 @@ class ModelEditCommand(StrictModel):
 class ModelEditProblem(StrictModel):
     address: ModelAddress
     detail: str
+
+
+class ModelConnectionReviewRequest(StrictModel):
+    revision: Sha256
+    graph: ModelAddress
+    source: SignalSource
+
+
+class ModelConnectionVerdict(StrictModel):
+    target: SignalTarget
+    reason: str | None
+
+
+class ModelConnectionReview(StrictModel):
+    targets: tuple[ModelConnectionVerdict, ...]
 
 
 class ModelEditState(StrictModel):

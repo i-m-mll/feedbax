@@ -27,6 +27,7 @@ import { useStudioConnection } from '@/hooks/useStudioConnection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { directTrainStep } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
+import { useModelSelectionStore } from './model/modelSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
@@ -143,6 +144,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const connection = useStudioConnection();
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
+  const modelWindow = useModelSelectionStore();
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
@@ -256,7 +258,17 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     ? [...runnableTrainRows, ...evaluationRows.filter(({ can_run }) => can_run)] : runnableTrainRows;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation, windowState.mode !== 'map');
   const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
-  const namedRun = definitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ?? definitionRows[0]?.key;
+  const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
+  const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
+    selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
+  const evaluated = step?.kind === 'evaluate' && namedRun && state.selection;
+  const axis = evaluated && state.selection?.kind === 'values' && state.selection.terms.length === 1
+    ? state.selection.terms[0] : undefined;
+  const evaluateScope = evaluated && (state.selection?.kind === 'steps'
+    ? singleStep ? (primaryVariant ? { kind: 'step' } as const : { kind: 'variant', variant: namedRun.variant } as const) : undefined
+    : axis?.valueIds.length === 1 ? { kind: 'axis_value', axis: axis.sweepId, value: axis.valueIds[0] } as const
+      : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
+        : undefined);
   function saveElementPosition(document: string, node: string, position: PresentationPosition) {
     const { outside, saved } = editor.getSnapshot();
     const current = (outside ?? saved).presentation ?? {};
@@ -270,12 +282,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
-    namedRun, documentScopes,
+    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined,
   };
+  function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
+    setWindowState((current) => ({
+      ...current, modelPaths: { ...current.modelPaths, [slot]: { document, path } },
+    }));
+  }
   const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
-    problemReveal: focusSlot === 'primary' ? revealed : undefined });
+    problemReveal: focusSlot === 'primary' ? revealed : undefined, modelPath: windowState.modelPaths?.primary,
+    setModelPath: (document, path) => setModelPath('primary', document, path) });
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden',
-    problemReveal: focusSlot === 'secondary' ? revealed : undefined });
+    problemReveal: focusSlot === 'secondary' ? revealed : undefined, modelPath: windowState.modelPaths?.secondary,
+    setModelPath: (document, path) => setModelPath('secondary', document, path) });
   const focusedModel = windowState.mode !== 'map' && focusView === 'model'
     ? (focusSlot === 'primary' ? primary : secondary).model : undefined;
   const analyze = useManagedAnalyze({
@@ -409,9 +428,18 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     connection.refetch();
     void projection.refetch();
   }
-  function moveHistory(action: 'undo' | 'redo') {
-    editor[action]();
-    void editor.flush().catch((error) => setCommandError(apiErrorMessage(error)));
+  async function moveHistory(action: 'undo' | 'redo') {
+    try {
+      const changed = await editor[action]();
+      if (changed?.length) {
+        const address = changed[0];
+        modelWindow.setState({ reveal: address, selection: changed });
+        if (focusView !== 'model') setWindowState((current) => showProjectWindowView(current, 'model', focusSlot));
+      }
+      await editor.flush();
+    } catch (error) {
+      setCommandError(apiErrorMessage(error));
+    }
   }
 
   const commandScope: ProjectWindowCommandScope = {
@@ -548,8 +576,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
     windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
-    bindStudioCommand('undo', () => moveHistory('undo'), { enabled: !!snapshot.undoName && !busy }),
-    bindStudioCommand('redo', () => moveHistory('redo'), { enabled: !!snapshot.redoName && !busy }),
+    bindStudioCommand('undo', () => { void moveHistory('undo'); }, { enabled: !!snapshot.undoName && !busy && !snapshot.saving }),
+    bindStudioCommand('redo', () => { void moveHistory('redo'); }, { enabled: !!snapshot.redoName && !busy && !snapshot.saving }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
     activity, problemCommand, failure && retryCommand,
   ].filter((command): command is StudioCommand => !!command);

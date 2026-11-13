@@ -199,15 +199,10 @@ class _Edit:
     def connect(self, address: ModelAddress, source: Record, target: Record) -> str:
         owner, graph = self.graph(address)
         output = self.port(owner, graph, source, "output")
-        input_port = self.port(owner, graph, target, "input")
-        if output is None:
-            raise _Refusal(address, "source must be a local output or a port of the inputs card")
-        if input_port is None:
-            raise _Refusal(address, "target must be a local input or a port of the outputs card")
-        if not _same_port(output.type, input_port.type):
-            raise _Refusal(address, "signal types are incompatible")
-        if any(wire["target"] == target for wire in graph["wires"].values()):
-            raise _Refusal(address, "target already has a wire")
+        reason = self.connection_reason(owner, graph, output, target)
+        if reason is not None:
+            raise _Refusal(address, reason)
+        assert output is not None
         key = _id(graph)
         delayed = self.closes_loop(owner, graph, source, target, output)
         attachments = [{"kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
@@ -215,6 +210,18 @@ class _Edit:
         graph["wires"][key] = _signal(source, target, attachments)
         self.changed.append(_address(self.name, address.composites, "wire", id=key))
         return key
+
+    def connection_reason(self, owner: Record, graph: Record, output: Port | None, target: Record) -> str | None:
+        input_port = self.port(owner, graph, target, "input")
+        if output is None:
+            return "Source must be a local output or a port of the inputs card"
+        if input_port is None:
+            return "Target must be a local input or a port of the outputs card"
+        if not _same_port(output.type, input_port.type):
+            return "Signal types are incompatible"
+        if any(wire["target"] == target for wire in graph["wires"].values()):
+            return "Target already has a wire"
+        return None
 
     def closes_loop(self, owner: Record, graph: Record, source: Record, target: Record, port: Port) -> bool:
         if port.reads_state_only or "component" not in source or "component" not in target:
@@ -371,6 +378,8 @@ class _Edit:
             chain = self.attachment_chain(address, parent.parent.model_dump(mode="json"))
             item = next((entry for entry in chain if entry["id"] == parent.id), None)
             allowed = {"fields", "window", "operation", "initial", "delay", "name"}
+        elif parent.kind == "wire":
+            item, allowed = graph["wires"].get(parent.id), {"attachments"}
         elif parent.kind == "port":
             port_address = _address(self.name, address.composites, "port", end=parent.end.model_dump(mode="json"))
             port_owner, _, direction, port = self.port_owner(port_address)
@@ -716,6 +725,34 @@ class _Edit:
             raise _Refusal(address, "attachment IDs collide on this owner")
 
 
+def review_model_connections(
+    document: ModelDocument,
+    review: edits.ModelConnectionReviewRequest,
+    *,
+    layout: Callable[[Record], dict[tuple[Direction, str], Port]],
+) -> edits.ModelConnectionReview:
+    address = review.graph
+    edit = _Edit(
+        address.document, edits.ModelEditState(document=document),
+        lambda component, direction, port: layout(component).get((direction, port)),
+        lambda *_: False,
+    )
+    owner, graph = edit.graph(address)
+    source = review.source.model_dump(mode="json")
+    output = edit.port(owner, graph, source, "output")
+    targets = [_card("outputs", port["id"]) for port in owner["ports"]["outputs"]]
+    for id_, component in graph["components"].items():
+        if component["kind"] == "leaf":
+            inputs = (port for direction, port in layout(component) if direction == "input")
+        else:
+            inputs = (port["id"] for port in component["ports"]["inputs"])
+        targets.extend(_component(id_, port) for port in inputs)
+    return edits.ModelConnectionReview(targets=tuple(
+        edits.ModelConnectionVerdict(target=target, reason=edit.connection_reason(owner, graph, output, target))
+        for target in targets
+    ))
+
+
 def apply_model_edit(
     document: str,
     state: edits.ModelEditState,
@@ -733,6 +770,15 @@ def apply_model_edit(
         match operation:
             case edits.AddComponent(graph=primary):
                 edit.add_component(operation)
+            case edits.MoveComponents(placements=placements):
+                primary = placements[0].address
+                for placement in placements:
+                    address = placement.address
+                    if address.composites != primary.composites:
+                        raise _Refusal(address, "select components of one graph")
+                    edit.component(address)
+                    edit.positions[address.to_text()] = placement.position
+                    edit.changed.append(address)
             case edits.DeleteElements(selection=selection):
                 primary = selection[0]
                 for address in selection:

@@ -2,7 +2,10 @@ import { defaultTaskSpec } from '@/features/scenario/defaultTaskSpec';
 import type { CreateNamedDocument, Document, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
-const model: Document = { schema: 'feedbax.spec.graph', payload: { nodes: {}, wires: [] } };
+const model: Document = {
+  schema: 'feedbax.spec.model',
+  payload: { step_seconds: 0.01, ports: {}, interior: {} },
+};
 const task: Document = {
   schema: 'feedbax.spec.task',
   payload: { type: defaultTaskSpec.type, params: defaultTaskSpec.params },

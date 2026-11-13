@@ -27,6 +27,9 @@ class PresentationCamera(PresentationPosition):
 class DocumentPresentation(StrictModel):
     positions: dict[str, PresentationPosition] = Field(default_factory=dict)
     camera: PresentationCamera | None = None
+    flipped: dict[str, bool] = Field(default_factory=dict)
+    collapsed: dict[str, bool] = Field(default_factory=dict)
+    waypoints: dict[str, list[PresentationPosition]] = Field(default_factory=dict)
 
 
 class StepPresentation(StrictModel):

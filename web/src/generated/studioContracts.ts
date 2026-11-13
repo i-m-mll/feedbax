@@ -558,6 +558,16 @@ export interface PasteComponents {
   clipboard: ModelClipboard;
 }
 
+export interface PlaceComponent {
+  address: ModelAddress;
+  position: ModelPosition;
+}
+
+export interface MoveComponents {
+  op: "move_components";
+  placements: PlaceComponent[];
+}
+
 export interface GroupComponents {
   selection: ModelAddress[];
   op: "group";
@@ -570,7 +580,7 @@ export interface UngroupComposite {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveComponents | DeleteElements | ConnectSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
 }
 
 export interface ModelEditProblem {
@@ -606,6 +616,21 @@ export interface ModelUndoRequest {
   revision: unknown;
   presentation_revision: unknown;
   token: unknown;
+}
+
+export interface ModelConnectionReviewRequest {
+  revision: unknown;
+  graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd;
+}
+
+export interface ModelConnectionVerdict {
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  reason: string | null;
+}
+
+export interface ModelConnectionReview {
+  targets: ModelConnectionVerdict[];
 }
 
 export interface SparseCooEntrySpec {
@@ -2810,6 +2835,9 @@ export type DocumentOverrides = Record<string, JsonValue> | Array<DocumentEdit>;
 export type DocumentPresentation = {
   "positions"?: Record<string, PresentationPosition>;
   "camera"?: PresentationCamera | null;
+  "flipped"?: Record<string, boolean>;
+  "collapsed"?: Record<string, boolean>;
+  "waypoints"?: Record<string, Array<PresentationPosition>>;
 };
 
 export type DocumentReference = {
@@ -4874,6 +4902,24 @@ export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<PasteComponents>;
 
+export const PlaceComponentSchema: z.ZodType<PlaceComponent> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "position": ModelPositionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PlaceComponent>;
+
+export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_components"),
+      "placements": z.array(PlaceComponentSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<MoveComponents>;
+
 export const GroupComponentsSchema: z.ZodType<GroupComponents> = z.lazy(() =>
   z
     .object({
@@ -4896,7 +4942,7 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveComponentsSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -4959,6 +5005,33 @@ export const ModelUndoRequestSchema: z.ZodType<ModelUndoRequest> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<ModelUndoRequest>;
+
+export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReviewRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "graph": ModelAddressSchema,
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionReviewRequest>;
+
+export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z.lazy(() =>
+  z
+    .object({
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "reason": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionVerdict>;
+
+export const ModelConnectionReviewSchema: z.ZodType<ModelConnectionReview> = z.lazy(() =>
+  z
+    .object({
+      "targets": z.array(ModelConnectionVerdictSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionReview>;
 
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
@@ -8657,6 +8730,9 @@ export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.laz
   z.object({
     "positions": z.record(z.string(), PresentationPositionSchema).optional(),
     "camera": z.union([PresentationCameraSchema, z.null()]).optional(),
+    "flipped": z.record(z.string(), z.boolean()).optional(),
+    "collapsed": z.record(z.string(), z.boolean()).optional(),
+    "waypoints": z.record(z.string(), z.array(PresentationPositionSchema)).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentPresentation>;
 
@@ -9948,6 +10024,8 @@ export const contractSchemas = {
   ModelDocument: ModelDocumentSchema,
   ModelEditRequest: ModelEditRequestSchema,
   ModelEditResponse: ModelEditResponseSchema,
+  ModelConnectionReviewRequest: ModelConnectionReviewRequestSchema,
+  ModelConnectionReview: ModelConnectionReviewSchema,
   EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
@@ -10067,6 +10145,8 @@ export interface ContractTypeMap {
   ModelDocument: ModelDocument;
   ModelEditRequest: ModelEditRequest;
   ModelEditResponse: ModelEditResponse;
+  ModelConnectionReviewRequest: ModelConnectionReviewRequest;
+  ModelConnectionReview: ModelConnectionReview;
   EvaluateAttachmentRequest: EvaluateAttachmentRequest;
   EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
   EvaluateAttachmentState: EvaluateAttachmentState;

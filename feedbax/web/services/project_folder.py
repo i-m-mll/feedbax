@@ -74,7 +74,9 @@ from feedbax.contracts.studio_project import (
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.model_edit import ModelEditRequest, ModelEditResponse, ModelUndoRequest
+    from feedbax.contracts.model_edit import (
+        ModelConnectionReview, ModelConnectionReviewRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
+    )
 
 
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
@@ -538,6 +540,20 @@ class ProjectFolderService:
 
     def patch(self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch) -> StudioProjectSnapshot:
         return self._patch(project_id, body, model_operation=False)
+
+    def review_model_connections(
+        self, project_id: str, body: ModelConnectionReviewRequest, components: ComponentRegistry,
+    ) -> ModelConnectionReview:
+        from feedbax.contracts.model_document import ModelDocument
+        from feedbax.studio.model_edit import review_model_connections
+        from feedbax.studio.model_ports import ModelRegistryPorts
+
+        snapshot = self.read(project_id, revision=body.revision)
+        payload, _ = _model_edit_source(snapshot, body.graph.document)
+        try:
+            return review_model_connections(ModelDocument.model_validate(payload), body, layout=ModelRegistryPorts(components).layout)
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
 
     def edit_model(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,

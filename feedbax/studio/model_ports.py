@@ -33,10 +33,13 @@ class ModelRegistryPorts:
         )
 
     def port(self, component: Record, direction: Direction, port: str) -> Port | None:
+        return self.layout(component).get((direction, port))
+
+    def layout(self, component: Record) -> dict[tuple[Direction, str], Port]:
         return self._layout(
             component["type"], canonical_json_v2_bytes(component["fields"]),
             canonical_json_v2_bytes(component["port_counts"]),
-        ).get((direction, port))
+        )
 
     def _derive_layout(
         self, type_id: str, fields: bytes, port_counts: bytes,
