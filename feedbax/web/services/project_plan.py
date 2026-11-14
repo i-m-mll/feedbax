@@ -56,7 +56,9 @@ from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.project_sweep import CheckpointRuleAxis
 from feedbax.contracts.request_identity import decode_python_task_selection, decode_request
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import (
+    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+)
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
@@ -581,7 +583,9 @@ def _evaluation_row(
     key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
     series = None
     rule = None
-    if (planned := run.inputs.get("subject")) is not None and isinstance(reference := planned.member.reference, ProductRef):
+    planned = run.inputs.get("subject")
+    reference = planned.member.reference if planned is not None else None
+    if isinstance(reference, ProductRef):
         match reference.select:
             case UpdateSeriesMember(rule=rule, updates=updates):
                 series = StudioEvaluationCheckpointSeries(
@@ -632,6 +636,7 @@ def _evaluation_row(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
         can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
+        subject_rank_key=reference.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=attempts[-1].bound_subject if attempts else None,
     ), problem
 

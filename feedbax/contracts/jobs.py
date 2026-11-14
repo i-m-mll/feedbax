@@ -126,6 +126,7 @@ class StudioSavedEvaluationRow(StrictModel):
     can_run: bool
     trials: list[str]
     result: StudioSavedEvaluationResult | None
+    subject_rank_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_series: StudioEvaluationCheckpointSeries | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )

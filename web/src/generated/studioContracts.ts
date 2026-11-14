@@ -218,6 +218,7 @@ export interface StudioSavedEvaluationRow {
   can_run: boolean;
   trials: string[];
   result: StudioSavedEvaluationResult | null;
+  subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_rule?: unknown | null;
   bound_subject?: StudioBoundBestSubject | null;
@@ -4273,6 +4274,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "can_run": z.boolean(),
       "trials": z.array(z.string()),
       "result": StudioSavedEvaluationResultSchema.nullable(),
+      "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_rule": z.unknown().nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),

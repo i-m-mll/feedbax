@@ -278,6 +278,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     ]);
     expect(projection.rank_groups?.map(({ ranks }) => ranks.length)).toEqual([2, 2]);
     expect(projection.rank_groups?.flatMap(({ ranks }) => ranks)).toEqual(keys);
+    expect(ranks.map(({ subject_rank_key }) => subject_rank_key)).toEqual(keys);
     for (const [index, label] of groupLabels.entries()) {
       await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveText(`${label} · Rank 1`);
       await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveText(`${label} · Rank 2`);

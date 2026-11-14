@@ -140,8 +140,6 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
         groupedLabels.set(member.id, studioFormat('groupedRank', { group: label, rank: member.label }));
       }
     }
-    const subjectAxis = Object.entries(project.steps[id]?.sweep?.axes ?? {})
-      .find(([, axis]) => axis && 'input' in axis && axis.input === 'subject')?.[0];
     const runs = runsByStep.get(id) ?? [];
     return {
       id, label: id, kind, group,
@@ -149,12 +147,12 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       documentUses: projected?.document_uses,
       inputs,
       sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
-        id, label: id, values: [...values].map(([value, label]) =>
-          ({ id: value, label: id === subjectAxis ? groupedLabels.get(value) ?? label : label })),
+        id, label: id, values: [...values].map(([id, label]) => ({ id, label })),
       })),
       statusCounts: projected?.status_counts ?? {},
-      runs: subjectAxis && groupedLabels.size ? runs.map((run) => {
-        const label = groupedLabels.get(run.values[subjectAxis]);
+      runs: groupedLabels.size ? runs.map((run) => {
+        const rank = evaluations.get(run.id)?.subject_rank_key;
+        const label = rank && groupedLabels.get(rank);
         return label ? { ...run, label } : run;
       }) : runs,
     };
