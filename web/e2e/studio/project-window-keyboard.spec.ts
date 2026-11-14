@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, ModelFieldResponse, ObjectiveDocument, PythonTaskSelection, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import type { ModelDocument, ModelEditResponse, ModelFieldResponse, ObjectiveDocument, PythonTaskSelection, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
+import { authorLearningRateSweep, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -175,8 +175,10 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
 });
 
-test('the keyboard authors a managed Train from an empty folder and runs it after reopening', async ({ page, request }) => {
-  test.setTimeout(58_000);
+test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', async ({ page, request }, info) => {
+  test.setTimeout(100_000);
+  const totalUpdates = 1200;
+  const home = String(info.config.metadata.home);
   const creation = post(page, '/api/projects');
   await page.goto('/');
   const created = await creation;
@@ -306,7 +308,7 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
     return authored && 'value' in authored ? authored.value : undefined;
   });
   await page.keyboard.press('Meta+5');
-  await setNumber(nBatches, 2, (project) => config(project)?.n_batches);
+  await setNumber(nBatches, totalUpdates, (project) => config(project)?.n_batches);
   await expect(nBatches).toBeEditable();
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
@@ -315,7 +317,7 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   expect(saved.revision).not.toBe(snapshot.revision);
   expect(saved.project.steps?.train?.base).toMatchObject({ inline: {
     trial_documents: { model: { document: 'model' }, python_task: { document: 'task' }, objective: { document: 'objective' } },
-    training_config: { n_batches: 2, batch_size: 4 },
+    training_config: { n_batches: totalUpdates, batch_size: 4 },
   } });
   const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
@@ -355,7 +357,6 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   expect(before.window_map?.problems).toEqual([]);
   expect(before.rows).toMatchObject([{ key: { variant: 'default', step: 'train', row: 'default' },
     request_id: expect.any(String), status: 'not_run', attempts: [] }]);
-  const [planned] = before.rows;
   async function reopen() {
     await page.reload();
     await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
@@ -369,37 +370,149 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await expect(weight).toHaveValue('2');
   await page.keyboard.press('Meta+5');
-  await expect(nBatches).toHaveValue('2');
+  await expect(nBatches).toHaveValue(String(totalUpdates));
   await expect(batchSize).toHaveValue('4');
-  await page.keyboard.press('Meta+1');
-  await expect(runs.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
-  const posted = post(page, runsPath);
-  await page.keyboard.press('Meta+R');
-  const admission = await posted;
-  expect(admission.status(), await admission.text()).toBe(202);
-  expect(admission.request().postDataJSON()).toMatchObject({ revision: saved.revision, run_keys: [planned.key] });
-  const { items, project_id } = await admission.json() as StudioJobSubmission;
-  expect(project_id).toBe(saved.project_id);
-  expect(items).toMatchObject([{ disposition: 'admitted', job_id: expect.any(String) }]);
-  await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 16_000 });
-  const [completed] = (await plan(saved.revision)).rows;
-  const progress = { completed_updates: 2, total_updates: 2 };
-  const receipt = { manifest_id: expect.any(String), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) };
-  expect(completed).toMatchObject({
-    key: planned.key, request_id: planned.request_id, status: 'succeeded',
-    attempts: [{ job_id: items[0].job_id, status: 'succeeded', progress, successful_receipt: receipt }],
-    result: { job_id: items[0].job_id, request_id: planned.request_id, progress, receipt },
-  });
-  await reopen();
-  await expect(runs.getByText('Done', { exact: true })).toBeVisible();
-  expect((await plan(saved.revision)).rows).toEqual([completed]);
-  await palette(page, 'openRun', 'Open Run');
+  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
+  await authorLearningRateSweep(rate);
+  const swept = await savedProject();
+  const sourceRows = (await plan(swept.revision)).window_map!.rows.filter(({ key }) => key.step === 'train');
+  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  const [selected] = sourceRows;
+  await page.keyboard.press('Control+Meta+2');
+  await activate(page, train.getByRole('button', { name: 'Sweep learning-rate', exact: true }));
+  const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate Slow · 0.001', exact: true });
+  await activate(page, slow);
+  await expect(slow).toHaveAttribute('aria-pressed', 'true');
+  await expect(train).toContainText('1 of 3');
+
+  async function submit(keys: StudioSavedTrainKey[], revision: string) {
+    const response = post(page, runsPath);
+    await palette(page, 'run', 'Run');
+    const admitted = await response;
+    expect(admitted.status(), await admitted.text()).toBe(202);
+    expect(admitted.request().postDataJSON()).toMatchObject({ revision, run_keys: keys });
+    const submission: StudioJobSubmission = await admitted.json();
+    expect(submission.project_id).toBe(saved.project_id);
+    expect(submission.items).toMatchObject(keys.map(() => ({ disposition: 'admitted', job_id: expect.any(String) })));
+    return submission.items;
+  }
+
+  const [initial] = await submit([selected.key], swept.revision);
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
-  await expect(results.getByRole('img', { name: 'Loss' })
-    .locator(`line[data-attempt="${items[0].job_id}"]`).first()).toBeAttached();
-  console.info('Keyboard first managed Train', JSON.stringify({
-    project: saved.project_id, revision: saved.revision, key: planned.key, attempt: completed.attempts[0], result: completed.result,
-  }));
+  await page.keyboard.press('Meta+1');
+  const trainTable = runs.getByRole('table', { name: 'Runs', exact: true });
+  await activate(page, trainTable.getByRole('button', { name: selected.label, exact: true }));
+  await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();
+  await palette(page, 'openRun', 'Open Run');
+  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  await expect(loss.locator('line title').filter({ hasText: initial.job_id! }).first()).toBeAttached({ timeout: 16_000 });
+  const stopping = post(page, '/api/jobs/stop');
+  await page.keyboard.press('Meta+Period');
+  const stop = await stopping;
+  expect(stop.status(), await stop.text()).toBe(202);
+  expect(stop.request().postDataJSON()).toEqual({ job_ids: [initial.job_id], mode: 'checkpoint' });
+
+  async function readSelected(revision: string) {
+    const rows = (await plan(revision)).rows;
+    return rows.find(({ key }) => key.step === selected.key.step && key.row === selected.key.row)!;
+  }
+  await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: 12_000 }).toBe('stopped');
+  const witness = 'web.e2e.studio.fixtures.managed_lifecycle';
+  const observe = async (action: string, ...args: string[]) =>
+    JSON.parse(await runProjectFixture(witness, action, home, saved.project_id, initial.job_id!, ...args));
+  const paused = await observe('restart');
+  expect(paused.checkpoint.completed_updates).toBeGreaterThan(0);
+  expect(paused.checkpoint.completed_updates).toBeLessThan(totalUpdates);
+  expect(paused.new_host).not.toBe(paused.old_host);
+
+  await page.reload();
+  await expect(mapStep(page, 'train')).toBeVisible();
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const resumed = post(page, `/api/jobs/${initial.job_id}/resume`);
+  await activity.getByRole('button', { name: 'Resume', exact: true }).click();
+  const response = await resumed;
+  expect(response.status(), await response.text()).toBe(202);
+  const continued: StudioActivityJob = await response.json();
+  const producer = (await readSelected(swept.revision)).request_id;
+  expect(continued).toMatchObject({ project_id: saved.project_id, request_id: producer, continues: initial.job_id, run_key: initial.run_key });
+  expect(continued.job_id).not.toBe(initial.job_id);
+  const binding = await observe('resume', continued.job_id);
+  expect(binding).toEqual({ host: paused.new_host, checkpoint: paused.checkpoint });
+  await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: 22_000 }).toBe('succeeded');
+  const trained = await readSelected(swept.revision);
+  expect(trained.result).toMatchObject({
+    job_id: continued.job_id,
+    request_id: producer,
+    progress: { completed_updates: totalUpdates, total_updates: totalUpdates },
+    receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+  });
+  expect(trained.attempts.map(({ job_id }) => job_id)).toEqual([initial.job_id, continued.job_id]);
+
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.keyboard.press('Control+Meta+2');
+  await activate(page, mapStep(page, 'train'));
+  const sweep = train.getByRole('button', { name: 'Sweep learning-rate', exact: true });
+  if (!(await slow.isVisible())) await activate(page, sweep);
+  await activate(page, slow);
+  await expect(slow).toHaveAttribute('aria-pressed', 'true');
+  await expect(train).toContainText('1 of 3');
+  const creating = post(page, projectPath + '/files');
+  await palette(page, 'newStep', 'New Step');
+  const choice = page.getByRole('dialog', { name: 'New Step', exact: true });
+  await activate(page, choice.getByRole('button', { name: 'Evaluate', exact: true }));
+  const createdEvaluate = await creating;
+  expect(createdEvaluate.status(), await createdEvaluate.text()).toBe(201);
+  const { snapshot: evaluated }: StudioProjectDocument = await createdEvaluate.json();
+  expect(evaluated.project.steps.evaluate.inputs?.subject).toEqual({
+    step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': [selected.coordinates['learning-rate'].value_id] } },
+  });
+  await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText('1 of 3');
+  const projection = await plan(evaluated.revision);
+  const [pending] = projection.window_map!.evaluations!;
+  expect(projection.window_map?.evaluations).toHaveLength(1);
+  const [evaluation] = await submit([pending.key], evaluated.revision);
+  const evaluatedRow = async () => (await plan(evaluated.revision)).window_map!.evaluations![0];
+  await expect.poll(async () => (await evaluatedRow()).status, { timeout: 18_000 }).toBe('succeeded');
+  const result = await evaluatedRow();
+  expect(result.result).toMatchObject({
+    job_id: evaluation.job_id,
+    receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    checkpoint_source: { job_id: continued.job_id, request_id: producer, completed_updates: totalUpdates },
+  });
+  const [trial] = result.trials;
+  expect(trial).toBeTruthy();
+  expect(result.trials).toHaveLength(1);
+
+  await page.reload();
+  await activate(page, mapStep(page, 'evaluate'));
+  await page.keyboard.press('Meta+1');
+  const label = projection.window_map!.rows.find(({ key }) => key.step === pending.key.step && key.row === pending.key.row)!.label;
+  await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: label, exact: true }));
+  await expect(runs.getByText('Done', { exact: true })).toBeVisible();
+  await expect(runs.getByRole('region', { name: 'Made From', exact: true })).toContainText('1 of 3');
+  expect(await evaluatedRow()).toEqual(result);
+  const replaying = post(page, projectPath + '/evaluate-replay');
+  await activate(page, page.getByRole('tab', { name: 'Scene', exact: true }));
+  const replayed = await replaying;
+  expect(replayed.ok(), await replayed.text()).toBe(true);
+  expect(replayed.request().postDataJSON()).toMatchObject({ revision: evaluated.revision, key: result.key, job_id: evaluation.job_id, trial });
+  const replay: WorkspaceReplayTrial = await replayed.json();
+  const observed = await observe('result', continued.job_id, evaluated.revision, evaluation.job_id!, trial);
+  expect(observed.receipt).toEqual(result.result!.receipt);
+  expect(replay.manifest_refs.producer_manifest).toMatchObject({
+    id: observed.receipt.manifest_id, metadata: { manifest_sha256: observed.receipt.manifest_sha256 },
+  });
+  expect(replay.identity.stable_id).toBe(trial);
+  expect(replay.tracks![0].samples).toEqual(observed.samples);
+  expect(observed.samples.length).toBeGreaterThan(1);
+  expect(observed.samples.every((sample: number[]) => sample.length === 2 && sample.every(Number.isFinite))).toBe(true);
+  await expect(page.getByRole('slider', { name: 'Playback Position' })).toBeVisible();
+  await info.attach('managed-checkpoint-and-evaluate', {
+    body: JSON.stringify({ project: saved.project_id, paused, continued, result, observed }),
+    contentType: 'application/json',
+  });
 });
 
 test('Model edits follow the lit users of a saved shared document', async ({ page, request }) => {
