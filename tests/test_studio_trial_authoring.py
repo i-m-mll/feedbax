@@ -2,20 +2,25 @@
 
 
 from copy import deepcopy
+from dataclasses import replace
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import AliasChoices, Field, StrictFloat, StrictInt
 
+from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.jobs import JobService
 from feedbax.contracts.request_identity import decode_request
-from feedbax.tasks.reaching import REACHING_TASK, ReachingParameters, reaching_document
+from feedbax.tasks.reaching import REACHING_TASK, ReachingParameters, builtin_python_tasks, reaching_document
+from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
+from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
@@ -266,6 +271,76 @@ def test_python_task_integer_sweep_uses_registered_site():
         for run in plan.runs if run.kind == "train"
     ]
     assert [request.trial_documents.python_task.params["n_steps"] for request in selected] == [11, 13, 15]
+
+
+def test_memoized_plan_uses_supplied_python_tasks():
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    declaration = builtin_python_tasks().resolve(REACHING_TASK)
+    assert declaration is not None
+    registry = PythonTaskRegistry()
+    registry.register(replace(declaration, key="test.reaching"))
+    registry.seal()
+    raw["documents"]["task"]["payload"]["type"] = "test.reaching"
+    project = Project.model_validate(raw)
+    memo = ProjectPlanMemo()
+    expected = compile_project(project, python_tasks=registry)
+    actual = compile_project(project, memo=memo, python_tasks=registry)
+    assert not actual.diagnostics
+    assert len(actual.runs) == 1
+    assert actual == expected
+    assert compile_project(project, memo=memo).diagnostics[0].path == "payload.trial_documents.python_task.type"
+
+
+def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp_path, monkeypatch):
+    class Parameters(ReachingParameters):
+        scale: StrictInt | StrictFloat = Field(default=1.0, validation_alias=AliasChoices("gain", "scale"))
+
+    def registry(prefix):
+        def template(params):
+            base = declaration.template(params)
+            conditions = (f"{prefix}-{type(params.scale).__name__}-{params.scale:.0f}",)
+
+            def prepare(*args):
+                return replace(base.prepare(*args), condition_ids=conditions)
+
+            return replace(base, prepare=prepare, condition_ids=conditions)
+
+        tasks = PythonTaskRegistry()
+        tasks.register(replace(declaration, key="test.reaching", parameters=Parameters, template=template))
+        tasks.seal()
+        return tasks
+
+    declaration = builtin_python_tasks().resolve(REACHING_TASK)
+    assert declaration is not None
+    compiler_tasks, window_tasks = registry("compiler"), registry("window")
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    raw["documents"]["objective"]["payload"]["terms"] = [
+        {"id": "command", "measure": {"kind": "literal", "value": 1}},
+    ]
+    raw["documents"]["task"]["payload"]["type"] = "test.reaching"
+    folders = ProjectFolderService(tmp_path, python_tasks=compiler_tasks)
+
+    def read(expected):
+        _save_project(folders, "cohort", Project.model_validate(raw))
+        settled = folders.read_plan("cohort", revision=None)
+        (run,) = settled.plan.runs
+        original = decode_request(settled.plan.requests[run.request_id], settled.plan.documents.__getitem__).spec
+        assert evaluation_conditions(original.trial_documents.task_source, window_tasks) == (expected,)
+        return window_service.ProjectPlanRead.without_history(settled)
+
+    before = read("window-int-1")
+    raw["documents"]["task"]["payload"]["params"]["gain"] = 2.0
+    after = read("window-int-2")
+    monkeypatch.setattr(window_service, "decode_request", lambda *args: pytest.fail("Decoded a compiled request"))
+    for view, expected in ((before, "window-int-1"), (after, "window-int-2")):
+        (row,) = view.window_map(evaluation_tasks=window_tasks).rows
+        assert row.evaluation_conditions == [expected]
+        (row,) = view.window_map(evaluation_tasks=PythonTaskRegistry()).rows
+        assert row.evaluation_conditions is None
 
 
 @pytest.mark.parametrize("kind", ["step", "axis_value", "rows", "variant"])

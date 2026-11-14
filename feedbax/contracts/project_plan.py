@@ -94,6 +94,7 @@ from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMe
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.contracts.request_specs import TrialDocuments
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.expression_registry import FunctionRegistry
@@ -230,6 +231,13 @@ class SelectedRunDefinition:
 
 
 @dataclass(frozen=True)
+class _TrainEvaluationSource:
+    request: bytes
+    documents: tuple[tuple[str, bytes], ...]
+    task: tuple[str, ...] | bytes
+
+
+@dataclass(frozen=True)
 class ProjectPlan:
     """Named runs and deduplicated objects encoded by the shared request codec."""
 
@@ -242,6 +250,18 @@ class ProjectPlan:
     diagnostics: tuple[ProjectDiagnostic, ...]
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
     selected_definitions: Mapping[RunKey, SelectedRunDefinition]
+    _train_evaluation_sources: Mapping[RequestId, _TrainEvaluationSource] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False,
+    )
+
+    def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
+        """Read the compiled Task facts only for their exact request and documents."""
+        source = self._train_evaluation_sources.get(request_id)
+        if source is not None and self.requests.get(request_id) == source.request and all(
+            self.documents.get(digest) == data for digest, data in source.documents
+        ):
+            return source.task
+        return None
 
     @property
     def elements(self) -> Mapping[ElementKey, PlannedElement]:
@@ -574,6 +594,14 @@ class _LoweredRow:
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
     model_source: _ModelSource | None = None
+    evaluation_source: tuple[str, ...] | bytes | None = None
+
+
+@dataclass(frozen=True)
+class _TrainPreparation:
+    checkpoint_problem: RunProblem | None
+    evaluation: GraphSpec | ProjectDiagnostic
+    condition_ids: tuple[str, ...]
 
 
 @cache
@@ -594,16 +622,14 @@ def _encode_row(
     inputs: Mapping[str, PlannedInput],
     encoding_stamp: tuple[StepKind, str, bytes] | None,
     document_memo: RequestDocumentMemo,
-    components: ComponentRegistry | None = None,
-    functions: FunctionRegistry | None = None,
+    prepare_trial: Callable[[TrialDocuments], _TrainPreparation | tuple[Problem, ...]],
     python_tasks: PythonTaskRegistry | None = None,
     model_source: _ModelSource | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
+    condition_ids = None
     if kind == "train":
-        from feedbax.compiler.trial_execution import (
-            PreparedTrialExecution, compile_trial_execution, validate_python_task,
-        )
+        from feedbax.compiler.trial_execution import validate_python_task
         from feedbax.tasks.reaching import builtin_python_tasks
         from feedbax.contracts.request_specs import TrialDocuments
 
@@ -622,38 +648,27 @@ def _encode_row(
                     update={"params": params.model_dump(mode="json")},
                 )})
                 payload = payload | {"trial_documents": authored.model_dump(mode="json")}
-            paired = compile_trial_execution(
-                authored.model_name, authored.model, authored.task_source,
-                components or _builtin_model_registry(), functions or _builtin_expression_registry(),
-                python_tasks=python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
-            )
+            preparation = prepare_trial(authored)
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents", str(error), key.step,
                 row=key.row, variant=key.variant,
             ),), encoding_stamp)
-        if not isinstance(paired, PreparedTrialExecution):
+        if isinstance(preparation, tuple):
             return _LoweredRow(None, tuple(ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD,
                 ".".join(("payload.trial_documents", *map(str, problem.path))),
                 problem.reason, key.step, row=key.row, variant=key.variant,
                 document=problem.model_address.document if problem.model_address else None,
                 model_address=problem.model_address,
-            ) for problem in paired), encoding_stamp)
-        graph = paired.executable.resolved.graph
-        if problem := model_owner_problem(graph, "checkpoint"):
-            address = paired.lowered.source_address(pointer(problem.path))
-            path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
-            checkpoint_problem = RunProblem(pointer(path), problem.reason, address)
+            ) for problem in preparation), encoding_stamp)
+        checkpoint_problem = preparation.checkpoint_problem
+        condition_ids = preparation.condition_ids
         assert model_source is not None
-        if problem := model_owner_problem(graph, "evaluate"):
-            address = paired.lowered.source_address(pointer(problem.path))
-            model_source = replace(model_source, evaluation_problem=ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
-                document=address.document if address is not None else None, model_address=address,
-            ))
+        if isinstance(preparation.evaluation, ProjectDiagnostic):
+            model_source = replace(model_source, evaluation_problem=preparation.evaluation)
         else:
-            model_source = replace(model_source, evaluation_graph=graph)
+            model_source = replace(model_source, evaluation_graph=preparation.evaluation)
     try:
         if kind == "report":
             document = ReportDocument.model_validate(payload)
@@ -679,6 +694,7 @@ def _encode_row(
             spec,
             {role: (binding.member,) for role, binding in inputs.items()},
             document_memo=document_memo,
+            capture_train_task=kind == "train",
         )
     except ValidationError as error:
         problems = tuple(
@@ -688,6 +704,7 @@ def _encode_row(
     except ValueError as error:
         problems = (("", str(error)),)
     else:
+        evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
             if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
@@ -696,9 +713,12 @@ def _encode_row(
                 term.enabled for term in spec.trial_documents.objective.terms
             ) else checkpoint_problem
         )
+        if problem is None and encoded.train_task is not None:
+            selection = encoded.train_task.python_selection
+            evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
             encoded, (), encoding_stamp, admission_problem=problem,
-            model_source=model_source,
+            model_source=model_source, evaluation_source=evaluation_source,
         )
     return _LoweredRow(
         None,
@@ -783,6 +803,7 @@ class _Compiler:
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
+        self.trial_preparations: dict[bytes, _TrainPreparation | tuple[Problem, ...]] = {}
         self.work = _PlanWork()
         if previous is not None:
             self.work.inline_origins.update(previous.inline_origins)
@@ -805,6 +826,7 @@ class _Compiler:
         self.diagnostics: list[ProjectDiagnostic] = []
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
+        self.train_evaluation_sources: dict[RequestId, _TrainEvaluationSource] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.checkpoint_horizons: dict[RequestId, int | None] = {}
 
@@ -952,6 +974,7 @@ class _Compiler:
             tuple(self.diagnostics),
             MappingProxyType(self.subsets),
             MappingProxyType(self.selected_definitions),
+            MappingProxyType(self.train_evaluation_sources),
         )
 
     def step(
@@ -1245,8 +1268,8 @@ class _Compiler:
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             lowered = _encode_row(
                 key, kind, payload, inputs, encoding_stamp,
-                self.work.request_documents,
-                self.components, self.functions, self.python_tasks, model_source=authored_model,
+                self.work.request_documents, self.prepare_train_trial,
+                self.python_tasks, model_source=authored_model,
             )
             return replace(
                 lowered,
@@ -1265,6 +1288,41 @@ class _Compiler:
             self.authored_inputs[key.variant],
             lower,
         )
+
+    def prepare_train_trial(self, authored: TrialDocuments) -> _TrainPreparation | tuple[Problem, ...]:
+        from feedbax.compiler.trial_execution import compile_trial_execution
+
+        # Names and document order can change which diagnostic is reported.
+        identity = to_json(
+            authored.model_dump(exclude_unset=True, round_trip=True), inf_nan_mode="constants",
+        )
+        if (prepared := self.trial_preparations.get(identity)) is not None:
+            return prepared
+        paired = compile_trial_execution(
+            authored.model_name, authored.model, authored.task_source,
+            self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
+            python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
+        )
+        result: _TrainPreparation | tuple[Problem, ...]
+        if isinstance(paired, tuple):
+            result = paired
+        else:
+            graph = paired.executable.resolved.graph
+            checkpoint_problem = None
+            if problem := model_owner_problem(graph, "checkpoint"):
+                address = paired.lowered.source_address(pointer(problem.path))
+                path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
+                checkpoint_problem = RunProblem(pointer(path), problem.reason, address)
+            evaluation: GraphSpec | ProjectDiagnostic = graph
+            if problem := model_owner_problem(graph, "evaluate"):
+                address = paired.lowered.source_address(pointer(problem.path))
+                evaluation = ProjectDiagnostic(
+                    ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
+                    document=address.document if address is not None else None, model_address=address,
+                )
+            result = _TrainPreparation(checkpoint_problem, evaluation, paired.execution.task.condition_ids)
+        self.trial_preparations[identity] = result
+        return result
 
     def lower_train_model(
         self, key: RunKey, payload: Payload, document_ids: Mapping[str, str], document_pointers: Mapping[str, str],
@@ -1649,6 +1707,10 @@ class _Compiler:
             return None
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
+        if lowered.evaluation_source is not None:
+            self.train_evaluation_sources[encoded.id] = _TrainEvaluationSource(
+                encoded.data, tuple(encoded.documents.items()), lowered.evaluation_source,
+            )
         if lowered.model_source is not None:
             self.model_sources[key] = lowered.model_source
         run = PlannedRun(
@@ -1969,7 +2031,7 @@ def compile_project(
         return _Compiler(project, readers, source_runs, operations=operations, components=components, functions=functions, python_tasks=python_tasks).plan()
     authority = _compiler_authority(components, operations, functions, python_tasks)
     ticket, previous = memo._begin(authority)
-    compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions)
+    compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions, python_tasks)
     plan = compiler.plan()
     if authority == _compiler_authority(components, operations, functions, python_tasks):
         memo._publish(ticket, authority, compiler.work)
