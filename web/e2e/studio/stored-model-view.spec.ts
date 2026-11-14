@@ -152,7 +152,12 @@ test('authors and reopens an addressed Model through the project history', async
   });
   const groupAddress = group.changed.find(({ element }) => element.kind === 'component' && element.id !== component.id);
   if (groupAddress?.element.kind !== 'component') throw new Error('Group did not return a component address');
-  await card(groupAddress.element.id).press('Enter');
+  const composite = card(groupAddress.element.id);
+  await expect(composite).toBeVisible();
+  await expect(composite).toHaveAttribute('tabindex', '0');
+  await composite.focus();
+  await expect(composite).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
   await model.focus();
   await page.keyboard.press('Meta+K');
