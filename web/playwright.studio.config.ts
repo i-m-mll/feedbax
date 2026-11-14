@@ -20,6 +20,7 @@ export default defineConfig({
   testDir: './e2e/studio',
   outputDir: mkdtempSync(join(tmpdir(), 'feedbax-studio-results-')),
   metadata: { home, backendPort },
+  grepInvert: preview ? undefined : /@responsiveness/,
   workers: 1,
   timeout: 30_000,
   use: {

@@ -111,5 +111,20 @@ jobs:
       - name: Run Studio walkthrough against the backend
         run: bun run test:studio
 
+      - name: Trace Studio responsiveness in production preview
+        env:
+          FEEDBAX_STUDIO_E2E_PREVIEW: "1"
+          PLAYWRIGHT_JSON_OUTPUT_FILE: studio-responsiveness/report.json
+        run: |
+          bun run test:studio responsiveness.spec.ts --workers=1 --retries=0 \
+            --output studio-responsiveness/results --reporter=line,json
+
+      - name: Upload Studio responsiveness evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-responsiveness
+          path: web/studio-responsiveness/
+
       - name: Build
         run: bun run build
