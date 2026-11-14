@@ -122,7 +122,7 @@ test('authors and reopens an addressed Model through the project history', async
   const unflippedPath = (await wirePath.getAttribute('d'))!;
   await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
   await cell.locator('header').click({ button: 'right' });
-  const flipped = await apply(() => page.getByRole('menuitem', { name: 'Flip', exact: true }).click());
+  const flipped = await apply(() => page.getByRole('menuitem', { name: 'Flip', exact: true }).press('Enter'));
   expect(flipped.snapshot.semantic_root).toBe(redone.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
   await expect(wirePath).not.toHaveAttribute('d', unflippedPath);
