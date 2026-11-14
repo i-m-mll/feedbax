@@ -304,6 +304,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   });
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
   await expect(inputs).toContainText('learning-rate Slow · 0.001, Medium · 0.002 · 2 of 3');
+  const members = inputs.getByRole('list', { name: 'Members', exact: true });
+  await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
   const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
   await expect(trialSet.getByRole('combobox')).toBeFocused();
   await trialSet.getByRole('combobox').selectOption('conditions');
@@ -347,6 +349,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const savedSubset = await subsetEdit;
   expect(savedSubset.ok(), await savedSubset.text()).toBe(true);
   await expect(inputs).toContainText('3 of 3');
+  await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2);
   const widened = (await readPlan()).window_map!.evaluations!;
   expect(widened.slice(0, 2)).toEqual(before);

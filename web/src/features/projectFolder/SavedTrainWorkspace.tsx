@@ -1047,7 +1047,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
                   <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
                   {id === 'subject' && subjectCheckpoint !== undefined &&
                     <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
-                  {subset && <dd className="text-shell-muted">{[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}</dd>}
+                  {subset && <dd className="text-shell-muted">
+                    {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+                    {subset.members && subset.members.length > 0 && <ol aria-label={studioName('members')}
+                      className="list-decimal space-y-0.5 ps-5">
+                      {subset.members.map(({ id, label }) => <li key={id}>{label}</li>)}
+                    </ol>}
+                  </dd>}
                 </div>)}</dl>
               </section>}
               {evaluationCheckpointRule &&

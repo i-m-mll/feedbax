@@ -31,6 +31,7 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
   const map = saved?.window_map;
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
+  const memberLabels = new Map(map?.rows.map(({ key, label }) => [savedRunId(key), label]));
   const train = new Map(saved?.rows.map((row) => [savedRunId(row.key), row]));
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
   const runsByStep = new Map<string, PlanRunView[]>();
@@ -81,6 +82,10 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
         id: input.id, label: input.id, sourceStepId: input.source_step_id ?? undefined,
         subset: input.subset ? {
           ...input.subset, terms: subsetTerms(input.subset.terms, sweepsByStep.get(input.source_step_id)),
+          members: input.subset.members?.map((key) => {
+            const id = savedRunId(key);
+            return { id, label: memberLabels.get(id) ?? key.row };
+          }),
         } : undefined,
       })) ?? [],
       sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
