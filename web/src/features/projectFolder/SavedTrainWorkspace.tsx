@@ -38,7 +38,7 @@ import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpo
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
-import { problemReason, problemTarget, type ProblemReveal } from './projectWindowProblems';
+import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioEvaluationResults } from './StudioEvaluationResults';
@@ -506,6 +506,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     requestSlotFocus((count) => count + 1);
     setPanel(null);
   }
+  const graphRepair = revealed && removeGraphVariation(saved.project, revealed.problem);
+  function removeRefusedVariation() {
+    if (!graphRepair || !ready || snapshot.saving || busy) return;
+    void perform(async () => {
+      editor.editFiles(studioName('removeVariation'), [graphRepair], { reviewedRevision: saved.revision });
+      await editor.flush();
+    });
+  }
   function showRun(match: SavedRow, jobId?: string) {
     const target = { stepId: match.key.step, runId: savedRunId(match.key) };
     setResultAttempt(jobId ? { runId: target.runId, jobId } : undefined);
@@ -930,7 +938,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
         const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
-          ? <ProblemDestination reveal={revealed}>{body}</ProblemDestination> : body;
+          ? <ProblemDestination reveal={revealed} action={graphRepair && <button type="button" className={control}
+            disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
+            {studioName('removeVariation')}
+          </button>}>{body}</ProblemDestination> : body;
         if (view === 'analysis' || view === 'figures') {
           const detail = analyze[view];
           return { ...detail, body: withProblem(<StudioErrorBoundary region={studioName(view)}>{detail.body}</StudioErrorBoundary>) };
@@ -1048,15 +1059,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   );
 }
 
-function ProblemDestination({ reveal, children }: { reveal: ProblemReveal; children: ReactNode }) {
+function ProblemDestination({ reveal, action, children }: { reveal: ProblemReveal; action?: ReactNode; children: ReactNode }) {
   const reason = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     reason.current?.focus();
   }, [reveal]);
   return <div className="flex h-full min-h-0 flex-col">
-    <p ref={reason} tabIndex={-1} className="border-b border-shell-divider px-3 py-2 text-sm">
-      <span className="font-medium">{reveal.target.label}</span>{' · '}{problemReason(reveal.problem)}
-    </p>
+    <div className="flex items-center justify-between gap-2 border-b border-shell-divider px-3 py-2 text-sm">
+      <p ref={reason} tabIndex={-1}>
+        <span className="font-medium">{reveal.target.label}</span>{' · '}
+        {action && <>{reveal.problem.path}{' · '}</>}{problemReason(reveal.problem)}
+      </p>
+      {action}
+    </div>
     <div className="min-h-0 flex-1 overflow-auto">{children}</div>
   </div>;
 }

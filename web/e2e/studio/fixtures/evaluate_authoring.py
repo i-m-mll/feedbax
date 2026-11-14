@@ -43,6 +43,16 @@ def files():
             for name, seed, y in rows
         }}}},
     }
+    control = evaluate["sweep"]["axes"]["seed"]["values"]["control"]["patches"]
+    parameter = control.pop("params.variation.row-y")["value"]
+    evaluate["sweep"]["exceptions"] = {
+        "raw-control": {"where": {"rows": ["seed=control"]}, "patches": {
+            "params.variation": {"op": "replace", "value": {
+                "raw-mass": {"op": "replace", "path": "graph.nodes.plant.params.mass", "value": 2},
+                "row-y": parameter,
+            }},
+        }},
+    }
     return [
         *({"kind": "document", "id": name, "document": document} for name, document in documents.items()),
         {"kind": "step", "id": "train", "step": train},

@@ -1,6 +1,7 @@
 import { studioName } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
-import type { StudioProjectWindowMapProblem } from '@/generated/studioContracts';
+import type { JsonValue, StudioProjectFilePatch, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
+import { authoredMember, authoredPointerParts, removeAuthoredMember, type AuthoredProject } from './authoredEdits';
 
 type ProblemElement =
   | { kind: 'component'; id: string }
@@ -14,8 +15,67 @@ export function problemReason({ path, detail, document_path }: StudioProjectWind
   return document_path ? `${document_path} · ${message}` : message;
 }
 
+const authoredGraphVariation = 'authored_graph_variation';
+
+function isOverrideRecord(value: JsonValue | undefined): value is { path: string; op: 'add' | 'replace' | 'remove' } {
+  return value != null && typeof value === 'object' && !Array.isArray(value) && typeof value.path === 'string' &&
+    (value.op === 'add' || value.op === 'replace' || value.op === 'remove');
+}
+
+function scopedVariationWriter(path: readonly string[]): number | undefined {
+  if (path[0] === 'deltas' && path[2] === 'patches') return 4;
+  if (path[0] !== 'sweep') return;
+  if (path[1] === 'axes' && path[3] === 'values' && path[5] === 'patches') return 7;
+  if ((path[1] === 'exceptions' || path[1] === 'rows') && path[3] === 'patches') return 5;
+}
+
+function canRemoveWithoutReindexing(value: JsonValue | undefined, key: string) {
+  return !Array.isArray(value) || Number(key) === value.length - 1;
+}
+
+export function removeGraphVariation(
+  project: AuthoredProject, problem: StudioProjectWindowMapProblem,
+): StudioProjectFilePatch | undefined {
+  if (problem.code !== authoredGraphVariation || !problem.step ||
+      problem.address !== `steps/${problem.step}.json` || !problem.authored_path ||
+      project.steps?.[problem.step]?.kind !== 'evaluate') return;
+  const address = { kind: 'step', id: problem.step } as const;
+  const path = authoredPointerParts(problem.authored_path);
+  const writerDepth = scopedVariationWriter(path);
+  const member = (parts: readonly string[]) => authoredMember(project, address, parts);
+  const recordPath = path.slice(0, -1);
+  let target: string[];
+  if (writerDepth !== undefined && path[writerDepth] === 'value') {
+    const writer = path.slice(0, writerDepth);
+    const suffix = path.slice(writerDepth + 1);
+    const storedWriter = member(writer);
+    const key = path[0] === 'deltas'
+      ? (isOverrideRecord(storedWriter) ? storedWriter.path : undefined)
+      : writer.at(-1);
+    const writesRecord = /^params\.variation\.[^.]+$/.test(key ?? '');
+    const writesPath = /^params\.variation\.[^.]+\.path$/.test(key ?? '');
+    if (writesPath && suffix.length === 0 && typeof member(path) === 'string') {
+      target = writer;
+    } else if (writesRecord && suffix.length === 1 && suffix[0] === 'path' && isOverrideRecord(member(recordPath))) {
+      if (!storedWriter || typeof storedWriter !== 'object' || Array.isArray(storedWriter) ||
+          storedWriter.op !== 'add' || /^params\.variation\.[0-9]+$/.test(key ?? '')) return;
+      target = writer;
+    } else if (key === 'params.variation' && suffix.length === 2 && suffix[1] === 'path' &&
+        isOverrideRecord(member(recordPath))) {
+      if (!canRemoveWithoutReindexing(member(path.slice(0, writerDepth + 1)), suffix[0])) return;
+      target = recordPath;
+    } else return;
+  } else if (path.length === 6 && path.slice(0, 4).join('/') === 'base/inline/params/variation' &&
+      path.at(-1) === 'path' && isOverrideRecord(member(recordPath))) {
+    if (!canRemoveWithoutReindexing(member(path.slice(0, 4)), path[4])) return;
+    target = recordPath;
+  } else return;
+  const patch = removeAuthoredMember(project, address, target);
+  return patch && { address, patches: [patch] };
+}
+
 export function problemTarget(problem: StudioProjectWindowMapProblem): ProblemReveal['target'] {
-  if (problem.model_address) return { view: 'model', label: studioName('model') };
+  if (problem.model_address || problem.code === authoredGraphVariation) return { view: 'model', label: studioName('model') };
   const pointer = problem.path.startsWith('/');
   const parts = pointer
     ? problem.path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))

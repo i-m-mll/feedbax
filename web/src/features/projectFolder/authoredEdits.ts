@@ -39,7 +39,7 @@ function own(container: Container, key: string | number) {
   return Object.prototype.hasOwnProperty.call(container, key);
 }
 
-function parts(pointer: string) {
+export function authoredPointerParts(pointer: string) {
   if (!/^\/(?:[^~]|~[01])*$/.test(pointer)) throw new Error('An authored edit requires a file-relative JSON pointer.');
   return pointer.slice(1).split('/').map((token) => token.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
@@ -63,7 +63,7 @@ function hasIndexedKeys(value: JsonValue | undefined): boolean {
 }
 
 function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolean) {
-  const path = parts(edit.path);
+  const path = authoredPointerParts(edit.path);
   let container: Container = entry;
   for (const token of path.slice(0, -1)) {
     const key = keyAt(container, token);
@@ -103,6 +103,37 @@ function fileEntry(project: ProjectEditContent, address: AuthoredFileAddress) {
   const collection = files(project as unknown as JsonObject, address.kind);
   if (!own(collection, address.id)) throw new Error('The named authored file no longer exists.');
   return object(collection[address.id]);
+}
+
+export function authoredMember(project: AuthoredProject, address: AuthoredFileAddress, path: readonly string[]) {
+  let parent: JsonValue | undefined = fileEntry(project, address);
+  for (const token of path) {
+    if (parent == null || typeof parent !== 'object' || token === '__proto__' ||
+        (Array.isArray(parent) && !/^(0|[1-9][0-9]*)$/.test(token))) return;
+    const key = keyAt(parent, token);
+    if (!own(parent, key)) return;
+    parent = Array.isArray(parent) ? parent[key as number] : parent[key];
+  }
+  return parent;
+}
+
+export function removeAuthoredMember(
+  project: AuthoredProject, address: AuthoredFileAddress, path: readonly string[],
+): ProjectValueEdit | undefined {
+  const parent = authoredMember(project, address, path.slice(0, -1));
+  const name = path.at(-1);
+  if (!name || parent == null || typeof parent !== 'object') return;
+  const key = keyAt(parent, name);
+  if (!own(parent, key)) return;
+  if (Array.isArray(parent) || Object.keys(parent).at(-1) === key) {
+    return { op: 'remove', path: authoredPointer(path) };
+  }
+  if (path.length === 1 || hasIndexedKeys(parent)) return;
+  // Replace the container so Undo restores an object member at its old position.
+  return {
+    op: 'replace', path: authoredPointer(path.slice(0, -1)),
+    value: Object.fromEntries(Object.entries(parent).filter(([member]) => member !== key)),
+  };
 }
 
 export function sameAuthoredFile(a: ProjectEditContent, b: ProjectEditContent, address: AuthoredFileAddress) {
@@ -155,7 +186,7 @@ export function presentationHistoryEdits(
 }
 
 function shouldReapply(before: Container, latest: Container, edit: ProjectValueEdit) {
-  const path = parts(edit.path);
+  const path = authoredPointerParts(edit.path);
   for (const [index, token] of path.entries()) {
     if (Array.isArray(before) || Array.isArray(latest)) {
       // An outside edit can move the intended element to a different index.
