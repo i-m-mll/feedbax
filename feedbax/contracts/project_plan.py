@@ -382,6 +382,7 @@ class ProjectPlan:
         default_factory=lambda: MappingProxyType({}), repr=False,
     )
     source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
+    exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
 
     def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
         """Read the compiled Task facts only for their exact request and documents."""
@@ -895,7 +896,7 @@ class _PlanWork:
         tuple[str, str, bool], _WorkEntry[StepComposition | ProjectDiagnostic]
     ] = field(default_factory=dict)
     sweeps: dict[
-        tuple[str, str], _WorkEntry[tuple[ExpandedRow, ...] | ProjectDiagnostic]
+        tuple[str, str], _WorkEntry[tuple[tuple[ExpandedRow, ...] | ProjectDiagnostic, dict[str, tuple[str, ...]]]]
     ] = field(default_factory=dict)
     rows: dict[RunKey, _WorkEntry[_LoweredRow]] = field(default_factory=dict)
     definitions: dict[RunKey, _WorkEntry[SelectedRunDefinition | None]] = field(default_factory=dict)
@@ -983,6 +984,7 @@ class _Compiler:
         self.documents: dict[str, bytes] = {}
         self.diagnostics: list[ProjectDiagnostic] = []
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
+        self.exception_matches: dict[tuple[str, str], Mapping[str, tuple[str, ...]]] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
         self.train_evaluation_sources: dict[RequestId, _TrainEvaluationSource] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
@@ -1148,6 +1150,7 @@ class _Compiler:
             MappingProxyType(self.train_evaluation_sources),
             SourceSnapshot(self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps)
             if self.source_sweeps is not None else None,
+            MappingProxyType(self.exception_matches),
         )
 
     def step(
@@ -1281,10 +1284,12 @@ class _Compiler:
                 return answer
 
             try:
+                exception_matches: dict[str, tuple[str, ...]] = {}
                 rows = expand_sweep(
                     composition.sweep, inputs=fanout,
                     integer_site=capture_site if self.source_sweeps is not None else integer_site,
                     checkpoint_subject=kind == "evaluate",
+                    exception_matches=exception_matches,
                 )
                 if self.source_sweeps is not None:
                     axes = composition.sweep.axes if composition.sweep is not None else {}
@@ -1300,30 +1305,34 @@ class _Compiler:
                     }, sites)
                     if source.inputs or source.integer_sites:
                         self.source_sweeps[variant, name] = source
-                return rows
+                return rows, exception_matches
             except SweepExpansionError as error:
-                return _sweep_problem(error, step=name, variant=variant)
+                return _sweep_problem(error, step=name, variant=variant), {}
 
         if self.previous is None:
-            return expand()
-        return _work(
-            self.previous.sweeps,
-            self.work.sweeps,
-            (variant, name),
-            (
-                composition,
-                tuple(subject.stamp if subject is not None else None for subject in subjects),
-                to_json(tuple(
-                    (role, tuple(
-                        (member.key, tuple(member.coordinates.items()), member.label, member.checkpoint_horizon)
-                        for member in bindings
-                    ))
-                    for role, bindings in sorted(fanout.items())
-                )),
-            ),
-            self.authored_inputs[variant],
-            expand,
-        )
+            rows, matches = expand()
+        else:
+            rows, matches = _work(
+                self.previous.sweeps,
+                self.work.sweeps,
+                (variant, name),
+                (
+                    composition,
+                    tuple(subject.stamp if subject is not None else None for subject in subjects),
+                    to_json(tuple(
+                        (role, tuple(
+                            (member.key, tuple(member.coordinates.items()), member.label, member.checkpoint_horizon)
+                            for member in bindings
+                        ))
+                        for role, bindings in sorted(fanout.items())
+                    )),
+                ),
+                self.authored_inputs[variant],
+                expand,
+            )
+        if matches:
+            self.exception_matches[variant, name] = MappingProxyType(matches)
+        return rows
 
     def checkpoint_horizon(self, request: RequestId) -> int | None:
         if request not in self.checkpoint_horizons:

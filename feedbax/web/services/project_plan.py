@@ -24,6 +24,7 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapEdge,
     StudioProjectWindowMapElement,
+    StudioProjectWindowMapException,
     StudioProjectWindowMapFigure,
     StudioProjectWindowMapInput,
     StudioProjectWindowMapProblem,
@@ -291,6 +292,12 @@ class ProjectPlanRead:
                     inputs=list(inputs(variant, step_id)),
                     document_ids=document_ids.get((variant, step_id), {}),
                     document_uses=sorted(document_uses[variant, step_id]),
+                    exceptions=[
+                        StudioProjectWindowMapException(
+                            id=name, count=len(rows), rule=plan.steps[variant, step_id].sweep.exceptions[name],
+                        )
+                        for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
+                    ],
                     status_counts=dict(counts[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items() if includes(variant)

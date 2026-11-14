@@ -859,6 +859,7 @@ export interface ModelFieldRequest {
   address?: ModelAddress | null;
   lit_steps?: string[];
   rows?: string[];
+  axes?: Record<string, string[]>;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
 }
 
@@ -939,6 +940,7 @@ export interface ModelFieldView {
   can_change_axis?: boolean;
   members?: StudioSweepValue[];
   address: ModelAddress;
+  sources?: StudioPlanReviewSource[];
 }
 
 export interface TrainFieldView {
@@ -3527,6 +3529,12 @@ export type StudioProjectWindowMapElement = {
   "figure"?: StepReference | null;
 };
 
+export type StudioProjectWindowMapException = {
+  "id": string;
+  "count": number;
+  "rule": SweepException;
+};
+
 export type StudioProjectWindowMapFigure = {
   "key": StudioSavedTrainKey;
   "name": string;
@@ -3576,6 +3584,7 @@ export type StudioProjectWindowMapStep = {
   "inputs": Array<StudioProjectWindowMapInput>;
   "document_ids": Record<string, string>;
   "document_uses"?: Array<string>;
+  "exceptions"?: Array<StudioProjectWindowMapException>;
   "status_counts": Record<string, number>;
 };
 
@@ -5450,6 +5459,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "address": ModelAddressSchema.nullable().optional(),
       "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "rows": z.array(z.string()).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
     })
     .strict()
@@ -5570,6 +5580,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "can_change_axis": z.boolean().optional(),
       "members": z.array(StudioSweepValueSchema).optional(),
       "address": ModelAddressSchema,
+      "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelFieldView>;
@@ -9694,6 +9705,14 @@ export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowM
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapElement>;
 
+export const StudioProjectWindowMapExceptionSchema: z.ZodType<StudioProjectWindowMapException> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "count": z.number().int().safe(),
+    "rule": SweepExceptionSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapException>;
+
 export const StudioProjectWindowMapFigureSchema: z.ZodType<StudioProjectWindowMapFigure> = z.lazy(() =>
   z.object({
     "key": StudioSavedTrainKeySchema,
@@ -9752,6 +9771,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
     "inputs": z.array(StudioProjectWindowMapInputSchema),
     "document_ids": z.record(z.string(), z.string()),
     "document_uses": z.array(z.string()).optional(),
+    "exceptions": z.array(StudioProjectWindowMapExceptionSchema).optional(),
     "status_counts": z.record(z.string(), z.number().int().safe()),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapStep>;

@@ -6,7 +6,7 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Problem
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioPlanReviewSource, StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentScope, ModelEditCommand
 from feedbax.contracts.project import Sha256
@@ -42,6 +42,7 @@ class ModelFieldRequest(StrictModel):
     address: ModelAddress | None = None
     lit_steps: list[ProjectName] = Field(default_factory=list)
     rows: list[str] = Field(default_factory=list)
+    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")] | None = None
 
 
@@ -87,6 +88,7 @@ class StudioFieldView(StrictModel):
 
 class ModelFieldView(StudioFieldView):
     address: ModelAddress
+    sources: list[StudioPlanReviewSource] = Field(default_factory=list)
 
 
 class TrainFieldView(StudioFieldView):

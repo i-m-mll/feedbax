@@ -15,6 +15,7 @@ interface ExceptionView {
   readonly id: string;
   readonly terms: readonly string[];
   readonly count: number;
+  readonly removable?: boolean;
   readonly changes: readonly { readonly id: string; readonly label: string; readonly value: string }[];
 }
 
@@ -54,7 +55,7 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
         )}
         {onToRows && <button type="button" className={commandClass} onClick={onToRows}>{studioName("toRows")}</button>}
       </div>
-      <ul className="divide-y divide-shell-divider rounded border border-shell-divider">
+      {axes.length > 0 && <ul className="divide-y divide-shell-divider rounded border border-shell-divider">
         {axes.map((axis, index) => (
           <li className="p-2" key={axis.id}>
             <div className="flex flex-wrap items-baseline gap-2">
@@ -76,7 +77,7 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
             </ul>
           </li>
         ))}
-      </ul>
+      </ul>}
       {exceptions.length > 0 && (
         <div className="space-y-1">
           <h3 className="font-medium">{studioName("exceptions")}</h3>
@@ -85,7 +86,8 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
               <li key={exception.id} className="space-y-1 p-2">
                 <div className="flex items-baseline justify-between gap-2">
                   <span>{[...exception.terms, exception.count].join(" · ")}</span>
-                  {onRemoveException && <button type="button" className={commandClass} onClick={() => onRemoveException(exception.id)}>{studioName("remove")}</button>}
+                  {onRemoveException && exception.removable !== false &&
+                    <button type="button" className={commandClass} onClick={() => onRemoveException(exception.id)}>{studioName("remove")}</button>}
                 </div>
                 <Changes entries={exception.changes} />
               </li>

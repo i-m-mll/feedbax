@@ -1,5 +1,5 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
-import type { FieldKind, StudioActivityJob, StudioEvaluateValueSource, StudioSavedEvaluationResult } from '@/generated/studioContracts';
+import type { FieldKind, StudioActivityJob, StudioEvaluateValueSource, StudioPlanReviewSource, StudioSavedEvaluationResult } from '@/generated/studioContracts';
 import vocabulary from './vocabulary.json';
 
 export type StudioNameId = keyof typeof vocabulary.name;
@@ -46,6 +46,17 @@ export function studioReplayLabel(update: number) {
 
 export function studioEvaluateValueSource(source: StudioEvaluateValueSource) {
   return studioFormat(source.kind === 'trained' ? 'trainedValue' : 'evaluateChangedValue', { step: source.step });
+}
+
+export function studioPlanValueSource(source: StudioPlanReviewSource) {
+  switch (source.kind) {
+    case 'sweep_value':
+      return studioFormat('fieldSource', { kind: source.axis ?? studioName('sweep'), name: source.value ?? source.name });
+    case 'upstream':
+      return studioFormat('trainedValue', { step: source.step ?? source.name });
+    default:
+      return studioFormat('fieldSource', { kind: studioName(source.kind), name: source.name });
+  }
 }
 
 const countFormat = new Intl.NumberFormat();

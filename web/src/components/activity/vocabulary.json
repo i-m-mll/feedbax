@@ -45,6 +45,7 @@
     "effector": "Effector",
     "evaluate": "Evaluate",
     "exceptions": "Exceptions",
+    "exception": "Exception",
     "false": "False",
     "first": "First",
     "fitView": "Fit View",
@@ -382,6 +383,7 @@
   "format": {
     "bestSubset": "{order} {metric} · {count}",
     "subsetPer": "Per {axes}",
+    "fieldSource": "{kind} · {name}",
     "rankedMember": "Rank {rank}",
     "groupedRank": "{group} · {rank}",
     "boundRankedMember": "Rank {rank} · {producer}",

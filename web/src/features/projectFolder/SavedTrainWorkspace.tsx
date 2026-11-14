@@ -10,6 +10,7 @@ import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
+import { StudioSweepOverview } from '@/components/pipeline/StudioSweepOverview';
 import { Dialog } from '@/components/ui/Dialog';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
@@ -22,7 +23,7 @@ import {
   projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
 import {
-  StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
+  ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest,
 } from '@/generated/studioContracts';
@@ -48,6 +49,17 @@ import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 
 type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
+
+function exceptionFieldLabel(path: string) {
+  if (!path.startsWith('{')) return path;
+  try {
+    const address = ModelAddressSchema.safeParse(JSON.parse(path));
+    const field = address.success && address.data.element.kind === 'field' ? address.data.element.path.at(-1) : undefined;
+    return field == null ? path : humanizeLabel(String(field));
+  } catch {
+    return path;
+  }
+}
 type WindowPanel = { kind: 'activity' } | {
   kind: 'problems';
   scope: { step: string; variant: string | null } | null;
@@ -430,6 +442,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
     namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
+    fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
+      state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
+    ) : undefined,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -702,6 +717,17 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       editor.editFiles(name, [{ address: { kind: 'step', id: step.id }, patches: [patch] }], {
         reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }],
       });
+      await editor.flush();
+    });
+  }
+
+  function removeSweepException(id: string) {
+    if (!step || !ready || busy || saved.project.sweep || !authored?.sweep?.exceptions?.[id]) return;
+    void perform(async () => {
+      editor.editFiles(studioName('remove'), [{
+        address: { kind: 'step', id: step.id },
+        patches: [{ op: 'replace', path: authoredPointer(['sweep', 'exceptions', id]), value: null }],
+      }], { reviewedRevision: saved.revision });
       await editor.flush();
     });
   }
@@ -1055,14 +1081,33 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const pivot = pivotCommand(slot);
           const pivotActive = pivotSlots[slot] === step.id;
           const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
+          const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
+            ?.exceptions?.map(({ id, count, rule }) => ({
+              id, count,
+              terms: [
+                ...Object.entries(rule.where?.axes ?? {}).map(([axis, values]) => {
+                  const options = step.sweeps.find(({ id }) => id === axis)?.values;
+                  return `${axis} ${values.map((value) => options?.find(({ id }) => id === value)?.label ?? value).join(', ')}`;
+                }),
+                ...(rule.where?.rows ?? []),
+              ],
+              changes: Object.entries(rule.patches ?? {}).flatMap(([path, patch]) => {
+                if (!patch) return [];
+                return [{ id: path, label: exceptionFieldLabel(path),
+                  value: 'value' in patch ? JSON.stringify(patch.value) : studioName('remove') }];
+              }),
+              removable: Boolean(!saved.project.sweep && authored?.sweep?.exceptions?.[id]),
+            })) ?? [];
           return {
             header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' ? runCommands : undefined}
               pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
-            drawer: (authoring || step.inputs.length > 0) ? <div className="space-y-3 text-sm">
+            drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
               {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
                   focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
                   onDetachedEditError={setCommandError}
                   onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
+              {exceptions.length > 0 && <StudioSweepOverview axes={[]} exceptions={exceptions}
+                onRemoveException={ready && !busy ? removeSweepException : undefined} />}
               {step.inputs.length > 0 && <section aria-label={studioName('inputs')} className="space-y-1">
                 <h3 className="font-semibold">{studioName('inputs')}</h3>
                 <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
