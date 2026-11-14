@@ -103,7 +103,7 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
     newSweepCommand: (id, subject) => bindStudioCommand('newSweep', () => onNewSweep(id), { subject }),
   });
   const card = within(screen.getByRole('article'));
-  const header = card.getByRole('button', { name: 'Select reach Train', exact: true });
+  const header = card.getByRole('button', { name: 'Select reach Train' });
   const first = card.getByRole('button', { name: mark('rate 0.003 · seed 1') });
   const second = card.getByRole('button', { name: mark('rate 0.003 · seed 2') });
 
@@ -262,9 +262,9 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   render(<StudioPipelineMap mode="line" plan={plan} state={state} onSelectionChange={onSelectionChange} />);
   const buttons = screen.getAllByRole('button');
   expect(buttons).toEqual([
-    screen.getByRole('button', { name: 'Select reach Train', exact: true }),
-    screen.getByRole('button', { name: `${select(evalStep.label)} Evaluate`, exact: true }),
-    screen.getByRole('button', { name: `${select(report.label)} Report`, exact: true }),
+    screen.getByRole('button', { name: 'Select reach Train' }),
+    screen.getByRole('button', { name: `${select(evalStep.label)} Evaluate` }),
+    screen.getByRole('button', { name: `${select(report.label)} Report` }),
   ]);
   fireEvent.click(buttons[2]);
   expect(onSelectionChange).toHaveBeenCalledWith({
