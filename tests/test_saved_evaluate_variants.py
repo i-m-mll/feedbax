@@ -3,19 +3,24 @@
 from copy import deepcopy
 
 import numpy as np
+import pytest
 
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters, authored_variation
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.host import HostClient
 from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA
+from feedbax.studio.canonical_evaluate import CannotRun, RAW_STATES_SCHEMA
 from feedbax.studio.schema import validate_graph_connection_schema
+from feedbax.tasks.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
@@ -138,6 +143,95 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     )
 
 
+def _selected_task_variants():
+    raw = managed_evaluation_definition()
+    train = raw["steps"]["train"]
+    inline = train["base"]["inline"]
+    inline["training_config"].pop("n_reach_steps")
+    inline["trial_documents"].update(task=None, python_task={"document": "task"}, input_overrides={})
+    raw["documents"]["task"] = {
+        "schema": "feedbax.spec.python_task",
+        "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
+    }
+    raw["documents"]["objective"]["payload"]["terms"][0].pop("epochs")
+    train["sweep"] = {"axes": {"target": {"values": {
+        name: {"patches": {"trial_documents.python_task.params.y": {"op": "add", "value": y}}}
+        for name, y in (("low", -0.2), ("high", 0.3))
+    }}}}
+    evaluate = raw["steps"]["baseline"]
+    evaluate["sweep"] = {"axes": {"trained": {"input": "subject"}}}
+    params = evaluate["base"]["inline"]["params"]
+    params["trial_set"] = {"kind": "sample", "count": 1}
+    params["variation"] = {"target-x": _patch("task.params.x", 0.4)}
+    refused_step = deepcopy(evaluate)
+    refused_step["base"]["inline"]["params"]["variation"] = {"bad-length": _patch("task.params.n_steps", 0)}
+    raw["steps"] = {"train": train, "baseline": evaluate, "refused": refused_step}
+    return Project.model_validate(raw)
+
+
+def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "task-fields"
+    _save_project(folders, project, _selected_task_variants())
+    plan = folders.read_plan(project, revision=None)
+    producers = {run.key: run for run in plan.plan.runs if run.kind == "train"}
+    selected = [run for run in plan.plan.runs if run.kind == "evaluate"]
+    assert len(producers) == len(selected) == 2
+    assert len(plan.plan.diagnostics) == 2
+    assert all(problem.step == "refused" and problem.path == "/params/variation/bad-length"
+               for problem in plan.plan.diagnostics)
+    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    refused = jobs.admit_plan(
+        folders, plan, run_keys=tuple(row.key for row in plan.plan.rows if row.key.step == "refused"),
+        token="refused-task-patch",
+    ).items
+    assert len(refused) == 2 and all(item.disposition == "rejected" and item.job_id is None for item in refused)
+    assert not host.jobs()
+
+    started = jobs.admit_plan(
+        folders, plan, run_keys=(*producers, *(run.key for run in selected)), token="selected-task-patch",
+    ).items
+    assert all(item.disposition == "admitted" for item in started)
+    targets = []
+    for run, item in zip(selected, started[len(producers):], strict=True):
+        settled = wait_until(lambda: (
+            job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
+            or job_row(host, item.job_id, "blocked")
+        ), timeout=30)
+        assert settled["state"] == "succeeded", settled["outcome"]
+        producer = producers[run.inputs["subject"].producer]
+        inherited = decode_request(
+            plan.plan.requests[producer.request_id], plan.plan.documents.__getitem__,
+        ).spec.trial_documents.python_task
+        assert inherited.params["x"] == 0.1
+        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=item.job_id)
+        with result.open_states() as states:
+            actual = states.data("/v1/task/output/reach_target")
+            np.testing.assert_allclose(actual[..., 0], 0.4)
+            np.testing.assert_allclose(actual[..., 1], inherited.params["y"])
+        targets.append(inherited.params["y"])
+    assert set(targets) == {-0.2, 0.3}
+
+
+def test_python_task_field_patch_respects_existing_variation_order_and_overlap():
+    original = PythonTaskSelection(type=REACHING_TASK, params={"x": 0.1, "y": -0.2})
+    selected = PythonTaskSelection(type=REACHING_TASK, params={"x": 0.4, "y": 0.3})
+    replace_task = _patch("task", selected.model_dump(mode="json"))
+    edit_field = _patch("task.params.x", 0.7)
+    with pytest.raises(ValueError, match="named edits overlap"):
+        RolloutParameters(seed=0, trial_policy="paired", trials=("0",),
+                          variation={"select": replace_task, "field": edit_field})
+    edits = tuple(OverridePatch.model_validate(patch) for patch in (replace_task, edit_field))
+    assert resolve_evaluation_variant(GraphSpec(), original, edits).task.params == {"x": 0.7, "y": 0.3}
+    assert resolve_evaluation_variant(GraphSpec(), original, edits[::-1]).task == selected
+    absent_field = OverridePatch.model_validate(_patch("task.params.z", 0.7))
+    with pytest.raises(CannotRun, match="missing key/index") as refusal:
+        resolve_evaluation_variant(GraphSpec(), original, {"absent": absent_field})
+    assert refusal.value.path == "/params/variation/absent"
+
+
 def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
@@ -147,9 +241,11 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     project = "compatibility"
     _save_project(folders, project, _saved_variants())
     reviewed = folders.read_plan(project, revision=None)
-    assert not reviewed.plan.diagnostics
+    (problem,) = reviewed.plan.diagnostics
+    assert (problem.step, problem.path) == ("incompatible", "/params/variation/0")
+    assert "target_pos" in problem.detail
     planned = {run.key.step: run for run in reviewed.plan.runs}
-    cases = ["baseline", "replacement", "perturbed", "different-dtype", "incompatible"]
+    cases = ["baseline", "replacement", "perturbed", "different-dtype"]
     assert len({planned[name].request_id for name in cases}) == len(cases)
     for name in cases:
         assert planned[name].inputs["subject"].producer == planned["train"].key
@@ -166,6 +262,10 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     (train,) = jobs.admit_plan(
         folders, reviewed, run_keys=(RunKey("default", "train", "default"),), token="train",
     ).items
+    (refused,) = jobs.admit_plan(
+        folders, reviewed, run_keys=(RunKey("default", "incompatible", "default"),), token="incompatible",
+    ).items
+    assert refused.disposition == "rejected" and refused.job_id is None
     started = jobs.admit_plan(
         folders, reviewed, run_keys=tuple(planned[name].key for name in cases), token="variants",
     )
@@ -189,16 +289,12 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     for name, item in zip(cases, started.items, strict=True):
         row = settled(item.job_id)
         assert row["edges"][0]["binding"]["completion"] == completion
-        if name in {"incompatible", "different-dtype"}:
+        if name == "different-dtype":
             assert row["state"] == "failed"
             error = row["outcome"]["error"]
             assert error["code"] == "cannot_run"
-            if name == "different-dtype":
-                assert error["path"].startswith("/inputs/subject/checkpoint/model/")
-                assert "dtype" in error["message"]
-            else:
-                assert error["path"].startswith("/inputs/subject/model/inputs")
-                assert "target_pos" in error["message"]
+            assert error["path"].startswith("/inputs/subject/checkpoint/model/")
+            assert "dtype" in error["message"]
             assert "receipt" not in row["outcome"]
             continue
         assert row["state"] == "succeeded", row["outcome"]

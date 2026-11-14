@@ -323,7 +323,6 @@ class JobService(PlanJobReader):
         )
         self._launch_lock = Lock()
         self._accepting = True
-        self._warmed = False
 
     def admit_plan(
         self,
@@ -691,13 +690,12 @@ class JobService(PlanJobReader):
 
     def warm(self) -> None:
         with self._launch_lock:
-            if self._accepting and not self._warmed:
+            if self._accepting:
                 self.host.warm(
                     self._training_worker,
                     runtime_owner=os.path.realpath(sys.executable)
                     if os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT") else None,
                 )
-                self._warmed = True
 
     def retire_runtime(self, release: str, disposition: str) -> dict:
         """Quiesce installed-runtime admissions and release its owned Host."""

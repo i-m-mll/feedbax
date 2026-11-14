@@ -1334,7 +1334,7 @@ class _Compiler:
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
     ) -> Payload | ProjectDiagnostic:
-        from feedbax.compiler.trial_execution import evaluation_conditions
+        from feedbax.compiler.trial_execution import evaluation_conditions, pair_trial_source
         from feedbax.studio.canonical_evaluate import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
@@ -1357,10 +1357,23 @@ class _Compiler:
             if "trial_set" not in raw or "trials" in raw:
                 raise ValueError("Declare a trial-set rule for managed Evaluate.")
             settings = authored_rollout_settings(raw)
-            task = resolve_evaluation_variant(
-                model_source.evaluation_graph, train.trial_documents.task_source, settings.variation,
-            ).task
-            conditions = evaluation_conditions(task, self.python_tasks)
+            documents = train.trial_documents
+            variant = resolve_evaluation_variant(
+                model_source.evaluation_graph, documents.task_source, settings.variation,
+            )
+            if any(target[0] == "task" for target in variant.edit_origins):
+                pairing = pair_trial_source(
+                    documents.model_name, documents.model, variant.task,
+                    self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
+                    python_tasks=self.python_tasks, input_overrides=documents.input_overrides,
+                    graph_override=variant.graph,
+                )
+                problems = pairing if isinstance(pairing, tuple) else pairing.problems
+                if problems:
+                    raise variant.task_refusal(problems[0])
+                conditions = pairing.task.condition_ids
+            else:
+                conditions = evaluation_conditions(variant.task, self.python_tasks)
             trials = resolve_trial_ids(raw["trial_set"], conditions)
             return payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
                 "trials": list(trials),
