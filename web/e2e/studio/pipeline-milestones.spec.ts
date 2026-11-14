@@ -570,6 +570,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: 26_000 });
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
+  await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
   const sampled = cell('Fast · 0.003', 'Long Task', 'Not run');
   const target = rows[3].key;
   await sampled.click();
