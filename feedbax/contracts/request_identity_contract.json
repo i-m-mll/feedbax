@@ -1,149 +1,5 @@
 {
   "fields": {
-    "feedbax.contracts.acausal.AcausalConnectionSpec": {
-      "a": {},
-      "b": {}
-    },
-    "feedbax.contracts.acausal.AcausalGraphSpec": {
-      "connections": {
-        "absent": []
-      },
-      "mujoco_asset": {
-        "absent": null
-      },
-      "nodes": {
-        "absent": {}
-      },
-      "physical_domain": {
-        "values": [
-          "planar_multibody",
-          "rotational",
-          "spatial_multibody",
-          "translational"
-        ]
-      },
-      "planar_dynamics": {
-        "absent": null
-      },
-      "solver": {},
-      "subgraphs": {
-        "absent": null
-      },
-      "wrap_geometries": {
-        "absent": {}
-      }
-    },
-    "feedbax.contracts.acausal.JointDampingMode": {
-      "coefficients": {},
-      "damping": {}
-    },
-    "feedbax.contracts.acausal.MuJoCoAssetBinding": {
-      "asset": {},
-      "effector_site": {},
-      "paths": {
-        "absent": {}
-      },
-      "sites": {
-        "absent": {}
-      }
-    },
-    "feedbax.contracts.acausal.MuscleWrap": {
-      "after_site": {},
-      "geom": {},
-      "side_site": {}
-    },
-    "feedbax.contracts.acausal.PlanarDynamicsSpec": {
-      "gravity": {
-        "absent": [
-          0.0,
-          -9.81
-        ]
-      },
-      "joint_dampers": {
-        "absent": {}
-      }
-    },
-    "feedbax.contracts.acausal.PlanarWrapGeometry": {
-      "frame": {},
-      "kind": {
-        "values": [
-          "cylinder",
-          "sphere"
-        ]
-      },
-      "offset": {
-        "absent": [
-          0.0,
-          0.0
-        ]
-      },
-      "radius": {}
-    },
-    "feedbax.contracts.acausal.RootFinderSpec": {
-      "atol": {
-        "absent": 1e-06
-      },
-      "max_steps": {
-        "absent": 32
-      },
-      "method": {
-        "absent": "newton",
-        "values": [
-          "newton"
-        ]
-      },
-      "rtol": {
-        "absent": 1e-06
-      }
-    },
-    "feedbax.contracts.acausal.SolverConfigSpec": {
-      "dt": {},
-      "mjx_backend": {
-        "absent": "jax",
-        "values": [
-          "jax",
-          "warp"
-        ]
-      },
-      "planar_substeps": {
-        "absent": null
-      },
-      "root_finder": {
-        "absent": null
-      },
-      "solver_type": {
-        "values": [
-          "euler",
-          "implicit_euler",
-          "kvaerno5",
-          "mujoco",
-          "tsit5"
-        ]
-      }
-    },
-    "feedbax.contracts.acausal.SpatialMusclePath": {
-      "law": {},
-      "law_revision": {
-        "absent": null
-      },
-      "parameters": {
-        "absent": {}
-      },
-      "sites": {},
-      "state_size": {},
-      "wraps": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.acausal.SpatialSite": {
-      "body": {},
-      "position": {}
-    },
-    "feedbax.contracts.artifact_custody.ContentObjectRef": {
-      "object_id": {},
-      "sha256": {},
-      "size_bytes": {}
-    },
     "feedbax.contracts.base.ParentRef": {
       "id": {},
       "kind": {},
@@ -1145,598 +1001,6 @@
       },
       "stop": {}
     },
-    "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec": {
-      "adapter_node": {
-        "absent": null
-      },
-      "input_key": {},
-      "label": {},
-      "metadata": {
-        "absent": {}
-      },
-      "payload_dtype": {
-        "absent": null
-      },
-      "payload_shape": {
-        "absent": null
-      },
-      "provenance_role": {
-        "absent": null
-      },
-      "target": {}
-    },
-    "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec": {
-      "kind": {
-        "values": [
-          "edge",
-          "input"
-        ]
-      },
-      "source_node": {
-        "absent": null
-      },
-      "source_port": {
-        "absent": null
-      },
-      "target_node": {},
-      "target_port": {}
-    },
-    "feedbax.contracts.graph.BarnacleSpec": {
-      "id": {},
-      "kind": {
-        "values": [
-          "intervention",
-          "probe"
-        ]
-      },
-      "label": {},
-      "read_paths": {
-        "absent": []
-      },
-      "timing": {
-        "values": [
-          "input",
-          "output"
-        ]
-      },
-      "transform": {
-        "absent": ""
-      },
-      "write_paths": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.graph.ComponentSpec": {
-      "input_ports": {
-        "absent": []
-      },
-      "output_ports": {
-        "absent": []
-      },
-      "params": {
-        "absent": {}
-      },
-      "revision": {
-        "absent": null
-      },
-      "type": {}
-    },
-    "feedbax.contracts.graph.DerivedDimensionRuleSpec": {
-      "axis": {
-        "absent": -1
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "node": {},
-      "param": {},
-      "port": {},
-      "source": {
-        "absent": "input_port",
-        "values": [
-          "input_port"
-        ]
-      }
-    },
-    "feedbax.contracts.graph.GraphSpec": {
-      "additive_channel_adapters": {
-        "absent": []
-      },
-      "barnacles": {
-        "absent": null
-      },
-      "derived_dimensions": {
-        "absent": []
-      },
-      "input_bindings": {
-        "absent": {}
-      },
-      "input_ports": {
-        "absent": []
-      },
-      "nodes": {
-        "absent": {}
-      },
-      "output_bindings": {
-        "absent": {}
-      },
-      "output_ports": {
-        "absent": []
-      },
-      "parameter_constraints": {
-        "absent": []
-      },
-      "retained_observables": {
-        "absent": null
-      },
-      "step_seconds": {
-        "absent": null
-      },
-      "subgraphs": {
-        "absent": null,
-        "families": [
-          "feedbax.spec.acausal_graph",
-          "feedbax.spec.graph"
-        ]
-      },
-      "taps": {
-        "absent": null
-      },
-      "user_ports": {
-        "absent": null
-      },
-      "wires": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.graph.ParameterConstraintSpec": {
-      "mask": {},
-      "node": {},
-      "role": {},
-      "value": {
-        "absent": 0.0
-      }
-    },
-    "feedbax.contracts.graph.RetainedObservableSpec": {
-      "id": {},
-      "label": {
-        "absent": null
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "retention": {
-        "absent": {}
-      },
-      "selector": {
-        "absent": null
-      },
-      "target": {
-        "absent": null
-      },
-      "value_schema": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.RetainedObservableTargetSpec": {
-      "edge_id": {
-        "absent": null
-      },
-      "kind": {
-        "values": [
-          "edge",
-          "graph_output",
-          "port",
-          "recurrent_carry",
-          "state_path",
-          "task_data"
-        ]
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "node_id": {
-        "absent": null
-      },
-      "path": {
-        "absent": null
-      },
-      "port": {
-        "absent": null
-      },
-      "selector": {},
-      "timing": {
-        "absent": null,
-        "values": [
-          "final",
-          "initial",
-          "input",
-          "output",
-          "step"
-        ]
-      }
-    },
-    "feedbax.contracts.graph.RetentionPolicySpec": {
-      "metadata": {
-        "absent": {}
-      },
-      "mode": {
-        "absent": "trajectory",
-        "values": [
-          "stream",
-          "trajectory",
-          "window"
-        ]
-      },
-      "order": {
-        "absent": null
-      },
-      "reason": {
-        "absent": null
-      },
-      "window_size": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioEpochValueSpec": {
-      "epoch_id": {},
-      "target_id": {},
-      "value_spec": {}
-    },
-    "feedbax.contracts.graph.StudioInterventionTransformSpec": {
-      "bounds": {
-        "absent": null
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "operation": {},
-      "parameters": {
-        "absent": null
-      },
-      "target_selector": {
-        "absent": null
-      },
-      "value": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioInterventionValueBounds": {
-      "max": {
-        "absent": null
-      },
-      "min": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioSelectorRef": {
-      "compact": {},
-      "dtype": {
-        "absent": null
-      },
-      "expected_shape": {
-        "absent": null
-      },
-      "frame": {
-        "absent": null
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "namespace": {
-        "values": [
-          "analysis_output",
-          "artifact_field",
-          "biomechanics_object",
-          "custom",
-          "graph_edge",
-          "graph_output",
-          "graph_port",
-          "mechanics_object",
-          "probe",
-          "recurrent_carry",
-          "retained_observable",
-          "state_path",
-          "task_binding",
-          "task_data",
-          "task_object"
-        ]
-      },
-      "path": {
-        "absent": null
-      },
-      "role": {
-        "absent": null
-      },
-      "target_id": {
-        "absent": null
-      },
-      "units": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioTaskBinding": {
-      "id": {},
-      "metadata": {
-        "absent": {}
-      },
-      "role": {},
-      "source_data_id": {},
-      "target_node_id": {},
-      "target_port": {}
-    },
-    "feedbax.contracts.graph.StudioTaskBindingSpec": {
-      "bindings": {
-        "absent": []
-      },
-      "exposed_data": {
-        "absent": []
-      },
-      "metadata": {
-        "absent": {}
-      }
-    },
-    "feedbax.contracts.graph.StudioTaskDataSpec": {
-      "bindable": {},
-      "dtype": {
-        "absent": null
-      },
-      "expected_shape": {
-        "absent": null
-      },
-      "frame": {
-        "absent": null
-      },
-      "id": {},
-      "kind": {},
-      "label": {},
-      "metadata": {
-        "absent": {}
-      },
-      "path": {},
-      "role": {
-        "absent": null
-      },
-      "units": {
-        "absent": null
-      },
-      "value_spec": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioTaskEpochSpec": {
-      "id": {},
-      "index": {},
-      "label": {},
-      "length": {},
-      "metadata": {
-        "absent": {}
-      }
-    },
-    "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec": {
-      "epoch_ids": {
-        "absent": []
-      },
-      "id": {},
-      "label": {},
-      "metadata": {
-        "absent": {}
-      }
-    },
-    "feedbax.contracts.graph.StudioTaskTimelineSignalSpec": {
-      "id": {},
-      "kind": {},
-      "label": {},
-      "metadata": {
-        "absent": {}
-      },
-      "path": {},
-      "task_data_id": {
-        "absent": null
-      },
-      "task_data_schema": {
-        "absent": null
-      },
-      "value_schema": {
-        "absent": null
-      },
-      "value_spec": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioTaskTimelineSpec": {
-      "epoch_value_specs": {
-        "absent": []
-      },
-      "epochs": {
-        "absent": []
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "segments": {
-        "absent": []
-      },
-      "signals": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.graph.StudioValueEnumerableSpec": {
-      "count": {
-        "absent": null
-      },
-      "form": {
-        "values": [
-          "list",
-          "range",
-          "sampler"
-        ]
-      },
-      "n": {
-        "absent": null
-      },
-      "sampler": {
-        "absent": null
-      },
-      "scale": {
-        "absent": "linear",
-        "values": [
-          "linear",
-          "log"
-        ]
-      },
-      "start": {
-        "absent": null
-      },
-      "stop": {
-        "absent": null
-      },
-      "values": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.StudioValueSpec": {
-      "distribution": {
-        "absent": null
-      },
-      "dtype": {
-        "absent": null
-      },
-      "expression": {
-        "absent": null
-      },
-      "frame": {
-        "absent": null
-      },
-      "function_id": {
-        "absent": null
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "mode": {},
-      "parameters": {
-        "absent": null
-      },
-      "reference": {
-        "absent": null
-      },
-      "sampling_scope": {
-        "absent": null
-      },
-      "schedule": {
-        "absent": null
-      },
-      "shape": {
-        "absent": null
-      },
-      "units": {
-        "absent": null
-      },
-      "value": {
-        "absent": null
-      },
-      "value_form": {
-        "values": [
-          "distribution",
-          "expression",
-          "function",
-          "literal",
-          "reference",
-          "schedule"
-        ]
-      },
-      "variation": {
-        "absent": {
-          "scope": "fixed"
-        }
-      }
-    },
-    "feedbax.contracts.graph.StudioValueVariationSpec": {
-      "enumerable": {
-        "absent": null
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "scope": {
-        "values": [
-          "epoch",
-          "fixed",
-          "replicate",
-          "run",
-          "snapshot",
-          "sweep",
-          "timestep",
-          "trial"
-        ]
-      },
-      "stochastic_policy": {
-        "absent": null,
-        "values": [
-          "resample_per_replicate",
-          "shared_per_run"
-        ]
-      }
-    },
-    "feedbax.contracts.graph.TapPositionSpec": {
-      "afterNode": {},
-      "targetNode": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.graph.TapSpec": {
-      "id": {},
-      "paths": {
-        "absent": {}
-      },
-      "position": {},
-      "transform": {
-        "absent": null
-      },
-      "type": {
-        "values": [
-          "intervention",
-          "probe"
-        ]
-      }
-    },
-    "feedbax.contracts.graph.TapTransform": {
-      "intervention": {
-        "absent": null
-      },
-      "params": {
-        "absent": {}
-      },
-      "type": {}
-    },
-    "feedbax.contracts.graph.UserPortSpec": {
-      "inputs": {
-        "absent": []
-      },
-      "outputs": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.graph.WireSpec": {
-      "id": {
-        "absent": null
-      },
-      "recurrent_initializer": {
-        "absent": null
-      },
-      "source_node": {},
-      "source_port": {},
-      "target_node": {},
-      "target_port": {},
-      "temporality": {
-        "absent": "instant",
-        "values": [
-          "instant",
-          "recurrent"
-        ]
-      }
-    },
     "feedbax.contracts.model_address.ComponentPortEnd": {
       "component": {},
       "owner": {
@@ -2321,36 +1585,6 @@
       },
       "report_type": {}
     },
-    "feedbax.contracts.request_specs.TrainingRequestSpec": {
-      "graph": {},
-      "method_payload": {},
-      "method_ref": {},
-      "numerical_settings": {
-        "absent": {}
-      },
-      "objective": {},
-      "on_nan": {
-        "absent": "raise",
-        "values": [
-          "halt_restore_checkpoint",
-          "raise"
-        ]
-      },
-      "risk_aggregation": {
-        "absent": {}
-      },
-      "seed": {
-        "absent": null
-      },
-      "task": {},
-      "task_binding_spec": {
-        "absent": null
-      },
-      "training_config": {},
-      "trial_documents": {
-        "absent": null
-      }
-    },
     "feedbax.contracts.task_document.Cell": {
       "first_epoch": {},
       "last_epoch": {},
@@ -2442,50 +1676,6 @@
         ]
       }
     },
-    "feedbax.contracts.training.LossTermSpec": {
-      "children": {
-        "absent": null
-      },
-      "label": {},
-      "matrix": {
-        "absent": null
-      },
-      "matrix_kind": {
-        "absent": null,
-        "values": [
-          "dense",
-          "diagonal"
-        ]
-      },
-      "norm": {
-        "absent": null,
-        "values": [
-          "huber",
-          "l1",
-          "l2",
-          "squared_l2"
-        ]
-      },
-      "retention": {
-        "absent": null
-      },
-      "selector": {
-        "absent": null
-      },
-      "target_selector": {
-        "absent": null
-      },
-      "target_value": {
-        "absent": null
-      },
-      "time_agg": {
-        "absent": null
-      },
-      "type": {},
-      "weight": {
-        "absent": 1.0
-      }
-    },
     "feedbax.contracts.training.MethodPayloadEnvelope": {
       "metadata": {
         "absent": {}
@@ -2500,31 +1690,6 @@
       "name": {},
       "package": {},
       "version": {}
-    },
-    "feedbax.contracts.training.ObjectiveSlotSpec": {
-      "kind": {
-        "absent": "loss_term",
-        "values": [
-          "external",
-          "loss_term",
-          "objective_spec"
-        ]
-      },
-      "loss": {
-        "absent": null
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "payload": {
-        "absent": null
-      },
-      "schema_id": {
-        "absent": null
-      },
-      "schema_version": {
-        "absent": null
-      }
     },
     "feedbax.contracts.training.RiskAggregationSpec": {
       "metadata": {
@@ -2555,15 +1720,6 @@
       "time": {
         "absent": null
       }
-    },
-    "feedbax.contracts.training.TaskSpec": {
-      "params": {
-        "absent": {}
-      },
-      "timeline": {
-        "absent": null
-      },
-      "type": {}
     },
     "feedbax.contracts.training.TimeAggregationSpec": {
       "discount": {
@@ -2602,35 +1758,6 @@
         "absent": null
       }
     },
-    "feedbax.contracts.training.TrainingConfig": {
-      "batch_size": {
-        "absent": 128
-      },
-      "effort_weight": {
-        "absent": 2.5
-      },
-      "grad_clip": {
-        "absent": 1.0
-      },
-      "hidden_dim": {
-        "absent": 128
-      },
-      "learning_rate": {
-        "absent": 0.001
-      },
-      "n_batches": {
-        "absent": 2000
-      },
-      "n_reach_steps": {
-        "absent": 80
-      },
-      "network_type": {
-        "absent": "gru"
-      },
-      "snapshot_interval": {
-        "absent": 100
-      }
-    },
     "feedbax.contracts.training.TrialDocuments": {
       "input_overrides": {
         "absent": {}
@@ -2642,46 +1769,1411 @@
         "absent": null
       },
       "task": {}
-    },
-    "feedbax.contracts.value_schema.ValueSchema": {
-      "dtype": {
-        "absent": null
-      },
-      "frame": {
-        "absent": null
-      },
-      "id": {},
-      "kind": {},
-      "label": {},
-      "metadata": {
-        "absent": {}
-      },
-      "origin": {
-        "absent": "unknown",
-        "values": [
-          "curated_fallback",
-          "declared",
-          "inferred_static",
-          "runtime_sample",
-          "unknown"
-        ]
-      },
-      "quantity": {
-        "absent": null
-      },
-      "rank": {
-        "absent": null
-      },
-      "shape": {
-        "absent": null
-      },
-      "units": {
-        "absent": null
-      }
     }
   },
   "retired": {
-    "fields": [],
+    "fields": [
+      {
+        "field": "a",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalConnectionSpec"
+      },
+      {
+        "field": "b",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalConnectionSpec"
+      },
+      {
+        "field": "connections",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "mujoco_asset",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "nodes",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "physical_domain",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "planar_dynamics",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "solver",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "subgraphs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "wrap_geometries",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "coefficients",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.JointDampingMode"
+      },
+      {
+        "field": "damping",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.JointDampingMode"
+      },
+      {
+        "field": "asset",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "effector_site",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "sites",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "after_site",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuscleWrap"
+      },
+      {
+        "field": "geom",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuscleWrap"
+      },
+      {
+        "field": "side_site",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuscleWrap"
+      },
+      {
+        "field": "gravity",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarDynamicsSpec"
+      },
+      {
+        "field": "joint_dampers",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarDynamicsSpec"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "offset",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "radius",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "atol",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "max_steps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "method",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "rtol",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "dt",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "mjx_backend",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "planar_substeps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "root_finder",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "solver_type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "law",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "law_revision",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "parameters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "sites",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "state_size",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "wraps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "body",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialSite"
+      },
+      {
+        "field": "position",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialSite"
+      },
+      {
+        "field": "object_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.artifact_custody.ContentObjectRef"
+      },
+      {
+        "field": "sha256",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.artifact_custody.ContentObjectRef"
+      },
+      {
+        "field": "size_bytes",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.artifact_custody.ContentObjectRef"
+      },
+      {
+        "field": "adapter_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "input_key",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "payload_dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "payload_shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "provenance_role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "target",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "source_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "source_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "target_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "target_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "read_paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "timing",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "transform",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "write_paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "input_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "output_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "params",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "revision",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "axis",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "param",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "source",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "additive_channel_adapters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "barnacles",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "derived_dimensions",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "input_bindings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "input_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "nodes",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "output_bindings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "output_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "parameter_constraints",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "retained_observables",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "step_seconds",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "subgraphs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "taps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "user_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "wires",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "mask",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "retention",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "target",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "value_schema",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "edge_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "node_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "timing",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "mode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "order",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "reason",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "window_size",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "epoch_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioEpochValueSpec"
+      },
+      {
+        "field": "target_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioEpochValueSpec"
+      },
+      {
+        "field": "value_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioEpochValueSpec"
+      },
+      {
+        "field": "bounds",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "operation",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "parameters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "target_selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "max",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionValueBounds"
+      },
+      {
+        "field": "min",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionValueBounds"
+      },
+      {
+        "field": "compact",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "expected_shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "namespace",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "target_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "source_data_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "target_node_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "target_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "bindings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBindingSpec"
+      },
+      {
+        "field": "exposed_data",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBindingSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBindingSpec"
+      },
+      {
+        "field": "bindable",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "expected_shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "value_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "index",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "length",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "epoch_ids",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "task_data_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "task_data_schema",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "value_schema",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "value_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "epoch_value_specs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "epochs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "segments",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "signals",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "count",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "form",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "n",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "sampler",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "scale",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "start",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "stop",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "values",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "distribution",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "expression",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "function_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "mode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "parameters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "reference",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "sampling_scope",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "schedule",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "value_form",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "variation",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "enumerable",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "scope",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "stochastic_policy",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "afterNode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapPositionSpec"
+      },
+      {
+        "field": "targetNode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapPositionSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "position",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "transform",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "intervention",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapTransform"
+      },
+      {
+        "field": "params",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapTransform"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapTransform"
+      },
+      {
+        "field": "inputs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.UserPortSpec"
+      },
+      {
+        "field": "outputs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.UserPortSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "recurrent_initializer",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "source_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "source_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "target_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "target_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "temporality",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "graph",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "method_payload",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "method_ref",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "numerical_settings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "objective",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "on_nan",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "risk_aggregation",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "seed",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "task",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "task_binding_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "training_config",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "trial_documents",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "children",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "matrix",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "matrix_kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "norm",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "retention",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "target_selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "target_value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "time_agg",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "weight",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "loss",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "payload",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "schema_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "schema_version",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "params",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "timeline",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "batch_size",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "effort_weight",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "grad_clip",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "hidden_dim",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "learning_rate",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "n_batches",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "n_reach_steps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "network_type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "snapshot_interval",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "origin",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "quantity",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "rank",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      }
+    ],
     "values": []
   }
 }

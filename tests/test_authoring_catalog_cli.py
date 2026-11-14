@@ -34,7 +34,6 @@ def test_cli_authoring_catalog_matches_studio_and_registered_declarations(
     )
     monkeypatch.setattr(bootstrap, "_installed_entry_points", lambda group: (entry_point,))
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
-    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
     state = asyncio.run(compose_application())
     app = FastAPI()
     app.include_router(router)

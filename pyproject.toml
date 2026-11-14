@@ -120,9 +120,6 @@ feedbax = "feedbax.cli:main"
 feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
 feedbax-figure = "feedbax.bin.figure:main"
-feedbax-train = "feedbax.bin.train:main"
-feedbax-provider = "feedbax.bin.provider:main"
-feedbax-orchestrate = "feedbax.bin.orchestrate:main"
 
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"
@@ -198,11 +195,10 @@ line-length = 88
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers -n auto -m 'not optional_mjx and not optional_ppo and not slow'"
+addopts = "--strict-markers -n auto -m 'not optional_mjx and not slow'"
 markers = [
     "slow: tests that are too expensive for every local or CI pass",
     "optional_mjx: MJX simulation and integration tests run only when explicitly selected",
-    "optional_ppo: PPO rollout and training tests run only when explicitly selected",
     "feedbax_contract: Feedbax contract-surface tests for downstream consumers",
     "graph_spec_contract: GraphSpec schema, migration, and runtime contract tests",
     "provider_contract: provider API and manifest contract tests",

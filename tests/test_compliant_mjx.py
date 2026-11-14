@@ -13,10 +13,7 @@ from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.objectives.loss import TargetSpec, TargetStateLoss
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.runtime.mapping import WhereDict
-from feedbax.tasks.task import TaskTrialSpec, prepare_trial
 
 
 pytestmark = [pytest.mark.optional_mjx, pytest.mark.usefixtures("enable_jax_x64")]
@@ -225,17 +222,7 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
     n_steps = 8
     angle = 0.18
     qpos = jnp.array([math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2)])
-    def where(state):
-        return state.physics.effector.pos
-
-    loss = TargetStateLoss("spatial target", where=where)
-    trial = TaskTrialSpec(
-        inits=WhereDict({"physics.plant.skeleton.qpos": qpos}),
-        targets=WhereDict({"physics.effector.pos": TargetSpec(
-            value=jnp.array([[0.16, 0.05, -0.02]]),
-        )}),
-        inputs=jnp.zeros((n_steps, 2)),
-    )
+    target = jnp.array([0.16, 0.05, -0.02])
 
     def build(dt, *, roundtrip=False):
         graph = compile_graph(_document(provider, dt), registry, artifact_provider=provider).graph
@@ -245,7 +232,9 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
                 GraphDocument.model_validate_json(saved), registry, artifact_provider=provider,
             ).graph
         node = graph.nodes["physics"]
-        initial = prepare_trial(graph, trial).init_state
+        initial = node.replace_state_value(
+            graph.init_state(key=key), ("plant", "skeleton", "qpos"), qpos,
+        )
         @jax.jit
         def rollout(state, command):
             return graph(
@@ -266,9 +255,8 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
 
     @jax.jit
     def objective(command):
-        _, _, history = rollout(initial, command)
-        batched = jax.tree.map(lambda value: value[None], history)
-        return loss.term(batched, trial, middle)[0]
+        outputs, _, _ = rollout(initial, command)
+        return jnp.mean(jnp.sum((outputs["effector"].pos - target) ** 2, axis=-1))
 
     command = jnp.array([0.34, 0.29])
     direction = jnp.array([0.8, -0.6])

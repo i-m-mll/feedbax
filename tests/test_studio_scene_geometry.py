@@ -9,7 +9,6 @@ from tests.fixtures.scene_geometry import native_scene_samples, seed_scene_proje
 
 _PROJECT = "/api/projects/scene"
 _SCENE = f"{_PROJECT}/scene/planar"
-_PARAMS = "/payload/subgraphs/mechanics/nodes"
 
 
 @pytest.fixture
@@ -38,6 +37,22 @@ def _read(client, source):
     return response.json()
 
 
+def _edit(client, document, component, path, value):
+    snapshot = client.get(_PROJECT).json()
+    response = client.post(f"{_PROJECT}/model/edit", json={
+        "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+        "document": document,
+        "command": {"operation": {
+            "op": "set_field", "value": value,
+            "address": {"document": document, "composites": ["mechanics"], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": component}, "path": ["fields", *path],
+            }},
+        }},
+    })
+    assert response.is_success, response.text
+    assert response.json()["result"]["status"] == "applied", response.text
+
+
 def test_scene_binds_the_exact_revision_and_preserves_authored_coordinates(project):
     root, client = project
     source = _source(client, "chain")
@@ -53,22 +68,8 @@ def test_scene_binds_the_exact_revision_and_preserves_authored_coordinates(proje
     assert model["muscles"][0]["points"][1]["frame"] == "forearm.distal"
     assert model["muscles"][0]["points"][1]["position"] == pytest.approx([0.03, -0.09])
 
-    response = client.patch(
-        _PROJECT,
-        json={
-            "revision": source["revision"],
-            "address": {"kind": "document", "id": "chain"},
-            "patches": [
-                {"op": "replace", "path": f"{_PARAMS}/forearm/params/length", "value": 0.37},
-                {
-                    "op": "replace",
-                    "path": f"{_PARAMS}/cross_chain/params/path_points/1/offset",
-                    "value": [0.05, -0.07],
-                },
-            ],
-        },
-    )
-    assert response.is_success, response.text
+    _edit(client, "chain", "forearm", ["length"], 0.37)
+    _edit(client, "chain", "cross_chain", ["path_points", 1, "offset"], [0.05, -0.07])
     assert client.post(_SCENE, json=source).status_code == 409
     updated = _read(client, _source(client, "chain"))["model"]
     assert updated["model_identity"] != model["model_identity"]
@@ -77,33 +78,13 @@ def test_scene_binds_the_exact_revision_and_preserves_authored_coordinates(proje
     assert updated["muscles"][0]["points"][1]["position"] == pytest.approx([0.05, -0.07])
 
 
-def test_scene_reports_missing_frames_and_omits_only_unsupported_wraps(project):
+def test_scene_reports_missing_frames_and_unresolved_occurrences(project):
     _, client = project
-    wrapped = _read(client, _source(client, "wrapped"))
-    assert len(wrapped["model"]["links"]) == 3
-    assert wrapped["model"]["muscles"] == [{"node_id": "cross_chain", "points": None}]
-    assert [(entry["code"], entry["node_ids"]) for entry in wrapped["diagnostics"]] == [
-        ("scene.unsupported_wrap", ["cross_chain"]),
-    ]
     source = _source(client, "chain")
     wrong_node = _read(client, {**source, "node_path": ["unknown", "mechanics"]})
     assert wrong_node["model"] is None
     assert "unknown" in wrong_node["diagnostics"][0]["message"]
-    response = client.patch(
-        _PROJECT,
-        json={
-            "revision": source["revision"],
-            "address": {"kind": "document", "id": "chain"},
-            "patches": [
-                {
-                    "op": "replace",
-                    "path": f"{_PARAMS}/cross_chain/params/path_points/1/frame",
-                    "value": "missing.distal",
-                }
-            ],
-        },
-    )
-    assert response.is_success, response.text
+    _edit(client, "chain", "cross_chain", ["path_points", 1, "frame"], "missing.distal")
     invalid = _read(client, _source(client, "chain"))
     assert invalid["model"] is None
     assert [(entry["code"], entry["node_ids"]) for entry in invalid["diagnostics"]] == [

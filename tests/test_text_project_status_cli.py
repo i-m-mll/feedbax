@@ -124,7 +124,6 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
     registries.seal()
     snapshot, plan_key, manifest = _retain_train(root, project, registries)
     receipt = manifest.read_bytes()
-    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
 
     def snapshot_rpc(self, *, project, start_host, record_keys, include_launch):
@@ -215,7 +214,6 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
         document["views"]["bad"] = document["views"]["profile"] | {"figure": {"document": "bad-figure"}}
 
     _edit(root, files, "velocity-analysis", invalid_siblings)
-    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
     monkeypatch.setattr(
         HostClient,
         "jobs_snapshot",

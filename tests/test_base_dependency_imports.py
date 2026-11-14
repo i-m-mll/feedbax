@@ -111,7 +111,7 @@ def test_unconditional_feedbax_imports_are_declared_for_their_namespace() -> Non
     assert findings == []
 
 
-def test_base_orchestration_imports_do_not_require_web_runtime_dependencies() -> None:
+def test_base_cli_imports_do_not_require_web_runtime_dependencies() -> None:
     script = textwrap.dedent(
         """
         import importlib
@@ -121,8 +121,6 @@ def test_base_orchestration_imports_do_not_require_web_runtime_dependencies() ->
         blocked_roots = {"anyio", "fastapi", "httpx", "starlette", "uvicorn"}
         blocked_modules = {
             "feedbax.web.app",
-            "feedbax.web.orchestration.controller",
-            "feedbax.web.worker.app",
         }
 
         class BlockWebRuntimeImports(importlib.abc.MetaPathFinder):
@@ -132,11 +130,9 @@ def test_base_orchestration_imports_do_not_require_web_runtime_dependencies() ->
                 return None
 
         sys.meta_path.insert(0, BlockWebRuntimeImports())
-        importlib.import_module("feedbax.bin.orchestrate")
-        importlib.import_module("feedbax.web.worker.identity")
-        from feedbax.orchestration.drivers.builtins import build_builtin_driver_registry
-
-        build_builtin_driver_registry()
+        importlib.import_module("feedbax.cli")
+        importlib.import_module("feedbax.__main__")
+        importlib.import_module("feedbax.orchestration.repo_snapshot")
 
         assert not blocked_modules.intersection(sys.modules)
         assert not blocked_roots.intersection(sys.modules)

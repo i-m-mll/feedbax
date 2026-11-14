@@ -45,7 +45,6 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
-from feedbax.integrations.provider import provider_manifest
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
@@ -423,11 +422,11 @@ def test_staged_execution_v1_migrates_and_composed_v2_serializes_provenance(
         "ref": "versioned-staged.json",
         "sha256": base_sha,
     }
-    provider_version = provider_manifest().schemas["StagedAnalysisBundleExecution"]["properties"][
+    schema_version = StagedAnalysisBundleExecution.model_json_schema()["properties"][
         "schema_version"
     ]
-    assert provider_version["const"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
-    assert provider_version["default"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
+    assert schema_version["const"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
+    assert schema_version["default"] == ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION
 
 
 def test_real_composed_staged_child_executes_and_records_provenance(
@@ -517,8 +516,8 @@ def test_recursive_parent_migrates_supported_older_direct_bundle(tmp_path: Path)
     assert flattening.payload["schema_version"] == "feedbax.spec.analysis_bundle.v6"
 
 
-def test_provider_and_migration_registry_publish_separate_authoring_schema() -> None:
-    properties = provider_manifest().schemas["AnalysisBundleDeltaSpec"]["properties"]
+def test_model_and_migration_registry_publish_separate_authoring_schema() -> None:
+    properties = AnalysisBundleDeltaSpec.model_json_schema()["properties"]
     assert set(properties) == {"schema_id", "schema_version", "parent", "deltas"}
     assert properties["schema_version"]["default"] == ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION
 

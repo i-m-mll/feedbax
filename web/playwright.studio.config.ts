@@ -33,7 +33,7 @@ export default defineConfig({
   webServer: {
     command: `${launcher} --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}${dispose}`,
     env: { FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid) },
-    url: `${baseURL}/api/provider/health`,
+    url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
     timeout: 55_000,

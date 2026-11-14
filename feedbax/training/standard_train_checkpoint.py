@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
 import jax
@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from feedbax.runtime.graph import Graph
 
 
-TrainStateCodec = Literal["legacy", "standard_train"]
 STANDARD_TRAIN_STATE_CODEC_ID = "feedbax.training.standard_train_state"
 STANDARD_TRAIN_STATE_CODEC_VERSION = f"{STANDARD_TRAIN_STATE_CODEC_ID}.v1"
 STANDARD_TRAIN_SLOTS = {"optimizer": "optimizer", "prng": "prng", "batch_counter": "auxiliary"}

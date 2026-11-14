@@ -9,7 +9,7 @@ export type PlanarScenePose =
   | { kind: 'inspection'; qpos: readonly number[] }
   | { kind: 'recorded'; sample: { modelIdentity: string; qpos: readonly number[] } | null };
 
-export type PlanarGeometry = Omit<ScenePlanarModel, 'model_identity'>;
+type PlanarGeometry = Omit<ScenePlanarModel, 'model_identity'>;
 
 interface PlanarFrame {
   position: ScenePoint;
@@ -20,10 +20,6 @@ function pointInWorld(frame: PlanarFrame, [x, y]: readonly number[]): ScenePoint
   const cosine = Math.cos(frame.angle);
   const sine = Math.sin(frame.angle);
   return [frame.position[0] + x * cosine - y * sine, frame.position[1] + x * sine + y * cosine];
-}
-
-export function frameLocalDelta(frame: Pick<PlanarFrame, 'angle'>, delta: ScenePoint): ScenePoint {
-  return pointInWorld({ position: [0, 0], angle: -frame.angle }, delta);
 }
 
 function poseGeometry(model: PlanarGeometry, qpos: readonly number[]) {
@@ -66,7 +62,7 @@ function posePlanarModel(model: ScenePlanarModel, pose: PlanarScenePose) {
   return posePlanarPreview(model, pose);
 }
 
-export function posePlanarPreview(model: PlanarGeometry, pose: Exclude<PlanarScenePose, { kind: 'recorded' }>) {
+function posePlanarPreview(model: PlanarGeometry, pose: Exclude<PlanarScenePose, { kind: 'recorded' }>) {
   return poseGeometry(model, pose.kind === 'reference' ? model.reference_qpos : pose.qpos);
 }
 
@@ -74,7 +70,7 @@ export function planarSceneEntityId(source: StudioPlanarSceneResponse, nodeId: s
   return JSON.stringify([source.project_id, source.document_id, source.node_path, nodeId]);
 }
 
-export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pose: PlanarScenePose, preview?: PlanarGeometry): ResolvedScene {
+export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pose: PlanarScenePose): ResolvedScene {
   const scene: ResolvedScene = {
     scenario_id: null, frame: 'world.xy', units: 'm', entities: [], anchors: [], elements: [], required_selectors: [],
     validation: source.diagnostics.map((diagnostic): ResolvedSceneValidationMessage => ({
@@ -83,7 +79,7 @@ export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pos
     })),
   };
   if (!source.model) return scene;
-  const model = (pose.kind !== 'recorded' && preview) || source.model;
+  const model = source.model;
   const posed = pose.kind !== 'recorded' ? posePlanarPreview(model, pose) : posePlanarModel(source.model, pose);
   if (!posed.ok) {
     scene.validation.push({

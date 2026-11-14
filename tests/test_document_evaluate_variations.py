@@ -39,7 +39,6 @@ from feedbax.web.services.evaluate_attachment import (
 )
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
-from tests.support.managed_import_probe import check_managed_worker, probe_managed_workers
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401
 from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401
@@ -57,9 +56,8 @@ from tests.test_model_document_plan import (
 
 def test_saved_addressed_condition_restores_document_train_model(host, tmp_path, authored):  # noqa: F811
     registry = new_application_registry_bundle()
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     imports = tmp_path / "worker-imports"
-    probe_managed_workers(jobs, imports)
     folders = ProjectFolderService(
         tmp_path / "projects",
         components=registry.components,
@@ -145,14 +143,6 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         )
         assert terminal["state"] == "succeeded", terminal.get("outcome")
         completions[run] = terminal
-        check_managed_worker(
-            imports,
-            job_id,
-            required=(
-                "feedbax.training.managed_studio" if run == train
-                else "feedbax.training.evaluate_worker"
-            ),
-        )
     checkpoint = completions[train]["outcome"]["completion"]
     for run in (baseline, condition):
         (edge,) = completions[run]["edges"]
@@ -291,7 +281,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     folders = ProjectFolderService(
         tmp_path / "projects", components=registry.components, functions=registry.expression_functions,
     )
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     raw, config, samples = _thelen_project(authored)
     _save_project(folders, "thelen", Project.model_validate(raw))
     snapshot = folders.read_plan("thelen", revision=None)
@@ -411,7 +401,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     assert train.admission_problem is not None
     assert train.admission_problem.model_address == problem.model_address
     assert "no typed model checkpoint owner" in train.admission_problem.detail
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     key = RunKey("default", "baseline", "default")
     view = read_settled_project_plan(snapshot, jobs)
     row = next(row for row in view.status_rows() if row.key == key)
@@ -455,7 +445,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     folders = ProjectFolderService(
         tmp_path / "projects", components=registry.components, functions=registry.expression_functions,
     )
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     raw = document_project(authored, evaluation=True)
     steps = raw["steps"]
     selected = [raw["documents"]["task"]["payload"]["validation_trials"][0]]

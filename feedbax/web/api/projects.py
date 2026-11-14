@@ -17,8 +17,6 @@ from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnaly
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
-    StudioDocumentAuthoring,
-    StudioDocumentAuthoringRequest,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
 )
@@ -113,15 +111,15 @@ def read_train_authoring(
         snapshot = folders.read(project_id, revision=body.revision)
         bundle = request.app.state.bootstrap_state.bundle
         try:
-            fields, patches, documents, reach_target = project_train_fields(
-                snapshot.project, step_id, bundle.training_programs, body.change, components=bundle.components,
+            fields, patches, documents = project_train_fields(
+                snapshot.project, step_id, bundle.training_programs, body.change,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision,
-            fields=fields, patches=patches, documents=documents, reach_target=reach_target,
+            fields=fields, patches=patches, documents=documents,
         )
 
     return _project_response(response, project_fields)
@@ -157,20 +155,6 @@ def edit_checkpoint_rule(
     return _project_response(response, lambda: prepare_checkpoint_rule_edit(
         request.app.state.project_folders, project_id, body,
     ))
-
-
-@router.post("/{project_id}/authoring/document", response_model_exclude_unset=True)
-def read_document_authoring(
-    project_id: ProjectName, body: StudioDocumentAuthoringRequest, request: Request, response: Response,
-) -> StudioDocumentAuthoring:
-    from feedbax.web.services.document_authoring import document_authoring
-
-    return _project_response(
-        response, lambda: document_authoring(
-            request.app.state.project_folders, project_id, body,
-            components=request.app.state.bootstrap_state.bundle.components,
-        ),
-    )
 
 
 @router.post("/{project_id}/authoring/trials")
@@ -372,11 +356,6 @@ def rename_project(
 def create_project_file(
     project_id: ProjectName, body: StudioProjectCreateFile, request: Request, response: Response
 ) -> StudioProjectDocument:
-    if (
-        body.file.kind == "step" and body.file.step.kind == "evaluate"
-        and not request.app.state.enable_evaluation_candidate
-    ):
-        raise HTTPException(422, detail="Evaluate activation is held.", headers=_NO_STORE)
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)
     )

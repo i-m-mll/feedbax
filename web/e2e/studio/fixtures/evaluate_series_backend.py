@@ -6,7 +6,7 @@ from feedbax.web.app import create_app
 def __getattr__(name: str):
     if name != "app":
         raise AttributeError(name)
-    return create_app(enable_evaluation_candidate=True)
+    return create_app()
 
 
 if __name__ == "__main__":

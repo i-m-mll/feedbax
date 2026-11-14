@@ -21,8 +21,8 @@ async function readPlan(request: APIRequestContext, path: string) {
 
 test('the saved Train field, map and Runs share named sweep values and row identity', async ({ page, request }) => {
   test.setTimeout(55_000);
-  const files = await fixture('files');
-  const { snapshot, projectPath } = await seedManagedProject(request, files.slice(0, 3));
+  const files = await fixture('ordinary-files', '2');
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   const card = page.getByRole('article', { name: 'Train train' });
@@ -46,7 +46,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
 
   const pending = (await readPlan(request, projectPath)).plan;
   const medium = pending.window_map!.rows.find(({ coordinates }) => coordinates['learning-rate']?.label === 'Medium')!;
-  await enter(rate.getByRole('textbox', { name: 'Medium', exact: true }), '0.0025');
+  await enter(rate.getByRole('textbox', { name: 'Value Medium', exact: true }), '0.0025');
   await expect(table.getByRole('cell', { name: 'Medium · 0.0025' })).toBeVisible();
   const changedBeforeRun = (await readPlan(request, projectPath)).plan.rows;
   expect(changedBeforeRun.map(({ key }) => key)).toEqual(pending.rows.map(({ key }) => key));
@@ -61,14 +61,14 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await expect(table.getByText('Done', { exact: true })).toHaveCount(3, { timeout: 25_000 });
   const done = (await readPlan(request, projectPath)).plan.rows;
 
-  await enter(rate.getByRole('textbox', { name: 'Medium', exact: true }), '0.00275');
+  await enter(rate.getByRole('textbox', { name: 'Value Medium', exact: true }), '0.00275');
   await expect(table.getByText('Out of date', { exact: true })).toHaveCount(1);
   await expect(card.getByText('1 Out of date')).toBeVisible();
   await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByText('0.0025 → 0.00275', { exact: false })).toBeVisible();
   await page.reload();
-  await expect(rate.getByRole('textbox', { name: 'Medium', exact: true })).toHaveValue('0.00275');
+  await expect(rate.getByRole('textbox', { name: 'Value Medium', exact: true })).toHaveValue('0.00275');
   await expect(table.getByText('Done', { exact: true })).toHaveCount(2);
   const { plan: reopened } = await readPlan(request, projectPath);
   expect(reopened.rows.map(({ key }) => key)).toEqual(done.map(({ key }) => key));
@@ -128,27 +128,23 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   }
   const base = kept.project.steps?.train.base;
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
-    training_config: { learning_rate: 0.00275 },
     method_payload: { payload: { optimizer: { params: { learning_rate: 0.00275 } } } },
   });
 });
 
-test('an inline component numeric field authors a step sweep from the inspector', async ({ page, request }) => {
-  const [model, task, train] = await fixture('files');
-  train.step.base.inline.graph = model.document.payload;
-  const { snapshot, projectPath } = await seedManagedProject(request, [task, train]);
+test('an addressed Model numeric field authors a step sweep from the inspector', async ({ page, request }) => {
+  const [model, task, objective, train] = await fixture('ordinary-files', '2');
+  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train]);
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
-  await page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'plant', exact: true }).click();
-  const field = page.getByRole('complementary', { name: 'Inspector' }).getByRole('group', { name: 'Mass', exact: true });
-  await field.getByRole('button', { name: 'To Sweep Mass', exact: true }).click();
-  await field.getByRole('button', { name: 'Add Value Mass' }).click();
-  const edits = field.getByRole('button', { name: /^Edit Mass / });
-  await expect(edits).toHaveCount(2);
-  await edits.last().click();
-  await enter(field.getByRole('spinbutton'), '2');
-  await expect(field.getByRole('spinbutton', { name: 'Edit Mass 2', exact: true })).toBeEnabled();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  const field = page.getByRole('region', { name: 'Mass field', exact: true });
+  await field.getByRole('button', { name: 'Mass kind: Value', exact: true }).click();
+  await field.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await enter(field.getByRole('textbox', { name: 'Mass', exact: true }), '1, 2');
+  await expect(field.getByRole('textbox', { name: 'Mass value 2', exact: true })).toHaveValue('2');
   const { plan } = await readPlan(request, projectPath);
   expect(plan.window_map!.rows.map(({ coordinates }) => coordinates.mass.value)).toEqual([1, 2]);
   expect(new Set(plan.rows.map(({ request_id }) => request_id)).size).toBe(2);
@@ -157,27 +153,28 @@ test('an inline component numeric field authors a step sweep from the inspector'
 
 
 test('an authored component range reopens as its exact rule and To List keeps row IDs', async ({ page, request }) => {
-  const [model, task, train] = await fixture('files');
-  train.step.base.inline.graph = model.document.payload;
+  const [model, task, objective, train] = await fixture('ordinary-files', '2');
   train.step.sweep = { axes: { mass: {
-    path: 'graph.nodes.plant.params.mass',
+    path: JSON.stringify({ composites: [], document: model.id,
+      element: { kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['fields', 'mass'] },
+    }),
     range: { start: 1.000123456789, stop: 2.000987654321, count: 3 },
   } } };
-  const { snapshot, projectPath } = await seedManagedProject(request, [task, train]);
+  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train]);
   await page.goto(`/?project=${snapshot.project_id}`);
   await page.reload();
-  const field = page.getByRole('group', { name: 'plant · Mass', exact: true });
-  await expect(field.getByText('1.000123456789', { exact: true })).toBeVisible();
-  await expect(field.getByText('2.000987654321', { exact: true })).toBeVisible();
-  await expect(field.getByText('Count', { exact: true })).toBeVisible();
+  await mapStep(page, 'train').click();
+  await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  const field = page.getByRole('region', { name: 'Mass field', exact: true });
+  await expect(field.getByRole('textbox', { name: 'First', exact: true })).toHaveValue('1.000123456789');
+  await expect(field.getByRole('textbox', { name: 'Last', exact: true })).toHaveValue('2.000987654321');
+  await expect(field.getByRole('textbox', { name: 'Count', exact: true })).toHaveValue('3');
   const { plan: authored } = await readPlan(request, projectPath);
   await field.getByRole('button', { name: 'To List', exact: true }).click();
-  const edits = field.getByRole('button', { name: /^Edit plant · Mass / });
-  await expect(edits).toHaveCount(3);
-  await edits.first().click();
-  await expect(field.getByRole('spinbutton')).toHaveValue('1.000123456789');
-  await edits.last().click();
-  await expect(field.getByRole('spinbutton')).toHaveValue('2.000987654321');
+  await expect(field.getByRole('textbox', { name: 'Mass value 1', exact: true })).toHaveValue('1.000123456789');
+  await expect(field.getByRole('textbox', { name: 'Mass value 3', exact: true })).toHaveValue('2.000987654321');
   const { plan: listed } = await readPlan(request, projectPath);
   expect(listed.rows).toEqual(authored.rows);
 });

@@ -37,7 +37,7 @@ def test_live_evaluate_replays_prefix_and_backfills_exact_interrupted_checkpoint
     assert not plan.plan.diagnostics
     rows = {run.key.step: run for run in plan.plan.runs}
     budget = ValidationBudget(durable_point_p95_ms=3, steady_update_ms=20, max_point_ms=10, max_update_fraction=.1)
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     host.policy(compute=1)
     (tmp_path / "stop_at_publication.py").write_text("""
 import os

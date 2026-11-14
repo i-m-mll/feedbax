@@ -75,8 +75,6 @@ def prepare_managed_training(
 ) -> ExecutionPreparationResult:
     """Prepare the document pair through the existing bounded update kernel."""
     documents = spec.trial_documents
-    if documents is None:
-        raise ValueError("/trial_documents: Managed Train requires a document pair.")
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     paired = compile_trial_execution(
         documents.model_name, documents.model, documents.task_source,

@@ -419,19 +419,6 @@ def activity_heatmap(
         when the data is an array of neural network unit activities with shape
         `(time, unit)`.
 
-    !!! Example
-        To plot hidden activity from a point-mass model built with
-        [`point_mass_nn`][feedbax.xabdeef.models.point_mass_nn], select the hidden
-        trajectory from its controller graph.
-
-        ```python
-        import feedbax._vendor.jax_cookbook.tree as jtree
-
-        states = task.eval(model, key=key_eval)  # States for all validation trials.
-        states_trial0 = jtree.take(states, 0)
-        activity_heatmap(states_trial0.net.hidden)
-        ```
-
     Arguments:
         activity: The array of activity over time for each unit in a network layer.
         colorscale: The name of the Plotly [color scale](https://plotly.com/python/builtin-colorscales/)

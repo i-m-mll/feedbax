@@ -71,10 +71,9 @@ EXECUTION_RELEVANT_UNTRACKED_PATHS = (
 # bar this wrapper runs restores the `slow` tier every time. `test_full_suite_wrapper`
 # pins both halves of that relationship.
 SUITE_MARKER_EXPRESSIONS = {
-    "core": "not optional_mjx and not optional_ppo",
-    "mjx": "not optional_ppo",
-    "ppo": "not optional_mjx",
-    "all": "optional_mjx or optional_ppo or (not optional_mjx and not optional_ppo)",
+    "core": "not optional_mjx",
+    "mjx": "optional_mjx or not optional_mjx",
+    "all": "optional_mjx or not optional_mjx",
 }
 
 
@@ -657,18 +656,11 @@ def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str
         help="Run the core suite plus optional MJX simulation tests.",
     )
     profile.add_argument(
-        "--include-ppo",
-        action="store_const",
-        const="ppo",
-        dest="suite_profile",
-        help="Run the core suite plus optional PPO rollout and training tests.",
-    )
-    profile.add_argument(
         "--include-optional",
         action="store_const",
         const="all",
         dest="suite_profile",
-        help="Run the core, MJX, and PPO test tiers.",
+        help="Run the core and MJX test tiers.",
     )
     parser.set_defaults(suite_profile="core")
     namespace, pytest_args = parser.parse_known_args(argv)

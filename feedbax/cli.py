@@ -1,21 +1,4 @@
-"""The one ``feedbax`` console entry point.
-
-Feedbax used to be a handful of sibling executables — ``feedbax-run``,
-``feedbax-analysis``, ``feedbax-figure``, and friends — plus a ``python -m
-feedbax`` module entry point that nothing installed a name for. A person or an
-agent arriving at a project had no single thing to type, and no single ``--help``
-that told them what the framework can do.
-
-This module is that single thing. It owns no behavior of its own: every
-subcommand either delegates to the existing console main that already implements
-it, or is routed into the engine parser in :mod:`feedbax.__main__`. The engine
-inventory is not copied here — :func:`engine_commands` reads it off that
-parser — so the unified surface cannot drift into a second, subtly different
-command list.
-
-Dispatch happens before any delegate module is imported, so running one
-subcommand never pays for the imports of the other five.
-"""
+"""Dispatch the unified Feedbax console commands without loading unused delegates."""
 
 from __future__ import annotations
 
@@ -64,24 +47,6 @@ DELEGATED_COMMANDS: tuple[DelegatedCommand, ...] = (
         "feedbax.bin.figure",
         "main",
         "Execute and resolve figure specs.",
-    ),
-    DelegatedCommand(
-        "train",
-        "feedbax.bin.train",
-        "main",
-        "Retired; use `feedbax execute-training-run-spec`.",
-    ),
-    DelegatedCommand(
-        "provider",
-        "feedbax.bin.provider",
-        "main",
-        "Emit provider health, capability manifests, and registry snapshots.",
-    ),
-    DelegatedCommand(
-        "orchestrate",
-        "feedbax.bin.orchestrate",
-        "main",
-        "Drive run-set orchestration: preflight, launch, status, watch.",
     ),
 )
 
@@ -140,7 +105,7 @@ def usage() -> str:
             "commands:",
             _delegated_help(),
             "",
-            "engine commands (also available as `python -m feedbax <command>`):",
+            "additional commands (also available as `python -m feedbax <command>`):",
             *(f"  {name}" for name in engine_commands()),
             "",
             "Run `feedbax <command> --help` for a command's own options.",

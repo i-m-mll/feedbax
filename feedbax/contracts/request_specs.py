@@ -8,18 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.figures import FigureSpec
-from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity_guard import IdentityWideInteger
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.training import (
     MethodPayloadEnvelope,
     MethodRefSpec,
-    ObjectiveSlotSpec,
     RiskAggregationSpec,
-    TaskSpec,
     TrialDocuments as TrialDocuments,
-    TrainingConfig,
 )
 
 
@@ -37,32 +33,6 @@ class NumericalSettings(BaseModel):
 class RequestSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     numerical_settings: NumericalSettings = Field(default_factory=NumericalSettings)
-
-
-class TrainingRequestSpec(RequestSpec):
-    graph: GraphSpec | None
-    task: TaskSpec | None
-    objective: ObjectiveSlotSpec | None
-    method_payload: MethodPayloadEnvelope
-    method_ref: MethodRefSpec
-    training_config: TrainingConfig
-    task_binding_spec: StudioTaskBindingSpec | None = None
-    risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)
-    seed: Annotated[int | None, IdentityWideInteger()] = Field(default=None, strict=True)
-    on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
-    trial_documents: TrialDocuments | None = None
-
-    @model_validator(mode="after")
-    def _task_objective_pair(self) -> TrainingRequestSpec:
-        if self.trial_documents is None:
-            if self.graph is None or self.task is None or self.objective is None:
-                raise ValueError("Train requires both a task and an objective.")
-        elif any(
-            item is not None
-            for item in (self.graph, self.task, self.objective, self.task_binding_spec)
-        ):
-            raise ValueError("Document Train uses the authored task and objective pair.")
-        return self
 
 
 class DocumentTrainingConfig(BaseModel):

@@ -29,10 +29,6 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_content import success_content_objects
 
 
-class ContinuationEvidenceUnavailable(ValueError):
-    """The exact producer predates typed continuation publication."""
-
-
 def publish_train_success(
     store_root: Path, attempt: str, request_id: str, launch: dict, outcome: dict,
     predecessor: tuple[dict, dict] | None,
@@ -71,9 +67,9 @@ def publish_train_success(
             if (
                 committed.attempt != attempt or committed.request != request
                 or committed.products != {"checkpoint": (product,)}
-                or (committed.continuation is not None
-                    and committed.continuation.provenance != _occurrence(pointer))
-                or (committed.continuation is not None and committed.recovery != recovery)
+                or committed.continuation is None
+                or committed.continuation.provenance != _occurrence(pointer)
+                or committed.recovery != recovery
                 or (predecessor is None) != (not committed.inputs)
             ):
                 raise ValueError("Published Train attempt differs from the accepted result")
@@ -102,46 +98,46 @@ def publish_train_success(
         for ref in success_content_objects(source, product):
             retain(source.object_path(ref), ref.sha256, ref.size_bytes)
         slots = {slot.slot: slot for slot in manifest.slots}
-        continuation = None
-        if all(
-            name in slots and slots[name].media_type == STANDARD_TRAIN_STATE_MEDIA_TYPE
+        if any(
+            name not in slots or slots[name].media_type != STANDARD_TRAIN_STATE_MEDIA_TYPE
             for name in ("batch_counter", "optimizer", "prng")
         ):
-            arrays = {
-                name: ContinuationSlot(
-                    content=retain(manifest_path.parent / slot.relative_path, slot.sha256, slot.size_bytes),
-                    array_descriptor_sha256=slot.metadata["array_descriptor_sha256"],
-                    semantic_abi_sha256=slot.semantic_abi.fingerprint_sha256,
-                )
-                for name in ("batch_counter", "optimizer", "prng")
-                for slot in (slots[name],)
-            }
-            coordinate = manifest.completed_coordinate
-            boundary = manifest.metadata.get(PHASE_BOUNDARY_DECISION_METADATA_KEY)
-            source_spec = TrainingRunSpec.model_validate(
-                manifest.run_contract_binding.canonical_projection["training_run_spec"]
+            raise ValueError("Train result lacks typed batch counter, optimizer, or PRNG state")
+        arrays = {
+            name: ContinuationSlot(
+                content=retain(manifest_path.parent / slot.relative_path, slot.sha256, slot.size_bytes),
+                array_descriptor_sha256=slot.metadata["array_descriptor_sha256"],
+                semantic_abi_sha256=slot.semantic_abi.fingerprint_sha256,
             )
-            optimizer = StudioGraphMethodPayload.model_validate(source_spec.method_payload.payload).optimizer
-            continuation = ContinuationOccurrence(
-                provenance=_occurrence(pointer),
-                learning_rate=optimizer.lr_schedule or optimizer.params["learning_rate"],
-                carried_optimizer=CarriedOptimizer.from_spec(optimizer, source_spec.training_config.grad_clip),
-                clock=CheckpointClock(
-                    completed_batches=manifest.completed_training_batches,
-                    segment_start_batch=manifest.segment_lineage.start_batch,
-                    phase=coordinate.phase,
-                    barrier=manifest.barrier,
-                    program_step=coordinate.program_step,
-                    inner_step=coordinate.inner_step,
-                    outer_step=coordinate.outer_step,
-                    schedule_origin_step=coordinate.schedule_origin_step,
-                    phase_boundary=None if boundary is None else (boundary["next_phase"],),
-                ),
-                model_semantic_abi_sha256=slots["model"].semantic_abi.fingerprint_sha256,
-                batch_counter=arrays["batch_counter"],
-                optimizer=arrays["optimizer"],
-                prng=arrays["prng"],
-            )
+            for name in ("batch_counter", "optimizer", "prng")
+            for slot in (slots[name],)
+        }
+        coordinate = manifest.completed_coordinate
+        boundary = manifest.metadata.get(PHASE_BOUNDARY_DECISION_METADATA_KEY)
+        source_spec = TrainingRunSpec.model_validate(
+            manifest.run_contract_binding.canonical_projection["training_run_spec"]
+        )
+        optimizer = StudioGraphMethodPayload.model_validate(source_spec.method_payload.payload).optimizer
+        continuation = ContinuationOccurrence(
+            provenance=_occurrence(pointer),
+            learning_rate=optimizer.lr_schedule or optimizer.params["learning_rate"],
+            carried_optimizer=CarriedOptimizer.from_spec(optimizer, source_spec.training_config.grad_clip),
+            clock=CheckpointClock(
+                completed_batches=manifest.completed_training_batches,
+                segment_start_batch=manifest.segment_lineage.start_batch,
+                phase=coordinate.phase,
+                barrier=manifest.barrier,
+                program_step=coordinate.program_step,
+                inner_step=coordinate.inner_step,
+                outer_step=coordinate.outer_step,
+                schedule_origin_step=coordinate.schedule_origin_step,
+                phase_boundary=None if boundary is None else (boundary["next_phase"],),
+            ),
+            model_semantic_abi_sha256=slots["model"].semantic_abi.fingerprint_sha256,
+            batch_counter=arrays["batch_counter"],
+            optimizer=arrays["optimizer"],
+            prng=arrays["prng"],
+        )
         published = view.publish_bound(
             request, attempt=attempt, products={"checkpoint": (product,)}, bindings=bindings,
             continuation=continuation, recovery=recovery,
@@ -196,7 +192,7 @@ def _train_inputs(view: SuccessView, request: RequestObject, predecessor: tuple[
         raise ValueError("Pinned predecessor typed product differs from the accepted Train outcome")
     if isinstance(decoded.spec.method_payload.payload.get("checkpoint_initialization"), dict):
         if parent.continuation is None:
-            raise ContinuationEvidenceUnavailable("Pinned predecessor predates typed continuation evidence")
+            raise ValueError("Pinned predecessor has no typed continuation evidence")
         if parent.continuation.provenance != _occurrence(completion["checkpoint"]["pointer"]):
             raise ValueError("Pinned predecessor receipt names a different checkpoint occurrence")
     return {"checkpoint": (view.resolve(decoded, member, ref),)}

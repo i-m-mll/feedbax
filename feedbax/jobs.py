@@ -22,7 +22,6 @@ from feedbax._secure_fs import (
     recheck_directory_chain,
 )
 from feedbax.checkpoint_coordinates import finite_coordinates
-from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
@@ -45,7 +44,6 @@ from feedbax.contracts.jobs import (
     StudioTrainCheckpointSource,
 )
 from feedbax.contracts.manifest import (
-    OverridePatch,
     TrainingRunManifest,
     canonical_manifest_path,
     load_manifest_bytes,
@@ -56,7 +54,7 @@ from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
-from feedbax.host.checkpoint_selection import EVALUATION_ENTRYPOINT, is_checkpoint_producer
+from feedbax.host.checkpoint_selection import is_checkpoint_producer
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -138,28 +136,17 @@ class _VerifiedEvaluation:
     size: int
     checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None
     placement: Literal["ordinary", "live"]
-    manifest_object: ContentObjectRef | None
-
-
-def evaluation_candidate_configured() -> bool:
-    """Read the application switch shared by Studio and the text CLI."""
-    return os.environ.get("FEEDBAX_STUDIO_EVALUATION_CANDIDATE") == "1"
+    manifest_object: ContentObjectRef
 
 
 class PlanJobReader:
     """Read the existing Host snapshot and authenticate its saved result evidence."""
 
     def __init__(
-        self, host: HostClient, *, enable_evaluation_candidate: bool = False,
-        components: ComponentRegistry | None = None,
+        self, host: HostClient, *, components: ComponentRegistry | None = None,
     ) -> None:
         self.host = host
-        self._enable_evaluation_candidate = enable_evaluation_candidate
         self._evaluation_components = components
-
-    @property
-    def evaluation_candidate_enabled(self) -> bool:
-        return self._enable_evaluation_candidate
 
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
@@ -167,19 +154,14 @@ class PlanJobReader:
         """Resolve the saved request capability shared by Plan and admission."""
         from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
 
-        if not self._enable_evaluation_candidate:
-            raise CannotRun("/evaluation_type", "Evaluate activation is held.")
         if run.requires:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
         if (source := plan.requests.get(checkpoint.request_id)) is not None:
-            from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
+            from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
             spec = decode_request(source, plan.documents.__getitem__).spec
-            if (
-                not isinstance(spec, (TrainingRequestSpec, DocumentTrainingRequestSpec))
-                or spec.trial_documents is None
-            ):
+            if not isinstance(spec, DocumentTrainingRequestSpec):
                 raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
         return params, checkpoint
 
@@ -191,9 +173,7 @@ class PlanJobReader:
         """Read saved Plan attempts and authenticate any selected stopped checkpoints."""
         manifest_root = str(store)
         key = plan_ref_key(project, manifest_root)
-        include_producers = self._enable_evaluation_candidate and any(
-            request.startswith("evaluate:") for request in requests
-        )
+        include_producers = any(request.startswith("evaluate:") for request in requests)
         snapshot = self.host.jobs_snapshot(
             project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
         )
@@ -203,7 +183,7 @@ class PlanJobReader:
             for row in plan_ref["rows"].values():
                 wanted.add(row["request_id"])
                 wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
-        stopped_jobs = set(stopped_checkpoint_jobs) if self._enable_evaluation_candidate else set()
+        stopped_jobs = set(stopped_checkpoint_jobs)
         attempts: dict[RequestId, list[PlanJobAttempt]] = {}
         by_id = {
             job["id"]: job for job in snapshot["jobs"]
@@ -228,13 +208,11 @@ class PlanJobReader:
             if request_id not in wanted:
                 continue
             evaluate = request_id.startswith("evaluate:")
-            if evaluate and not self._enable_evaluation_candidate:
-                continue
             succeeded = job["state"] == "succeeded"
             size = None
             result = None
             damage = None
-            if succeeded and (job.get("outcome") or {}).get("store_success") is not None:
+            if succeeded:
                 if success_view is None:
                     success_view = SuccessView(ImmutableArtifactBlobProvider(store))
                 damage = _owned_result_damage(success_view, job)
@@ -298,13 +276,9 @@ class JobService(PlanJobReader):
         registries: ApplicationRegistryBundle,
         *,
         bootstrap_modules: tuple[str, ...] = (),
-        enable_evaluation_candidate: bool = False,
         live_validation_qualifications: Sequence[ValidationQualification] = (),
     ) -> None:
-        super().__init__(
-            host, enable_evaluation_candidate=enable_evaluation_candidate,
-            components=registries.components,
-        )
+        super().__init__(host, components=registries.components)
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
         self._live_validation_qualifications = {
@@ -344,7 +318,7 @@ class JobService(PlanJobReader):
         project = reviewed.project_id
         before = {run.key: run for run in reviewed.plan.runs}
         kinds = {before[key].kind for key in selected.values() if key in before}
-        evaluate = self._enable_evaluation_candidate and "evaluate" in kinds
+        evaluate = "evaluate" in kinds
         train = "train" in kinds
         command = {
             "kind": "canonical_train" if train or not evaluate else "canonical_evaluate",
@@ -368,22 +342,16 @@ class JobService(PlanJobReader):
         runs = {}
         checkpoints = {}
         names_by_key = {key: name for name, key in selected.items()}
-        freeze_catalogs = self._enable_evaluation_candidate and train
-        reviewed_catalogs = _planned_checkpoint_catalogs(reviewed.plan) if freeze_catalogs else {}
+        reviewed_catalogs = _planned_checkpoint_catalogs(reviewed.plan) if train else {}
         with folders.admission_plan(project) as current:
             if current.store_path != reviewed.store_path:
                 raise JobConflict("The saved project's store changed since the reviewed Plan.")
             after = {run.key: run for run in current.plan.runs}
-            current_catalogs = _planned_checkpoint_catalogs(current.plan) if freeze_catalogs else {}
+            current_catalogs = _planned_checkpoint_catalogs(current.plan) if train else {}
             store = ImmutableArtifactBlobProvider(current.store_path)
             for name, key in selected.items():
                 old, run = before.get(key), after.get(key)
                 if old is not None and old.kind == "evaluate":
-                    if not evaluate:
-                        items[name] = _rejected(
-                            name, "cannot_run /evaluation_type: Evaluate activation is held."
-                        )
-                        continue
                     if run is None:
                         items[name] = _rejected(name, "/runs: the reviewed Evaluate row is no longer runnable.")
                         continue
@@ -512,45 +480,6 @@ class JobService(PlanJobReader):
             admitted, project=project, continues=None, command=command
         )
 
-    def admit_private_checkpoint_evaluation(
-        self, producer: str, coordinates: tuple[int, ...], *, evaluate_update: int,
-        variation: OverridePatch, token: str,
-    ) -> str:
-        """Admit the private CPU qualification over one explicit Train lineage."""
-        from feedbax.training.private_evaluation import PrivateEvaluationRequest
-
-        rows = self.host.jobs(job_id=producer, include_launch=True)
-        if not rows or not _is_studio_job(rows[0]):
-            raise JobNotFound(producer)
-        source = rows[0]
-        root = source["launch"]["payload"]["manifest_root"]
-        request = PrivateEvaluationRequest(
-            manifest_root=Path(root), producer=producer, producer_request=source["request"],
-            coordinates=finite_coordinates(coordinates), evaluate_update=evaluate_update,
-            variation=variation,
-        )
-        payload = request.model_dump(mode="json")
-        request_id = "private-checkpoint-evaluation:" + canonical_sha256(payload)
-        record = {"kind": "private_checkpoint_evaluation", "request": request_id}
-        item = AdmissionItem(
-            run_key=request_id,
-            job=Job(
-                id=uuid4().hex, project=source["project"], request=request_id,
-                launch=replace(
-                    self._training_worker,
-                    warm_entrypoint=EVALUATION_ENTRYPOINT,
-                    preload=("jax", "feedbax.plugins.retained"),
-                    payload=payload,
-                ),
-                data={"private_evaluation_root": root},
-                edges=(Edge(producer, authenticated_completion=True),),
-            ),
-        )
-        admitted = self._admit(token, [item], record)
-        if admitted["record"] != record:
-            raise JobConflict("This submission token belongs to another action.")
-        return admitted["items"][0]["job_id"]
-
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         anchors = [
             row["id"]
@@ -596,12 +525,10 @@ class JobService(PlanJobReader):
         )
 
     def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
-        """Locate an authenticated candidate result by exact project and attempt."""
+        """Locate an authenticated Evaluate result by exact project and attempt."""
         from feedbax.studio.canonical_evaluate import EvaluationResult
         from feedbax.persistence.effective_success import SuccessView
 
-        if not self._enable_evaluation_candidate:
-            raise JobNotFound(job_id)
         rows = self.host.jobs_snapshot(job_id=job_id, project=project, start_host=False)["jobs"]
         if not rows:
             raise JobNotFound(job_id)
@@ -611,10 +538,9 @@ class JobService(PlanJobReader):
             or not job["request"].startswith("evaluate:") or job["state"] != "succeeded"
         ):
             raise JobNotFound(job_id)
-        if (job.get("outcome") or {}).get("store_success") is not None:
-            damage = _owned_result_damage(SuccessView(ImmutableArtifactBlobProvider(store)), job)
-            if damage is not None:
-                raise JobConflict(damage)
+        damage = _owned_result_damage(SuccessView(ImmutableArtifactBlobProvider(store)), job)
+        if damage is not None:
+            raise JobConflict(damage)
         result = _verified_evaluation_result(job, store)
         if result is None:
             raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
@@ -927,24 +853,15 @@ class JobService(PlanJobReader):
         return None
 
     def _receipt_matches(self, job: dict[str, Any]) -> bool:
-        receipt = (job.get("outcome") or {}).get("receipt")
-        if not receipt:
-            return False
-        if (job.get("outcome") or {}).get("store_success") is not None:
-            from feedbax.persistence.effective_success import SuccessView
+        from feedbax.persistence.effective_success import SuccessView
 
-            store = ImmutableArtifactBlobProvider(Path(job["data"]["manifest_root"]))
-            if _owned_result_damage(SuccessView(store), job) is not None:
-                return False
-        if job["request"].startswith("evaluate:"):
-            return _verified_evaluation_result(job, Path(job["data"]["manifest_root"])) is not None
-        path = canonical_manifest_path(
-            "TrainingRunManifest", receipt["manifest_id"], root=job["data"]["manifest_root"]
-        )
-        try:
-            return sha256(path.read_bytes()).hexdigest() == receipt["manifest_sha256"]
-        except FileNotFoundError:
+        root = Path(job["data"]["manifest_root"])
+        store = ImmutableArtifactBlobProvider(root)
+        if _owned_result_damage(SuccessView(store), job) is not None:
             return False
+        if job["request"].startswith("evaluate:"):
+            return _verified_evaluation_result(job, root) is not None
+        return _verified_training_receipt(job, root) is not None
 
     def _activity_rows(
         self,
@@ -1122,22 +1039,20 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
         if not edge["satisfied"]:
             return None
         binding = edge["binding"]
-        manifest_object = None
-        if "store_success" in outcome:
-            view = SuccessView(ImmutableArtifactBlobProvider(store))
-            accepted = ContentObjectRef.model_validate(outcome["store_success"])
-            if view.attempt_ref(job["id"]) != accepted:
-                return None
-            success = view.read_receipt(accepted)
-            if success.attempt != job["id"] or success.request.id != job["request"] or success.evaluation_manifest is None:
-                return None
-            manifest_object = success.evaluation_manifest
+        view = SuccessView(ImmutableArtifactBlobProvider(store))
+        accepted = ContentObjectRef.model_validate(outcome["store_success"])
+        if view.attempt_ref(job["id"]) != accepted:
+            return None
+        success = view.read_receipt(accepted)
+        if success.attempt != job["id"] or success.request.id != job["request"] or success.evaluation_manifest is None:
+            return None
+        manifest_object = success.evaluation_manifest
 
         manifest, subject = verify_evaluation_receipt(
             store, attempt=job["id"], request_id=job["request"], project=job["project"],
             receipt=receipt, binding=binding, manifest_object=manifest_object,
         )
-        if manifest_object is not None and success.products != {"states": (states_product(manifest),)}:
+        if success.products != {"states": (states_product(manifest),)}:
             return None
         gaps = None
         if isinstance(subject.select, UpdateSeriesMember):
@@ -1166,8 +1081,9 @@ def _selected_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckp
 
 def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
     """Authenticate the successful manifest named by this exact Host attempt."""
+    outcome = job.get("outcome") or {}
     try:
-        receipt = JobReceipt.model_validate((job.get("outcome") or {}).get("receipt"))
+        receipt = JobReceipt.model_validate(outcome.get("receipt"))
         job_id = job["id"]
         if receipt.manifest_id != training_run_manifest_id(job_id):
             return None

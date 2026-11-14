@@ -43,37 +43,11 @@ describe('live training trajectory normalization', () => {
             frame: 'world',
           },
         },
-      },
-      12
+      }
     );
 
-    expect(frame.batch).toBe(12);
-    expect(frame.effector).toEqual([[0.1, 0.2], [0.3, 0.4]]);
-    expect(frame.target).toEqual([[0.5, 0.6], [0.7, 0.8]]);
-    expect(frame.t).toEqual([4, 5]);
     expect(liveTrainingEffectorTrack(frame)?.selector.compact).toBe('graph_output:effector');
     expect(liveTrainingTargetTrack(frame)?.selector.compact).toBe('task_data:target');
-  });
-
-  it('migrates legacy effector target trajectory fields into selector-keyed tracks', () => {
-    const frame = normalizeTrainingTrajectoryPayload(
-      {
-        effector: [[0, 0], [1, 1]],
-        target: [2, 3],
-        t: [0, 1],
-        observables: { hidden: [1] },
-        outputs: { effector: [[0, 0], [1, 1]] },
-      },
-      3
-    );
-
-    expect(frame.schema_id).toBe(LIVE_TRAINING_TRAJECTORY_SCHEMA_ID);
-    expect(frame.schema_version).toBe(LIVE_TRAINING_TRAJECTORY_SCHEMA_VERSION);
-    expect(frame.effector).toEqual([[0, 0], [1, 1]]);
-    expect(frame.target).toEqual([2, 3]);
-    expect(frame.trackBySelector['graph_output:effector']).toBeDefined();
-    expect(frame.trackBySelector['task_data:target']).toBeDefined();
-    expect(frame.observables).toEqual({ hidden: [1] });
   });
 
   it('rejects unsupported explicit live trajectory schema versions', () => {
@@ -81,8 +55,7 @@ describe('live training trajectory normalization', () => {
       normalizeTrainingTrajectoryPayload(
         {
           schema_version: 'feedbax.event.studio.training_trajectory.v0' as never,
-        },
-        1
+        }
       )
     ).toThrow("Unsupported training trajectory schema_version");
   });

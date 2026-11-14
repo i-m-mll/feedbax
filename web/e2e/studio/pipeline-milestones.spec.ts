@@ -8,7 +8,6 @@ import {
   runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
 
-const evaluationEnabled = process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE === '1';
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
 const runButton = (page: Page) => primary(page).getByRole('button', { name: 'Run', exact: true });
@@ -180,7 +179,6 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
 });
 
 test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', async ({ page, request }) => {
-  test.fixme(!evaluationEnabled, 'M2 public gate · 736786f, dbbfb13, 339d687, 01e4c26, ed09a0a');
   test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -12,9 +11,6 @@ from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.runtime.mapping import WhereDict
-from feedbax.tasks import TaskTrialSpec, prepare_trial
-from feedbax.training.retained_graph import compile_training_run, rollout_graph
 
 
 def _compile(graph):
@@ -170,32 +166,22 @@ def test_serialized_recurrent_tap_preserves_owned_state_reset_and_distinguishes_
         ],
     }
     graph = _compile(spec).graph
-    prepared = prepare_trial(
-        graph,
-        TaskTrialSpec(
-            inits=WhereDict({"plant.vector": jnp.array([3.0, 4.0])}),
-            targets=WhereDict(),
-            inputs={"force": jnp.ones((2, 2))},
-        ),
-    )
-    reset = graph.initial_cycle_port_values(prepared.init_state)
+    state = init_state_from_component(graph)
+    index = graph.nodes["plant"].state_index
+    state = state.set(index, eqx.tree_at(lambda item: item.vector, state.get(index), jnp.array([3.0, 4.0])))
+    inputs = {"force": jnp.ones((2, 2))}
+    reset = graph.initial_cycle_port_values(state)
     assert len(reset) == 1
     np.testing.assert_allclose(next(iter(reset.values())), [3, 4])
     outputs, _, carry = graph.step(
-        {"force": prepared.inputs["force"][0]},
-        jax.tree.map(lambda leaf: leaf, prepared.init_state),
+        {"force": inputs["force"][0]},
+        jax.tree.map(lambda leaf: leaf, state),
         reset,
         key=jr.key(1),
     )
     np.testing.assert_allclose(outputs["read"], first)
     np.testing.assert_allclose(next(iter(carry.values())), first_write)
-    trajectory, _, _ = graph.rollout_with_trace(
-        prepared.inputs,
-        prepared.init_state,
-        key=jr.key(2),
-        n_steps=prepared.n_steps,
-        trace=(),
-    )
+    trajectory, _, _ = graph.rollout_with_trace(inputs, state, key=jr.key(2), n_steps=2, trace=())
     np.testing.assert_allclose(trajectory["read"], [first, [8, 10]])
     np.testing.assert_allclose(trajectory["plant"], [[4, 5], [5, 6]])
 
@@ -227,42 +213,6 @@ def test_unsupported_serialized_tap_fails_at_authored_tap(tap, message):
     with pytest.raises(GraphCompilationError, match=message) as error:
         _compile({**_fanout(), "taps": [tap]})
     assert error.value.record.diagnostics[0].source_anchor.authored_path == "/graph/taps/0"
-
-
-def test_studio_worker_rollout_executes_authored_tap():
-    spec = _fanout()
-    spec["taps"] = [
-        _tap(
-            "graph_edge", "edge:source.output->left.input", value={"mode": "constant", "value": 3.0}
-        )
-    ]
-    compiled = compile_training_run(
-        graph_spec=spec,
-        training_spec={
-            "optimizer": {"type": "adam"},
-            "loss": {
-                "type": "TargetStateLoss",
-                "label": "left_zero",
-                "selector": "graph_output:left",
-                "target_value": 0.0,
-                "weight": 1.0,
-                "norm": "squared_l2",
-            },
-            "n_batches": 1,
-            "batch_size": 1,
-        },
-        task_spec={"type": "Generic", "params": {}},
-        task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
-            "exposed_data": [],
-            "bindings": [],
-        },
-        cfg=SimpleNamespace(n_reach_steps=2),
-        component_registry=ComponentRegistry(),
-    )
-    rollout = rollout_graph(compiled.graph, compiled, key=jr.key(0))
-    np.testing.assert_allclose(rollout["outputs"]["left"], [6.0, 6.0])
-    np.testing.assert_allclose(rollout["outputs"]["right"], [2.0, 2.0])
 
 
 @pytest.mark.parametrize(

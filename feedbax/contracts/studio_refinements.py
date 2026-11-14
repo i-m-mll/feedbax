@@ -284,14 +284,6 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
             "(value.epoch_value_specs ?? []).some((entry, index, entries) => index > 0 && (entries[index - 1].target_id > entry.target_id || (entries[index - 1].target_id === entry.target_id && (value.epochs ?? []).findIndex((epoch) => epoch.id === entries[index - 1].epoch_id) > (value.epochs ?? []).findIndex((epoch) => epoch.id === entry.epoch_id))))",
         ),
     ),
-    "StudioScenarioSpec": (
-        CrossFieldRefinement(
-            "studio-scenario.task-spec",
-            "Studio scenario task_spec must satisfy the generated TaskSpec contract",
-            None,
-            "value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success",
-        ),
-    ),
     "WorkspaceDocument": (
         CrossFieldRefinement(
             "workspace-document.semantic-root",
@@ -617,7 +609,6 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "StudioValueSpec": frozenset({"validate_value_variation"}),
     "StudioEpochValueSpec": frozenset({"validate_safe_value"}),
     "StudioTaskTimelineSpec": frozenset({"validate_epoch_values"}),
-    "StudioScenarioSpec": frozenset({"admit_task_spec"}),
     "WorkspaceDocument": frozenset({"validate_semantic_anchors"}),
     "DynamicPortPolicy": frozenset({"validate_port_namespace"}),
     "RepresentationStateAnchorSelectorBinding": frozenset({"validate_anchor_subpath_namespace"}),

@@ -12,9 +12,7 @@ import jax.random as jr
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.component_registry.retained import retained_component_registry
 from feedbax.compiler import GraphCompilationError
-from feedbax.compiler.builders import build_component
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
@@ -27,7 +25,6 @@ from feedbax.mechanics.force_fields import (
 )
 from feedbax.component_migrations.mechanics import THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1
 from feedbax.runtime.state import CartesianState
-from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
 
 REVISION = 3
@@ -359,17 +356,9 @@ def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> Non
 
 @pytest.fixture(scope="module")
 def compiled_target_relative_rollout():
-    registry = retained_component_registry()
-    graph = spec_to_graph(_target_relative_graph_spec(), registry)
-    stabilization = build_component(
-        "hold",
-        "feedbax.Stabilization",
-        {"n_steps": 4, "workspace": [[-1.0, -1.0], [1.0, 1.0]]},
-        component_registry=registry,
-    )
-    trial = stabilization.trial_spec
-    (initial,) = trial.inits.values()
-    targets = trial.inputs.effector_target.pos
+    graph = spec_to_graph(_target_relative_graph_spec(), ComponentRegistry())
+    initial_position = jnp.zeros(2)
+    targets = jnp.broadcast_to(initial_position, (3, 2))
     incoming_force = jnp.array([0.5, 0.25])
 
     def run(positions, targets, activations):
@@ -391,7 +380,7 @@ def compiled_target_relative_rollout():
 
         return jax.lax.scan(step, State(graph), (positions, targets, activations))[1]
 
-    return eqx.filter_jit(jax.vmap(run)), initial.pos, targets, incoming_force
+    return eqx.filter_jit(jax.vmap(run)), initial_position, targets, incoming_force
 
 
 def test_compiled_mixed_batch_preserves_passthrough_and_trial_frame(
@@ -442,32 +431,6 @@ def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
             ]
         ),
     )
-
-
-def test_task_authored_trial_variant_initializes_native_component_state() -> None:
-    graph = spec_to_graph(_graph_spec(), ComponentRegistry())
-    trial = TaskTrialSpec(
-        inits={
-            "load.params_index": ThresholdLatchedForceParams(
-                threshold=0.0,
-                force=jnp.array([2.0, -1.0]),
-                lateral_force=0.0,
-                ramp_duration=0.0,
-                scale=-1.0,
-                active=True,
-            )
-        },
-        targets={},
-        inputs={},
-        timeline=TrialTimeline(n_steps=1),
-    )
-    state = prepare_trial(graph, trial).init_state
-    component = graph.nodes["load"]
-    initialized = state.get(component.params_index)
-
-    assert initialized.active
-    assert initialized.scale == pytest.approx(-1.0)
-    assert jnp.allclose(initialized.force, jnp.array([2.0, -1.0]))
 
 
 def test_v1_fixed_selector_migrates_to_v2() -> None:

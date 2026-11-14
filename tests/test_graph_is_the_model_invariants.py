@@ -30,15 +30,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from feedbax.compiler import GraphCompilationError
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
-from feedbax.training.retained_diagnostics import GraphCompilationError
-from feedbax.training.retained_graph import compile_training_run
-
 # Outcomes that count as "the build refused to guess". A fix for any of the
 # xfailed invariants may legitimately take the form of a loud rejection, so the
 # xfail tests treat these as conformant.
@@ -463,28 +461,6 @@ def test_unknown_component_type_is_rejected_not_defaulted() -> None:
     assert "Known component types" in message
 
 
-def test_training_spec_without_a_loss_is_rejected_not_fabricated() -> None:
-    """A loss-free run may not be compiled and trained against a fabricated MSE."""
-    training_spec = _training_spec()
-    training_spec["loss"] = {
-        "type": "Composite",
-        "label": "empty",
-        "children": {},
-    }
-
-    with pytest.raises(GraphCompilationError) as exc_info:
-        compile_training_run(
-            component_registry=_registry(),
-            graph_spec=_worker_linear_graph_spec(),
-            training_spec=training_spec,
-            task_spec={"type": "Generic", "params": {}},
-            task_binding_spec=_constant_task_binding_spec(),
-            cfg=_worker_cfg(),
-        )
-
-    assert exc_info.value.diagnostics[0].code == "worker.missing_loss_terms"
-
-
 # ---------------------------------------------------------------------------
 # Worker-path fixtures (kept local so this module has no cross-test coupling)
 # ---------------------------------------------------------------------------
@@ -647,60 +623,6 @@ def test_leaky_rnn_cell_vocabulary_builds_a_leaky_cell() -> None:
         assert cell.use_noise is True
         assert float(cell.noise_strength) == pytest.approx(0.03)
         assert float(cell.alpha) == pytest.approx(0.1)
-
-
-def test_rollout_length_is_not_silently_the_batch_count() -> None:
-    """Rollout length is an architectural fact; it must be explicit."""
-    cfg = SimpleNamespace(learning_rate=0.1, grad_clip=1.0, snapshot_interval=10)
-
-    with pytest.raises(GraphCompilationError) as exc_info:
-        compile_training_run(
-            component_registry=_registry(),
-            graph_spec=_worker_linear_graph_spec(),
-            training_spec=_training_spec(n_batches=7),
-            task_spec={"type": "Generic", "params": {}},
-            task_binding_spec=_constant_task_binding_spec(),
-            cfg=cfg,
-        )
-    assert exc_info.value.diagnostics[0].code == "worker.missing_rollout_length"
-
-
-def test_task_data_without_a_value_spec_is_not_silently_zeros() -> None:
-    """Unspecified task data is an incomplete model, not a zero signal."""
-    with pytest.raises(GraphCompilationError) as exc_info:
-        compile_training_run(
-            component_registry=_registry(),
-            graph_spec=_worker_linear_graph_spec(),
-            training_spec=_training_spec(),
-            task_spec={"type": "Generic", "params": {}},
-            task_binding_spec=_worker_task_binding_spec(value_spec=None),
-            cfg=_worker_cfg(),
-        )
-    assert exc_info.value.diagnostics[0].code == "worker.missing_task_data_value_spec"
-
-
-def test_missing_task_workspace_is_not_silently_hardcoded() -> None:
-    """The task's spatial extent must come from the task spec, not from source."""
-    value_spec = {
-        "mode": "function",
-        "function_id": "delayed_reach_target_position",
-        "dtype": "float32",
-        "shape": ["time", 4],
-    }
-
-    with pytest.raises(GraphCompilationError) as exc_info:
-        compile_training_run(
-            component_registry=_registry(),
-            graph_spec=_worker_linear_graph_spec(input_size=4),
-            training_spec=_training_spec(),
-            task_spec={"type": "DelayedReaches", "params": {}},
-            task_binding_spec=_worker_task_binding_spec(
-                value_spec=value_spec,
-                expected_shape=["time", 4],
-            ),
-            cfg=_worker_cfg(n_reach_steps=3),
-        )
-    assert exc_info.value.diagnostics[0].code == "worker.missing_task_workspace"
 
 
 def test_composite_with_a_subgraph_does_not_require_unused_outer_params() -> None:

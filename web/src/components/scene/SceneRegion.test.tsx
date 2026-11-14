@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { ResolvedScene } from '@/features/scenario/projections';
-import { WORKSPACE_REPLAY_FIXTURE } from '@/features/scenario/workspaceReplay';
+import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
 import { SceneClockControls } from './SceneClockControls';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneHeaderControls } from './SceneRegion';
 import { fittedCamera, sceneTimeline, type SceneOverlay, type SceneView } from './sceneView';
@@ -118,8 +118,17 @@ describe('Scene regions', () => {
   });
 
   it('updates the live marker from the incoming frame without a playback clock', () => {
-    const frame = normalizeTrainingTrajectoryPayload({ effector: [[-0.5, 0], [0.6, 0]] });
-    const latest = normalizeTrainingTrajectoryPayload({ effector: [[0.6, 0], [-0.5, 0]] });
+    const frameFor = (samples: number[][]) => normalizeTrainingTrajectoryPayload({
+      tracks: {
+        effector: {
+          anchor_id: 'effector',
+          selector: { namespace: 'graph_output', compact: 'graph_output:effector', role: 'observed' },
+          samples, dim: 2, dtype: 'float32',
+        },
+      },
+    });
+    const frame = frameFor([[-0.5, 0], [0.6, 0]]);
+    const latest = frameFor([[0.6, 0], [-0.5, 0]]);
     const drawing = {
       time: 0, selectedId: null, onSelect: vi.fn(), camera: fittedCamera,
       onCameraChange: vi.fn(), hiddenOverlays: noOverlaysHidden,

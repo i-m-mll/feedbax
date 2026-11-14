@@ -19,7 +19,7 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
-from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
@@ -89,7 +89,6 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import (
     DocumentTrainingRequestSpec,
     ReportRequestSpec,
-    TrainingRequestSpec,
 )
 from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 
@@ -307,7 +306,7 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
 
 
 def _train_checkpoint_horizon(train: object) -> int | None:
-    if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
+    if not isinstance(train, DocumentTrainingRequestSpec):
         return None
     if train.method_ref == STUDIO_GRAPH_METHOD:
         return StudioGraphMethodPayload.model_validate(train.method_payload.payload).target_total
@@ -446,17 +445,13 @@ def _authored_graph_variation_problem(key: RunKey, payload: Payload) -> ProjectD
     return None
 
 
-def _train_model_path(payload: Payload) -> tuple[str, ...]:
-    return ("trial_documents", "model") if "trial_documents" in payload else ("graph",)
-
-
 def _with_train_model(
     payload: Payload, model: _ModelSource, document_ids: Mapping[str, str],
     document_pointers: Mapping[str, str],
 ) -> Payload:
     data = model.model.model_dump(mode="json")
     draft = deepcopy(payload)
-    main = _train_model_path(payload)
+    main = ("trial_documents", "model")
     apply_value_patch_in_place(draft, main, "replace", data, path=pointer(main))
     for slot, name in document_ids.items():
         if name != model.document or not slot.startswith("payload."):
@@ -470,7 +465,7 @@ def _with_train_model(
 
 def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSource) -> SelectedRunDefinition:
     payload = _with_train_model(definition.payload, model, definition.document_ids, definition.document_pointers)
-    prefix = _train_model_path(payload)
+    prefix = ("trial_documents", "model")
     sources = dict(definition.sources)
     batches = definition.payload.get(MODEL_ATTACHMENTS, {})
     for batch, differences in batches.items():
@@ -558,7 +553,7 @@ def _integer_train_site(path: str, payload: Payload, python_tasks: PythonTaskReg
     site = python_task_parameter_site(path, documents, python_tasks or builtin_python_tasks())
     if site is not None:
         return site.expected.base is ValueBase.INTEGER and not site.expected.shape
-    annotation = DocumentTrainingRequestSpec if documents is not None else TrainingRequestSpec
+    annotation = DocumentTrainingRequestSpec
     for segment in path.split("."):
         fields = getattr(annotation, "model_fields", {})
         if segment not in fields:
@@ -599,16 +594,13 @@ def _encode_row(
     inputs: Mapping[str, PlannedInput],
     encoding_stamp: tuple[StepKind, str, bytes] | None,
     document_memo: RequestDocumentMemo,
-    model_document: str | None = None,
-    sources: Mapping[str, ValueSource] | None = None,
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
     python_tasks: PythonTaskRegistry | None = None,
     model_source: _ModelSource | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
-    document_train = kind == "train" and payload.get("trial_documents") is not None
-    if document_train:
+    if kind == "train":
         from feedbax.compiler.trial_execution import (
             PreparedTrialExecution, compile_trial_execution, validate_python_task,
         )
@@ -616,7 +608,7 @@ def _encode_row(
         from feedbax.contracts.request_specs import TrialDocuments
 
         try:
-            authored = TrialDocuments.model_validate(payload["trial_documents"])
+            authored = TrialDocuments.model_validate(payload.get("trial_documents"))
             if authored.python_task is not None:
                 resolved = validate_python_task(authored.python_task, python_tasks or builtin_python_tasks())
                 if isinstance(resolved[0], Problem):
@@ -662,54 +654,6 @@ def _encode_row(
             ))
         else:
             model_source = replace(model_source, evaluation_graph=graph)
-    if kind == "train" and isinstance(graph := payload.get("graph"), dict) and "interior" in graph:
-        from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
-        from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
-
-        def model_problem(detail: str, address: ModelAddress | None) -> _LoweredRow:
-            path = "payload.graph"
-            origin = None
-            if address is not None:
-                stored = address.stored_path()
-                path += "".join(f".{segment}" for segment in stored)
-                if sources is not None:
-                    for count in range(len(stored), -1, -1):
-                        if origin := sources.get(pointer(("payload", "graph", *stored[:count]))):
-                            break
-            return _LoweredRow(None, (ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, path, detail, key.step,
-                document=model_document, row=key.row, variant=key.variant,
-                model_address=address, document_path=origin.path if origin and origin.kind == "document" else None,
-                layer=f"{origin.kind}:{origin.name}{origin.path}" if origin and origin.kind != "document" else None,
-            ),), encoding_stamp)
-
-        try:
-            model = ModelDocument.model_validate(graph)
-            binding = StudioTaskBindingSpec.model_validate(payload.get("task_binding_spec") or {})
-            components = components or _builtin_model_registry()
-            lowered_model = lower_model_document(model_document or "model", model, components, binding)
-            derived, binding = lowered_model.graph, lowered_model.task
-            issues = validate_graph_connection_schema(
-                derived, "/graph", binding, component_registry=components,
-            )
-            if binding is not None:
-                issues.extend(validate_task_binding_schema(
-                    binding, derived, "/task_binding_spec", component_registry=components,
-                ))
-            if issue := next((item for item in issues if item.severity == "error"), None):
-                source = (issue.location or {}).get("path", "/graph")
-                return model_problem(issue.message, lowered_model.source_address(source))
-            payload = payload | {
-                "graph": derived.model_dump(mode="json"),
-                "task_binding_spec": binding.model_dump(mode="json") if binding else None,
-            }
-        except ModelCompilationProblem as error:
-            return model_problem(str(error), error.address)
-        except ValueError as error:
-            return _LoweredRow(None, (ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, "payload.graph", str(error), key.step,
-                document=model_document, row=key.row, variant=key.variant,
-            ),), encoding_stamp)
     try:
         if kind == "report":
             document = ReportDocument.model_validate(payload)
@@ -729,8 +673,6 @@ def _encode_row(
                     encoding_stamp,
                 )
             spec = ReportRequestSpec(report_type=None, document=document)
-        elif document_train:
-            spec = DocumentTrainingRequestSpec.model_validate(payload)
         else:
             spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         encoded = request_identity.encode_request(
@@ -747,17 +689,12 @@ def _encode_row(
         problems = (("", str(error)),)
     else:
         problem = (
-            RunProblem("/trial_documents", "Managed Train requires a Model, Task, and Objective document.")
-            if kind == "train" and not document_train else
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
             if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
             RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms.")
             if isinstance(spec, DocumentTrainingRequestSpec) and not any(
                 term.enabled for term in spec.trial_documents.objective.terms
-            ) else
-            RunProblem("/graph/nodes", "Model has no components.")
-            if isinstance(spec, TrainingRequestSpec) and spec.graph is not None and not spec.graph.nodes
-            else checkpoint_problem
+            ) else checkpoint_problem
         )
         return _LoweredRow(
             encoded, (), encoding_stamp, admission_problem=problem,
@@ -1309,8 +1246,6 @@ class _Compiler:
             lowered = _encode_row(
                 key, kind, payload, inputs, encoding_stamp,
                 self.work.request_documents,
-                document_ids.get("payload.graph"),
-                definition.sources if definition is not None else None,
                 self.components, self.functions, self.python_tasks, model_source=authored_model,
             )
             return replace(
@@ -1338,9 +1273,8 @@ class _Compiler:
         from feedbax.compiler.model_document import ModelCompilationProblem
 
         raw = payload.get("trial_documents")
-        managed = isinstance(raw, dict)
-        model_payload = raw.get("model") if managed else payload.get("graph")
-        document = raw.get("model_name") if managed else document_ids.get("payload.graph", "model")
+        model_payload = raw.get("model") if isinstance(raw, dict) else None
+        document = raw.get("model_name") if isinstance(raw, dict) else None
         address = None
         has_differences = MODEL_ATTACHMENTS in payload
         try:
@@ -1411,7 +1345,7 @@ class _Compiler:
         if source is None:
             return payload
         train = request_identity.decode_request(source, self.documents.__getitem__).spec
-        if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)) or train.trial_documents is None:
+        if not isinstance(train, DocumentTrainingRequestSpec):
             return payload
         raw = payload.get("params")
         if not isinstance(raw, dict):
@@ -1472,22 +1406,15 @@ class _Compiler:
             train = request_identity.decode_request(
                 self.requests[reference.request_id], self.documents.__getitem__,
             ).spec
-            if not isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)):
+            if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Attachment differences require a Train request")
             if model_source is None:
                 raise ValueError("Attachment differences need a saved Model document")
             components = self.components or _builtin_model_registry()
             documents = train.trial_documents
             document, model = model_source.document, model_source.model
-            if documents is not None:
-                binding = None
-                base_task = documents.task_source
-            else:
-                assert isinstance(train, TrainingRequestSpec)
-                binding = train.task_binding_spec or StudioTaskBindingSpec()
-                base_task = train.task
             before, lowered, derived = lower_evaluate_attachments(
-                document, model, binding, components, differences, functions=self.functions,
+                document, model, None, components, differences, functions=self.functions,
             )
             raw_params = payload["params"]
             params = authored_rollout_settings(raw_params)
@@ -1497,9 +1424,9 @@ class _Compiler:
             if isinstance(prior, dict):
                 prior = tuple(prior[name] for name in sorted(prior))
             variation = (*prior, *derived)
-            effective = resolve_evaluation_variant(before.graph, base_task, variation)
+            effective = resolve_evaluation_variant(before.graph, documents.task_source, variation)
             issues = validate_graph_connection_schema(
-                effective.graph, "/graph", binding,
+                effective.graph, "/graph",
                 component_registry=components,
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):

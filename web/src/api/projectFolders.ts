@@ -9,7 +9,6 @@ import {
   type ModelFieldRequest,
   type ModelProjectionRequest,
   type ModelUndoRequest,
-  type StudioDocumentAuthoringRequest,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
   type StudioProjectPatch,
@@ -40,7 +39,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioDocumentAuthoringRequest' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | ModelRequest>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | ModelRequest>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -84,20 +83,6 @@ export function replayProjectHistory(id: string, body: StudioProjectReplay, sign
   return readFolder('StudioProjectSnapshot', id, path, {
     method: 'POST', body: mutationBody('StudioProjectReplay', body, path), signal,
   });
-}
-
-export async function fetchDocumentAuthoring(id: string, body: StudioDocumentAuthoringRequest, signal?: AbortSignal) {
-  const path = `${projectPath(id)}/authoring/document`;
-  try {
-    const response = await requestJson(path, {
-      method: 'POST', body: mutationBody('StudioDocumentAuthoringRequest', body, path), signal, cache: 'no-store',
-    });
-    const definition = parseContract('StudioDocumentAuthoring', response);
-    if (definition.revision !== body.revision) throw new Error('Document definition has the wrong revision');
-    return definition;
-  } catch (error) {
-    throw asApiRequestError(error, path, 'The document definition did not match its contract');
-  }
 }
 
 export async function writeProjectPresentation(id: string, body: StudioPresentationWrite, signal?: AbortSignal) {

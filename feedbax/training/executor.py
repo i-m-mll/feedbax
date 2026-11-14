@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import pickle
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -14,7 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
 import jax
@@ -111,14 +110,13 @@ from feedbax.contracts.worker import (
     MethodTrainingDiagnosticsSpec,
     ProgressCoordinate,
 )
-from feedbax.orchestration.events import (
+from feedbax.training.metrics import (
     MAPPED_METRIC_VALUE_SCHEMA_VERSION,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
-    RunEventEmitter,
     normalize_serialized_metrics,
 )
-from feedbax.orchestration.schedule_eval import project_training_schedules
+from feedbax.training.schedule_eval import project_training_schedules
 from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistry,
@@ -134,7 +132,6 @@ from feedbax.training.checkpoint_custody import (
     resolve_checkpoint_custody_ref,
     structural_abi_fingerprint,
     write_checkpoint_transaction,
-    materialize_concatenated_checkpoint_histories,
     checkpoint_slot_names,
 )
 from feedbax.training.checkpoint_transform import (
@@ -164,11 +161,9 @@ from feedbax.training.manifest_preflight import (
 )
 from feedbax.training.interruption import CancellationDecision
 from feedbax.training.model_checkpoint import SemanticModelWriter
-from feedbax.training.standard_train_checkpoint import TrainStateCodec
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
-    ObjectiveLowerer,
     RestoredScheduleContextBinder,
     _thaw_runtime_value,
     executor_owned_initial_slot_names,
@@ -197,10 +192,6 @@ from feedbax.training.worker_validation import (
     resolve_execution_mapping,
     validate_worker_contract,
 )
-
-if TYPE_CHECKING:
-    from feedbax.objectives.spec import ObjectiveExecutionRequirements
-
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
@@ -439,7 +430,7 @@ class _PreparedBarrierArtifact:
 
 @dataclass(frozen=True)
 class TrainingRunExecutionResult:
-    """Result returned by ``execute_training_run_spec``."""
+    """Result returned by ``execute_managed_training_run``."""
 
     run_id: str
     status: ManifestStatus
@@ -515,11 +506,9 @@ class StreamingCheckpointStore:
         continuation: CheckpointContinuationRequest | None = None,
         resolved_method: ResolvedTrainingMethod[Any],
         slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
-        run_event_emitter: RunEventEmitter | None = None,
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
         semantic_model: SemanticModelWriter | None = None,
-        train_state_codec: TrainStateCodec = "legacy",
         resume_checkpoint: PhaseCheckpoint | None = None,
         checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
     ) -> None:
@@ -534,11 +523,9 @@ class StreamingCheckpointStore:
         self.continuation = continuation
         self.resolved_method = resolved_method
         self.slot_axis_bindings = dict(slot_axis_bindings or {})
-        self.run_event_emitter = run_event_emitter
         self.checkpoint_initialization = dict(checkpoint_initialization or {})
         self.content_provider = content_provider
         self.semantic_model = semantic_model
-        self.train_state_codec = train_state_codec
         self._checkpoint_published = checkpoint_published
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -641,34 +628,11 @@ class StreamingCheckpointStore:
             metadata=checkpoint_metadata,
             content_provider=self.content_provider,
             semantic_model=self.semantic_model,
-            train_state_codec=self.train_state_codec,
         )
         self._writes.append(write)
         if self._checkpoint_published is not None:
             self._checkpoint_published(write)
         self._visit_ordinals[saved.barrier] = ordinal
-        if self.run_event_emitter is not None:
-            coordinate_payload, checkpoint_metrics = normalize_serialized_metrics(
-                saved.coordinate,
-                saved.coordinate.metrics,
-                self.slot_axis_bindings,
-            )
-            checkpoint_payload: dict[str, Any] = {
-                "barrier": saved.barrier,
-                "barrier_visit_ordinal": saved.visit_ordinal,
-                "transaction_id": write.manifest.transaction_id,
-                "coordinate": coordinate_payload,
-                "program_step": saved.coordinate.program_step,
-            }
-            if any(
-                name in saved.coordinate.metrics and bindings and bindings[0].mode == "mapped"
-                for name, bindings in self.slot_axis_bindings.items()
-            ):
-                checkpoint_payload["metrics"] = checkpoint_metrics
-            self.run_event_emitter.emit(
-                "checkpoint_written",
-                checkpoint_payload,
-            )
         for prepared in prepared_artifacts:
             self._barrier_artifacts.append(
                 store_bytes_artifact(
@@ -691,25 +655,9 @@ class StreamingCheckpointStore:
         return saved
 
 
-def __getattr__(name: str):
-    if name == "execute_training_run_spec":
-        from feedbax.training.retained_executor import execute_training_run_spec
-
-        return execute_training_run_spec
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def execute_managed_training_run(spec: TrainingRunSpec, **arguments: Any) -> TrainingRunExecutionResult:
-    """Drive a prepared document run through the shared lifecycle."""
-    return _execute_training_run(spec=spec, lower_objective=None, **arguments)
-
-
-def _execute_training_run(
-    spec: TrainingRunSpec | Mapping[str, Any],
+def execute_managed_training_run(
+    spec: TrainingRunSpec,
     *,
-    lower_objective: Callable[
-        [TrainingRunSpec, ObjectiveLowerer | None], tuple[Any, ObjectiveExecutionRequirements | None]
-    ] | None,
     run_id: str | None = None,
     preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
     initial_slots: Mapping[str, Any] | None = None,
@@ -718,7 +666,6 @@ def _execute_training_run(
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
     checkpoint_source_pointer: CheckpointLatestPointer | None = None,
-    checkpoint_history_parent_roots: Mapping[str, Path | str] | None = None,
     checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
     checkpoint_initialization_request: CheckpointInitializationRequest | None = None,
     checkpoint_fork_plan: CheckpointForkPlan | None = None,
@@ -726,10 +673,8 @@ def _execute_training_run(
     checkpoint_fork_target_id: str | None = None,
     checkpoint_content_provider: ArtifactBlobProvider | None = None,
     semantic_model: SemanticModelWriter | None = None,
-    train_state_codec: TrainStateCodec = "legacy",
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
-    loss_service: ObjectiveLowerer | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
     training_spec_payload: Mapping[str, Any] | None = None,
     training_spec_payload_kind: str = "TrainingRunSpec",
@@ -739,7 +684,6 @@ def _execute_training_run(
     manifest_metadata_projection: TrainingManifestMetadataProjection
     | Mapping[str, Any]
     | None = None,
-    task_binding_spec: Mapping[str, Any] | None = None,
     resume: bool = False,
     resume_slot_transform: ResumeSlotTransform | None = None,
     stop_after_barrier: str | None = None,
@@ -748,7 +692,6 @@ def _execute_training_run(
     issues: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
     retain_history: bool = True,
-    run_event_emitter: RunEventEmitter | None = None,
     cancellation_probe: CancellationProbe | None = None,
     stop_before_update: Callable[[], bool] | None = None,
     start_callback: Callable[[int], None] | None = None,
@@ -766,22 +709,15 @@ def _execute_training_run(
     )
     cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
-    if (lower_objective is None) != (run_spec.trial_documents is not None):
-        raise TrainingRunExecutorError("/trial_documents: This entry point requires its own request family.")
-    if run_spec.task_binding_spec is not None:
-        bound_task = run_spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
-        if task_binding_spec is not None and task_binding_spec != bound_task:
-            raise TrainingRunExecutorError("task bindings disagree with the authored training spec")
-        task_binding_spec = bound_task
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
     loose_preparation = any(
         value is not None
-        for value in (initial_slots, kernel_context, loss_service, resume_slot_transform)
+        for value in (initial_slots, kernel_context, resume_slot_transform)
     )
     if preparation is not None and loose_preparation:
         raise TrainingRunExecutorError(
             "preparation is mutually exclusive with initial_slots, kernel_context, "
-            "loss_service, and resume_slot_transform"
+            "and resume_slot_transform"
         )
     if mapping_levels:
         if not isinstance(preparation, MaterializedExecutionPreparation):
@@ -797,7 +733,6 @@ def _execute_training_run(
             ) from exc
         initial_slots = _thaw_runtime_value(preparation.initial_slots)
         kernel_context = preparation.kernel_context
-        loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform
         restored_schedule_context_binder = preparation.restored_schedule_context_binder
     elif isinstance(preparation, MaterializedExecutionPreparation):
@@ -807,7 +742,6 @@ def _execute_training_run(
     elif isinstance(preparation, ExecutionPreparationResult):
         initial_slots = preparation.initial_slots
         kernel_context = preparation.kernel_context
-        loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform
         restored_schedule_context_binder = preparation.restored_schedule_context_binder
     else:
@@ -856,7 +790,6 @@ def _execute_training_run(
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=training_spec_payload_ref,
         authoritative_training_spec_payload_ref=authoritative_training_spec_ref,
-        task_binding_spec=task_binding_spec,
     )
     effective_training_spec_ref = resolve_training_spec_payload_ref(
         training_spec_payload_ref,
@@ -918,15 +851,8 @@ def _execute_training_run(
     method_contract = resolved_method.contract
     _validate_declarations_match_spec(run_spec, method_contract.method_ref)
 
-    if lower_objective is None:
-        if preparation is None or loss_service is not None:
-            raise TrainingRunExecutorError("Managed Train requires its prepared objective.")
-        # The prepared numerical kernel closes over its objective. The shared
-        # phase declaration still carries the legacy read-only objective slot.
-        lowered_objective = None
-        requirements = None
-    else:
-        lowered_objective, requirements = lower_objective(run_spec, loss_service)
+    if preparation is None:
+        raise TrainingRunExecutorError("Managed Train requires its prepared objective.")
     kernels = dict(resolved_method.update_kernels)
     guards = dict(resolved_method.guard_predicates)
     effective_phase = validate_worker_contract(
@@ -934,8 +860,6 @@ def _execute_training_run(
         environment=environment,
         update_kernels=kernels,
         guard_predicates=guards,
-        task_binding_spec=task_binding_spec,
-        objective_requirements=requirements,
         active_mapping_axes=tuple(level.axis for level in mapping_levels),
     )
     if (
@@ -949,7 +873,6 @@ def _execute_training_run(
     executor_owned_slots = executor_owned_initial_slot_names(run_spec, slot_axis_bindings)
     slots = _initial_slots(
         initial_slots,
-        lowered_objective=lowered_objective,
         executor_owned_slots=executor_owned_slots,
     )
     slots = _normalize_batch_progress_slot(slots, program=program)
@@ -994,7 +917,7 @@ def _execute_training_run(
     if initialization_authorities and resume:
         raise TrainingRunExecutorError(
             "the checkpoint initialization authority is mutually "
-            "exclusive with the legacy resume flag"
+            "exclusive with exact checkpoint resume"
         )
     if initialization_authorities and checkpoint_source_root is None:
         raise TrainingRunExecutorError(
@@ -1093,7 +1016,7 @@ def _execute_training_run(
 
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
-    legacy_resume_parent: ParentRef | None = None
+    resume_parent: ParentRef | None = None
     continuation = run_spec.checkpoint_progress.continuation
     continuation_applied = False
     resume_completed_batches = 0
@@ -1111,7 +1034,7 @@ def _execute_training_run(
             allow_new_lineage_override=continuation is not None,
             published_pointer=checkpoint_source_pointer,
         )
-        legacy_resume_parent = loaded.parent_ref
+        resume_parent = loaded.parent_ref
         resolved_initialization = _ResolvedCheckpointInitialization(
             mode="continue_from",
             source=loaded.parent_ref.model_copy(update={"role": "resume_parent"}),
@@ -1197,7 +1120,6 @@ def _execute_training_run(
         continuation=continuation if loaded_resume_checkpoint is not None else None,
         resolved_method=resolved_method,
         slot_axis_bindings=slot_axis_bindings,
-        run_event_emitter=run_event_emitter,
         checkpoint_initialization=(
             resolved_initialization.provenance
             if resolved_initialization is not None
@@ -1209,7 +1131,6 @@ def _execute_training_run(
         ),
         content_provider=checkpoint_content_provider,
         semantic_model=semantic_model,
-        train_state_codec=train_state_codec,
         resume_checkpoint=loaded_resume_checkpoint,
         checkpoint_published=checkpoint_published,
     )
@@ -1342,8 +1263,6 @@ def _execute_training_run(
         live_progress_callback = _live_progress_callback(
             progress_callback,
             record_progress,
-            run_event_emitter=run_event_emitter,
-            total_batches=total_batches,
             started_at=started_at,
             cancellation_observer=observe_cancellation,
             runtime_telemetry=runtime_telemetry,
@@ -1417,36 +1336,6 @@ def _execute_training_run(
             method_observation_buffer.flush()
             method_observation_buffer.assert_empty()
         checkpoint_writes = checkpoint_store.writes
-        if continuation is not None and continuation.self_contained and checkpoint_writes:
-            stitched_path = (
-                custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl"
-            )
-            with ExitStack() as history_sources:
-                parent_root = (
-                    resolved_initialization.source_root
-                    if resolved_initialization is not None
-                    else resume_source_root
-                )
-                if (
-                    resolved_initialization is not None
-                    and resolved_initialization.source_content_binding is not None
-                    and resolved_initialization.content_provider is not None
-                ):
-                    parent_root = history_sources.enter_context(
-                        materialize_checkpoint_content(
-                            resolved_initialization.source_content_binding,
-                            resolved_initialization.content_provider,
-                            owner=f"training-history:{resolved_run_id}",
-                        )
-                    )
-                materialize_concatenated_checkpoint_histories(
-                    custody_root,
-                    stitched_path,
-                    parent_roots={
-                        **(checkpoint_history_parent_roots or {}),
-                        **{lineage.transaction_id: parent_root for lineage in parent_lineage},
-                    },
-                )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         final_metrics = _final_metrics(
             execution.slots,
@@ -1473,8 +1362,8 @@ def _execute_training_run(
             learning_rates=None if retain_history else learning_rates.ordered_rows(),
         )
         inherited_terminal_checkpoint = (
-            InheritedTerminalCheckpoint(checkpoint=legacy_resume_parent)
-            if legacy_resume_parent is not None
+            InheritedTerminalCheckpoint(checkpoint=resume_parent)
+            if resume_parent is not None
             and (continuation is None or continuation_applied)
             and resume_slot_transform is None
             and execution.resumed_terminal
@@ -1493,7 +1382,6 @@ def _execute_training_run(
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
             training_spec_payload_ref=effective_training_spec_ref,
-            task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
             checkpoint_parents=resolved_checkpoint_parents,
             checkpoint_initialization=resolved_checkpoint_initialization,
@@ -1529,83 +1417,41 @@ def _execute_training_run(
             conflict_policy=manifest_conflict_policy,
             path=manifest_output_path,
         )
-        if run_event_emitter is not None:
-            terminal_coordinate, _ = normalize_serialized_metrics(
-                execution.coordinate,
-                execution.coordinate.metrics,
-                slot_axis_bindings,
-            )
-            run_event_emitter.emit_terminal(
-                "complete",
-                {
-                    "run_id": resolved_run_id,
-                    "status": status,
-                    "coordinate": terminal_coordinate,
-                    "program_step": execution.coordinate.program_step,
-                    "manifest_path": str(manifest_path),
-                    "manifest_id": manifest.id,
-                    "metrics": final_metrics,
-                    "runtime_telemetry": runtime_telemetry,
-                    **(
-                        {"cancellation": cancellation.as_provenance()}
-                        if cancellation is not None
-                        else {}
-                    ),
-                },
-            )
     except _NanGuardFailure as failure:
         assert segment_start_batch is not None
-        try:
-            if before_finalize is not None:
-                before_finalize()
-            failed_result = _finalize_nan_guard_failure(
-                failure,
-                run_spec=run_spec,
-                run_id=resolved_run_id,
-                manifest_id=exact_manifest_id,
-                root_path=root_path,
-                collection_root=collection_root,
-                program=program,
-                checkpoint_store=checkpoint_store,
-                method_observation_buffer=method_observation_buffer,
-                progress_history=progress_history,
-                learning_rates=learning_rates,
-                scratch=scratch,
-                retain_history=retain_history,
-                slot_axis_bindings=slot_axis_bindings,
-                segment_start_batch=segment_start_batch,
-                embedded_training_spec_payload=embedded_training_spec_payload,
-                training_spec_payload_kind=training_spec_payload_kind,
-                training_spec_payload_schema_id=training_spec_payload_schema_id,
-                training_spec_payload_schema_version=training_spec_payload_schema_version,
-                effective_training_spec_ref=effective_training_spec_ref,
-                task_binding_spec=task_binding_spec,
-                issues=issues,
-                runtime_telemetry=runtime_telemetry,
-                producer_context=producer_context,
-                projection_custody=projection_custody,
-                manifest_conflict_policy=manifest_conflict_policy,
-                diagnostics_path=diagnostics_path,
-                payload_binding_status=payload_binding_status,
-                run_event_emitter=run_event_emitter,
-                checkpoint_parents=resolved_checkpoint_parents,
-                checkpoint_initialization=resolved_checkpoint_initialization,
-            )
-        except Exception as finalization_error:
-            if run_event_emitter is not None:
-                run_event_emitter.emit_terminal(
-                    "failed",
-                    {
-                        "run_id": resolved_run_id,
-                        "status": "failed",
-                        "failure_kind": "nan_guard",
-                        "stopped": True,
-                        "stop_reason": str(failure),
-                        "error": str(finalization_error),
-                        "error_type": type(finalization_error).__name__,
-                    },
-                )
-            raise
+        if before_finalize is not None:
+            before_finalize()
+        failed_result = _finalize_nan_guard_failure(
+            failure,
+            run_spec=run_spec,
+            run_id=resolved_run_id,
+            manifest_id=exact_manifest_id,
+            root_path=root_path,
+            collection_root=collection_root,
+            program=program,
+            checkpoint_store=checkpoint_store,
+            method_observation_buffer=method_observation_buffer,
+            progress_history=progress_history,
+            learning_rates=learning_rates,
+            scratch=scratch,
+            retain_history=retain_history,
+            slot_axis_bindings=slot_axis_bindings,
+            segment_start_batch=segment_start_batch,
+            embedded_training_spec_payload=embedded_training_spec_payload,
+            training_spec_payload_kind=training_spec_payload_kind,
+            training_spec_payload_schema_id=training_spec_payload_schema_id,
+            training_spec_payload_schema_version=training_spec_payload_schema_version,
+            effective_training_spec_ref=effective_training_spec_ref,
+            issues=issues,
+            runtime_telemetry=runtime_telemetry,
+            producer_context=producer_context,
+            projection_custody=projection_custody,
+            manifest_conflict_policy=manifest_conflict_policy,
+            diagnostics_path=diagnostics_path,
+            payload_binding_status=payload_binding_status,
+            checkpoint_parents=resolved_checkpoint_parents,
+            checkpoint_initialization=resolved_checkpoint_initialization,
+        )
         if failure.mode == "raise":
             raise FloatingPointError(str(failure)) from failure
         return failed_result
@@ -1647,7 +1493,6 @@ def _execute_training_run(
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
             training_spec_payload_ref=effective_training_spec_ref,
-            task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
             checkpoint_parents=resolved_checkpoint_parents,
             checkpoint_initialization=resolved_checkpoint_initialization,
@@ -1680,26 +1525,6 @@ def _execute_training_run(
             conflict_policy=manifest_conflict_policy,
             path=manifest_output_path,
         )
-        if run_event_emitter is not None:
-            terminal_coordinate, _ = normalize_serialized_metrics(
-                interrupted.coordinate,
-                interrupted.coordinate.metrics,
-                slot_axis_bindings,
-            )
-            run_event_emitter.emit_terminal(
-                "complete",
-                {
-                    "run_id": resolved_run_id,
-                    "status": "cancelled",
-                    "coordinate": terminal_coordinate,
-                    "program_step": interrupted.coordinate.program_step,
-                    "manifest_path": str(manifest_path),
-                    "manifest_id": manifest.id,
-                    "metrics": final_metrics,
-                    "cancellation": interrupted.decision.as_provenance(),
-                    "runtime_telemetry": runtime_telemetry,
-                },
-            )
         return TrainingRunExecutionResult(
             run_id=resolved_run_id,
             status="cancelled",
@@ -1715,18 +1540,6 @@ def _execute_training_run(
             history_events=progress_history.events(),
             payload_binding_status=payload_binding_status,
         )
-    except Exception as exc:
-        if run_event_emitter is not None:
-            run_event_emitter.emit_terminal(
-                "failed",
-                {
-                    "run_id": resolved_run_id,
-                    "status": "failed",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-        raise
     finally:
         scratch_scope.close()
     return TrainingRunExecutionResult(
@@ -1768,7 +1581,6 @@ def _finalize_nan_guard_failure(
     training_spec_payload_schema_id: str | None,
     training_spec_payload_schema_version: str | None,
     effective_training_spec_ref: str | None,
-    task_binding_spec: Mapping[str, Any] | None,
     issues: Sequence[str] | None,
     runtime_telemetry: Mapping[str, Any],
     producer_context: NativeExecutionProducerContext | None,
@@ -1776,7 +1588,6 @@ def _finalize_nan_guard_failure(
     manifest_conflict_policy: ManifestConflictPolicy,
     diagnostics_path: Path,
     payload_binding_status: Literal["verified", "not_bound"],
-    run_event_emitter: RunEventEmitter | None,
     checkpoint_parents: Sequence[ParentRef],
     checkpoint_initialization: Mapping[str, Any] | None,
 ) -> TrainingRunExecutionResult:
@@ -1845,7 +1656,6 @@ def _finalize_nan_guard_failure(
         training_spec_payload_schema_id=training_spec_payload_schema_id,
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=effective_training_spec_ref,
-        task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
         checkpoint_writes=checkpoint_writes,
         checkpoint_parents=checkpoint_parents,
         checkpoint_initialization=checkpoint_initialization,
@@ -1903,27 +1713,6 @@ def _finalize_nan_guard_failure(
             root=root_path,
             conflict_policy="reuse-identical",
             path=fallback_path,
-        )
-    if run_event_emitter is not None:
-        run_event_emitter.emit_terminal(
-            "failed",
-            {
-                "run_id": run_id,
-                "status": "failed",
-                "failure_kind": "nan_guard",
-                "stopped": True,
-                "stop_reason": str(failure),
-                "coordinate": failure.coordinate.model_copy(update={"metrics": {}}).model_dump(
-                    mode="json", exclude_none=True
-                ),
-                "program_step": failure.coordinate.program_step,
-                "manifest_path": str(manifest_path),
-                "manifest_id": manifest.id,
-                "attribution_artifacts": [
-                    ref.model_dump(mode="json", exclude_none=True) for ref in attribution_refs
-                ],
-                "persistence_errors": list(failure.persistence_errors),
-            },
         )
     return TrainingRunExecutionResult(
         run_id=run_id,
@@ -2497,14 +2286,13 @@ def _validate_declarations_match_spec(spec: TrainingRunSpec, resolved_method_ref
 def _initial_slots(
     initial_slots: Mapping[str, Any] | None,
     *,
-    lowered_objective: Any,
     executor_owned_slots: Sequence[str],
 ) -> dict[str, Any]:
     if initial_slots is None:
         raise TrainingRunExecutorError("/initial_slots are required for native execution")
     slots = dict(initial_slots)
     for slot in executor_owned_slots:
-        slots.setdefault(slot, lowered_objective)
+        slots.setdefault(slot, None)
     return slots
 
 
@@ -2791,6 +2579,7 @@ def _resolve_checkpoint_fork_initialization(
         bindings,
         transform_registry=registry,
         content_provider=content_provider,
+        source_content_binding=source_content_binding,
     )
     forked = results[target_id]
     if (
@@ -3402,8 +3191,6 @@ def _live_progress_callback(
     progress_callback: ProgressCallback | None,
     record_history: Callable[[dict[str, Any]], None],
     *,
-    run_event_emitter: RunEventEmitter | None = None,
-    total_batches: int | None = None,
     started_at: float | None = None,
     cancellation_observer: Callable[[ProgressCoordinate], None] | None = None,
     runtime_telemetry: dict[str, Any] | None = None,
@@ -3411,11 +3198,10 @@ def _live_progress_callback(
     start_semantics: str = "executor_entry",
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
-    ready_emitted = False
     first_progress_recorded = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
-        nonlocal ready_emitted, first_progress_recorded
+        nonlocal first_progress_recorded
         bindings = dict(slot_axis_bindings or {})
         event = _history_event(coordinate, bindings)
         if runtime_telemetry is not None and not first_progress_recorded:
@@ -3429,78 +3215,12 @@ def _live_progress_callback(
             )
             event["runtime_telemetry"] = deepcopy(runtime_telemetry)
         record_history(event)
-        if run_event_emitter is not None:
-            if not ready_emitted:
-                ready_emitted = True
-                ready_payload: dict[str, Any] = {
-                    "run_id": coordinate.run_id,
-                    "phase": coordinate.phase,
-                    "program_step": coordinate.program_step,
-                    "coordinate": event["coordinate"],
-                    "runtime_telemetry": deepcopy(runtime_telemetry or {}),
-                }
-                if any(
-                    name in coordinate.metrics
-                    and axis_bindings
-                    and axis_bindings[0].mode == "mapped"
-                    for name, axis_bindings in bindings.items()
-                ):
-                    ready_payload["metrics"] = event["metrics"]
-                run_event_emitter.emit(
-                    "ready",
-                    ready_payload,
-                )
-            elapsed_seconds = time.perf_counter() - started_at if started_at is not None else None
-            payload = _run_progress_event_payload(
-                event,
-                coordinate=coordinate,
-                total_batches=total_batches,
-                elapsed_seconds=elapsed_seconds,
-            )
-            run_event_emitter.emit_progress(
-                payload,
-                batch=coordinate.program_step,
-                total_batches=total_batches,
-            )
         if progress_callback is not None:
             progress_callback(deepcopy(event))
         if cancellation_observer is not None:
             cancellation_observer(coordinate)
 
     return emit
-
-
-def _run_progress_event_payload(
-    event: Mapping[str, Any],
-    *,
-    coordinate: ProgressCoordinate,
-    total_batches: int | None,
-    elapsed_seconds: float | None,
-) -> dict[str, Any]:
-    metrics = event.get("metrics", {})
-    metrics = metrics if isinstance(metrics, Mapping) else {}
-    coordinate_payload = event.get("coordinate")
-    payload: dict[str, Any] = {
-        "run_id": coordinate.run_id,
-        "phase": coordinate.phase,
-        "program_step": coordinate.program_step,
-        "total_batches": total_batches,
-        "coordinate": coordinate_payload,
-        "metrics": dict(metrics),
-        "status": "running",
-    }
-    if elapsed_seconds is not None:
-        payload["elapsed_seconds"] = elapsed_seconds
-    loss = metrics.get("train_loss")
-    if loss is not None and not (
-        isinstance(loss, Mapping)
-        and loss.get("schema_id") == "feedbax.manifest.mapped_metric_value"
-    ):
-        try:
-            payload["loss"] = float(loss)
-        except (TypeError, ValueError):
-            payload["loss"] = loss
-    return payload
 
 
 def _prepare_barrier_artifacts(
@@ -3553,12 +3273,10 @@ def _barrier_artifact_bytes(
             f"/artifact_sinks/{sink.slot}/encoding: raw artifact sinks require bytes-like "
             f"slot values; found {type(value).__name__}"
         )
-    if sink.encoding == "json":
-        media_type = (
-            "application/json" if sink.media_type == "application/octet-stream" else sink.media_type
-        )
-        return canonical_json_bytes(value), media_type
-    return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), sink.media_type
+    media_type = (
+        "application/json" if sink.media_type == "application/octet-stream" else sink.media_type
+    )
+    return canonical_json_bytes(value), media_type
 
 
 def _barrier_artifact_suffix(sink: BarrierArtifactSinkSpec) -> str:
@@ -3570,8 +3288,6 @@ def _barrier_artifact_suffix(sink: BarrierArtifactSinkSpec) -> str:
             return suffix
     if sink.encoding == "json":
         return ".json"
-    if sink.encoding == "pickle":
-        return ".pkl"
     return ""
 
 
@@ -4059,7 +3775,6 @@ def _build_manifest(
     training_spec_payload_schema_id: str | None,
     training_spec_payload_schema_version: str | None,
     training_spec_payload_ref: str | None,
-    task_binding_spec: dict[str, Any] | None,
     checkpoint_writes: Sequence[CheckpointWriteResult],
     checkpoint_parents: Sequence[ParentRef],
     checkpoint_initialization: Mapping[str, Any] | None,
@@ -4104,7 +3819,6 @@ def _build_manifest(
         training_spec_payload_schema_id=training_spec_payload_schema_id,
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=training_spec_payload_ref,
-        task_binding_spec=task_binding_spec,
     )
     execution_identity = execution_context.execution if execution_context is not None else None
     row_provenance = (
@@ -4133,8 +3847,6 @@ def _build_manifest(
         completed_at=utc_now(),
         graph_spec=payloads.graph_spec,
         training_spec=payloads.training_spec,
-        task_spec=payloads.task_spec,
-        task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
         inherited_terminal_checkpoint=inherited_terminal_checkpoint,
         terminal_certification=TrainingRunCertification(
@@ -4189,7 +3901,7 @@ def _build_manifest(
         provenance=Provenance(
             entrypoint=EntrypointRef(
                 kind="feedbax-training-executor",
-                command="python -m feedbax execute-training-run-spec",
+                command="feedbax.training_host_worker:main",
             ),
             issues=list(issues or ()),
             parents=checkpoint_parents,
@@ -4277,8 +3989,3 @@ def _preflight_manifest_emission(
         )
     if conflict_policy != "reuse-identical":
         raise ManifestEmissionConflictError(f"manifest identity already exists: {manifest.id!r}")
-
-
-def load_training_run_spec(path: Path | str) -> TrainingRunSpec:
-    """Load a TrainingRunSpec JSON file."""
-    return TrainingRunSpec.model_validate(strict_json_loads(Path(path).read_text(encoding="utf-8")))

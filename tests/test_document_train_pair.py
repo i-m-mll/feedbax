@@ -13,21 +13,21 @@ import pytest
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import PlanRequests, compile_project
 from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.expression_builtins import register_builtins
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.document import TaskParameters
 from feedbax.training.evaluate_worker import score_paired_validation
 from feedbax.training.managed_studio import prepare_trial_update
-from tests.test_document_task_parity import _model_payload, _pair_model, example, expression, legacy
-from tests.test_model_document_plan import _model_project
+from tests.test_document_task_parity import _model_payload, _pair_model, example, expression
 from tests.test_local_job_host import host as host_fixture  # noqa: F401
 
 
@@ -37,7 +37,7 @@ def authored_documents():
     functions.seal()
     model = ModelDocument.model_validate(_model_payload())
     interface, _ = _pair_model()
-    task, _ = example("delayed", functions, interface=interface, old=legacy("delayed"))
+    task, _ = example("delayed", functions, interface=interface, reference_validation=True)
     task = task.model_copy(update={"id": "delayed-reaches"})
     (command,) = interface.outputs
     objective = ObjectiveDocument(
@@ -156,16 +156,6 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
 
 def test_plan_round_trips_the_authored_task_and_objective(authored):
     _, model, task, objective = authored
-    raw = _model_project()
-    raw["steps"].pop("baseline")
-    raw["documents"]["reach-model"]["payload"] = model.model_dump(mode="json")
-    legacy_plan = compile_project(Project.model_validate(raw))
-    legacy_request = next(iter(legacy_plan.requests.values()))
-    decoded = decode_request(legacy_request, legacy_plan.documents.__getitem__)
-    assert decoded.spec.trial_documents is None
-    assert encode_request(decoded.spec, decoded.inputs).data == legacy_request
-
-    assert legacy_plan.runs[0].admission_problem.path == "/trial_documents"
     raw = document_project(authored)
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics
@@ -259,38 +249,6 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored):
     )
 
 
-def test_previous_document_train_bytes_and_mirror_are_preserved(authored):
-    from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.studio.canonical_train import lower_canonical_train
-
-    raw = document_project(authored)
-    plan = compile_project(Project.model_validate(raw))
-    data = next(iter(plan.requests.values()))
-    managed = decode_request(data, plan.documents.__getitem__).spec
-    assert isinstance(managed, DocumentTrainingRequestSpec)
-    previous_payload = managed.model_dump(mode="json") | {
-        "graph": None, "task": None, "objective": None,
-    }
-    previous_payload["trial_documents"]["model"] = raw["documents"]["reach-model"]["payload"]
-    # Keep the Task ID used by the retained request fixture before the replay fixture changed.
-    previous_payload["trial_documents"]["task"]["id"] = "delayed"
-    previous_payload["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] = 0.004
-    previous_payload["training_config"]["learning_rate"] = 0.004
-    previous = TrainingRequestSpec.model_validate(previous_payload)
-    encoded = encode_request(previous, {})
-    assert encoded.id == "train:da9a620135a874b2e33809b91c3d704c527dd1e91db0bcd0575cf19bdeb2a9e6"
-    decoded = decode_request(encoded.data, encoded.documents.__getitem__)
-    assert isinstance(decoded.spec, TrainingRequestSpec)
-    assert encode_request(decoded.spec, decoded.inputs) == encoded
-
-    registry = new_application_registry_bundle()
-    restored = lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
-    assert restored.training_config.learning_rate == 0.004
-    decoded.spec.training_config.learning_rate = 0.005
-    with pytest.raises(ValueError, match="/training_config/learning_rate"):
-        lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
-
-
 def test_managed_train_stores_only_scientific_model_names(authored):
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.request_identity import request_id
@@ -321,60 +279,54 @@ def test_managed_train_stores_only_scientific_model_names(authored):
 
 
 def document_project(authored, *, evaluation=False):
-    _, model, task, objective = authored
-    raw = _model_project()
-    if not evaluation:
-        raw["steps"].pop("baseline")
-    else:
-        params = raw["steps"]["baseline"]["base"]["inline"]["params"]
-        params.pop("trials")
-        params["trial_set"] = {"kind": "every_condition"}
-    raw["documents"]["reach-model"]["payload"] = model.model_dump(mode="json")
     from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 
-    raw["documents"].update(
-        {
+    _, model, task, objective = authored
+    raw = {
+        "documents": {
+            "reach-model": {"schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": model.model_dump(mode="json")},
             "task": {"schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task.model_dump(mode="json")},
             "objective": {
                 "schema": OBJECTIVE_DOCUMENT_SCHEMA_ID,
                 "payload": objective.model_dump(mode="json"),
             },
-        }
-    )
-    inline = raw["steps"]["train"]["base"]["inline"]
-    inline.pop("graph")
-    inline.pop("task_binding_spec")
-    inline.pop("task")
-    inline.pop("objective")
-    inline["trial_documents"] = {
-        "model_name": "reach-model",
-        "model": {"document": "reach-model"},
-        "task": {"document": "task"},
-        "objective": {"document": "objective"},
-        "input_overrides": {"reach_target": "target_pos"},
+        },
+        "steps": {
+            "train": {"kind": "train", "base": {"inline": {
+                "trial_documents": {
+                    "model_name": "reach-model",
+                    "model": {"document": "reach-model"},
+                    "task": {"document": "task"},
+                    "objective": {"document": "objective"},
+                    "input_overrides": {"reach_target": "target_pos"},
+                },
+                "training_config": {"n_batches": 2, "n_reach_steps": 80, "batch_size": 4},
+                "method_ref": {"package": "feedbax", "name": "studio_graph", "version": "v1"},
+                "method_payload": {
+                    "schema_id": "feedbax.spec.training_method.studio_graph",
+                    "schema_version": "feedbax.spec.training_method.studio_graph.v1",
+                    "payload": {
+                        "optimizer": {"type": "adam", "params": {"learning_rate": 0.001}},
+                        "target_total": 2,
+                        "key_schedule": "independent_v1",
+                    },
+                },
+            }}},
+        },
     }
-    inline["training_config"] = {"n_batches": 2, "n_reach_steps": 80, "batch_size": 4}
+    if evaluation:
+        raw["steps"]["baseline"] = {
+            "kind": "evaluate",
+            "base": {"inline": {
+                "evaluation_type": ROLLOUT_TYPE,
+                "params": {
+                    "seed": 731, "trial_policy": "paired", "variation": [],
+                    "trial_set": {"kind": "every_condition"},
+                },
+            }},
+            "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
+        }
     return raw
-
-
-def test_entry_points_refuse_the_other_request_family(authored, tmp_path):
-    from feedbax.studio.canonical_train import lower_canonical_train
-    from feedbax.training.executor import TrainingRunExecutorError, execute_training_run_spec
-    from feedbax.plugins.application import new_application_registry_bundle
-    from tests.test_studio_training_host_worker import _authored_request
-
-    registries = new_application_registry_bundle()
-    with pytest.raises(ValueError, match="/trial_documents"):
-        lower_canonical_train(
-            _authored_request(), registries.training_programs, registries=registries
-        )
-    plan = compile_project(Project.model_validate(document_project(authored)))
-    request = decode_request(next(iter(plan.requests.values())), plan.documents.__getitem__).spec
-    spec = lower_canonical_train(request, registries.training_programs, registries=registries)
-    with pytest.raises(TrainingRunExecutorError, match="/trial_documents"):
-        execute_training_run_spec(
-            spec, registry=registries.training_programs, manifest_root=tmp_path
-        )
 
 
 def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tmp_path, authored):  # noqa: F811
@@ -387,7 +339,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     from tests.test_local_job_host import job_row, wait_until
 
     registry = new_application_registry_bundle()
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "document-pair"
     raw = document_project(authored, evaluation=True)

@@ -15,7 +15,7 @@ import pytest
     (
         "feedbax.analysis.evaluation",
         "feedbax.bin.analysis",
-        "feedbax.orchestration.drivers.runpod",
+        "feedbax.orchestration.runpod",
         "feedbax.web.app",
     ),
 )

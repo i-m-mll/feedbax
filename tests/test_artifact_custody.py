@@ -16,7 +16,7 @@ import pytest
 
 import feedbax.persistence.artifact_custody as custody_module
 from feedbax.contracts.base import ArtifactRef
-from feedbax.contracts.artifact_store import migrate_path_backed_content, store_bytes_artifact
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.artifact_custody import (
     ContentBinding,
     ContentManifestConflictError,
@@ -74,28 +74,6 @@ def test_project_store_resolves_owned_objects_after_cwd_change_and_move(
         assert pinned.read_bytes() == b"retained object"
 
 
-def test_path_backed_migration_streams_large_source_without_whole_file_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "diagnostics.json"
-    payload = b'{"trace":"' + b"x" * (12 * 1024 * 1024) + b'"}\n'
-    source.write_bytes(payload)
-    original_read_bytes = Path.read_bytes
-
-    def refuse_source_read(path: Path) -> bytes:
-        if path == source:
-            raise AssertionError("migration read the source into memory")
-        return original_read_bytes(path)
-
-    monkeypatch.setattr(Path, "read_bytes", refuse_source_read)
-    destination = tmp_path / "store"
-    refs, receipt = migrate_path_backed_content(
-        {"training_diagnostics": source}, destination_store=destination
-    )
-    expected_sha = hashlib.sha256(payload).hexdigest()
-    assert refs["training_diagnostics"].sha256 == expected_sha
-    assert receipt.mappings[0].size_bytes == len(payload)
-    assert _artifact_path(destination, expected_sha).read_bytes() == payload
 
 
 def test_role_free_objects_trees_and_bindings_share_one_canonical_identity(
@@ -222,23 +200,6 @@ def test_content_tree_rejects_links_and_portable_name_collisions(tmp_path: Path)
         ContentTree(files=(ContentTreeFile(relative_path="nested/value", object=object_ref),))
 
 
-def test_path_backed_import_migrates_with_receipt_and_no_source_dependency(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "imported.bin"
-    source.write_bytes(b"path-backed exact bytes")
-    refs, receipt = migrate_path_backed_content(
-        {"legacy-import:one": source},
-        destination_store=tmp_path / "store",
-    )
-    source.unlink()
-
-    ref = refs["legacy-import:one"]
-    assert ImmutableArtifactBlobProvider(tmp_path / "store").get_object(ref) == (
-        b"path-backed exact bytes"
-    )
-    assert receipt.mappings[0].source_ref == "legacy-import:one"
-    assert receipt.mappings[0].target_ref == ref.object_id
 
 
 def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(

@@ -51,7 +51,7 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.project_sweep import CheckpointRuleAxis
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
@@ -192,7 +192,7 @@ class ProjectPlanRead:
                 train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
                 documents = (
                     train.trial_documents
-                    if isinstance(train, (TrainingRequestSpec, DocumentTrainingRequestSpec)) else None
+                    if isinstance(train, DocumentTrainingRequestSpec) else None
                 )
                 conditions[run.request_id] = None
                 if documents is not None:
@@ -373,7 +373,7 @@ class ProjectPlanService:
         return read_settled_project_plan(settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs)
 
     def response(self, view: ProjectPlanRead, *, include_window_map: bool) -> StudioSavedTrainRuns:
-        evaluation_tasks = self.jobs.registries.python_tasks if self.jobs.evaluation_candidate_enabled else None
+        evaluation_tasks = self.jobs.registries.python_tasks
         return view.response(include_window_map=include_window_map, evaluation_tasks=evaluation_tasks)
 
     def _evaluation_result(
@@ -419,7 +419,7 @@ class ProjectPlanService:
             subject = RunKey(series.subject.variant, series.subject.step, series.subject.row)
             run = next(run for run in plan.runs if run.key == subject)
             train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-            if not isinstance(train, (DocumentTrainingRequestSpec, TrainingRequestSpec)) or train.trial_documents is None:
+            if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Evaluate subject has no authored Objective.")
             return result.objective_series(series.requested, objective=train.trial_documents.objective)
         except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:

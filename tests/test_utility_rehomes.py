@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 
-import jax.random as jr
 import matplotlib.figure as mplfig
 
 from feedbax.config.defaults import get_iterations_to_save_model_parameters
 from feedbax.config.hyperparams import flat_key_to_where_fn, flatten_hps
 from feedbax.config.namespace import TreeNamespace
 from feedbax.plot.utils import get_label_str, savefig
-from feedbax.training.environment import EnvironmentProtocol, EnvironmentStep
-
-
 def test_plot_utils_label_and_matplotlib_save(tmp_path):
     assert get_label_str("train__pert__std") == "Train pert. std."
 
@@ -42,23 +38,3 @@ def test_hyperparameter_selectors_and_default_save_iterations():
         10,
         20,
     ]
-
-
-def test_training_environment_protocol_accepts_structural_implementation():
-    class DummyEnvironment:
-        def init_env_state(self, trial_spec, key):
-            return None
-
-        def step_env(self, env_state, action, key, t, trial_spec):
-            return EnvironmentStep(
-                obs={"t": t},
-                target=None,
-
-                reward=None,
-                done=None,
-            )
-
-    env = DummyEnvironment()
-
-    assert isinstance(env, EnvironmentProtocol)
-    assert env.step_env(None, None, jr.PRNGKey(0), 1, None).obs == {"t": 1}

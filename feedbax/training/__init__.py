@@ -1,16 +1,9 @@
 from .checkpoint_custody import (
-    CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
-    CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
-    CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
     AuthenticatedCheckpointTransaction,
-    CheckpointCustodyArchiveEvidence,
-    CheckpointCustodyArchiveResult,
-    MaterializedCheckpointCustodyArchive,
     CheckpointCompatibilityError,
     CheckpointConsistencyError,
     CheckpointContractBindingError,
     CheckpointCustodyError,
-    CheckpointDigestMigrationRequired,
     CheckpointCustodyFingerprint,
     CheckpointCustodyMutationError,
     CheckpointIntegrityError,
@@ -20,7 +13,6 @@ from .checkpoint_custody import (
     CheckpointSemanticStateUnsupported,
     IsolatedCheckpointProbe,
     CheckpointForkPlanBindings,
-    CheckpointForkPlanMigrationResult,
     CheckpointForkDerivedDigestComparison,
     CheckpointForkDerivedDigestDifference,
     CheckpointForkPlanRelockResult,
@@ -30,26 +22,16 @@ from .checkpoint_custody import (
     DEFAULT_CHECKPOINT_FORK_TRANSFORM_REGISTRY,
     CheckpointWriteResult,
     CheckpointCustodyDocuments,
-    ForkCompatibilityClassification,
-    ForkCompatibilityProjectionMigration,
-    ForkPlanDigestClassification,
     ResolvedCheckpointTransaction,
     ResumeSlotTransform,
-    RunContractMigrationEdge,
-    RunContractProjectionEvidence,
     assert_checkpoint_custody_unchanged,
     authenticate_checkpoint_custody_ref,
     authenticate_published_checkpoint_custody,
     checkpoint_fork_plan_canonical_projection,
     checkpoint_fork_plan_sha256,
-    classify_checkpoint_fork_plan_derived_digests,
-    classify_fork_compatibility_projection,
     derive_checkpoint_fork_compatibility_projection,
-    migrate_checkpoint_fork_plan_derived_digests,
-    migrate_fork_compatibility_projection,
     rebuild_checkpoint_fork_derived_digests,
     relock_checkpoint_fork_derived_digests,
-    relock_checkpoint_fork_plan_file,
     checkpoint_slot_names,
     checkpoint_slot_specs,
     checkpoint_semantic_state_root,
@@ -62,10 +44,6 @@ from .checkpoint_custody import (
     load_checkpoint_latest_pointer_json,
     load_checkpoint_transaction_manifest_file,
     load_checkpoint_transaction_manifest_json,
-    migrate_path_backed_checkpoint,
-    produce_checkpoint_custody_archive,
-    publish_directory_no_replace,
-    materialize_checkpoint_custody_archive,
     resolve_checkpoint_custody_ref,
     require_checkpoint_semantic_state_equal,
     run_contract_binding,
@@ -103,19 +81,6 @@ from .diagnostics import (
     TrainingDiagnostics,
     load_method_training_trace,
 )
-from feedbax.contracts.run_matrix import (
-    AuthoredTrainingRow,
-    RowLowererIdentity,
-    TrainingRowLoweringResult,
-    TrainingRowParentProvenance,
-    TrainingRowPlanningProvenance,
-    TrainingRowProvenance,
-)
-from feedbax.contracts.training import (
-    TrainingMethodAuthoringContribution,
-    TrainingMethodAuthoringHook,
-)
-
 try:
     from .executor import (
         DiagnosticsEmissionConflictError,
@@ -123,7 +88,6 @@ try:
         StreamingCheckpointStore,
         TrainingRunExecutionResult,
         TrainingRunExecutorError,
-        load_training_run_spec,
     )
     from .optimizers import (
         OptimizerStateCompatibilityError,
@@ -132,42 +96,14 @@ try:
         learning_rate_schedule,
         validate_optimizer_state_for_spec,
     )
-    from .run_matrix import (
-        TrainingRowLowerer,
-        materialize_adapted_run_matrix,
-    )
-    from .row_lowering import (
-        TrainingRowLowererRegistration,
-        TrainingRowLowererRegistry,
-        TrainingRowLowererRegistryError,
-        TrainingRowLoweringContext,
-    )
-    from .authoring import (
-        AUTHORING_RESERVED_METADATA_KEYS,
-        TRAINING_METHOD_AUTHORING_LOWERER_ID,
-        TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY,
-        TRAINING_METHOD_AUTHORING_LOWERER_VERSION,
-        TrainingMethodAuthoringCompilation,
-        TrainingMethodAuthoringError,
-        compile_training_method_authoring,
-        training_method_row_lowerer_registration,
-        training_method_authoring_implementation_sha256,
-    )
 except ImportError:
     pass
 
 __all__ = [
-    "CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE",
-    "CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID",
-    "CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION",
-    "CheckpointCustodyArchiveEvidence",
-    "CheckpointCustodyArchiveResult",
-    "MaterializedCheckpointCustodyArchive",
     "CheckpointCompatibilityError",
     "CheckpointConsistencyError",
     "CheckpointContractBindingError",
     "CheckpointCustodyError",
-    "CheckpointDigestMigrationRequired",
     "CheckpointCustodyFingerprint",
     "CheckpointCustodyMutationError",
     "CheckpointIntegrityError",
@@ -177,7 +113,6 @@ __all__ = [
     "CheckpointSemanticStateUnsupported",
     "IsolatedCheckpointProbe",
     "CheckpointForkPlanBindings",
-    "CheckpointForkPlanMigrationResult",
     "CheckpointForkDerivedDigestComparison",
     "CheckpointForkDerivedDigestDifference",
     "CheckpointForkPlanRelockResult",
@@ -187,12 +122,7 @@ __all__ = [
     "DEFAULT_CHECKPOINT_FORK_TRANSFORM_REGISTRY",
     "CheckpointWriteResult",
     "CheckpointCustodyDocuments",
-    "ForkCompatibilityClassification",
-    "ForkCompatibilityProjectionMigration",
-    "ForkPlanDigestClassification",
     "ResolvedCheckpointTransaction",
-    "RunContractMigrationEdge",
-    "RunContractProjectionEvidence",
     "CheckpointTransactionDiagnostic",
     "DiagnosticsEmissionConflictError",
     "LearningRateDiagnostic",
@@ -200,33 +130,13 @@ __all__ = [
     "NativeExecutionProducerContext",
     "NativeTrainingDiagnosticsInput",
     "ResumeSlotTransform",
-    "SimpleTrainer",
     "StreamingCheckpointStore",
     "ScheduleContextDiagnostic",
     "TrainingDiagnostics",
     "ManifestEmissionConflictError",
     "OptimizerStateCompatibilityError",
     "TrainingRunExecutionResult",
-    "AuthoredTrainingRow",
-    "RowLowererIdentity",
-    "TrainingRowLowerer",
-    "TrainingRowLowererRegistration",
-    "TrainingRowLowererRegistry",
-    "TrainingRowLowererRegistryError",
-    "TrainingRowLoweringContext",
-    "TrainingRowLoweringResult",
-    "TrainingRowParentProvenance",
-    "TrainingRowPlanningProvenance",
-    "TrainingRowProvenance",
     "TrainingRunExecutorError",
-    "TrainingMethodAuthoringCompilation",
-    "TrainingMethodAuthoringContribution",
-    "TrainingMethodAuthoringError",
-    "TrainingMethodAuthoringHook",
-    "AUTHORING_RESERVED_METADATA_KEYS",
-    "TRAINING_METHOD_AUTHORING_LOWERER_ID",
-    "TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY",
-    "TRAINING_METHOD_AUTHORING_LOWERER_VERSION",
     "AuthenticatedCheckpointTransaction",
     "ExecutionPreparationError",
     "ExecutionPreparationPlan",
@@ -248,26 +158,16 @@ __all__ = [
     "authenticate_published_checkpoint_custody",
     "checkpoint_fork_plan_canonical_projection",
     "checkpoint_fork_plan_sha256",
-    "classify_checkpoint_fork_plan_derived_digests",
-    "classify_fork_compatibility_projection",
     "derive_checkpoint_fork_compatibility_projection",
-    "migrate_checkpoint_fork_plan_derived_digests",
-    "migrate_fork_compatibility_projection",
     "rebuild_checkpoint_fork_derived_digests",
     "relock_checkpoint_fork_derived_digests",
-    "relock_checkpoint_fork_plan_file",
     "derive_preparation_rng_scope",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
     "checkpoint_semantic_state_root",
-    "compile_training_method_authoring",
-    "training_method_row_lowerer_registration",
-    "training_method_authoring_implementation_sha256",
-    "execute_training_run_spec",
     "fingerprint_checkpoint_custody_inputs",
     "fork_checkpoint_plan",
     "isolated_checkpoint_probe",
-    "grad_wrap_simple_loss_func",
     "load_hps",
     "load_latest_checkpoint",
     "load_method_training_trace",
@@ -276,48 +176,24 @@ __all__ = [
     "load_checkpoint_latest_pointer_json",
     "load_checkpoint_transaction_manifest_file",
     "load_checkpoint_transaction_manifest_json",
-    "migrate_path_backed_checkpoint",
-    "produce_checkpoint_custody_archive",
-    "publish_directory_no_replace",
-    "materialize_checkpoint_custody_archive",
     "resolve_checkpoint_custody_ref",
     "require_checkpoint_semantic_state_equal",
-    "load_training_run_spec",
     "lower_zero_level_preparation_plan",
     "materialize_execution_preparation",
     "learning_rate_at_step",
     "learning_rate_schedule",
-    "materialize_adapted_run_matrix",
     "run_contract_binding",
     "require_execution_preparation_provider",
     "preparation_rng_token",
     "structural_abi_fingerprint",
-    "training_step_for_abstract_loss",
     "validate_optimizer_state_for_spec",
     "write_checkpoint_transaction",
 ]
 
-_TRAINER_EXPORTS = frozenset({
-    "SimpleTrainer",
-    "grad_wrap_simple_loss_func",
-    "training_step_for_abstract_loss",
-})
-
-
 def __getattr__(name: str):
-    if name in _TRAINER_EXPORTS:
-        from . import trainer
-
-        value = getattr(trainer, name)
-    elif name == "load_hps":
-        from ..config.hyperparams import load_hps
-
-        value = load_hps
-    elif name == "execute_training_run_spec":
-        from .retained_executor import execute_training_run_spec
-
-        value = execute_training_run_spec
-    else:
+    if name != "load_hps":
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    globals()[name] = value
-    return value
+    from ..config.hyperparams import load_hps
+
+    globals()[name] = load_hps
+    return load_hps

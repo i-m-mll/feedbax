@@ -8,10 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union, cast
+from typing import Any, Callable, Optional, TypeVar, Union, cast
 
 import jax.numpy as jnp
-import jax.random as jr
 import jax.tree as jt
 from equinox import Module
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -32,9 +31,6 @@ from feedbax.runtime.filters import FilterState, FirstOrderFilter, LowPassFilter
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.runtime.noise import Normal
 from feedbax.runtime.trial_history import trial_history_plan
-
-if TYPE_CHECKING:
-    from feedbax.tasks import AbstractTask
 
 T = TypeVar("T")
 
@@ -169,25 +165,6 @@ class SimpleFeedback(Graph):
     @property
     def force_lp(self) -> Optional[LowPassFilter]:
         return cast(LowPassFilter | None, self.nodes.get("force_filter"))
-
-    @staticmethod
-    def get_nn_input_size(
-        task: "AbstractTask",
-        mechanics: Mechanics,
-        feedback_spec: Union[
-            PyTree[ChannelSpec[MechanicsState]], PyTree[Mapping[str, Any]]
-        ] = ChannelSpec(where=StateSelector(("plant.skeleton",))),
-    ) -> int:
-        example_mechanics_state = mechanics.state_index.init
-        example_feedback = jt.map(
-            lambda spec: spec.where(example_mechanics_state),
-            _convert_feedback_spec(feedback_spec),
-            is_leaf=lambda x: isinstance(x, ChannelSpec),
-        )
-        n_feedback = _tree_sum_n_features(example_feedback)
-        example_trial_spec = task.sample_trial(key=jr.PRNGKey(0))
-        n_task_inputs = _tree_sum_n_features(example_trial_spec.inputs)
-        return n_feedback + n_task_inputs
 
 
 def feedback_state_view(

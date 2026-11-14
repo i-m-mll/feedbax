@@ -3,7 +3,7 @@ import type { ComponentDefinition, DelayAttachment, InterventionAttachment, Json
 import { ModelAddressSchema } from '@/generated/studioContracts';
 import { z } from 'zod';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
-import { humanizeLabel } from '@/components/values/ValueSpecField';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { addressKey, type Component, type Port } from './modelGraph';
 
 export type Attachment = DelayAttachment | InterventionAttachment | ProbeAttachment;

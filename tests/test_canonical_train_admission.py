@@ -30,7 +30,7 @@ from feedbax.host import HostError, Job, Launch
 from feedbax.host.completion import CompletionFileError
 from feedbax.job_completion import verify_bound_training_completion, verify_training_model_product
 from feedbax.jobs import JobConflict, JobService
-from feedbax.orchestration.schedule_eval import (
+from feedbax.training.schedule_eval import (
     LEARNING_RATE_SCHEDULE_ID,
     learning_rate_from_build_optimizer,
 )

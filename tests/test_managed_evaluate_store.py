@@ -22,7 +22,7 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import EvaluationResult, states_ref
+from feedbax.studio.canonical_evaluate import states_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
@@ -36,7 +36,7 @@ host = host_fixture
 def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path, monkeypatch, capsys, damage):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
     project = "evaluate-store"
     _save_project(folders, project, Project.model_validate(definition("last")))
@@ -260,7 +260,6 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         assert replayed.time.values == expected_axis
         assert replayed.tracks[0].samples == expected.tolist()
 
-    unpinned = EvaluationResult(plan.store_path, attempt, runs["evaluate"].request_id, original.receipt)
     path = store.object_path(states_binding.object_ref)
     raw = path.read_bytes()
     header_end = 8 + int.from_bytes(raw[:8], "little")
@@ -278,10 +277,9 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
                 path.write_bytes(altered)
         with original.open_states() as dataset:
             assert dataset.data(position, (0, 0, 1)).tobytes() != expected.tobytes()
-        for reader in (original.open_states(verify=True), unpinned.open_states()):
-            with pytest.raises(ArrayContainerError, match="digest mismatch"):
-                with reader as dataset:
-                    dataset.data(position, (0, 0, 1))
+        with pytest.raises(ArrayContainerError, match="digest mismatch"):
+            with original.open_states(verify=True) as dataset:
+                dataset.data(position, (0, 0, 1))
         with pytest.raises(ArtifactBlobIntegrityError):
             store.verify_object(states_binding.object_ref)
         for selection in ([], ["--attempt", attempt], ["--attempt", prior["id"]]):

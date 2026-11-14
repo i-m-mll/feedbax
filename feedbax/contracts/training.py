@@ -16,9 +16,6 @@ from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.graph import (
     GraphSpec,
     ParamValue,
-    RetentionPolicySpec,
-    StudioTaskBindingSpec,
-    StudioTaskTimelineSpec,
 )
 from feedbax.contracts.checkpoints import (
     CheckpointContinuationRequest,
@@ -47,7 +44,6 @@ from feedbax.contracts.worker import (
 
 if TYPE_CHECKING:
     from feedbax.training.preparation import ExecutionPreparationProvider
-    from feedbax.training.row_lowering import TrainingRowLowererRegistration
 
 
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
@@ -263,53 +259,6 @@ class TimeAggregationSpec(BaseModel):
     discount_exp: Optional[float] = None
 
 
-class LossTermSpec(BaseModel):
-    """Specification for a loss term."""
-
-    schema_id: Literal["feedbax.spec.training.loss_term"] = LOSS_TERM_SPEC_SCHEMA_ID
-    schema_version: str = LOSS_TERM_SPEC_SCHEMA_VERSION
-    type: str
-    label: str
-    weight: float = 1.0
-    selector: Optional[str] = None
-    target_selector: Optional[str] = None
-    target_value: Optional[Any] = None
-    retention: Optional[RetentionPolicySpec] = None
-    norm: Optional[Literal["squared_l2", "l2", "l1", "huber"]] = None
-    matrix: Optional[Any] = None
-    matrix_kind: Optional[Literal["dense", "diagonal"]] = None
-    time_agg: Optional[TimeAggregationSpec] = None
-    children: Optional[Dict[str, "LossTermSpec"]] = None
-
-
-class EarlyStoppingSpec(BaseModel):
-    """Specification for early stopping."""
-
-    metric: str
-    patience: int
-    min_delta: float
-
-
-class TrainingSpec(BaseModel):
-    """Complete specification for a training run."""
-
-    optimizer: OptimizerSpec
-    loss: LossTermSpec
-    n_batches: int
-    batch_size: int
-    n_epochs: Optional[int] = None
-    checkpoint_interval: Optional[int] = None
-    early_stopping: Optional[EarlyStoppingSpec] = None
-
-
-class TaskSpec(BaseModel):
-    """Specification for a task."""
-
-    type: str
-    params: Dict[str, ParamValue] = Field(default_factory=dict)
-    timeline: Optional[StudioTaskTimelineSpec] = None
-
-
 class TrainingConfig(BaseModel):
     """Structured configuration for the real JAX training backend (Phase 6).
 
@@ -420,25 +369,6 @@ class GraphTopologySourceSpec(TrainingRunContractModel):
         return self
 
 
-class ObjectiveSlotSpec(TrainingRunContractModel):
-    """Objective/loss payload slot consumed by future objective-governance work."""
-
-    kind: Literal["loss_term", "objective_spec", "external"] = "loss_term"
-    loss: LossTermSpec | None = None
-    payload: dict[str, Any] | None = None
-    schema_id: str | None = None
-    schema_version: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _validate_payload(self) -> "ObjectiveSlotSpec":
-        if self.kind == "loss_term" and self.loss is None:
-            raise ValueError("/objective/loss is required when objective.kind='loss_term'")
-        if self.kind != "loss_term" and self.payload is None:
-            raise ValueError(f"/objective/payload is required when objective.kind={self.kind!r}")
-        return self
-
-
 class RiskAggregationSpec(TrainingRunContractModel):
     """Objective/risk aggregation policy, separate from method identity."""
 
@@ -461,22 +391,6 @@ class MethodExtensionsSpec(TrainingRunContractModel):
     """Explicitly non-semantic method extension metadata."""
 
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class TrainingMethodAuthoringContribution(BaseModel):
-    """Runtime-only method values consumed by the typed authoring compiler.
-
-    This hook result is not a durable spec. The authoring compiler embeds its
-    values in the existing ``TrainingRunSpec`` contract.
-    """
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    training_config: TrainingConfig
-    checkpoint_interval: int | None = Field(default=None, gt=0)
-    progress_interval: int | None = Field(default=None, gt=0)
-    method_extensions: MethodExtensionsSpec = Field(default_factory=MethodExtensionsSpec)
-    mapping_levels: list[MappingLevelSpec] | None = None
 
 
 class StandardSupervisedMethodPayload(TrainingRunContractModel):
@@ -566,32 +480,6 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 TrainingMethodOptimizerSpecProjector = Callable[[PayloadT], OptimizerSpec | Mapping[str, Any]]
 TrainingMethodOptimizerStepExtractor = Callable[[PayloadT, Mapping[str, Any]], int]
-
-
-@dataclass(frozen=True)
-class TrainingMethodAuthoringHook(Generic[PayloadT]):
-    """Complete runtime hook for method-owned authoring compilation."""
-
-    lowerer_id: str
-    lowerer_version: str
-    compile: Callable[[PayloadT], TrainingMethodAuthoringContribution]
-    graph: Callable[[PayloadT], object]
-    task: Callable[[PayloadT], object]
-    objective: Callable[[PayloadT], object]
-    domain: Callable[[PayloadT], Mapping[str, Any]]
-
-    def validate_structure(self) -> None:
-        """Validate the stable lowerer identity and callable boundaries."""
-        identities = (self.lowerer_id, self.lowerer_version)
-        if any(not isinstance(value, str) or not value.strip() for value in identities):
-            raise ValueError("training method authoring hook identity must not be empty")
-        invalid = [
-            name
-            for name in ("compile", "graph", "task", "objective", "domain")
-            if not callable(getattr(self, name))
-        ]
-        if invalid:
-            raise TypeError(f"training method authoring hook callables are invalid={invalid!r}")
 
 
 @dataclass(frozen=True)
@@ -720,24 +608,10 @@ class TrainingProgramRuntimeFacet(Generic[PayloadT]):
 
 
 @dataclass(frozen=True)
-class TrainingProgramAuthoringFacet(Generic[PayloadT]):
-    """Optional authoring operations paid for only by authorable programs."""
-
-    hook: TrainingMethodAuthoringHook[PayloadT]
-
-
-@dataclass(frozen=True)
 class TrainingProgramPreparationFacet:
     """Runtime preparation supplied independently of method semantics."""
 
     provider: ExecutionPreparationProvider
-
-
-@dataclass(frozen=True)
-class TrainingProgramRowLoweringFacet:
-    """Authored-row compilers derived into the application lowering view."""
-
-    registrations: tuple[TrainingRowLowererRegistration, ...]
 
 
 @dataclass(frozen=True)
@@ -757,8 +631,6 @@ class DeclaredTrainingProgram(Generic[PayloadT]):
     declaration: TrainingProgramDeclaration[PayloadT]
     runtime: TrainingProgramRuntimeFacet[PayloadT]
     preparation: TrainingProgramPreparationFacet | None = None
-    row_lowering: TrainingProgramRowLoweringFacet | None = None
-    authoring: TrainingProgramAuthoringFacet[PayloadT] | None = None
     projection: TrainingProgramProjectionFacet[PayloadT] | None = None
 
     @property
@@ -806,10 +678,6 @@ class DeclaredTrainingProgram(Generic[PayloadT]):
         return self.preparation.provider if self.preparation is not None else None
 
     @property
-    def authoring_hook(self):
-        return self.authoring.hook if self.authoring is not None else None
-
-    @property
     def metadata_projector(self):
         return self.projection.metadata if self.projection is not None else None
 
@@ -855,8 +723,6 @@ def declare_training_program(
         [PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]
     ] = lambda _payload: {},
     preparation_provider: ExecutionPreparationProvider | None = None,
-    row_lowerers: Sequence[TrainingRowLowererRegistration] = (),
-    authoring_hook: TrainingMethodAuthoringHook[PayloadT] | None = None,
     metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None,
     schedule_projector: TrainingMethodScheduleProjector[PayloadT] | None = None,
     optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None,
@@ -902,10 +768,6 @@ def declare_training_program(
             if preparation_provider is not None
             else None
         ),
-        row_lowering=(
-            TrainingProgramRowLoweringFacet(tuple(row_lowerers)) if row_lowerers else None
-        ),
-        authoring=(TrainingProgramAuthoringFacet(authoring_hook) if authoring_hook else None),
         projection=projection,
     )
 
@@ -924,10 +786,6 @@ def evolve_training_program(
         "update_kernels_factory": program.update_kernels_factory,
         "guard_predicates_factory": program.guard_predicates_factory,
         "preparation_provider": program.preparation_provider,
-        "row_lowerers": (
-            program.row_lowering.registrations if program.row_lowering is not None else ()
-        ),
-        "authoring_hook": program.authoring_hook,
         "metadata_projector": program.metadata_projector,
         "schedule_projector": program.schedule_projector,
         "optimizer_spec_projector": program.optimizer_spec_projector,
@@ -1066,23 +924,6 @@ class TrainingProgramRegistry:
         ]
         if invalid_hooks:
             raise TypeError(f"training program has non-callable facets={invalid_hooks!r}")
-        if program.row_lowering is not None:
-            from feedbax.training.row_lowering import TrainingRowLowererRegistration
-
-            if not program.row_lowering.registrations or any(
-                not isinstance(registration, TrainingRowLowererRegistration)
-                for registration in program.row_lowering.registrations
-            ):
-                raise TypeError(
-                    "training-program row-lowering facet must contain "
-                    "TrainingRowLowererRegistration values"
-                )
-        if program.authoring_hook is not None:
-            if not isinstance(program.authoring_hook, TrainingMethodAuthoringHook):
-                raise TypeError(
-                    "training-program authoring facet must contain a TrainingMethodAuthoringHook"
-                )
-            program.authoring_hook.validate_structure()
         if program.metadata_projector is not None:
             if not isinstance(program.metadata_projector, TrainingMethodMetadataProjector):
                 raise TypeError(
@@ -1432,30 +1273,6 @@ def _unavailable_standard_supervised_runtime(
     )
 
 
-def standard_supervised_training_program() -> DeclaredTrainingProgram[
-    StandardSupervisedMethodPayload
-]:
-    """Return Feedbax's standard supervised training-program declaration."""
-    return declare_training_program(
-        method_ref=STANDARD_SUPERVISED_METHOD_REF,
-        payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-        payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-        payload_model=StandardSupervisedMethodPayload,
-        contract_compiler=lambda _payload: standard_supervised_method_contract(),
-        update_kernels_factory=_unavailable_standard_supervised_runtime,
-        schedule_projector=TrainingMethodScheduleProjector(
-            projector_id="feedbax.training.standard_supervised.schedule_projection",
-            projector_version="v1",
-            projector=lambda _payload, _coordinates: ScheduleProjection(),
-        ),
-        optimizer_spec_projector=lambda payload: payload.optimizer,
-        optimizer_step_extractor=_standard_supervised_optimizer_step,
-        rejected_payload_versions=("feedbax.spec.training_method.standard_supervised_payload.v0",),
-        owner="feedbax.contracts.training",
-        package="feedbax",
-    )
-
-
 def _standard_supervised_optimizer_step(
     payload: StandardSupervisedMethodPayload,
     runtime: Mapping[str, Any],
@@ -1489,13 +1306,6 @@ def _standard_supervised_optimizer_step(
     if step < 0:
         raise ValueError("standard supervised optimizer count must be non-negative")
     return step
-
-
-def default_training_program_registry() -> TrainingProgramRegistry:
-    """Return the default method-ref keyed payload registry."""
-    registry = TrainingProgramRegistry()
-    registry.register_program(standard_supervised_training_program())
-    return registry
 
 
 class TrialDocuments(TrainingRunContractModel):
@@ -1533,13 +1343,8 @@ class TrainingRunSpec(TrainingRunContractModel):
     schema_version: str = TRAINING_RUN_SPEC_SCHEMA_VERSION
     on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
     graph: GraphTopologySourceSpec
-    task: TaskSpec | None = Field(default=None, exclude_if=lambda value: value is None)
-    task_binding_spec: StudioTaskBindingSpec | None = Field(
-        default=None, exclude_if=lambda value: value is None,
-    )
     training_config: TrainingConfig
-    objective: ObjectiveSlotSpec | None = Field(default=None, exclude_if=lambda value: value is None)
-    trial_documents: TrialDocuments | None = Field(default=None, exclude_if=lambda value: value is None)
+    trial_documents: TrialDocuments
     risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)
     method_ref: MethodRefSpec
     method_payload: MethodPayloadEnvelope
@@ -1563,12 +1368,6 @@ class TrainingRunSpec(TrainingRunContractModel):
                 "/schema_version unsupported TrainingRunSpec schema_version "
                 f"{self.schema_version!r}; expected {TRAINING_RUN_SPEC_SCHEMA_VERSION!r}"
             )
-
-        if self.trial_documents is None:
-            if self.task is None or self.objective is None:
-                raise ValueError("The retained envelope needs its task and objective.")
-        elif any(value is not None for value in (self.task, self.objective, self.task_binding_spec)):
-            raise ValueError("A managed run needs only the authored task and objective pair.")
 
         method_key = self.method_ref.key
         method_contract = self.worker_execution.method_contract
@@ -1616,7 +1415,3 @@ def validate_training_run_spec_semantics(
     """Validate registry-owned semantics at an explicit post-bootstrap boundary."""
     resolve_training_run_spec(spec, registry)
     return spec
-
-
-# Enable forward references
-LossTermSpec.model_rebuild()

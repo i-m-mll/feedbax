@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 import pytest
 
-from feedbax.objectives.loss import TermTree
+from feedbax.objectives.base import TermTree
 from feedbax.plot import loss_history, loss_history_compare
 
 

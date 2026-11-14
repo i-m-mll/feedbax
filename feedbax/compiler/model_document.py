@@ -818,3 +818,23 @@ def lower_model_document(
     lower.reject_within_step_paths(graph)
     binding = lower.root_inputs(task, graph) if task is not None else None
     return LoweredModelDocument(graph, binding, lower.origins, tuple(lower.links), tuple(sorted(lower.plugins)))
+
+
+def lower_planar_scene_interior(
+    document: ProjectName, model: ModelDocument, path: tuple[str, ...], components: ComponentRegistry,
+) -> AcausalGraphSpec:
+    """Lower the selected mechanics occurrence without resolving the surrounding model."""
+    interior = model.interior
+    for index, name in enumerate(path):
+        component = interior.components.get(name)
+        if component is None or component.kind != "composite":
+            break
+        child = component.interior
+        if isinstance(child, PhysicalInterior):
+            if child.physical_domain == "planar_multibody" and index == len(path) - 1:
+                return _Lower(document, model, components).physical(
+                    child, component.ports, path, substeps=component.substeps,
+                )
+            break
+        interior = child
+    raise ValueError(f"{list(path)!r} must identify a planar multibody interior.")

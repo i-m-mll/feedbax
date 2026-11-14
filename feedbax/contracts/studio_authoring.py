@@ -4,18 +4,16 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import Field, JsonValue, StrictFloat, StrictInt
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.expression_registry import FunctionInfo
-from feedbax.contracts.graph import WireSpec
-from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.operation import OperationDefinition
-from feedbax.contracts.project import DocumentOverridePath, Sha256
+from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler
-from feedbax.contracts.studio_project import PresentationPosition, ProjectValueEdit, StudioProjectFilePatch
+from feedbax.contracts.studio_project import ProjectValueEdit
 
 
 class StudioAuthoringMethod(StrictModel):
@@ -83,59 +81,6 @@ class StudioAuthoringSource(StrictModel):
     path: str
 
 
-class StudioDocumentAuthoringChange(StrictModel):
-    scope: Literal["variant"] | None = None
-    lit_steps: list[ProjectName] = Field(min_length=1)
-    path: DocumentOverridePath
-    value: StrictStr | StrictInt | StrictFloat | StrictBool
-
-
-class StudioModelAddComponent(StrictModel):
-    kind: Literal["addComponent"]
-    component: Literal["feedbax.GRU", "feedbax.Linear", "feedbax.PointMass"]
-    revision: Annotated[StrictInt, Field(gt=0)]
-    position: PresentationPosition | None = None
-
-
-class StudioModelConnectPorts(StrictModel):
-    kind: Literal["connectPorts"]
-    wire: WireSpec
-
-
-class StudioModelExposeOutput(StrictModel):
-    kind: Literal["exposeOutput"]
-    source_node: NonemptyText
-    source_port: NonemptyText
-
-
-class StudioModelAuthoringChange(StrictModel):
-    lit_steps: list[ProjectName] = Field(min_length=1)
-    operation: Annotated[
-        StudioModelAddComponent | StudioModelConnectPorts | StudioModelExposeOutput,
-        Field(discriminator="kind"),
-    ]
-
-
-class StudioDocumentAuthoringRequest(StrictModel):
-    revision: Sha256
-    run: StudioSavedTrainKey
-    field: Literal["graph", "task"]
-    presentation_revision: Sha256 | None = None
-    change: StudioDocumentAuthoringChange | StudioModelAuthoringChange | None = None
-
-
-class StudioDocumentAuthoring(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    payload: JsonValue
-    sources: dict[str, StudioAuthoringSource]
-    variant_model_paths: list[DocumentOverridePath] | None = None
-    variant_model_reason: NonemptyText | None = None
-    files: list[StudioProjectFilePatch]
-    created_component: str | None = None
-    presentation_revision: Sha256 | None = None
-
-
 class StudioAuthoringField(StrictModel):
     id: str
     label: str
@@ -192,29 +137,9 @@ class StudioAuthoringSweepChange(StrictModel):
     ]
 
 
-ReachCoordinate = Annotated[StrictFloat, Field(ge=-3.4028234663852886e38, le=3.4028234663852886e38)]
-
-
-class StudioReachPosition(StrictModel):
-    x: ReachCoordinate
-    y: ReachCoordinate
-
-
-class StudioReachTargetEdit(StrictModel):
-    kind: Literal["bindReachTarget"]
-    input: NonemptyText
-    position: StudioReachPosition
-
-
-class StudioReachTargetAuthoring(StrictModel):
-    inputs: list[StudioAuthoringOption]
-    input: str | None
-    position: StudioReachPosition | None
-
-
 class StudioTrainAuthoringRequest(StrictModel):
     revision: Sha256
-    change: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | None = None
+    change: StudioAuthoringChange | StudioAuthoringSweepChange | None = None
 
 
 class StudioTrainAuthoring(StrictModel):
@@ -224,4 +149,3 @@ class StudioTrainAuthoring(StrictModel):
     fields: list[StudioAuthoringField]
     patches: list[ProjectValueEdit]
     documents: list[ProjectName]
-    reach_target: StudioReachTargetAuthoring | None = None

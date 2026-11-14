@@ -58,16 +58,17 @@ def publish_evaluate_success(
         view = SuccessView(store)
         committed = view.attempt_ref(attempt)
         existing = view.read_owned_success(committed) if committed is not None else None
-        manifest_object = existing.receipt.evaluation_manifest if existing is not None else None
-        if existing is not None and manifest_object is None:
-            raise ValueError("Published Evaluate attempt lacks its accepted worker receipt")
+        if existing is None:
+            manifest_ref, _ = store.resolve_manifest("EvaluationRunManifest", worker_receipt.manifest_id)
+            manifest_object = manifest_ref.object
+        else:
+            manifest_object = existing.receipt.evaluation_manifest
+            if manifest_object is None:
+                raise ValueError("Published Evaluate attempt lacks its accepted worker receipt")
         manifest, subject = verify_evaluation_receipt(
             root, attempt=attempt, request_id=request_id, project=project, receipt=worker_receipt, binding=binding,
             manifest_object=manifest_object,
         )
-        if manifest_object is None:
-            manifest_ref, _ = store.resolve_manifest(manifest.kind, manifest.id)
-            manifest_object = manifest_ref.object
         if (
             manifest.metadata["canonical_request"] != launch.canonical_request.request.model_dump(mode="json")
             or subject != launch.canonical_request.checkpoint

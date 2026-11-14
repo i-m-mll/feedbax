@@ -26,7 +26,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
 )
 from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec, StateSlotSpec
-from feedbax.runtime._graph_key_schedule import derive_key, sample_training_trials
+from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.training.optimizers import build_optimizer
 from feedbax.training.preparation import ExecutionPreparationProvider, RestoredScheduleContextBinder
@@ -111,23 +111,13 @@ class StudioUpdateKernel:
         self,
         *,
         compiled: Any,
-        batch_size: int | None = None,
+        batch_size: int,
         optimizer: optax.GradientTransformationExtraArgs,
-        score_batch: Callable[[Any, jax.Array, int], tuple[jax.Array, dict[str, jax.Array]]] | None = None,
-        rollout_fn: Callable[[Any, Any, Any], dict[str, Any]] | None = None,
-        evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]] | None = None,
+        score_batch: Callable[[Any, jax.Array, int], tuple[jax.Array, dict[str, jax.Array]]],
         snapshot: Callable[[Any, jax.Array], dict[str, Any]] | None = None,
     ) -> None:
-        if score_batch is None:
-            if rollout_fn is None or evaluate_loss_fn is None:
-                raise TypeError("Supply a batch score or the scenario worker's rollout and loss.")
-            score_batch = _score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn)
-        elif rollout_fn is not None or evaluate_loss_fn is not None:
-            raise TypeError("Supply exactly one scoring interface.")
         self._snapshot = snapshot
         trainable_filter = compiled.trainable_filter
-        if batch_size is None:
-            batch_size = compiled.training_spec.batch_size
 
         @eqx.filter_jit
         def numerical_update(model, optimizer_state, key, batch_counter):
@@ -200,18 +190,6 @@ class StudioUpdateKernel:
         return self._snapshot(graph, key) if self._snapshot is not None else {}
 
 
-def _score_legacy_batch(compiled, rollout_fn, evaluate_loss_fn):
-    """Preserve the protected scenario worker's established batch reduction."""
-    def score(graph, key, count):
-        def one(trial_key):
-            return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, trial_key))
-
-        if count == 1:
-            return one(key)
-        trials = sample_training_trials(one, key, count)
-        return jax.tree.map(lambda values: jnp.mean(values, axis=0), trials)
-
-    return score
 
 
 def studio_graph_method_contract(payload: StudioGraphMethodPayload):

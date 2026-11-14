@@ -25,7 +25,6 @@ from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
-from web.e2e.studio.fixtures.reaching_project import reaching_project, reaching_train_request
 
 
 def successor_file():
@@ -47,25 +46,6 @@ def successor_file():
     }}
 
 
-def legacy_graph_files():
-    payload = reaching_train_request(reaching_project(batches=2)).model_dump(mode="json", exclude_none=True)
-    files = []
-    for name, schema, field in (
-        ("model", "feedbax.spec.graph", "graph"),
-        ("task", "feedbax.spec.task", "task"),
-    ):
-        files.append({
-            "kind": "document", "id": name,
-            "document": {"schema": schema, "payload": payload[field]},
-        })
-        payload[field] = {"document": name}
-    return [
-        *files,
-        {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": payload}}},
-        successor_file(),
-    ]
-
-
 def ordinary_files(batches: str, *rates: str):
     example = managed_train_project(batches=int(batches))
     step = example.steps["train"].model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -78,11 +58,13 @@ def ordinary_files(batches: str, *rates: str):
                 for index, rate in enumerate(rates)
             }}},
         }
+    trial = step["base"]["inline"]["trial_documents"]
+    names = (trial[slot]["document"] for slot in ("model", "task", "objective"))
     files = [
-        {"kind": "document", "id": name, "document": document.model_dump(
+        {"kind": "document", "id": name, "document": example.documents[name].model_dump(
             mode="json", by_alias=True, exclude_unset=True,
         )}
-        for name, document in example.documents.items()
+        for name in names
     ]
     files.append({"kind": "step", "id": "train", "step": step})
     return files
@@ -313,9 +295,7 @@ def run_saved_cli(home: str, project_id: str, label: str) -> None:
 
 if __name__ == "__main__":
     action, *arguments = sys.argv[1:]
-    if action == "files" and not arguments:
-        print(json.dumps(legacy_graph_files()))
-    elif action == "managed-files" and not arguments:
+    if action == "managed-files" and not arguments:
         print(json.dumps([*ordinary_files("2"), successor_file()]))
     elif action == "ordinary-files":
         print(json.dumps(ordinary_files(*arguments)))

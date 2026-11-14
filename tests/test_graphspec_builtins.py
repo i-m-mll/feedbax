@@ -18,7 +18,6 @@ from feedbax.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
-    RetainedObservableSpec,
     StudioTaskBindingSpec,
     WireSpec,
 )
@@ -49,7 +48,6 @@ from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
-from feedbax.runtime.retained_observables import lower_retention_plan
 
 
 def _components() -> ComponentRegistry:
@@ -673,10 +671,8 @@ def test_feedback_channels_materialize_point_mass_selector(selector: str) -> Non
         noise_role="sensory_feedback",
         noise_timing="pre_controller",
     )
-    spec.retained_observables = [RetainedObservableSpec(selector="port:feedback.feedback")]
     compiled = compile_graph(GraphDocument(graph=spec), _components())
     graph = compiled.graph
-    assert "port:feedback.feedback" in lower_retention_plan(compiled.resolved.graph).by_selector
 
     mechanics = graph.nodes["mechanics"]
     subgraph = graph.nodes["feedback"]

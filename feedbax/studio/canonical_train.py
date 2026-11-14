@@ -15,8 +15,7 @@ from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import LastMember, ProductRef
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
-from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.studio_training import (
     STUDIO_GRAPH_METHOD,
     PublishedTrainingCheckpoint,
@@ -48,7 +47,7 @@ class PinnedTrainCheckpoint(StrictModel):
 class BoundStudioTrainingJobInput(StudioTrainingJobInput):
     """Internal Host payload and attempt sidecar, with canonical custody when admitted by Plan."""
 
-    canonical_request: CanonicalTrainRequestBinding | None = None
+    canonical_request: CanonicalTrainRequestBinding
     checkpoint_input: PinnedTrainCheckpoint | None = None
     checkpoint_catalog: tuple[int, ...] = Field(default=(), exclude_if=lambda value: not value)
 
@@ -60,10 +59,10 @@ class BoundStudioTrainingJobInput(StudioTrainingJobInput):
 
 def _decode_train(
     request_id: str, data: bytes, read_document: Callable[[str], bytes]
-) -> tuple[TrainingRequestSpec | DocumentTrainingRequestSpec, ProductRef | None]:
+) -> tuple[DocumentTrainingRequestSpec, ProductRef | None]:
     decoded = decode_request(data, read_document)
     if decoded.id != request_id or not isinstance(
-        decoded.spec, (TrainingRequestSpec, DocumentTrainingRequestSpec)
+        decoded.spec, DocumentTrainingRequestSpec
     ):
         raise ValueError("Training launch does not match its canonical Train request.")
     checkpoint = None
@@ -93,7 +92,7 @@ def _decode_train(
 
 
 def lower_canonical_train(
-    request: TrainingRequestSpec | DocumentTrainingRequestSpec,
+    request: DocumentTrainingRequestSpec,
     execution: TrainingProgramRegistry | WorkerExecutionSpec,
     *,
     registries=None,
@@ -110,8 +109,6 @@ def lower_canonical_train(
             "/risk_aggregation: Studio graph Train uses its ordinary objective reduction"
         )
     documents = request.trial_documents
-    if documents is None:
-        raise ValueError("/trial_documents: Managed Train requires Model, Task, and Objective documents.")
     from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
     from feedbax.plugins.application import new_application_registry_bundle
 
@@ -146,31 +143,22 @@ def lower_canonical_train(
     batches = continuation.additional_batches if continuation is not None else method.target_total
     if authored_config.n_batches != batches:
         raise ValueError("/training_config/n_batches: does not match the method target")
-    if isinstance(authored_config, TrainingConfig) and (
-        authored_config.n_reach_steps <= 0 or authored_config.n_reach_steps != paired.execution.task.n_steps
-    ):
-        raise ValueError("/training_config/n_reach_steps: does not match the authored task horizon")
     if authored_config.batch_size <= 0 or authored_config.snapshot_interval <= 0:
         raise ValueError("/training_config: batch size and snapshot interval must be positive")
     schedule = method.optimizer.lr_schedule
     rate = schedule.learning_rate_0 if schedule is not None else method.optimizer.params.get("learning_rate")
-    if isinstance(authored_config, TrainingConfig):
-        if type(rate) not in (float, int) or not isfinite(rate) or authored_config.learning_rate != rate:
-            raise ValueError("/training_config/learning_rate: does not match the finite method rate")
-        config = authored_config
-    else:
-        if type(rate) not in (float, int) or not isfinite(rate) or rate <= 0:
-            path = "lr_schedule/learning_rate_0" if schedule is not None else "params/learning_rate"
-            raise ValueError(f"/method_payload/payload/optimizer/{path}: requires a finite positive rate")
-        if schedule is not None and "learning_rate" in method.optimizer.params:
-            raise ValueError(
-                "/method_payload/payload/optimizer/params/learning_rate: the schedule owns the rate"
-            )
-        config = TrainingConfig(
-            **authored_config.model_dump(exclude={"n_reach_steps"}),
-            learning_rate=rate,
-            n_reach_steps=paired.execution.task.n_steps,
+    if type(rate) not in (float, int) or not isfinite(rate) or rate <= 0:
+        path = "lr_schedule/learning_rate_0" if schedule is not None else "params/learning_rate"
+        raise ValueError(f"/method_payload/payload/optimizer/{path}: requires a finite positive rate")
+    if schedule is not None and "learning_rate" in method.optimizer.params:
+        raise ValueError(
+            "/method_payload/payload/optimizer/params/learning_rate: the schedule owns the rate"
         )
+    config = TrainingConfig(
+        **authored_config.model_dump(exclude={"n_reach_steps"}),
+        learning_rate=rate,
+        n_reach_steps=paired.execution.task.n_steps,
+    )
     if isinstance(execution, TrainingProgramRegistry):
         resolved = execution.resolve_execution(request.method_ref, payload)
         contract, phase = resolved.contract, resolved.effective_phase
@@ -226,10 +214,6 @@ def verify_training_request_binding(
     launch: BoundStudioTrainingJobInput,
 ) -> tuple[tuple[Path, ContentObjectRef], ...]:
     """Authenticate the request and the exact executable payload pinned by the launch."""
-    if launch.canonical_request is None:
-        if launch.request_id != canonical_training_run_spec_sha256(launch.spec):
-            raise ValueError("Training launch does not match its authored request id.")
-        return ()
     binding = launch.canonical_request
     store = ImmutableArtifactBlobProvider(launch.manifest_root)
     documents = {ref.sha256: ref for ref in binding.documents}

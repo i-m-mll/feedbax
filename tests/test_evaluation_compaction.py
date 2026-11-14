@@ -14,6 +14,7 @@ from feedbax.analysis.evaluation_compaction import (
     EvaluationBatchMergeInput,
     EvaluationBatchMergeState,
     compact_evaluation_batch,
+    _validate_fragment_ref,
     merge_evaluation_batch_fragment,
     publish_evaluation_compaction_products,
     reclaim_evaluation_batch_caches,
@@ -24,7 +25,6 @@ from feedbax.analysis.execution_context import (
     StagedExecutionContextError,
     resolve_staged_execution_context,
 )
-from feedbax.analysis.harness import _validate_evaluation_fragment_checkpoint
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationLifecycleRowOutcome,
@@ -338,10 +338,10 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
         (declaration.parameters, EMPTY_STAGED_EXECUTION_CONTEXT),
     ]
     assert fragment.metadata["consumer_parameters"] == declaration.parameters
-    _validate_evaluation_fragment_checkpoint(
+    _validate_fragment_ref(
         declaration,
-        batch,
         fragment,
+        batch_id=batch.batch_id,
         matrix_intent_hash="a" * 64,
     )
     drifted_fragment = fragment.model_copy(
@@ -352,11 +352,11 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
             }
         }
     )
-    with pytest.raises(ValueError, match="fragment checkpoint contract drifted"):
-        _validate_evaluation_fragment_checkpoint(
+    with pytest.raises(ValueError, match="fragment identity drifted"):
+        _validate_fragment_ref(
             declaration,
-            batch,
             drifted_fragment,
+            batch_id=batch.batch_id,
             matrix_intent_hash="a" * 64,
         )
     missing_analysis_type = declaration.model_dump(mode="json")
@@ -425,10 +425,10 @@ def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
         resolved = value.execution_context.resolve_checkpoint_custody_ref(
             ref,
             binding_name=str(value.parameters["checkpoint_binding"]),
-            slot_names=["controller"],
+            slot_names=["batch_counter"],
         )
         assert resolved.parent_ref == ref
-        assert set(resolved.slots) == {"controller"}
+        assert set(resolved.slots) == {"batch_counter"}
         return EvaluationBatchFragment(
             payload={"transaction_id": resolved.manifest.transaction_id},
             schema_id=declaration.compact_product_schema_id,
@@ -1118,6 +1118,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
         provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
         fragment_path = tmp_path / "custody" / provider.canonical_relative_path(fragment)
         if failure == "tampered":
+            fragment_path.chmod(0o600)
             fragment_path.write_bytes(b"tampered")
         else:
             fragment_path.unlink()

@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioDocumentAuthoring, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { ModelDocument, ModelEditResponse, ModelFieldResponse, ObjectiveDocument, PythonTaskSelection, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
@@ -10,6 +10,29 @@ test.use({
 
 const region = (page: Page, id: string) => page.locator(`[data-studio-focus-region="${id}"]:visible`);
 const command = (page: Page, id: string) => page.locator(`button[data-command-id="${id}"]:visible`).first();
+
+function alternateModelFiles(files: Awaited<ReturnType<typeof fixture>>, id: string) {
+  const [model, task, objective, train] = structuredClone(files);
+  function rehome(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(rehome);
+    if (typeof value === 'string') {
+      return value.replaceAll(`"document":"${model.id}"`, `"document":"${id}-model"`);
+    }
+    if (value === null || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
+      key === 'document' && entry === model.id ? `${id}-model` : rehome(entry),
+    ]));
+  }
+  const trial = train.step.base.inline.trial_documents;
+  trial.model_name = `${id}-model`;
+  trial.model = { document: `${id}-model` };
+  trial.task = { document: `${id}-task` };
+  trial.objective = { document: `${id}-objective` };
+  train.id = id;
+  return [{ ...model, id: `${id}-model` },
+    { ...task, id: `${id}-task`, document: rehome(task.document) },
+    { ...objective, id: `${id}-objective`, document: rehome(objective.document) }, train];
+}
 
 async function tabTo(page: Page, target: Locator, limit = 100) {
   await expect(target).toBeVisible();
@@ -381,16 +404,13 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
 
 test('Model edits follow the lit users of a saved shared document', async ({ page, request }) => {
   test.setTimeout(45_000);
-  const [model, task, train] = await fixture('files');
+  const [model, task, objective, train] = await fixture('managed-files');
   const alpha = { ...train, id: 'alpha' };
   const beta = { ...train, id: 'beta' };
   const gamma = { kind: 'step', id: 'gamma', step: { kind: 'train', base: { step: 'alpha' } } };
-  const otherModel = { ...model, id: 'other-model' };
-  const other = { ...train, id: 'other', step: { ...train.step, base: { inline: {
-    ...train.step.base.inline, graph: { document: 'other-model' },
-  } } } };
-  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, otherModel, alpha, beta, gamma, other]);
-  const massPath = '/nodes/plant/params/mass';
+  const { snapshot, projectPath } = await seedManagedProject(request, [
+    model, task, objective, alpha, beta, gamma, ...alternateModelFiles([model, task, objective, train], 'other'),
+  ]);
 
   async function readPlan(revision: string) {
     const response = await request.get(`${projectPath}/train-runs?revision=${revision}&window_map=true`);
@@ -400,12 +420,13 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
     return Object.fromEntries(plan.rows.map((row) => [row.key.step, row]));
   }
 
-  async function definition(revision: string, run: StudioSavedTrainRuns['rows'][number]['key']) {
-    const response = await request.post(`${projectPath}/authoring/document`, {
-      data: { revision, run, field: 'graph' },
-    });
+  async function readMass(revision: string, run: StudioSavedTrainRuns['rows'][number]['key']) {
+    const response = await request.post(`${projectPath}/model/fields`, { data: { revision, run,
+      owner: { document: model.id, composites: [], element: { kind: 'component', id: 'plant' } },
+    } });
     expect(response.ok(), await response.text()).toBe(true);
-    return await response.json() as StudioDocumentAuthoring;
+    const field = (await response.json() as ModelFieldResponse).fields?.find(({ label }) => label === 'Mass');
+    return field?.effective ?? field?.text;
   }
 
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -416,33 +437,34 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   const card = (step: string) => page.getByRole('article', { name: `Train ${step}`, exact: true });
   await expect(modelView).toBeFocused();
   await expect(count).toHaveText('· 3 of 3');
-  await expect(modelView.getByRole('combobox', { name: 'Edit Model' }).locator('option:checked')).toHaveText('model');
+  await expect(modelView.locator('header').first()).toContainText(model.id);
   for (const step of ['alpha', 'beta', 'gamma']) await expect(card(step)).toHaveAttribute('data-document-scope', 'lit');
   await expect(card('other')).toHaveAttribute('data-document-scope', 'faint');
   await expect(mapStep(page, 'alpha')).toHaveAttribute('aria-current', 'step');
   const initial = await readPlan(snapshot.revision);
 
-  const component = page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('button', { name: 'plant', exact: true });
+  const component = modelView.getByRole('article', { name: 'Point mass', exact: true }).locator('header');
   await component.click();
-  const mass = region(page, 'inspector').getByRole('spinbutton', { name: 'Edit Mass', exact: true });
-  const write = () => page.waitForResponse((response) =>
-    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  async function edit(value: string) {
-    const writing = write();
-    await enter(mass, value);
+  const inspector = region(page, 'inspector');
+  const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+  const documentValue = (saved: StudioProjectSnapshot) => saved.project.documents?.[model.id].payload;
+  const valueAt = (mass: number) => ({ interior: { components: { plant: { fields: { mass } } } } });
+
+  async function savedModelWrite(writing: ReturnType<typeof post>) {
     const response = await writing;
     expect(response.ok(), await response.text()).toBe(true);
-    return { written: await response.json() as StudioProjectSnapshot, body: response.request().postDataJSON() };
+    const { result } = await response.json() as ModelEditResponse;
+    expect(result.status).toBe('applied');
+    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    return result.snapshot;
   }
-  const documentValue = (saved: StudioProjectSnapshot) => saved.project.documents?.model.payload;
-  const valueAt = (mass: number) => ({ nodes: { plant: { params: { mass } } } });
-  const changes = (value: number) => ({ model: { [massPath]: value } });
 
   await expect(mass).toHaveValue('1');
-  const shared = await edit('2');
-  expect(shared.body.address).toEqual({ kind: 'document', id: 'model' });
-  expect(documentValue(shared.written)).toMatchObject(valueAt(2));
-  const afterShared = await readPlan(shared.written.revision);
+  const sharedWrite = post(page, `${projectPath}/model/edit`);
+  await enter(mass, '2');
+  const shared = await savedModelWrite(sharedWrite);
+  expect(documentValue(shared)).toMatchObject(valueAt(2));
+  const afterShared = await readPlan(shared.revision);
   for (const step of ['alpha', 'beta', 'gamma']) expect(afterShared[step].request_id).not.toEqual(initial[step].request_id);
   expect(afterShared.other.request_id).toEqual(initial.other.request_id);
 
@@ -462,67 +484,47 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(count).toHaveText('· 2 of 3');
   await expect(mass).toHaveValue('2');
 
-  const narrowed = await edit('3');
-  expect(narrowed.body.files.map(({ address }: { address: { kind: string; id: string } }) => address)).toEqual([
-    { kind: 'step', id: 'alpha' }, { kind: 'step', id: 'beta' },
-  ]);
-  expect(documentValue(narrowed.written)).toMatchObject(valueAt(2));
-  expect(narrowed.written.project.steps?.alpha.document_overrides).toEqual(changes(3));
-  expect(narrowed.written.project.steps?.beta.document_overrides).toEqual(changes(3));
-  const afterNarrowed = await readPlan(narrowed.written.revision);
-  for (const step of ['alpha', 'beta']) expect(afterNarrowed[step].request_id).not.toEqual(afterShared[step].request_id);
-  for (const step of ['gamma', 'other']) expect(afterNarrowed[step].request_id).toEqual(afterShared[step].request_id);
-  const alphaLocal = await definition(narrowed.written.revision, afterNarrowed.alpha.key);
-  const betaLocal = await definition(narrowed.written.revision, afterNarrowed.beta.key);
-  const excluded = await definition(narrowed.written.revision, afterNarrowed.gamma.key);
-  expect(alphaLocal.payload).toMatchObject(valueAt(3));
-  expect(betaLocal.payload).toMatchObject(valueAt(3));
-  expect(excluded.payload).toMatchObject(valueAt(2));
-  expect(alphaLocal.sources[massPath]).toMatchObject({ kind: 'step', name: 'alpha' });
-  expect(betaLocal.sources[massPath]).toMatchObject({ kind: 'step', name: 'beta' });
-  expect(excluded.sources[massPath]).toMatchObject({ kind: 'document', name: 'model' });
-  await expect(mass).toHaveValue('3');
+  const rejected = post(page, `${projectPath}/model/fields`);
+  await enter(mass, '3');
+  const refusal = await (await rejected).json() as ModelFieldResponse;
+  expect(refusal.problems?.[0].reason).toBe('Select all steps that use this Model to change its document value.');
+  await expect(inspector.getByRole('alert')).toContainText(refusal.problems![0].reason);
+  expect((await readSaved(request, projectPath)).revision).toBe(shared.revision);
+  for (const step of ['alpha', 'beta', 'gamma']) expect(await readMass(shared.revision, afterShared[step].key)).toBe('2');
+  await mass.press('Escape');
 
-  await expect(count).toHaveText('· 2 of 3');
   await activate(page, mapStep(page, 'gamma'), 'Shift+Enter');
   await expect(count).toHaveText('· 3 of 3');
-  const restored = await edit('4');
-  expect(restored.body.files).toHaveLength(3);
-  expect(documentValue(restored.written)).toMatchObject(valueAt(4));
-  expect(restored.written.project.steps?.alpha.document_overrides).toEqual({});
-  expect(restored.written.project.steps?.beta.document_overrides).toEqual({});
-  const afterRestore = await readPlan(restored.written.revision);
-  for (const step of ['alpha', 'beta', 'gamma']) expect(afterRestore[step].request_id).not.toEqual(afterNarrowed[step].request_id);
-  expect(afterRestore.other.request_id).toEqual(afterNarrowed.other.request_id);
+  const restoring = post(page, `${projectPath}/model/edit`);
+  await enter(mass, '4');
+  const restored = await savedModelWrite(restoring);
+  expect(documentValue(restored)).toMatchObject(valueAt(4));
+  const afterRestore = await readPlan(restored.revision);
+  for (const step of ['alpha', 'beta', 'gamma']) expect(afterRestore[step].request_id).not.toEqual(afterShared[step].request_id);
+  expect(afterRestore.other.request_id).toEqual(afterShared.other.request_id);
 
-  const undoing = write();
+  const undoing = post(page, `${projectPath}/model/undo`);
+  await modelView.focus();
   await page.keyboard.press('Meta+Z');
-  const undone = await undoing;
-  expect(undone.ok(), await undone.text()).toBe(true);
-  expect(undone.request().postDataJSON().files).toHaveLength(3);
-  const beforeReload = await undone.json() as StudioProjectSnapshot;
+  const beforeReload = await savedModelWrite(undoing);
   expect(documentValue(beforeReload)).toMatchObject(valueAt(2));
-  expect(beforeReload.project.steps?.alpha.document_overrides).toEqual(changes(3));
-  expect(beforeReload.project.steps?.beta.document_overrides).toEqual(changes(3));
-  await expect(mass).toHaveValue('3');
+  await expect(mass).toHaveValue('2');
 
   await page.reload();
   await expect(count).toHaveText('· 3 of 3');
   await component.click();
-  await expect(mass).toHaveValue('3');
-  const reopened = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+  await expect(mass).toHaveValue('2');
+  const reopened = await readSaved(request, projectPath);
   expect(reopened.revision).toBe(beforeReload.revision);
   const plan = await readPlan(reopened.revision);
-  for (const step of ['alpha', 'beta', 'gamma', 'other']) expect(plan[step].request_id).toEqual(afterNarrowed[step].request_id);
+  for (const step of ['alpha', 'beta', 'gamma', 'other']) expect(plan[step].request_id).toEqual(afterShared[step].request_id);
 });
 
 test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }) => {
-  const [model, task, train, successor] = await fixture('files');
-  const thirdModel = { ...model, id: 'third-model' };
-  const third = { ...train, id: 'third', step: { ...train.step, base: { inline: {
-    ...train.step.base.inline, graph: { document: thirdModel.id },
-  } } } };
-  const { snapshot } = await seedManagedProject(request, [model, task, train, successor, thirdModel, third]);
+  const [model, task, objective, train, successor] = await fixture('managed-files');
+  const { snapshot } = await seedManagedProject(request, [
+    model, task, objective, train, successor, ...alternateModelFiles([model, task, objective, train], 'third'),
+  ]);
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('F6');
@@ -580,7 +582,7 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(region(page, 'drawer')).toHaveCount(0);
   await palette(page, 'showDrawer', 'Show Drawer');
   await expect(region(page, 'drawer')).toBeFocused();
-  const plant = region(page, 'drawer').getByRole('button', { name: 'plant', exact: true });
+  const plant = region(page, 'drawer').getByRole('button', { name: 'Point mass', exact: true });
   await activate(page, plant);
   await expect(plant).toHaveAttribute('aria-pressed', 'true');
   await expect(region(page, 'inspector').getByRole('spinbutton', { name: 'Edit Mass', exact: true })).toHaveValue('1');
@@ -676,11 +678,9 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(card.getByRole('button', { name: 'New Step train' })).toHaveAttribute('data-command-id', 'newStep');
   const create = post(page, `${projectPath}/files`);
   await palette(page, 'newStep', 'New Step');
-  if (process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE === '1') {
-    const train = page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true });
-    await expect(train).toBeFocused();
-    await page.keyboard.press('Enter');
-  }
+  const train = page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true });
+  await expect(train).toBeFocused();
+  await page.keyboard.press('Enter');
   const created = await create;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: authored } = await created.json() as StudioProjectDocument;

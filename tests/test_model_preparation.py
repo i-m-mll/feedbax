@@ -150,7 +150,8 @@ def test_studio_update_trains_weights_and_keeps_reset_template_fixed():
     )
 
     kernel = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer, rollout_fn=rollout, evaluate_loss_fn=loss
+        compiled=compiled, optimizer=optimizer, batch_size=1,
+        score_batch=lambda model, key, _count: loss(None, rollout(model, None, key)),
     )
     trainable, _ = eqx.partition(graph, compiled.trainable_filter)
     slots = kernel(
@@ -168,69 +169,6 @@ def test_studio_update_trains_weights_and_keeps_reset_template_fixed():
         for before, after in zip(
             jt.leaves(graph.nodes["cell"].state_index.init), jt.leaves(trained.state_index.init)
         )
-    )
-
-
-def test_eager_point_mass_rebuild_consistency_and_custom_callbacks_use_current_nodes():
-    from feedbax.runtime.iteration import run_component
-    from feedbax.xabdeef.models import point_mass_nn
-
-    key = jax.random.PRNGKey(0)
-    task = SimpleNamespace(
-        sample_trial=lambda **kwargs: SimpleNamespace(inputs=jnp.zeros(1))
-    )
-
-    def build():
-        return point_mass_nn(
-            task,
-            hidden_size=3,
-            feedback_delay_steps=2,
-            feedback_noise_std=0,
-            motor_noise_std=0,
-            key=key,
-        )
-
-    traces = []
-
-    @eqx.filter_jit
-    def rollout(model):
-        traces.append(None)
-        state = model.init_state(key=key)
-        mechanics = state.get(model.mechanics.state_index)
-        mechanics = eqx.tree_at(
-            lambda value: value.effector.pos, mechanics, jnp.asarray([2.0, 3.0], dtype=jnp.float32)
-        )
-        state = state.set(model.mechanics.state_index, mechanics)
-        state = model.state_consistency_update(state)
-        view = model.state_view(state)
-        outputs, _, _ = run_component(
-            model, {"input": jnp.zeros((2, 1))}, state, key=key, n_steps=2
-        )
-        return view, outputs
-
-    model = build()
-    initial, outputs = rollout(model)
-    rebuilt_initial, rebuilt_outputs = rollout(build())
-    assert len(traces) == 1
-    assert jnp.array_equal(initial.mechanics.plant.skeleton.pos, jnp.asarray([2.0, 3.0]))
-    for pos, vel in initial.feedback.queue:
-        assert jnp.array_equal(pos, jnp.asarray([2.0, 3.0]))
-    assert eqx.tree_equal(initial, rebuilt_initial)
-    assert eqx.tree_equal(outputs, rebuilt_outputs)
-
-    def consistency(current, state):
-        cell = current.net.nodes["cell"]
-        return state.set(cell.state_index, cell.state_index.init)
-
-    def view(node_states):
-        return node_states["net"].cell
-
-    customized = model.with_state_consistency(consistency).with_state_view(view).prepare()
-    assert customized.state_consistency_fn is consistency
-    assert customized.state_view_fn is view
-    state = customized.state_consistency_update(customized.init_state(key=key))
-    assert eqx.tree_equal(
-        customized.state_view(state), customized.net.nodes["cell"].state_index.init
     )
 
 
@@ -258,79 +196,3 @@ def test_preparation_keeps_task_parameter_and_latch_slots_independent():
     assert bool(state.get(left.latch_index).latched)
     assert not bool(state.get(right.latch_index).latched)
     assert state.get(right.params_index).scale.dtype == jnp.float32
-
-
-def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
-    from feedbax.contracts.worker import ProgressCoordinate
-    from feedbax.training.checkpoint_custody import (
-        load_latest_checkpoint,
-        write_checkpoint_transaction,
-    )
-    from feedbax.training.studio_executor import StudioUpdateKernel
-    from tests.test_checkpoint_custody import _run_spec
-
-    key = jax.random.PRNGKey(0)
-
-    compiled = _prepare_studio_gru(key)
-    graph = compiled.graph
-    optimizer = optax.adam(0.05)
-
-    def predict(model, plan, key):
-        return model.nodes["cell"]({"input": jnp.ones(2)}, model.init_state(key=key), key=key)[0]
-
-    def loss(plan, outputs):
-        return jnp.sum((outputs["output"] - 1) ** 2), {}
-
-    kernel = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer, rollout_fn=predict, evaluate_loss_fn=loss
-    )
-
-    def initial_slots(prepared):
-        trainable, _ = eqx.partition(prepared.graph, prepared.trainable_filter)
-        return {
-            "model": prepared.graph,
-            "optimizer": optimizer.init(trainable),
-            "prng": key,
-            "batch_counter": jnp.array(0, dtype=jnp.int32),
-        }
-
-    slots = initial_slots(compiled)
-    for _ in range(2):
-        updated = kernel(slots)
-        slots = {name: updated[name] for name in slots}
-    uninterrupted = kernel(slots)
-    run_spec = _run_spec()
-    program = run_spec.worker_execution.method_contract.phase_program
-    written = write_checkpoint_transaction(
-        tmp_path,
-        run_spec=run_spec,
-        phase_program=program,
-        barrier_name="after_train_batch",
-        coordinate=ProgressCoordinate(
-            run_id="run-2",
-            phase="train_batch",
-            program_step=2,
-            completed_barrier="after_train_batch",
-        ),
-        slots=slots,
-    )
-    assert {slot.codec_schema_version for slot in written.checkpoint_set.slots} == {
-        "feedbax.training.checkpoint_custody.pickle.v3"
-    }
-    loaded = load_latest_checkpoint(
-        tmp_path,
-        expected_run_spec=run_spec,
-        expected_phase_program=program,
-        expected_slots=initial_slots(_prepare_studio_gru(key)),
-    )
-    resumed = kernel(loaded.slots)
-    assert eqx.tree_equal(resumed, uninterrupted)
-    assert eqx.tree_equal(
-        predict(resumed["model"], None, key), predict(uninterrupted["model"], None, key)
-    )
-    assert not eqx.tree_equal(
-        resumed["model"].nodes["cell"].cell, slots["model"].nodes["cell"].cell
-    )
-    assert eqx.tree_equal(
-        resumed["model"].nodes["cell"].state_index.init, graph.nodes["cell"].state_index.init
-    )

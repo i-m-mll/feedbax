@@ -1,5 +1,5 @@
 import { studioName } from '@/components/activity/studioVocabulary';
-import { humanizeLabel } from '@/components/values/ValueSpecField';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { JsonValue, StudioProjectFilePatch, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 import { authoredMember, authoredPointerParts, removeAuthoredMember, type AuthoredProject } from './authoredEdits';
 

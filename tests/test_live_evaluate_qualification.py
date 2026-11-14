@@ -27,7 +27,7 @@ def managed_jobs(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     host.policy(compute=1)
-    return JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    return JobService(host, new_application_registry_bundle())
 
 
 def instrument(jobs, mode, tmp_path):

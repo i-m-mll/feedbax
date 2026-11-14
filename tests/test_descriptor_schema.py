@@ -24,7 +24,6 @@ from feedbax.contracts.descriptors import (
 from feedbax.contracts.manifest import AnalysisDataProduct
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.value_schema import ValueSchema
-from feedbax.integrations.provider import provider_manifest
 
 
 def _value_schema(
@@ -358,8 +357,7 @@ def test_descriptor_basis_hash_fills_data_product_contract_slot() -> None:
     assert product.product_identity_hash is not None
 
 
-def test_descriptor_families_are_registered_and_exported() -> None:
-    manifest = provider_manifest()
+def test_descriptor_families_have_explicit_version_policies() -> None:
     policies = default_spec_registry.policy_matrix()
     expected = {
         "VariableDescriptor",
@@ -370,7 +368,7 @@ def test_descriptor_families_are_registered_and_exported() -> None:
         "SelectorFallbackPolicyIdentity",
     }
 
-    assert expected <= set(manifest.schemas)
+    assert expected <= set(policies)
     for kind in expected:
         assert policies[kind].owner_module == "feedbax.contracts.descriptors"
         assert "tests/test_descriptor_schema.py" in policies[kind].required_tests

@@ -13,7 +13,6 @@ from feedbax.plugins import (
 )
 from feedbax.plugins import bootstrap as bootstrap_module
 from feedbax.plugins.composition import compose_application
-from feedbax.plugins.retained import compose_retained_application
 
 
 def test_importing_plugins_performs_no_discovery(monkeypatch) -> None:
@@ -29,8 +28,7 @@ def test_importing_plugins_performs_no_discovery(monkeypatch) -> None:
     assert calls == []
 
 
-@pytest.mark.parametrize("compose", (compose_application, compose_retained_application))
-def test_typed_compose_discovers_once_after_import(monkeypatch, compose) -> None:
+def test_typed_compose_discovers_once_after_import(monkeypatch) -> None:
     calls: list[str] = []
     registration = PluginRegistration(
         PluginDeclaration("tests.import_order", "1", 2),
@@ -52,7 +50,7 @@ def test_typed_compose_discovers_once_after_import(monkeypatch, compose) -> None
         lambda **_kwargs: (EntryPoint(),),
     )
 
-    state = asyncio.run(compose())
+    state = asyncio.run(compose_application())
 
     assert calls == ["load", "register"]
     assert state.provenance[0].plugin_id == "tests.import_order"
@@ -65,7 +63,6 @@ def test_typed_compose_discovers_once_after_import(monkeypatch, compose) -> None
         "feedbax.bin.describe",
         "feedbax.bin.figure",
         "feedbax.bin.run",
-        "feedbax.bin.studio_pipeline",
         "feedbax.web.api.components",
         "feedbax.web.app",
     ),
@@ -74,16 +71,6 @@ def test_public_composition_roots_use_the_shared_composer(module_name: str) -> N
     module = importlib.import_module(module_name)
 
     assert module.compose_application is compose_application
-
-
-@pytest.mark.parametrize(
-    "module_name",
-    ("feedbax.bin.orchestrate", "feedbax.bin.provider", "feedbax.web.worker.app"),
-)
-def test_retained_composition_roots_use_the_shared_composer(module_name: str) -> None:
-    module = importlib.import_module(module_name)
-
-    assert module.compose_retained_application is compose_retained_application
 
 
 def test_config_globals_are_populated_without_plugin_side_effects() -> None:

@@ -6,9 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.contracts.canonical_json import CanonicalJsonError, CanonicalJsonErrorCode
+from feedbax.contracts.canonical_json import (
+    CanonicalJsonError,
+    CanonicalJsonErrorCode,
+    canonical_json_v2_bytes,
+)
 from feedbax.contracts.figures import FigureSpec
-from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.request_identity import (
     REQUEST_KINDS,
     RequestDocumentMemo,
@@ -32,9 +35,12 @@ from feedbax.contracts.request_specs import (
     EvaluationRequestSpec,
     NumericalSettings,
     RenderRequestSpec,
-    TrainingRequestSpec,
+    DocumentTrainingConfig,
+    DocumentTrainingRequestSpec,
 )
-from feedbax.contracts.training import TrainingConfig
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_plan import compile_project
+from tests.test_document_train_pair import authored_documents, document_project
 
 _CORPUS = Path(__file__).parent / "fixtures" / "request_identity_corpus.json"
 
@@ -43,10 +49,20 @@ def _read_corpus():
     return json.loads(_CORPUS.read_bytes())["requests"]
 
 
+def _managed_train():
+    plan = compile_project(Project.model_validate(document_project(authored_documents())))
+    (data,) = plan.requests.values()
+    spec = decode_request(data, plan.documents.__getitem__).spec
+    assert isinstance(spec, DocumentTrainingRequestSpec)
+    return spec
+
+
 def test_downstream_identity_corpus_round_trips():
     rows = _read_corpus()
     assert set(REQUEST_KINDS) == {row["kind"] for row in rows}
     for row in rows:
+        if row["kind"] == "train":
+            continue
         spec_type = REQUEST_KINDS[row["kind"]].spec_type
         spec = spec_type.model_validate_json(json.dumps(row["spec"]))
         request = encode_request(spec, row["inputs"])
@@ -56,10 +72,8 @@ def test_downstream_identity_corpus_round_trips():
 
 
 def test_factored_document_reuse_keeps_current_values_and_input_bindings():
-    source = next(row for row in _read_corpus() if row["kind"] == "train")
-    raw = source["spec"]
-    raw["method_payload"]["payload"]["typed_value"] = True
-    spec = TrainingRequestSpec.model_validate(raw)
+    spec = _managed_train()
+    spec.method_payload.payload["typed_value"] = True
     memo = RequestDocumentMemo()
     first = encode_request(spec, {}, document_memo=memo)
     assert first == encode_request(spec, {})
@@ -70,9 +84,11 @@ def test_factored_document_reuse_keeps_current_values_and_input_bindings():
     assert seeded == encode_request(spec, {})
     assert seeded.id != first.id and seeded.documents == first.documents
 
-    inputs = {"checkpoint": (InputMember(
-        key="first", reference=ProductRef(request_id=first.id, role="checkpoint")
-    ),)}
+    inputs = {
+        "checkpoint": (
+            InputMember(key="first", reference=ProductRef(request_id=first.id, role="checkpoint")),
+        )
+    }
     bound = encode_request(spec, inputs, document_memo=memo)
     assert bound == encode_request(spec, inputs)
     assert bound.id != seeded.id and bound.documents == seeded.documents
@@ -88,7 +104,7 @@ def test_absent_values_and_retired_spellings_contract():
     assert checked["fields"] == generate_identity_fields()
     validate_identity_contract(checked)
 
-    model = "feedbax.contracts.training.TrainingConfig"
+    model = "feedbax.contracts.request_specs.DocumentTrainingConfig"
     changed = deepcopy(checked)
     changed["fields"][model]["grad_clip"]["absent"] = None
     with pytest.raises(ValueError, match="absent value changed"):
@@ -107,26 +123,24 @@ def test_absent_values_and_retired_spellings_contract():
 
 
 def test_author_default_move_keeps_nested_stored_absence():
-    source = _read_corpus()[0]
-    assert source["kind"] == "train"
-    original = TrainingRequestSpec.model_validate_json(json.dumps(source["spec"]))
-    config = TrainingConfig()
+    original = _managed_train()
+    config = DocumentTrainingConfig()
     original = original.model_copy(update={"training_config": config})
     old = encode_request(original, {})
 
-    field = TrainingConfig.model_fields["grad_clip"]
+    field = DocumentTrainingConfig.model_fields["grad_clip"]
     default = field.default
     precision = NumericalSettings.model_fields["matmul_precision"]
     old_precision = precision.default
     try:
         field.default = None
         precision.default = "high"
-        TrainingConfig.model_rebuild(force=True)
+        DocumentTrainingConfig.model_rebuild(force=True)
         NumericalSettings.model_rebuild(force=True)
-        TrainingRequestSpec.model_rebuild(force=True)
+        DocumentTrainingRequestSpec.model_rebuild(force=True)
         author = original.model_copy(
             update={
-                "training_config": TrainingConfig(),
+                "training_config": DocumentTrainingConfig(),
                 "numerical_settings": NumericalSettings(),
             }
         )
@@ -135,7 +149,7 @@ def test_author_default_move_keeps_nested_stored_absence():
         assert json.loads(new.data)["spec"]["training_config"]["grad_clip"] is None
 
         stored = decode_request(old.data, old.documents.__getitem__)
-        assert isinstance(stored.spec, TrainingRequestSpec)
+        assert isinstance(stored.spec, DocumentTrainingRequestSpec)
         assert stored.spec.training_config.grad_clip == default
         assert stored.spec.numerical_settings.matmul_precision == old_precision
         assert json.loads(new.data)["spec"]["numerical_settings"]["matmul_precision"] == "high"
@@ -143,16 +157,13 @@ def test_author_default_move_keeps_nested_stored_absence():
     finally:
         field.default = default
         precision.default = old_precision
-        TrainingConfig.model_rebuild(force=True)
+        DocumentTrainingConfig.model_rebuild(force=True)
         NumericalSettings.model_rebuild(force=True)
-        TrainingRequestSpec.model_rebuild(force=True)
+        DocumentTrainingRequestSpec.model_rebuild(force=True)
 
 
 def test_cached_absence_preserves_canonical_number_and_boolean_distinctions():
-    source = next(row for row in _read_corpus() if row["kind"] == "train")
-    spec = TrainingRequestSpec.model_validate(source["spec"]).model_copy(
-        update={"training_config": TrainingConfig()}
-    )
+    spec = _managed_train().model_copy(update={"training_config": DocumentTrainingConfig()})
     memo = RequestDocumentMemo()
     baseline = encode_request(spec, {}, document_memo=memo)
 
@@ -224,60 +235,37 @@ def test_figure_raw_mapping_cannot_collide_with_a_typed_expression():
     assert decoded.spec.figure == figure
 
 
-def test_training_documents_keep_semantic_types_and_large_integers():
-    source = _read_corpus()[0]
-    spec = TrainingRequestSpec.model_validate_json(json.dumps(source["spec"]))
-    empty = encode_request(spec.model_copy(update={"graph": GraphSpec()}), {})
-    assert empty.documents[json.loads(empty.data)["spec"]["graph"]] == b"{}"
-    assert decode_request(empty.data, empty.documents.__getitem__).id == empty.id
-    graph = GraphSpec.model_validate(
-        {
-            "subgraphs": {
-                "plant": {
-                    "schema_id": "feedbax.spec.acausal_graph",
-                    "physical_domain": "translational",
-                    "solver": {"solver_type": "euler", "dt": 0.01},
-                },
-            },
-            "nodes": {
-                "node": {
-                    "type": "matrix",
-                    "params": {
-                        "table": {
-                            "schema_id": "feedbax.spec.component_param.array_value",
-                            "schema_version": "feedbax.spec.component_param.array_value.v1",
-                            "encoding": "constant",
-                            "dtype": "uint64",
-                            "shape": [1],
-                            "nonfinite": "forbid",
-                            "value": (1 << 64) - 1,
-                        }
-                    },
-                },
-            },
-        }
-    )
-    spec = spec.model_copy(update={"graph": graph, "seed": (1 << 64) - 1})
+def test_managed_training_preserves_wide_seed_and_factored_payload():
+    spec = _managed_train().model_copy(update={"seed": (1 << 64) - 1})
     request = encode_request(spec, {})
     data = json.loads(request.data)
-    graph_bytes = request.documents[data["spec"]["graph"]]
-    assert b'"value":"18446744073709551615"' in graph_bytes
     assert data["spec"]["seed"] == "18446744073709551615"
     decoded = decode_request(request.data, request.documents.__getitem__)
-    assert decoded.spec == spec
+    assert encode_request(decoded.spec, {}) == request
     with pytest.raises(ValueError, match="Invalid request document bytes"):
         decode_request(request.data, lambda digest: b"{}")
-    edited = spec.model_copy(update={"training_config": TrainingConfig(learning_rate=0.01)})
-    another = encode_request(edited, {})
+    config = spec.training_config.model_copy(update={"batch_size": 9})
+    another = encode_request(spec.model_copy(update={"training_config": config}), {})
     assert another.documents == request.documents
     assert another.id != request.id
 
 
+def test_retired_train_envelope_is_refused():
+    legacy = next(row for row in _read_corpus() if row["kind"] == "train")
+    data = canonical_json_v2_bytes(
+        {"schema": "feedbax.request.v1", "kind": "train", "spec": legacy["spec"], "inputs": {}}
+    )
+    with pytest.raises(ValueError, match="Unsupported stored request envelope"):
+        decode_request(data, {}.__getitem__)
+
+
 def test_shared_spec_keeps_canonical_error_order_and_paths():
     spec = RenderRequestSpec(figure=FigureSpec(name="example", assembler="plot", traces=[]))
-    malformed = spec.model_copy(update={
-        "figure": spec.figure.model_copy(update={"name": chr(0xD800)}),
-    })
+    malformed = spec.model_copy(
+        update={
+            "figure": spec.figure.model_copy(update={"name": chr(0xD800)}),
+        }
+    )
     member = InputMember.model_construct(
         key=chr(0xD800),
         reference=ProductRef(request_id="train:" + "a" * 64, role="checkpoint"),
@@ -295,9 +283,13 @@ def test_shared_spec_keeps_canonical_error_order_and_paths():
 
 def test_shared_spec_keeps_storage_only_input_diagnostics():
     spec = EvaluationRequestSpec(evaluation_type="rollout")
-    member = InputMember(key="candidate", reference=ContentRef(
-        sha256="a" * 64, size=2**53,
-    ))
+    member = InputMember(
+        key="candidate",
+        reference=ContentRef(
+            sha256="a" * 64,
+            size=2**53,
+        ),
+    )
     with pytest.raises(CanonicalJsonError) as error:
         encode_request(spec, {"initial": (member,)})
     assert error.value.code == CanonicalJsonErrorCode.UNSAFE_INTEGER

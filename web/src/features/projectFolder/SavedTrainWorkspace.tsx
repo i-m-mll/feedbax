@@ -11,7 +11,7 @@ import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type Pipelin
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
 import { Dialog } from '@/components/ui/Dialog';
-import { humanizeLabel } from '@/components/values/ValueSpecField';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import type { PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
@@ -241,7 +241,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     problemReveal.reveal.problem.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
     ? problemReveal.reveal : undefined;
   function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
-    const document = field === 'graph' ? modelDocumentId(step?.documentIds) : step?.documentIds?.['payload.task'];
+    const document = field === 'graph' ? modelDocumentId(step?.documentIds)
+      : step?.documentIds?.['payload.trial_documents.task'] ?? step?.documentIds?.['payload.trial_documents.python_task'];
     if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
     if (!localVariant && (!wholeStep || saved.project.sweep)) return undefined;
@@ -337,8 +338,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
   const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
     selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
-  const direct = authored?.base && 'inline' in authored.base ? authored.base.inline : undefined;
-  const managedTrial = step?.kind === 'evaluate' || Boolean(direct?.trial_documents || step?.documentIds?.['payload.trial_documents.model']);
+  const trialStep = step?.kind === 'train' || step?.kind === 'evaluate';
   const trialVisible = windowState.mode !== 'map' &&
     [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
   const selectedSweepValues = new Map<string, Set<string>>();
@@ -365,7 +365,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     : axis?.valueIds.length === 1 ? { kind: 'axis_value', axis: axis.sweepId, value: axis.valueIds[0] } as const
       : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
         : undefined);
-  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, Boolean(managedTrial && trialVisible),
+  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
     !pending && !outside && !snapshot.saving && Boolean(evaluateScope ||
       wholeStep && !saved.project.sweep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train'),
     evaluateScope || undefined);
@@ -397,7 +397,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
-    variantId: variant, evaluation: selectedEvaluation, evaluationReplay, onChooseSweepValue: authoring?.onChooseSweepValue,
+    variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
     namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
   };
@@ -946,7 +946,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const detail = analyze[view];
           return { ...detail, body: withProblem(<StudioErrorBoundary region={studioName(view)}>{detail.body}</StudioErrorBoundary>) };
         }
-        if ((view === 'task' || view === 'objective') && managedTrial) {
+        if ((view === 'task' || view === 'objective') && trialStep) {
+          if (!namedRun) return { body: noView };
           if (!trial.view) return { body: trial.error
             ? withProblem(<p className="p-3 text-sm" role="alert">{trial.error}</p>)
             : <div aria-busy="true" /> };
@@ -965,18 +966,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           };
         }
         if (view === 'model' || view === 'task' || view === 'scene') {
-          const header = view !== 'scene' && authoring && wholeStep && !managedTrial
-            ? <StudioTrainAuthoringForm {...authoring} view={view} documentPicker />
-            : details[view].header;
           const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
           return { ...details[view], header: <>
-            {header}
+            {details[view].header}
             {details[view].path}
             {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
               {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
             </span>}
           </>, body: withProblem(<StudioErrorBoundary region={studioName(view)}>
-            {view === 'task' && authoring && wholeStep && <StudioTrainAuthoringForm {...authoring} taskBinding />}
             {details[view].body}
           </StudioErrorBoundary>) };
         }
@@ -1030,7 +1027,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             </StudioErrorBoundary>),
           };
         }
-        if ((view === 'training' || view === 'objective') && authoring) {
+        if (view === 'training' && authoring) {
           return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} run={namedRun}
             fieldRows={detailInputs.fieldRows} />) };
         }

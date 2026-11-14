@@ -27,7 +27,6 @@ class _Result:
     receipt: Mapping[str, str] | None = None
     error: Mapping[str, str] | None = None
     completion: Mapping[str, Any] | None = None
-    completion_error: Mapping[str, str] | None = None
     model_product: Mapping[str, Any] | None = None
     store_publication_error: Mapping[str, str] | None = None
 
@@ -113,8 +112,6 @@ class _Events:
             data["error"] = result.error
         if result.completion is not None:
             data["completion"] = result.completion
-        if result.completion_error is not None:
-            data["completion_error"] = result.completion_error
         if result.model_product is not None:
             data["model_product"] = result.model_product
         if result.store_publication_error is not None:
@@ -200,14 +197,13 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     )
     from feedbax.host.completion import CompletionFileError
     from feedbax.job_completion import (
-        CompletionUnavailable,
         attest_checkpoint_publication,
         training_binding_path,
         verify_bound_training_completion,
         verify_training_completion,
         verify_training_model_product,
     )
-    from feedbax.orchestration.events import normalize_serialized_metrics
+    from feedbax.training.metrics import normalize_serialized_metrics
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
@@ -236,8 +232,6 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
 
     events.current_phase = "binding"
     launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
-    if launch.spec.trial_documents is None:
-        raise ValueError("/trial_documents: Managed Train requires authored documents.")
     if launch.spec.method_ref != STUDIO_GRAPH_METHOD:
         raise ValueError("Studio training jobs require the registered Studio graph method")
     method = StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
@@ -245,10 +239,9 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     if not launch.manifest_root.is_absolute():
         raise ValueError("manifest_root must be absolute")
     manifest_root = launch.manifest_root.resolve()
-    if launch.canonical_request is not None:
-        if launch.manifest_root != manifest_root:
-            raise ValueError("Canonical Train store must be absolute and canonical")
-        verify_training_request_binding(launch)
+    if launch.manifest_root != manifest_root:
+        raise ValueError("Canonical Train store must be absolute and canonical")
+    verify_training_request_binding(launch)
     if launch.checkpoint_input is not None:
         raise ValueError("The Host delivery owns the resolved Train checkpoint input.")
     checkpoint_root = _attempt_root(manifest_root, job_id)
@@ -264,7 +257,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         ):
             raise CompletionFileError("Host completion bindings changed after assignment.")
         dependencies = strict_json_loads(raw_dependencies)["bindings"]
-    checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
+    checkpoint_ref = launch.canonical_request.checkpoint
     stateful = method.continuation
     source_scope = stateful.source_slots if stateful is not None else "model_only"
     if launch.resume is None or stateful is None:
@@ -342,7 +335,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             source_model.provider if source_model is not None else model_artifact_provider(graph)
         )
         semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
-        if semantic_model is None and launch.canonical_request is not None:
+        if semantic_model is None:
             raise ModelCheckpointError("/graph", "Managed Train requires a typed model checkpoint owner")
         events.phase("building")
         registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
@@ -464,10 +457,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                 "checkpoint": checkpoint.model_dump(mode="json"),
                 "elapsed_seconds": events.elapsed(),
             }
-            if (
-                launch.canonical_request is not None
-                and checkpoint.pointer.completed_coordinate.completed_barrier == "after_train_batch"
-            ):
+            if checkpoint.pointer.completed_coordinate.completed_barrier == "after_train_batch":
                 try:
                     publication["checkpoint_product"] = attest_checkpoint_publication(
                         launch=launch, binding_sha256=binding_sha256, checkpoint=checkpoint, write=write,
@@ -539,7 +529,6 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             checkpoint_content_provider=provider,
             checkpoint_source_content_binding=source_content,
             semantic_model=semantic_model,
-            train_state_codec="standard_train" if semantic_model is not None else "legacy",
             resume=resume is not None,
             registry=registries.training_programs,
             stop_before_update=stop_before_update,
@@ -553,21 +542,12 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         )
         if result.status == "completed" and result.end_completed_batches == target:
             terminal_receipt = receipt("completed")
-            try:
-                completion = verify_training_completion(
-                    producer_job_id=job_id, launch=launch, binding_sha256=binding_sha256,
-                    receipt=terminal_receipt, checkpoint=events.checkpoint,
-                )
-            except (CompletionFileError, CompletionUnavailable) as error:
-                code = "input_unavailable" if isinstance(error, CompletionUnavailable) else "dependency_corrupt"
-                return _Result(
-                    "succeeded", receipt=terminal_receipt,
-                    completion_error={"code": code, "message": str(error)},
-                )
-            model_product = None
-            if launch.canonical_request is not None:
-                product, _ = verify_training_model_product(completion)
-                model_product = product.model_dump(mode="json")
+            completion = verify_training_completion(
+                producer_job_id=job_id, launch=launch, binding_sha256=binding_sha256,
+                receipt=terminal_receipt, checkpoint=events.checkpoint,
+            )
+            product, _ = verify_training_model_product(completion)
+            model_product = product.model_dump(mode="json")
             return _Result(
                 "succeeded", receipt=terminal_receipt, completion=completion, model_product=model_product,
             )
@@ -583,14 +563,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
             error["code"] = "publication_failed"
         try:
             if not manifest_path.exists():
-                payloads = build_training_run_manifest_spec_payloads(
-                    launch.spec,
-                    task_binding_spec=(
-                        launch.spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
-                        if launch.spec.task_binding_spec is not None
-                        else None
-                    ),
-                )
+                payloads = build_training_run_manifest_spec_payloads(launch.spec)
                 checkpoint = events.checkpoint
                 write_manifest(
                     TrainingRunManifest(
@@ -600,8 +573,6 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                         completed_batches=events.completed_updates,
                         training_spec=payloads.training_spec,
                         graph_spec=payloads.graph_spec,
-                        task_spec=payloads.task_spec,
-                        task_binding_spec=payloads.task_binding_spec,
                         checkpoint_custody=(
                             [
                                 ParentRef(

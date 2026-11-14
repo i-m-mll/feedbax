@@ -30,7 +30,7 @@ from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.plugins.application import new_application_registry_bundle
-from tests.test_canonical_evaluate_admission import authored_evaluation_project
+from tests.test_canonical_evaluate_admission import managed_evaluation_definition
 
 
 _KEY = RunKey("default", "analyze", "default")
@@ -38,7 +38,7 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 
 
 def _project() -> Project:
-    project, _ = authored_evaluation_project()
+    project = Project.model_validate(managed_evaluation_definition())
     project.steps = {name: project.steps[name] for name in ("train", "baseline")}
     project.documents["velocity-analysis"] = Document.model_validate(
         {
@@ -353,7 +353,7 @@ def test_figure_binding_and_unselected_evaluate_rows_fail_closed():
     assert "upper" in problem.detail and "unknown_upper" in problem.detail
     assert len(refused.elements) == 2
 
-    original, _ = authored_evaluation_project()
+    original = Project.model_validate(managed_evaluation_definition())
     project.steps["conditions"] = original.steps["conditions"]
     project.steps["analyze"] = Step.model_validate(
         {

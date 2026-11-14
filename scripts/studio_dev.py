@@ -144,7 +144,6 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         FEEDBAX_VITE_CACHE_DIR=str(paths.cache / "vite"),
         XDG_CACHE_HOME=str(paths.cache),
     )
-    os.environ.pop("FEEDBAX_WORKER_URL", None)
     os.environ.pop("VITE_FEEDBAX_E2E", None)
     print(f"Studio data home: {home}", flush=True)
 

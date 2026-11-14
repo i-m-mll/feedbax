@@ -4,7 +4,7 @@ import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { StudioFieldControl } from '@/components/values/StudioFieldControl';
-import { humanizeLabel } from '@/components/values/ValueSpecField';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';

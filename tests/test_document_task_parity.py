@@ -1,10 +1,10 @@
-"""Step 1 exercises the document runtime beside the existing class entry points."""
+"""Qualify document tasks and objectives against captured class outputs."""
 
-import time
+import json
+from pathlib import Path
 
 from dataclasses import replace
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -52,19 +52,10 @@ from feedbax.tasks.document import (
 )
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.model_reset import ModelResetError
-from feedbax.tasks.task import (
-    DelayedReaches,
-    SimpleReaches,
-    Stabilization,
-    gen_epoch_lengths,
-)
-from tests.test_model_document_plan import _model_project
-from feedbax.xabdeef.losses import delayed_reach_loss, simple_reach_loss
-from feedbax.xabdeef.models import point_mass_nn
+from tests.test_model_document_plan import _nested_model
 
 PERIOD = 0.01
 STEPS = 80
-WORKSPACE = jnp.array([[-0.4, -0.3], [0.5, 0.45]])
 POINT = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
 REAL = ValueType(base=ValueBase.REAL)
 TIME_TYPE = ValueType(base=ValueBase.REAL, dimensions=TIME)
@@ -82,7 +73,7 @@ def reset_position(interface):
 
 
 def _model_payload(*, curl=False, writable_gru=False, rename=False):
-    payload = _model_project()["documents"]["reach-model"]["payload"]
+    payload = _nested_model()
     payload["step_seconds"] = PERIOD
     inputs = payload["ports"]["inputs"]
     inputs[0]["type"]["unit"] = "m"
@@ -179,7 +170,7 @@ def expression(text, scope=()):
     return result.value
 
 
-def example(kind, functions, *, zero=False, interface=PORTLESS, old=None):
+def example(kind, functions, *, zero=False, interface=PORTLESS, reference_validation=False):
     delayed = kind == "delayed"
     initial = kind == "stabilization"
     names = (
@@ -245,7 +236,7 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, old=None):
         signals=tuple(signals),
         links=(Link(model_field=reset_position(interface).to_text(), variable="start"),) if interface.reset.fields else (),
         fixed_steps=STEPS,
-        validation_trials=validation_rows(kind, old) if old else (ValidationTrial(),),
+        validation_trials=validation_rows(kind) if reference_validation else (ValidationTrial(),),
     )
     task = compile_task(
         doc,
@@ -257,63 +248,24 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, old=None):
     return doc, task
 
 
-def legacy(kind):
-    common = dict(n_steps=STEPS + 1, workspace=WORKSPACE, eval_grid_n=2)
-    if kind == "delayed":
-        return DelayedReaches(
-            **common, loss_func=delayed_reach_loss(), catch_metadata_policy="flag"
-        )
-    cls = Stabilization if kind == "stabilization" else SimpleReaches
-    return cls(**common, loss_func=simple_reach_loss(), epoch_name="move")
+REFERENCE_DIR = Path(__file__).parent / "fixtures" / "retirement"
 
 
-def validation_rows(kind, old):
-    size = old.eval_grid_n
-    bounds = np.asarray(old.workspace)
-    stabilization = kind == "stabilization"
-    ticks = [
-        np.linspace(lo, hi, size if stabilization else size + 2, dtype=np.float32)
-        for lo, hi in bounds.T
-    ]
-    if not stabilization:
-        ticks = [axis[1:-1] for axis in ticks]
-    start = np.stack(np.meshgrid(*ticks), axis=-1).reshape(-1, 2)
-    if stabilization:
-        goal = start
-    else:
-        angles = np.arange(old.eval_n_directions) * (2 * np.pi / old.eval_n_directions)
-        offsets = old.eval_reach_length * np.stack((np.cos(angles), np.sin(angles)), axis=-1)
-        goal = (start[:, None] + offsets).reshape(-1, 2)
-        start = np.repeat(start, old.eval_n_directions, axis=0)
-    if kind == "delayed":
-        trials_key = jr.split(jr.PRNGKey(old.seed_validation), 3)[0]
-        epoch_keys = jax.vmap(lambda key: jr.split(key)[0])(jr.split(trials_key, len(start)))
-        lengths = jax.vmap(lambda key: gen_epoch_lengths(key, old.epoch_len_ranges))(epoch_keys)
-    rows = []
-    for i, (a, b) in enumerate(zip(start, goal, strict=True)):
-        variables = {"start": tuple(map(float, a)), "target": tuple(map(float, b))}
-        epoch_steps = {}
-        if kind == "delayed":
-            variables["catch"] = False
-            epoch_steps = dict(zip(("hold", "cue"), map(int, lengths[i]), strict=True))
-        rows.append(ValidationTrial(variables=variables, epoch_steps=epoch_steps))
-    return tuple(rows)
+def reference_metadata():
+    return json.loads((REFERENCE_DIR / "reference.json").read_text())
 
 
-def overrides(kind, old_trials):
-    start = old_trials.inits["mechanics.effector"].pos
-    target = (
-        old_trials.inputs.effector_target
-        if kind != "simple"
-        else old_trials.inputs["effector_target"]
+def validation_rows(kind):
+    return tuple(
+        ValidationTrial.model_validate(row)
+        for row in reference_metadata()["tasks"][kind]["validation_rows"]
     )
-    given = {"start": start, "target": target.pos[:, -1]}
-    epoch_steps = {}
-    if kind == "delayed":
-        lengths = jnp.diff(old_trials.timeline.epoch_bounds, axis=-1)
-        given["catch"] = old_trials.extra["is_catch_trial"]
-        epoch_steps = {"hold": lengths[:, 0], "cue": lengths[:, 1]}
-    return TaskParameters(variables=given, epoch_steps=epoch_steps)
+
+
+@pytest.fixture(scope="module")
+def references():
+    with np.load(REFERENCE_DIR / "legacy_task_reference.npz", allow_pickle=False) as arrays:
+        yield arrays
 
 
 def objective(kind, task, functions):
@@ -381,114 +333,63 @@ def vectorized_signals(kind, trial):
 
 
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
-def test_document_trial_and_objective_match_legacy(kind, functions):
-    old = legacy(kind)
-    doc, task = example(kind, functions, old=old)
+def test_document_trial_and_objective_match_reference(kind, functions, references):
+    doc, task = example(kind, functions, reference_validation=True)
     assert TaskDocument.model_validate_json(doc.model_dump_json()) == doc
     run_key = jr.key(1)
     keys = jr.split(run_key, 250)
-    old_trials = jax.jit(jax.vmap(old.get_train_trial))(keys)
-    given = overrides(kind, old_trials)
+    fixture = f"{kind}/train"
+    variables = {name: jnp.asarray(references[f"{fixture}/variables/{name}"]) for name in ("start", "target")}
+    epoch_steps = {}
+    if kind == "delayed":
+        variables["catch"] = jnp.asarray(references[f"{fixture}/variables/catch"])
+        epoch_steps = {
+            name: jnp.asarray(references[f"{fixture}/epoch_steps/{name}"]) for name in ("hold", "cue")
+        }
+    given = TaskParameters(variables=variables, epoch_steps=epoch_steps)
     batch = jax.jit(jax.vmap(lambda key, parameters: task.ahead(parameters, run_key, key)))
     trial = batch(keys, given)
-    expected_inputs = old_trials.inputs
-    effector = (
-        expected_inputs.effector_target if kind != "simple" else expected_inputs["effector_target"]
-    )
-    np.testing.assert_array_equal(trial.inputs["target_pos"], effector.pos)
-    np.testing.assert_array_equal(trial.inputs["target_vel"], effector.vel)
-    np.testing.assert_array_equal(
-        trial.inputs["goal"], old_trials.targets["mechanics.effector.pos"].value
-    )
-    np.testing.assert_array_equal(
-        trial.variables["start"], old_trials.inits["mechanics.effector"].pos
-    )
-    np.testing.assert_array_equal(trial.epochs.starts, old_trials.timeline.epoch_bounds[:, :-1])
-    np.testing.assert_array_equal(trial.epochs.ends, old_trials.timeline.epoch_bounds[:, 1:])
-    assert (trial.epochs.outcomes == EpochEnd.LENGTH).all()
-    if kind == "delayed":
-        np.testing.assert_array_equal(trial.inputs["fixation"], expected_inputs.hold[..., 0])
-        np.testing.assert_array_equal(trial.inputs["target_on"], expected_inputs.target_on[..., 0])
-        np.testing.assert_array_equal(trial.variables["catch"], old_trials.extra["is_catch_trial"])
+    validation = jax.jit(task.validation)(TaskParameters(), run_key)
+    limits = reference_metadata()["comparison"]
+    for cohort, result in (("train", trial), ("validation", validation)):
+        prefix = f"{kind}/{cohort}"
+        for signal, data in result.inputs.items():
+            expected = references[f"{prefix}/inputs/{signal}"]
+            if cohort == "validation" and data.dtype.kind == "f":
+                np.testing.assert_allclose(data, expected, **limits["validation_float"])
+            else:
+                np.testing.assert_array_equal(data, expected)
+            np.testing.assert_array_equal(result.present[signal], references[f"{prefix}/present/{signal}"])
+        bounds = references[f"{prefix}/epoch_bounds"]
+        np.testing.assert_array_equal(result.epochs.starts, bounds[:, :-1])
+        np.testing.assert_array_equal(result.epochs.ends, bounds[:, 1:])
+        np.testing.assert_allclose(result.variables["start"], references[f"{prefix}/init/pos"],
+                                   **limits["validation_float"])
+        assert (result.epochs.outcomes == EpochEnd.LENGTH).all()
     for signal, expected in vectorized_signals(kind, trial).items():
         np.testing.assert_array_equal(trial.inputs[signal], expected)
-    validation = jax.jit(task.validation)(TaskParameters(), run_key)
-    legacy_validation = old.validation_trials
-    target = legacy_validation.targets["mechanics.effector.pos"].value
-    assert validation.inputs["goal"].shape == (old.n_validation_trials, STEPS, 2)
-    np.testing.assert_allclose(validation.inputs["goal"], target, rtol=0, atol=3e-7)
-    np.testing.assert_allclose(
-        validation.variables["start"],
-        legacy_validation.inits["mechanics.effector"].pos,
-        rtol=0,
-        atol=3e-7,
-    )
-    np.testing.assert_array_equal(
-        validation.epochs.starts, legacy_validation.timeline.epoch_bounds[:, :-1]
-    )
-    np.testing.assert_array_equal(
-        validation.epochs.ends, legacy_validation.timeline.epoch_bounds[:, 1:]
-    )
     np.testing.assert_array_equal(
         validation.inputs["goal"], task.validation(TaskParameters(), jr.key(99)).inputs["goal"]
     )
 
-    old_inputs = legacy_validation.inputs
-    old_effector = old_inputs["effector_target"] if kind == "simple" else old_inputs.effector_target
-    np.testing.assert_allclose(validation.inputs["target_pos"], old_effector.pos, rtol=0, atol=3e-7)
-    np.testing.assert_array_equal(validation.inputs["target_vel"], old_effector.vel)
-    if kind == "delayed":
-        np.testing.assert_array_equal(validation.inputs["fixation"], old_inputs.hold[..., 0])
-        np.testing.assert_array_equal(validation.inputs["target_on"], old_inputs.target_on[..., 0])
-        assert not validation.variables["catch"].any()
-
-    # Compare objective values on an actual PointMass controller rollout.
-    model = point_mass_nn(old, n_steps=STEPS + 1, dt=PERIOD, hidden_size=4, key=jr.key(7))
-    states = old.eval_trials(model, old_trials, keys)
     retained = {
-        "hand": states.mechanics.effector.pos,
-        "velocity": states.mechanics.effector.vel,
-        "command": states.efferent.output,
-        "activity": states.net.hidden,
+        name: jnp.asarray(references[f"{kind}/objective/observed/{name}"])
+        for name in ("hand", "velocity", "command", "activity")
     }
     executor = objective(kind, task, functions)
-    # The fixation signal has an explicit zero outside the scored epochs.
-    results = jax.jit(
-        lambda kept: executor.evaluate(
-            kept,
-            trial,
-            run_key=run_key,
-            trial_keys=keys,
-        )
-    )(retained)
-    if kind == "simple":
-        # The legacy trainer stores this discount once for the batch. Raw vmap
-        # broadcasts the shared field, so restore its declared batch axes.
-        old_trials = eqx.tree_at(
-            lambda trial: trial.targets["mechanics.effector.pos"].discount,
-            old_trials,
-            old_trials.targets["mechanics.effector.pos"].discount[0],
-        )
-    expected_loss = old.loss_func(states, old_trials, model)
+    results = jax.jit(lambda kept: executor.evaluate(kept, trial, run_key=run_key, trial_keys=keys))(retained)
     tree = executor(retained, trial, ObjectiveInputs(run_key, keys))
-    assert tree.total == pytest.approx(float(results.loss), rel=2e-5, abs=1e-6)
-    assert results.loss == pytest.approx(float(expected_loss.total), rel=2e-5, abs=1e-6)
+    tolerance = limits["objective_float"]
+    np.testing.assert_allclose(tree.total, results.loss, **tolerance)
+    np.testing.assert_allclose(results.loss, references[f"{kind}/objective/total"], **tolerance)
     for term, observed in results.terms.items():
         assert int(observed.covered) == keys.shape[0]
-        assert float(observed.value) == pytest.approx(
-            float(expected_loss[term].total), rel=2e-5, abs=1e-6
+        np.testing.assert_allclose(
+            observed.value, references[f"{kind}/objective/terms/{term}/weighted_total"], **tolerance,
         )
 
-    samples = []
-    for _ in range(7):
-        start = time.perf_counter()
-        batch(keys, given).inputs["goal"].block_until_ready()
-        samples.append((time.perf_counter() - start) * 1000)
-    median = np.median(samples)
-    print(f"{kind} batch250 median {median:.3f} ms")
 
-
-def test_zero_length_and_delayed_distribution(functions):
+def test_zero_length_and_delayed_distribution(functions, references):
     _, zero = example("delayed", functions, zero=True)
     key = jr.key(5)
     trial = jax.jit(zero.ahead)(TaskParameters(), key, key)
@@ -497,18 +398,7 @@ def test_zero_length_and_delayed_distribution(functions):
     assert trial.present["target_pos"][-1]
 
     _, task = example("delayed", functions)
-    old = legacy("delayed")
-    old_keys = jr.split(jr.key(16), 20_000)
     new_keys = jr.split(jr.key(17), 20_000)
-
-    def old_draw(key):
-        trial = old.get_train_trial(key)
-        return (
-            jnp.diff(trial.timeline.epoch_bounds)[:2],
-            trial.extra["is_catch_trial"],
-            trial.inits["mechanics.effector"].pos,
-            trial.inputs.effector_target.pos[-1],
-        )
 
     def new_draw(key):
         prepared, _ = task.init(TaskParameters(), key, key)
@@ -520,9 +410,9 @@ def test_zero_length_and_delayed_distribution(functions):
             prepared.values["target"],
         )
 
-    before = jax.jit(jax.vmap(old_draw))(old_keys)
+    before = tuple(references[f"delayed/distribution/{field}"] for field in ("epoch_lengths", "catch", "start", "target"))
     after = jax.jit(jax.vmap(new_draw))(new_keys)
-    for index, (lo, hi) in enumerate(old.epoch_len_ranges):
+    for index, (lo, hi) in enumerate(reference_metadata()["tasks"]["delayed"]["distribution"]["epoch_ranges_half_open"]):
         for values in (before[0][:, index], after[0][:, index]):
             np.testing.assert_array_equal(np.unique(values), np.arange(lo, hi))
             proportions = np.bincount(np.asarray(values) - lo) / len(values)
@@ -757,8 +647,7 @@ def test_trial_configuration_changes_force_without_mutating_model():
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
 def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions, paired_model):
     interface, graph = paired_model
-    old = legacy(kind)
-    doc, task = example(kind, functions, interface=interface, old=old)
+    doc, task = example(kind, functions, interface=interface, reference_validation=True)
     (port,) = interface.inputs
     (command,) = interface.outputs
     assert port.required and port.type == POINT
@@ -841,23 +730,15 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
 
 
 @pytest.mark.parametrize("kind", ["simple", "stabilization"])
-def test_reach_and_stabilization_sample_distributions(kind, functions):
+def test_reach_and_stabilization_sample_distributions(kind, functions, references):
     _, task = example(kind, functions)
-    old = legacy(kind)
-    before_keys = jr.split(jr.key(24), 20_000)
     after_keys = jr.split(jr.key(25), 20_000)
-
-    def legacy_positions(key):
-        trial = old.get_train_trial(key)
-        return trial.inits["mechanics.effector"].pos, trial.targets["mechanics.effector.pos"].value[
-            0
-        ]
 
     def document_positions(key):
         prepared, _ = task.init(TaskParameters(), key, key)
         return prepared.values["start"], prepared.values["target"]
 
-    before = jax.jit(jax.vmap(legacy_positions))(before_keys)
+    before = tuple(references[f"{kind}/distribution/{field}"] for field in ("start", "target"))
     after = jax.jit(jax.vmap(document_positions))(after_keys)
     for old_values, new_values in zip(before, after, strict=True):
         for axis in range(2):

@@ -40,11 +40,11 @@ def _python_project():
 
 
 def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  # noqa: F811
-    app = create_app(projects_dir=tmp_path / "projects", enable_evaluation_candidate=True)
+    app = create_app(projects_dir=tmp_path / "projects")
     with TestClient(app) as client:
         registry = app.state.bootstrap_state.bundle
         folders = app.state.project_folders
-        jobs = JobService(host, registry, enable_evaluation_candidate=True)
+        jobs = JobService(host, registry)
         app.state.job_service = jobs
         project = "trial-authoring"
         raw = _python_project()

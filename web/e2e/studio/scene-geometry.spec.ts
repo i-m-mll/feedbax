@@ -12,7 +12,7 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
 const projectId = 'scene-geometry';
 const projectUrl = `/api/projects/${projectId}`;
-const params = '/payload/subgraphs/mechanics/nodes';
+const params = '/payload/interior/components/mechanics/interior/components';
 type Probe = Window & { sceneProof: ReturnType<typeof mountSceneProbe> };
 type Point = [number, number];
 type NativeSample = {
@@ -156,8 +156,8 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
   await expect(guide).toHaveText('0.03, -0.09 m');
 
   const editedRevision = await patch(request, initial.chain.revision, [
-    { op: 'replace', path: `${params}/forearm/params/length`, value: 0.37 },
-    { op: 'replace', path: `${params}/cross_chain/params/path_points/1/offset`, value: [0.05, -0.07] },
+    { op: 'replace', path: `${params}/forearm/fields/length`, value: 0.37 },
+    { op: 'replace', path: `${params}/cross_chain/fields/path_points/1/offset`, value: [0.05, -0.07] },
   ]);
   const { chain: edited } = await fixture('read', folder, 'chain');
   expect(edited.revision).toBe(editedRevision);
@@ -179,7 +179,7 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
   await show(page, address, { kind: 'inspection', qpos: [0.4] });
   await expectInvalidGeometry(page, 'scene.invalid_pose', /coordinate per joint/);
   const invalid = await patch(request, editedRevision, [
-    { op: 'replace', path: `${params}/cross_chain/params/path_points/1/frame`, value: 'missing.distal' },
+    { op: 'replace', path: `${params}/cross_chain/fields/path_points/1/frame`, value: 'missing.distal' },
   ]);
   await show(page, source('chain', invalid), { kind: 'reference' });
   await expectInvalidGeometry(page, 'mechanics.muscle_path_missing_frame', /cross_chain.*missing\.distal/);

@@ -10,16 +10,15 @@ from feedbax.mechanics import DiffraxBackend, Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.training.rl.env import RLEnvConfig, rl_env_reset_sampled, rl_env_step
 
 
 @pytest.mark.usefixtures("enable_jax_x64")
-@pytest.mark.parametrize("path", ["legacy", "diffrax", "rl"])
+@pytest.mark.parametrize("path", ["legacy", "diffrax"])
 def test_two_link_step_projects_only_the_crossing_angle(path):
     key = jax.random.PRNGKey(0)
     dt = 0.02
     arm = TwoLinkArm()
-    dtype = jnp.float32 if path == "rl" else jnp.float64
+    dtype = jnp.float64
     start = TwoLinkArmState(
         angle=jnp.array([0.01, 0.5], dtype=dtype),
         d_angle=jnp.array([-2.0, 0.3], dtype=dtype),
@@ -30,15 +29,6 @@ def test_two_link_step_projects_only_the_crossing_angle(path):
 
     def step(clip_states):
         plant = DirectForceInput(arm, clip_states=clip_states)
-        if path == "rl":
-            config = RLEnvConfig(n_steps=3, dt=dt, frame_skip=1, n_joints=2, n_muscles=2)
-            state = rl_env_reset_sampled(plant, config, key)
-            state = state._replace(
-                plant_state=eqx.tree_at(lambda s: s.skeleton, state.plant_state, start)
-            )
-            state, obs, _, _ = eqx.filter_jit(rl_env_step)(plant, config, state, action)
-            return state.plant_state.skeleton, obs[6:8]
-
         backend = DiffraxBackend(control_dt=dt) if path == "diffrax" else None
         mechanics = Mechanics(plant, dt, backend=backend)
         state = init_state_from_component(mechanics)

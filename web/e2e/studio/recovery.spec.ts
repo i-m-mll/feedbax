@@ -101,7 +101,7 @@ const test = base.extend<{ studio: RecoveryStudio }>({
     };
     const healthy = async () => {
       try {
-        return (await request.get(`${origin}/api/provider/health`, { timeout: 1000 })).ok();
+        return (await request.get(`${origin}/api/health`, { timeout: 1000 })).ok();
       } catch {
         return false;
       }

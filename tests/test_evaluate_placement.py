@@ -63,7 +63,7 @@ def test_same_evaluate_products_inside_driver_and_ordinary_job(host, tmp_path, m
     assert len(task.condition_ids) >= trial_count
     store = ImmutableArtifactBlobProvider(plan.store_path)
     request = store.store_rooted_object(plan.plan.requests[evaluate.request_id], namespace="qualification-evaluate")
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     template = jobs._training_worker
     env = template.env | {
         "PYTHONPATH": str(Path(__file__).resolve().parents[1]),

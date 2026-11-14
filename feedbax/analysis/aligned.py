@@ -8,25 +8,14 @@ import feedbax._vendor.jax_cookbook.tree as jtree
 from equinox import Module, field
 from feedbax._vendor.jax_cookbook import (
     LDict,
-    compose,
     is_module,
     is_type,
 )
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.analysis.analysis import (
-    AbstractAnalysis,
-    NoPorts,
-    get_validation_trial_specs,
-)
-from feedbax.analysis.state_utils import (
-    get_pos_endpoints,
-    get_trial_start_positions,
-    unsqueezer,
-)
+from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.support import _OptionalCallableFieldConverter
 from feedbax.config.defaults import EVAL_REACH_LENGTH
-from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.types import (
     AnalysisInputData,
     Direction,
@@ -36,27 +25,10 @@ from feedbax.analysis.types import (
 )
 
 if TYPE_CHECKING:
-    from feedbax.tasks import AbstractTask
     import plotly.graph_objects as go
 
 VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
-
-
-def get_reach_directions(task: "AbstractTask", *args) -> Array:
-    pos_endpoints = get_pos_endpoints(get_validation_trial_specs(task))
-    return pos_endpoints[1] - pos_endpoints[0]
-
-
-def get_trivial_reach_directions(task: "AbstractTask", *args) -> Array:
-    """Return 'aligns' 'reaches' with the x-y axes; i.e. effectively does nothing.
-
-    The purpose of this is to avoid (for now) trying to bypass `AlignedVars` as a dependency of
-    other analyses (e.g. `Profiles`) in cases where it doesn't make sense to align with a certain
-    directon (e.g. certain steady-state tasks performed using `SimpleReaches`).
-    """
-    origins, _ = get_pos_endpoints(get_validation_trial_specs(task))
-    return jnp.broadcast_to(jnp.array([1.0, 0.0]), origins.shape)
 
 
 def _where_force(states, *_):
@@ -80,7 +52,6 @@ DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
         ResponseVar.POSITION: VarSpec(
             where=lambda states, *_: states.mechanics.effector.pos,
             labels=Labels("Position", "Pos.", "p"),
-            origin=compose(get_trial_start_positions).then(unsqueezer(-2)),
         ),
         ResponseVar.VELOCITY: VarSpec(
             where=lambda states, *_: states.mechanics.effector.vel,
@@ -174,18 +145,11 @@ def get_aligned_vars(vars, directions):
     )
 
 
-def get_reach_origins_directions(task: "AbstractTask", models: PyTree[Module], hps: TreeNamespace):
-    pos_endpoints = get_pos_endpoints(get_validation_trial_specs(task))
-    directions = pos_endpoints[1] - pos_endpoints[0]
-    origins = pos_endpoints[0]
-    return origins, directions
-
-
 class AlignedVars(AbstractAnalysis[NoPorts]):
     """Align spatial variable (e.g. position and velocity) coordinates with the reach direction."""
 
+    directions_fn: Callable = eqx.field(kw_only=True)
     varset: PyTree[VarSpec] = eqx.field(default_factory=lambda: DEFAULT_VARSET)
-    directions_fn: Callable = get_reach_directions
 
     def compute(
         self,

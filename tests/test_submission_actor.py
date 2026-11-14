@@ -30,7 +30,6 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
     projects = tmp_path / "projects"
     project = "reaching"
     for name, content in dump_text_project(

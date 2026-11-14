@@ -46,27 +46,3 @@ Studio's Quit command closes the GUI. Its per-user background service continues 
 The application menu has Reconnect, Login Items and Service Logs. A run that finishes or fails can notify you when its project window is in the background. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
 
 Installed files live inside the app bundle. Durable application state lives under `~/.feedbax`, with configuration in `config`, preferences in `settings` and the default workspace under `workspace`. Project-selected output locations retain models, checkpoints and results. `~/.cache/feedbax` contains disposable compilation files, temporary files and bounded service logs. Replacement and uninstall preserve durable state and project data.
-
-Import a self-contained UTF-8 MJCF document through the authenticated Studio endpoint `POST /api/graphs/assets/mujoco` with the XML as the request body. Use the returned content reference as `mujoco_asset.asset` in the authored graph. Studio retains the exact asset in its durable web content store and resolves the same reference when opening the project, training and resuming.
-
-## Qualify the signed MJX CPU candidate
-
-Generate the fixture inputs with the source development environment. Copy the harness and JSON to a private QA directory outside the developer checkout. Every installed harness command uses the signed app's bundled interpreter and the exact installed fixture root.
-
-```sh
-uv run --no-sync python -m scripts.qualify_biomechanics_desktop author > "$QA/fixtures.json"
-cp scripts/qualify_biomechanics_desktop.py "$QA/"
-CONTENTS="$APP/Contents"
-PYTHON="$CONTENTS/Resources/python/bin/python3.12"
-LAUNCHER="$CONTENTS/MacOS/feedbax-studio"
-```
-
-Install the retained signed archive using its receipt and verify native background-service readiness. For the source-denial phase, stop the registered service and run the exact installed launcher with `service serve` under the host's fixture sandbox. Deny reads from the developer checkout, Homebrew and dependency stores, and deny writes inside the app. Keep the fixture state and JIT cache writable. Prove both sandbox denials before collecting results. Start a fresh service under the same sandbox after the checkpoint stop. Keep the native installation and each service-generation receipt together.
-
-Run the harness as `"$PYTHON" -I -B "$QA/qualify_biomechanics_desktop.py"`. Keep `QA` outside the app and readable by the sandbox. Pass `--contents "$CONTENTS" --fixture-root "$FIXTURE"` to commands that address the installed app. Capture each command's JSON output. The harness submits retained CPU jobs to the installed Host and writes custody under the fixture workspace. These jobs are read through the harness. The ordinary managed Train and its Studio Activity, Quit and reopen checks remain a separate acceptance case.
-
-1. Run `start "$QA/fixtures.json" planar-rigid --batches 2 --checkpoint-interval 1`. Use the returned job ID with `snapshot "$JOB" --status completed`, then run `checkpoint "$QA/fixtures.json" planar-rigid "$JOB"`. A successful job has finite update metrics and a positive first gradient. The checkpoint reader authenticates the terminal retained transaction, restores the model and checks the controller weights, planar observation and muscle state.
-2. Open the installed GUI and start `spatial-mixed` with a batch target large enough to span Quit and relaunch. Use a short checkpoint interval. Capture `snapshot "$JOB" --status running --gui present`, then quit the GUI and capture an absent-GUI snapshot. Reopen and capture a present-GUI snapshot. Pass the prior event sequence and completed update as `--after-sequence` and `--after-update` for each subsequent sample. Keep the start command's project and job IDs. Run `prove-quit` on the three snapshots to compare the service, worker, job and progress.
-3. Request `"$LAUNCHER" service stop checkpoint`. With the service stopped, run `checkpoint "$QA/fixtures.json" spatial-mixed "$JOB" --source-snapshot "$QA/reopened.json"`. Restart the service and use `resume "$JOB" "$PROJECT" "$QA/fixtures.json" spatial-mixed`. The successor uses the same spec and the authenticated source transaction. Let it complete or checkpoint-stop it. If stopped, use its own pre-stop snapshot for offline inspection. Run `prove-resume` on both checkpoint records to verify the generation changed, the exact checkpoint lineage, further controller updates, the same authored model, XYZ observations, quaternion normalization and mixed muscle widths.
-
-Run `cache-probe` with the bundled interpreter under the same sandbox. It compiles a small CPU executable and verifies an actual write to the fixture's configured JIT cache. Retain the exact release and dependency identities, source-denial and native readiness logs, signed size, startup time, bundled MuJoCo notices, native inventory and cache proof. Stop and unregister the fixture after acceptance.

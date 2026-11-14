@@ -27,14 +27,11 @@ from feedbax.models.networks import (
     population_readout_kernel_mask,
     population_structure_from_spec,
 )
-from feedbax.objectives.loss import TermTree
 from feedbax.runtime.components import Linear
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.compiler.serialization import graph_to_spec
-from feedbax.tasks import TaskTrialSpec
 from feedbax.training.studio_executor import StudioUpdateKernel
-from feedbax.training.trainer import training_step_for_abstract_loss
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -129,8 +126,7 @@ def test_same_name_replacement_keeps_its_initialized_weight() -> None:
     assert apply_parameter_constraints(original).get_node("readout").layer.weight.item() == 7.0
 
 
-@pytest.mark.parametrize("entry_point", ["supervised", "studio"])
-def test_nested_parameter_constraints_survive_gradient_updates(entry_point: str) -> None:
+def test_nested_parameter_constraints_survive_gradient_updates() -> None:
     spec = GraphSpec(
         nodes={
             "readout": ComponentSpec(
@@ -185,34 +181,15 @@ def test_nested_parameter_constraints_survive_gradient_updates(entry_point: str)
     assert jnp.array_equal(weight(graph), jnp.array([[0.25, 0.0]]))
     # With all-ones inputs and initial output 0.25, both weights have gradient -1.5.
 
-    if entry_point == "supervised":
-        trial_specs = TaskTrialSpec(inits={}, targets={}, inputs={"input": inputs[None, None]})
-        keys = jax.random.split(key, 1)
-        init_states = eqx.filter_vmap(lambda key: graph.init_state(key=key))(keys)
-
-        def loss(_states, trials, model):
-            outputs = jax.vmap(lambda trial_inputs: predict(model, trial_inputs, key))(
-                trials.inputs["input"][:, 0]
-            )
-            return TermTree.leaf("squared_error", squared_error(outputs))
-
-        trained, _, _, _ = training_step_for_abstract_loss(
-            optimizer, graph, opt_state, loss, eqx.is_inexact_array, trial_specs, init_states, keys
-        )
-    else:
-        kernel = StudioUpdateKernel(
-            compiled=SimpleNamespace(
-                graph=graph,
-                trainable_filter=eqx.is_inexact_array,
-                training_spec=SimpleNamespace(batch_size=1),
-            ),
-            optimizer=optimizer,
-            rollout_fn=lambda model, _plan, key: predict(model, inputs, key),
-            evaluate_loss_fn=lambda _plan, outputs: (squared_error(outputs), {}),
-        )
-        trained = kernel(
-            {"model": graph, "optimizer": opt_state, "prng": key, "batch_counter": jnp.int32(0)}
-        )["model"]
+    kernel = StudioUpdateKernel(
+        compiled=SimpleNamespace(graph=graph, trainable_filter=eqx.is_inexact_array),
+        optimizer=optimizer,
+        batch_size=1,
+        score_batch=lambda model, key, _count: (squared_error(predict(model, inputs, key)), {}),
+    )
+    trained = kernel(
+        {"model": graph, "optimizer": opt_state, "prng": key, "batch_counter": jnp.int32(0)}
+    )["model"]
 
     assert weight(trained)[0, 0] == 0.25
     assert float(weight(trained)[0, 1]) == pytest.approx(0.15)

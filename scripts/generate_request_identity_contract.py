@@ -14,6 +14,7 @@ from feedbax.contracts.request_identity_guard import (
 )
 
 _CONTRACT = Path("feedbax/contracts/request_identity_contract.json")
+_RETIREMENTS = frozenset({"m2-train-v1-retirement"})
 
 
 def main() -> None:
@@ -30,7 +31,7 @@ def main() -> None:
         old = subprocess.check_output(
             ["git", "show", f"{args.base}:{_CONTRACT.as_posix()}"], timeout=15
         )
-        validate_identity_transition(json.loads(old), candidate)
+        validate_identity_transition(json.loads(old), candidate, migrations=_RETIREMENTS)
     if args.write:
         _CONTRACT.write_text(json.dumps(candidate, sort_keys=True, indent=2) + "\n")
     elif checked != candidate:

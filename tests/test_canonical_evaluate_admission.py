@@ -18,7 +18,7 @@ from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
 from feedbax.host.evaluate_success import publish_evaluate_success
-from feedbax.jobs import JobConflict, JobNotFound, JobService
+from feedbax.jobs import JobConflict, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
@@ -34,51 +34,9 @@ from feedbax.training.studio_executor import studio_training_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
-from tests.test_studio_training_host_worker import _authored_spec
 from tests.support.store_damage import writable_store_object
 
 host = host_fixture
-
-
-def authored_evaluation_project():
-    from tests.test_studio_training_host_worker import _authored_request
-
-    spec = _authored_spec(batches=2, sampled_hold=True)
-    train_payload = _authored_request(batches=2, sampled_hold=True).model_dump(mode="json", exclude_none=True)
-    step = {
-        "kind": "evaluate",
-        "base": {"inline": {
-            "evaluation_type": ROLLOUT_TYPE,
-            "params": {
-                "seed": 731,
-                "trials": ["alpha", "beta", "gamma"],
-                "trial_policy": "paired",
-                "variation": [],
-            },
-        }},
-        "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
-    }
-    sweep = {"axes": {"mass": {"values": {
-        name: {"value": mass, "patches": {"params.variation": {"value": [
-            {"path": "graph.nodes.plant.params.mass", "op": "replace", "value": mass},
-        ]}}}
-        for name, mass in (("nominal", 1), ("heavy", 2))
-    }}}}
-    authored = Project.model_validate({"steps": {
-        "train": {"kind": "train", "base": {"inline": train_payload}},
-        "baseline": step,
-        "conditions": step | {"sweep": sweep},
-        "unsupported-condition": step | {"base": {"inline": {
-            "evaluation_type": ROLLOUT_TYPE,
-            "params": step["base"]["inline"]["params"] | {
-                "variation": [{"path": "nodes.plant.params.damping", "op": "replace", "value": 1}],
-            },
-        }}},
-        "unsupported": step | {
-            "inputs": {"subject": {"step": "train", "checkpoint": {"best_by": "loss"}}},
-        },
-    }})
-    return authored, spec
 
 
 def _save_project(folders, project, authored):
@@ -94,24 +52,30 @@ def managed_evaluation_definition():
     from feedbax.contracts.model_address import ModelAddress
     from tests.test_document_train_pair import authored_documents, document_project
 
-    raw = document_project(authored_documents())
-    legacy, _ = authored_evaluation_project()
-    raw["steps"].update({
-        name: step.model_dump(mode="json", by_alias=True, exclude_unset=True)
-        for name, step in legacy.steps.items()
-        if name != "train"
-    })
-    for name, step in raw["steps"].items():
-        if name != "train":
-            params = step["base"]["inline"]["params"]
-            params.pop("trials")
-            params["trial_set"] = {"kind": "every_condition"}
+    raw = document_project(authored_documents(), evaluation=True)
+    baseline = raw["steps"]["baseline"]
     mass = ModelAddress.model_validate({
         "document": "reach-model", "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     }).to_text()
-    for member in raw["steps"]["conditions"]["sweep"]["axes"]["mass"]["values"].values():
-        member["patches"] = {mass: {"value": member["value"]}}
+    sweep = {"axes": {"mass": {"values": {
+        name: {"value": value, "patches": {mass: {"value": value}}}
+        for name, value in (("nominal", 1), ("heavy", 2))
+    }}}}
+    raw["steps"].update(
+        conditions=baseline | {"sweep": sweep},
+        **{
+            "unsupported-condition": baseline | {"base": {"inline": {
+                "evaluation_type": ROLLOUT_TYPE,
+                "params": baseline["base"]["inline"]["params"] | {
+                    "variation": [{"path": "nodes.plant.params.damping", "op": "replace", "value": 1}],
+                },
+            }}},
+            "unsupported": baseline | {
+                "inputs": {"subject": {"step": "train", "checkpoint": {"best_by": "loss"}}},
+            },
+        },
+    )
     return raw
 
 
@@ -150,14 +114,14 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     registry = new_application_registry_bundle()
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "reaching"
     definition = managed_evaluation_definition()
     baseline_step = definition["steps"]["baseline"]
-    legacy = json.loads(json.dumps(baseline_step))
-    legacy["base"]["inline"]["params"]["retention"] = "observations"
-    definition["steps"]["legacy"] = legacy
+    observations = json.loads(json.dumps(baseline_step))
+    observations["base"]["inline"]["params"]["retention"] = "observations"
+    definition["steps"]["observations"] = observations
     stoppable = json.loads(json.dumps(baseline_step))
     stoppable["base"]["inline"]["params"]["seed"] += 1
     definition["steps"]["stoppable"] = stoppable
@@ -182,10 +146,6 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     def launch(service, rows, token):
         return service.admit_plan(folders, plan, run_keys=rows, token=token)
 
-    gated = JobService(host, registry)
-    (disabled,) = launch(gated, (baseline,), "evaluate-held").items
-    assert disabled.disposition == "rejected"
-    assert disabled.reason.startswith("cannot_run /evaluation_type")
     unsupported = RunKey("default", "unsupported", "default")
     (selector,) = launch(jobs, (unsupported,), "unsupported-selector").items
     assert selector.disposition == "rejected"
@@ -211,7 +171,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert attached.disposition == "attached" and attached.job_id == submitted.items[0].job_id
     with monkeypatch.context() as environment:
         environment.setenv("JAX_ENABLE_X64", "1")
-        different_execution = JobService(host, registry, enable_evaluation_candidate=True)
+        different_execution = JobService(host, registry)
         (conflict,) = launch(different_execution, (baseline,), "evaluate-live-conflict").items
         assert conflict.disposition == "rejected"
         assert "different execution binding" in conflict.reason
@@ -271,8 +231,6 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert row["request"] == by_key[key].request_id
         assert row["edges"][0]["binding"]["completion"]["producer_job_id"] == source.job_id
         outcomes[key] = jobs.read_evaluation_result(project=project, store=root, job_id=item.job_id)
-        with pytest.raises(JobNotFound):
-            gated.read_evaluation_result(project=project, store=root, job_id=item.job_id)
 
     joined = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
     for key, item in zip(keys, submitted.items, strict=True):
@@ -401,14 +359,14 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert unsupported_condition.disposition == "rejected"
     assert unsupported_condition.job_id is None
 
-    (legacy_attempt,) = launch(jobs, (RunKey("default", "legacy", "default"),), "legacy-observations").items
-    legacy_job = wait_until(lambda: (
-        job_row(host, legacy_attempt.job_id, "succeeded") or job_row(host, legacy_attempt.job_id, "failed")
+    (observation_attempt,) = launch(jobs, (RunKey("default", "observations", "default"),), "observations").items
+    observation_job = wait_until(lambda: (
+        job_row(host, observation_attempt.job_id, "succeeded") or job_row(host, observation_attempt.job_id, "failed")
     ))
-    assert legacy_job["state"] == "succeeded", legacy_job.get("outcome")
-    legacy_result = jobs.read_evaluation_result(project=project, store=root, job_id=legacy_attempt.job_id)
-    assert legacy_result.size_bytes > 0
-    with legacy_result.open_states() as dataset:
+    assert observation_job["state"] == "succeeded", observation_job.get("outcome")
+    observation_result = jobs.read_evaluation_result(project=project, store=root, job_id=observation_attempt.job_id)
+    assert observation_result.size_bytes > 0
+    with observation_result.open_states() as dataset:
         assert dataset.descriptor.schema_id == STATES_SCHEMA
         assert "source_graph_sha256" not in dataset.descriptor.attrs
         np.testing.assert_array_equal(dataset.data(position)[0, 0], base_pos)
@@ -416,14 +374,14 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (raw_attempt,) = host.jobs(job_id=submitted.items[0].job_id, include_launch=True)
     view = SuccessView(store)
     raw_success = view.read_attempt(raw_attempt["id"])
-    observation_success = view.read_attempt(legacy_attempt.job_id)
+    observation_success = view.read_attempt(observation_attempt.job_id)
     assert raw_success.receipt.inputs == observation_success.receipt.inputs
     assert raw_success.receipt.effective != observation_success.receipt.effective
     binding = next(edge["binding"] for edge in raw_attempt["edges"] if edge["authenticated_completion"])
     attempt = "incompatible-states-layout"
     wrong_manifest = outcomes[baseline]._manifest().model_copy(update={
         "id": evaluation_manifest_id(attempt),
-        "artifacts": legacy_result._manifest().artifacts,
+        "artifacts": observation_result._manifest().artifacts,
     })
     wrong_ref = store.bind_manifest(wrong_manifest.kind, wrong_manifest.id, wrong_manifest.model_dump_json().encode())
     before = store.read_ref(INDEX_REF)
@@ -499,7 +457,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
 def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
     project = "unsupported-owner"
     registry = jobs.registries

@@ -5,27 +5,18 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from feedbax.contracts.experiment_envelope_dialect import (
-    ANALYSIS_BUNDLE_OUTPUT,
-    ANALYSIS_RUN_OUTPUT,
-    FIGURE_OUTPUT,
-    REPORT_OUTPUT,
-)
 from feedbax.contracts.manifest import ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1
+from feedbax.contracts.manifest import AnalysisRunSpec
 from feedbax.contracts.manifest import authenticated_manifest_ref_metadata
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
-    default_spec_registry,
     migrate_structured_spec_payload,
 )
 from feedbax.contracts.parameter_contracts import (
     ANALYSIS_PARAMS_SCHEMA_VERSION,
-    FIGURE_TRACE_PARAMS_SCHEMA_VERSION,
     AnalysisParams,
     FigureTraceParams,
-    ParameterContractError,
 )
-from feedbax.integrations.provider import provider_manifest
 
 
 @pytest.mark.parametrize(
@@ -64,12 +55,9 @@ from feedbax.integrations.provider import provider_manifest
 def test_analysis_corpus_shapes_have_one_declared_contract(params: dict[str, object]) -> None:
     document = {"analysis_type": "example.analysis", "params": params}
 
-    addressed = ANALYSIS_RUN_OUTPUT.parameter_objects(document)
-
-    assert [(path, schema.schema_version) for path, _, schema in addressed] == [
-        ("params", ANALYSIS_PARAMS_SCHEMA_VERSION)
-    ]
-    ANALYSIS_RUN_OUTPUT.validate_parameter_objects(document)
+    assert AnalysisParams.model_json_schema()["$id"] == ANALYSIS_PARAMS_SCHEMA_VERSION
+    assert AnalysisRunSpec.model_validate(document).params == params
+    AnalysisParams.model_validate(document["params"])
 
 
 def test_analysis_rejects_an_undeclared_artifact_reference_shape() -> None:
@@ -84,8 +72,8 @@ def test_analysis_rejects_an_undeclared_artifact_reference_shape() -> None:
         },
     }
 
-    with pytest.raises(ParameterContractError, match="declared ArtifactRef contract"):
-        ANALYSIS_RUN_OUTPUT.validate_parameter_objects(document)
+    with pytest.raises(ValidationError, match="declared ArtifactRef contract"):
+        AnalysisParams.model_validate(document["params"])
 
 
 def test_analysis_census_high_risk_shapes_have_explicit_migration_boundary() -> None:
@@ -116,14 +104,10 @@ def test_analysis_census_high_risk_shapes_have_explicit_migration_boundary() -> 
     }
 
     for params in ({}, checkpoint):
-        ANALYSIS_RUN_OUTPUT.validate_parameter_objects(
-            {"analysis_type": "example.analysis", "params": params}
-        )
+        AnalysisParams.model_validate(params)
     for params in (legacy_artifact_authorities, legacy_ranged):
-        with pytest.raises(ParameterContractError, match="declared (Parent|Artifact)Ref contract"):
-            ANALYSIS_RUN_OUTPUT.validate_parameter_objects(
-                {"analysis_type": "example.analysis", "params": params}
-            )
+        with pytest.raises(ValidationError, match="declared (Parent|Artifact)Ref contract"):
+            AnalysisParams.model_validate(params)
 
     migrated = {
         **legacy_ranged,
@@ -141,9 +125,7 @@ def test_analysis_census_high_risk_shapes_have_explicit_migration_boundary() -> 
             "media_type": "application/json",
         },
     }
-    ANALYSIS_RUN_OUTPUT.validate_parameter_objects(
-        {"analysis_type": "example.analysis", "params": migrated}
-    )
+    AnalysisParams.model_validate(migrated)
 
 
 def test_analysis_rejects_half_a_nested_schema_identity() -> None:
@@ -152,31 +134,8 @@ def test_analysis_rejects_half_a_nested_schema_identity() -> None:
         "params": {"result_schema": {"schema_id": "example.analysis.result"}},
     }
 
-    with pytest.raises(ParameterContractError, match="without a nonempty 'schema_version'"):
-        ANALYSIS_RUN_OUTPUT.validate_parameter_objects(document)
-
-
-def test_bundle_and_all_figure_parameter_locations_are_addressed() -> None:
-    bundle = {"params_base": {"params": {"window": 4}}}
-    figure = {
-        "assembler_params": {"height": 450},
-        "traces": [{"params": {"color": "blue"}}],
-        "slot_bindings": {"observed": [{"params": {"showlegend": True}}]},
-        "trace_families": [{"params": {"line_width": 2}}],
-        "slot_families": [{"params": {"marker_size": 5}}],
-    }
-
-    ANALYSIS_BUNDLE_OUTPUT.validate_parameter_objects(bundle)
-    FIGURE_OUTPUT.validate_parameter_objects(figure)
-
-    paths = [path for path, _, _ in FIGURE_OUTPUT.parameter_objects(figure)]
-    assert paths == [
-        "assembler_params",
-        "traces.0.params",
-        "slot_bindings.observed.0.params",
-        "trace_families.0.params",
-        "slot_families.0.params",
-    ]
+    with pytest.raises(ValidationError, match="without a nonempty 'schema_version'"):
+        AnalysisParams.model_validate(document["params"])
 
 
 def test_figure_style_is_deliberately_open_but_common_fields_are_typed() -> None:
@@ -184,10 +143,6 @@ def test_figure_style_is_deliberately_open_but_common_fields_are_typed() -> None
 
     with pytest.raises(ValidationError, match="showlegend"):
         FigureTraceParams.model_validate({"showlegend": "yes"})
-
-
-def test_report_unknown_type_keeps_the_existing_external_owner_behavior() -> None:
-    assert REPORT_OUTPUT.params_model({"report_type": "example.external_report"}) is None
 
 
 def test_old_document_migrates_before_current_parameter_acceptance() -> None:
@@ -198,7 +153,7 @@ def test_old_document_migrates_before_current_parameter_acceptance() -> None:
     )
 
     assert migrated.target_version == "feedbax.spec.analysis_run.v2"
-    ANALYSIS_RUN_OUTPUT.validate_parameter_objects(migrated.payload)
+    assert AnalysisRunSpec.model_validate(migrated.payload).params == {"window": 4}
 
 
 def test_unknown_old_parameter_contract_version_is_explicitly_rejected() -> None:
@@ -208,14 +163,3 @@ def test_unknown_old_parameter_contract_version_is_explicitly_rejected() -> None
             {"window": 4},
             source_version="feedbax.spec.params.analysis.v0",
         )
-
-
-def test_provider_publishes_the_same_parameter_schema_models() -> None:
-    schemas = provider_manifest().schemas
-
-    assert schemas["AnalysisParams"] == AnalysisParams.model_json_schema()
-    assert schemas["AnalysisParams"]["$id"] == ANALYSIS_PARAMS_SCHEMA_VERSION
-    assert schemas["FigureTraceParams"]["$id"] == FIGURE_TRACE_PARAMS_SCHEMA_VERSION
-    assert default_spec_registry.current_version("FigureTraceParams") == (
-        FIGURE_TRACE_PARAMS_SCHEMA_VERSION
-    )

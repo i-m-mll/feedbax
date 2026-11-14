@@ -58,3 +58,18 @@ def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches")
     for name in ("model", "task", "objective"):
         documents[name] = project["documents"][documents[name]["document"]]["payload"]
     return payload
+
+
+
+def managed_train_spec(*, batches: int = 2):
+    from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.studio.canonical_train import lower_canonical_train
+
+    registries = new_application_registry_bundle()
+    spec = lower_canonical_train(
+        DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=batches)),
+        registries.training_programs,
+        registries=registries,
+    )
+    return spec, registries

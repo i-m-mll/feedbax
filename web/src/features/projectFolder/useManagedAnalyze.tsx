@@ -5,7 +5,7 @@ import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StudioDefinitionForm, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
 import { Dialog } from '@/components/ui/Dialog';
-import { humanizeLabel } from '@/components/values/ValueSpecField';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type JsonPrimitive, type JsonValue, type OperationElement,

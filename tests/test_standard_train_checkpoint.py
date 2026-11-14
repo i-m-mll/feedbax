@@ -58,7 +58,6 @@ def test_typed_standard_optimizer_state_reproduces_the_next_update(tmp_path, opt
         ),
         slots=state,
         semantic_model=model_writer,
-        train_state_codec="standard_train",
     )
     resumed = load_latest_checkpoint(
         publication.root,

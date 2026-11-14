@@ -4,86 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from math import atan2, cos, sin
-from typing import Any
 
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
-from feedbax.compiler.resolution import resolve_component_node
-from feedbax.component_registry.registry import required_interior_domain
+from feedbax.compiler.model_document import lower_planar_scene_interior
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import is_acausal_type
-from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID, DomainDiagnostic
-from feedbax.contracts.graph import (
-    GRAPH_SPEC_SCHEMA_ID,
-    GraphSpec,
-    expected_subgraph_schema_id_for_domain,
-    validate_subgraph_domain,
-)
-from feedbax.contracts.migrations import migrate_graph_spec
+from feedbax.contracts.domain import DomainDiagnostic
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.representation import RepresentationMusclePathPointSpec
 from feedbax.contracts.studio_scene import ScenePlanarLink, ScenePlanarModel, ScenePlanarMuscle
 from feedbax.mechanics.authored_model import compile_planar_model
 from feedbax.mechanics.compiled_model import CompiledPhysicalModel
-
-
-def _select_interior(
-    project: Project,
-    document_id: str,
-    node_path: Sequence[str],
-    registry: Any,
-) -> AcausalGraphSpec:
-    document = project.documents.get(document_id)
-    if (
-        document is None
-        or document.schema_id != GRAPH_SPEC_SCHEMA_ID
-        or not isinstance(document.payload, dict)
-    ):
-        raise ValueError(f"{document_id!r} must name an authored graph document.")
-    migration = migrate_graph_spec(document.payload, component_registry=registry)
-    historical = {record.metadata.get("graph_path") for record in migration.migration_records}
-    graph = GraphSpec.model_validate(migration.payload)
-    graph_path = "graph"
-    for index, name in enumerate(node_path):
-        node = graph.nodes.get(name)
-        child = (graph.subgraphs or {}).get(name)
-        if node is None or child is None:
-            raise ValueError(f"No authored interior at {list(node_path[: index + 1])!r}.")
-        node = resolve_component_node(
-            node, registry, historical_unversioned=graph_path in historical
-        )
-        domain = required_interior_domain(node.type, registry)
-        validate_subgraph_domain(
-            child,
-            expected_domain=domain,
-            node_name=name,
-            node_type=node.type,
-            consumer="Scene",
-        )
-        graph_path = f"{graph_path}.subgraphs[{name!r}]"
-        if isinstance(child, AcausalGraphSpec):
-            if (
-                index != len(node_path) - 1
-                or domain not in (ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID)
-                or child.physical_domain != "planar_multibody"
-            ):
-                break
-            return child.model_copy(
-                update={
-                    "nodes": {
-                        key: resolve_component_node(
-                            spec, registry, historical_unversioned=graph_path in historical
-                        )
-                        for key, spec in child.nodes.items()
-                    },
-                }
-            )
-        if (
-            domain is not None
-            and expected_subgraph_schema_id_for_domain(domain) != GRAPH_SPEC_SCHEMA_ID
-        ):
-            break
-        graph = child
-    raise ValueError(f"{list(node_path)!r} must identify a planar multibody interior.")
 
 
 def _compiled_geometry(
@@ -171,11 +104,15 @@ def prepare_project_scene(
     project: Project,
     document_id: str,
     node_path: Sequence[str],
-    registry: Any,
+    registry: ComponentRegistry,
 ) -> tuple[ScenePlanarModel | None, list[DomainDiagnostic]]:
     """Prepare geometry for one occurrence without realizing the outer graph or a run."""
     try:
-        graph = _select_interior(project, document_id, node_path, registry)
+        document = project.documents.get(document_id)
+        if document is None or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+            raise ValueError(f"{document_id!r} must name an authored Model document.")
+        model = ModelDocument.model_validate(document.payload)
+        graph = lower_planar_scene_interior(document_id, model, tuple(node_path), registry)
         report = compile_acausal_authoring_report(
             graph,
             node_path=list(node_path),

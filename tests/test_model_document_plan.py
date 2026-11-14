@@ -19,7 +19,7 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.component_registry import ComponentPack, ComponentRegistry
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
@@ -39,16 +39,12 @@ from feedbax.training.checkpoint_custody import open_published_model_slot
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.contracts.studio_training import StudioGraphMethodPayload
-from feedbax.contracts.training import TrainingSpec
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.evaluate_attachment import prepare_evaluate_attachment
 from feedbax.contracts.model_edit import EvaluateAttachmentRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
-from feedbax.compiler.prototypes import prototypes_from_task_bindings
-from feedbax.training.retained_graph import compile_training_run
-from tests.test_canonical_evaluate_admission import _save_project, authored_evaluation_project
+from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, job_row, wait_until
 
 host = host_fixture
@@ -157,16 +153,17 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     assert exc.value.authored_path.startswith("/graph/")
 
 
-def _model_project() -> dict:
-    project, _ = authored_evaluation_project()
-    raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    train = raw["steps"]["train"]["base"]["inline"]
-    source = train["graph"]
+def _nested_model() -> dict:
     leaves = {
-        key: {"kind": "leaf", "name": key.capitalize(), "type": value["type"], "fields": value["params"]}
-        for key, value in source["nodes"].items()
+        "cell": {"kind": "leaf", "name": "Cell", "type": "feedbax.GRU", "fields": {
+            "input_size": 2, "hidden_size": 100, "dtype": "float32",
+        }},
+        "readout": {"kind": "leaf", "name": "Readout", "type": "feedbax.Linear", "fields": {
+            "input_size": 100, "output_size": 2, "use_bias": True, "activation": "identity",
+            "initialization": "random", "dtype": "float32", "trainable": False,
+        }},
+        "plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.PointMass", "fields": {"mass": 1.0}},
     }
-    period = leaves["plant"]["fields"].pop("dt")
     delay = {"kind": "delay", "id": "carry", "delay": {"value": 1, "unit": "st"}}
     network = {"kind": "composite", "name": "Controller", "ports": {
         "inputs": [_port("target", "Target", shape=[2])],
@@ -183,8 +180,8 @@ def _model_project() -> dict:
             "pass-force": _wire(_end("controller", "force"), {"owner": "outputs", "port": "force"}),
         },
     }}
-    model = {
-        "step_seconds": period,
+    return {
+        "step_seconds": 0.01,
         "ports": {"inputs": [_port("task-input", "reach_target", shape=[2])],
                   "outputs": [_port("effector", "effector")]},
         "interior": {"components": {"wrapper": wrapper, "plant": leaves["plant"]}, "wires": {
@@ -193,10 +190,11 @@ def _model_project() -> dict:
             "effector-wire": _wire(_end("plant", "effector"), {"owner": "outputs", "port": "effector"}),
         }},
     }
-    train["graph"] = {"document": "reach-model"}
-    raw["documents"] = {"reach-model": {"schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": model}}
-    raw["steps"] = {key: raw["steps"][key] for key in ("train", "baseline")}
-    return raw
+
+def _model_project() -> dict:
+    from tests.test_document_train_pair import authored_documents, document_project
+
+    return document_project(authored_documents(), evaluation=True)
 
 
 def _rename_components(model):
@@ -247,10 +245,10 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         }
         for key, period in zip(keys, (0.01, 0.02, 0.03), strict=True):
             definition = plan.selected_definitions[key]
-            assert definition.payload["graph"]["step_seconds"] == pytest.approx(period)
+            assert definition.payload["trial_documents"]["model"]["step_seconds"] == pytest.approx(period)
             assert definition.payload["alias"] == pytest.approx(period)
-            assert definition.document_ids["payload.graph"] == "reach-model"
-            source = definition.sources["/payload/graph/step_seconds"]
+            assert definition.document_ids["payload.trial_documents.model"] == "reach-model"
+            source = definition.sources["/payload/trial_documents/model/step_seconds"]
             assert source.kind == "sweep_value"
             assert definition.sources["/payload/alias"] == source
         assert snapshot.project.documents["reach-model"].payload == model
@@ -271,7 +269,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         scoped = client.patch(url, json={"revision": snapshot.revision, "files": prepared["files"]})
         assert scoped.status_code == 200, scoped.text
         scoped_plan = folders.read_plan("fields", revision=scoped.json()["revision"], source_runs=keys).plan
-        mass_path = "/payload/graph/interior/components/plant/fields/mass"
+        mass_path = "/payload/trial_documents/model/interior/components/plant/fields/mass"
         assert scoped_plan.selected_definitions[keys[0]].sources[mass_path].kind == "exception"
         assert scoped_plan.selected_definitions[keys[1]].sources[mass_path].kind == "document"
         restored = client.patch(url, json={
@@ -354,7 +352,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         revision = folders.read("duration").revision
         keys = tuple(row.key for row in folders.read_plan("duration", revision=revision).plan.rows if row.key.step == "train")
         definitions = folders.read_plan("duration", revision=revision, source_runs=keys).plan.selected_definitions
-        assert [item.payload["graph"]["interior"]["components"]["rnn"]["fields"]["tau"]
+        assert [item.payload["trial_documents"]["model"]["interior"]["components"]["rnn"]["fields"]["tau"]
                 for item in definitions.values()] == [
             {"kind": "literal", "value": value, "unit": "s"} for value in (0.02, 0.03, 0.04)
         ]
@@ -367,11 +365,6 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
 
 def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
     raw = _model_project()
-    train = raw["steps"]["train"]["base"]["inline"]
-    train["training_config"].pop("learning_rate")
-    train["trial_documents"] = {
-        "model": train.pop("graph"), "task": train.pop("task"), "objective": train.pop("objective"),
-    }
     raw["steps"].pop("baseline")
     _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
     url = "/api/projects/managed-rate"
@@ -455,27 +448,13 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
 
     run = next(run for run in before.runs if run.kind == "train")
     spec = decode_request(before.requests[run.request_id], before.documents.__getitem__).spec
-    registry = ComponentRegistry()
-    graph = compile_graph(
-        GraphDocument(graph=spec.graph), registry,
-        input_prototypes=prototypes_from_task_bindings(spec.task_binding_spec),
-        initialization_key=jax.random.key(42),
-    ).graph
-    assert graph.period_seconds == spec.graph.step_seconds == graph.nodes["plant"].dt
+    registry = new_application_registry_bundle()
+    executable = lower_canonical_train(spec, registry.training_programs, registries=registry)
+    prepared = prepare_managed_training(executable, registry)
+    graph = prepared.initial_slots["model"]
+    assert graph.period_seconds == spec.trial_documents.model.step_seconds == graph.nodes["plant"].dt
     assert graph.nodes["wrapper"].nodes["controller"].period_seconds == graph.period_seconds
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
-    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
-    prepared = compile_training_run(
-        graph_spec=spec.graph,
-        training_spec=TrainingSpec(
-            optimizer=method.optimizer, loss=spec.objective.loss,
-            n_batches=spec.training_config.n_batches, batch_size=1,
-        ),
-        task_spec=spec.task.model_dump(mode="json", exclude_none=True),
-        task_binding_spec=spec.task_binding_spec,
-        cfg=spec.training_config, component_registry=registry,
-    )
-    assert prepared.graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
 
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
@@ -853,6 +832,7 @@ def test_stored_equations_use_the_scalar_solver_and_free_boundary():
     )
     assert outputs["position"][-1] > 0
     project = _model_project()
+    del project["steps"]["baseline"]
     reaching = project["documents"]["reach-model"]["payload"]["interior"]
     reaching["components"].update(model["interior"]["components"])
     reaching["components"]["constant-force"] = leaf("Constant", value=1.0)
@@ -883,10 +863,9 @@ def test_linked_delay_repeats_the_completed_reset_state():
     assert not plan.diagnostics
     train = next(run for run in plan.runs if run.kind == "train")
     request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
-    graph = compile_graph(
-        GraphDocument(graph=request.graph), ComponentRegistry(),
-        input_prototypes=prototypes_from_task_bindings(request.task_binding_spec),
-    ).graph
+    registry = new_application_registry_bundle()
+    executable = lower_canonical_train(request, registry.training_programs, registries=registry)
+    graph = prepare_managed_training(executable, registry).initial_slots["model"]
     state = graph.init_state(key=jax.random.key(3))
     cell = graph.nodes["wrapper"].nodes["controller"].nodes["cell"]
     state = cell.replace_state_value(state, ("hidden",), jnp.full((cell.hidden_size,), 2.0, dtype=jnp.float32))
@@ -983,7 +962,7 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     folders = ProjectFolderService(tmp_path / "projects")
     project = "mechanics"
     _save_project(folders, project, Project.model_validate(raw))
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     service = ProjectPlanService(folders, jobs)
     view = service.read(project, revision=None)
     response = service.response(view, include_window_map=True)
@@ -1085,7 +1064,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     from tests.test_document_train_pair import authored_documents, document_project
 
     registry = new_application_registry_bundle()
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     folders = ProjectFolderService(tmp_path / "projects")
     raw = document_project(authored_documents(), evaluation=True)
     group = _group_reaching_pipeline(raw, registry.components) if grouped else None

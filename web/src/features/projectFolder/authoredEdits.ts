@@ -255,7 +255,7 @@ export function applyAuthoredEdits(
 }
 
 export function modelDocumentId(ids?: Readonly<Record<string, string>>) {
-  return ids?.['payload.trial_documents.model'] ?? ids?.['payload.graph'];
+  return ids?.['payload.trial_documents.model'];
 }
 
 export function directTrainStep(project: AuthoredProject, stepId: string, includeRowEdits = false) {

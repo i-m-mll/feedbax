@@ -18,7 +18,6 @@ import jax.numpy as jnp
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, ConfigBinding, MissingPrototypeInput, Ports
 from feedbax.runtime.components import identity_activation, relu
@@ -255,26 +254,6 @@ def _owner_options(
         build_context_fields=("key",) if has_key else (),
         trainable_by_default=trainable,
     )
-
-
-_PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
-
-
-def _restore_wrapper_state(
-    component: GraphNode, state: _PickleState, former_fields: tuple[str, ...]
-) -> None:
-    attrs, slots = state if isinstance(state, tuple) else (state, {})
-    obsolete = ((attrs or {}).keys() | slots.keys()).intersection(former_fields)
-    if obsolete:
-        fields = ", ".join(sorted(obsolete))
-        raise _LegacyWrapperLayoutError(
-            f"{type(component).__name__} uses the pre-v3 wrapper layout ({fields}). "
-            "Use the producer version of Feedbax to export the live layer parameters."
-        )
-    if attrs is not None:
-        vars(component).update(attrs)
-    for name, value in slots.items():
-        object.__setattr__(component, name, value)
 
 
 def _call_single_input_layer(
@@ -523,9 +502,6 @@ class MLP(GraphNode):
     @property
     def final_activation(self) -> Callable:
         return self.layer.final_activation
-
-    def __setstate__(self, state: _PickleState) -> None:
-        _restore_wrapper_state(self, state, ("activation", "final_activation"))
 
     def __call__(
         self,
@@ -2414,9 +2390,6 @@ class Embedding(GraphNode):
     def weight(self) -> Float[Array, "num_embeddings embedding_size"]:
         return self.layer.weight
 
-    def __setstate__(self, state: _PickleState) -> None:
-        _restore_wrapper_state(self, state, ("weight",))
-
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -2498,9 +2471,6 @@ class PReLU(GraphNode):
     @property
     def init_alpha(self) -> Array:
         return self.layer.negative_slope
-
-    def __setstate__(self, state: _PickleState) -> None:
-        _restore_wrapper_state(self, state, ("init_alpha",))
 
     def __call__(
         self,

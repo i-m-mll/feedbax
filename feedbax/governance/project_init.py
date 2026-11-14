@@ -1,49 +1,21 @@
-"""``feedbax init``: the deterministic, transactional cold start for a project.
-
-A project that uses Feedbax needs seven things and no more: a declaration of its
-layout, the budgets that bound how large an authored envelope may be, a
-root-anchored ignore rule for reproducible compiler output, a deny-by-default
-authorization for its production Python, a minimal installable package to put
-science in, and one root agent instruction file. This module creates exactly
-those, and nothing else.
-
-What it deliberately does *not* create is the point. No example envelope, no
-fake base, no placeholder science, no project-local compiler or wrapper CLI, no
-``generated/`` directory, no Git commit, no dependency resolution, and no
-network access. An empty scaffold that means nothing is worse than no scaffold:
-it invites someone to fill in the shape instead of authoring the science.
-
-Two properties make it safe to run twice. It is **transactional** — every
-outcome is computed before anything is written, any conflict refuses the whole
-run, and a failure part-way through removes what this run created. And it is
-**non-destructive** — a durable file that already exists is validated and left
-exactly as it is. The single thing that upgrades itself in place is the
-generated agent-instructions block, which is Feedbax's to maintain.
-
-Initialization never makes the science-surface gate pass. That gate reads its
-policy from a protected baseline ref, so a freshly written policy file is not
-authoritative until it is committed and ratified there. ``init`` says so out
-loud rather than producing green output that means nothing.
-"""
+"""Create a managed project declaration and repository scaffolding transactionally."""
 
 from __future__ import annotations
 
-import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
-from feedbax.contracts.authoring_budget import (
-    AUTHORING_BUDGET_SCHEMA_ID,
-    AUTHORING_BUDGET_SCHEMA_VERSION,
-)
-from feedbax.contracts.project_experiment import (
-    PROJECT_DECLARATION_FILENAME,
-    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
-    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
-    ProjectExperimentDeclarationError,
-    load_project_declaration,
+from pydantic import ValidationError
+
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import (
+    PROJECT_DECLARATION_SUFFIX,
+    ProjectConfiguration,
+    ProjectReadError,
+    dump_text_project,
+    load_text_project,
 )
 from feedbax.governance.agent_instructions import (
     AGENT_FILE_NAMES,
@@ -57,79 +29,8 @@ from feedbax.governance.agent_instructions import (
 )
 from feedbax.governance.science_surface import POLICY_SCHEMA_VERSION
 
-#: Conventional locations. Any of them may be moved by editing the declaration
-#: afterwards; ``init`` itself is not configurable through a second file.
-DEFAULT_ENVELOPE_DIRECTORY = "specs/experiment"
-DEFAULT_OUTPUT_DIRECTORY = "generated"
-DEFAULT_BUDGET_REF = f"{DEFAULT_ENVELOPE_DIRECTORY}/authoring_budget.json"
+DEFAULT_STORE = "results"
 DEFAULT_POLICY_REF = "ci/feedbax-science-surface.toml"
-
-#: The owner-ratified framework-wide default caps, one section per dialect layer.
-#: Evaluation allows one ordinary two-arm comparison with exact receipt bindings
-#: in a single delta (8192 canonical bytes / 512 nodes). Other structural bounds
-#: remain unchanged. Reports permit longer prose scalars with flatter structure.
-DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
-    "training": {
-        "max_bytes": 8192,
-        "max_scalar_bytes": 512,
-        "max_ast_nodes": 160,
-        "max_depth": 16,
-        "max_items": 32,
-        "max_object_keys": 32,
-        "max_assertions": 4,
-    },
-    "evaluation": {
-        "max_bytes": 8192,
-        "max_scalar_bytes": 512,
-        "max_ast_nodes": 512,
-        "max_depth": 12,
-        "max_items": 32,
-        "max_object_keys": 32,
-        "max_assertions": 4,
-    },
-    "analysis": {
-        "max_bytes": 4096,
-        "max_scalar_bytes": 512,
-        "max_ast_nodes": 120,
-        "max_depth": 12,
-        "max_items": 32,
-        "max_object_keys": 32,
-        "max_assertions": 4,
-    },
-    "figure": {
-        "max_bytes": 4096,
-        "max_scalar_bytes": 512,
-        "max_ast_nodes": 120,
-        "max_depth": 12,
-        "max_items": 32,
-        "max_object_keys": 32,
-        "max_assertions": 4,
-    },
-    "comparison": {
-        "max_bytes": 4096,
-        "max_scalar_bytes": 512,
-        "max_ast_nodes": 120,
-        "max_depth": 12,
-        "max_items": 32,
-        "max_object_keys": 32,
-        "max_assertions": 4,
-    },
-    "report": {
-        "max_bytes": 8192,
-        "max_scalar_bytes": 4096,
-        "max_ast_nodes": 120,
-        "max_depth": 10,
-        "max_items": 32,
-        "max_object_keys": 32,
-        "max_assertions": 2,
-    },
-}
-
-DEFAULT_BUDGET_RATIONALE = (
-    "Framework defaults from `feedbax init`. Every cap is a ceiling on one "
-    "authored envelope, not a target: an envelope that needs more usually wants "
-    "a different base rather than a larger budget."
-)
 
 #: Exit codes. Initialization follows the same contract as every other Feedbax
 #: command: 0 succeeded, 2 a stable refusal with an actionable diagnostic.
@@ -144,7 +45,7 @@ class ProjectInitError(Exception):
 
 @dataclass(frozen=True)
 class EntryOutcome:
-    """What one of the seven entries is, or would be, after this run."""
+    """What one entry is, or would be, after this run."""
 
     path: str
     action: str
@@ -198,29 +99,6 @@ class InitReport:
 
 
 # --- default file contents ---------------------------------------------------
-
-
-def default_declaration_document(project: str) -> dict[str, Any]:
-    """Return the declaration ``init`` writes for a project of this name."""
-    return {
-        "schema_id": PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
-        "schema_version": PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
-        "project": project,
-        "envelope_directory": DEFAULT_ENVELOPE_DIRECTORY,
-        "output_directory": DEFAULT_OUTPUT_DIRECTORY,
-        "authoring_budget": DEFAULT_BUDGET_REF,
-    }
-
-
-def default_budget_document(project: str) -> dict[str, Any]:
-    """Return the authoring-budget document ``init`` writes."""
-    return {
-        "schema_id": AUTHORING_BUDGET_SCHEMA_ID,
-        "schema_version": AUTHORING_BUDGET_SCHEMA_VERSION,
-        "budget_id": f"{project}.envelope_budgets.v2",
-        "rationale": DEFAULT_BUDGET_RATIONALE,
-        "layers": {layer: dict(caps) for layer, caps in DEFAULT_AUTHORING_BUDGET_LAYERS.items()},
-    }
 
 
 def default_science_policy(package: str | None) -> str:
@@ -321,13 +199,13 @@ class _Plan:
     def record(self, outcome: EntryOutcome) -> None:
         self.outcomes.append(outcome)
 
-    def create(self, relative: str, path: Path, text: str) -> None:
+    def create(self, relative: str, path: Path, text: str | bytes) -> None:
         self.writes.append(_PlannedWrite(path, text))
         self.record(EntryOutcome(relative, "created"))
 
     def update(self, relative: str, path: Path, content: bytes, previous_bytes: bytes) -> None:
         self.writes.append(_PlannedWrite(path, content, previous_bytes))
-        self.record(EntryOutcome(relative, "updated", "added the compiler-output rule"))
+        self.record(EntryOutcome(relative, "updated", "added the Store ignore rule"))
 
 
 def _plan_durable(
@@ -349,28 +227,17 @@ def _plan_durable(
         plan.record(EntryOutcome(relative, "conflict", problem))
 
 
-def _validate_declaration(root: Path) -> Callable[[Path], str | None]:
-    def validate(_path: Path) -> str | None:
-        try:
-            load_project_declaration(root)
-        except ProjectExperimentDeclarationError as exc:
-            return str(exc)
-        return None
-
-    return validate
-
-
-def _output_ignore_rule(output_directory: str) -> str:
-    """Return one literal root-anchored Git ignore rule for compiler output."""
-    escaped = "".join(f"\\{char}" if char in "\\*?[] " else char for char in output_directory)
+def _store_ignore_rule(store_directory: str) -> str:
+    """Return one literal root-anchored Git ignore rule for Store contents."""
+    escaped = "".join(f"\\{char}" if char in "\\*?[] " else char for char in store_directory)
     return f"/{escaped}/"
 
 
-def _plan_output_ignore(plan: _Plan, root: Path, output_directory: str) -> None:
-    """Install the declared compiler-output rule without rewriting other rules."""
+def _plan_store_ignore(plan: _Plan, root: Path, store_directory: str) -> None:
+    """Add the Store ignore rule while preserving existing rules."""
     relative = ".gitignore"
     path = root / relative
-    rule = _output_ignore_rule(output_directory)
+    rule = _store_ignore_rule(store_directory)
     if not path.exists():
         plan.create(relative, path, f"{rule}\n")
         return
@@ -390,7 +257,7 @@ def _plan_output_ignore(plan: _Plan, root: Path, output_directory: str) -> None:
         return
     rule_bytes = rule.encode("utf-8")
     if rule_bytes in previous_bytes.splitlines():
-        plan.record(EntryOutcome(relative, "validated", "compiler-output rule already present"))
+        plan.record(EntryOutcome(relative, "validated", "Store ignore rule already present"))
         return
     separator = b"" if not previous_bytes or previous_bytes.endswith(b"\n") else b"\n"
     plan.update(
@@ -399,24 +266,6 @@ def _plan_output_ignore(plan: _Plan, root: Path, output_directory: str) -> None:
         previous_bytes + separator + rule_bytes + b"\n",
         previous_bytes,
     )
-
-
-def _validate_budget(path: Path) -> str | None:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return f"is not readable JSON: {exc}"
-    if not isinstance(document, dict):
-        return "is not one JSON object"
-    identity = (document.get("schema_id"), document.get("schema_version"))
-    if identity != (AUTHORING_BUDGET_SCHEMA_ID, AUTHORING_BUDGET_SCHEMA_VERSION):
-        return (
-            f"declares schema identity {identity}, expected "
-            f"{(AUTHORING_BUDGET_SCHEMA_ID, AUTHORING_BUDGET_SCHEMA_VERSION)}"
-        )
-    if not isinstance(document.get("layers"), dict) or not document["layers"]:
-        return "states no layer sections"
-    return None
 
 
 def _validate_policy(path: Path) -> str | None:
@@ -458,37 +307,38 @@ def plan_init(
 ) -> tuple[_Plan, str, str]:
     """Compute every outcome for one ``init`` run without writing anything."""
     root_path = Path(root)
-    project_name = project or derive_project_name(root_path)
-    package_name = package or derive_package_name(project_name)
     requirement = feedbax_requirement or _default_feedbax_requirement()
     plan = _Plan()
 
-    declaration_path = root_path / PROJECT_DECLARATION_FILENAME
-    _plan_durable(
-        plan,
-        relative=PROJECT_DECLARATION_FILENAME,
-        path=declaration_path,
-        text=_json_text(default_declaration_document(project_name)),
-        validate=_validate_declaration(root_path),
-    )
-    output_directory = DEFAULT_OUTPUT_DIRECTORY
-    if declaration_path.exists():
+    declarations = tuple(root_path.glob(f"*{PROJECT_DECLARATION_SUFFIX}"))
+    if declarations:
         try:
-            output_directory = load_project_declaration(root_path).output_directory
-        except ProjectExperimentDeclarationError:
-            pass
-    _plan_output_ignore(plan, root_path, output_directory)
-    _plan_durable(
-        plan,
-        relative=DEFAULT_BUDGET_REF,
-        path=root_path / DEFAULT_BUDGET_REF,
-        text=_json_text(default_budget_document(project_name)),
-        validate=_validate_budget,
-    )
+            existing = load_text_project(root_path)
+            if project is not None and project != existing.configuration.project:
+                raise ProjectInitError(f"the existing project is named {existing.configuration.project!r}")
+        except (ProjectReadError, ProjectInitError) as exc:
+            plan.record(EntryOutcome(declarations[0].name, "conflict", str(exc)))
+            return plan, project or derive_project_name(root_path), package or ""
+        project_name = existing.configuration.project
+        package_name = package or derive_package_name(project_name)
+        plan.record(EntryOutcome(existing.declaration, "validated", "already present"))
+        store = existing.configuration.store
+    else:
+        project_name = project or derive_project_name(root_path)
+        package_name = package or derive_package_name(project_name)
+        try:
+            configuration = ProjectConfiguration(project=project_name, store=DEFAULT_STORE)
+        except ValidationError as exc:
+            raise ProjectInitError(str(exc)) from exc
+        for path, content in dump_text_project(Project(), configuration).items():
+            plan.create(path, root_path / path, content)
+        store = DEFAULT_STORE
 
-    # A repository that already declares a Python project owns its own packaging
-    # and its own source layout. Initialization states that it is staying out of
-    # both rather than quietly writing a competing one.
+    resolved_root = root_path.resolve()
+    store_path = (resolved_root / store).resolve()
+    if store_path.is_relative_to(resolved_root) and store_path != resolved_root:
+        _plan_store_ignore(plan, root_path, store_path.relative_to(resolved_root).as_posix())
+
     is_new_project = not (root_path / "pyproject.toml").exists()
     marker_relative = f"src/{package_name}/__init__.py"
     marker_path = root_path / marker_relative
@@ -530,10 +380,6 @@ def plan_init(
 
     _plan_agent_files(plan, root_path)
     return plan, project_name, package_name
-
-
-def _json_text(document: Any) -> str:
-    return json.dumps(document, indent=2) + "\n"
 
 
 def _default_feedbax_requirement() -> str:
@@ -609,12 +455,10 @@ def created_entry_paths(report: InitReport) -> tuple[str, ...]:
     return tuple(outcome.path for outcome in report.outcomes if outcome.action == "created")
 
 
-#: The seven entries a fresh ``feedbax init`` is responsible for, in report
-#: order. Tests assert against this rather than against prose.
+#: The files a fresh project initializes, in report order.
 INIT_ENTRIES: tuple[str, ...] = (
-    PROJECT_DECLARATION_FILENAME,
+    "<project>.feedbax",
     ".gitignore",
-    DEFAULT_BUDGET_REF,
     DEFAULT_POLICY_REF,
     "pyproject.toml",
     "src/<package>/__init__.py",
@@ -622,20 +466,14 @@ INIT_ENTRIES: tuple[str, ...] = (
 )
 
 
-def entry_paths(package: str) -> tuple[str, ...]:
+def entry_paths(project: str, package: str) -> tuple[str, ...]:
     """Return :data:`INIT_ENTRIES` with the package placeholder resolved."""
-    return tuple(entry.replace("<package>", package) for entry in INIT_ENTRIES)
+    return tuple(entry.replace("<project>", project).replace("<package>", package) for entry in INIT_ENTRIES)
 
 
 __all__ = [
-    "AUTHORING_BUDGET_SCHEMA_ID",
-    "AUTHORING_BUDGET_SCHEMA_VERSION",
-    "DEFAULT_AUTHORING_BUDGET_LAYERS",
-    "DEFAULT_BUDGET_RATIONALE",
-    "DEFAULT_BUDGET_REF",
-    "DEFAULT_ENVELOPE_DIRECTORY",
-    "DEFAULT_OUTPUT_DIRECTORY",
     "DEFAULT_POLICY_REF",
+    "DEFAULT_STORE",
     "EXIT_CONFLICT",
     "EXIT_INFRASTRUCTURE",
     "EXIT_OK",
@@ -645,8 +483,6 @@ __all__ = [
     "ProjectInitError",
     "agent_block_status",
     "created_entry_paths",
-    "default_budget_document",
-    "default_declaration_document",
     "default_package_marker",
     "default_pyproject",
     "default_science_policy",

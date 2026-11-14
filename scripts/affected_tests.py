@@ -27,7 +27,6 @@ SHARED_STUDIO_SOURCES = (
     "web/src/features/schema/",
     "web/src/types/graph.ts",
     "web/src/utils/canonicalJsonV2.ts",
-    "web/src/utils/studioDraftHash.ts",
 )
 PANTS_LAUNCHER_VERSION = "v0.13.2"
 PANTS_LAUNCHERS = {
@@ -234,7 +233,7 @@ def _studio_related(root: Path, paths: set[str]) -> list[str]:
 
 
 def _capabilities(root: Path, tests: list[str]) -> list[str]:
-    markers = {"optional_mjx", "optional_ppo"}
+    markers = {"optional_mjx"}
     required: set[str] = set()
     for path in tests:
         syntax = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
@@ -454,7 +453,7 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
         "contracts": contracts,
         "clean_wheel": clean_wheel,
         "capabilities": (
-            ["optional_mjx", "optional_ppo"]
+            ["optional_mjx"]
             if python_reason
             else _capabilities(root, python_tests)
             if python_tests

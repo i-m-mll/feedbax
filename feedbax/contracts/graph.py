@@ -1285,16 +1285,6 @@ class StudioScenarioSpec(BaseModel):
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("task_spec", mode="before")
-    @classmethod
-    def admit_task_spec(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        from feedbax.contracts.training import TaskSpec
-
-        return TaskSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
-
-
 class StudioStageSpec(BaseModel):
     """Pipeline stage over scenario drafts, collections, and manifests."""
 

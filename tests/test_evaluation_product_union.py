@@ -54,7 +54,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.spec_storage import training_run_execution_hash
-from feedbax.orchestration.bundle import (
+from feedbax.contracts.execution_identity import (
     AuthoredIntentRef,
     ExecutionCapsuleRef,
     ExecutionIdentityEnvelope,

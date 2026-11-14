@@ -14,7 +14,6 @@ from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.training import TaskSpec
 from feedbax.contracts.model_values import MODEL_OWNERS, SPATIAL_OWNER, model_owner_problem
 from feedbax.studio.canonical_evaluate import CannotRun
 
@@ -25,7 +24,7 @@ _MANAGED_TASK = TypeAdapter(TaskDocument | PythonTaskSelection)
 @dataclass(frozen=True)
 class EvaluationVariant:
     graph: GraphSpec
-    task: TaskSpec | TaskDocument | PythonTaskSelection
+    task: TaskDocument | PythonTaskSelection
     source_overrides: dict[str, float]
     edit_origins: dict[tuple[str, ...], str] = field(compare=False)
 
@@ -98,58 +97,19 @@ def _finite_float32(value: object) -> bool:
     return type(value) in (int, float) and -limit <= value <= limit
 
 
-def _fixed_reach_target(entry: StudioEpochValueSpec) -> bool:
-    value = entry.value_spec
-    return (
-        entry.target_id == "reach_target"
-        and value.mode == "constant" and value.value_form == "literal"
-        and value.variation.scope == "fixed"
-        and value.dtype in {None, "float32"}
-        and value.units in {None, "m"} and value.frame in {None, "world"}
-        and isinstance(value.value, list) and len(value.value) == 2
-        and all(_finite_float32(component) for component in value.value)
-    )
 
 
-def _qualify_task(source: TaskSpec, task: TaskSpec, path: str) -> None:
-    if task == source:
-        return
-    original, candidate = source.timeline, task.timeline
-    if (
-        task.type != source.type or task.params != source.params
-        or original is None or candidate is None
-        or [(item.id, item.index, item.length) for item in candidate.epochs]
-        != [(item.id, item.index, item.length) for item in original.epochs]
-        or candidate.signals != original.signals
-    ):
-        raise CannotRun(path, "task replacement must preserve the horizon, sampled epochs and signal interface")
-    changed = [
-        item for left, right in (
-            (original.epoch_value_specs, candidate.epoch_value_specs),
-            (candidate.epoch_value_specs, original.epoch_value_specs),
-        )
-        for item in left if item not in right
-    ]
-    if not all(_fixed_reach_target(item) for item in changed):
-        raise CannotRun(
-            f"{path}/timeline/epoch_value_specs",
-            "task replacement requires fixed reach_target epoch values in world Cartesian metres",
-        )
 
 
-def _replacement_task(task, patch, path):
+def _replacement_task(patch, path):
     try:
-        if isinstance(task, TaskSpec):
-            replacement = TaskSpec.model_validate(patch.value)
-            _qualify_task(task, replacement, path)
-            return replacement
         return _MANAGED_TASK.validate_python(patch.value)
     except ValidationError as error:
         raise CannotRun(path, error.errors()[0]["msg"]) from error
 
 
 def resolve_evaluation_variant(
-    graph: GraphSpec, task: TaskSpec | TaskDocument | PythonTaskSelection, patches: VariationEdits,
+    graph: GraphSpec, task: TaskDocument | PythonTaskSelection, patches: VariationEdits,
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     graph_payload, wire_ids = _addressable_graph(graph)
@@ -161,7 +121,7 @@ def resolve_evaluation_variant(
         parts = patch.path.split(".")
         try:
             if parts == ["task"] and patch.op == "replace":
-                replacement = _replacement_task(task, patch, f"{path}/value")
+                replacement = _replacement_task(patch, f"{path}/value")
                 edit_origins = {target: origin for target, origin in edit_origins.items() if target[0] != "task"}
                 edit_origins[("task",)] = path
                 continue

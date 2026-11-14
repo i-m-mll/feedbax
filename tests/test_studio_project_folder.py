@@ -21,6 +21,7 @@ from feedbax import project_folder
 from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioJobEventHistory
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
@@ -35,46 +36,34 @@ from feedbax.studio.authoring import authoring_surface, project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
-from web.e2e.studio.fixtures.canonical_train import successor_file
-from web.e2e.studio.fixtures.reaching_project import reaching_project
+from web.e2e.studio.fixtures.canonical_train import ordinary_files, successor_file
 
 
 _URL = "/api/projects/reach"
-_GAIN = "/payload/nodes/gain/params/gain"
+_MODEL = "point-mass"
+_SETTINGS = "settings"
+_VALUE = "/payload/value"
+_MASS_ADDRESS = ModelAddress.model_validate({
+    "document": _MODEL, "composites": [],
+    "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+})
+_SEED = "method_payload.payload.seed"
 
 
 @pytest.fixture
 def study(tmp_path: Path):
-    corpus = json.loads(
-        (Path(__file__).parent / "fixtures" / "request_identity_corpus.json").read_bytes()
-    )
-    spec = next(row["spec"] for row in corpus["requests"] if row["kind"] == "train")
-    graph = spec.pop("graph")
-    project = Project.model_validate(
-        {
-            "documents": {"model": {"schema": graph["schema_id"], "payload": graph}},
-            "steps": {
-                "fit": {
-                    "kind": "train",
-                    "base": {"inline": {"graph": {"document": "model"}, **spec}},
-                    "sweep": {
-                        "axes": {
-                            "seed": {
-                                "values": {
-                                    "10": {"patches": {"seed": {"value": 10}}},
-                                    "2": {"patches": {"seed": {"value": 2}}},
-                                }
-                            }
-                        },
-                        "exceptions": {
-                            "z_first": {"where": {"rows": []}},
-                            "a_second": {"where": {"rows": []}},
-                        },
-                    },
-                }
-            },
-        }
-    )
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    fit = raw["steps"]["fit"] = raw["steps"].pop("train")
+    fit["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    fit["sweep"] = {
+        "axes": {"seed": {"values": {
+            "10": {"patches": {_SEED: {"value": 10}}},
+            "2": {"patches": {_SEED: {"value": 2}}},
+        }}},
+        "exceptions": {"z_first": {"where": {"rows": []}}, "a_second": {"where": {"rows": []}}},
+    }
+    raw["documents"][_SETTINGS] = {"schema": "example.settings", "payload": {"value": 1}}
+    project = Project.model_validate(raw)
     root = tmp_path / "reach"
     for name, data in dump_text_project(
         project, ProjectConfiguration(project="reach", store="results")
@@ -98,8 +87,8 @@ def _patch(
     value: JsonValue,
     *,
     kind="document",
-    name="model",
-    path=_GAIN,
+    name=_SETTINGS,
+    path=_VALUE,
 ):
     return client.patch(
         _URL,
@@ -111,11 +100,27 @@ def _patch(
     )
 
 
-def _gain(root: Path):
+def _edit_mass(client: TestClient, url: str, snapshot, value: float):
+    response = client.post(f"{url}/model/edit", json={
+        "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+        "document": _MODEL,
+        "command": {"operation": {"op": "set_field", "value": value, "address": _MASS_ADDRESS.model_dump(mode="json")}},
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["status"] == "applied", result
+    return result["snapshot"]
+
+
+def _settings(root: Path):
+    return load_text_project(root).project.documents[_SETTINGS].payload["value"]
+
+
+def _mass(root: Path):
     return (
         load_text_project(root)
-        .project.documents["model"]
-        .payload["nodes"]["gain"]["params"]["gain"]
+        .project.documents[_MODEL]
+        .payload["interior"]["components"]["plant"]["fields"]["mass"]
     )
 
 
@@ -152,23 +157,11 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     snapshot = response.json()["snapshot"]
     root = tmp_path / snapshot["project_id"]
     url = f"/api/projects/{snapshot['project_id']}"
-    fixture = reaching_project()
-    model = fixture.graph.model_dump(mode="json", exclude_none=True)
-    task = fixture.workspace.model_dump(mode="json", exclude_none=True)["scenarios"][
-        "scenario:train"
-    ]["task_spec"]
+    model, task, objective, train = ordinary_files("2")
+    trial = train["step"]["base"]["inline"]["trial_documents"]
     for entry in (
+        model, task, objective,
         {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
-        {
-            "kind": "document",
-            "id": "model",
-            "document": {"schema": model["schema_id"], "payload": model},
-        },
-        {
-            "kind": "document",
-            "id": "task",
-            "document": {"schema": "feedbax.spec.task", "payload": task},
-        },
     ):
         response = client.post(
             f"{url}/files", json={"revision": snapshot["revision"], "file": entry}
@@ -184,7 +177,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
                 {
                     "op": "replace",
                     "path": "/base/inline",
-                    "value": {"graph": {"document": "model"}, "task": {"document": "task"}},
+                    "value": {"trial_documents": trial},
                 }
             ],
         },
@@ -192,13 +185,12 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     assert response.status_code == 200, response.text
     snapshot = response.json()
     selected = RunKey("default", "train", "default")
-    mass = "/payload/graph/nodes/plant/params/mass"
+    mass = "/payload/trial_documents/model/interior/components/plant/fields/mass"
     before = _read_plan(client, root, snapshot, selected)
     assert before.variants == ("default",)
     assert [row.key for row in before.rows] == [selected]
     assert not before.runs and not before.requests
     assert {item.path for item in before.diagnostics} == {
-        "payload.objective",
         "payload.method_payload",
         "payload.method_ref",
         "payload.training_config",
@@ -208,37 +200,28 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     }
     assert set(before.selected_definitions) == {selected}
     definition = before.selected_definitions[selected]
-    assert definition.payload["graph"] == model
-    assert definition.payload["task"] == task
+    assert definition.payload["trial_documents"]["model"] == model["document"]["payload"]
+    assert definition.payload["trial_documents"]["task"] == task["document"]["payload"]
     assert (
         definition.sources[mass].kind,
         definition.sources[mass].name,
         definition.sources[mass].path,
-    ) == ("document", "model", "/nodes/plant/params/mass")
-    assert definition.sources["/payload/task/params/n_steps"].name == "task"
+    ) == ("document", _MODEL, "/interior/components/plant/fields/mass")
+    assert definition.sources["/payload/trial_documents/task/id"].name == task["id"]
     assert not _read_plan(client, root, snapshot).selected_definitions
 
-    response = client.patch(
-        url,
-        json={
-            "revision": snapshot["revision"],
-            "address": {"kind": "document", "id": "model"},
-            "patches": [
-                {"op": "replace", "path": "/payload/nodes/plant/params/mass", "value": 2.0}
-            ],
-        },
-    )
-    assert response.status_code == 200, response.text
-    current = response.json()
+    with client:
+        current = _edit_mass(client, url, snapshot, 2.0)
     assert current["revision"] != snapshot["revision"]
     plan = _read_plan(client, root, current, selected)
     assert plan.rows == before.rows and plan.diagnostics == before.diagnostics
-    assert plan.sources == before.sources
+    assert plan.sources[selected][mass] == before.sources[selected][mass]
+    assert plan.selected_definitions[selected].document_ids == definition.document_ids
     assert (
-        plan.selected_definitions[selected].payload["graph"]["nodes"]["plant"]["params"]["mass"]
+        plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 2.0
     )
-    assert definition.payload["graph"]["nodes"]["plant"]["params"]["mass"] == 1.0
+    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.0
     files = _folder_state(root)
     with pytest.raises(project_folder.ProjectRevisionConflict) as conflict:
         app.state.project_folders.read_plan(snapshot["project_id"], revision=snapshot["revision"])
@@ -332,7 +315,10 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     project = Project.model_validate({
         "steps": {
             "train": {"kind": "train", "base": {"inline": {
-                "task": {"type": "SimpleReaches", "params": {"n_steps": 80}},
+                "trial_documents": {"task": {
+                    "id": "task", "fixed_steps": 80, "variables": [], "epochs": [{"id": "move", "name": "Move"}],
+                    "signals": [],
+                }},
                 "method_ref": STUDIO_GRAPH_METHOD.model_dump(),
                 "method_payload": {
                     "schema_id": method.payload_schema_id,
@@ -345,14 +331,14 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
             }}},
         },
     })
-    _, patches, _, _ = project_train_fields(
+    _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
     )
     patch, = patches
     assert patch.path == "/base/inline/training_config"
     assert patch.value == {
-        "n_batches": 25, "learning_rate": 0.02, "batch_size": 1, "n_reach_steps": 80,
+        "n_batches": 25, "batch_size": 1, "n_reach_steps": 80,
         "snapshot_interval": 12,
     }
 
@@ -373,7 +359,7 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
         )
     assert inline["method_payload"]["payload"]["optimizer"]["params"] == reference
 
-    _, patches, _, _ = project_train_fields(
+    _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/method_payload/payload/seed", value=7.0),
     )
@@ -468,7 +454,7 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
     original = load_text_project(root)
     authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     authored["steps"]["other"] = authored["steps"]["fit"]
-    dotted = "documents.model.payload.nodes.gain.params.gain"
+
     existing = "steps.fit.base.inline.training_config.n_batches"
     authored["sweep"] = {
         "rows": {
@@ -488,49 +474,52 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         path.write_bytes(data)
 
     before = _read(client)
-    path = "/nodes/gain/params/gain"
+    owner = {"document": _MODEL, "composites": [], "element": {"kind": "component", "id": "plant"}}
+    field = ModelAddress.model_validate(owner | {"element": {
+        "kind": "field", "parent": owner["element"], "path": ["fields", "mass"],
+    }})
     key = {"variant": "compare", "step": "fit", "row": "seed=10"}
-    body = {"revision": before["revision"], "run": key, "field": "graph"}
-    change = {"scope": "variant", "path": path, "value": 3, "lit_steps": ["fit", "other"]}
+    body = {"revision": before["revision"], "run": key, "owner": owner}
+    change = {
+        "address": field.model_dump(mode="json"), "edit": {"kind": "text", "text": "3"},
+        "lit_steps": ["fit", "other"],
+    }
 
     def review(**updates):
-        return client.post(f"{_URL}/authoring/document", json={**body, **updates})
+        return client.post(f"{_URL}/model/fields", json={**body, **updates})
 
     with client:
         inspection = review()
         assert inspection.status_code == 200, inspection.text
-        assert path in inspection.json()["variant_model_paths"]
-        narrowed = review(change={**change, "lit_steps": ["fit"]})
+        mass = next(item for item in inspection.json()["fields"] if item["label"] == "Mass")
+        assert ModelAddress.model_validate(mass["address"]) == field
+        narrowed = review(**(change | {"lit_steps": ["fit"]}))
         assert narrowed.status_code == 422, narrowed.text
-        assert "all its users" in narrowed.text
-        base = review(run={**key, "variant": "base"}, change=change)
-        assert base.status_code == 422, base.text
-        parent = review(run={**key, "variant": "parent"}, change=change)
+        assert "steps that use this Model" in narrowed.text
+        parent = review(**(change | {"run": {**key, "variant": "parent"}}))
         assert parent.status_code == 422, parent.text
         assert "inherited" in parent.text
-        reviewed = review(change=change)
+        reviewed = review(**change)
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]
-        assert recipe == {
-            "address": {"kind": "variant", "id": "compare"},
-            "patches": [{"op": "add", "path": f"/patches/{dotted}", "value": {"value": 3}}],
-        }
+        assert recipe["address"] == {"kind": "variant", "id": "compare"}
+        assert recipe["patches"][0]["value"][field.to_text()] == {"op": "replace", "value": 3}
         snapshot = client.patch(_URL, json={"revision": before["revision"], **recipe})
         assert snapshot.status_code == 200, snapshot.text
         after = snapshot.json()
         assert after["project"]["documents"] == before["project"]["documents"]
         assert after["project"]["steps"] == before["project"]["steps"]
         sweep = before["project"]["sweep"]
-        sweep["rows"]["compare"]["patches"][dotted] = {"value": 3}
+        sweep["rows"]["compare"]["patches"][field.to_text()] = {"op": "replace", "value": 3}
         assert after["project"]["sweep"] == sweep
-        stale = review(change=change)
+        stale = review(**change)
         assert stale.status_code == 409, stale.text
-        again = review(revision=after["revision"], change={**change, "value": 4})
+        again = review(revision=after["revision"], **change)
         assert again.status_code == 200, again.text
-        assert again.json()["sources"][path]["kind"] == "variant"
-        assert again.json()["files"][0]["patches"] == [
-            {"op": "replace", "path": f"/patches/{dotted}", "value": {"value": 4}},
-        ]
+        inspected = review(revision=after["revision"])
+        assert inspected.status_code == 200, inspected.text
+        mass = next(item for item in inspected.json()["fields"] if item["label"] == "Mass")
+        assert mass["text"] == "3"
 
         old_plan = compile_project(project)
         new_plan = _read_plan(client, root, after)
@@ -594,7 +583,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
         7,
         kind="step",
         name="fit",
-        path="/sweep/axes/seed/values/10/patches/seed/value",
+        path=f"/sweep/axes/seed/values/10/patches/{_SEED}/value",
     )
     assert edited.status_code == 200, edited.text
     after = _read_plan(client, root, edited.json(), selected)
@@ -634,7 +623,7 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     release = Event()
 
     def pause_old_compile(project, **kwargs):
-        if project.documents["model"].payload["nodes"]["gain"]["params"]["gain"] == 1:
+        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1:
             entered.set()
             assert release.wait(5)
         return compile_project(project, **kwargs)
@@ -646,23 +635,23 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
         )
         try:
             assert entered.wait(5)
-            changed = _patch(client, opened["revision"], 4)
-            assert changed.status_code == 200, changed.text
-            current = _read_plan(client, root, changed.json(), selected)
+            with client:
+                changed = _edit_mass(client, _URL, opened, 4)
+            current = _read_plan(client, root, changed, selected)
         finally:
             release.set()
         old = previous.result(timeout=5)
 
     assert (old.revision, old.semantic_root) == (opened["revision"], opened["semantic_root"])
     assert (
-        old.plan.selected_definitions[selected].payload["graph"]["nodes"]["gain"]["params"]["gain"]
+        old.plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 1
     )
     assert (
-        current.selected_definitions[selected].payload["graph"]["nodes"]["gain"]["params"]["gain"]
+        current.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 4
     )
-    assert _read_plan(client, root, changed.json(), selected) == current
+    assert _read_plan(client, root, changed, selected) == current
 
 
 def _plan_dependencies(root: Path) -> None:
@@ -863,7 +852,7 @@ def test_new_projects_are_durable_openable_and_distinct(tmp_path):
 def test_rename_changes_only_the_declaration_and_checks_authored_revision(study):
     root, client = study
     initial = client.get(f"{_URL}/open").json()
-    presentation = {"documents": {"model": {"camera": {"x": 1, "y": 2, "zoom": 1.5}}}}
+    presentation = {"documents": {_MODEL: {"camera": {"x": 1, "y": 2, "zoom": 1.5}}}}
     response = client.put(f"{_URL}/presentation", json={
         "revision": initial["snapshot"]["presentation_revision"],
         "presentation": presentation,
@@ -942,13 +931,8 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     step_file = root / "steps/train.json"
     assert json.loads(step_file.read_bytes()) == train["step"]
 
-    evaluate = {"kind": "step", "id": "evaluate", "step": {"kind": "evaluate", "base": {"inline": {}}}}
-    held = client.post(url, json={"revision": step_revision["revision"], "file": evaluate})
-    assert held.status_code == 422 and held.json()["detail"] == "Evaluate activation is held."
-    assert not (root / "steps/evaluate.json").exists()
-
     task = {"kind": "document", "id": "task", "document": {
-        "schema": "feedbax.spec.task", "payload": {"type": "SimpleReaches", "params": {"n_steps": 100}},
+        "schema": "feedbax.spec.python_task", "payload": {"type": "feedbax.task.reaching.v1", "params": {}},
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
     assert rejected.status_code == 409
@@ -995,7 +979,7 @@ def test_rename_and_patch_from_one_revision_have_one_winner(study):
         assert opened["snapshot"] == patched.json()
         assert renamed.json()["detail"]["current"] == opened["snapshot"]["revision"]
         assert opened["configuration"]["project"] == "reach"
-        assert _gain(root) == 3
+        assert _settings(root) == 3
 
 
 def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(study):
@@ -1003,17 +987,16 @@ def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(s
     before = _read(client)
     assert "note" not in before["project"]["steps"]["fit"]
     file_revisions = {entry["address"]["id"]: entry["revision"] for entry in before["file_revisions"]}
-    authored_file = root / "documents/model.json"
+    authored_file = root / "documents/point-mass.json"
     authored_file.chmod(0o644)
-    response = _patch(client, before["revision"], 3)
-    assert response.status_code == 200, response.text
-    saved = response.json()
+    with client:
+        saved = _edit_mass(client, _URL, before, 3)
     assert saved["revision"] != before["revision"]
     assert saved["semantic_root"] != before["semantic_root"]
     current_files = {entry["address"]["id"]: entry["revision"] for entry in saved["file_revisions"]}
     assert current_files["fit"] == file_revisions["fit"]
-    assert current_files["model"] != file_revisions["model"]
-    assert _gain(root) == 3
+    assert current_files[_MODEL] != file_revisions[_MODEL]
+    assert _mass(root) == 3
     assert authored_file.stat().st_mode & 0o777 == 0o644
     assert _read(TestClient(create_app(projects_dir=root.parent))) == saved
     plan_before = compile_project(load_text_project(root).project)
@@ -1022,8 +1005,8 @@ def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(s
 
     presentation = {
         "documents": {
-            "model": {
-                "positions": {"gain": {"x": 40, "y": 20}},
+            _MODEL: {
+                "positions": {"plant": {"x": 40, "y": 20}},
                 "camera": {"x": 2, "y": 3, "zoom": 1.5},
             }
         },
@@ -1083,7 +1066,7 @@ def test_named_sweep_edit_preserves_value_ids_order_and_other_request(study):
         7,
         kind="step",
         name="fit",
-        path="/sweep/axes/seed/values/10/patches/seed/value",
+        path=f"/sweep/axes/seed/values/10/patches/{_SEED}/value",
     )
     assert response.status_code == 200, response.text
     reopened = load_text_project(root)
@@ -1092,7 +1075,7 @@ def test_named_sweep_edit_preserves_value_ids_order_and_other_request(study):
     assert list(sweep.exceptions) == ["z_first", "a_second"]
     current = compile_project(reopened.project)
     assert [run.key for run in current.runs] == [run.key for run in previous.runs]
-    assert [run.coordinates for run in current.runs] == [run.coordinates for run in previous.runs]
+    assert [run.coordinates["seed"].value_id for run in current.runs] == ["10", "2"]
     assert current.runs[0].request_id != previous.runs[0].request_id
     assert current.runs[1].request_id == previous.runs[1].request_id
 
@@ -1112,14 +1095,14 @@ def test_competing_writers_from_one_revision_have_one_winner(study):
     assert sorted(response.status_code for response in results.values()) == [200, 409]
     (winner,) = (value for value, response in results.items() if response.status_code == 200)
     (loser,) = (response for response in results.values() if response.status_code == 409)
-    assert _gain(root) == winner
+    assert _settings(root) == winner
     assert loser.json()["detail"]["current"] == load_text_project(root).revision
 
 
 def test_external_revision_and_invalid_batch_preserve_external_bytes(study):
     root, client = study
     baseline = _read(client)
-    path = root / "documents/model.json"
+    path = root / "documents/settings.json"
     path.write_bytes(path.read_bytes() + b"\n")
     reformatted = _read(client)
     assert reformatted["revision"] != baseline["revision"]
@@ -1127,10 +1110,10 @@ def test_external_revision_and_invalid_batch_preserve_external_bytes(study):
     assert _patch(client, baseline["revision"], 3).status_code == 409
 
     body = json.loads(path.read_bytes())
-    body["payload"]["nodes"]["gain"]["params"]["gain"] = 9
+    body["payload"]["value"] = 9
     data = json.dumps(body, indent=4).encode()
     write_bytes_atomic(path, data)
-    assert _gain(root) == 9
+    assert _settings(root) == 9
     assert _patch(client, reformatted["revision"], 3).status_code == 409
     latest = _read(client)
     assert latest["semantic_root"] != reformatted["semantic_root"]
@@ -1138,9 +1121,9 @@ def test_external_revision_and_invalid_batch_preserve_external_bytes(study):
         _URL,
         json={
             "revision": latest["revision"],
-            "address": {"kind": "document", "id": "model"},
+            "address": {"kind": "document", "id": _SETTINGS},
             "patches": [
-                {"op": "replace", "path": _GAIN, "value": 3},
+                {"op": "replace", "path": _VALUE, "value": 3},
                 {"op": "remove", "path": "/schema"},
             ],
         },
@@ -1153,7 +1136,7 @@ def test_external_revision_and_invalid_batch_preserve_external_bytes(study):
 def test_external_change_while_staging_is_detected_before_replace(study, monkeypatch):
     root, client = study
     before = _read(client)
-    path = root / "documents/model.json"
+    path = root / "documents/settings.json"
     raw = path.read_bytes() + b"\n"
 
     def inject_edit(target, data, **kwargs):
@@ -1178,8 +1161,8 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
     before = _read(client)
     files = [
         {
-            "address": {"kind": "document", "id": "model"},
-            "patches": [{"op": "replace", "path": _GAIN, "value": 3}],
+            "address": {"kind": "document", "id": _SETTINGS},
+            "patches": [{"op": "replace", "path": _VALUE, "value": 3}],
         },
         {
             "address": {"kind": "step", "id": "fit"},
@@ -1192,7 +1175,7 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
             "address": {"kind": "presentation", "id": "presentation"},
             "patches": [{
                 "op": "add", "path": "/steps",
-                "value": {"fit": {"model_positions": {"model": {"gain": {"x": 1, "y": 2}}}}},
+                "value": {"fit": {"model_positions": {_MODEL: {"plant": {"x": 1, "y": 2}}}}},
             }],
         })
         before_write = _folder_state(root)
@@ -1217,246 +1200,17 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
     assert (root / ".studio-patch.json").is_file()
     after = _read(client)
     assert after["revision"] != before["revision"]
-    assert _gain(root) == 3
+    assert _settings(root) == 3
     assert after["project"]["steps"]["fit"]["note"]["reason"] == "shared edit"
     if placement:
         assert after["presentation_revision"] != before["presentation_revision"]
-        assert after["presentation"]["steps"]["fit"]["model_positions"]["model"] == {
-            "gain": {"x": 1.0, "y": 2.0},
+        assert after["presentation"]["steps"]["fit"]["model_positions"][_MODEL] == {
+            "plant": {"x": 1.0, "y": 2.0},
         }
     assert not (root / ".studio-patch.json").exists()
     stale = client.patch(_URL, json=body)
     assert stale.status_code == 409
     assert _read(client)["revision"] == after["revision"]
-
-
-def test_model_topology_patches_resolve_only_for_lit_steps(study):
-    root, client = study
-    before = _read(client)
-    direct = client.patch(_URL, json={
-        "revision": before["revision"], "files": [
-            {
-                "address": {"kind": "step", "id": "fit"},
-                "patches": [{"op": "remove", "path": "/sweep"}],
-            }, {
-                "address": {"kind": "document", "id": "model"},
-                "patches": [
-                    {"op": "remove", "path": "/payload/output_ports"},
-                    {"op": "remove", "path": "/payload/output_bindings"},
-                ],
-            },
-        ],
-    })
-    assert direct.status_code == 200, direct.text
-    snapshot = direct.json()
-    step = snapshot["project"]["steps"]["fit"]
-    for id in ("lit", "unlit"):
-        peer = client.post(f"{_URL}/files", json={
-            "revision": snapshot["revision"], "file": {"kind": "step", "id": id, "step": step},
-        })
-        assert peer.status_code == 201, peer.text
-        snapshot = peer.json()["snapshot"]
-    base = compile_project(load_text_project(root).project)
-    shared = (root / "documents/model.json").read_bytes()
-    unlit = (root / "steps/unlit.json").read_bytes()
-    def model_edit(operation, lit):
-        with client:
-            reviewed = client.post(f"{_URL}/authoring/document", json={
-                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
-                "run": {"variant": "default", "step": "fit", "row": "default"}, "field": "graph",
-                "change": {"lit_steps": lit, "operation": operation},
-            })
-        assert reviewed.status_code == 200, reviewed.text
-        recipe = reviewed.json()
-        response = client.patch(_URL, json={
-            "revision": recipe["revision"], "presentation_revision": recipe.get("presentation_revision"),
-            "files": recipe["files"],
-        })
-        assert response.status_code == 200, response.text
-        return response.json(), [file["address"]["id"] for file in recipe["files"] if file["address"]["kind"] == "step"]
-
-    for operation in (
-        {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1, "position": {"x": 8, "y": -9}},
-        {"kind": "connectPorts", "wire": {
-            "id": "gru-carry",
-            "source_node": "gru", "source_port": "hidden", "target_node": "gru", "target_port": "hidden",
-        }},
-        {"kind": "exposeOutput", "source_node": "gru", "source_port": "hidden"},
-    ):
-        snapshot, changed = model_edit(operation, ["fit", "lit"])
-        assert changed == ["fit", "lit"]
-    assert (root / "documents/model.json").read_bytes() == shared
-    assert (root / "steps/unlit.json").read_bytes() == unlit
-    assert snapshot["presentation"]["steps"] == {
-        id: {"model_positions": {"model": {"gru": {"x": 8.0, "y": -9.0}}}} for id in ("fit", "lit")
-    }
-    keys = [run.key for run in base.runs]
-    scoped = compile_project(load_text_project(root).project, source_runs=keys)
-    assert not scoped.diagnostics
-    originals = {run.key: run.request_id for run in base.runs}
-    for run in scoped.runs:
-        graph = scoped.selected_definitions[run.key].payload["graph"]
-        if run.key.step == "unlit":
-            assert "gru" not in graph["nodes"]
-            assert run.request_id == originals[run.key]
-        else:
-            assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
-            (carry,) = (wire for wire in graph["wires"] if wire["source_node"] == "gru")
-            assert carry["id"] == "gru-carry"
-            assert run.request_id != originals[run.key]
-            source = scoped.sources[run.key]["/payload/graph/nodes/gru/params/hidden_size"]
-            assert (source.kind, source.name) == ("step", run.key.step)
-    _, changed = model_edit(
-        {"kind": "exposeOutput", "source_node": "gain", "source_port": "output"}, ["fit", "lit", "unlit"],
-    )
-    assert not changed
-    widened = compile_project(load_text_project(root).project, source_runs=keys)
-    assert not widened.diagnostics
-    for key in keys:
-        bindings = widened.selected_definitions[key].payload["graph"]["output_bindings"]
-        assert bindings["output"] == ["gain", "output"]
-        assert ("hidden" in bindings) == (key.step != "unlit")
-
-
-def test_shared_model_edit_supersedes_only_matching_local_topology(study):
-    root, client = study
-    snapshot = _read(client)
-    all_users = ["fit", "lit", "unlit"]
-    local_users = ["fit", "lit"]
-
-    def save(files):
-        response = client.patch(_URL, json={"revision": snapshot["revision"], "files": files})
-        assert response.status_code == 200, response.text
-        return response.json()
-
-    def recipe(operation, lit=all_users):
-        return client.post(f"{_URL}/authoring/document", json={
-            "revision": snapshot["revision"],
-            "run": {"variant": "default", "step": "fit", "row": "default"},
-            "field": "graph",
-            "change": {"lit_steps": lit, "operation": operation},
-        })
-
-    def edits(operation, lit=all_users):
-        response = recipe(operation, lit)
-        assert response.status_code == 200, response.text
-        return response.json()["files"]
-
-    def wire(source, target):
-        return {"kind": "connectPorts", "wire": {
-            "source_node": source, "source_port": "hidden", "target_node": target, "target_port": "hidden",
-        }}
-
-    def output(node):
-        return {"kind": "exposeOutput", "source_node": node, "source_port": "hidden"}
-
-    def step_edit(step, patches):
-        return {"address": {"kind": "step", "id": step}, "patches": patches}
-
-    def restore_scope(before, after, remove):
-        return [
-            {"address": {"kind": "document", "id": "model"}, "patches": [
-                {"op": "remove", "path": path} for path in remove
-            ]},
-            *(step_edit(step, [{
-                "op": "replace", "path": "/document_overrides",
-                "value": before["project"]["steps"][step]["document_overrides"],
-            }]) for step in local_users if before["project"]["steps"][step] != after["project"]["steps"][step]),
-        ]
-
-    with client:
-        snapshot = save([step_edit("fit", [{"op": "remove", "path": "/sweep"}])])
-        for step in all_users[1:]:
-            created = client.post(f"{_URL}/files", json={
-                "revision": snapshot["revision"],
-                "file": {"kind": "step", "id": step, "step": snapshot["project"]["steps"]["fit"]},
-            })
-            assert created.status_code == 201, created.text
-            snapshot = created.json()["snapshot"]
-        add = {"kind": "addComponent", "component": "feedbax.GRU", "revision": 1}
-        snapshot = save(edits(add))
-        snapshot = save(edits(add))
-        snapshot = save(edits(wire("gru2", "gru2"), ["fit"]))
-        snapshot = save(edits(wire("gru", "gru"), local_users))
-        snapshot = save(edits(output("gru"), local_users))
-        before = snapshot
-        for operation, detail in (
-            (wire("gru2", "gru"), "Input gru.hidden has multiple drivers"),
-            (output("gru2"), "different binding for public output 'hidden'"),
-        ):
-            conflict = recipe(operation)
-            assert conflict.status_code == 422
-            assert detail in conflict.text
-            assert _read(client) == before
-
-        fit = before["project"]["steps"]["fit"]["document_overrides"]
-        different_initializer = [
-            {
-                **edit, "value": {
-                    **edit["value"],
-                    "recurrent_initializer": {**edit["value"]["recurrent_initializer"], "dtype": "float64"},
-                },
-            }
-            if edit["path"] == "/wires/-" and edit["value"]["source_node"] == "gru" else edit
-            for edit in fit["model"]
-        ]
-        for operations, detail in (
-            (different_initializer, "different wire declaration for gru.hidden"),
-            ([*fit["model"], {"op": "replace", "path": "/wires/0/temporality", "value": "recurrent"}],
-             "edits /wires by position"),
-        ):
-            snapshot = save([step_edit("fit", [{
-                "op": "replace", "path": "/document_overrides/model", "value": operations,
-            }])])
-            conflict = recipe(wire("gru", "gru"))
-            assert conflict.status_code == 422
-            assert detail in conflict.text
-            assert _read(client) == snapshot
-            snapshot = save([step_edit("fit", [{
-                "op": "replace", "path": "/document_overrides", "value": fit,
-            }])])
-        assert snapshot == before
-
-        unlit = (root / "steps/unlit.json").read_bytes()
-        wire_files = edits(wire("gru", "gru"))
-        assert [file["address"]["id"] for file in wire_files] == ["model", "fit", "lit"]
-        snapshot = save(wire_files)
-        wired = snapshot
-        output_files = edits(output("gru"))
-        assert [file["address"]["id"] for file in output_files] == ["model", "fit", "lit"]
-        snapshot = save(output_files)
-        promoted = snapshot
-        assert (root / "steps/unlit.json").read_bytes() == unlit
-        assert promoted["project"]["steps"]["lit"]["document_overrides"] == {}
-        assert promoted["project"]["steps"]["fit"]["document_overrides"]["model"] == [
-            edit for edit in fit["model"]
-            if edit["path"] == "/wires" or (
-                edit["path"] == "/wires/-" and edit["value"]["source_node"] == "gru2"
-            )
-        ]
-        keys = [RunKey("default", step, "default") for step in all_users]
-        plan = compile_project(load_text_project(root).project, source_runs=keys)
-        assert not plan.diagnostics
-        for key in keys:
-            graph = plan.selected_definitions[key].payload["graph"]
-            assert graph["output_bindings"]["hidden"] == ["gru", "hidden"]
-            assert [edge["source_node"] for edge in graph["wires"]] == (
-                ["gru", "gru2"] if key.step == "fit" else ["gru"]
-            )
-            source = plan.sources[key]["/payload/graph/wires/0/source_node"]
-            assert (source.kind, source.name) == ("document", "model")
-            output_source = plan.sources[key]["/payload/graph/output_bindings/hidden/0"]
-            assert (output_source.kind, output_source.name) == ("document", "model")
-            if key.step == "fit":
-                assert plan.sources[key]["/payload/graph/wires/1/source_node"].name == "fit"
-
-        snapshot = save(restore_scope(wired, promoted, ["/payload/output_bindings/hidden", "/payload/output_ports/1"]))
-        assert snapshot == wired
-        snapshot = save(restore_scope(before, wired, ["/payload/wires/0"]))
-        assert snapshot == before
-        snapshot = save(wire_files)
-        snapshot = save(output_files)
-        assert snapshot == promoted == _read(client)
 
 
 def test_unreadable_presentation_does_not_hide_the_authored_project(study):
@@ -1478,14 +1232,14 @@ def test_unreadable_presentation_does_not_hide_the_authored_project(study):
     )
     assert repaired.status_code == 200
     assert repaired.json()["presentation_error"] is None
-    assert _gain(root) == 3
+    assert _settings(root) == 3
 
 
 def test_project_and_authored_paths_cannot_point_outside_the_root(study, tmp_path):
     root, client = study
     (tmp_path / "elsewhere").symlink_to(root, target_is_directory=True)
     assert client.get("/api/projects/elsewhere").status_code == 422
-    original = root / "documents/model.json"
+    original = root / "documents/point-mass.json"
     outside = tmp_path / "outside.json"
     original.rename(outside)
     original.symlink_to(outside)
@@ -1509,13 +1263,13 @@ def test_existing_event_stream_observes_an_external_edit(study, monkeypatch, thr
 
                     project_folder.ProjectFolder(root.parent).patch(root.name, StudioProjectPatch.model_validate({
                         "revision": before,
-                        "address": {"kind": "document", "id": "model"},
-                        "patches": [{"op": "replace", "path": _GAIN, "value": 11}],
+                        "address": {"kind": "document", "id": _SETTINGS},
+                        "patches": [{"op": "replace", "path": _VALUE, "value": 11}],
                     }))
                 else:
-                    path = root / "documents/model.json"
+                    path = root / "documents/settings.json"
                     document = json.loads(path.read_bytes())
-                    document["payload"]["nodes"]["gain"]["params"]["gain"] = 11
+                    document["payload"]["value"] = 11
                     write_bytes_atomic(path, json.dumps(document).encode())
             if self.calls > 2:
                 raise HostError("unavailable", "Stream ended")
@@ -1534,4 +1288,4 @@ def test_existing_event_stream_observes_an_external_edit(study, monkeypatch, thr
         load_text_project(root).revision,
     ]
     assert observations[0]["revision"] != observations[1]["revision"]
-    assert _gain(root) == 11
+    assert _settings(root) == 11

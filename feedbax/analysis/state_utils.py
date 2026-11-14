@@ -1,57 +1,14 @@
-from typing import TYPE_CHECKING
-
 from functools import cache
 
 import equinox as eqx
 import jax.numpy as jnp
-import jax.random as jr
 import jax.tree as jt
 import numpy as np
 from equinox import filter_vmap as vmap
-from feedbax._vendor.jax_cookbook import LDict, MaskedArray, is_module, is_type
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from feedbax._vendor.jax_cookbook import LDict, MaskedArray, is_type
+from jaxtyping import Array, Float, PyTree
 
-from feedbax.analysis.analysis import get_validation_trial_specs
-from feedbax.config.namespace import TreeNamespace
 from feedbax.config.defaults import REPLICATE_CRITERION
-
-
-if TYPE_CHECKING:
-    from feedbax.tasks import AbstractTask
-
-
-def get_pos_endpoints(trial_specs):
-    """Given a set of `SimpleReaches` trial specifications, return the stacked start and end positions."""
-    return jnp.stack(
-        [
-            trial_specs.inits["mechanics.effector"].pos,
-            jnp.take(trial_specs.targets["mechanics.effector.pos"].value, -1, axis=-2),
-        ],
-        axis=0,
-    )
-
-
-@eqx.filter_jit
-def vmap_eval_ensemble(
-    key: PRNGKeyArray,
-    hps: TreeNamespace,
-    models: eqx.Module,
-    task: "AbstractTask",
-    *,
-    model_axes: PyTree,
-):
-    """Evaluate an ensemble of models on `n` random repeats of a task's validation set."""
-
-    def evaluate(repeat_key):
-        return task.eval_ensemble(
-            models,
-            n_replicates=hps.model.n_replicates,
-            key=repeat_key,
-            ensemble_random_trials=False,
-            model_axes=model_axes,
-        )
-
-    return eqx.filter_vmap(evaluate)(jr.split(key, hps.task.eval_n))
 
 
 def _get_replicate_idxs_fn(replicate_info, key):
@@ -97,7 +54,7 @@ def get_best_replicate(tree, *, replicate_info, axis: int = 1, keep_axis: bool =
 
 
 def get_align_epoch_start(
-    epoch_idx: int,
+    epoch_starts: Array,
     *,
     time_axis: int = -2,
     trial_axis: int = -3,
@@ -112,61 +69,55 @@ def get_align_epoch_start(
     if any. Each result leaf is a MaskedArray with a same-shape validity mask.
     """
 
-    def align_epochs(vars, *, data):
-        def _align_vars_by_task(task, all_states_for_task):
-            epoch_bounds = task.validation_trials.timeline.epoch_bounds
-            if epoch_bounds is None:
-                raise ValueError("No epoch bounds defined in the task timeline.")
-            start_idxs = np.asarray(epoch_bounds[:, epoch_idx], dtype=np.int64)
-            min_start = int(start_idxs.min())
+    def align_epochs(values):
+        start_idxs = np.asarray(epoch_starts, dtype=np.int64)
+        min_start = int(start_idxs.min())
 
-            if anchor == "max":
-                anchor_idx = int(start_idxs.max())
-            elif anchor == "min":
-                anchor_idx = min_start
-            elif isinstance(anchor, str):
-                raise ValueError(f"Unsupported anchor='{anchor}'. Use 'max', 'min', or an int.")
-            else:
-                anchor_idx = int(anchor)
+        if anchor == "max":
+            anchor_idx = int(start_idxs.max())
+        elif anchor == "min":
+            anchor_idx = min_start
+        elif isinstance(anchor, str):
+            raise ValueError(f"Unsupported anchor='{anchor}'. Use 'max', 'min', or an int.")
+        else:
+            anchor_idx = int(anchor)
 
-            max_right_shift = max(0, anchor_idx - min_start)
+        max_right_shift = max(0, anchor_idx - min_start)
 
-            @cache
-            def _alignment_indices(n_time):
-                output_time = jnp.arange(n_time + max_right_shift)
-                # Shifts at or below -n_time discard the entire trial.
-                bounded_anchor = max(anchor_idx, min_start - n_time)
-                shifts = jnp.asarray(np.maximum(bounded_anchor - start_idxs, -n_time))
-                source_time = output_time[None, :] - shifts[:, None]
-                valid = (0 <= source_time) & (source_time < n_time)
-                return jnp.where(valid, source_time, 0), valid
+        @cache
+        def _alignment_indices(n_time):
+            output_time = jnp.arange(n_time + max_right_shift)
+            # Shifts at or below -n_time discard the entire trial.
+            bounded_anchor = max(anchor_idx, min_start - n_time)
+            shifts = jnp.asarray(np.maximum(bounded_anchor - start_idxs, -n_time))
+            source_time = output_time[None, :] - shifts[:, None]
+            valid = (0 <= source_time) & (source_time < n_time)
+            return jnp.where(valid, source_time, 0), valid
 
-            def _align_vars(states):
-                x = jnp.moveaxis(states, (trial_axis, time_axis), (0, 1))
-                n_trials, n_time, *feature_shape = x.shape
-                if n_trials != start_idxs.size:
-                    raise ValueError(
-                        f"Trial axis size ({n_trials}) does not match start_idxs ({start_idxs.size})."
-                    )
-
-                source_time, valid = _alignment_indices(n_time)
-                valid = valid.reshape(valid.shape + (1,) * len(feature_shape))
-                output_shape = (*source_time.shape, *feature_shape)
-                pad = jnp.asarray(pad_value, dtype=x.dtype)
-                if n_time:
-                    trial = jnp.arange(n_trials)[:, None]
-                    aligned = jnp.where(valid, x[trial, source_time], pad)
-                else:
-                    aligned = jnp.broadcast_to(pad, output_shape)
-                masks = jnp.broadcast_to(valid, output_shape)
-                return MaskedArray(
-                    jnp.moveaxis(aligned, (0, 1), (trial_axis, time_axis)),
-                    jnp.moveaxis(masks, (0, 1), (trial_axis, time_axis)),
+        def _align_vars(states):
+            x = jnp.moveaxis(states, (trial_axis, time_axis), (0, 1))
+            n_trials, n_time, *feature_shape = x.shape
+            if n_trials != start_idxs.size:
+                raise ValueError(
+                    f"Trial axis size ({n_trials}) does not match start_idxs ({start_idxs.size})."
                 )
 
-            return jt.map(_align_vars, all_states_for_task)
+            source_time, valid = _alignment_indices(n_time)
+            valid = valid.reshape(valid.shape + (1,) * len(feature_shape))
+            output_shape = (*source_time.shape, *feature_shape)
+            pad = jnp.asarray(pad_value, dtype=x.dtype)
+            if n_time:
+                trial = jnp.arange(n_trials)[:, None]
+                aligned = jnp.where(valid, x[trial, source_time], pad)
+            else:
+                aligned = jnp.broadcast_to(pad, output_shape)
+            masks = jnp.broadcast_to(valid, output_shape)
+            return MaskedArray(
+                jnp.moveaxis(aligned, (0, 1), (trial_axis, time_axis)),
+                jnp.moveaxis(masks, (0, 1), (trial_axis, time_axis)),
+            )
 
-        return jt.map(_align_vars_by_task, data.tasks, vars, is_leaf=is_module)
+        return jt.map(_align_vars, values)
 
     return align_epochs
 
@@ -255,10 +206,6 @@ def trim_tails(
         return x
     
     return jt.map(_trim_ma, tree, is_leaf=is_type(MaskedArray))
-
-
-def get_trial_start_positions(task: "AbstractTask") -> Array:
-    return get_validation_trial_specs(task).inits["mechanics.effector"].pos
 
 
 def unsqueezer(axis: int):

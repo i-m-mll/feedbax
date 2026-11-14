@@ -1,4 +1,4 @@
-"""Request custody and dataset reads for the isolated saved Evaluate candidate."""
+"""Request custody and dataset reads for saved Evaluate."""
 
 from __future__ import annotations
 
@@ -197,14 +197,6 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
     return train, Provenance(parents=parents, metadata=metadata)
 
 
-def read_evaluation_manifest(
-    root: Path, job_id: str, request_id: str, receipt: JobReceipt,
-) -> tuple[EvaluationRunManifest, ProductRef]:
-    store = ImmutableArtifactBlobProvider(root)
-    ref, raw = store.resolve_manifest("EvaluationRunManifest", receipt.manifest_id)
-    return decode_evaluation_manifest(store, raw, ref.object, job_id, request_id, receipt)
-
-
 def decode_evaluation_manifest(
     store: ImmutableArtifactBlobProvider, raw: bytes, ref: ContentObjectRef,
     job_id: str, request_id: str, receipt: JobReceipt,
@@ -236,16 +228,13 @@ def decode_evaluation_manifest(
 
 def verify_evaluation_receipt(
     root: Path, *, attempt: str, request_id: str, project: str, receipt: JobReceipt, binding: dict,
-    manifest_object: ContentObjectRef | None = None,
+    manifest_object: ContentObjectRef,
 ) -> tuple[EvaluationRunManifest, ProductRef]:
     """Authenticate the worker receipt against the exact Host dependency."""
-    if manifest_object is None:
-        manifest, subject = read_evaluation_manifest(root, attempt, request_id, receipt)
-    else:
-        store = ImmutableArtifactBlobProvider(root)
-        manifest, subject = decode_evaluation_manifest(
-            store, store.get_object(manifest_object), manifest_object, attempt, request_id, receipt,
-        )
+    store = ImmutableArtifactBlobProvider(root)
+    manifest, subject = decode_evaluation_manifest(
+        store, store.get_object(manifest_object), manifest_object, attempt, request_id, receipt,
+    )
     if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
         selection = binding["checkpoint_selection"]
         members = selection["members"]
@@ -309,7 +298,7 @@ class EvaluationResult:
 
     def __init__(
         self, root: Path, job_id: str, request_id: str, receipt: JobReceipt,
-        *, manifest_object: ContentObjectRef | None = None,
+        *, manifest_object: ContentObjectRef,
     ):
         self._root = root
         self._job_id = job_id
@@ -318,14 +307,11 @@ class EvaluationResult:
         self._manifest_object = manifest_object
 
     def _manifest(self) -> EvaluationRunManifest:
-        if self._manifest_object is None:
-            manifest, _ = read_evaluation_manifest(self._root, self._job_id, self._request_id, self.receipt)
-        else:
-            store = ImmutableArtifactBlobProvider(self._root)
-            manifest, _ = decode_evaluation_manifest(
-                store, store.get_object(self._manifest_object), self._manifest_object,
-                self._job_id, self._request_id, self.receipt,
-            )
+        store = ImmutableArtifactBlobProvider(self._root)
+        manifest, _ = decode_evaluation_manifest(
+            store, store.get_object(self._manifest_object), self._manifest_object,
+            self._job_id, self._request_id, self.receipt,
+        )
         return manifest
 
     @property
@@ -342,7 +328,7 @@ class EvaluationResult:
         spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
         params = RolloutParameters.model_validate(spec.params)
         store = ImmutableArtifactBlobProvider(self._root)
-        with open_stored_dataset(store, ref, verify=verify or self._manifest_object is None) as dataset:
+        with open_stored_dataset(store, ref, verify=verify) as dataset:
             if dataset.descriptor.schema_id != params.states_schema:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset

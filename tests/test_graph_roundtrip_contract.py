@@ -8,7 +8,6 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
-from feedbax.component_registry.retained import retained_component_registry
 from feedbax.components import penzai
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
@@ -20,7 +19,7 @@ from tests.support.graph_compiler_test_support import spec_to_graph
 
 
 def _registry_cases() -> list[str]:
-    registry = retained_component_registry()
+    registry = ComponentRegistry()
     return [
         component_type
         for component_type in registry.executable_names()
@@ -291,7 +290,7 @@ def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> 
         penzai.register_penzai_builder(
             "test_roundtrip_sigmoid", lambda _: pz.nn.Elementwise(jax.nn.sigmoid)
         )
-    return retained_component_registry()
+    return ComponentRegistry()
 
 
 @pytest.mark.parametrize("component_type", _registry_cases())
@@ -301,7 +300,7 @@ def test_registered_buildable_component_param_round_trips(
 ) -> None:
     """Every declared leaf parameter is exercised non-default and must survive."""
     registry = roundtrip_registry
-    restore_registry = retained_component_registry()
+    restore_registry = ComponentRegistry()
     meta = registry.get(component_type)
     assert meta is not None
     baseline_params = _contextualize_params(component_type, None, deepcopy(meta.default_params))

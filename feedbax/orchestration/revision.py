@@ -1,59 +1,14 @@
-"""Resolve and enforce the provenance of the Feedbax package currently imported.
+"""Resolve and verify the revision of the imported Feedbax package.
 
-``resolve_feedbax_revision``/``assert_feedbax_revision_exact`` are the original,
-already-wired execution-boundary check (Mandible-Issue 3149d58): they resolve the
-Git commit of the checkout that supplied ``import feedbax`` and fail closed on a
-locked-revision mismatch or an unresolvable source. Their behaviour is exactly as
-shipped, so the PREFLIGHT/LAUNCH call sites and their tests are unaffected.
+Use `assert_feedbax_revision_exact` at an execution boundary with a known
+revision. Use `assert_feedbax_revision_pin` to check the ancestry of an authored
+revision pin. `check_feedbax_provenance` additionally checks the working tree,
+and `assert_feedbax_source_residence` checks the supplying checkout path.
 
-``assert_feedbax_revision_pin`` is the *authoring-time* half of that gate
-(Mandible-Issue 0c2b295). An authored spec or lock in a downstream science repo
-records the revision it was qualified against; that pin is a well-formedness and
-ancestry statement, not a live identity statement, because the run's actual
-provenance is minted per run set into ``RunBundle.feedbax_revision`` and asserted
-exactly at launch. Authoring-time therefore asserts that the pin is well formed
-and that the locked commit is an ancestor of the installed revision: it still
-fails on a fabricated pin and on a pin from an abandoned branch, but it does not
-fail merely because the dependency moved forward.
-
-``resolve_feedbax_provenance``/``check_feedbax_provenance`` extend that surface
-(Mandible-Issue 7e7dac8) with working-tree cleanliness and an explicit,
-never-default override, for callers that want the stricter guarantee described
-by that issue: fail closed on mismatch, a dirty supplying tree, or unverifiable
-provenance, and skip with a visible warning (never silently) when no pin is
-supplied at all. ``RunAssemblyRequest.feedbax_revision`` is the durable authority
-those checks are run against at assembly time (Mandible-Issue a09bad3).
-
-``assert_feedbax_source_residence`` is the runtime-only companion: an operator
-asserts on the invocation which checkout it believes supplies ``import feedbax``.
-An absolute checkout path is machine-local, so it is never recorded durably.
-
-Memoization
------------
-
-Every check above resolves the same fact — the commit that supplied the imported
-package — and the gates deliberately re-assert it at each boundary, per stage and
-per launched row. Each resolution costs three ``git`` subprocesses, so the
-repeated question, not any individual query, is what makes the cost visible.
-
-``_resolve_checkout_revision`` is therefore memoized per package directory for the
-life of the process. That is sound because of what the question means: it asks
-which commit supplied the code this interpreter has *already imported*, and that
-is settled at import time. If the supplying checkout is later committed to or
-checked out, the loaded module objects do not change with it, so a freshly
-queried ``HEAD`` would describe code that is not the code running. Holding the
-first answer is the accurate one as well as the cheap one.
-
-Working-tree cleanliness is deliberately *not* memoized. Unlike a revision it is a
-live property of the tree rather than of the imported bytes, and the provenance
-gate exists precisely to notice an edit, so ``_feedbax_tree_is_dirty`` re-runs
-``git status`` on every call. Wheel provenance is likewise re-read each time: it
-costs no subprocess, and re-reading keeps the checkout/distribution conflict check
-honest.
-
-``_reset_checkout_revision_cache`` re-opens the question for a host that has
-grounds to ask it again — chiefly the test suite, where each test stands in for a
-fresh process and builds its own throwaway checkout.
+The checkout revision is cached per package directory for the life of the
+process. The cache records which revision supplied the code already loaded into
+this interpreter. Working-tree status and wheel provenance are read when
+requested because they can change independently of the loaded code.
 """
 
 from __future__ import annotations
@@ -99,7 +54,7 @@ class FeedbaxRevisionAncestryWarning(UserWarning):
     Raised as a warning rather than an error because the authoring-time check is
     advisory by construction: exact, fail-closed enforcement of the revision a
     run actually executed against lives at the launch boundary, against the
-    per-run-set ``RunBundle.feedbax_revision``. Callers who want the
+    recorded execution revision. Callers who want the
     undeterminable case to be fatal can promote it with
     ``warnings.simplefilter("error", FeedbaxRevisionAncestryWarning)`` or
     ``-W error::feedbax.orchestration.revision.FeedbaxRevisionAncestryWarning``.
@@ -215,10 +170,7 @@ def resolve_feedbax_revision() -> str:
 def assert_feedbax_revision_exact(locked_revision: str) -> str:
     """Fail closed unless the imported Feedbax package matches ``locked_revision``.
 
-    This is the launch-time boundary check. Callers pass the revision Feedbax
-    minted for the run set (``RunBundle.feedbax_revision``), so anything other
-    than exact identity means the code about to execute is not the code the run
-    was assembled from.
+    Callers use this when execution requires the exact recorded revision.
     """
     if not _GIT_REVISION_RE.fullmatch(locked_revision):
         raise FeedbaxRevisionError(
@@ -308,12 +260,8 @@ def _pin_ancestry_state(
 def assert_feedbax_revision_pin(locked_revision: str) -> str:
     """Fail closed unless an authored pin is well formed and an ancestor of the install.
 
-    This is the authoring-time gate for a revision recorded in a spec or lock: it
-    states which Feedbax the document was qualified against, not which Feedbax a
-    run executed (that is minted per run set and asserted exactly at launch by
-    ``assert_feedbax_revision_exact``). A pin therefore stays valid as the
-    dependency moves forward, while a fabricated commit or a commit from an
-    abandoned branch still fails, because neither is an ancestor of the install.
+    The pin records the revision the document was qualified against. It remains
+    valid when the installed revision descends from that commit.
 
     Three outcomes are distinguished, and each names itself in its message:
 

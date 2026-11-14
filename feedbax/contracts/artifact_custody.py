@@ -27,8 +27,6 @@ CONTENT_MANIFEST_REF_SCHEMA_ID = "feedbax.spec.content_manifest_ref"
 CONTENT_MANIFEST_REF_SCHEMA_VERSION = "feedbax.spec.content_manifest_ref.v1"
 CONTENT_BINDING_SCHEMA_ID = "feedbax.spec.content_binding"
 CONTENT_BINDING_SCHEMA_VERSION = "feedbax.spec.content_binding.v1"
-CONTENT_MIGRATION_RECEIPT_SCHEMA_ID = "feedbax.spec.content_migration_receipt"
-CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION = "feedbax.spec.content_migration_receipt.v1"
 CONTENT_ROOT_RECORD_SCHEMA_ID = "feedbax.spec.content_root_record"
 CONTENT_ROOT_RECORD_SCHEMA_VERSION = "feedbax.spec.content_root_record.v1"
 CONTENT_HOLD_RECORD_SCHEMA_ID = "feedbax.spec.content_hold_record"
@@ -44,7 +42,6 @@ CONTENT_GC_RECEIPT_SCHEMA_VERSION = "feedbax.spec.content_gc_receipt.v1"
 CONTENT_OBJECT_REF_PREFIX = "content-object://sha256/"
 CONTENT_TREE_REF_PREFIX = "content-tree://sha256/"
 CONTENT_MANIFEST_REF_PREFIX = "content-manifest://"
-LEGACY_CONTENT_MIGRATION_COMMAND = "python -m feedbax migrate-content-store"
 
 
 class ArtifactBlobCustodyError(ValueError):
@@ -209,28 +206,8 @@ class ContentBinding(StrictModel):
     tree: ContentTreeRef
 
 
-class ContentMigrationMapping(StrictModel):
-    """One old locator mapped to its canonical successor reference."""
-
-    source_type: Literal["staged-root-v1", "manifest-packet-v1", "path-backed-import"]
-    source_ref: str
-    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    target_ref: str
-    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    size_bytes: int = Field(ge=0)
 
 
-class ContentMigrationReceipt(StrictModel):
-    """Complete deterministic receipt emitted by an explicit offline migration."""
-
-    schema_id: Literal[CONTENT_MIGRATION_RECEIPT_SCHEMA_ID] = CONTENT_MIGRATION_RECEIPT_SCHEMA_ID
-    schema_version: Literal[CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION] = (
-        CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION
-    )
-    source_schema_version: str
-    destination_store: str
-    mappings: tuple[ContentMigrationMapping, ...]
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def _require_utc(value: datetime) -> datetime:
@@ -526,8 +503,6 @@ __all__ = [
     "CONTENT_MANIFEST_REF_PREFIX",
     "CONTENT_MANIFEST_REF_SCHEMA_ID",
     "CONTENT_MANIFEST_REF_SCHEMA_VERSION",
-    "CONTENT_MIGRATION_RECEIPT_SCHEMA_ID",
-    "CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION",
     "CONTENT_ROOT_RECORD_SCHEMA_ID",
     "CONTENT_ROOT_RECORD_SCHEMA_VERSION",
     "CONTENT_HOLD_RECORD_SCHEMA_ID",
@@ -548,7 +523,6 @@ __all__ = [
     "CONTENT_TREE_REF_SCHEMA_VERSION",
     "CONTENT_TREE_SCHEMA_ID",
     "CONTENT_TREE_SCHEMA_VERSION",
-    "LEGACY_CONTENT_MIGRATION_COMMAND",
     "IMMUTABLE_ARTIFACT_BLOB_PROVIDER_KIND",
     "IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID",
     "IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION",
@@ -561,8 +535,6 @@ __all__ = [
     "ContentBinding",
     "ContentManifestConflictError",
     "ContentManifestRef",
-    "ContentMigrationMapping",
-    "ContentMigrationReceipt",
     "ContentGcDecision",
     "ContentGcReceipt",
     "ContentGcRequest",

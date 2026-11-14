@@ -8,11 +8,12 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, build_default_studio_workspace
+from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ComponentOptions
 from feedbax.contracts.component import PortType
-from feedbax.studio.schema import enumerate_studio_schema_registry
+from feedbax.compiler.resolution import resolve_graph_parameters
+from feedbax.studio.schema import _enumerate_graph_ports, validate_graph_connection_schema
 
 
 @pytest.mark.parametrize("declared_size", [None, 4])
@@ -61,13 +62,10 @@ def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_
         output_bindings={"output": ("linear", "output")},
         derived_dimensions=[{"node": "linear", "param": "input_size", "port": "input"}],
     )
-    schema = enumerate_studio_schema_registry(
-        build_default_studio_workspace(label="Custom prototype"),
-        graph=graph,
-        component_registry=components,
-    )
+    resolution = resolve_graph_parameters(graph, {}, components, allow_incomplete=True)
+    issues = validate_graph_connection_schema(graph, component_registry=components, _resolution=resolution)
     dimension_issues = [
-        issue for issue in schema.issues if issue.type.startswith("derived_dimension")
+        issue for issue in issues if issue.type.startswith("derived_dimension")
     ]
     if declared_size is not None:
         assert [issue.type for issue in dimension_issues] == ["derived_dimension_conflict"]
@@ -76,7 +74,7 @@ def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_
         assert not dimension_issues
         port = next(
             port
-            for port in schema.ports
+            for port in _enumerate_graph_ports(resolution.graph, component_registry=components, resolution=resolution)
             if port.node_id == "linear" and port.port == "input" and port.direction == "input"
         )
         assert port.value_schema.shape == [3]
@@ -461,14 +459,12 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
     assert rebuilt_graph.nodes["source"].width == 3
     assert calls == {"source": 2, "relay": 2}
     calls.update(source=0, relay=0)
-    studio = enumerate_studio_schema_registry(
-        build_default_studio_workspace(label="Normalized parameters"),
-        graph=spec,
-        component_registry=registry,
-    )
+    resolution = resolve_graph_parameters(spec, {}, registry, allow_incomplete=True)
+    issues = validate_graph_connection_schema(spec, component_registry=registry, _resolution=resolution)
+    ports = _enumerate_graph_ports(resolution.graph, component_registry=registry, resolution=resolution)
     assert calls == {"source": 1, "relay": 1}
-    assert not [issue for issue in studio.issues if issue.type.startswith("derived_dimension")]
-    output = next(port for port in studio.ports if port.port == "output" and port.node_id is None)
+    assert not [issue for issue in issues if issue.type.startswith("derived_dimension")]
+    output = next(port for port in ports if port.port == "output" and port.node_id is None)
     assert output.value_schema.shape == [3]
 
 

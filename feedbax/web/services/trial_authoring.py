@@ -1,6 +1,8 @@
 """Project and prepare edits for one saved trial pairing."""
 
 import re
+
+from pydantic import JsonValue
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
@@ -10,13 +12,13 @@ from feedbax.contracts.expression_values import Level, Problem, ProblemCode, Sco
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
-from feedbax.contracts.project import SetProjectValue, apply_document_edits, document_edit_ops, json_pointer_parts
+from feedbax.contracts.project import DocumentOverrides, Project, SetProjectValue, apply_document_edits, document_edit_ops, json_pointer_parts
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.studio_project import AuthoredFileAddress
+from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
@@ -32,10 +34,29 @@ from feedbax.expression_site import project_site, read_field
 from feedbax.expression_text import ParsedField, print_field
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.plugins.application import ApplicationRegistryBundle
-from feedbax.web.services.document_authoring import _step_difference
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.web.services.trial_scope import file_value, scoped_file, selected_runs, variant_file
+
+
+def _step_difference(
+    project: Project, step: str, document: str, local: DocumentOverrides,
+) -> StudioProjectFilePatch:
+    authored = project.steps[step]
+    differences: dict[str, JsonValue] = authored.model_dump(mode="json")["document_overrides"]
+    if not local:
+        differences.pop(document, None)
+    else:
+        differences[document] = local if isinstance(local, dict) else [
+            edit.model_dump(mode="json") for edit in local
+        ]
+    return StudioProjectFilePatch(
+        address=AuthoredFileAddress(kind="step", id=step),
+        patches=[SetProjectValue(
+            op="replace" if "document_overrides" in authored.model_fields_set else "add",
+            path="/document_overrides", value=differences,
+        )],
+    )
 
 
 @dataclass(frozen=True)
@@ -373,7 +394,7 @@ def _evaluate_documents(plan, key, definition, bundle):
     if raw is None:
         raise ProjectFolderInvalid("The selected Evaluate has no planned Train subject.")
     request = decode_request(raw, plan.documents.__getitem__).spec
-    if not isinstance(request, (TrainingRequestSpec, DocumentTrainingRequestSpec)) or request.trial_documents is None:
+    if not isinstance(request, DocumentTrainingRequestSpec):
         raise ProjectFolderInvalid("The selected Evaluate has no managed Train pairing.")
     documents = request.trial_documents
     projection = _project(documents, bundle, show_objective=False)

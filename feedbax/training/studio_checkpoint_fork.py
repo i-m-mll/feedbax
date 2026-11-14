@@ -20,7 +20,7 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     resolve_training_run_spec,
 )
-from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
+from feedbax.training.schedule_eval import compare_continuation_schedule_projections
 from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
     CheckpointForkPlanBindings,

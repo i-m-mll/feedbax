@@ -23,7 +23,7 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
-from tests.test_private_checkpoint_evaluation import _damaged_prng, install_finite_gate
+from tests.support.finite_train import _damaged_prng, install_finite_gate
 
 host = host_fixture
 
@@ -74,7 +74,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
 ):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
     project = "finite"
     _save_project(folders, project, _fixture())
@@ -95,7 +95,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert len({by_step[name].request_id for name in ("ordered", "ascending", "cadence")}) == 3
 
     host.policy(compute=1)
-    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4, managed=True)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
 
     def launch(token, *steps):
         return jobs.admit_plan(folders, plan, run_keys=tuple(by_step[name].key for name in steps), token=token)
@@ -274,11 +274,10 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
 
 
 def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, monkeypatch):
-    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     registries = new_application_registry_bundle()
-    jobs = JobService(host, registries, enable_evaluation_candidate=True)
+    jobs = JobService(host, registries)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "stopped"
     definition = document_project(authored_documents(), evaluation=True)
@@ -331,7 +330,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert zero.disposition == "rejected" and "/inputs/subject/checkpoint" in zero.reason
 
     host.policy(compute=1)
-    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4, managed=True)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
     (producer,) = launch("producer", "train")
     last, exact = launch("consumers", "last", "exact")
     assert {last.disposition, exact.disposition} == {"admitted"}
@@ -343,11 +342,6 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     checkpoint = stopped["outcome"]["checkpoint"]
     assert checkpoint["completed_updates"] == 3
     assert host.stopped_checkpoint(producer.job_id, project=project, manifest_root=str(plan.store_path)) == 3
-    hidden = JobService(host, registries, enable_evaluation_candidate=False).read_plan_attempts(
-        project=project, store=plan.store_path, requests=(by_step["train"].request_id,),
-        stopped_checkpoint_jobs=(producer.job_id,),
-    )
-    assert hidden.by_request[by_step["train"].request_id][0].stopped_checkpoint is None
     assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
     evaluated = terminal(exact.job_id, "succeeded")
     binding = evaluated["edges"][0]["binding"]

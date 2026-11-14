@@ -19,7 +19,6 @@ from feedbax.plugins.application import (
     EXPERIMENT_PACKAGES,
     EVALUATION_RECIPES,
     FIGURES,
-    TRAINING_PROGRAMS,
     ApplicationRegistryBundle,
     new_application_registry_bundle,
 )
@@ -744,18 +743,3 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
             )
         )
     assert package_error.value.code is BootstrapErrorCode.NAMESPACE_COLLISION
-
-
-def test_runpod_smoke_fixture_derives_program_preparation_facet() -> None:
-    from feedbax.training.runpod_smoke_fixture import METHOD_REF
-
-    state = asyncio.run(
-        bootstrap_application(
-            _context(),
-            entry_points=(),
-            modules=("feedbax.training.runpod_smoke_fixture",),
-        )
-    )
-
-    assert state.registry(TRAINING_PROGRAMS).program(METHOD_REF) is not None
-    assert state.bundle.execution_preparations.get(METHOD_REF) is not None

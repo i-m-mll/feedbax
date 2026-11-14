@@ -121,7 +121,7 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
         assert (after.target_node, after.target_port) == (original.target_node, original.target_port)
         scale = variant.graph.nodes[before.target_node]
         assert scale.type == "feedbax.Scale" and scale.params["scale"] == 0.5
-    reader = PlanJobReader(HostClient(), enable_evaluation_candidate=True)
+    reader = PlanJobReader(HostClient())
     reader.evaluation_parameters(plan, run)
 
 
@@ -225,7 +225,7 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
     assert len(plan.plan.diagnostics) == 2
     assert all(problem.step == "refused" and problem.path == "/params/variation/bad-length"
                for problem in plan.plan.diagnostics)
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     refused = jobs.admit_plan(
         folders, plan, run_keys=tuple(row.key for row in plan.plan.rows if row.key.step == "refused"),
         token="refused-task-patch",
@@ -279,7 +279,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     registry = new_application_registry_bundle()
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "compatibility"
     _save_project(folders, project, _saved_variants())

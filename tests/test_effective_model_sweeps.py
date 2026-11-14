@@ -79,7 +79,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     folders = ProjectFolderService(
         tmp_path, components=registry.components, functions=registry.expression_functions,
     )
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     raw = _managed_project(authored)
     target = _wire_field("train-added", "fields", "factor").to_text()
     raw["steps"]["train"]["sweep"] = {"axes": {"factor": {"path": target, "values": [0.5]}}}

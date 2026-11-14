@@ -22,7 +22,7 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
-from tests.test_private_checkpoint_evaluation import install_finite_gate
+from tests.support.finite_train import install_finite_gate
 
 host = host_fixture
 
@@ -76,7 +76,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     _save_project(folders, project, Project.model_validate(raw))
     first = folders.read_plan(project, revision=None)
     train = next(run for run in first.plan.runs if run.kind == "train")
-    jobs = JobService(host, registry, enable_evaluation_candidate=True)
+    jobs = JobService(host, registry)
     (producer,) = jobs.admit_plan(folders, first, run_keys=(train.key,), token="train").items
     assert producer.disposition == "admitted"
     finished = wait_until(lambda: job_row(host, producer.job_id, "succeeded"), timeout=20)
@@ -200,14 +200,14 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
 def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
     project = "resumed-series"
     _save_project(folders, project, Project.model_validate(definition([{"at": 2}, {"at": 4}, {"at": 5}])))
     plan = folders.read_plan(project, revision=None)
     rows = {run.kind: run for run in plan.plan.runs}
     host.policy(compute=1)
-    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4, managed=True)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
     (producer,) = jobs.admit_plan(folders, plan, run_keys=(rows["train"].key,), token="train").items
     assert producer.disposition == "admitted"
     wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)

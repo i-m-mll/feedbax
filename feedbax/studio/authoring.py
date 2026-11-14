@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import math
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args, overload
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
-from feedbax.component_registry.registry import ComponentRegistry
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
@@ -20,7 +18,6 @@ from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
-from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
@@ -48,8 +45,6 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringSource,
     StudioAuthoringSurface,
     StudioAuthoringSweepChange,
-    StudioReachTargetAuthoring,
-    StudioReachTargetEdit,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
@@ -64,7 +59,6 @@ from feedbax.contracts.training import (
     MethodPayloadEnvelope,
     MethodRefSpec,
     OptimizerSpec,
-    TaskSpec,
     TrainingConfig,
     TrainingProgramRegistry,
 )
@@ -73,7 +67,6 @@ from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERAT
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.training.optimizers import optimizer_types
 
 
@@ -329,55 +322,6 @@ class _TrainFields:
         reference = _read(DocumentReference, self.payload.get(field))
         return (reference.document,) if reference else ()
 
-    def document[Model: BaseModel](self, name: str, model: type[Model], label: str) -> Model | None:
-        schema = _document_schema(model)
-        documents = {
-            key: parsed
-            for key, document in self.project.documents.items()
-            if document.schema_id == schema
-            if (parsed := _read(model, document.payload)) is not None
-        }
-        raw = self.payload.get(name)
-        ref = _read(DocumentReference, raw)
-        path = (name,)
-        can_choose = (raw is None or (ref is not None and not ref.pointer)) and bool(documents)
-        source = (
-            ValueSource("document", ref.document, ref.pointer or "")
-            if ref and ref.document in documents
-            else None
-        )
-        self.field(
-            path,
-            label,
-            ref.document if ref else "Inline" if raw is not None else None,
-            _options({key: key for key in documents}) if can_choose else None,
-            lambda key: [self.set(path, {"document": key})],
-            source=source,
-            documents=self.named_documents(name),
-        )
-        if ref is not None and not ref.pointer:
-            return documents.get(ref.document)
-        return _read(model, raw)
-
-    def inline_component_fields(self, graph: GraphSpec, components: ComponentRegistry) -> None:
-        for node, component in graph.nodes.items():
-            meta = components.get(component.type)
-            if meta is None or (component.revision is not None and component.revision != meta.revision):
-                continue
-            for schema in meta.param_schema:
-                path = ("graph", "nodes", node, "params", schema.name)
-                value = _get(self.payload, path)
-                if type(value) not in (int, float) or schema.type not in ("int", "float"):
-                    continue
-                self.field(
-                    path, schema.name.replace("_", " ").capitalize(), value,
-                    StudioAuthoringNumber(
-                        kind="number", min=schema.min, max=schema.max,
-                        step=1 if schema.type == "int" else None,
-                    ),
-                    lambda value, path=path: [self.set(path, value)],
-                )
-
     def studio_method(self, payload: dict[str, JsonValue]) -> StudioGraphMethodPayload | None:
         method_ref = _read(MethodRefSpec, payload.get("method_ref"))
         envelope = _read(MethodPayloadEnvelope, payload.get("method_payload"))
@@ -501,18 +445,11 @@ class _TrainFields:
         task = _read(TaskDocument, raw)
         if task is not None:
             return task.fixed_steps
-        raw = self.payload.get("task")
-        if ref := _read(DocumentReference, raw):
-            entry = self.project.documents.get(ref.document)
-            raw = entry.payload if entry is not None and not ref.pointer else None
-        return infer_task_n_steps(_read(TaskSpec, raw))
+        return None
 
     def training(self, n_steps: int | None, read_plan: _ReadPlan | None) -> None:
         raw_config = self.payload.get("training_config")
-        managed_rate = self.payload.get("trial_documents") is not None and (
-            raw_config is None or isinstance(raw_config, dict) and "learning_rate" not in raw_config
-        )
-        settings_type = DocumentTrainingConfig if managed_rate else TrainingConfig
+        settings_type = DocumentTrainingConfig
         config = _read(settings_type, raw_config)
         defaults = settings_type(batch_size=_GRAPH_BATCH_SIZE)
         if n_steps is not None:
@@ -525,9 +462,7 @@ class _TrainFields:
             settings = config or defaults
             payload = StudioGraphMethodPayload(
                 optimizer=OptimizerSpec(
-                    type=_DEFAULT_OPTIMIZER, params={"learning_rate": (
-                        settings.learning_rate if isinstance(settings, TrainingConfig) else TrainingConfig().learning_rate
-                    )}
+                    type=_DEFAULT_OPTIMIZER, params={"learning_rate": TrainingConfig().learning_rate}
                 ),
                 target_total=settings.n_batches,
                 key_schedule=STUDIO_INDEPENDENT_KEY_SCHEDULE,
@@ -585,7 +520,7 @@ class _TrainFields:
                 ),
                 lambda value: [self.set(seed_path, value)],
             )
-            if managed_rate and method.optimizer.lr_schedule is None:
+            if method.optimizer.lr_schedule is None:
                 rate = _get(self.payload, _OPTIMIZER_RATE)
                 if type(rate) in (int, float):
                     self.field(
@@ -611,9 +546,6 @@ class _TrainFields:
                 method.continuation.progress.additional_batches
                 if method.continuation is not None else method.target_total
             )
-            rate = method.optimizer.params.get("learning_rate")
-            if not managed_rate and type(rate) in (int, float) and 0 < rate <= sys.float_info.max:
-                initial_config["learning_rate"] = rate
 
         def settings_change(
             name: str, value: _Scalar, mirror: _Path | None
@@ -625,9 +557,7 @@ class _TrainFields:
                 else [self.set(path, {**initial_config, name: value})]
             )
             if method is not None and mirror is not None:
-                if name == "learning_rate" and raw_params is None:
-                    patches.append(self.set(rate_path, {"learning_rate": value}))
-                elif name == "n_batches" and method.continuation is not None:
+                if name == "n_batches" and method.continuation is not None:
                     assert type(value) is int
                     patches.extend((
                         self.set(_METHOD_TOTAL, method.continuation.progress.source_completed_batches + value),
@@ -640,13 +570,10 @@ class _TrainFields:
         settings = settings_type.model_json_schema()["properties"]
         names = {
             "n_batches": ("target_total",),
-            "learning_rate": ("optimizer", "params", "learning_rate"),
             "snapshot_interval": None,
         }
         if self.field_editor and config is not None:
             names.update(batch_size=None, grad_clip=None)
-        if managed_rate:
-            del names["learning_rate"]
         for name, mirror in names.items():
             schema = settings[name]
             if "anyOf" in schema:
@@ -664,9 +591,7 @@ class _TrainFields:
                     kind="number",
                     min=1 if integer else 0,
                     step=1 if integer else None,
-                )
-                if name != "learning_rate" or params_ref is None
-                else None,
+                ),
                 lambda value, name=name, mirror=mirror: settings_change(name, value, mirror),
                 documents=self.named_documents("task") if config is None else (),
             )
@@ -676,17 +601,14 @@ def project_train_fields(
     project: Project,
     step_id: str,
     registry: TrainingProgramRegistry,
-    change: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | None,
+    change: StudioAuthoringChange | StudioAuthoringSweepChange | None,
     *,
-    components: ComponentRegistry | None = None,
     read_plan: _ReadPlan | None = None,
 ) -> tuple[
-    list[StudioAuthoringField], list[SetProjectValue], list[str], StudioReachTargetAuthoring | None,
+    list[StudioAuthoringField], list[SetProjectValue], list[str],
 ]:
     """Project the supported fields and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
-    reach_target = None
-    reach_edit = change if isinstance(change, StudioReachTargetEdit) else None
     definition.training(definition.task_steps(), read_plan)
 
     sweeps = {}
@@ -707,9 +629,7 @@ def project_train_fields(
 
     patches = []
     documents: set[str] = set()
-    if reach_edit is not None:
-        raise ValueError("Edit the target in the authored Task document.")
-    elif isinstance(change, StudioAuthoringSweepChange):
+    if isinstance(change, StudioAuthoringSweepChange):
         sweep = sweeps.get(change.field)
         if sweep is None:
             raise ValueError(f"Field {change.field!r} has no supported sweep edit")
@@ -737,7 +657,7 @@ def project_train_fields(
             )
     if isinstance(change, (StudioAuthoringChange, StudioAuthoringSweepChange)):
         patches = definition.authored_edits(change.field, patches)
-    return [field.view for field in definition.fields.values()], patches, sorted(documents), reach_target
+    return [field.view for field in definition.fields.values()], patches, sorted(documents)
 
 
 def project_training_numeric_fields(

@@ -29,7 +29,6 @@ host = host_fixture
 
 
 def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("FEEDBAX_STUDIO_EVALUATION_CANDIDATE", raising=False)
     monkeypatch.setenv("FEEDBAX_ACTOR_LABEL", "environment actor")
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     projects = tmp_path / "projects"

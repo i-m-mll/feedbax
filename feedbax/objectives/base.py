@@ -8,7 +8,6 @@ from typing import Any, Optional, Self, Tuple, TypeVar
 import equinox as eqx
 import jax.numpy as jnp
 import jax.tree_util as jtu
-from equinox import AbstractVar, Module
 from jaxtyping import Array, ArrayLike
 
 U = TypeVar("U")
@@ -220,23 +219,3 @@ class TermTree[T](Mapping[str, "TermTree"]):
 
 def is_termtree(x):
     return isinstance(x, TermTree)
-
-
-class AbstractLoss(Module):
-    """Callable objective returning a tree of scalar or array term values."""
-
-    label: AbstractVar[str]
-
-    def __call__(self, states: Any, trial_specs: Any, model: Any) -> TermTree:
-        return TermTree.leaf(
-            self.label,
-            self.term(states, trial_specs, model),
-            originator=self,
-        )
-
-    def term(self, states: Any, trial_specs: Any, model: Any) -> Array:
-        """Compute a leaf objective term."""
-        raise NotImplementedError
-
-    def skeleton(self, batch_dims: tuple[int, ...]) -> TermTree:
-        return TermTree.leaf(self.label, jnp.empty(batch_dims))

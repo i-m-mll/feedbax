@@ -18,7 +18,8 @@ from feedbax.training.diagnostics import (
     TrainingDiagnostics,
     load_method_training_trace,
 )
-from tests.test_training_run_executor import _mapped_diagnostics_run_spec
+from feedbax.contracts.worker import AxisSpec, MethodTrainingDiagnosticsSpec, SlotAxisBindingSpec
+from tests.support.managed_train_fixture import managed_train_spec
 
 
 def _stored_trace(
@@ -27,10 +28,19 @@ def _stored_trace(
     *,
     diagnostics_schema_version: str = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
 ) -> tuple[TrainingRunManifest, ImmutableArtifactBlobProvider, MethodTrainingTrace]:
-    run_spec = _mapped_diagnostics_run_spec()
+    run_spec, _ = managed_train_spec()
     contract = run_spec.worker_execution.method_contract
-    declaration = contract.training_diagnostics
-    assert declaration is not None
+    contract.axes.append(AxisSpec(name="ensemble", role="replicate", size=5))
+    metric_slot = next(slot for slot in contract.state_slots if slot.name == "train_loss")
+    metric_slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)]
+    declaration = MethodTrainingDiagnosticsSpec(
+        trace_schema_id="feedbax.tests.method_trace",
+        trace_schema_version="feedbax.tests.method_trace.v1",
+        measurement_basis="kernel_input",
+        metric_payload_slot="train_loss",
+        replica_axis="ensemble",
+    )
+    contract.training_diagnostics = declaration
     trace = MethodTrainingTrace(
         method_ref=contract.method_ref,
         trace_schema_id=declaration.trace_schema_id,
@@ -145,14 +155,19 @@ def test_load_method_training_trace_requires_manifest_authority(tmp_path: Path) 
     assert exc_info.value.kind == "missing"
 
 
-def test_load_method_training_trace_rejects_truncated_custody(tmp_path: Path) -> None:
+def test_load_method_training_trace_rejects_truncated_json(tmp_path: Path) -> None:
     manifest, provider, _ = _stored_trace(tmp_path)
     artifact = manifest.artifacts[0]
-    path = provider.root / provider.canonical_relative_path(artifact)
-    path.write_bytes(path.read_bytes()[:-1])
+    truncated = provider.store_bytes(
+        provider.get_bytes(artifact)[:-1],
+        role=artifact.role,
+        logical_name="truncated-training-diagnostics.json",
+        media_type=artifact.media_type,
+        metadata=artifact.metadata,
+    )
 
     with pytest.raises(MethodTrainingTraceLoadError) as exc_info:
-        load_method_training_trace(manifest, provider)
+        load_method_training_trace(manifest.model_copy(update={"artifacts": [truncated]}), provider)
 
     assert exc_info.value.kind == "truncated"
 

@@ -13,13 +13,8 @@ import pytest
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.training import GraphTopologySourceSpec
-from feedbax.contracts.worker import ProgressCoordinate
-from feedbax.compiler.cde_templates import cde_controller_spec
 from feedbax.models.cde import cde_controller
 from feedbax.runtime.iteration import iterate_component
-from feedbax.training.checkpoint_custody import load_latest_checkpoint, write_checkpoint_transaction
-from tests.test_checkpoint_custody import _run_spec
 from tests.test_solver_checkpoint_continuation import _assert_same_arrays
 
 
@@ -127,15 +122,6 @@ def _train_step(slots, observations):
     }, (trajectory, grads)
 
 
-def _run_contract(kind):
-    spec = _run_spec()
-    graph = _nonlinear_graph() if kind == "graph" else cde_controller_spec(2, 3, 2, 4, 1)
-    spec = spec.model_copy(
-        update={"graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json"))}
-    )
-    return spec, spec.worker_execution.method_contract.phase_program
-
-
 def _interrupted_training(kind):
     fresh = _initial_slots(kind, seed=4)
     prefix = jnp.array([[1.25, -0.75], [-0.5, 0.9]], dtype=jnp.float32)
@@ -158,18 +144,12 @@ def _assert_slots(actual, expected):
 
 
 def _resume(root, kind):
-    spec, program = _run_contract(kind)
     expected = _interrupted_training(kind)
     fresh = _initial_slots(kind, seed=17)
     if kind == "cde":
         model, (state, _) = fresh["model"]
         fresh["model"] = (model, (state, model.initial_cycle_port_values(state)))
-    loaded = load_latest_checkpoint(
-        root,
-        expected_run_spec=spec,
-        expected_phase_program=program,
-        expected_slots=fresh,
-    ).slots
+    loaded = eqx.tree_deserialise_leaves(root / "continuation.eqx", fresh)
     _assert_slots(loaded, expected)
 
     observations = jnp.array([[-0.2, -0.8], [0.9, 0.45]], dtype=jnp.float32)
@@ -190,20 +170,7 @@ def _resume(root, kind):
 
 @pytest.mark.parametrize("kind", ["graph", "cde"])
 def test_nonlinear_checkpoint_resumes_training_in_fresh_process(tmp_path, kind):
-    spec, program = _run_contract(kind)
-    write_checkpoint_transaction(
-        tmp_path,
-        run_spec=spec,
-        phase_program=program,
-        barrier_name="after_train_batch",
-        coordinate=ProgressCoordinate(
-            run_id="run-2",
-            phase="train_batch",
-            program_step=1,
-            completed_barrier="after_train_batch",
-        ),
-        slots=_interrupted_training(kind),
-    )
+    eqx.tree_serialise_leaves(tmp_path / "continuation.eqx", _interrupted_training(kind))
     process = subprocess.run(
         [
             sys.executable,

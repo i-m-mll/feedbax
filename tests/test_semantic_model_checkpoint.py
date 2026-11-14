@@ -28,9 +28,7 @@ from feedbax.runtime.raw_state import bind_raw_state
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
-    materialize_checkpoint_custody_archive,
     open_published_model_slot,
-    produce_checkpoint_custody_archive,
     write_checkpoint_transaction,
 )
 from feedbax.training.model_checkpoint import (
@@ -38,11 +36,12 @@ from feedbax.training.model_checkpoint import (
     SemanticModelWriter,
     effective_model_graph,
 )
-from tests.test_studio_training_host_worker import _authored_spec
+from tests.support.managed_train_fixture import managed_train_spec
 
 
 def _publish(root, graph, model, assets=None):
-    spec = _authored_spec(batches=2).model_copy(update={
+    spec, _ = managed_train_spec(batches=2)
+    spec = spec.model_copy(update={
         "graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json")),
     })
     phase = spec.worker_execution.effective_phase.phase_program
@@ -158,18 +157,9 @@ def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path, 
     np.testing.assert_array_equal(samples[0], [0.25, 0.25])
     np.testing.assert_allclose(samples[1:], expected["activation"], rtol=2e-7)
 
-    provider = ImmutableArtifactBlobProvider(tmp_path / "archives")
-    reference = authenticate_published_checkpoint_custody(written.root).parent_ref
-    archive = produce_checkpoint_custody_archive(
-        reference, allowed_root=written.root, artifact_provider=provider,
-    )
-    materialized = materialize_checkpoint_custody_archive(
-        provider, archive.artifact_ref, tmp_path / "unpacked",
-        expected_parent_ref=reference,
-        expected_transaction_root_sha256=written.latest_pointer.transaction_root_sha256,
-    )
-    archived = materialized.resolved_transaction.slots["model"]
-    assert archived.nodes["muscle"].vmax == fresh.vmax
+    evidence = authenticate_published_checkpoint_custody(written.root)
+    assert evidence.manifest.transaction_id == written.manifest.transaction_id
+
 
 
 def _spatial_step(model):

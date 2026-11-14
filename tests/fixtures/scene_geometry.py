@@ -3,10 +3,8 @@
 import json
 from pathlib import Path
 import sys
-from time import perf_counter
 
-from feedbax.contracts.acausal import AcausalGraphSpec
-from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, ComponentSpec, GraphSpec
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 
@@ -19,9 +17,9 @@ _POSES = {
 }
 
 
-def _interior(count: int, *, wrapped: bool = False) -> AcausalGraphSpec:
-    def node(kind: str, **params) -> ComponentSpec:
-        return ComponentSpec(type=f"feedbax.{kind}", params=params)
+def _model(count: int) -> dict:
+    def node(kind: str, **fields) -> dict:
+        return {"kind": "leaf", "name": kind, "type": f"feedbax.{kind}", "fields": fields}
 
     nodes = {
         "base": node("WorldFrame"),
@@ -47,7 +45,6 @@ def _interior(count: int, *, wrapped: bool = False) -> AcausalGraphSpec:
             frame_angle=angles[index],
             rest_angle=0.14,
         )
-    wrap_geometries = {}
     if count == 3:
         nodes["cross_chain"] = node(
             "MusclePath",
@@ -57,54 +54,46 @@ def _interior(count: int, *, wrapped: bool = False) -> AcausalGraphSpec:
                 {"frame": "hand.distal", "offset": [-0.07, 0.05]},
             ],
         )
-        if wrapped:
-            nodes["side"] = node("PointMarker", frame="base.frame", offset=[0.0, 0.2])
-            nodes["cross_chain"].params["wraps"] = [
-                {"after_site": 0, "geom": "guide", "side_site": "side"}
-            ]
-            wrap_geometries["guide"] = {"kind": "cylinder", "frame": "base.frame", "radius": 0.03}
-    return AcausalGraphSpec(
-        physical_domain="planar_multibody",
-        nodes=nodes,
-        wrap_geometries=wrap_geometries,
-        solver={"solver_type": "euler", "dt": 0.002},
-    )
+
+    def end(component, port):
+        return {"owner": "component", "component": component, "port": port}
+
+    def port(name, size):
+        return {"id": name, "name": name, "type": {"base": "real", "shape": [size]}}
+
+    return {
+        "step_seconds": 0.002,
+        "ports": {},
+        "interior": {"components": {"mechanics": {
+            "kind": "composite", "name": "Mechanics",
+            "ports": {
+                "inputs": [{**port("force", count), "default": {"value": [0.0] * count}}],
+                "outputs": [port("effector", 2)],
+            },
+            "interior": {
+                "physical_domain": "planar_multibody", "components": nodes,
+                "wires": {
+                    "force": {"source": {"owner": "inputs", "port": "force"}, "target": end("drive", "u")},
+                    "effector": {"source": end("sense", "y"), "target": {"owner": "outputs", "port": "effector"}},
+                },
+            },
+        }}},
+    }
 
 
-def _graph(interior: AcausalGraphSpec) -> GraphSpec:
-    return GraphSpec(
-        nodes={
-            "mechanics": ComponentSpec(
-                type="feedbax.AcausalSystem",
-                input_ports=["force"],
-                output_ports=["effector"],
-            )
-        },
-        subgraphs={"mechanics": interior},
-        input_ports=["force"],
-        input_bindings={"force": ("mechanics", "force")},
-        output_ports=["effector"],
-        output_bindings={"effector": ("mechanics", "effector")},
-    )
+def scene_files():
+    return [
+        {"kind": "document", "id": name, "document": {
+            "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
+        }}
+        for name, count in (("single", 1), ("chain", 3))
+    ]
 
 
 def seed_scene_project(root: Path) -> None:
-    graphs = {
-        "single": _graph(_interior(1)),
-        "chain": _graph(_interior(3)),
-        "wrapped": _graph(_interior(3, wrapped=True)),
-    }
-    project = Project.model_validate(
-        {
-            "documents": {
-                name: {
-                    "schema": GRAPH_SPEC_SCHEMA_ID,
-                    "payload": graph.model_dump(mode="json", exclude_none=True),
-                }
-                for name, graph in graphs.items()
-            }
-        }
-    )
+    project = Project.model_validate({
+        "documents": {file["id"]: file["document"] for file in scene_files()},
+    })
     for name, content in dump_text_project(
         project, ProjectConfiguration(project=root.name, store="results")
     ).items():
@@ -116,18 +105,15 @@ def seed_scene_project(root: Path) -> None:
 def native_scene_samples(root: Path, document: str):
     import mujoco
 
-    from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler.model_document import lower_planar_scene_interior
     from feedbax.component_registry import ComponentRegistry
+    from feedbax.mechanics.authored_model import compile_planar_model
 
     saved = load_text_project(root)
-    graph = GraphSpec.model_validate(saved.project.documents[document].payload)
-    compiled = (
-        compile_graph(GraphDocument(graph=graph), ComponentRegistry())
-        .graph.nodes["mechanics"]
-        .descriptor
-    )
+    document_model = ModelDocument.model_validate(saved.project.documents[document].payload)
+    interior = lower_planar_scene_interior(document, document_model, ("mechanics",), ComponentRegistry())
+    compiled = compile_planar_model(interior)
     model = compiled.model
-    interior = graph.subgraphs["mechanics"]
     samples = []
     for qpos in _POSES[model.nq]:
         data = mujoco.MjData(model)
@@ -163,38 +149,10 @@ def native_scene_samples(root: Path, document: str):
     return {"revision": saved.revision, "identity": compiled.identity, "samples": samples}
 
 
-def settled_scene_plan(root: Path, revision: str):
-    from feedbax.contracts.project_plan import RunKey
-    from feedbax.web.services.project_folder import ProjectFolderService
-
-    key = RunKey("default", "train", "default")
-    service = ProjectFolderService(root.parent)
-    started = perf_counter()
-    result = service.read_plan(root.name, revision=revision, source_runs=(key,))
-    read_ms = (perf_counter() - started) * 1_000
-    plan = result.plan
-    definition = plan.selected_definitions[key]
-    pointer = "/subgraphs/mechanics/nodes/cross_chain/params/path_points/1/offset/0"
-    source = definition.sources[f"/payload/graph{pointer}"]
-    return {
-        "project_id": result.project_id,
-        "revision": result.revision,
-        "semantic_root": result.semantic_root,
-        "row": [key.variant, key.step, key.row],
-        "rows": len(plan.rows),
-        "runs": len(plan.runs),
-        "diagnostics": sorted(item.path for item in plan.diagnostics),
-        "guide": definition.payload["graph"]["subgraphs"]["mechanics"]["nodes"]["cross_chain"]["params"]["path_points"][1],
-        "source": {"kind": source.kind, "name": source.name, "path": source.path},
-        "read_ms": round(read_ms, 3),
-    }
-
-
 if __name__ == "__main__":
     action, *paths = sys.argv[1:]
-    if action == "authoring-input":
-        graph = _graph(_interior(3))
-        print(json.dumps({"schema": GRAPH_SPEC_SCHEMA_ID, "payload": graph.model_dump(mode="json", exclude_none=True)}))
+    if action == "files":
+        print(json.dumps(scene_files()))
     elif action == "seed":
         [path] = paths
         seed_scene_project(Path(path))
@@ -205,8 +163,5 @@ if __name__ == "__main__":
                 {document: native_scene_samples(Path(path), document) for document in documents}
             )
         )
-    elif action == "settled-plan":
-        path, revision = paths
-        print(json.dumps(settled_scene_plan(Path(path), revision)))
     else:
         raise ValueError(f"Unknown Scene fixture action {action!r}")

@@ -20,8 +20,6 @@ from feedbax.contracts.artifact_custody import (
     CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1,
     CONTENT_MANIFEST_REF_SCHEMA_ID,
     CONTENT_MANIFEST_REF_SCHEMA_VERSION,
-    CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
-    CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION,
     CONTENT_OBJECT_REF_SCHEMA_ID,
     CONTENT_OBJECT_REF_SCHEMA_VERSION,
     CONTENT_RETENTION_INDEX_SCHEMA_ID,
@@ -71,7 +69,6 @@ from feedbax.contracts.checkpoint_initialization import (
     CHECKPOINT_STRUCTURE_SCHEMA_ID,
     CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
     CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,
-    derive_checkpoint_semantic_abis,
     derive_legacy_checkpoint_semantic_abi,
 )
 from feedbax.contracts.component import (
@@ -108,73 +105,15 @@ from feedbax.contracts.execution_context import (
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
 )
-from feedbax.contracts.execution_migrations import (
-    migrate_controller_event_v1_document,
-    migrate_run_set_state_v5_to_v6,
-)
 from feedbax.contracts.execution_schema import (
-    ATTEMPT_SCHEMA_ID,
-    ATTEMPT_SCHEMA_VERSION,
-    BACKEND_PLAN_SCHEMA_ID,
-    BACKEND_PLAN_SCHEMA_VERSION,
-    CONTROLLER_EVENT_SCHEMA_ID,
-    CONTROLLER_EVENT_SCHEMA_VERSION,
-    CONTROLLER_EVENT_SCHEMA_VERSION_V1,
-    CONTROLLER_PROJECTION_SCHEMA_ID,
-    CONTROLLER_PROJECTION_SCHEMA_VERSION,
-    CONTROLLER_PROJECTION_SCHEMA_VERSION_V1,
-    DEPLOYMENT_POLICY_SCHEMA_ID,
-    DEPLOYMENT_POLICY_SCHEMA_VERSION,
-    DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
-    EFFECT_RESERVATION_SCHEMA_ID,
-    EFFECT_RESERVATION_SCHEMA_VERSION,
-    EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
-    EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
-    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
-    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
-    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
-    INVOCATION_SCHEMA_ID,
-    INVOCATION_SCHEMA_VERSION,
     MAPPED_METRIC_VALUE_SCHEMA_ID,
     MAPPED_METRIC_VALUE_SCHEMA_VERSION,
-    ORPHAN_HANDLING_POLICY_SCHEMA_ID,
-    ORPHAN_HANDLING_POLICY_SCHEMA_VERSION,
-    PROVIDER_INVENTORY_SCHEMA_ID,
-    PROVIDER_INVENTORY_SCHEMA_VERSION,
     REPO_REALIZATION_PLAN_SCHEMA_ID,
     REPO_REALIZATION_PLAN_SCHEMA_VERSION,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2,
-    RUN_BUNDLE_SCHEMA_ID,
-    RUN_BUNDLE_SCHEMA_VERSION,
-    RUN_BUNDLE_SCHEMA_VERSION_V1,
-    RUN_BUNDLE_SCHEMA_VERSION_V10,
-    RUN_BUNDLE_SCHEMA_VERSION_V11,
-    RUN_BUNDLE_SCHEMA_VERSION_V12,
-    RUN_BUNDLE_SCHEMA_VERSION_V13,
-    RUN_BUNDLE_SCHEMA_VERSION_V2,
-    RUN_BUNDLE_SCHEMA_VERSION_V3,
-    RUN_BUNDLE_SCHEMA_VERSION_V4,
-    RUN_BUNDLE_SCHEMA_VERSION_V5,
-    RUN_BUNDLE_SCHEMA_VERSION_V6,
-    RUN_BUNDLE_SCHEMA_VERSION_V7,
-    RUN_BUNDLE_SCHEMA_VERSION_V8,
-    RUN_BUNDLE_SCHEMA_VERSION_V9,
-    RUN_EVENT_SCHEMA_ID,
-    RUN_EVENT_SCHEMA_VERSION,
-    RUN_INTENT_SCHEMA_ID,
-    RUN_INTENT_SCHEMA_VERSION,
-    RUN_SET_STATE_SCHEMA_ID,
-    RUN_SET_STATE_SCHEMA_VERSION,
-    RUN_SET_STATE_SCHEMA_VERSION_V1,
-    RUN_SET_STATE_SCHEMA_VERSION_V2,
-    RUN_SET_STATE_SCHEMA_VERSION_V3,
-    RUN_SET_STATE_SCHEMA_VERSION_V4,
-    RUN_SET_STATE_SCHEMA_VERSION_V5,
-    STAGED_ROOT_CUSTODY_SCHEMA_ID,
-    STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
 )
@@ -188,24 +127,7 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
-from feedbax.contracts.experiment_envelope_dialect import (
-    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
-    EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
-    ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
-    ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
-)
 from feedbax.contracts.run_matrix import (
-    AUTHORED_TRAINING_ROW_SCHEMA_ID,
-    AUTHORED_TRAINING_ROW_SCHEMA_VERSION,
-    RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
-    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
-    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1,
-    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2,
-    TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID,
-    TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
-    TRAINING_ROW_LOWERER_REF_SCHEMA_ID,
-    TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION,
-    TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
@@ -213,28 +135,6 @@ from feedbax.contracts.run_matrix import (
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
-    TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
-    TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
-    TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
-    TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-    RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
-)
-from feedbax.contracts.shadow_launch import (
-    SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
-    SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
 )
 from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID,
@@ -246,42 +146,20 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V2,
-    EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
-    EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,
-    EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
-    EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID,
     EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION,
-    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
-    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
-    EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1,
-    EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID,
-    EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION,
 )
 from feedbax.contracts.evaluation_product_union import (
     EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID,
     EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_ID,
     EVALUATION_COMPACT_PRODUCT_UNION_SCHEMA_VERSION,
-)
-from feedbax.contracts.evaluation_preflight import (
-    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-    EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
-    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
-    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
-    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
-    EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
-)
-from feedbax.contracts.remote_smoke import (
-    REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
-    REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION,
 )
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
@@ -305,14 +183,6 @@ from feedbax.contracts.nan_attribution import (
     NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
     NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
     NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
-)
-from feedbax.contracts.resolved_snapshot_decoder import (
-    SNAPSHOT_SCHEMA_ID,
-    SNAPSHOT_SCHEMA_VERSION,
-)
-from feedbax.contracts.spec_storage import (
-    TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID,
-    TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import (
     COLORBAR_PANEL_PLACEMENT_SCHEMA_ID,
@@ -349,8 +219,6 @@ from feedbax.contracts.figures import (
     SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION,
 )
 from feedbax.contracts.figure_roles import (
-    FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
-    FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
     FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_ID,
     FIGURE_ROW_EXPANSION_REQUEST_SCHEMA_VERSION,
     RESOLVED_FIGURE_INPUTS_SCHEMA_ID,
@@ -365,27 +233,7 @@ from feedbax.contracts.row_index import (
     ROW_INDEX_SCHEMA_ID,
     ROW_INDEX_SCHEMA_VERSION,
 )
-from feedbax.contracts.authoring_budget import (
-    AUTHORING_BUDGET_SCHEMA_ID,
-    AUTHORING_BUDGET_SCHEMA_VERSION,
-    AUTHORING_BUDGET_SCHEMA_VERSION_V1,
-    AUTHORING_BUDGET_V1_REJECTION_REASON,
-)
-from feedbax.contracts.experiment_compile_lock import (
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
-    migrate_compile_lock_v3_to_v4,
-    migrate_compile_lock_v4_to_v5,
-)
-from feedbax.contracts.experiment_envelope import (
-    EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
-    EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
-)
 from feedbax.contracts.graph import (
-    ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
-    ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
@@ -394,13 +242,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V3,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
     GRAPH_SPEC_SCHEMA_VERSION_V5,
-    LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-    STUDIO_GRAPH_PROJECT_SCHEMA_ID,
-    STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
-    STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
-    STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-    STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
     STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID,
     STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION,
     STUDIO_TASK_TIMELINE_SCHEMA_ID,
@@ -408,19 +250,8 @@ from feedbax.contracts.graph import (
     STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
     STUDIO_BIOMECHANICS_SCHEMA_VERSION,
-    STUDIO_SCENARIO_SCHEMA_VERSION,
-    STUDIO_SCENARIO_SCHEMA_VERSION_V1,
-    STUDIO_SCENARIO_SCHEMA_VERSION_V2,
-    STUDIO_STAGE_SCHEMA_VERSION,
-    STUDIO_STAGE_SCHEMA_VERSION_V1,
-    STUDIO_STAGE_SCHEMA_ID,
-    STUDIO_WORKSPACE_SCHEMA_VERSION,
-    STUDIO_WORKSPACE_SCHEMA_VERSION_V1,
-    STUDIO_WORKSPACE_SCHEMA_ID,
     GraphSpec,
-    StudioPersistenceDocument,
 )
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
@@ -464,8 +295,6 @@ from feedbax.contracts.manifest import (
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
-    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
-    TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
@@ -497,23 +326,9 @@ from feedbax.contracts.manifest import (
     FIGURE_MANIFEST_SCHEMA_VERSION,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
-    TRAINING_RUN_SET_SCHEMA_VERSION,
-    TRAINING_RUN_SET_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
-)
-from feedbax.contracts.retention_artifact_schema import (
-    LOSS_TERM_PLAN_SCHEMA_ID,
-    LOSS_TERM_PLAN_SCHEMA_VERSION,
-    RETAINED_OBSERVABLE_PLAN_SCHEMA_ID,
-    RETAINED_OBSERVABLE_PLAN_SCHEMA_VERSION,
-    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
-    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
-    RETENTION_PLAN_SCHEMA_ID,
-    RETENTION_PLAN_SCHEMA_VERSION,
-    RETENTION_POLICY_PLAN_SCHEMA_ID,
-    RETENTION_POLICY_PLAN_SCHEMA_VERSION,
 )
 from feedbax.contracts.schema_namespace import (
     SchemaNamespaceKind,
@@ -535,9 +350,6 @@ from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_ID,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
-    LOSS_TERM_SPEC_SCHEMA_ID,
-    LOSS_TERM_SPEC_SCHEMA_VERSION,
-    LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     RUN_CONTROL_SPEC_SCHEMA_ID,
@@ -549,7 +361,6 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
-    LossTermSpec,
 )
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
@@ -1101,242 +912,6 @@ def _payload_metadata_version(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _migrate_checkpoint_transaction_manifest_v1_to_v2_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Add the explicit fork-provenance slot introduced in v2 manifests."""
-    migrated = dict(payload)
-    migrated.setdefault("fork_provenance", None)
-    return migrated
-
-
-def _migrate_checkpoint_transaction_manifest_v2_to_v3_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Split content fingerprints from environment provenance in v3 manifests."""
-    migrated = dict(payload)
-
-    migrated_slots: list[Any] = []
-    for raw_slot in list(migrated.get("slots") or ()):
-        if not isinstance(raw_slot, Mapping):
-            migrated_slots.append(raw_slot)
-            continue
-        slot = dict(raw_slot)
-        fingerprint = slot.get("structural_abi_fingerprint")
-        if isinstance(fingerprint, Mapping):
-            slot["structural_abi_fingerprint"] = _migrate_structural_abi_fingerprint_to_content_v2(
-                fingerprint
-            )
-        migrated_slots.append(slot)
-    migrated["slots"] = migrated_slots
-
-    binding = migrated.get("run_contract_binding")
-    if isinstance(binding, Mapping):
-        migrated["run_contract_binding"] = _migrate_run_contract_binding_to_v2(binding)
-
-    return migrated
-
-
-def _migrate_checkpoint_transaction_manifest_v3_to_v4_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Add explicit batch progress separate from checkpoint coordinates."""
-    migrated = dict(payload)
-    metadata = migrated.get("metadata")
-    completed_batches = None
-    if isinstance(metadata, Mapping):
-        for key in (
-            "completed_training_batches",
-            "completed_batches",
-            "completed_batch",
-        ):
-            if key in metadata and metadata[key] is not None:
-                try:
-                    completed_batches = int(metadata[key])
-                except (TypeError, ValueError):
-                    completed_batches = None
-                else:
-                    break
-    migrated.setdefault("completed_training_batches", completed_batches)
-    migrated.setdefault(
-        "completed_coordinate_semantics",
-        (
-            "Checkpoint/barrier coordinate for custody ordering; not the primary "
-            "training-batch progress field."
-        ),
-    )
-    return migrated
-
-
-def _migrate_checkpoint_coordinate_v4_to_v5_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Rename the cumulative coordinate without deriving batch progress from it."""
-    migrated = dict(payload)
-
-    def migrate_coordinate(raw: Any, *, path: str) -> Any:
-        if not isinstance(raw, Mapping):
-            return raw
-        coordinate = dict(raw)
-        legacy = coordinate.pop("global_step", None)
-        program_step = coordinate.get("program_step")
-        if legacy is not None and program_step is not None and legacy != program_step:
-            raise ValueError(
-                f"{path} conflicts: global_step={legacy!r}, program_step={program_step!r}"
-            )
-        if legacy is not None:
-            coordinate["program_step"] = legacy
-        return coordinate
-
-    migrated["completed_coordinate"] = migrate_coordinate(
-        migrated.get("completed_coordinate"), path="/completed_coordinate"
-    )
-    slots = migrated.get("slots")
-    if isinstance(slots, list):
-        migrated_slots: list[Any] = []
-        for index, slot in enumerate(slots):
-            if not isinstance(slot, Mapping):
-                migrated_slots.append(slot)
-                continue
-            migrated_slot = dict(slot)
-            migrated_slot["coordinate"] = migrate_coordinate(
-                migrated_slot.get("coordinate"), path=f"/slots/{index}/coordinate"
-            )
-            migrated_slots.append(migrated_slot)
-        migrated["slots"] = migrated_slots
-    metadata = dict(migrated.get("metadata") or {})
-    metadata.setdefault("coordinate_migration", "global_step_to_program_step.v1")
-    migrated["metadata"] = metadata
-    migrated["completed_coordinate_semantics"] = (
-        "Cumulative phase-program coordinate for custody ordering; not the primary "
-        "training-batch progress field or checkpoint count."
-    )
-    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
-    return migrated
-
-
-def _migrate_checkpoint_history_v5_to_v6_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Mark legacy slot trees for declaration-guided BatchHistory wrapping."""
-    migrated = dict(payload)
-    metadata = dict(migrated.get("metadata") or {})
-    metadata["batch_history_tree_migration"] = "declared_paths_v5_to_v6"
-    migrated["metadata"] = metadata
-    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6
-    return migrated
-
-
-def _migrate_checkpoint_lineage_v6_to_v7_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Backfill legacy checkpoints as self-contained single-segment lineages."""
-    migrated = dict(payload)
-    completed = migrated.get("completed_training_batches")
-    if completed is None:
-        completed = 0
-    if not isinstance(completed, int) or isinstance(completed, bool) or completed < 0:
-        raise ValueError(
-            "v6 checkpoint lineage migration requires non-negative /completed_training_batches"
-        )
-    migrated["segment_lineage"] = {
-        "start_batch": 0,
-        "segment_batch_count": completed,
-        "history_granularities": {},
-    }
-    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7
-    return migrated
-
-
-def _migrate_checkpoint_axes_v7_to_v8_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Add optional resolved axis evidence without inferring it from shape."""
-    migrated = dict(payload)
-    migrated["slots"] = [
-        {**dict(slot), "materialized_axes": None} for slot in migrated.get("slots", ())
-    ]
-    provenance = migrated.get("fork_provenance")
-    if isinstance(provenance, Mapping):
-        migrated_provenance = _migrate_checkpoint_fork_provenance_v1_to_v2_payload(provenance)
-        migrated["fork_provenance"] = migrated_provenance
-    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8
-    return migrated
-
-
-def _migrate_checkpoint_semantic_state_roots_v8_to_v9_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Retain legacy custody identities while marking semantic roots unavailable."""
-    migrated = dict(payload)
-    migrated["semantic_state_roots_status"] = "unavailable_legacy"
-    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9
-    return migrated
-
-
-def _migrate_checkpoint_semantic_abi_v9_to_v10_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Derive named leaf ownership from authenticated slot and phase identities."""
-    migrated = deepcopy(dict(payload))
-    slots = list(migrated.get("slots") or ())
-    fingerprints: dict[str, StructuralAbiFingerprint] = {}
-    slot_roles: dict[str, str] = {}
-    for raw_slot in slots:
-        if not isinstance(raw_slot, Mapping):
-            continue
-        name = raw_slot.get("slot")
-        fingerprint = raw_slot.get("structural_abi_fingerprint")
-        if isinstance(name, str) and isinstance(fingerprint, Mapping):
-            fingerprints[name] = StructuralAbiFingerprint.model_validate(fingerprint)
-            slot_roles[name] = str(raw_slot.get("role", "auxiliary"))
-    binding = migrated.get("run_contract_binding")
-    projection = binding.get("canonical_projection") if isinstance(binding, Mapping) else None
-    phase_program = projection.get("phase_program") if isinstance(projection, Mapping) else None
-    optimizer_bindings = (
-        list(phase_program.get("optimizer_bindings") or ())
-        if isinstance(phase_program, Mapping)
-        else []
-    )
-    has_unbound_optimizer = not optimizer_bindings and any(
-        role == "optimizer" for role in slot_roles.values()
-    )
-    if not has_unbound_optimizer:
-        semantic_abis = derive_checkpoint_semantic_abis(
-            fingerprints,
-            slot_roles=slot_roles,
-            optimizer_bindings=optimizer_bindings,
-        )
-    else:
-        semantic_abis = {
-            slot: derive_legacy_checkpoint_semantic_abi(
-                slot=slot,
-                role=slot_roles.get(slot, "auxiliary"),
-                fingerprint=fingerprint,
-            )
-            for slot, fingerprint in fingerprints.items()
-        }
-        metadata = dict(migrated.get("metadata") or {})
-        metadata["semantic_abi_migration"] = {
-            "status": "legacy-path-identity",
-            "reason": "historical transaction has optimizer slots but no target bindings",
-        }
-        migrated["metadata"] = metadata
-    migrated["slots"] = [
-        {
-            **dict(raw_slot),
-            "semantic_abi": semantic_abis[str(raw_slot["slot"])].model_dump(
-                mode="json", exclude_none=True
-            ),
-        }
-        if isinstance(raw_slot, Mapping) and str(raw_slot.get("slot")) in semantic_abis
-        else raw_slot
-        for raw_slot in slots
-    ]
-    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
-    return migrated
-
-
 def _migrate_checkpoint_structure_v1_to_v2_payload(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1459,32 +1034,6 @@ def _migrate_training_diagnostics_v3_to_v4_payload(
     migrated = dict(payload)
     migrated["failure_kind"] = None
     migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION
-    return migrated
-
-
-def _migrate_checkpoint_latest_pointer_v2_to_v3_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Rename the custody-order coordinate without deriving batch progress."""
-    migrated = dict(payload)
-    coordinate = migrated.get("completed_coordinate")
-    if not isinstance(coordinate, Mapping):
-        return migrated
-    updated_coordinate = dict(coordinate)
-    legacy = updated_coordinate.pop("global_step", None)
-    current = updated_coordinate.get("program_step")
-    if legacy is not None and current is not None and legacy != current:
-        raise ValueError(
-            "legacy checkpoint latest pointer conflicts at /completed_coordinate: "
-            f"global_step={legacy!r}, program_step={current!r}"
-        )
-    if legacy is not None:
-        updated_coordinate["program_step"] = legacy
-    migrated["completed_coordinate"] = updated_coordinate
-    migrated["completed_coordinate_semantics"] = (
-        "Cumulative phase-program coordinate for custody ordering; not the primary "
-        "training-batch progress field or checkpoint count."
-    )
     return migrated
 
 
@@ -1662,39 +1211,12 @@ def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any
     return migrated
 
 
-def _migrate_loss_term_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    from feedbax.objectives.service import loss_term_spec_to_objective_spec
-
-    legacy_payload = {
-        key: value for key, value in payload.items() if key not in {"schema_id", "schema_version"}
-    }
-    if "type" not in legacy_payload and "label" not in legacy_payload:
-        return {
-            "schema_id": LOSS_TERM_SPEC_SCHEMA_ID,
-            "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION,
-        }
-    loss_term = LossTermSpec.model_validate(legacy_payload)
-    loss_term_spec_to_objective_spec(loss_term, path="/loss")
-    migrated = loss_term.model_dump(mode="json", exclude_none=True)
-    migrated["schema_id"] = LOSS_TERM_SPEC_SCHEMA_ID
-    migrated["schema_version"] = LOSS_TERM_SPEC_SCHEMA_VERSION
-    return migrated
-
-
 def _migrate_lr_schedule_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated["schema_id"] = LR_SCHEDULE_SPEC_SCHEMA_ID
     migrated["schema_version"] = LR_SCHEDULE_SPEC_SCHEMA_VERSION
     migrated.setdefault("origin", {"kind": "run_start"})
     migrated.setdefault("allow_inert", False)
-    return migrated
-
-
-def _migrate_training_run_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(payload)
-    migrated.setdefault("schema_id", TRAINING_RUN_SPEC_SCHEMA_ID)
-    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V2
-    migrated.setdefault("on_nan", "raise")
     return migrated
 
 
@@ -1712,32 +1234,6 @@ def _migrate_worker_execution_program_v1_to_v2_payload(
     return migrated
 
 
-def _migrate_training_run_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(payload)
-    migrated["schema_id"] = TRAINING_RUN_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
-    execution = migrated.get("worker_execution")
-    if isinstance(execution, dict):
-        migrated_execution = dict(execution)
-        for field_name in ("method_contract", "effective_phase"):
-            embedded = migrated_execution.get(field_name)
-            if isinstance(embedded, dict):
-                migrated_execution[field_name] = _migrate_worker_execution_program_v1_to_v2_payload(
-                    embedded
-                )
-        migrated_execution.setdefault("mapping_levels", None)
-        migrated["worker_execution"] = migrated_execution
-    return migrated
-
-
-def _migrate_training_run_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(payload)
-    migrated["schema_id"] = TRAINING_RUN_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION
-    migrated.pop("execution", None)
-    return migrated
-
-
 def _training_run_spec_v3_policy_evidence(payload: MigrationPayload) -> Mapping[str, Any]:
     source_field_present = "execution" in payload
     raw_policy = payload["execution"] if source_field_present else {}
@@ -1749,12 +1245,6 @@ def _training_run_spec_v3_policy_evidence(payload: MigrationPayload) -> Mapping[
             "canonical_sha256": _canonical_sha256(policy),
         }
     }
-
-
-def _migrate_training_run_set_manifest_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(payload)
-    migrated.setdefault("axes", {})
-    return migrated
 
 
 def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1868,8 +1358,11 @@ def _migrate_studio_task_binding_v2_payload(payload: dict[str, Any]) -> dict[str
             if shape is None:
                 shape = (data.get("value_spec") or {}).get("shape")
             time_varying = temporal in {
-                "trajectory", "materialized_trajectory", "epoch_masked_signal",
-                "time_varying", "per_step",
+                "trajectory",
+                "materialized_trajectory",
+                "epoch_masked_signal",
+                "time_varying",
+                "per_step",
             } or (
                 temporal not in {"constant", "trial_constant", "initial", "per_trial"}
                 and isinstance(shape, (list, tuple))
@@ -1962,48 +1455,12 @@ def _migrate_representation_spec_v4_to_v5_payload(payload: dict[str, Any]) -> di
     return migrated
 
 
-def _migrate_studio_scenario_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Promote scenarios to the typed biomechanics-spec boundary."""
-    return dict(payload)
-
-
-def _migrate_studio_scenario_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove graph semantics and presentation copies from scenario drafts."""
-    migrated = dict(payload)
-    migrated.pop("graph", None)
-    migrated.pop("graph_ui_state", None)
-    migrated.pop("ui_state", None)
-    return migrated
-
-
-def _migrate_studio_stage_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove presentation state from a semantic pipeline stage."""
-    migrated = dict(payload)
-    migrated.pop("ui_state", None)
-    return migrated
-
-
-def _migrate_studio_workspace_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove presentation state from a semantic Studio workspace."""
-    migrated = dict(payload)
-    migrated.pop("ui_state", None)
-    return migrated
-
-
-def _migrate_studio_graph_project_unversioned_payload(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Stamp the released unversioned Studio graph-project document."""
-
-    return {
-        **payload,
-        "schema_id": STUDIO_GRAPH_PROJECT_SCHEMA_ID,
-        "schema_version": STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
-    }
-
-
 def _decode_component_revisions(
-    payload: dict[str, Any], component_registry: Any | None, *, historical: bool = False, resolve_current: bool = False
+    payload: dict[str, Any],
+    component_registry: Any | None,
+    *,
+    historical: bool = False,
+    resolve_current: bool = False,
 ) -> dict[str, Any]:
     nodes = payload.get("nodes")
     if not isinstance(nodes, Mapping):
@@ -2011,13 +1468,17 @@ def _decode_component_revisions(
     decoded = {}
     resolver_registry = component_registry
     for name, raw_node in nodes.items():
-        if not isinstance(raw_node, Mapping) or ("param_schema_version" not in raw_node and not historical and not resolve_current):
+        if not isinstance(raw_node, Mapping) or (
+            "param_schema_version" not in raw_node and not historical and not resolve_current
+        ):
             decoded[name] = raw_node
             continue
         node = dict(raw_node)
         token = node.pop("param_schema_version", None)
         if "revision" in node and "param_schema_version" in raw_node:
-            raise ValueError(f"Component node {name!r} declares both revision and legacy param_schema_version")
+            raise ValueError(
+                f"Component node {name!r} declares both revision and legacy param_schema_version"
+            )
         if component_registry is None and token is None:
             decoded[name] = node
             continue
@@ -2034,7 +1495,9 @@ def _decode_component_revisions(
                 historical_unversioned=historical and token is None,
                 complete_params=False,
             )
-            node.update(type=resolution.type_id, params=resolution.params, revision=resolution.revision)
+            node.update(
+                type=resolution.type_id, params=resolution.params, revision=resolution.revision
+            )
         decoded[name] = node
     return {**payload, "nodes": decoded}
 
@@ -2072,12 +1535,17 @@ def migrate_graph_spec(
     )
     migrated_payload = dict(result.payload)
     if resolved_target == GRAPH_SPEC_SCHEMA_VERSION:
-        if component_registry is None and resolved_source != GRAPH_SPEC_SCHEMA_VERSION and migrated_payload.get("nodes"):
+        if (
+            component_registry is None
+            and resolved_source != GRAPH_SPEC_SCHEMA_VERSION
+            and migrated_payload.get("nodes")
+        ):
             from feedbax.component_registry import ComponentRegistry
 
             component_registry = ComponentRegistry()
         migrated_payload = _decode_component_revisions(
-            migrated_payload, component_registry,
+            migrated_payload,
+            component_registry,
             historical=historical_unversioned or resolved_source != GRAPH_SPEC_SCHEMA_VERSION,
         )
     migrated_payload.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
@@ -2119,7 +1587,9 @@ def migrate_graph_spec(
                             if resolved_source != GRAPH_SPEC_SCHEMA_VERSION
                             else ACAUSAL_GRAPH_SCHEMA_VERSION
                         )
-                    ) if isinstance(raw_subgraph, Mapping) else None,
+                    )
+                    if isinstance(raw_subgraph, Mapping)
+                    else None,
                     path=nested_path,
                     registry=registry,
                     component_registry=component_registry,
@@ -2194,12 +1664,17 @@ def migrate_acausal_graph_spec(
     )
     migrated_payload = dict(result.payload)
     if resolved_target == ACAUSAL_GRAPH_SCHEMA_VERSION:
-        if component_registry is None and resolved_source == ACAUSAL_GRAPH_SCHEMA_VERSION_V1 and migrated_payload.get("nodes"):
+        if (
+            component_registry is None
+            and resolved_source == ACAUSAL_GRAPH_SCHEMA_VERSION_V1
+            and migrated_payload.get("nodes")
+        ):
             from feedbax.component_registry import ComponentRegistry
 
             component_registry = ComponentRegistry()
         migrated_payload = _decode_component_revisions(
-            migrated_payload, component_registry,
+            migrated_payload,
+            component_registry,
             historical=historical_unversioned or resolved_source == ACAUSAL_GRAPH_SCHEMA_VERSION_V1,
             resolve_current=True,
         )
@@ -2354,13 +1829,7 @@ def migrate_structured_spec_payload(
     registry: SpecSchemaRegistry | None = None,
     component_registry: Any | None = None,
 ) -> SpecMigrationResult:
-    """Migrate or explicitly reject one registered structured spec payload.
-
-    The checkpoint v5-to-v6 registry transform only marks legacy BatchHistory
-    declarations. Their array wrapping completes during checkpoint load in
-    ``_wrap_migrated_v5_batch_histories``; this function alone does not produce
-    the fully loaded v6 slot tree.
-    """
+    """Migrate or explicitly reject one registered structured spec payload."""
     registry = registry or default_spec_registry
     if kind in {"GraphSpec", "AcausalGraphSpec"}:
         migrate_graph = migrate_graph_spec if kind == "GraphSpec" else migrate_acausal_graph_spec
@@ -2398,493 +1867,6 @@ def migrate_structured_spec_payload(
             _record_with_spec_path(record, path) for record in result.migration_records
         ],
     )
-
-
-_STUDIO_OBJECTIVE_SCHEMA_ID = "feedbax.spec.studio.objective"
-_STUDIO_OBJECTIVE_SCHEMA_VERSION = f"{_STUDIO_OBJECTIVE_SCHEMA_ID}.v1"
-_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION = "feedbax.studio.objective.v1"
-
-
-_SCENARIO_STRUCTURED_FIELDS = {
-    "training_spec": "TrainingSpec",
-    "task_spec": "TaskSpec",
-    "objective_spec": "ObjectiveSpec",
-    "temporal_spec": "StudioTaskTimelineSpec",
-    "biomechanics_spec": "StudioBiomechanicsSpec",
-    "analysis_spec": "AnalysisRunSpec",
-    "report_spec": "ReportSpec",
-}
-
-
-def migrate_studio_scenario_spec(
-    payload: Mapping[str, Any],
-    *,
-    source_version: str | None = None,
-    target_version: str | None = None,
-    assume_current: bool = False,
-    path: str = "scenario",
-    registry: SpecSchemaRegistry | None = None,
-) -> SpecMigrationResult:
-    """Migrate a Studio scenario and nested durable spec payloads."""
-    registry = registry or default_spec_registry
-    result = registry.migrate(
-        "StudioScenarioSpec",
-        payload,
-        source_version=source_version,
-        target_version=target_version,
-        assume_current=assume_current,
-    )
-    migrated_payload = dict(result.payload)
-    records = [_record_with_spec_path(record, path) for record in result.migration_records]
-
-    graph_payload = migrated_payload.get("graph")
-    if isinstance(graph_payload, Mapping) or isinstance(graph_payload, GraphSpec):
-        graph_result = migrate_graph_spec(
-            graph_payload,
-            path=f"{path}/graph",
-            registry=registry,
-        )
-        migrated_payload["graph"] = graph_result.payload
-        records.extend(graph_result.migration_records)
-
-    task_binding_payload = migrated_payload.get("task_binding_spec")
-    if isinstance(task_binding_payload, Mapping):
-        task_binding_result = migrate_studio_task_binding_spec(
-            task_binding_payload,
-            path=f"{path}/task_binding_spec",
-            registry=registry,
-        )
-        migrated_payload["task_binding_spec"] = task_binding_result.payload
-        records.extend(task_binding_result.migration_records)
-
-    for field_name, kind in _SCENARIO_STRUCTURED_FIELDS.items():
-        field_payload = migrated_payload.get(field_name)
-        if isinstance(field_payload, Mapping):
-            if field_name == "objective_spec" and (
-                field_payload.get("schema_id") == _STUDIO_OBJECTIVE_SCHEMA_ID
-                or field_payload.get("schema_version") in (
-                    _STUDIO_OBJECTIVE_SCHEMA_VERSION,
-                    _LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,
-                )
-            ):
-                kind = "StudioObjectiveSpec"
-            if not assume_current:
-                field_payload = _stamp_parent_carried_nested_schema_version(
-                    kind,
-                    field_payload,
-                    registry=registry,
-                )
-            field_result = migrate_structured_spec_payload(
-                kind,
-                field_payload,
-                assume_current=assume_current,
-                path=f"{path}/{field_name}",
-                registry=registry,
-            )
-            migrated_payload[field_name] = field_result.payload
-            records.extend(field_result.migration_records)
-
-    probe_specs = migrated_payload.get("probe_specs")
-    if isinstance(probe_specs, list):
-        migrated_probes: list[Any] = []
-        for index, probe_payload in enumerate(probe_specs):
-            if not isinstance(probe_payload, Mapping):
-                migrated_probes.append(probe_payload)
-                continue
-            if not assume_current:
-                probe_payload = _stamp_parent_carried_nested_schema_version(
-                    "RetainedObservableSpec",
-                    probe_payload,
-                    registry=registry,
-                )
-            probe_result = migrate_structured_spec_payload(
-                "RetainedObservableSpec",
-                probe_payload,
-                assume_current=assume_current,
-                path=f"{path}/probe_specs/{index}",
-                registry=registry,
-            )
-            migrated_probes.append(probe_result.payload)
-            records.extend(probe_result.migration_records)
-        migrated_payload["probe_specs"] = migrated_probes
-
-    return SpecMigrationResult(
-        kind=result.kind,
-        schema_id=result.schema_id,
-        source_version=result.source_version,
-        target_version=result.target_version,
-        payload=migrated_payload,
-        migration_records=records,
-    )
-
-
-def migrate_studio_stage_spec(
-    payload: Mapping[str, Any],
-    *,
-    source_version: str | None = None,
-    target_version: str | None = None,
-    assume_current: bool = False,
-    path: str = "stage",
-    registry: SpecSchemaRegistry | None = None,
-) -> SpecMigrationResult:
-    """Migrate or explicitly reject a Studio pipeline stage payload."""
-    active_registry = registry or default_spec_registry
-    _validate_studio_document_identity(
-        "StudioStageSpec",
-        payload,
-        path=path,
-        registry=active_registry,
-    )
-    result = migrate_structured_spec_payload(
-        "StudioStageSpec",
-        payload,
-        source_version=source_version,
-        target_version=target_version,
-        assume_current=assume_current,
-        path=path,
-        registry=active_registry,
-    )
-    migrated = dict(result.payload)
-    migrated["schema_id"] = STUDIO_STAGE_SCHEMA_ID
-    migrated["schema_version"] = result.target_version
-    return replace(result, payload=migrated)
-
-
-def migrate_studio_workspace_spec(
-    payload: Mapping[str, Any],
-    *,
-    source_version: str | None = None,
-    target_version: str | None = None,
-    path: str = "workspace",
-    registry: SpecSchemaRegistry | None = None,
-) -> SpecMigrationResult:
-    """Migrate a durable Studio workspace and nested scenario/stage payloads."""
-    registry = registry or default_spec_registry
-    _validate_studio_document_identity(
-        "StudioWorkspaceSpec",
-        payload,
-        path=path,
-        registry=registry,
-    )
-    result = registry.migrate(
-        "StudioWorkspaceSpec",
-        payload,
-        source_version=source_version,
-        target_version=target_version,
-    )
-    migrated_payload = dict(result.payload)
-    migrated_payload["schema_id"] = STUDIO_WORKSPACE_SCHEMA_ID
-    migrated_payload["schema_version"] = result.target_version
-    records = [_record_with_spec_path(record, path) for record in result.migration_records]
-
-    scenarios = migrated_payload.get("scenarios")
-    if isinstance(scenarios, Mapping):
-        migrated_scenarios: dict[str, Any] = {}
-        for scenario_id in sorted(scenarios):
-            scenario_payload = scenarios[scenario_id]
-            if not isinstance(scenario_payload, Mapping):
-                migrated_scenarios[str(scenario_id)] = scenario_payload
-                continue
-            scenario_payload = _stamp_parent_carried_nested_schema_version(
-                "StudioScenarioSpec",
-                scenario_payload,
-                carried_version=(
-                    STUDIO_SCENARIO_SCHEMA_VERSION_V2
-                    if result.source_version == STUDIO_WORKSPACE_SCHEMA_VERSION_V1
-                    else None
-                ),
-                registry=registry,
-            )
-            scenario_result = migrate_studio_scenario_spec(
-                scenario_payload,
-                path=f"{path}/scenarios/{scenario_id}",
-                registry=registry,
-            )
-            migrated_scenarios[str(scenario_id)] = scenario_result.payload
-            records.extend(scenario_result.migration_records)
-        migrated_payload["scenarios"] = migrated_scenarios
-
-    stages = migrated_payload.get("stages")
-    if isinstance(stages, list):
-        migrated_stages: list[Any] = []
-        for index, stage_payload in enumerate(stages):
-            if not isinstance(stage_payload, Mapping):
-                migrated_stages.append(stage_payload)
-                continue
-            stage_payload = _stamp_parent_carried_nested_schema_version(
-                "StudioStageSpec",
-                stage_payload,
-                carried_version=(
-                    STUDIO_STAGE_SCHEMA_VERSION_V1
-                    if result.source_version == STUDIO_WORKSPACE_SCHEMA_VERSION_V1
-                    else None
-                ),
-                registry=registry,
-            )
-            stage_result = migrate_studio_stage_spec(
-                stage_payload,
-                path=f"{path}/stages/{index}",
-                registry=registry,
-            )
-            migrated_stages.append(stage_result.payload)
-            records.extend(stage_result.migration_records)
-        migrated_payload["stages"] = migrated_stages
-
-    return SpecMigrationResult(
-        kind=result.kind,
-        schema_id=result.schema_id,
-        source_version=result.source_version,
-        target_version=result.target_version,
-        payload=migrated_payload,
-        migration_records=records,
-    )
-
-
-def _validate_studio_document_identity(
-    kind: str,
-    payload: Mapping[str, Any],
-    *,
-    path: str,
-    registry: SpecSchemaRegistry,
-) -> None:
-    """Require exact identity on current Studio documents and reject mismatches."""
-
-    family = registry.resolve(kind)
-    declared_id = payload.get("schema_id")
-    if declared_id is not None and declared_id != family.identity:
-        raise UnsupportedSpecVersion(
-            "Unsupported Studio document schema identity: "
-            f"family={kind!r}, path={path!r}, schema_id={declared_id!r}, "
-            f"expected_schema_id={family.identity!r}"
-        )
-
-
-def admit_studio_persistence_document(
-    payload: Mapping[str, Any],
-    *,
-    registry: SpecSchemaRegistry | None = None,
-) -> StudioPersistenceDocument:
-    """Admit, migrate, validate, and normalize one complete Studio save envelope."""
-
-    active_registry = registry or default_spec_registry
-    document = dict(payload)
-    canonical_json_v2_bytes(document)
-    family = active_registry.resolve("StudioPersistenceDocument")
-    if document.get("schema_id") != family.identity:
-        raise UnsupportedSpecVersion(
-            "Studio save ingress requires the exact persistence schema identity: "
-            f"schema_id={document.get('schema_id')!r}, expected={family.identity!r}"
-        )
-    result = active_registry.migrate("StudioPersistenceDocument", document)
-    admitted = dict(result.payload)
-
-    graph = admitted.get("graph")
-    if isinstance(graph, Mapping) or isinstance(graph, GraphSpec):
-        admitted["graph"] = migrate_graph_spec(
-            graph,
-            path="persistence_document/graph",
-            registry=active_registry,
-        ).payload
-
-    workspace = admitted.get("workspace")
-    if isinstance(workspace, Mapping):
-        _require_current_studio_save_identity(
-            "StudioWorkspaceSpec",
-            workspace,
-            path="persistence_document/workspace",
-            registry=active_registry,
-        )
-        stages = workspace.get("stages")
-        if isinstance(stages, list):
-            for index, stage in enumerate(stages):
-                if isinstance(stage, Mapping):
-                    _require_current_studio_save_identity(
-                        "StudioStageSpec",
-                        stage,
-                        path=f"persistence_document/workspace/stages/{index}",
-                        registry=active_registry,
-                    )
-        admitted["workspace"] = migrate_studio_workspace_spec(
-            workspace,
-            path="persistence_document/workspace",
-            registry=active_registry,
-        ).payload
-
-    workspace_document = admitted.get("workspace_document")
-    if isinstance(workspace_document, Mapping):
-        admitted["workspace_document"] = _migrate_workspace_document_analysis_layout(
-            workspace_document
-        )
-
-    validated = StudioPersistenceDocument.model_validate(admitted)
-    canonical_json_v2_bytes(validated.model_dump(mode="json", exclude_none=True))
-    return validated
-
-
-def _require_current_studio_save_identity(
-    kind: str,
-    payload: Mapping[str, Any],
-    *,
-    path: str,
-    registry: SpecSchemaRegistry,
-) -> None:
-    family = registry.resolve(kind)
-    declared_version = _payload_schema_version(payload)
-    if declared_version is None:
-        raise UnsupportedSpecVersion(
-            "Studio save documents must declare their schema version: "
-            f"family={kind!r}, path={path!r}"
-        )
-    if declared_version != family.current_version:
-        return
-    if payload.get("schema_id") != family.identity:
-        raise UnsupportedSpecVersion(
-            "Current Studio save documents must declare their exact schema identity: "
-            f"family={kind!r}, path={path!r}, schema_id={payload.get('schema_id')!r}, "
-            f"schema_version={family.current_version!r}, "
-            f"expected_schema_id={family.identity!r}"
-        )
-
-
-def _stamp_parent_carried_nested_schema_version(
-    kind: str,
-    payload: Mapping[str, Any],
-    *,
-    carried_version: str | None = None,
-    registry: SpecSchemaRegistry,
-) -> dict[str, Any]:
-    """Return a copy stamped when current workspace schema carries nested identity.
-
-    Studio workspace v1 is authoritative for direct scenario/stage child shapes
-    emitted before those children were stamped independently. Durable load then
-    passes explicit nested schema versions into the normal structured migration
-    path instead of silently accepting versionless children.
-    """
-    payload_dict = dict(payload)
-    if _payload_schema_version(payload) is not None:
-        return payload_dict
-    family = registry.resolve(kind)
-    payload_dict["schema_version"] = carried_version or family.current_version
-    return payload_dict
-
-
-def _migrate_workspace_document_analysis_layout(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Admit pre-layout presentation documents as an explicit empty layout."""
-    migrated = dict(payload)
-    if "analysis_canvas_layout" in migrated:
-        return migrated
-    pages = []
-    for raw_page in migrated.get("analysis_pages") or []:
-        if not isinstance(raw_page, Mapping):
-            pages.append(raw_page)
-            continue
-        page = dict(raw_page)
-        page.pop("viewport", None)
-        pages.append(page)
-    migrated["analysis_pages"] = pages
-    migrated["analysis_canvas_layout"] = {
-        "schema_id": ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
-        "schema_version": ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
-        "stages": {},
-    }
-    return migrated
-
-
-def migrate_graph_project_payload(
-    payload: Mapping[str, Any],
-    *,
-    registry: SpecSchemaRegistry | None = None,
-    component_registry: Any | None = None,
-) -> dict[str, Any]:
-    """Migrate durable project-level graph and workspace payloads before validation."""
-    registry = registry or default_spec_registry
-    declared_id = payload.get("schema_id")
-    if declared_id is not None and declared_id != STUDIO_GRAPH_PROJECT_SCHEMA_ID:
-        raise UnsupportedSpecVersion(
-            "Unsupported Studio graph-project schema identity: "
-            f"schema_id={declared_id!r}, expected={STUDIO_GRAPH_PROJECT_SCHEMA_ID!r}"
-        )
-    source_version = _payload_schema_version(payload)
-    if source_version is None:
-        source_version = STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY
-    project_result = registry.migrate(
-        "StudioGraphProject",
-        payload,
-        source_version=source_version,
-    )
-    migrated = dict(project_result.payload)
-    migrated["schema_id"] = STUDIO_GRAPH_PROJECT_SCHEMA_ID
-    migrated["schema_version"] = STUDIO_GRAPH_PROJECT_SCHEMA_VERSION
-    workspace_ui_state: dict[str, Any] = {}
-    stage_ui_state: dict[str, dict[str, Any]] = {}
-    scenario_ui_state: dict[str, dict[str, Any]] = {}
-    graph_payload = migrated.get("graph")
-    if isinstance(graph_payload, Mapping) or isinstance(graph_payload, GraphSpec):
-        migrated["graph"] = migrate_graph_spec(
-            graph_payload,
-            path="graph",
-            registry=registry,
-            component_registry=component_registry,
-            historical_unversioned=True,
-        ).payload
-    workspace_payload = migrated.get("workspace")
-    if isinstance(workspace_payload, Mapping):
-        workspace_ui_state = dict(workspace_payload.get("ui_state") or {})
-        stage_ui_state = {
-            str(stage["id"]): dict(stage.get("ui_state") or {})
-            for stage in workspace_payload.get("stages", [])
-            if isinstance(stage, Mapping) and isinstance(stage.get("id"), str)
-        }
-        scenarios_payload = workspace_payload.get("scenarios", {})
-        if isinstance(scenarios_payload, Mapping):
-            scenario_ui_state = {
-                str(scenario_id): dict(scenario.get("ui_state") or {})
-                for scenario_id, scenario in scenarios_payload.items()
-                if isinstance(scenario, Mapping)
-            }
-        migrated["workspace"] = migrate_studio_workspace_spec(
-            workspace_payload,
-            path="workspace",
-            registry=registry,
-        ).payload
-    if "workspace_document" not in migrated:
-        from feedbax.contracts.authored_canonical import canonical_sha256
-
-        graph_document_sha256 = canonical_sha256(
-            {
-                "schema_id": "feedbax.graph_document",
-                "schema_version": "1",
-                "graph": migrated["graph"],
-            }
-        )
-        root_anchor = {
-            "semantic_document_sha256": graph_document_sha256,
-            "authored_path": "/graph",
-        }
-        migrated["workspace_document"] = {
-            "schema_id": "feedbax.workspace_document",
-            "schema_version": "1",
-            "semantic_root": root_anchor,
-            "graph_ui_state": migrated.pop("ui_state", None) or {},
-            "workspace_ui_state": workspace_ui_state,
-            "stage_ui_state": stage_ui_state,
-            "scenario_ui_state": scenario_ui_state,
-            "analysis_pages": migrated.pop("analysis_pages", None) or [],
-            "active_analysis_page_id": migrated.pop("active_analysis_page_id", None),
-            "semantic_anchors": {},
-        }
-    else:
-        workspace_document = dict(migrated["workspace_document"])
-        workspace_document.setdefault("workspace_ui_state", workspace_ui_state)
-        workspace_document.setdefault("stage_ui_state", stage_ui_state)
-        workspace_document.setdefault("scenario_ui_state", scenario_ui_state)
-        migrated["workspace_document"] = workspace_document
-    migrated["workspace_document"] = _migrate_workspace_document_analysis_layout(
-        migrated["workspace_document"]
-    )
-    return migrated
 
 
 def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2935,123 +1917,6 @@ def _migrate_analysis_run_manifest_v1(payload: dict[str, Any]) -> dict[str, Any]
 def _migrate_evaluation_run_manifest_v1(payload: dict[str, Any]) -> dict[str, Any]:
     """Admit inline historical manifests for explicit shared-content conversion."""
     return dict(payload)
-
-
-def _migrate_training_run_matrix_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Promote the untyped v1 base locator to the fail-closed v2 union."""
-    migrated = dict(payload)
-    base = migrated.get("base")
-    if not isinstance(base, Mapping):
-        raise ValueError("TrainingRunMatrixSpec v1 /base must be an object")
-    has_inline = base.get("inline") is not None
-    has_ref = base.get("ref") is not None
-    has_sha = base.get("sha256") is not None
-    if has_inline and has_ref:
-        raise ValueError("TrainingRunMatrixSpec v1 /base cannot carry both inline and ref")
-    if has_inline and has_sha:
-        raise ValueError("TrainingRunMatrixSpec v1 inline /base cannot carry sha256")
-    if has_inline:
-        migrated["base"] = {"kind": "inline", "inline": base["inline"]}
-    elif base.get("ref") is not None:
-        digest = base.get("sha256")
-        if not isinstance(digest, str) or not digest:
-            raise ValueError(
-                "TrainingRunMatrixSpec v1 unpinned /base/ref cannot migrate to v2; "
-                "a canonical content sha256 pin is required"
-            )
-        migrated["base"] = {
-            "kind": "authored_intent",
-            "ref": base["ref"],
-            "content_hash": digest,
-            "pin_algorithm": "legacy_raw_sha256",
-            **(
-                {"payload_path": base["payload_path"]}
-                if base.get("payload_path") is not None
-                else {}
-            ),
-        }
-    else:
-        raise ValueError("TrainingRunMatrixSpec v1 /base requires inline or ref")
-    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2
-    return migrated
-
-
-def _migrate_training_run_matrix_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Add explicit composition and execution-dependency layers."""
-    migrated = dict(payload)
-    migrated.setdefault("deltas", [])
-    migrated.setdefault("execution_dependencies", [])
-    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3
-    return migrated
-
-
-def _migrate_training_run_matrix_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Retire unresolved run ids and require transform implementation pins."""
-    migrated = deepcopy(payload)
-    fork = migrated.get("fork")
-    if isinstance(fork, dict):
-        source_run_id = fork.pop("source_run_id", None)
-        if source_run_id is not None:
-            raise ValueError(
-                "TrainingRunMatrixSpec v3 fork.source_run_id cannot migrate because it "
-                "does not identify checkpoint custody; declare a content-pinned "
-                "fork_from_selected_checkpoint execution dependency"
-            )
-    for dependency in migrated.get("execution_dependencies", ()):
-        if dependency.get("kind") != "fork_from_selected_checkpoint":
-            continue
-        for transform in dependency.get("slot_transforms", ()):
-            if "implementation_sha256" not in transform:
-                raise ValueError(
-                    "TrainingRunMatrixSpec v3 durable slot transforms cannot migrate "
-                    "without an implementation_sha256 pin"
-                )
-    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4
-    return migrated
-
-
-def _migrate_training_run_matrix_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Adopt per-row derivations only when no base-only derivation exists."""
-    migrated = deepcopy(payload)
-    if migrated.get("derivations", []) != []:
-        raise ValueError(
-            "TrainingRunMatrixSpec v4 with /derivations cannot migrate to v5 because "
-            "base-only derivation semantics are ambiguous under per-row derivation; re-author "
-            "the matrix with row-local derivations"
-        )
-    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5
-    return migrated
-
-
-def _migrate_training_run_matrix_v5_to_v6_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Wrap only authentic v5 execution hashes in the closed v6 authority union."""
-    migrated = deepcopy(payload)
-    base = migrated.get("base")
-    if isinstance(base, Mapping) and base.get("kind") == "resolved_output":
-        raise ValueError(
-            "TrainingRunMatrixSpec v5 resolved-output bases cannot migrate to v6 because "
-            "v5 does not preserve row_id and checkpoint_transaction_id"
-        )
-    for dependency in migrated.get("execution_dependencies", ()):
-        if dependency.get("kind") != "fork_from_selected_checkpoint":
-            continue
-        execution_hash = dependency.pop("source_execution_hash", None)
-        if not isinstance(execution_hash, str) or not execution_hash:
-            raise ValueError(
-                "TrainingRunMatrixSpec v5 selected checkpoints cannot migrate without an "
-                "authentic source_execution_hash; Feedbax never synthesizes execution identity"
-            )
-        dependency["source_authority"] = {
-            "kind": "execution_hash",
-            "execution_hash": execution_hash,
-        }
-    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
-    return migrated
 
 
 def _migrate_evaluation_run_matrix_v2_to_v3_payload(
@@ -3133,14 +1998,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         )
 
-    manifest_emitters = ("feedbax.contracts.manifest", "feedbax.integrations.provider")
-    studio_schema_emitters = ("feedbax.studio.schema", "feedbax.integrations.provider")
-    objective_emitters = ("feedbax.objective_spec", "feedbax.integrations.provider")
-    invocation_emitters = ("feedbax.execution.records", "feedbax.integrations.provider")
-    realization_emitters = (
-        "feedbax.orchestration.realization",
-        "feedbax.integrations.provider",
-    )
+    manifest_emitters = ("feedbax.contracts.manifest",)
 
     families = [
         _family(
@@ -3257,10 +2115,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
             STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
             owner_module="feedbax.contracts.staged_execution",
-            emitted_by=(
-                "feedbax.analysis.execute_staged_analysis_bundle",
-                "feedbax.integrations.provider",
-            ),
+            emitted_by=("feedbax.analysis.execute_staged_analysis_bundle",),
             consumed_by=(
                 "feedbax.analysis.resolve_staged_execution_context",
                 "feedbax.bin.analysis",
@@ -3277,10 +2132,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
             STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
             owner_module="feedbax.contracts.staged_execution",
-            emitted_by=(
-                "feedbax.analysis.execute_staged_analysis_bundle",
-                "feedbax.integrations.provider",
-            ),
+            emitted_by=("feedbax.analysis.execute_staged_analysis_bundle",),
             consumed_by=(
                 "feedbax.analysis.resolve_staged_execution_context",
                 "feedbax.bin.analysis",
@@ -3301,10 +2153,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
             IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
             owner_module="feedbax.contracts.artifact_custody",
-            emitted_by=(
-                "feedbax.persistence.artifact_custody",
-                "feedbax.integrations.provider",
-            ),
+            emitted_by=("feedbax.persistence.artifact_custody",),
             consumed_by=(
                 "feedbax.persistence.open_immutable_artifact_blob_provider",
                 "downstream staged execution",
@@ -3323,10 +2172,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
             IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
             owner_module="feedbax.contracts.artifact_custody",
-            emitted_by=(
-                "feedbax.persistence.artifact_custody",
-                "feedbax.integrations.provider",
-            ),
+            emitted_by=("feedbax.persistence.artifact_custody",),
             consumed_by=(
                 "feedbax.persistence.open_immutable_artifact_blob_provider",
                 "downstream staged execution",
@@ -3389,79 +2235,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     CONTENT_BINDING_SCHEMA_VERSION,
                     "Runtime role binding kept separate from content-tree identity.",
                 ),
-                (
-                    "ContentMigrationReceipt",
-                    CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
-                    CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION,
-                    "Complete receipt for explicit offline legacy-custody migration.",
-                ),
             )
-        ),
-        _family(
-            "RunMatrixMaterialization",
-            RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
-            RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
-            owner_module="feedbax.training.run_matrix",
-            emitted_by=("feedbax.training.run_matrix.write_materialized_matrix",),
-            consumed_by=("training matrix launch and archival tooling",),
-            description="Execution payload files and typed row-provenance index.",
-            stance="reject",
-            rejected_old_versions=(
-                RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1,
-                RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2,
-            ),
-            required_tests=("tests/test_run_matrix_materialization.py",),
-            notes=(
-                "v1 omitted authored-row/lowerer provenance and v2 omitted the complete "
-                "lowered-payload hash; rematerialize from source."
-            ),
-        ),
-        _family(
-            "AuthoredTrainingRow",
-            AUTHORED_TRAINING_ROW_SCHEMA_ID,
-            AUTHORED_TRAINING_ROW_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
-            consumed_by=("feedbax.training.run_matrix.TrainingRowLowerer",),
-            durable=False,
-            description="Typed axis-patched row input supplied to a declared lowerer.",
-            rejected_old_versions=(f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v0",),
-        ),
-        _family(
-            "TrainingRowLowererRef",
-            TRAINING_ROW_LOWERER_REF_SCHEMA_ID,
-            TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("downstream TrainingRunMatrixSpec base payloads",),
-            consumed_by=("feedbax.training.row_lowering.TrainingRowLowererRegistry",),
-            description=(
-                "Content-pinned public authority selecting an exact authored-row lowerer."
-            ),
-            stance="reject",
-            rejected_old_versions=(
-                f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v0",
-                TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1,
-            ),
-            required_tests=("tests/test_training_row_lowering.py",),
-            notes="v1 lowerers had no governed parent-resolution context.",
-        ),
-        _family(
-            "TrainingRowLoweringResult",
-            TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID,
-            TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.training.run_matrix.TrainingRowLowerer",),
-            consumed_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
-            durable=False,
-            description="Declared lowerer identity and authoritative row execution payload.",
-            rejected_old_versions=(f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v0",),
         ),
         _family(
             "TrainingRowPlanningProvenance",
             TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
             TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
             owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
+            emitted_by=("analysis execution provenance",),
             consumed_by=("feedbax.contracts.manifest.planned_training_run_manifest_id",),
             durable=False,
             description="Authored-row and ordered lowerer identity bound into planned IDs.",
@@ -3476,11 +2257,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             TRAINING_ROW_PROVENANCE_SCHEMA_ID,
             TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
             owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
-            consumed_by=(
-                "feedbax.training.spec_storage.compile_training_run_matrix",
-                "feedbax.orchestration.bundle.RunRowSpec",
-            ),
+            emitted_by=("analysis execution provenance",),
+            consumed_by=("feedbax.contracts.execution_identity.ExecutionIdentityEnvelope",),
             description="Canonical row coordinates and authored-to-execution lowering provenance.",
             rejected_old_versions=(
                 f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v0",
@@ -3493,103 +2271,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
-            "DeploymentPolicy",
-            DEPLOYMENT_POLICY_SCHEMA_ID,
-            DEPLOYMENT_POLICY_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.bundle",
-            emitted_by=(
-                "feedbax.orchestration.assembly.RunAssemblyRequest",
-                "feedbax.orchestration.bundle.RunBundle",
-            ),
-            consumed_by=(
-                "feedbax.orchestration.stages.run_preflight_checks",
-                "orchestration CLI",
-            ),
-            description="Requested venue, launch authorization, and resource policy.",
-            stance="migrate",
-            supported_old_versions=(DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{DEPLOYMENT_POLICY_SCHEMA_ID}.v0",),
-        ),
-        _family(
-            "RunAssemblyRequest",
-            RUN_ASSEMBLY_REQUEST_SCHEMA_ID,
-            RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.assembly",
-            emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
-            consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
-            description="Authored request resolved and compiled by persisted ASSEMBLE.",
-            stance="migrate",
-            supported_old_versions=(
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
-            ),
-            rejected_old_versions=(
-                f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V2,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5,
-                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6,
-            ),
-            notes=(
-                "v2 omitted governed compile-time training-row parent declarations; "
-                "v3 omitted additive staged-root custody declarations; "
-                "v4 omitted the optional typed evaluation output preflight policy; "
-                "v5 nested an unmigrated deployment policy. No version below v7 "
-                "carries the required Feedbax revision authority, and a migrator "
-                "cannot invent one, so every version below v7 rejects. v7 migrates "
-                "only when it has no legacy staged_roots; migrated roots require the "
-                "explicit content-store migration command."
-            ),
-        ),
-        _family(
-            "EvaluationMatrixExecutionCapsule",
-            EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID,
-            EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_VERSION,
-            owner_module="feedbax.analysis.evaluation_orchestration",
-            emitted_by=(
-                "feedbax.analysis.evaluation_orchestration.EvaluationMatrixIdentityAdapter",
-            ),
-            consumed_by=("feedbax.orchestration.assembly",),
-            description=("Identity capsule for one authored whole-matrix evaluation invocation."),
-            rejected_old_versions=(f"{EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_evaluation_orchestration.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "ExecutionIdentityEnvelope",
-            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
-            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.execution_identity",
-            emitted_by=("feedbax.contracts.execution_identity.ExecutionIdentityEnvelope",),
-            consumed_by=(
-                "feedbax.orchestration.assembly",
-                "feedbax.orchestration.conformance.check_execution_identity",
-                "feedbax.training.executor.NativeExecutionProducerContext",
-            ),
-            description="Per-row binding of authored intent to exact execution identity.",
-            stance="migrate",
-            supported_old_versions=(EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID}.v0",),
-            notes=(
-                "v1 envelopes migrate with row_provenance explicitly unavailable; "
-                "training-matrix compiler v2 always emits populated provenance."
-            ),
-        ),
-        _family(
             "NativeExecutionProducerContext",
             NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
             NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
             owner_module="feedbax.contracts.execution_context.NativeExecutionProducerContext",
-            emitted_by=(
-                "feedbax.orchestration.drivers.native_execution.inject_native_execution_context",
-            ),
+            emitted_by=("typed execution diagnostics",),
             consumed_by=(
                 "feedbax.__main__",
-                "feedbax.training.executor.execute_training_run_spec",
+                "feedbax.training.executor.execute_managed_training_run",
             ),
             description=(
                 "Envelope-only native execution input carrying assembly identity and "
@@ -3597,7 +2286,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=(f"{NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID}.v0",),
             required_tests=(
-                "tests/test_training_run_executor.py",
+                "tests/test_canonical_train_admission.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -3606,11 +2295,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             TRAINING_DIAGNOSTICS_SCHEMA_ID,
             TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
             owner_module="feedbax.training.diagnostics.TrainingDiagnostics",
-            emitted_by=("feedbax.training.executor.execute_training_run_spec",),
-            consumed_by=(
-                "feedbax.orchestration.conformance",
-                "feedbax.orchestration.stages",
-            ),
+            emitted_by=("feedbax.training.executor.execute_managed_training_run",),
+            consumed_by=("typed job failure diagnostics",),
             description=(
                 "Typed cumulative and segment-level observations emitted beside the sole "
                 "native training-run manifest."
@@ -3623,7 +2309,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=(f"{TRAINING_DIAGNOSTICS_SCHEMA_ID}.v0",),
             required_tests=(
-                "tests/test_training_run_executor.py",
+                "tests/test_canonical_train_admission.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -3670,7 +2356,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "MappedMetricValue",
             MAPPED_METRIC_VALUE_SCHEMA_ID,
             MAPPED_METRIC_VALUE_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.events.MappedMetricValue",
+            owner_module="feedbax.training.metrics.MappedMetricValue",
             emitted_by=("feedbax.training.executor",),
             consumed_by=("training history, events, manifests, and diagnostics",),
             description="Lossless JSON metric value carrying resolved mapped-axis evidence.",
@@ -3682,7 +2368,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "StructuredMappedMetricValue",
             STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
             STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.events.StructuredMappedMetricValue",
+            owner_module="feedbax.training.metrics.StructuredMappedMetricValue",
             emitted_by=("feedbax.training.executor",),
             consumed_by=("method-authored training diagnostics",),
             description="Named numeric and boolean metric leaves carrying one replica axis.",
@@ -3691,50 +2377,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
-            "StudioTrainingAssemblySpec",
-            STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
-            STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.studio_training",
-            emitted_by=("feedbax.web.services.training_service.TrainingService",),
-            consumed_by=(
-                "feedbax.contracts.studio_training.StudioTrainingAssemblySpec",
-                "feedbax.web.services.worker_driver.WorkerHttpDriver",
-            ),
-            description="Governed authored request and executable payload for Studio training.",
-            rejected_old_versions=(f"{STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_structured_spec_migrations.py",
-                "tests/test_training_jobs.py",
-            ),
-        ),
-        _family(
-            "TrainingRunResolvedSemanticsSnapshot",
-            SNAPSHOT_SCHEMA_ID,
-            SNAPSHOT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.spec_storage",
-            emitted_by=("feedbax.orchestration.assembly.persist_compiled_row",),
-            consumed_by=("feedbax.contracts.resolved_snapshot_decoder",),
-            description="Structurally shared immutable resolved training semantics.",
-            rejected_old_versions=(f"{SNAPSHOT_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_training_spec_storage.py",),
-        ),
-        _family(
-            "TrainingRunExecutionCapsule",
-            TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID,
-            TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.spec_storage",
-            emitted_by=("feedbax.orchestration.assembly.persist_compiled_row",),
-            consumed_by=("training replay and provenance verification",),
-            description="Execution provenance joining authored intent to resolved semantics.",
-            rejected_old_versions=(f"{TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_training_spec_storage.py",),
-        ),
-        _family(
             "GraphSpec",
             GRAPH_SPEC_SCHEMA_ID,
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
-            emitted_by=("Studio canvas save/load", "provider_manifest.schemas"),
+            emitted_by=("Studio canvas save/load"),
             consumed_by=(
                 "feedbax.compiler.compile_graph",
                 "Studio backend",
@@ -3757,7 +2404,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ACAUSAL_GRAPH_SCHEMA_ID,
             ACAUSAL_GRAPH_SCHEMA_VERSION,
             owner_module="feedbax.contracts.acausal",
-            emitted_by=("GraphSpec.subgraphs", "provider_manifest.schemas"),
+            emitted_by=("GraphSpec.subgraphs"),
             consumed_by=("Studio backend", "acausal domain compiler"),
             description="Durable acausal graph interior specification.",
             stance="migrate",
@@ -3904,8 +2551,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ANALYSIS_PARAMS_SCHEMA_ID,
             ANALYSIS_PARAMS_SCHEMA_VERSION,
             owner_module="feedbax.contracts.parameter_contracts",
-            emitted_by=("feedbax.integrations.provider.provider_manifest",),
-            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            emitted_by=("authored analysis and figure specifications",),
+            consumed_by=("analysis and figure specification validation",),
             description=(
                 "Open scientific parameters identified by the containing analysis type, "
                 "with fail-closed durable identity and artifact-reference structures."
@@ -3919,8 +2566,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ANALYSIS_BUNDLE_PARAMS_SCHEMA_ID,
             ANALYSIS_BUNDLE_PARAMS_SCHEMA_VERSION,
             owner_module="feedbax.contracts.parameter_contracts",
-            emitted_by=("feedbax.integrations.provider.provider_manifest",),
-            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            emitted_by=("authored analysis and figure specifications",),
+            consumed_by=("analysis and figure specification validation",),
             description="Open shared analysis-bundle parameter object.",
             stance="reject",
             rejected_old_versions=(f"{ANALYSIS_BUNDLE_PARAMS_SCHEMA_ID}.v0",),
@@ -3931,8 +2578,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             FIGURE_ASSEMBLER_PARAMS_SCHEMA_ID,
             FIGURE_ASSEMBLER_PARAMS_SCHEMA_VERSION,
             owner_module="feedbax.contracts.parameter_contracts",
-            emitted_by=("feedbax.integrations.provider.provider_manifest",),
-            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            emitted_by=("authored analysis and figure specifications",),
+            consumed_by=("analysis and figure specification validation",),
             description="Deliberately open figure-assembler parameter vocabulary.",
             stance="reject",
             rejected_old_versions=(f"{FIGURE_ASSEMBLER_PARAMS_SCHEMA_ID}.v0",),
@@ -3943,8 +2590,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             FIGURE_TRACE_PARAMS_SCHEMA_ID,
             FIGURE_TRACE_PARAMS_SCHEMA_VERSION,
             owner_module="feedbax.contracts.parameter_contracts",
-            emitted_by=("feedbax.integrations.provider.provider_manifest",),
-            consumed_by=("feedbax.envelope.compile.EnvelopeKernel",),
+            emitted_by=("authored analysis and figure specifications",),
+            consumed_by=("analysis and figure specification validation",),
             description=("Deliberately open figure styling vocabulary with typed common fields."),
             stance="reject",
             rejected_old_versions=(f"{FIGURE_TRACE_PARAMS_SCHEMA_ID}.v0",),
@@ -4054,93 +2701,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_figure_role_references.py",),
         ),
         _family(
-            "FigureRowCustodyLocator",
-            FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
-            FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.figure_roles",
-            emitted_by=("feedbax.envelope.compile",),
-            consumed_by=("feedbax.analysis.fulfillment_row_custody.resolve_row_custody_overlay",),
-            description=(
-                "Where one row-expanded figure's per-row custody bindings are found, and "
-                "the row index identity the located document must match."
-            ),
-            required_tests=("tests/test_fulfillment_row_custody.py",),
-        ),
-        _family(
-            "ExperimentEnvelopeCompileResult",
-            EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
-            EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.experiment_envelope",
-            emitted_by=("feedbax.envelope.entrypoint.compile_experiment_envelope",),
-            consumed_by=("python -m feedbax preflight-experiment-envelope",),
-            description="Outcome the built-in envelope compiler returns to the dispatcher.",
-            required_tests=("tests/test_experiment_envelope_dispatch.py",),
-        ),
-        _family(
-            "ExperimentCompileLock",
-            EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
-            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.experiment_compile_lock",
-            emitted_by=("feedbax.envelope.compile.EnvelopeKernel.compile_envelope",),
-            consumed_by=(
-                "feedbax.envelope.choke.compare_tracked_outputs",
-                "downstream execution and resume",
-            ),
-            description=(
-                "Compile-time plan pinning what an envelope compile read and decided, "
-                "with compiler contract and implementation provenance recorded apart."
-            ),
-            stance="migrate",
-            supported_old_versions=(
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
-                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
-            ),
-            required_tests=("tests/test_envelope_engine_kernel.py",),
-            notes=(
-                "v2 adds the optional typed artifact contract a figure runtime input "
-                "binding carries, which is what a root figure's runtime input authority is "
-                "built from. v1 remains readable as exactly its own grammar and is not "
-                "migrated: the only thing v2 adds is a contract a v1 lock does not carry, "
-                "so restating the version would rename the absence instead of filling it. "
-                "A v1 lock stating a contract is refused as later grammar, and executing a "
-                "v1 root figure input reference is refused at lowering with an actionable "
-                "re-author-at-envelope-v5 diagnostic. v3 adds the closed "
-                "analysis_receipt_set consumer; v1/v2 remain readable only with their "
-                "singular analysis_input grammar. v4 both pins execution_identity to "
-                "canonical_json_v1 and admits the governed_parent compile-time input with "
-                "exact typed parent and artifact byte/schema identity. Only attributable "
-                "built-in Feedbax v3 locks migrate; v1/v2 remain readable, and older "
-                "grammars cannot be relabelled to carry governed_parent. v5 pins the "
-                "producer execution identity in each planned product reference and hashes "
-                "these references into the consumer execution identity. Older locks remain "
-                "readable. Locks with planned products need recompilation before use "
-                "because migration cannot recover the original producer pins."
-            ),
-        ),
-        _family(
-            "AuthoringBudget",
-            AUTHORING_BUDGET_SCHEMA_ID,
-            AUTHORING_BUDGET_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.authoring_budget",
-            emitted_by=("downstream project authoring-budget resources",),
-            consumed_by=("feedbax.envelope.authoring.read_authored_document",),
-            description=(
-                "Per-layer authored-document caps: Feedbax owns the document and the "
-                "enforcement, the project owns the layer names and the numbers."
-            ),
-            rejected_old_versions=(
-                f"{AUTHORING_BUDGET_SCHEMA_ID}.v0",
-                AUTHORING_BUDGET_SCHEMA_VERSION_V1,
-            ),
-            required_tests=("tests/test_authoring_budget.py", "tests/test_envelope_engine_kernel.py"),
-            notes=(
-                "v2 measures max_bytes using canonical_json_v1 and removes max_lines. "
-                "v1 is rejected: remove max_lines in every layer, review max_bytes "
-                "under sorted compact UTF-8 JSON, and explicitly declare v2. "
-                "No automatic migration reinterprets a source-byte policy."
-            ),
-        ),
-        _family(
             "FigureTemplate",
             FIGURE_TEMPLATE_SCHEMA_ID,
             FIGURE_TEMPLATE_SCHEMA_VERSION,
@@ -4182,7 +2742,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.spec.graph.additive_channel_adapter",
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
-            emitted_by=("GraphSpec.additive_channel_adapters", "provider_manifest.schemas"),
+            emitted_by=("GraphSpec.additive_channel_adapters"),
             consumed_by=("feedbax.graph_channel_adapters",),
             description="Graph-embedded external additive channel adapter.",
         ),
@@ -4191,7 +2751,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.spec.graph.additive_channel_target",
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
-            emitted_by=("AdditiveGraphChannelAdapterSpec.target", "provider_manifest.schemas"),
+            emitted_by=("AdditiveGraphChannelAdapterSpec.target"),
             consumed_by=("feedbax.graph_channel_adapters",),
             description="Target address for an additive graph-channel adapter.",
         ),
@@ -4214,7 +2774,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.spec.analysis.input_requirement",
             "feedbax.spec.analysis.input_requirement.v1",
             owner_module="feedbax.contracts.graph",
-            emitted_by=("GraphSpec retained analysis inputs", "provider_manifest.schemas"),
+            emitted_by=("GraphSpec retained analysis inputs"),
             consumed_by=("feedbax.analysis", "Studio schema enumeration"),
             description="Observable requirement declared by an analysis consumer.",
         ),
@@ -4264,7 +2824,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=(f"{RUN_CONTROL_SPEC_SCHEMA_ID}.v0",),
             required_tests=(
-                "tests/test_training_authoring.py",
+                "tests/test_studio_project_folder.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -4275,11 +2835,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.contracts.training",
             emitted_by=(
                 "TrainingMethodScheduleProjector",
-                "feedbax.orchestration.schedule_eval.project_training_schedules",
+                "feedbax.training.schedule_eval.project_training_schedules",
             ),
             consumed_by=(
                 "feedbax.training.executor",
-                "feedbax.orchestration.schedule_eval",
+                "feedbax.training.schedule_eval",
                 "training failure diagnostics",
             ),
             description=(
@@ -4293,7 +2853,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             TRAINING_RUN_SPEC_SCHEMA_ID,
             TRAINING_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.training",
-            emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
+            emitted_by=("TrainingRunManifest.training_spec"),
             consumed_by=(
                 "training executor pre-launch validation",
                 "downstream run-spec consumers",
@@ -4302,85 +2862,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Public durable scientific request envelope for graph, task, objective, "
                 "method, worker, artifact, checkpoint, and progress policy."
             ),
-            stance="migrate",
-            supported_old_versions=(
+            stance="reject",
+            rejected_old_versions=(
                 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
                 TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
                 TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
             ),
-            rejected_old_versions=("feedbax.spec.training_run.v0",),
             required_tests=(
                 "tests/test_training_run_spec.py",
                 "tests/test_structured_spec_migrations.py",
             ),
-        ),
-        _family(
-            "TrainingRunMatrixSpec",
-            TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
-            TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.training.run_matrix", "provider_manifest.schemas"),
-            consumed_by=("training matrix materialization", "Studio schema enumeration"),
-            description=(
-                "Governed multi-row training launch document with explicit rows, "
-                "sweep axes, base-spec resolution, derivations, and fork semantics."
-            ),
-            stance="migrate",
-            supported_old_versions=(
-                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
-                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
-                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
-                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
-                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
-            ),
-            rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
-            required_tests=(
-                "tests/test_run_matrix_spec.py",
-                "tests/test_run_matrix_materialization.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "TrainingRunMatrixDeltaSpec",
-            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
-            TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.training_matrix_composition",
-            emitted_by=("authored training matrix composition",),
-            consumed_by=(
-                "feedbax.training.spec_storage.compile_training_run_matrix",
-                "feedbax.orchestration.matrix_authority",
-            ),
-            description=(
-                "Ordered whole-document deltas over one content-pinned parent training "
-                "matrix or parent delta spec."
-            ),
-            rejected_old_versions=(f"{TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_training_matrix_delta_composition.py",),
-        ),
-        _family(
-            "TrainingRunMatrixAuthority",
-            TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
-            TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.orchestration.matrix_authority",),
-            consumed_by=("RunPodOrchestrationDriver.preflight_evidence",),
-            description="Provider-unverified authenticated matrix authority.",
-            rejected_old_versions=(f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
-        ),
-        _family(
-            "ShadowLaunchEvidence",
-            SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
-            SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.shadow_launch",
-            emitted_by=("feedbax.bin.orchestrate",),
-            consumed_by=("provider-free shadow-launch result readers only",),
-            description=(
-                "Output-only proof of one provider-free local continuation update; "
-                "it is not provider readiness authority."
-            ),
-            required_tests=("tests/test_orchestration_cli.py",),
-            rejected_old_versions=(f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",),
         ),
         _family(
             "EvaluationBatchMergeCheckpoint",
@@ -4447,26 +2938,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_evaluation_product_union.py",),
         ),
         _family(
-            "EvaluationLifecycleEvidence",
-            EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID,
-            EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.evaluation_lifecycle",
-            emitted_by=("feedbax.analysis.harness",),
-            consumed_by=("feedbax.orchestration.executor_family",),
-            description="Ordered nested outcomes for one governed evaluation matrix.",
-            required_tests=("tests/test_evaluation_lifecycle.py",),
-            rejected_old_versions=(f"{EVALUATION_LIFECYCLE_EVIDENCE_SCHEMA_ID}.v0",),
-        ),
-        _family(
             "EvaluationMatrixBatchPlan",
             EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
             EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
             owner_module="feedbax.contracts.evaluation_lifecycle",
             emitted_by=("evaluation matrix orchestration authors",),
-            consumed_by=(
-                "feedbax.analysis.evaluation_orchestration."
-                "compile_evaluation_run_matrix_for_orchestration",
-            ),
+            consumed_by=("feedbax.analysis.harness",),
             description=("Ordered matrix subsets assigned inside the governed public harness."),
             stance="migrate",
             supported_old_versions=(EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,),
@@ -4476,7 +2953,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
                 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
             ),
-            required_tests=("tests/test_evaluation_orchestration.py",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "EvaluationPayloadRetentionPolicy",
@@ -4491,116 +2968,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=(f"{EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID}.v0",),
             required_tests=("tests/test_evaluation_compaction.py",),
-        ),
-        _family(
-            "EvaluationOutputPreflightPolicy",
-            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID,
-            EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.evaluation_preflight",
-            emitted_by=("evaluation matrix orchestration authors",),
-            consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
-            description=(
-                "Authored resolved-cardinality expectation and retained-write budget inputs."
-            ),
-            rejected_old_versions=(
-                f"{EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_ID}.v0",
-                EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
-                EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
-            ),
-            notes=(
-                "v1 and v2 are rejected because absent storage_mode meant retain_all; "
-                "migration would infer the authored choice required by v3."
-            ),
-            required_tests=("tests/test_evaluation_orchestration.py",),
-        ),
-        _family(
-            "EvaluationOutputPreflightEvidence",
-            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.evaluation_preflight",
-            emitted_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
-            consumed_by=("evaluation run preflight evidence readers",),
-            description=(
-                "Resolved cardinality, retained-byte estimate, and exact filesystem-space "
-                "observation made before evaluation outputs."
-            ),
-            stance="migrate",
-            supported_old_versions=(EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_evaluation_orchestration.py",),
-        ),
-        _family(
-            "EvaluationMatrixOrderedUnionEvidence",
-            EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
-            EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.evaluation_lifecycle",
-            emitted_by=("feedbax.orchestration.stages.StageEngine",),
-            consumed_by=("evaluation matrix terminal evidence readers",),
-            description=("Hash-bound ordered-union proof across governed matrix batch units."),
-            rejected_old_versions=(f"{EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_evaluation_orchestration.py",),
-        ),
-        _family(
-            "EvaluationWorkerTopologyEvidence",
-            EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID,
-            EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.evaluation_lifecycle",
-            emitted_by=("feedbax.analysis.harness",),
-            consumed_by=("feedbax.orchestration.executor_family.EvaluationMatrixExecutorAdapter",),
-            description=(
-                "Observed persistent worker processes and their governed batch assignments."
-            ),
-            rejected_old_versions=(f"{EVALUATION_WORKER_TOPOLOGY_EVIDENCE_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_evaluation_orchestration.py",),
-        ),
-        _family(
-            "EvaluationShadowLaunchEvidence",
-            EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
-            EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.evaluation_lifecycle",
-            emitted_by=("feedbax.bin.orchestrate",),
-            consumed_by=("provider-free shadow-launch result readers only",),
-            description="Provider-free evaluation-family lifecycle traversal evidence.",
-            required_tests=("tests/test_evaluation_lifecycle.py",),
-            rejected_old_versions=(
-                f"{EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",
-                EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1,
-            ),
-            notes="v1 could prove only one whole-matrix subprocess.",
-        ),
-        _family(
-            "RemoteSmokeEvidence",
-            REMOTE_SMOKE_EVIDENCE_SCHEMA_ID,
-            REMOTE_SMOKE_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.remote_smoke",
-            emitted_by=("feedbax.orchestration.stages.StageEngine",),
-            consumed_by=(
-                "feedbax.orchestration.stages.StageEngine certification",
-                "orchestration evidence readers",
-            ),
-            description=(
-                "Per-row typed evidence for bounded native execution in the pre-launch "
-                "RunPod smoke stage."
-            ),
-            required_tests=("tests/test_remote_smoke_contract.py",),
-            rejected_old_versions=(f"{REMOTE_SMOKE_EVIDENCE_SCHEMA_ID}.v0",),
-        ),
-        _family(
-            "TrainingRunMatrixPreflightBinding",
-            TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
-            TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.run_matrix",
-            emitted_by=("feedbax.orchestration.drivers.runpod",),
-            consumed_by=("Feedbax orchestration pre-provision restoration",),
-            description=(
-                "Provider-evidence-bound authenticated binding from a governed training "
-                "matrix and its ordered rows to provider-specific preflight authority."
-            ),
-            rejected_old_versions=(f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_runpod_matrix_preflight_binding.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
         ),
         _family(
             "TrainingRunComposition",
@@ -4619,37 +2986,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
-            "RootTrainingAuthority",
-            ROOT_TRAINING_AUTHORITY_SCHEMA_ID,
-            ROOT_TRAINING_AUTHORITY_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.experiment_envelope_dialect",
-            emitted_by=("root training envelope authors",),
-            consumed_by=("feedbax.envelope.compile",),
-            description="Content-pinned source and derivation authority for root training.",
-            rejected_old_versions=(f"{ROOT_TRAINING_AUTHORITY_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_experiment_envelope_dialect.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "ExperimentLayerRootAuthority",
-            EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID,
-            EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.experiment_envelope_dialect",
-            emitted_by=("root analysis and figure envelope authors",),
-            consumed_by=("feedbax.envelope.compile",),
-            description=(
-                "Content-pinned closed scientific authority for root analysis runs, "
-                "analysis bundles, and figures."
-            ),
-            rejected_old_versions=(f"{EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_experiment_envelope_dialect.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
             "CheckpointStructure",
             CHECKPOINT_STRUCTURE_SCHEMA_ID,
             CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
@@ -4664,7 +3000,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             stance="migrate",
             supported_old_versions=(CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,),
-            required_tests=("tests/test_envelope_layer_contracts.py",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "CheckpointInitializationRequest",
@@ -4679,7 +3015,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Authored model-weight warm start or checkpoint continuation naming one "
                 "authenticated source checkpoint."
             ),
-            required_tests=("tests/test_envelope_layer_contracts.py",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "CheckpointInitializationPlan",
@@ -4694,7 +3030,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Explicit per-slot restore/fresh/ignored outcome of the closed checkpoint "
                 "matching rule; no structural search and no renaming maps."
             ),
-            required_tests=("tests/test_envelope_layer_contracts.py",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "TrainingExecutionDependencyLayer",
@@ -4803,8 +3139,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Atomic multi-slot training checkpoint transaction manifest with "
                 "run-contract binding, slot ABI fingerprints, and content integrity."
             ),
-            stance="migrate",
-            supported_old_versions=(
+            stance="reject",
+            rejected_old_versions=(
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
@@ -4844,62 +3180,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "downstream checkpoint adoption lanes",
             ),
             description=("Published latest pointer for an atomic training checkpoint transaction."),
-            stance="migrate",
-            supported_old_versions=(TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,),
+            stance="reject",
+            rejected_old_versions=(TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "RunBundle",
-            RUN_BUNDLE_SCHEMA_ID,
-            RUN_BUNDLE_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.bundle",
-            emitted_by=("feedbax.orchestration.bundle.RunBundle",),
-            consumed_by=(
-                "feedbax.orchestration.stages.StageEngine",
-                "orchestration CLI",
-            ),
-            description="Durable run-set orchestration request bundle.",
-            stance="migrate",
-            supported_old_versions=(
-                RUN_BUNDLE_SCHEMA_VERSION_V11,
-                RUN_BUNDLE_SCHEMA_VERSION_V12,
-                RUN_BUNDLE_SCHEMA_VERSION_V13,
-            ),
-            rejected_old_versions=(
-                "feedbax.orchestration.run_bundle.v0",
-                RUN_BUNDLE_SCHEMA_VERSION_V1,
-                RUN_BUNDLE_SCHEMA_VERSION_V2,
-                RUN_BUNDLE_SCHEMA_VERSION_V3,
-                RUN_BUNDLE_SCHEMA_VERSION_V4,
-                RUN_BUNDLE_SCHEMA_VERSION_V5,
-                RUN_BUNDLE_SCHEMA_VERSION_V6,
-                RUN_BUNDLE_SCHEMA_VERSION_V7,
-                RUN_BUNDLE_SCHEMA_VERSION_V8,
-                RUN_BUNDLE_SCHEMA_VERSION_V9,
-                RUN_BUNDLE_SCHEMA_VERSION_V10,
-            ),
-            required_tests=(
-                "tests/test_orchestration_core.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "StagedRootCustody",
-            STAGED_ROOT_CUSTODY_SCHEMA_ID,
-            STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.staged_root_custody.StagedRootCustody",
-            emitted_by=("feedbax.orchestration.staged_root_custody.seal_staged_root",),
-            consumed_by=(
-                "feedbax.orchestration.input_materialization",
-                "Feedbax staged evaluation execution",
-            ),
-            description="Exact content-addressed custody for one typed staged execution root.",
-            rejected_old_versions=(f"{STAGED_ROOT_CUSTODY_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_orchestration_staged_root_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -4936,217 +3220,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
-            "EmergencyRunSetRecord",
-            EMERGENCY_RUN_SET_RECORD_SCHEMA_ID,
-            EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.state",
-            emitted_by=("feedbax.orchestration.state.RunSetStateStore.save_emergency",),
-            consumed_by=(
-                "feedbax.orchestration.state.RunSetStateStore.load_emergency",
-                "feedbax.orchestration.stages.StageEngine",
-                "feedbax.bin.orchestrate.cmd_status",
-            ),
-            description=(
-                "Bounded fail-closed recovery and custody gate for control-state failures."
-            ),
-            rejected_old_versions=(f"{EMERGENCY_RUN_SET_RECORD_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_orchestration_core.py",
-                "tests/test_orchestration_cli.py",
-                "tests/test_orchestration_state_persistence.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "RunSetState",
-            RUN_SET_STATE_SCHEMA_ID,
-            RUN_SET_STATE_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.state",
-            emitted_by=("feedbax.orchestration.state.RunSetStateStore",),
-            consumed_by=(
-                "feedbax.orchestration.stages.StageEngine",
-                "orchestration drivers",
-            ),
-            description="Atomic run-set orchestration state document.",
-            rejected_old_versions=(
-                "feedbax.orchestration.run_set_state.v0",
-                RUN_SET_STATE_SCHEMA_VERSION_V1,
-                RUN_SET_STATE_SCHEMA_VERSION_V2,
-                RUN_SET_STATE_SCHEMA_VERSION_V3,
-                RUN_SET_STATE_SCHEMA_VERSION_V4,
-            ),
-            required_tests=(
-                "tests/test_orchestration_core.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "RunEvent",
-            RUN_EVENT_SCHEMA_ID,
-            RUN_EVENT_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.events",
-            emitted_by=(
-                "feedbax.orchestration.events.RunEventEmitter",
-                "feedbax.web.worker.app",
-            ),
-            consumed_by=(
-                "feedbax.orchestration.events.RunEventReader",
-                "feedbax.web.services.training_service",
-            ),
-            description="Canonical JSONL envelope for training-run row events.",
-            rejected_old_versions=("feedbax.run_event.v0", "feedbax.run_event.v1"),
-            required_tests=(
-                "tests/test_run_events.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "RunIntent",
-            RUN_INTENT_SCHEMA_ID,
-            RUN_INTENT_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.controller",
-            emitted_by=("feedbax.orchestration.controller.DurableController",),
-            consumed_by=("durable controller", "Studio operations"),
-            description="Provider-neutral desired outcome admitted by the controller.",
-            rejected_old_versions=(f"{RUN_INTENT_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_durable_controller.py",),
-        ),
-        _family(
-            "EffectReservation",
-            EFFECT_RESERVATION_SCHEMA_ID,
-            EFFECT_RESERVATION_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.controller",
-            emitted_by=("feedbax.orchestration.controller.DurableController",),
-            consumed_by=("durable controller", "backend adapters"),
-            description="Inert exact reservation preceding one external effect.",
-            rejected_old_versions=(f"{EFFECT_RESERVATION_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_durable_controller.py",),
-        ),
-        _family(
-            "ControllerEvent",
-            CONTROLLER_EVENT_SCHEMA_ID,
-            CONTROLLER_EVENT_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.controller",
-            emitted_by=("feedbax.orchestration.controller.ControllerEventStore",),
-            consumed_by=("durable controller projection", "Studio operations"),
-            description="Append-only replay-safe controller lifecycle event.",
-            stance="migrate",
-            supported_old_versions=(CONTROLLER_EVENT_SCHEMA_VERSION_V1,),
-            rejected_old_versions=(f"{CONTROLLER_EVENT_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_durable_controller.py",),
-        ),
-        _family(
-            "ControllerProjection",
-            CONTROLLER_PROJECTION_SCHEMA_ID,
-            CONTROLLER_PROJECTION_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.controller",
-            emitted_by=("feedbax.orchestration.controller.project_controller_events",),
-            consumed_by=("Studio status", "Studio artifact inspection"),
-            description="Rebuildable query projection over controller events.",
-            rejected_old_versions=(
-                f"{CONTROLLER_PROJECTION_SCHEMA_ID}.v0",
-                CONTROLLER_PROJECTION_SCHEMA_VERSION_V1,
-            ),
-            notes="v1 lacks retry, inventory, and orphan projections and is rebuilt from events.",
-            required_tests=("tests/test_durable_controller.py",),
-        ),
-        _family(
-            "ProviderInventoryObservation",
-            PROVIDER_INVENTORY_SCHEMA_ID,
-            PROVIDER_INVENTORY_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.controller",
-            emitted_by=("feedbax.orchestration.controller.EffectAdapter",),
-            consumed_by=("durable controller reconciliation",),
-            description="Complete provider inventory input for effect and orphan reconciliation.",
-            rejected_old_versions=(f"{PROVIDER_INVENTORY_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_durable_controller.py",),
-        ),
-        _family(
-            "OrphanHandlingPolicy",
-            ORPHAN_HANDLING_POLICY_SCHEMA_ID,
-            ORPHAN_HANDLING_POLICY_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.controller",
-            emitted_by=("feedbax.orchestration.controller.DurableController",),
-            consumed_by=("durable controller orphan projector", "Studio status"),
-            description="Explicit replay-safe handling decision for unmatched provider resources.",
-            rejected_old_versions=(f"{ORPHAN_HANDLING_POLICY_SCHEMA_ID}.v0",),
-            required_tests=("tests/test_durable_controller.py",),
-        ),
-        _family(
-            "RunPodPreflightBaseEvidence",
-            RUNPOD_PREFLIGHT_BASE_EVIDENCE_SCHEMA_ID,
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.drivers.runpod",
-            emitted_by=("RunPodOrchestrationDriver.preflight_evidence",),
-            consumed_by=("RunPodOrchestrationDriver.restore_completed_preflight",),
-            description="Plan-bound provider preflight evidence payload.",
-            rejected_old_versions=(RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,),
-            required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
-        ),
-        _family(
-            "RunPodPreflightEvidence",
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
-            owner_module="feedbax.orchestration.drivers.runpod",
-            emitted_by=("RunPodOrchestrationDriver.preflight_evidence",),
-            consumed_by=("RunPodOrchestrationDriver.restore_completed_preflight",),
-            description="Matrix-bound RunPod preflight evidence envelope.",
-            rejected_old_versions=(
-                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
-                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
-                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
-            ),
-            required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
-        ),
-        _family(
-            "RealizedDeploymentRecord",
-            REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID,
-            REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.conformance",
-            emitted_by=("feedbax.orchestration.stages.StageEngine",),
-            consumed_by=(
-                "feedbax.orchestration.conformance.check_realized_deployment",
-                "feedbax.orchestration.conformance.RunConformanceCertificate",
-            ),
-            description="Per-row realized provider, environment, timing, and cost proof.",
-            rejected_old_versions=(f"{REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_run_conformance.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "RunConformanceCertificate",
-            RUN_CONFORMANCE_SCHEMA_ID,
-            RUN_CONFORMANCE_SCHEMA_VERSION,
-            owner_module="feedbax.orchestration.conformance",
-            emitted_by=("feedbax.orchestration.conformance.write_conformance_certificate",),
-            consumed_by=(
-                "feedbax.orchestration.conformance.assert_certificate_allows_completed_registration",
-                "REGISTER stage",
-            ),
-            description="Run-set red/green certificate for realized spec conformance.",
-            rejected_old_versions=(
-                "feedbax.run_conformance.v0",
-                RUN_CONFORMANCE_SCHEMA_VERSION_V1,
-            ),
-            required_tests=("tests/test_run_conformance.py",),
-        ),
-        _family(
-            "TrainingSpec",
-            "feedbax.spec.training",
-            "feedbax.spec.training.v1",
-            owner_module="feedbax.contracts.training",
-            emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
-            consumed_by=("training service", "worker"),
-            description="Training optimizer, loss, and run-shape specification.",
-        ),
-        _family(
             "LrScheduleSpec",
             LR_SCHEDULE_SPEC_SCHEMA_ID,
             LR_SCHEDULE_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.training",
-            emitted_by=("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
+            emitted_by=("OptimizerSpec.lr_schedule"),
             consumed_by=("feedbax.training.optimizers", "downstream optimizer builders"),
             description=("Declarative learning-rate schedule contract for OptimizerSpec."),
             stance="migrate",
@@ -5154,30 +3232,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=("feedbax.spec.training.lr_schedule.v0",),
             required_tests=(
                 "tests/test_optimizer_contract.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
-        _family(
-            "TaskSpec",
-            "feedbax.spec.task",
-            "feedbax.spec.task.v1",
-            owner_module="feedbax.contracts.training",
-            emitted_by=("TrainingRunManifest.task_spec", "provider_manifest.schemas"),
-            consumed_by=("task preset lowering", "worker"),
-            description="Task family and task parameter specification.",
-        ),
-        _family(
-            "LossTermSpec",
-            LOSS_TERM_SPEC_SCHEMA_ID,
-            LOSS_TERM_SPEC_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.training",
-            emitted_by=("TrainingSpec.loss", "provider_manifest.schemas"),
-            consumed_by=("training loss lowering",),
-            description="Legacy structured loss-term specification.",
-            stance="migrate",
-            supported_old_versions=(LOSS_TERM_SPEC_SCHEMA_VERSION_V1,),
-            required_tests=(
-                "tests/test_loss_service.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -5198,32 +3252,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
-            "StudioObjectiveSpec",
-            _STUDIO_OBJECTIVE_SCHEMA_ID,
-            _STUDIO_OBJECTIVE_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.graph",
-            emitted_by=("Studio objective authoring",),
-            consumed_by=("StudioScenarioSpec.objective_spec",),
-            description="Studio-authored objective with editor selectors and legacy loss provenance.",
-            stance="migrate",
-            supported_old_versions=(_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,),
-        ),
-        _family(
-            "ObjectiveSpec",
-            "feedbax.spec.objective",
-            "feedbax.spec.objective.v1",
-            owner_module="feedbax.objective_spec",
-            emitted_by=("StudioScenarioSpec.objective_spec", "provider_manifest.schemas"),
-            consumed_by=("future objective lowering",),
-            description="Durable selector-addressed objective specification.",
-            rejected_old_versions=("feedbax.objective.v0",),
-        ),
-        _family(
             "EvaluationRunSpec",
             EVALUATION_RUN_SPEC_SCHEMA_ID,
             EVALUATION_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
-            emitted_by=("EvaluationRunManifest.evaluation_spec", "provider_manifest.schemas"),
+            emitted_by=("EvaluationRunManifest.evaluation_spec"),
             consumed_by=(
                 "feedbax.analysis.evaluation",
                 "feedbax-analysis evaluate",
@@ -5235,17 +3268,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "existing run ids stay byte-stable."
             ),
             rejected_old_versions=(f"{EVALUATION_RUN_SPEC_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_envelope_layer_contracts.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "AnalysisRunSpec",
             ANALYSIS_RUN_SPEC_SCHEMA_ID,
             ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
-            emitted_by=("AnalysisRunManifest.analysis_spec", "provider_manifest.schemas"),
+            emitted_by=("AnalysisRunManifest.analysis_spec"),
             consumed_by=("feedbax.analysis.specs",),
             description="Declarative analysis run request.",
             stance="migrate",
@@ -5316,8 +3346,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
             ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
-            emitted_by=("AnalysisRunSpec.input_requirements", "provider_manifest.schemas"),
-            consumed_by=("feedbax.integrations.provider.validate_analysis_spec",),
+            emitted_by=("AnalysisRunSpec.input_requirements"),
+            consumed_by=("feedbax.analysis.specs.resolve_analysis_inputs",),
             description="Typed analysis data-product input requirement.",
             required_tests=(
                 "tests/test_analysis_data_products.py",
@@ -5329,7 +3359,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             SELECTOR_ROLE_IDENTITY_SCHEMA_ID,
             SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
             owner_module="feedbax.contracts.descriptors",
-            emitted_by=("VariableDescriptor.role", "provider_manifest.schemas"),
+            emitted_by=("VariableDescriptor.role"),
             consumed_by=("descriptor resolution", "downstream selector validation"),
             description="Namespaced selector-role identity used by descriptor consumers.",
             required_tests=(
@@ -5342,7 +3372,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             COMPONENT_SELECTOR_SYNTAX_SCHEMA_ID,
             COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
             owner_module="feedbax.contracts.descriptors",
-            emitted_by=("VariableDescriptor.selector_syntax", "provider_manifest.schemas"),
+            emitted_by=("VariableDescriptor.selector_syntax"),
             consumed_by=("descriptor resolution", "downstream selector validation"),
             description="Namespaced component-selector syntax identity.",
             required_tests=(
@@ -5355,7 +3385,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             SELECTOR_FALLBACK_POLICY_SCHEMA_ID,
             SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
             owner_module="feedbax.contracts.descriptors",
-            emitted_by=("VariableDescriptor.fallback_policy", "provider_manifest.schemas"),
+            emitted_by=("VariableDescriptor.fallback_policy"),
             consumed_by=("descriptor resolution", "downstream selector validation"),
             description="Namespaced selector fallback-policy identity.",
             required_tests=(
@@ -5368,7 +3398,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             VARIABLE_DESCRIPTOR_SCHEMA_ID,
             VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
             owner_module="feedbax.contracts.descriptors",
-            emitted_by=("GraphSpec/training/run metadata", "provider_manifest.schemas"),
+            emitted_by=("GraphSpec/training/run metadata"),
             consumed_by=("descriptor resolution", "downstream selector validation"),
             description="Selectable variable descriptor contract.",
             required_tests=(
@@ -5381,7 +3411,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             COMPONENT_DESCRIPTOR_SCHEMA_ID,
             COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
             owner_module="feedbax.contracts.descriptors",
-            emitted_by=("VariableDescriptor components", "provider_manifest.schemas"),
+            emitted_by=("VariableDescriptor components"),
             consumed_by=("descriptor resolution", "downstream selector validation"),
             description="Selectable scalar or slice component descriptor contract.",
             required_tests=(
@@ -5394,7 +3424,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             DESCRIPTOR_BASIS_SCHEMA_ID,
             DESCRIPTOR_BASIS_SCHEMA_VERSION,
             owner_module="feedbax.contracts.descriptors",
-            emitted_by=("descriptor-bearing specs", "provider_manifest.schemas"),
+            emitted_by=("descriptor-bearing specs"),
             consumed_by=("descriptor resolution", "analysis data-product basis pins"),
             description="Whole descriptor-basis identity and hash contract.",
             required_tests=(
@@ -5463,10 +3493,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.manifest.analysis_bundle_execution",
             "feedbax.manifest.analysis_bundle_execution.v2",
             owner_module="feedbax.analysis.bundles",
-            emitted_by=(
-                "feedbax.analysis.execute_staged_analysis_bundle",
-                "provider_manifest.schemas",
-            ),
+            emitted_by=("feedbax.analysis.execute_staged_analysis_bundle",),
             consumed_by=("downstream staged bundle provenance consumers",),
             description="Durable staged analysis bundle execution provenance.",
             stance="migrate",
@@ -5497,7 +3524,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
             EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.extraction",
-            emitted_by=("data-product extraction specs", "provider_manifest.schemas"),
+            emitted_by=("data-product extraction specs"),
             consumed_by=(
                 "feedbax.contracts.extraction.materialize_extraction_product",
                 "feedbax.contracts.extraction.verify_extraction_product",
@@ -5514,7 +3541,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             REPORT_SPEC_SCHEMA_ID,
             REPORT_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
-            emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
+            emitted_by=("ReportManifest.report_spec"),
             consumed_by=(
                 "Studio report materialization",
                 "feedbax.analysis.reports.execute_authored_report_spec",
@@ -5527,10 +3554,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "byte-stable."
             ),
             rejected_old_versions=(f"{REPORT_SPEC_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_envelope_layer_contracts.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "RegenerationSpec",
@@ -5540,7 +3564,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=(
                 "AnalysisRunManifest.regeneration_specs",
                 "ReportManifest.regeneration_specs",
-                "provider_manifest.schemas",
             ),
             consumed_by=(
                 "analysis materialization",
@@ -5561,7 +3584,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.spec.manifest_packet",
             "feedbax.spec.manifest_packet.v2",
             owner_module="feedbax.contracts.manifest_packet",
-            emitted_by=("feedbax.contracts.manifest_packet", "feedbax.bin.packet"),
+            emitted_by=("feedbax.contracts.manifest_packet",),
             consumed_by=("feedbax.contracts.manifest_packet",),
             description=(
                 "Unique-object packet with exact manifest and logical-reference import/export."
@@ -5577,7 +3600,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.spec.checkpoint_selection",
             "feedbax.spec.checkpoint_selection.v1",
             owner_module="feedbax.contracts.manifest",
-            emitted_by=("CheckpointSelectionManifest.selection_spec", "provider_manifest.schemas"),
+            emitted_by=("CheckpointSelectionManifest.selection_spec"),
             consumed_by=("checkpoint-selection materializers", "downstream scorer plug-ins"),
             description="Declarative generic checkpoint-selection request.",
         ),
@@ -5586,7 +3609,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             SELECTION_SPEC_SCHEMA_ID,
             SELECTION_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.selection",
-            emitted_by=("Studio stage selection_spec", "provider_manifest.schemas"),
+            emitted_by=("Studio stage selection_spec"),
             consumed_by=(
                 "Studio pipeline staging",
                 "evaluation/analysis/queue/lineage consumers",
@@ -5616,99 +3639,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
-        _family(
-            "ObjectiveExecutionRequirements",
-            "feedbax.spec.objective.execution_requirements",
-            "feedbax.spec.objective.v1",
-            owner_module="feedbax.objective_spec",
-            emitted_by=("feedbax.objectives.service", "provider_manifest.schemas"),
-            consumed_by=("feedbax.training.worker_validation",),
-            description=(
-                "Axis and aggregation declaration emitted by objective lowering for "
-                "worker reducer validation."
-            ),
-            required_tests=(
-                "tests/test_loss_schedule_specs.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        ),
     ]
-
-    for kind in (
-        "TargetStateLossSpec",
-        "FiniteDifferenceLossSpec",
-        "MatrixQuadraticLossSpec",
-        "SelectorAddressSpec",
-        "TargetValueSpec",
-        "MatrixPayloadSpec",
-        "EpochMaskSpec",
-        "ConstantScheduleSpec",
-        "PowerLawScheduleSpec",
-        "MovementEpochRampScheduleSpec",
-        "MetricSpec",
-        "ReductionSpec",
-        "TaskTimelineSpec",
-        "TimelineEpochSpec",
-        "TimelineEventSpec",
-    ):
-        families.append(
-            _family(
-                kind,
-                f"feedbax.spec.objective.{kind.removesuffix('Spec').lower()}",
-                "feedbax.spec.objective.v1",
-                owner_module="feedbax.objective_spec",
-                emitted_by=objective_emitters,
-                consumed_by=("ObjectiveSpec",),
-                description=f"Provider-exported ObjectiveSpec submodel {kind}.",
-                covers="ObjectiveSpec",
-            )
-        )
-
-    families.append(
-        _family(
-            "StudioGraphProject",
-            STUDIO_GRAPH_PROJECT_SCHEMA_ID,
-            STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.graph",
-            emitted_by=("feedbax.web.services.graph_service",),
-            consumed_by=("Studio graph load",),
-            description="Stored semantic graph and Studio workspace transaction.",
-            stance="migrate",
-            supported_old_versions=(STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,),
-            required_tests=("tests/test_studio_workspace.py",),
-        )
-    )
-    families.append(
-        _family(
-            "StudioPersistenceDocument",
-            STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-            STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.graph",
-            emitted_by=("Studio frontend save client",),
-            consumed_by=("Studio graph save ingress",),
-            description="Atomic graph, workspace, and presentation save transaction.",
-            rejected_old_versions=("feedbax.spec.studio.persistence_document.v0",),
-            required_tests=(
-                "tests/test_studio_workspace.py",
-                "web/src/generated/studioContracts.test.ts",
-            ),
-        )
-    )
-    families.append(
-        _family(
-            "AnalysisCanvasLayoutDocument",
-            ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
-            ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.graph",
-            emitted_by=("Studio frontend whole-document persistence",),
-            consumed_by=("Studio Analysis Canvas",),
-            description="Presentation-only Analysis Canvas node geometry and viewport.",
-            required_tests=(
-                "tests/test_studio_workspace.py",
-                "web/src/stores/analysisStore.test.ts",
-            ),
-        )
-    )
 
     for kind, schema_id, description in (
         ("ArtifactRef", "feedbax.manifest.artifact_ref", "Manifest artifact reference."),
@@ -5760,11 +3691,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.manifest.model_artifact",
             "Durable model-artifact manifest.",
         ),
-        (
-            "TrainingRunSetManifest",
-            "feedbax.manifest.training_run_set",
-            "Durable training-run collection manifest.",
-        ),
         ("TrainingRunManifest", "feedbax.manifest.training_run", "Durable training-run manifest."),
         (
             "EvaluationRunManifest",
@@ -5798,8 +3724,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "AnalysisDataProduct"
                     else FIGURE_MANIFEST_SCHEMA_VERSION
                     if kind == "FigureManifest"
-                    else TRAINING_RUN_SET_SCHEMA_VERSION
-                    if kind == "TrainingRunSetManifest"
                     else ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
                     if kind == "AnalysisRunManifest"
                     else EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
@@ -5810,16 +3734,13 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     "migrate"
                     if kind
                     in {
-                        "TrainingRunSetManifest",
                         "AnalysisRunManifest",
                         "EvaluationRunManifest",
                     }
                     else "reject"
                 ),
                 supported_old_versions=(
-                    (TRAINING_RUN_SET_SCHEMA_VERSION_V1,)
-                    if kind == "TrainingRunSetManifest"
-                    else (ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,)
+                    (ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,)
                     if kind == "AnalysisRunManifest"
                     else (EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1,)
                     if kind == "EvaluationRunManifest"
@@ -5827,12 +3748,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 ),
                 owner_module="feedbax.contracts.manifest",
                 emitted_by=(
-                    ("AnalysisRunManifest.produced_data", "provider_manifest.schemas")
+                    ("AnalysisRunManifest.produced_data")
                     if kind == "AnalysisDataProduct"
                     else manifest_emitters
                 ),
                 consumed_by=(
-                    ("feedbax.integrations.provider.validate_analysis_spec",)
+                    ("feedbax.analysis.specs.resolve_analysis_inputs",)
                     if kind == "AnalysisDataProduct"
                     else ("manifest load/write", "provider handoff")
                 ),
@@ -5845,58 +3766,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "AnalysisDataProduct"
                     else ("tests/test_structured_spec_migrations.py",)
                 ),
-            )
-        )
-
-    for kind, schema_id, version, description in (
-        (
-            "RetentionPlan",
-            RETENTION_PLAN_SCHEMA_ID,
-            RETENTION_PLAN_SCHEMA_VERSION,
-            "Produced training-run retention-plan artifact payload.",
-        ),
-        (
-            "RetainedObservablesArtifact",
-            RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
-            RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
-            "Produced retained-observable values artifact payload.",
-        ),
-        (
-            "RetainedObservablePlan",
-            RETAINED_OBSERVABLE_PLAN_SCHEMA_ID,
-            RETAINED_OBSERVABLE_PLAN_SCHEMA_VERSION,
-            "Executable retained-observable plan subrecord.",
-        ),
-        (
-            "RetentionPolicyPlan",
-            RETENTION_POLICY_PLAN_SCHEMA_ID,
-            RETENTION_POLICY_PLAN_SCHEMA_VERSION,
-            "Executable retention policy subrecord.",
-        ),
-        (
-            "LossTermPlan",
-            LOSS_TERM_PLAN_SCHEMA_ID,
-            LOSS_TERM_PLAN_SCHEMA_VERSION,
-            "Executable lowered loss term subrecord.",
-        ),
-    ):
-        rejected_versions = None
-        if kind in {"RetentionPlan", "LossTermPlan"}:
-            rejected_versions = (f"{schema_id}.v1", f"{schema_id}.v0")
-        families.append(
-            _family(
-                kind,
-                schema_id,
-                version,
-                owner_module="feedbax.retained_observables",
-                emitted_by=(
-                    "feedbax.retained_observables.retention_plan_to_json",
-                    "TrainingRunManifest retention artifacts",
-                ),
-                consumed_by=("training-run manifest write/load", "analysis materialization"),
-                description=description,
-                rejected_old_versions=rejected_versions,
-                required_tests=("tests/test_retained_observables.py",),
             )
         )
 
@@ -5920,79 +3789,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 schema_id,
                 version,
                 owner_module="feedbax.contracts.artifact_schema",
-                emitted_by=("feedbax.contracts.artifact_schema", "provider_manifest.schemas"),
+                emitted_by=("feedbax.contracts.artifact_schema"),
                 consumed_by=(
                     "feedbax.contracts.artifact_schema.read_npz_array_store",
                     "artifact materializer",
                 ),
                 description=description,
-            )
-        )
-
-    for (
-        kind,
-        schema_id,
-        current_version,
-        owner_module,
-        emitted_by,
-        consumed_by,
-        rejected_versions,
-        description,
-    ) in (
-        (
-            "Invocation",
-            INVOCATION_SCHEMA_ID,
-            INVOCATION_SCHEMA_VERSION,
-            "feedbax.execution.records",
-            invocation_emitters,
-            ("feedbax.orchestration.realization", "durable controller"),
-            ("feedbax.spec.execution.v1", "feedbax.spec.execution.v2"),
-            "Exact provider-neutral request for one admitted workflow operation.",
-        ),
-        (
-            "BackendPlan",
-            BACKEND_PLAN_SCHEMA_ID,
-            BACKEND_PLAN_SCHEMA_VERSION,
-            "feedbax.orchestration.realization",
-            realization_emitters,
-            ("durable controller", "backend adapter"),
-            (
-                "feedbax.manifest.execution.v4",
-                "feedbax.manifest.execution.v3",
-                "feedbax.manifest.execution.v2",
-                "feedbax.manifest.execution.v1",
-                "feedbax.manifest.execution_cloud_payload.v1",
-                "feedbax.manifest.execution_reproducibility.v1",
-                "feedbax.manifest.execution_reproducibility.v2",
-                "feedbax.manifest.execution_reproducibility.v3",
-            ),
-            "Exact inert realization through a declared backend adapter.",
-        ),
-        (
-            "Attempt",
-            ATTEMPT_SCHEMA_ID,
-            ATTEMPT_SCHEMA_VERSION,
-            "feedbax.orchestration.realization",
-            realization_emitters,
-            ("durable controller", "event projection"),
-            (
-                "feedbax.manifest.execution.v1",
-                "feedbax.manifest.execution.v2",
-                "feedbax.manifest.execution.v3",
-            ),
-            "One observed backend realization with explicit terminal classification.",
-        ),
-    ):
-        families.append(
-            _family(
-                kind,
-                schema_id,
-                current_version,
-                owner_module=owner_module,
-                emitted_by=emitted_by,
-                consumed_by=consumed_by,
-                description=description,
-                rejected_old_versions=rejected_versions,
             )
         )
 
@@ -6003,7 +3805,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             STUDIO_API_TRANSPORT_SCHEMA_VERSION,
             owner_module="feedbax.contracts.studio_api",
             emitted_by=("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
-            consumed_by=("Studio frontend", "provider HTTP API"),
+            consumed_by=("Studio frontend", "Studio HTTP API"),
             description="Shared schema identity for Studio HTTP transport models.",
             rejected_old_versions=("feedbax.spec.studio.api_transport.v0",),
             required_tests=(
@@ -6042,24 +3844,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     for kind, schema_id, description in (
         (
-            "StudioWorkspaceSpec",
-            "feedbax.spec.studio.workspace",
-            "Durable Studio workspace/pipeline state.",
-        ),
-        (
-            "StudioScenarioSpec",
-            "feedbax.spec.studio.scenario",
-            "Durable Studio scenario draft state.",
-        ),
-        (
             "StudioBiomechanicsSpec",
             STUDIO_BIOMECHANICS_SCHEMA_ID,
             "Scenario-local biomechanics metadata boundary.",
-        ),
-        (
-            "StudioStageSpec",
-            "feedbax.spec.studio.stage",
-            "Durable Studio pipeline stage state.",
         ),
         (
             "StudioTaskBindingSpec",
@@ -6078,26 +3865,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
-        if kind == "StudioScenarioSpec":
-            current_version = STUDIO_SCENARIO_SCHEMA_VERSION
-            stance = "migrate"
-            supported = (
-                LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
-                STUDIO_SCENARIO_SCHEMA_VERSION_V1,
-                STUDIO_SCENARIO_SCHEMA_VERSION_V2,
-            )
-            rejected = ("feedbax.spec.studio.scenario.v0",)
-        elif kind == "StudioWorkspaceSpec":
-            current_version = STUDIO_WORKSPACE_SCHEMA_VERSION
-            stance = "migrate"
-            supported = (STUDIO_WORKSPACE_SCHEMA_VERSION_V1,)
-            rejected = ("feedbax.spec.studio.workspace.v0",)
-        elif kind == "StudioStageSpec":
-            current_version = STUDIO_STAGE_SCHEMA_VERSION
-            stance = "migrate"
-            supported = (STUDIO_STAGE_SCHEMA_VERSION_V1,)
-            rejected = ("feedbax.spec.studio.stage.v0",)
-        elif kind == "StudioBiomechanicsSpec":
+        if kind == "StudioBiomechanicsSpec":
             current_version = STUDIO_BIOMECHANICS_SCHEMA_VERSION
             stance = "reject"
             supported = None
@@ -6136,7 +3904,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 schema_id,
                 current_version,
                 owner_module="feedbax.contracts.graph",
-                emitted_by=("Studio save/load", "provider_manifest.schemas"),
+                emitted_by=("Studio save/load"),
                 consumed_by=("Studio backend", "worker"),
                 description=description,
                 stance=stance,
@@ -6151,190 +3919,35 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             WORKSPACE_REPLAY_SCHEMA_ID,
             WORKSPACE_REPLAY_SCHEMA_VERSION,
             owner_module="feedbax.contracts.workspace_replay",
-            emitted_by=("eval/validation replay materialization", "provider_manifest.schemas"),
-            consumed_by=("Studio project playback", "Mandible provider integration", "analysis materialization"),
+            emitted_by=("eval/validation replay materialization"),
+            consumed_by=(
+                "Studio project playback",
+                "Mandible provider integration",
+                "analysis materialization",
+            ),
             description="Manifest-linked replay product for authored Studio geometry.",
             rejected_old_versions=(WORKSPACE_REPLAY_SCHEMA_VERSION_V0,),
-            required_tests=("tests/test_workspace_replay_contract.py", "tests/test_structured_spec_migrations.py"),
+            required_tests=(
+                "tests/test_workspace_replay_contract.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         )
     )
 
-    for kind, schema_id, description in (
-        ("ValueSchema", "feedbax.spec.studio.schema.value", "Provider-owned value schema record."),
-        ("PortSchema", "feedbax.spec.studio.schema.port", "Provider-owned graph port schema."),
-        (
-            "TaskDataSchema",
-            "feedbax.spec.studio.schema.task_data",
-            "Provider-owned task data schema.",
-        ),
-        (
-            "SelectorTargetSchema",
-            "feedbax.spec.studio.schema.selector_target",
-            "Provider-owned selectable target schema.",
-        ),
-        (
-            "SchemaValidationIssue",
-            "feedbax.spec.studio.schema.validation_issue",
-            "Studio schema validation issue.",
-        ),
-        (
-            "RuntimeIntrospectionOptions",
-            "feedbax.spec.studio.runtime_introspection_options",
-            "Bounded runtime introspection request options.",
-        ),
-        (
-            "RuntimeSampleLeafSchema",
-            "feedbax.spec.studio.runtime_sample_leaf",
-            "Runtime sample leaf schema record.",
-        ),
-        (
-            "RuntimeIntrospectionResult",
-            "feedbax.manifest.studio.runtime_introspection",
-            "Validation/runtime sample response, not a saved artifact format.",
-        ),
-        (
-            "StudioSchemaEnumerationRequest",
-            "feedbax.spec.studio.schema_enumeration_request",
-            "Request to enumerate Studio schema surfaces.",
-        ),
-        (
-            "StudioSchemaRegistry",
-            "feedbax.manifest.studio.schema_registry",
-            "Provider-emitted Studio schema enumeration.",
-        ),
-    ):
-        families.append(
-            _family(
-                kind,
-                schema_id,
-                MANIFEST_SCHEMA_VERSION,
-                owner_module=(
-                    "feedbax.contracts.value_schema"
-                    if kind == "ValueSchema"
-                    else "feedbax.studio.schema"
-                ),
-                emitted_by=studio_schema_emitters,
-                consumed_by=("Studio frontend", "provider HTTP API"),
-                durable=kind
-                not in {
-                    "StudioSchemaRegistry",
-                    "RuntimeIntrospectionResult",
-                    "RuntimeIntrospectionOptions",
-                    "RuntimeSampleLeafSchema",
-                    "StudioSchemaEnumerationRequest",
-                },
-                description=description,
-            )
-        )
-
-    for kind, schema_id, durable, description in (
-        ("ProviderManifest", "feedbax.manifest.provider", True, "Provider capability manifest."),
-        ("ProviderHealth", "feedbax.manifest.provider_health", False, "Provider health response."),
-        (
-            "ProviderValidationResult",
-            "feedbax.manifest.provider_validation_result",
-            False,
-            "Provider validation response.",
-        ),
-        (
-            "CapabilitySpec",
-            "feedbax.manifest.provider_capability",
-            False,
-            "Provider capability record.",
-        ),
-        (
-            "MandibleArtifactMapping",
-            "feedbax.manifest.mandible_artifact_mapping",
-            False,
-            "Mandible artifact mapping metadata.",
-        ),
-        (
-            "MandibleManifestMapping",
-            "feedbax.manifest.mandible_manifest_mapping",
-            False,
-            "Mandible manifest mapping metadata.",
-        ),
-        (
-            "RegistrySnapshot",
-            "feedbax.manifest.registry_snapshot",
-            True,
-            "Provider registry snapshot.",
-        ),
-        (
-            "RegistryEntry",
-            "feedbax.manifest.registry_entry",
-            False,
-            "Registry entry embedded in registry snapshots.",
-        ),
-        (
-            "ComponentRegistrySnapshot",
-            "feedbax.manifest.registry_snapshot.component",
-            True,
-            "Component registry snapshot capability alias.",
-        ),
-        (
-            "TaskRegistrySnapshot",
-            "feedbax.manifest.registry_snapshot.task",
-            True,
-            "Task registry snapshot capability alias.",
-        ),
-        (
-            "LossRegistrySnapshot",
-            "feedbax.manifest.registry_snapshot.loss",
-            True,
-            "Loss registry snapshot capability alias.",
-        ),
-        (
-            "ProtocolRegistrySnapshot",
-            "feedbax.manifest.registry_snapshot.protocol",
-            True,
-            "Protocol registry snapshot capability alias.",
-        ),
-        (
-            "AnalysisRegistrySnapshot",
-            "feedbax.manifest.registry_snapshot.analysis",
-            True,
-            "Analysis registry snapshot capability alias.",
-        ),
-        (
+    families.append(
+        _family(
             "EvaluationStatesContainer",
             EVALUATION_STATES_CONTAINER_SCHEMA_ID,
-            True,
-            "Governed NPZ custody envelope for evaluation-state pytrees.",
-        ),
-    ):
-        families.append(
-            _family(
-                kind,
-                schema_id,
-                (
-                    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
-                    if kind == "EvaluationStatesContainer"
-                    else MANIFEST_SCHEMA_VERSION
-                ),
-                owner_module=(
-                    "feedbax.contracts.evaluation_states"
-                    if kind == "EvaluationStatesContainer"
-                    else "feedbax.integrations.provider"
-                ),
-                emitted_by=(
-                    ("feedbax.analysis.evaluation.execute_evaluation_run_spec",)
-                    if kind == "EvaluationStatesContainer"
-                    else ("feedbax.integrations.provider.provider_manifest",)
-                ),
-                consumed_by=(
-                    (
-                        "feedbax.analysis.evaluation.load_evaluation_states",
-                        "feedbax.analysis.specs.resolve_analysis_inputs",
-                    )
-                    if kind == "EvaluationStatesContainer"
-                    else ("Mandible provider integration",)
-                ),
-                durable=durable,
-                description=description,
-                covers="RegistrySnapshot" if kind.endswith("RegistrySnapshot") else None,
-            )
+            EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
+            owner_module="feedbax.contracts.evaluation_states",
+            emitted_by=("feedbax.analysis.evaluation.execute_evaluation_run_spec",),
+            consumed_by=(
+                "feedbax.analysis.evaluation.load_evaluation_states",
+                "feedbax.analysis.specs.resolve_analysis_inputs",
+            ),
+            description="Governed NPZ custody envelope for evaluation-state pytrees.",
         )
+    )
 
     for family in families:
         registry.register_family(family)
@@ -6344,32 +3957,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             continue
         for old_version in family.policy.rejected_old_versions:
             remediation = (
-                "RunBundle v1-v5 lack explicit deployment review authorization; v6 lacks "
-                "the required Feedbax revision pin and authenticated input custody/materialization "
-                "authority; v7 lacks default pre-launch remote smoke policy; reassemble "
-                "from a current RunAssemblyRequest with a DeploymentPolicy."
-                if family.kind == "RunBundle"
-                else (
-                    "RunAssemblyRequest v1 lacks explicit deployment review authorization, "
-                    "and no version below v7 carries the required feedbax_revision "
-                    "authority; a migrator cannot invent the revision a request was "
-                    "authored against, so re-author a current v9 request that names it "
-                    "explicitly."
-                    if family.kind == "RunAssemblyRequest"
-                    else (
-                        f"{family.kind} has no registered migration from {old_version!r}; "
-                        f"{family.policy.owner_module} owns this schema and current-version "
-                        "recreation or an explicit new migration is required."
-                    )
-                )
+                f"{family.kind} has no registered migration from {old_version!r}; "
+                f"{family.policy.owner_module} owns this schema and current-version "
+                "recreation or an explicit new migration is required."
             )
             if family.kind in {"ResolvedGraph", "CompilationRecord"}:
                 remediation = (
                     "Historical compiler evidence cannot establish current resolved "
                     "semantics; recompile the authored GraphDocument."
                 )
-            if family.kind == "AuthoringBudget" and old_version == AUTHORING_BUDGET_SCHEMA_VERSION_V1:
-                remediation = AUTHORING_BUDGET_V1_REJECTION_REASON
             registry.reject_version(
                 family.kind,
                 old_version,
@@ -6490,135 +4086,6 @@ def _migrate_staged_analysis_bundle_execution_v1_to_v2_payload(
     return dict(payload)
 
 
-def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Mark provenance as unavailable on bundles emitted before row handoff v1."""
-    migrated = dict(payload)
-    rows = migrated.get("rows")
-    if isinstance(rows, list):
-        migrated["rows"] = [
-            {**row, "provenance": None} if isinstance(row, Mapping) else row for row in rows
-        ]
-    return migrated
-
-
-def _migrate_execution_identity_envelope_v1_to_v2_payload(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Record typed training-row provenance as unavailable for legacy producers."""
-    migrated = dict(payload)
-    migrated["row_provenance"] = None
-    return migrated
-
-
-def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Move row provenance into the sole per-row execution identity envelope."""
-    migrated = dict(payload)
-    rows = migrated.get("rows")
-    if isinstance(rows, list):
-        migrated_rows: list[Any] = []
-        for raw_row in rows:
-            if not isinstance(raw_row, Mapping):
-                migrated_rows.append(raw_row)
-                continue
-            row = dict(raw_row)
-            provenance = row.pop("provenance", None)
-            raw_execution = row.get("execution")
-            if isinstance(raw_execution, Mapping):
-                execution = dict(raw_execution)
-                if isinstance(provenance, Mapping):
-                    provenance = dict(provenance)
-                    if (
-                        provenance.get("schema_version")
-                        == TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1
-                    ):
-                        raw_payload = execution.get("payload")
-                        payload_sha256 = (
-                            raw_payload.get("sha256") if isinstance(raw_payload, Mapping) else None
-                        )
-                        provenance["schema_id"] = TRAINING_ROW_PROVENANCE_SCHEMA_ID
-                        provenance["schema_version"] = TRAINING_ROW_PROVENANCE_SCHEMA_VERSION
-                        provenance["lowered_execution_payload_hash"] = payload_sha256
-                execution["schema_version"] = EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
-                execution["row_provenance"] = provenance
-                row["execution"] = execution
-            migrated_rows.append(row)
-        migrated["rows"] = migrated_rows
-    return migrated
-
-
-def _migrate_deployment_policy_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Preserve policy intent while moving driver semantics to registry validation."""
-    migrated = dict(payload)
-    migrated["schema_id"] = DEPLOYMENT_POLICY_SCHEMA_ID
-    migrated["schema_version"] = DEPLOYMENT_POLICY_SCHEMA_VERSION
-    return migrated
-
-
-def _migrate_run_bundle_v11_to_v12_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Lift the nested deployment policy to the registry-resolved schema."""
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
-    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V12
-    policy = migrated.get("deployment_policy")
-    if isinstance(policy, Mapping):
-        migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
-    return migrated
-
-
-def _migrate_run_bundle_v12_to_v13_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Admit path-free v12 bundles and require explicit migration for staged roots."""
-    if payload.get("staged_roots"):
-        raise ValueError(
-            "RunBundle v12 staged_roots require explicit offline content-store migration"
-        )
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
-    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V13
-    migrated.pop("staged_roots", None)
-    migrated.setdefault("content_bindings", [])
-    return migrated
-
-
-def _migrate_run_bundle_v13_to_v14_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Preserve ungrouped launch behavior without interpreting newer policy fields."""
-    launch_policy = payload.get("launch_policy")
-    if isinstance(launch_policy, Mapping) and "groups" in launch_policy:
-        raise ValueError("RunBundle v13 cannot declare ordered launch groups")
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
-    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
-    if isinstance(launch_policy, Mapping):
-        migrated["launch_policy"] = {**launch_policy, "groups": None}
-    return migrated
-
-
-def _migrate_run_assembly_request_v7_to_v8_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Admit path-free v7 requests and require explicit migration for staged roots."""
-    if payload.get("staged_roots"):
-        raise ValueError(
-            "RunAssemblyRequest v7 staged_roots require explicit offline content-store migration"
-        )
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8
-    migrated.pop("staged_roots", None)
-    migrated.setdefault("content_bindings", [])
-    return migrated
-
-
-def _migrate_run_assembly_request_v8_to_v9_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Preserve ungrouped launch behavior without interpreting newer policy fields."""
-    launch_policy = payload.get("launch_policy")
-    if isinstance(launch_policy, Mapping) and "groups" in launch_policy:
-        raise ValueError("RunAssemblyRequest v8 cannot declare ordered launch groups")
-    migrated = dict(payload)
-    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
-    if isinstance(launch_policy, Mapping):
-        migrated["launch_policy"] = {**launch_policy, "groups": None}
-    return migrated
-
-
 def _migrate_evaluation_matrix_batch_plan_v1(payload: dict[str, Any]) -> dict[str, Any]:
     """Preserve v1 retain-all plans with no batch consumers."""
     migrated = dict(payload)
@@ -6722,20 +4189,6 @@ def _migrate_evaluation_batch_compaction_evidence_v1(
     return migrated
 
 
-def _migrate_evaluation_output_preflight_evidence_v1(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Preserve v1 evidence as an explicit retain-all capacity decision."""
-    migrated = dict(payload)
-    migrated["schema_id"] = EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_ID
-    migrated["schema_version"] = EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
-    migrated.setdefault("storage_mode", "retain_all")
-    migrated.setdefault("active_batch_count", 0)
-    migrated.setdefault("max_rows_per_active_batch", 0)
-    migrated.setdefault("estimated_compact_retained_bytes", 0)
-    return migrated
-
-
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
 default_spec_registry.register_migration(
@@ -6756,52 +4209,6 @@ default_spec_registry.register_migration(
         migration_id="content-retention-index-v1-to-v2-expiry-disposition",
         migrate=_migrate_content_retention_index_v1,
         description="Type nested lease expiry without changing historical retention meaning.",
-    ),
-)
-default_spec_registry.register_migration(
-    "ExperimentCompileLock",
-    SchemaMigration(
-        source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
-        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
-        migration_id="experiment-compile-lock-v3-to-v4-execution-identity-pin",
-        migrate=migrate_compile_lock_v3_to_v4,
-        description=(
-            "Pin execution identity to canonical_json_v1 only when the v3 lock records "
-            "attributable built-in Feedbax compiler provenance."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "ExperimentCompileLock",
-    SchemaMigration(
-        source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
-        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
-        migration_id="experiment-compile-lock-v4-to-v5-without-planned-products",
-        migrate=migrate_compile_lock_v4_to_v5,
-        description="Upgrade locks whose references do not require producer execution pins.",
-    ),
-)
-default_spec_registry.register_migration(
-    "RunSetState",
-    SchemaMigration(
-        source_version=RUN_SET_STATE_SCHEMA_VERSION_V5,
-        target_version=RUN_SET_STATE_SCHEMA_VERSION,
-        migration_id="run-set-state-v5-to-v6-non-authoritative-pids",
-        migrate=migrate_run_set_state_v5_to_v6,
-        description=(
-            "Preserve legacy PIDs as diagnostics while explicitly withholding process "
-            "identity and signal authority."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "ControllerEvent",
-    SchemaMigration(
-        source_version=CONTROLLER_EVENT_SCHEMA_VERSION_V1,
-        target_version=CONTROLLER_EVENT_SCHEMA_VERSION,
-        migration_id="controller-event-v1-to-v2-reconciliation-events",
-        migrate=migrate_controller_event_v1_document,
-        description="Preserve v1 lifecycle events in the v2 retry and inventory event family.",
     ),
 )
 default_spec_registry.register_migration(
@@ -6855,82 +4262,6 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
-    "EvaluationOutputPreflightEvidence",
-    SchemaMigration(
-        source_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V1,
-        target_version=EVALUATION_OUTPUT_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-        migration_id="evaluation-output-preflight-evidence-v1-to-v2-storage-mode",
-        migrate=_migrate_evaluation_output_preflight_evidence_v1,
-        description="Preserve v1 evidence as an explicit retain-all decision.",
-    ),
-)
-default_spec_registry.register_migration(
-    "DeploymentPolicy",
-    SchemaMigration(
-        source_version=DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
-        target_version=DEPLOYMENT_POLICY_SCHEMA_VERSION,
-        migration_id="deployment-policy-v1-to-v2-registry-driver",
-        migrate=_migrate_deployment_policy_v1_to_v2_payload,
-        description="Preserve policy intent while delegating driver semantics to its registry.",
-    ),
-)
-default_spec_registry.register_migration(
-    "RunBundle",
-    SchemaMigration(
-        source_version=RUN_BUNDLE_SCHEMA_VERSION_V11,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
-        migration_id="run-bundle-v11-to-v12-registry-driver",
-        migrate=_migrate_run_bundle_v11_to_v12_payload,
-        description="Lift the nested deployment policy to its registry-resolved schema.",
-    ),
-)
-default_spec_registry.register_migration(
-    "RunBundle",
-    SchemaMigration(
-        source_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION_V13,
-        migration_id="run-bundle-v12-to-v13-content-bindings",
-        migrate=_migrate_run_bundle_v12_to_v13_payload,
-        description=(
-            "Add canonical content bindings to path-free bundles; legacy staged roots "
-            "require explicit offline migration."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "RunBundle",
-    SchemaMigration(
-        source_version=RUN_BUNDLE_SCHEMA_VERSION_V13,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
-        migration_id="run-bundle-v13-to-v14-ordered-launch-groups",
-        migrate=_migrate_run_bundle_v13_to_v14_payload,
-        description="Preserve legacy ungrouped launch behavior with no ordered groups.",
-    ),
-)
-default_spec_registry.register_migration(
-    "RunAssemblyRequest",
-    SchemaMigration(
-        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
-        migration_id="run-assembly-request-v7-to-v8-content-bindings",
-        migrate=_migrate_run_assembly_request_v7_to_v8_payload,
-        description=(
-            "Add canonical content bindings to path-free requests; legacy staged roots "
-            "require explicit offline migration."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "RunAssemblyRequest",
-    SchemaMigration(
-        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
-        migration_id="run-assembly-request-v8-to-v9-ordered-launch-groups",
-        migrate=_migrate_run_assembly_request_v8_to_v9_payload,
-        description="Preserve legacy ungrouped launch behavior with no ordered groups.",
-    ),
-)
-default_spec_registry.register_migration(
     "CheckpointForkPlan",
     SchemaMigration(
         source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
@@ -6961,19 +4292,6 @@ default_spec_registry.register_migration(
         migration_id="checkpoint-fork-plan-v3-to-v4-migration-history",
         migrate=_migrate_checkpoint_fork_plan_v3_to_v4_payload,
         description="Add the empty top-level derived-digest migration-history field.",
-    ),
-)
-default_spec_registry.register_migration(
-    "ExecutionIdentityEnvelope",
-    SchemaMigration(
-        source_version=EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
-        target_version=EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
-        migration_id="execution-identity-envelope-v1-to-v2-row-provenance-unavailable",
-        migrate=_migrate_execution_identity_envelope_v1_to_v2_payload,
-        description=(
-            "Preserve envelopes from compiler families that predate typed training-row "
-            "provenance and mark that provenance explicitly unavailable."
-        ),
     ),
 )
 default_spec_registry.register_migration(
@@ -7075,16 +4393,6 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
-    "TrainingRunMatrixSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
-        migration_id="training-run-matrix-v1-to-v2-typed-base",
-        migrate=_migrate_training_run_matrix_v1_to_v2_payload,
-        description="Replace the untyped base locator with the content-pinned base union.",
-    ),
-)
-default_spec_registry.register_migration(
     "EvaluationRunMatrixSpec",
     SchemaMigration(
         source_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
@@ -7092,52 +4400,6 @@ default_spec_registry.register_migration(
         migration_id="evaluation-run-matrix-v2-to-v3-combined-authoring",
         migrate=_migrate_evaluation_run_matrix_v2_to_v3_payload,
         description="Preserve staged parents and enable combined explicit or axis authoring.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingRunMatrixSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
-        migration_id="training-run-matrix-v2-to-v3-composition",
-        migrate=_migrate_training_run_matrix_v2_to_v3_payload,
-        description="Add ordered composition deltas and typed execution dependencies.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingRunMatrixSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
-        migration_id="training-run-matrix-v3-to-v4-typed-fork-custody",
-        migrate=_migrate_training_run_matrix_v3_to_v4_payload,
-        description="Retire source run ids and require durable transform implementation pins.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingRunMatrixSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
-        migration_id="training-run-matrix-v4-to-v5-per-row-derivations",
-        migrate=_migrate_training_run_matrix_v4_to_v5_payload,
-        description=(
-            "Accept only matrices without base-only derivations; legacy derivations must be "
-            "re-authored with explicit per-row semantics."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingRunMatrixSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V5,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-        migration_id="training-run-matrix-v5-to-v6-closed-fork-authority",
-        migrate=_migrate_training_run_matrix_v5_to_v6_payload,
-        description=(
-            "Wrap authentic execution hashes in the closed fork source-authority union; "
-            "never synthesize resolved-output selectors or execution identity."
-        ),
     ),
 )
 default_spec_registry.register_migration(
@@ -7185,185 +4447,6 @@ default_spec_registry.register_migration(
         description=(
             "Add optional provider-declared planar-chain reference poses in configuration "
             "coordinates."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "StudioGraphProject",
-    SchemaMigration(
-        source_version=STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
-        target_version=STUDIO_GRAPH_PROJECT_SCHEMA_VERSION,
-        migration_id="studio-graph-project-unversioned-to-v1",
-        migrate=_migrate_studio_graph_project_unversioned_payload,
-        description="Stamp the released unversioned Studio graph-project document.",
-    ),
-)
-default_spec_registry.register_migration(
-    "StudioScenarioSpec",
-    SchemaMigration(
-        source_version=LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
-        target_version=STUDIO_SCENARIO_SCHEMA_VERSION_V2,
-        migration_id="studio-scenario-legacy-v1-to-v2-typed-biomechanics",
-        migrate=_migrate_studio_scenario_v1_to_v2_payload,
-        description=(
-            "Canonicalize frontend-authored v1 scenarios and type their biomechanics boundary."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "StudioScenarioSpec",
-    SchemaMigration(
-        source_version=STUDIO_SCENARIO_SCHEMA_VERSION_V1,
-        target_version=STUDIO_SCENARIO_SCHEMA_VERSION_V2,
-        migration_id="studio-scenario-v1-to-v2-typed-biomechanics",
-        migrate=_migrate_studio_scenario_v1_to_v2_payload,
-        description="Type and version the scenario biomechanics representation boundary.",
-    ),
-)
-default_spec_registry.register_migration(
-    "StudioScenarioSpec",
-    SchemaMigration(
-        source_version=STUDIO_SCENARIO_SCHEMA_VERSION_V2,
-        target_version=STUDIO_SCENARIO_SCHEMA_VERSION,
-        migration_id="studio-scenario-v2-to-v3-semantic-workspace-separation",
-        migrate=_migrate_studio_scenario_v2_to_v3_payload,
-        description="Remove graph and graph presentation copies from scenario drafts.",
-    ),
-)
-default_spec_registry.register_migration(
-    "StudioStageSpec",
-    SchemaMigration(
-        source_version=STUDIO_STAGE_SCHEMA_VERSION_V1,
-        target_version=STUDIO_STAGE_SCHEMA_VERSION,
-        migration_id="studio-stage-v1-to-v2-semantic-workspace-separation",
-        migrate=_migrate_studio_stage_v1_to_v2_payload,
-        description="Remove presentation state from semantic pipeline stages.",
-    ),
-)
-default_spec_registry.register_migration(
-    "StudioWorkspaceSpec",
-    SchemaMigration(
-        source_version=STUDIO_WORKSPACE_SCHEMA_VERSION_V1,
-        target_version=STUDIO_WORKSPACE_SCHEMA_VERSION,
-        migration_id="studio-workspace-v1-to-v2-semantic-workspace-separation",
-        migrate=_migrate_studio_workspace_v1_to_v2_payload,
-        description="Remove presentation state from the semantic Studio workspace.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
-        migration_id="training-checkpoint-transaction-v1-to-v2-fork-provenance",
-        migrate=_migrate_checkpoint_transaction_manifest_v1_to_v2_payload,
-        description="Add explicit fork provenance to training checkpoint manifests.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointLatestPointer",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
-        target_version=TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
-        migration_id="training-checkpoint-latest-pointer-v2-to-v3-program-coordinate",
-        migrate=_migrate_checkpoint_latest_pointer_v2_to_v3_payload,
-        description=(
-            "Rename global_step to cumulative program_step without inferring "
-            "completed training batches from the coordinate."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
-        migration_id="training-checkpoint-transaction-v2-to-v3-portable-custody",
-        migrate=_migrate_checkpoint_transaction_manifest_v2_to_v3_payload,
-        description=(
-            "Split structural content fingerprints from environment provenance and "
-            "version run-contract binding projections."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-        migration_id="training-checkpoint-transaction-v3-to-v4-batch-progress",
-        migrate=_migrate_checkpoint_transaction_manifest_v3_to_v4_payload,
-        description=(
-            "Add explicit completed training batches separate from checkpoint coordinate progress."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
-        migration_id="training-checkpoint-transaction-v4-to-v5-program-coordinate",
-        migrate=_migrate_checkpoint_coordinate_v4_to_v5_payload,
-        description=(
-            "Rename global_step to cumulative program_step without inferring "
-            "completed training batches from the coordinate."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-        migration_id="training-checkpoint-transaction-v5-to-v6-batch-history",
-        migrate=_migrate_checkpoint_history_v5_to_v6_payload,
-        description="Mark legacy slot trees for typed batch-history migration.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
-        migration_id="training-checkpoint-transaction-v6-to-v7-segment-lineage",
-        migrate=_migrate_checkpoint_lineage_v6_to_v7_payload,
-        description="Backfill self-contained checkpoints as root segment lineages.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
-        migration_id="training-checkpoint-transaction-v7-to-v8-mapped-axes",
-        migrate=_migrate_checkpoint_axes_v7_to_v8_payload,
-        description="Add optional resolved mapped-axis evidence to checkpoint slots.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
-        migration_id="training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
-        migrate=_migrate_checkpoint_semantic_state_roots_v8_to_v9_payload,
-        description=(
-            "Preserve legacy content-integrity v1 custody hashes while marking semantic "
-            "state roots unavailable."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingCheckpointTransactionManifest",
-    SchemaMigration(
-        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
-        migration_id="training-checkpoint-transaction-v9-to-v10-semantic-abi",
-        migrate=_migrate_checkpoint_semantic_abi_v9_to_v10_payload,
-        description=(
-            "Derive stable component, parameter-role, and optimizer ownership identities "
-            "while retaining raw PyTree structure as integrity evidence."
         ),
     ),
 )
@@ -7421,37 +4504,6 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
-    "TrainingRunSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
-        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
-        migration_id="training-run-spec-v1-to-v2-nan-policy",
-        migrate=_migrate_training_run_spec_v1_to_v2_payload,
-        description="Add fail-loud executor NaN policy to durable training run specs.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingRunSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
-        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
-        migration_id="training-run-spec-v2-to-v3-mapped-axis-vocabulary",
-        migrate=_migrate_training_run_spec_v2_to_v3_payload,
-        description="Add optional mapping levels and migrate embedded worker contracts to v2.",
-    ),
-)
-default_spec_registry.register_migration(
-    "TrainingRunSpec",
-    SchemaMigration(
-        source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
-        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION,
-        migration_id="training-run-spec-v3-to-v4-separate-launch-policy",
-        migrate=_migrate_training_run_spec_v3_to_v4_payload,
-        description="Remove operational execution policy from scientific run identity.",
-        record_metadata=_training_run_spec_v3_policy_evidence,
-    ),
-)
-default_spec_registry.register_migration(
     "WorkerMethodContractSpec",
     SchemaMigration(
         source_version=WORKER_CONTRACT_SCHEMA_VERSION_V1,
@@ -7462,16 +4514,6 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
-    "TrainingRunSetManifest",
-    SchemaMigration(
-        source_version=TRAINING_RUN_SET_SCHEMA_VERSION_V1,
-        target_version=TRAINING_RUN_SET_SCHEMA_VERSION,
-        migration_id="training-run-set-manifest-v1-to-v2-axes",
-        migrate=_migrate_training_run_set_manifest_v1_to_v2_payload,
-        description="Add explicit axes metadata to training run-set manifests.",
-    ),
-)
-default_spec_registry.register_migration(
     "LrScheduleSpec",
     SchemaMigration(
         source_version=LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
@@ -7479,19 +4521,6 @@ default_spec_registry.register_migration(
         migration_id="lr-schedule-spec-v1-to-v2-typed-origin",
         migrate=_migrate_lr_schedule_spec_v1_to_v2_payload,
         description="Preserve legacy global-zero clocks as explicit run_start origins.",
-    ),
-)
-default_spec_registry.register_migration(
-    "LossTermSpec",
-    SchemaMigration(
-        source_version=LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
-        target_version=LOSS_TERM_SPEC_SCHEMA_VERSION,
-        migration_id="loss-term-spec-v1-to-v2-objective-adapter",
-        migrate=_migrate_loss_term_spec_v1_to_v2_payload,
-        description=(
-            "Stamp legacy loss-term payloads with schema identity after verifying "
-            "they route through ObjectiveSpec/ReductionSpec lowering."
-        ),
     ),
 )
 default_spec_registry.register_migration(
@@ -7619,7 +4648,7 @@ default_spec_registry.register_migration(
         migration_id="graph-spec-v5-to-v6-component-revisions",
         migrate=dict,
         description="Use canonical integer component revisions.",
-    )
+    ),
 )
 
 
@@ -7655,16 +4684,6 @@ default_spec_registry.register_migration(
 )
 
 
-default_spec_registry.register_migration(
-    "StudioObjectiveSpec",
-    SchemaMigration(
-        source_version=_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,
-        target_version=_STUDIO_OBJECTIVE_SCHEMA_VERSION,
-        migration_id="studio-objective-v1-governed-identity",
-        migrate=dict,
-        description="Preserve authored objective terms under the governed Studio schema identity.",
-    ),
-)
 default_spec_registry.register_migration(
     "StudioTaskBindingSpec",
     SchemaMigration(

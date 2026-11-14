@@ -12,7 +12,6 @@ SCIENTIFIC_CORE_PACKAGES = (
     "component_registry",
     "components",
     "control",
-    "execution",
     "intervene",
     "mechanics",
     "models",
@@ -20,18 +19,16 @@ SCIENTIFIC_CORE_PACKAGES = (
     "runtime",
     "tasks",
     "training",
-    "workflow",
 )
 
 FORBIDDEN_IMPORTS = {
     "studio": ("feedbax.studio", "feedbax.web"),
-    "controller": ("feedbax.orchestration.controller",),
     "provider_adapter": (
         "feedbax.integrations",
-        "feedbax.orchestration.drivers",
+        "feedbax.orchestration.runpod",
     ),
     "persistence": ("feedbax.persistence",),
-    "authoring": ("feedbax.bin", "feedbax.config", "feedbax.envelope"),
+    "authoring": ("feedbax.bin", "feedbax.config"),
 }
 
 COMPOSITION_ROOT_IMPORTS = {

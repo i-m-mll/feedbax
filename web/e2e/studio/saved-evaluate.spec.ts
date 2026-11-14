@@ -12,7 +12,6 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-const enabled = process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE === '1';
 const fixture = 'web.e2e.studio.fixtures.canonical_evaluate';
 const trialIndex = 1;
 const position = '/v1/model/state/plant/effector~1position';
@@ -113,20 +112,10 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   const [initial] = initialPlan.evaluations!.filter(({ key }) => key.step === 'baseline');
   expect(initial.can_run).toBe(false);
   expect(initialPlan.problems).toContainEqual(expect.objectContaining({
-    step: 'baseline', code: 'cannot_run', path: enabled ? '/inputs/subject' : '/evaluation_type',
+    step: 'baseline', code: 'cannot_run', path: '/inputs/subject',
   }));
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'New Step baseline', exact: true })).toHaveCount(0);
-  if (!enabled) {
-    const refused = await request.post(path, { data: { revision, run_keys: [initial.key], token: 'held' } });
-    expect(refused.status()).toBe(202);
-    expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
-      { disposition: 'rejected', reason: expect.stringContaining('/evaluation_type') },
-    ]);
-    await tab(page, 'Scene').click();
-    await expect(footer(page).getByRole('group', { name: 'Clock' })).toHaveCount(0);
-    return;
-  }
 
   await chooseStep(page, 'unsupported');
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
@@ -232,14 +221,14 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   return { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis };
 }
 
-test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by default'}`, async ({ page, request }, info) => {
+test('saved Evaluate runs against its trained checkpoints', async ({ page, request }, info) => {
   test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal application backend');
   test.setTimeout(60_000);
   await runSavedEvaluation(page, request, info);
 });
 
 test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
-  test.skip(!enabled || process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal Evaluate candidate backend');
+  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the managed Evaluate backend');
   test.setTimeout(59_000);
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -680,7 +669,6 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
 });
 
 test('authors and replays Evaluate from the selected stopped Train checkpoint', async ({ page, request }, info) => {
-  test.skip(!enabled, 'Requires the Evaluate candidate flag');
   test.setTimeout(58_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'walkthrough-files', '1200'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -762,7 +750,6 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
 });
 
 test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request }, info) => {
-  test.skip(!enabled, 'Requires the Evaluate candidate flag');
   test.setTimeout(65_000);
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
     (await runSavedEvaluation(page, request, info))!;

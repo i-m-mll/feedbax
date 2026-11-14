@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 from copy import deepcopy
-import json
 
 import pytest
 from pydantic import ValidationError
@@ -21,19 +20,14 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
-    GRAPH_SPEC_SCHEMA_VERSION_V3,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
     GRAPH_SPEC_SCHEMA_VERSION_V5,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-    STUDIO_SCENARIO_SCHEMA_VERSION,
-    STUDIO_SCENARIO_SCHEMA_VERSION_V2,
     ComponentSpec,
     GraphMetadata,
-    GraphProject,
     GraphSpec,
     ParamSchema,
     WireSpec,
-    studio_semantic_document_bytes,
 )
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
@@ -55,11 +49,9 @@ from feedbax.contracts.migrations import (
     SpecMigrationResult,
     UnsupportedSpecVersion,
     UnsupportedComponentMigration,
-    migrate_graph_project_payload,
     migrate_graph_spec,
     migrate_structured_spec_payload,
 )
-from feedbax.integrations.provider import validate_graph_spec_manifest, validate_spec
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [
@@ -81,25 +73,6 @@ GRAPH_V2_TO_V6_MIGRATIONS = [
     "graph-spec-v4-to-v5-component-param-array-values",
     "graph-spec-v5-to-v6-component-revisions",
 ]
-
-
-def test_studio_scenario_v2_migration_removes_graph_and_presentation_copies() -> None:
-    result = migrate_structured_spec_payload(
-        "StudioScenarioSpec",
-        {
-            "id": "scenario:train",
-            "label": "Train",
-            "schema_version": STUDIO_SCENARIO_SCHEMA_VERSION_V2,
-            "graph": GraphSpec().model_dump(mode="json"),
-            "graph_ui_state": {"viewport": {"x": 1, "y": 2, "zoom": 1}},
-            "ui_state": {"workspace_view_state": {"mode": "model"}},
-        },
-    )
-
-    assert result.target_version == STUDIO_SCENARIO_SCHEMA_VERSION
-    assert "graph" not in result.payload
-    assert "graph_ui_state" not in result.payload
-    assert "ui_state" not in result.payload
 
 
 def _legacy_metadata() -> dict[str, str]:
@@ -223,80 +196,16 @@ def test_acausal_graph_spec_rejects_unknown_extra_fields() -> None:
         AcausalGraphSpec.model_validate({**_acausal_graph_payload(), "unknown": True})
 
 
-def test_graph_project_round_trips_with_acausal_interior() -> None:
-    now = "2026-01-01T00:00:00Z"
-    graph = GraphSpec(
-        metadata=GraphMetadata(name="mixed", created_at=now, updated_at=now),
-        nodes={
-            "plant": ComponentSpec(
-                type="feedbax.AcausalSystem",
-                params={"dt": 0.001},
-                input_ports=["input"],
-                output_ports=["state"],
-            )
-        },
-        subgraphs={"plant": AcausalGraphSpec.model_validate(_acausal_graph_payload())},
-    )
-    project = GraphProject.model_validate(
-        migrate_graph_project_payload(
-            {"metadata": graph.metadata.model_dump(), "graph": graph.model_dump()}
-        )
-    )
-
-    dumped = project.model_dump(mode="json")
-    loaded = GraphProject.model_validate_json(project.model_dump_json())
-
-    # This is the same saved v2 graph an older Studio build could have written.
-    # Its execution identity must survive the additive solver and geometry fields.
-    persisted = json.loads(studio_semantic_document_bytes(loaded.graph, None))
-    interior = persisted["graph"]["subgraphs"]["plant"]
-    assert interior["solver"] == _acausal_graph_payload()["solver"]
-    assert "wrap_geometries" not in interior
-
-    assert loaded.model_dump(mode="json") == dumped
-    assert dumped["graph"]["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert dumped["graph"]["subgraphs"]["plant"]["schema_version"] == (ACAUSAL_GRAPH_SCHEMA_VERSION)
 
 
-def test_graph_project_migration_accepts_v3_payload_with_acausal_v1_subgraph() -> None:
-    now = "2026-01-01T00:00:00Z"
-    payload = {
-        "metadata": {"name": "mixed", "created_at": now, "updated_at": now},
-        "graph": {
-            "schema_id": GRAPH_SPEC_SCHEMA_ID,
-            "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V3,
-            "nodes": {
-                "plant": {
-                    "type": "AcausalSystem",
-                    "params": {"dt": 0.001},
-                    "input_ports": ["input"],
-                    "output_ports": ["state"],
-                }
-            },
-            "wires": [],
-            "subgraphs": {
-                "plant": _acausal_graph_payload(schema_version=ACAUSAL_GRAPH_SCHEMA_VERSION_V1)
-            },
-        },
-    }
-
-    migrated = migrate_graph_project_payload(payload)
-    project = GraphProject.model_validate(migrated)
-
-    assert migrated["graph"]["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert isinstance(project.graph.subgraphs["plant"], AcausalGraphSpec)
-    assert project.graph.subgraphs["plant"].connections[0].a == ("ground", "p")
 
 
 @pytest.mark.parametrize("historical", [False, True])
 def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_path, historical):
-    import json
-
     from feedbax.component_registry import ComponentPack
     from feedbax.component_registry.history import Change, History, LegacyEndpoint
     from feedbax.contracts.portable import Ports
     from feedbax.runtime.graph import Component
-    from feedbax.web.services.graph_service import GraphService
 
     class ReaderOwner(Component):
         value: int = 0
@@ -363,19 +272,6 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
         },
         "subgraphs": {"plant": acausal},
     }
-    project = {
-        "metadata": {
-            "name": "reader",
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
-        },
-        "graph": causal,
-    }
-    project_path = tmp_path / "reader.json"
-    project_path.write_text(json.dumps(project))
-    loaded_project = (
-        GraphService(storage_dir=tmp_path).get_graph("reader", component_registry=registry).project
-    )
     manifest = GraphSpecManifest(
         id="feedbax-graph-spec:reader",
         graph_spec=SpecPayload(kind="GraphSpec", inline=causal),
@@ -387,15 +283,12 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
     for graph in (
         direct.payload,
         loaded_manifest.payload["subgraphs"]["plant"],
-        loaded_project.graph.subgraphs["plant"].model_dump(mode="json"),
     ):
         assert graph["schema_version"] == ACAUSAL_GRAPH_SCHEMA_VERSION
         assert {key: graph["nodes"]["owner"][key] for key in expected} == expected
         nested = graph["subgraphs"]["child"]
         assert nested["schema_version"] == ACAUSAL_GRAPH_SCHEMA_VERSION
         assert {key: nested["nodes"]["owner"][key] for key in expected} == expected
-    assert loaded_project.graph.nodes["owner"].params == {"value": 1}
-    assert loaded_project.graph.nodes["owner"].revision == 2
     assert loaded_manifest.payload["nodes"]["owner"]["params"] == {"value": 1}
     assert node == {"type": "reader.ReaderOwner", "params": {"value": 0}}
     if not historical:
@@ -691,109 +584,6 @@ def test_model_artifact_parent_graph_spec_records_are_discoverable(tmp_path) -> 
     assert result.custody_manifest_id == graph_manifest.id
     assert result.migration_records == loaded_manifest.migration_records
     assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-
-
-def test_provider_validation_reports_manifest_migration_custody_states(
-    application_registry_bundle,
-) -> None:
-    registries = application_registry_bundle
-    migrated = validate_graph_spec_manifest(
-        GraphSpecManifest(
-            id="feedbax-graph-spec:legacy",
-            graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
-        ),
-        component_registry=registries.components,
-    )
-    assert migrated.valid
-    assert migrated.migration_status == "feedbax_migrated"
-    assert [
-        record.migration_id for record in migrated.migration_records
-    ] == GRAPH_V1_TO_V6_MIGRATIONS
-    routed = validate_spec(
-        "graph_manifest",
-        GraphSpecManifest(
-            id="feedbax-graph-spec:routed",
-            graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
-        ).model_dump(mode="json"),
-        component_registry=registries.components,
-        training_method_registry=registries.training_programs,
-        analysis_registry=registries.analysis_recipes,
-    )
-    assert routed.valid
-    assert routed.migration_status == "feedbax_migrated"
-
-    current = validate_graph_spec_manifest(
-        GraphSpecManifest(
-            id="feedbax-graph-spec:current",
-            graph_spec=spec_payload("GraphSpec", _current_graph_payload()),
-        ),
-        component_registry=registries.components,
-    )
-    assert current.valid
-    assert current.migration_status == "current"
-    assert current.migration_records == []
-
-    downstream_record = ArtifactMigrationRecord(
-        migration_id="rlrmp-legacy-artifact-v0-to-v1",
-        source_schema_version="rlrmp.model_artifact.v0",
-        target_schema_version="rlrmp.model_artifact.v1",
-        tool="rlrmp",
-    )
-    downstream = validate_graph_spec_manifest(
-        ModelArtifactManifest(
-            id="feedbax-model-artifact:downstream",
-            graph_spec=spec_payload("GraphSpec", _current_graph_payload()),
-            migration_records=[downstream_record],
-        ),
-        component_registry=registries.components,
-    )
-    assert downstream.valid
-    assert downstream.migration_status == "downstream_migrated"
-    assert downstream.downstream_migration_records == [downstream_record]
-
-
-def test_manifest_validation_rejects_ambiguous_unversioned_component(
-    application_registry_bundle,
-) -> None:
-    payload = _current_graph_payload()
-    payload["nodes"] = {"linear": {"type": "Linear", "params": {"output_size": 2}}}
-    result = validate_graph_spec_manifest(
-        GraphSpecManifest(
-            id="feedbax-graph-spec:unversioned-component",
-            graph_spec=spec_payload("GraphSpec", payload),
-        ),
-        component_registry=application_registry_bundle.components,
-    )
-
-    assert not result.valid
-    assert result.migration_status == "rejected"
-    assert result.errors[0].type == "unsupported_component_migration"
-    assert "Ambiguous unversioned component parameters for 'Linear'" in result.errors[0].message
-
-
-def test_provider_validation_rejects_unsupported_manifest_graph_spec_version(
-    application_registry_bundle,
-) -> None:
-    result = validate_graph_spec_manifest(
-        GraphSpecManifest(
-            id="feedbax-graph-spec:unsupported",
-            graph_spec=SpecPayload(
-                kind="GraphSpec",
-                inline={
-                    "schema_id": GRAPH_SPEC_SCHEMA_ID,
-                    "schema_version": "feedbax.spec.graph.v99",
-                    "nodes": {},
-                    "wires": [],
-                },
-            ),
-        ),
-        component_registry=application_registry_bundle.components,
-    )
-
-    assert not result.valid
-    assert result.migration_status == "rejected"
-    assert result.errors[0].type == "unsupported_spec_version"
-    assert "feedbax.spec.graph.v99" in result.errors[0].message
 
 
 def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.MonkeyPatch) -> None:

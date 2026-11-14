@@ -93,7 +93,6 @@ from feedbax.analysis.result_cache import (
 from feedbax.contracts.computation_revision import validate_computation_revision
 
 if TYPE_CHECKING:
-    from feedbax.tasks import AbstractTask
     from typing import ClassVar as AbstractClassVar
 
     from feedbax.analysis.context import AnalysisRunContext
@@ -136,7 +135,6 @@ __all__ = [
     "_call_fig_params_fn",
     "_load_analysis_result_cache",
     "_write_analysis_result_cache",
-    "get_validation_trial_specs",
 ]
 
 
@@ -208,15 +206,6 @@ _NAME_NORMALIZATION = {"states": "data.states"}
 
 def _normalize_name(name: str) -> str:
     return _NAME_NORMALIZATION.get(name, name)
-
-
-def get_validation_trial_specs(task: "AbstractTask"):
-    # TODO: Support any number of extra axes (i.e. for analyses that vmap over multiple axes in their task/model objects)
-    # if len(task.workspace.shape) == 3:
-    #     #! I don't understand why/if this is necessary
-    #     return eqx.filter_vmap(lambda task: task.validation_trials)(task)
-    # else:
-    return task.validation_trials
 
 
 def _extract_vmapped_kwargs_to_args(fn, vmapped_dep_names: Sequence[str]):

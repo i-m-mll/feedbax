@@ -228,9 +228,9 @@ class Store:
                 outcome["error"] = {"code": "service_stopped", "message": "The background service stopped."}
             if outcome["outcome"] == "succeeded":
                 try:
-                    if "model_product" in outcome:
+                    if self._is_managed_launch(row, "feedbax.training_host_worker:main"):
                         outcome = self._publish_train_result(row, outcome)
-                    elif row["request"].startswith("evaluate:") and self._is_canonical_evaluate(row):
+                    elif self._is_managed_launch(row, "feedbax.training.evaluate_worker:main"):
                         outcome = self._publish_evaluate_result(row, outcome)
                 except (ValueError, KeyError, TypeError, OSError) as error:
                     if isinstance(error, OSError) and error.errno in {
@@ -246,43 +246,31 @@ class Store:
         self.append(row, kind, data)
 
     def _publish_train_result(self, row: sqlite3.Row, outcome: dict) -> dict:
-        from feedbax.host.train_success import ContinuationEvidenceUnavailable, publish_train_success
+        from feedbax.host.train_success import publish_train_success
 
-        launch = json.loads(row["launch"])
-        payload = launch["payload"]
-        binding = payload.get("canonical_request")
-        try:
-            if launch["warm_entrypoint"] != "feedbax.training_host_worker:main" or binding is None:
-                raise ValueError("Only canonical managed Train can publish a model product")
-            self._check_completion_identity(row, outcome)
-            predecessor = None
-            if binding.get("checkpoint") is not None:
-                (edge,) = self.completion_bindings(row["id"])
-                pinned = edge["completion"]
-                parent = self.get(pinned["producer_job_id"])
-                if parent is None or parent["state"] != "succeeded":
-                    raise ValueError("Pinned Train predecessor did not succeed")
-                prior = json.loads(parent["outcome"])
-                if prior["completion"] != pinned:
-                    raise ValueError("Pinned Train predecessor differs from its accepted completion")
-                if "store_success" not in prior:
-                    return outcome | {"store_publication_error": {
-                        "code": "input_unavailable", "message": "Pinned Train predecessor has no typed success receipt",
-                    }}
-                predecessor = pinned, prior
-            ref = publish_train_success(
-                Path(payload["manifest_root"]), row["id"], row["request"], payload, outcome, predecessor,
-            )
-        except ContinuationEvidenceUnavailable as error:
-            return outcome | {"store_publication_error": {
-                "code": "input_unavailable", "message": str(error),
-            }}
+        payload = json.loads(row["launch"])["payload"]
+        binding = payload["canonical_request"]
+        self._check_completion_identity(row, outcome)
+        predecessor = None
+        if binding.get("checkpoint") is not None:
+            (edge,) = self.completion_bindings(row["id"])
+            pinned = edge["completion"]
+            parent = self.get(pinned["producer_job_id"])
+            if parent is None or parent["state"] != "succeeded":
+                raise ValueError("Pinned Train predecessor did not succeed")
+            prior = json.loads(parent["outcome"])
+            if prior["completion"] != pinned:
+                raise ValueError("Pinned Train predecessor differs from its accepted completion")
+            predecessor = pinned, prior
+        ref = publish_train_success(
+            Path(payload["manifest_root"]), row["id"], row["request"], payload, outcome, predecessor,
+        )
         return outcome | {"store_success": ref}
 
-    def _is_canonical_evaluate(self, row: sqlite3.Row) -> bool:
+    def _is_managed_launch(self, row: sqlite3.Row, entrypoint: str) -> bool:
         launch = json.loads(row["launch"])
         return (
-            launch["warm_entrypoint"] == "feedbax.training.evaluate_worker:main"
+            launch["warm_entrypoint"] == entrypoint
             and launch["payload"].get("canonical_request") is not None
         )
 
@@ -372,21 +360,6 @@ class Store:
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
                 try:
                     selected = requested_checkpoint_selection(job["request"], job["launch"])
-                    if selected is not None and not evaluate:
-                        edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
-                        if len(edges) != 1 or job["continues"] is not None:
-                            raise ValueError("Private evaluation requires one exact producer edge.")
-                        producer = self.get(aliases.get(edges[0]["job_id"], edges[0]["job_id"]))
-                        source = json.loads(producer["launch"])["payload"] if producer is not None else {}
-                        if (
-                            producer is None or producer["id"] != payload["producer"]
-                            or producer["project"] != job["project"]
-                            or producer["request"] != payload["producer_request"]
-                            or source.get("manifest_root") != payload["manifest_root"]
-                            or source.get("canonical_request") is None
-                            or not set(selected.coordinates) <= set(source.get("checkpoint_catalog", ()))
-                        ):
-                            raise ValueError("Private evaluation differs from its admitted Train catalogue.")
                 except (ValueError, KeyError, TypeError) as exc:
                     raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
@@ -552,6 +525,7 @@ class Store:
                    WHERE j.project=? AND j.state='succeeded'
                    AND j.request IN (SELECT value FROM json_each(?))
                    AND json_extract(j.data, '$.manifest_root')=?
+                   AND json_type(j.outcome, '$.store_success')='object'
                    AND json_extract(j.outcome, '$.completion.request_id')=j.request
                    AND json_extract(j.outcome, '$.completion.project_id')=j.project
                    AND json_extract(j.outcome, '$.completion.producer_job_id')=j.id
@@ -857,18 +831,7 @@ class Store:
         outcome = json.loads(attempt["outcome"])
         completion = outcome.get("completion")
         if completion is None:
-            reported = outcome.get("completion_error")
-            if reported is None:
-                return None, "Producer has no authenticated completion."
-            if (
-                not isinstance(reported, dict)
-                or reported.get("code") not in ("input_unavailable", "dependency_corrupt")
-                or not isinstance(reported.get("message"), str)
-            ):
-                raise CompletionFileError("Producer reported malformed completion evidence.")
-            if reported["code"] == "dependency_corrupt":
-                raise CompletionFileError(reported["message"])
-            return None, reported["message"]
+            return None, "Producer has no authenticated completion."
         self._check_completion_identity(attempt, outcome)
         verify_completion_files(completion, train_slots=train_slots)
         return completion, None
@@ -927,13 +890,6 @@ class Store:
             )
             for row in rows:
                 publication = json.loads(row["data"])
-                if (
-                    not selection.requires_catalog and not selection.allows_gaps
-                    and "checkpoint_product" not in publication
-                    and "checkpoint_product_error" not in publication
-                ):
-                    # Older recovery-only publications did not attest an Evaluate product.
-                    continue
                 coordinate = int(publication["key"].split(":")[1])
                 if coordinate <= lower or (upper is not None and (
                     coordinate > upper

@@ -133,7 +133,7 @@ def seed_series_variants(home: str):
 def observe(home: str, project: str, revision: str, trial_index: str):
     paths = AppPaths.resolve(instance_root=Path(home))
     folders = ProjectFolderService(paths.web / "projects")
-    jobs = JobService(HostClient(paths.host), new_application_registry_bundle(), enable_evaluation_candidate=True)
+    jobs = JobService(HostClient(paths.host), new_application_registry_bundle())
     view = ProjectPlanService(folders, jobs).read(project, revision=revision)
     variable = state_key("plant", "effector/position")
     trial = int(trial_index)

@@ -1,0 +1,2552 @@
+{
+  "source_revision": "47fe615970e7c4d320f174d16587385d95433ea1",
+  "source_tree": "a42465cbb79a34f01c391d1e03709b8ca0e3f168",
+  "runtime": {
+    "python": "3.13.5",
+    "jax": "0.7.2",
+    "equinox": "0.13.1",
+    "numpy": "2.2.3",
+    "jax_x64": false,
+    "jax_platforms": "cpu",
+    "prng_impl": "threefry2x32",
+    "uv_lock_sha256": "2912b1c8f08761670038e8fd64280161c8649e0d2b36fe0974c9b52d957d2110"
+  },
+  "comparison": {
+    "train_task": "exact",
+    "validation_float": {
+      "rtol": 0,
+      "atol": 3e-07
+    },
+    "objective_float": {
+      "rtol": 2e-05,
+      "atol": 1e-06
+    },
+    "distributions": {
+      "ks_max": 0.025,
+      "catch_proportion_difference_max": 0.02,
+      "integer_epoch_bin_proportion_error_max": 0.01
+    }
+  },
+  "tasks": {
+    "simple": {
+      "legacy_class": "SimpleReaches",
+      "period_seconds": 0.01,
+      "legacy_n_steps": 81,
+      "control_steps": 80,
+      "workspace": [
+        [
+          -0.4000000059604645,
+          -0.30000001192092896
+        ],
+        [
+          0.5,
+          0.44999998807907104
+        ]
+      ],
+      "validation_seed": 5555,
+      "eval_grid_n": 2,
+      "eval_n_directions": 7,
+      "eval_reach_length": 0.5,
+      "validation_rows": [
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.3999999761581421,
+              -0.050000011920928955
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.2117448770875089,
+              0.34091572931308595
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.21126049082001508,
+              0.43746394416998285
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.5504844577930674,
+              0.16694185763785016
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.5504844577930674,
+              -0.266941881479708
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.2112604908200152,
+              -0.5374639680118407
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.21174487708750878,
+              -0.4409157531549439
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.6999999582767487,
+              -0.050000011920928955
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.5117448592061155,
+              0.34091572931308595
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.08873949129859149,
+              0.43746394416998285
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.25048447567446086,
+              0.16694185763785016
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.2504844756744609,
+              -0.266941881479708
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.08873949129859136,
+              -0.5374639680118407
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.5117448592061153,
+              -0.4409157531549439
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              0.3999999761581421,
+              0.19999998807907104
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              0.2117448770875089,
+              0.590915729313086
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.21126049082001508,
+              0.6874639441699828
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.5504844577930674,
+              0.4169418576378502
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.5504844577930674,
+              -0.01694188147970796
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.2112604908200152,
+              -0.28746396801184076
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              0.21174487708750878,
+              -0.1909157531549439
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.6999999582767487,
+              0.19999998807907104
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.5117448592061155,
+              0.590915729313086
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.08873949129859149,
+              0.6874639441699828
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.25048447567446086,
+              0.4169418576378502
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.2504844756744609,
+              -0.01694188147970796
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.08873949129859136,
+              -0.28746396801184076
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.5117448592061153,
+              -0.1909157531549439
+            ]
+          },
+          "epoch_steps": {}
+        }
+      ],
+      "train": {
+        "epoch_names": [
+          "move"
+        ],
+        "document_epoch_ids": [
+          "move"
+        ],
+        "event_names": [],
+        "target_start_step": 0
+      },
+      "validation": {
+        "epoch_names": [
+          "move"
+        ],
+        "document_epoch_ids": [
+          "move"
+        ],
+        "event_names": [],
+        "target_start_step": 0
+      },
+      "distribution": {
+        "count": 20000,
+        "legacy_seed": 24,
+        "document_seed": 25,
+        "epoch_ranges_half_open": null
+      }
+    },
+    "delayed": {
+      "legacy_class": "DelayedReaches",
+      "period_seconds": 0.01,
+      "legacy_n_steps": 81,
+      "control_steps": 80,
+      "workspace": [
+        [
+          -0.4000000059604645,
+          -0.30000001192092896
+        ],
+        [
+          0.5,
+          0.44999998807907104
+        ]
+      ],
+      "validation_seed": 5555,
+      "eval_grid_n": 2,
+      "eval_n_directions": 7,
+      "eval_reach_length": 0.5,
+      "validation_rows": [
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.3999999761581421,
+              -0.050000011920928955
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 7,
+            "cue": 15
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.2117448770875089,
+              0.34091572931308595
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 12,
+            "cue": 11
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.21126049082001508,
+              0.43746394416998285
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 10,
+            "cue": 10
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.5504844577930674,
+              0.16694185763785016
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 10,
+            "cue": 13
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.5504844577930674,
+              -0.266941881479708
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 12,
+            "cue": 19
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.2112604908200152,
+              -0.5374639680118407
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 8,
+            "cue": 19
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.21174487708750878,
+              -0.4409157531549439
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 7,
+            "cue": 12
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.6999999582767487,
+              -0.050000011920928955
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 13,
+            "cue": 14
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.5117448592061155,
+              0.34091572931308595
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 13,
+            "cue": 15
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.08873949129859149,
+              0.43746394416998285
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 13,
+            "cue": 16
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.25048447567446086,
+              0.16694185763785016
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 7,
+            "cue": 15
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              -0.2504844756744609,
+              -0.266941881479708
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 8,
+            "cue": 15
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.08873949129859136,
+              -0.5374639680118407
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 11,
+            "cue": 12
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              -0.050000011920928955
+            ],
+            "target": [
+              0.5117448592061153,
+              -0.4409157531549439
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 14,
+            "cue": 12
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              0.3999999761581421,
+              0.19999998807907104
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 6,
+            "cue": 16
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              0.2117448770875089,
+              0.590915729313086
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 7,
+            "cue": 12
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.21126049082001508,
+              0.6874639441699828
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 14,
+            "cue": 19
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.5504844577930674,
+              0.4169418576378502
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 7,
+            "cue": 19
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.5504844577930674,
+              -0.01694188147970796
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 11,
+            "cue": 19
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.2112604908200152,
+              -0.28746396801184076
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 5,
+            "cue": 14
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              -0.10000002384185791,
+              0.19999998807907104
+            ],
+            "target": [
+              0.21174487708750878,
+              -0.1909157531549439
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 6,
+            "cue": 14
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.6999999582767487,
+              0.19999998807907104
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 13,
+            "cue": 16
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.5117448592061155,
+              0.590915729313086
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 13,
+            "cue": 12
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.08873949129859149,
+              0.6874639441699828
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 7,
+            "cue": 19
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.25048447567446086,
+              0.4169418576378502
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 13,
+            "cue": 13
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              -0.2504844756744609,
+              -0.01694188147970796
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 9,
+            "cue": 15
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.08873949129859136,
+              -0.28746396801184076
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 8,
+            "cue": 16
+          }
+        },
+        {
+          "variables": {
+            "start": [
+              0.19999995827674866,
+              0.19999998807907104
+            ],
+            "target": [
+              0.5117448592061153,
+              -0.1909157531549439
+            ],
+            "catch": false
+          },
+          "epoch_steps": {
+            "hold": 8,
+            "cue": 15
+          }
+        }
+      ],
+      "train": {
+        "epoch_names": [
+          "hold",
+          "target_on",
+          "movement"
+        ],
+        "document_epoch_ids": [
+          "hold",
+          "cue",
+          "move"
+        ],
+        "event_names": [],
+        "target_start_step": 0
+      },
+      "validation": {
+        "epoch_names": [
+          "hold",
+          "target_on",
+          "movement"
+        ],
+        "document_epoch_ids": [
+          "hold",
+          "cue",
+          "move"
+        ],
+        "event_names": [],
+        "target_start_step": 0
+      },
+      "distribution": {
+        "count": 20000,
+        "legacy_seed": 16,
+        "document_seed": 17,
+        "epoch_ranges_half_open": [
+          [
+            5,
+            15
+          ],
+          [
+            10,
+            20
+          ]
+        ]
+      }
+    },
+    "stabilization": {
+      "legacy_class": "Stabilization",
+      "period_seconds": 0.01,
+      "legacy_n_steps": 81,
+      "control_steps": 80,
+      "workspace": [
+        [
+          -0.4000000059604645,
+          -0.30000001192092896
+        ],
+        [
+          0.5,
+          0.44999998807907104
+        ]
+      ],
+      "validation_seed": 5555,
+      "eval_grid_n": 2,
+      "eval_n_directions": null,
+      "eval_reach_length": null,
+      "validation_rows": [
+        {
+          "variables": {
+            "start": [
+              -0.4000000059604645,
+              -0.30000001192092896
+            ],
+            "target": [
+              -0.4000000059604645,
+              -0.30000001192092896
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.5,
+              -0.30000001192092896
+            ],
+            "target": [
+              0.5,
+              -0.30000001192092896
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              -0.4000000059604645,
+              0.44999998807907104
+            ],
+            "target": [
+              -0.4000000059604645,
+              0.44999998807907104
+            ]
+          },
+          "epoch_steps": {}
+        },
+        {
+          "variables": {
+            "start": [
+              0.5,
+              0.44999998807907104
+            ],
+            "target": [
+              0.5,
+              0.44999998807907104
+            ]
+          },
+          "epoch_steps": {}
+        }
+      ],
+      "train": {
+        "epoch_names": [
+          "move"
+        ],
+        "document_epoch_ids": [
+          "move"
+        ],
+        "event_names": [],
+        "target_start_step": 0
+      },
+      "validation": {
+        "epoch_names": [
+          "move"
+        ],
+        "document_epoch_ids": [
+          "move"
+        ],
+        "event_names": [],
+        "target_start_step": 0
+      },
+      "distribution": {
+        "count": 20000,
+        "legacy_seed": 24,
+        "document_seed": 25,
+        "epoch_ranges_half_open": null
+      }
+    }
+  },
+  "losses": {
+    "observations": {
+      "epoch_names": [
+        "hold",
+        "cue",
+        "move"
+      ],
+      "target_start_step": 0
+    },
+    "target_state": {
+      "legacy_class": "TargetStateLoss",
+      "reduction": "sum",
+      "target": "target",
+      "weight": "schedule"
+    },
+    "effector_fixation": {
+      "legacy_class": "EffectorFixationLoss",
+      "reduction": "sum",
+      "mask": "hold"
+    },
+    "nth_difference_order_3": {
+      "legacy_class": "NthDifferenceLoss",
+      "order": 3
+    },
+    "state_derivative": {
+      "legacy_class": "StateDerivativeLoss",
+      "order": 1
+    },
+    "output_jerk": {
+      "legacy_class": "OutputJerkLoss",
+      "order": 2
+    },
+    "epoch_masked_target": {
+      "legacy_class": "EpochMaskedLoss",
+      "epochs": [
+        "hold",
+        "cue"
+      ]
+    },
+    "epoch_masked_derivative": {
+      "legacy_class": "EpochMaskedLoss",
+      "epochs": [
+        "hold",
+        "cue"
+      ],
+      "order": 1
+    },
+    "epoch_masked_empty": {
+      "legacy_class": "EpochMaskedLoss",
+      "epochs": []
+    },
+    "straight_actual": {
+      "legacy_class": "EffectorStraightPathLoss",
+      "normalize_by": "actual"
+    },
+    "straight_goal": {
+      "legacy_class": "EffectorStraightPathLoss",
+      "normalize_by": "goal"
+    },
+    "stop_softmin": {
+      "legacy_class": "StopAtGoalLoss",
+      "method": "softmin",
+      "window_len": 2
+    },
+    "stop_soft_or": {
+      "legacy_class": "StopAtGoalLoss",
+      "method": "soft-or",
+      "window_len": 2
+    },
+    "model_square": {
+      "legacy_class": "ModelLoss"
+    },
+    "composite": {
+      "legacy_class": "CompositeLoss",
+      "weights": {
+        "target": 2.0,
+        "model": 3.0
+      }
+    },
+    "functional_terms": {
+      "legacy_class": "FuncTermsLoss",
+      "weights": {
+        "effort": 0.5
+      }
+    },
+    "selector_matrix_quadratic": {
+      "legacy_class": "SelectorObjectiveLoss",
+      "matrix": "observed/matrix",
+      "reduction": "final"
+    }
+  },
+  "legacy_task_reference.npz": {
+    "sha256": "6c6857bd572aa6d9304945ce75eb504c75f424d52f37ef1ee42d11822eabebf9",
+    "arrays": {
+      "keys/train": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<u4"
+      },
+      "keys/run": {
+        "shape": [
+          2
+        ],
+        "dtype": "<u4"
+      },
+      "keys/model": {
+        "shape": [
+          2
+        ],
+        "dtype": "<u4"
+      },
+      "simple/train/init/pos": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/init/vel": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/init/force": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/variables/start": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/variables/target": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/epoch_bounds": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<i4"
+      },
+      "simple/train/inputs/target_pos": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/inputs/target_vel": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/inputs/goal": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/position_discount": {
+        "shape": [
+          80
+        ],
+        "dtype": "<f4"
+      },
+      "simple/train/present/target_pos": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "simple/train/present/target_vel": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "simple/train/present/goal": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "simple/validation/init/pos": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/init/vel": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/init/force": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/variables/start": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/variables/target": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/epoch_bounds": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<i4"
+      },
+      "simple/validation/inputs/target_pos": {
+        "shape": [
+          28,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/inputs/target_vel": {
+        "shape": [
+          28,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/inputs/goal": {
+        "shape": [
+          28,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/position_discount": {
+        "shape": [
+          80
+        ],
+        "dtype": "<f4"
+      },
+      "simple/validation/present/target_pos": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "simple/validation/present/target_vel": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "simple/validation/present/goal": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "simple/objective/observed/hand": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/observed/velocity": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/observed/command": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/observed/activity": {
+        "shape": [
+          250,
+          80,
+          4
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/effector_position/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/effector_final_velocity/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/nn_output/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/nn_hidden/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/effector_position/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/effector_final_velocity/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/nn_output/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/nn_hidden/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/effector_position/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/effector_final_velocity/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/nn_output/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "simple/objective/terms/nn_hidden/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "simple/distribution/start": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "simple/distribution/target": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/init/pos": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/init/vel": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/init/force": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/variables/start": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/variables/target": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/variables/catch": {
+        "shape": [
+          250
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/train/epoch_steps/hold": {
+        "shape": [
+          250
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/train/epoch_steps/cue": {
+        "shape": [
+          250
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/train/epoch_bounds": {
+        "shape": [
+          250,
+          4
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/train/inputs/target_pos": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/inputs/target_vel": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/inputs/goal": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/present/target_pos": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/train/present/target_vel": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/train/present/goal": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/train/inputs/fixation": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/inputs/target_on": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/train/present/target_on": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/train/present/fixation": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/validation/init/pos": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/init/vel": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/init/force": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/variables/start": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/variables/target": {
+        "shape": [
+          28,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/variables/catch": {
+        "shape": [
+          28
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/validation/epoch_steps/hold": {
+        "shape": [
+          28
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/validation/epoch_steps/cue": {
+        "shape": [
+          28
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/validation/epoch_bounds": {
+        "shape": [
+          28,
+          4
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/validation/inputs/target_pos": {
+        "shape": [
+          28,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/inputs/target_vel": {
+        "shape": [
+          28,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/inputs/goal": {
+        "shape": [
+          28,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/present/target_pos": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/validation/present/target_vel": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/validation/present/goal": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/validation/inputs/fixation": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/inputs/target_on": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/validation/present/target_on": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/validation/present/fixation": {
+        "shape": [
+          28,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/objective/observed/hand": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/observed/velocity": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/observed/command": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/observed/activity": {
+        "shape": [
+          250,
+          80,
+          4
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_fixation/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_position/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_final_velocity/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/nn_output/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/nn_hidden/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_fixation/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_position/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_final_velocity/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/nn_output/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/nn_hidden/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_fixation/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_position/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/effector_final_velocity/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/nn_output/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "delayed/objective/terms/nn_hidden/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "delayed/distribution/catch": {
+        "shape": [
+          20000
+        ],
+        "dtype": "|b1"
+      },
+      "delayed/distribution/epoch_lengths": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<i4"
+      },
+      "delayed/distribution/start": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "delayed/distribution/target": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/init/pos": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/init/vel": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/init/force": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/variables/start": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/variables/target": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/epoch_bounds": {
+        "shape": [
+          250,
+          2
+        ],
+        "dtype": "<i4"
+      },
+      "stabilization/train/inputs/target_pos": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/inputs/target_vel": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/inputs/goal": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/train/present/target_pos": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "stabilization/train/present/target_vel": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "stabilization/train/present/goal": {
+        "shape": [
+          250,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "stabilization/validation/init/pos": {
+        "shape": [
+          4,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/init/vel": {
+        "shape": [
+          4,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/init/force": {
+        "shape": [
+          4,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/variables/start": {
+        "shape": [
+          4,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/variables/target": {
+        "shape": [
+          4,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/epoch_bounds": {
+        "shape": [
+          4,
+          2
+        ],
+        "dtype": "<i4"
+      },
+      "stabilization/validation/inputs/target_pos": {
+        "shape": [
+          4,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/inputs/target_vel": {
+        "shape": [
+          4,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/inputs/goal": {
+        "shape": [
+          4,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/validation/present/target_pos": {
+        "shape": [
+          4,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "stabilization/validation/present/target_vel": {
+        "shape": [
+          4,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "stabilization/validation/present/goal": {
+        "shape": [
+          4,
+          80
+        ],
+        "dtype": "|b1"
+      },
+      "stabilization/objective/observed/hand": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/observed/velocity": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/observed/command": {
+        "shape": [
+          250,
+          80,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/observed/activity": {
+        "shape": [
+          250,
+          80,
+          4
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/effector_position/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/effector_final_velocity/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/nn_output/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/nn_hidden/per_trial_raw": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/effector_position/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/effector_final_velocity/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/nn_output/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/nn_hidden/per_trial_weighted": {
+        "shape": [
+          250
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/effector_position/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/effector_final_velocity/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/nn_output/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stabilization/objective/terms/nn_hidden/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stabilization/distribution/start": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stabilization/distribution/target": {
+        "shape": [
+          20000,
+          2
+        ],
+        "dtype": "<f4"
+      }
+    }
+  },
+  "legacy_loss_reference.npz": {
+    "sha256": "bb2657d4642ac2f0551b7885aa12cbb0d5ce70d44e31632d666dbbda3dde20a5",
+    "arrays": {
+      "observed/position": {
+        "shape": [
+          2,
+          6,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "observed/velocity": {
+        "shape": [
+          2,
+          6,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "observed/activity": {
+        "shape": [
+          2,
+          6,
+          4
+        ],
+        "dtype": "<f4"
+      },
+      "observed/command": {
+        "shape": [
+          2,
+          6,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "observed/goal": {
+        "shape": [
+          2,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "observed/target": {
+        "shape": [
+          2,
+          6,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "observed/bounds": {
+        "shape": [
+          2,
+          4
+        ],
+        "dtype": "<i4"
+      },
+      "observed/hold": {
+        "shape": [
+          2,
+          6
+        ],
+        "dtype": "|b1"
+      },
+      "observed/schedule": {
+        "shape": [
+          6
+        ],
+        "dtype": "<f4"
+      },
+      "observed/model": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "observed/matrix": {
+        "shape": [
+          2,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "target_state/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "target_state/terms/target_state/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "target_state/terms/target_state/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "effector_fixation/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "effector_fixation/terms/Effector maintains fixation/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "effector_fixation/terms/Effector maintains fixation/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "nth_difference_order_3/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "nth_difference_order_3/terms/nth_difference/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "nth_difference_order_3/terms/nth_difference/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "state_derivative/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "state_derivative/terms/state_derivative/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "state_derivative/terms/state_derivative/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "output_jerk/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "output_jerk/terms/output_jerk/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "output_jerk/terms/output_jerk/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "epoch_masked_target/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "epoch_masked_target/terms/target_state_epoch_masked/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "epoch_masked_target/terms/target_state_epoch_masked/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "epoch_masked_derivative/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "epoch_masked_derivative/terms/state_derivative_epoch_masked/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "epoch_masked_derivative/terms/state_derivative_epoch_masked/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "epoch_masked_empty/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "epoch_masked_empty/terms/target_state_epoch_masked/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "epoch_masked_empty/terms/target_state_epoch_masked/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "straight_actual/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "straight_actual/terms/effector_path_straightness/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "straight_actual/terms/effector_path_straightness/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "straight_goal/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "straight_goal/terms/effector_path_straightness/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "straight_goal/terms/effector_path_straightness/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stop_softmin/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stop_softmin/terms/effector_stop_at_goal/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stop_softmin/terms/effector_stop_at_goal/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stop_soft_or/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "stop_soft_or/terms/effector_stop_at_goal/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "stop_soft_or/terms/effector_stop_at_goal/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "model_square/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "model_square/terms/model_square/per_trial_raw": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "model_square/terms/model_square/per_trial_weighted": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "composite/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "composite/terms/target/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "composite/terms/model/per_trial_raw": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "composite/terms/target/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "composite/terms/model/per_trial_weighted": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "composite/terms/target/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "composite/terms/model/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "functional_terms/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "functional_terms/terms/effort/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "functional_terms/terms/effort/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "functional_terms/terms/effort/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "selector_matrix_quadratic/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "selector_matrix_quadratic/terms/terminal_quadratic/per_trial_raw": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "selector_matrix_quadratic/terms/terminal_quadratic/per_trial_weighted": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "selector_matrix_quadratic/terms/terminal_quadratic/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      }
+    }
+  }
+}

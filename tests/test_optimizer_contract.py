@@ -10,20 +10,9 @@ import optax
 import pytest
 
 from feedbax.contracts.training import (
-    LR_SCHEDULE_SPEC_SCHEMA_ID,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LrScheduleSpec,
-    LossTermSpec,
-    ObjectiveSlotSpec,
     OptimizerSpec,
-    TaskSpec,
-    TrainingConfig,
-    TrainingRunSpec,
-    WorkerExecutionSpec,
-    standard_supervised_effective_phase_spec,
-    standard_supervised_method_contract,
-    standard_supervised_method_payload,
-    standard_supervised_method_ref,
 )
 from feedbax.contracts.checkpoints import CheckpointSegmentLineage
 from feedbax.training.schedule_clocks import (
@@ -31,7 +20,6 @@ from feedbax.training.schedule_clocks import (
     resolve_schedule_window,
     schedule_progress,
 )
-from feedbax.integrations.provider import provider_manifest
 from feedbax.training.optimizers import (
     OptimizerStateCompatibilityError,
     build_optimizer,
@@ -41,46 +29,6 @@ from feedbax.training.optimizers import (
 
 
 pytestmark = pytest.mark.feedbax_contract
-
-
-def _minimal_graph() -> dict[str, object]:
-    return {
-        "nodes": {
-            "gain": {
-                "type": "Gain",
-                "params": {"gain": 1.0},
-                "input_ports": ["input"],
-                "output_ports": ["output"],
-            }
-        },
-        "wires": [],
-        "input_ports": ["input"],
-        "output_ports": ["output"],
-        "input_bindings": {"input": ("gain", "input")},
-        "output_bindings": {"output": ("gain", "output")},
-    }
-
-
-def _training_run_payload_without_lr_schedule() -> dict[str, object]:
-    worker = WorkerExecutionSpec(
-        method_contract=standard_supervised_method_contract(),
-        effective_phase=standard_supervised_effective_phase_spec(),
-    )
-    spec = TrainingRunSpec(
-        graph={"inline": _minimal_graph()},
-        task=TaskSpec(type="ReachingTask", params={"n_steps": 4}),
-        training_config=TrainingConfig(n_batches=2, batch_size=3),
-        objective=ObjectiveSlotSpec(
-            loss=LossTermSpec(type="target_state", label="target", selector="output")
-        ),
-        method_ref=standard_supervised_method_ref(),
-        method_payload=standard_supervised_method_payload(),
-        worker_execution=worker,
-    )
-    payload = spec.model_dump(mode="json")
-    method_optimizer = payload["method_payload"]["payload"]["optimizer"]
-    method_optimizer.pop("lr_schedule", None)
-    return payload
 
 
 def _expected_cosine(peak: float, *, alpha: float, progress: float) -> float:
@@ -299,27 +247,6 @@ def test_declared_schedule_rejects_plain_legacy_optimizer_state() -> None:
 
     with pytest.raises(OptimizerStateCompatibilityError, match="declares lr_schedule"):
         validate_optimizer_state_for_spec(spec, old_state)
-
-
-def test_legacy_training_run_spec_without_lr_schedule_still_loads() -> None:
-    payload = _training_run_payload_without_lr_schedule()
-
-    spec = TrainingRunSpec.model_validate(payload)
-
-    optimizer = spec.method_payload.payload["optimizer"]
-    assert "lr_schedule" not in payload["method_payload"]["payload"]["optimizer"]
-    assert OptimizerSpec.model_validate(optimizer).lr_schedule is None
-
-
-def test_lr_schedule_schema_identity_is_publicly_discoverable() -> None:
-    manifest = provider_manifest()
-
-    schema = manifest.schemas["LrScheduleSpec"]
-    assert schema["properties"]["schema_id"]["const"] == LR_SCHEDULE_SPEC_SCHEMA_ID
-    assert (
-        LrScheduleSpec.model_fields["schema_version"].default
-        == LR_SCHEDULE_SPEC_SCHEMA_VERSION
-    )
 
 
 def test_segment_start_clock_resolves_incident_ramp_values() -> None:

@@ -11,11 +11,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from inspect import getsourcefile
 from typing import Any, Literal
 
 import jax.tree as jt
 import numpy as np
 
+from feedbax.contracts.base import sha256_bytes, sha256_file
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.checkpoint_initialization import (
     INITIALIZE_FROM_SOURCE_ROLES,
     CheckpointInitializationPlan,
@@ -579,11 +582,18 @@ def bind_semantic_checkpoint_fork_step(
 
 def semantic_checkpoint_transform_implementation_sha256() -> str:
     """Return the exact implementation pin used by durable fork plans."""
-    from feedbax.training.row_lowering import training_row_lowerer_implementation_sha256
-
-    return training_row_lowerer_implementation_sha256(
-        (derive_and_apply_semantic_checkpoint_transform, validate_checkpoint_semantic_abi)
-    )
+    dependencies = [derive_and_apply_semantic_checkpoint_transform, validate_checkpoint_semantic_abi]
+    identities = []
+    for dependency in dependencies:
+        source_path = getsourcefile(dependency)
+        if source_path is None:
+            raise ValueError(f"Checkpoint transform dependency has no source: {dependency.__qualname__}")
+        identities.append({
+            "module": dependency.__module__,
+            "qualname": dependency.__qualname__,
+            "source_sha256": sha256_file(source_path),
+        })
+    return sha256_bytes(canonical_json_v1_bytes(identities))
 
 
 __all__ = [

@@ -1,11 +1,4 @@
-"""``feedbax init`` creates exactly seven things, twice, without losing user bytes.
-
-The value of an initializer is not that it saves typing; it is that the thing it
-produces is *exactly* what the framework expects, and that running it again on a
-live repository cannot damage it. These tests pin both: the exact inventory, the
-exact refusal behavior, and the guarantee that a second run validates rather
-than overwrites.
-"""
+"""Transactional managed-project initialization and repository scaffolding."""
 
 from __future__ import annotations
 
@@ -17,11 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.contracts.experiment_envelope_dialect import ExperimentEnvelopeLayer
-from feedbax.contracts.project_experiment import (
-    PROJECT_DECLARATION_FILENAME,
-    load_project_declaration,
-)
+from feedbax.contracts.project_io import load_text_project
 from feedbax.governance import project_init
 from feedbax.governance.agent_instructions import (
     AGENT_FILE_NAMES,
@@ -31,6 +20,9 @@ from feedbax.governance.agent_instructions import (
 )
 from feedbax.governance.cli import run_init
 from feedbax.governance.science_surface import POLICY_SCHEMA_VERSION
+
+
+PROJECT_DECLARATION_FILENAME = "spinnaker-study.feedbax"
 
 
 def _project(tmp_path: Path, name: str = "spinnaker-study") -> Path:
@@ -50,17 +42,16 @@ def _entries(root: Path) -> set[str]:
 # --- the exact inventory ----------------------------------------------------
 
 
-def test_a_new_project_gets_exactly_the_seven_entries(tmp_path: Path) -> None:
+def test_a_new_project_gets_exactly_the_project_files(tmp_path: Path) -> None:
     root = _project(tmp_path)
 
     report = project_init.initialize(root)
 
     assert report.exit_code == project_init.EXIT_OK
-    assert _entries(root) == set(project_init.entry_paths(report.package))
-    assert set(project_init.entry_paths("spinnaker_study")) == {
+    assert _entries(root) == set(project_init.entry_paths(report.project, report.package))
+    assert set(project_init.entry_paths("spinnaker-study", "spinnaker_study")) == {
         PROJECT_DECLARATION_FILENAME,
         ".gitignore",
-        "specs/experiment/authoring_budget.json",
         "ci/feedbax-science-surface.toml",
         "pyproject.toml",
         "src/spinnaker_study/__init__.py",
@@ -87,32 +78,28 @@ def test_explicit_names_override_the_derivation(tmp_path: Path) -> None:
 
 
 def test_nothing_speculative_is_created(tmp_path: Path) -> None:
-    """No example envelope, no fake science, no empty generated custody."""
     root = _project(tmp_path)
 
     project_init.initialize(root)
 
-    for absent in ("generated", "specs/experiment/example.envelope.json", ".git"):
+    for absent in ("results", "documents", "steps", ".git"):
         assert not (root / absent).exists(), absent
-    assert (root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"
-    assert list((root / "specs/experiment").iterdir()) == [
-        root / "specs/experiment/authoring_budget.json"
-    ]
+    assert (root / ".gitignore").read_text(encoding="utf-8") == "/results/\n"
     assert (root / "src" / "spinnaker_study" / "__init__.py").read_text().count("\n") == 1
 
 
 def test_the_output_rule_is_root_anchored(tmp_path: Path) -> None:
     root = _project(tmp_path)
     project_init.initialize(root)
-    (root / "generated").mkdir()
-    (root / "generated" / "lock.json").touch()
-    (root / "web" / "src" / "generated").mkdir(parents=True)
-    (root / "web" / "src" / "generated" / "contract.ts").touch()
+    (root / "results").mkdir()
+    (root / "results" / "lock.json").touch()
+    (root / "web" / "src" / "results").mkdir(parents=True)
+    (root / "web" / "src" / "results" / "contract.ts").touch()
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     subprocess.run(["git", "init", "-q", root], check=True, env=env)
 
     root_output = subprocess.run(
-        ["git", "-C", root, "check-ignore", "--no-index", "-q", "generated/lock.json"],
+        ["git", "-C", root, "check-ignore", "--no-index", "-q", "results/lock.json"],
         check=False,
         env=env,
     )
@@ -124,7 +111,7 @@ def test_the_output_rule_is_root_anchored(tmp_path: Path) -> None:
             "check-ignore",
             "--no-index",
             "-q",
-            "web/src/generated/contract.ts",
+            "web/src/results/contract.ts",
         ],
         check=False,
         env=env,
@@ -142,31 +129,11 @@ def test_the_written_declaration_loads_through_the_real_loader(tmp_path: Path) -
 
     project_init.initialize(root)
 
-    declaration = load_project_declaration(root)
-    assert declaration.project == "spinnaker-study"
-    assert declaration.envelope_directory == project_init.DEFAULT_ENVELOPE_DIRECTORY
-    assert declaration.output_directory == project_init.DEFAULT_OUTPUT_DIRECTORY
-    assert declaration.authoring_budget.resource_id == project_init.DEFAULT_BUDGET_REF
-    assert declaration.authoring_budget.root.joinpath(
-        declaration.authoring_budget.document_name
-    ).is_file()
-
-
-def test_the_written_budget_states_a_section_for_every_dialect_layer(tmp_path: Path) -> None:
-    root = _project(tmp_path)
-
-    project_init.initialize(root)
-
-    document = json.loads((root / project_init.DEFAULT_BUDGET_REF).read_text())
-    assert set(document["layers"]) == {layer.value for layer in ExperimentEnvelopeLayer}
-
-
-def test_the_ratified_training_caps_are_the_framework_defaults() -> None:
-    training = project_init.DEFAULT_AUTHORING_BUDGET_LAYERS["training"]
-
-    assert "max_lines" not in training
-    assert training["max_ast_nodes"] == 160
-    assert training["max_depth"] == 16
+    text = load_text_project(root)
+    assert text.configuration.project == "spinnaker-study"
+    assert text.configuration.store == "results"
+    assert text.project.documents == {}
+    assert text.project.steps == {}
 
 
 def test_the_written_policy_authorizes_only_the_marker_init_created(tmp_path: Path) -> None:
@@ -243,7 +210,6 @@ def test_a_second_run_reports_durable_files_as_validated(tmp_path: Path) -> None
 
     actions = {outcome.path: outcome.action for outcome in report.outcomes}
     assert actions[PROJECT_DECLARATION_FILENAME] == "validated"
-    assert actions[project_init.DEFAULT_BUDGET_REF] == "validated"
     assert actions[project_init.DEFAULT_POLICY_REF] == "validated"
     assert actions[AGENT_FILE_NAMES[0]] == "unchanged"
 
@@ -252,29 +218,30 @@ def test_a_customized_declaration_is_kept_not_reset(tmp_path: Path) -> None:
     root = _project(tmp_path)
     project_init.initialize(root)
     document = json.loads((root / PROJECT_DECLARATION_FILENAME).read_text())
-    document["envelope_directory"] = "studies"
+    document["store"] = "studies"
     (root / PROJECT_DECLARATION_FILENAME).write_text(json.dumps(document, indent=2) + "\n")
 
     project_init.initialize(root)
 
-    assert load_project_declaration(root).envelope_directory == "studies"
+    assert load_text_project(root).configuration.store == "studies"
 
 
 def test_an_existing_gitignore_keeps_its_bytes_and_gains_the_declared_rule(
     tmp_path: Path,
 ) -> None:
     root = _project(tmp_path)
+    project_init.initialize(root)
     original = b"*.secret\r\n# project rule with opaque bytes: \xff"
     (root / ".gitignore").write_bytes(original)
-    declaration = project_init.default_declaration_document("spinnaker-study")
-    declaration["output_directory"] = "build/compiler-output"
+    declaration = json.loads((root / PROJECT_DECLARATION_FILENAME).read_text())
+    declaration["store"] = "build/experiment-results"
     (root / PROJECT_DECLARATION_FILENAME).write_text(
         json.dumps(declaration, indent=2) + "\n", encoding="utf-8"
     )
 
     project_init.initialize(root)
 
-    assert (root / ".gitignore").read_bytes() == original + b"\n/build/compiler-output/\n"
+    assert (root / ".gitignore").read_bytes() == original + b"\n/build/experiment-results/\n"
 
 
 def test_a_second_run_does_not_duplicate_the_output_ignore_rule(tmp_path: Path) -> None:
@@ -283,7 +250,7 @@ def test_a_second_run_does_not_duplicate_the_output_ignore_rule(tmp_path: Path) 
 
     project_init.initialize(root)
 
-    assert (root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"
+    assert (root / ".gitignore").read_text(encoding="utf-8") == "/results/\n"
 
 
 def test_an_existing_python_project_keeps_its_own_packaging(tmp_path: Path) -> None:
@@ -312,18 +279,6 @@ def test_an_invalid_declaration_refuses_the_whole_run(tmp_path: Path) -> None:
     assert report.exit_code == project_init.EXIT_CONFLICT
     assert [outcome.path for outcome in report.conflicts] == [PROJECT_DECLARATION_FILENAME]
     assert _entries(root) == {PROJECT_DECLARATION_FILENAME}
-
-
-def test_an_invalid_budget_refuses_the_whole_run(tmp_path: Path) -> None:
-    root = _project(tmp_path)
-    budget = root / project_init.DEFAULT_BUDGET_REF
-    budget.parent.mkdir(parents=True)
-    budget.write_text('{"schema_id": "feedbax.spec.authoring_budget", "schema_version": "v9"}\n')
-
-    report = project_init.initialize(root)
-
-    assert report.exit_code == project_init.EXIT_CONFLICT
-    assert _entries(root) == {project_init.DEFAULT_BUDGET_REF}
 
 
 def test_an_unsupported_policy_version_refuses_the_whole_run(tmp_path: Path) -> None:

@@ -5,10 +5,8 @@ import {
   ConstantArrayValueSpecSchema,
   ChangeModelAttachmentSchema,
   GraphMetadataSchema,
-  SemanticAnchorSchema,
   SparseCooArrayValueSpecSchema,
   SparseCooEntrySpecSchema,
-  StudioPersistenceDocumentSchema,
   StudioTaskTimelineSpecSchema,
   StudioValueEnumerableSpecSchema,
 } from '@/generated/studioContracts';
@@ -143,7 +141,7 @@ describe('generated Studio constraint parity', () => {
     metadata: {},
   });
 
-  it('projects numeric bounds and string patterns', () => {
+  it('projects numeric bounds', () => {
     expect(
       GraphMetadataSchema.safeParse({
         name: 'test',
@@ -152,12 +150,7 @@ describe('generated Studio constraint parity', () => {
         save_revision: -1,
       }).success,
     ).toBe(false);
-    expect(
-      SemanticAnchorSchema.safeParse({
-        semantic_document_sha256: 'not-a-digest',
-        authored_path: 'graph',
-      }).success,
-    ).toBe(false);
+
   });
 
   it('runs the same registered cross-field refinements as Python', () => {
@@ -173,15 +166,6 @@ describe('generated Studio constraint parity', () => {
         form: 'range',
         start: 0,
         stop: 1,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('fails closed on an unknown persistence-document version', () => {
-    expect(
-      StudioPersistenceDocumentSchema.safeParse({
-        schema_id: 'feedbax.spec.studio.persistence_document',
-        schema_version: 'feedbax.spec.studio.persistence_document.v99',
       }).success,
     ).toBe(false);
   });

@@ -2,22 +2,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import jax.numpy as jnp
-import jax.random as jr
 import pytest
 from pydantic import ValidationError
 
 from feedbax.contracts.graph import (
     GraphSpec,
-    StudioPersistenceDocument,
-    StudioTaskBindingSpec,
     StudioTaskTimelineSpec,
     StudioWorkspaceSpec,
     studio_semantic_document_sha256,
 )
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.training import TaskSpec
-from feedbax.training.retained_graph import _materialize_task_data, _validate_epoch_value_targets
 
 
 def _literal(value: object) -> dict[str, object]:
@@ -57,28 +51,6 @@ def _timeline(*, first: float = 1.0, second: float = 3.0) -> dict[str, object]:
         "segments": [],
         "metadata": {},
     }
-
-
-def _binding() -> StudioTaskBindingSpec:
-    return StudioTaskBindingSpec.model_validate(
-        {
-            "schema_version": "feedbax.spec.studio.task_bindings.v3",
-            "exposed_data": [
-                {
-                    "id": "hold",
-                    "label": "Hold",
-                    "kind": "signal",
-                    "path": "inputs.hold",
-                    "bindable": True,
-                    "expected_shape": ["time", 1],
-                    "value_spec": _literal(0),
-                    "metadata": {},
-                }
-            ],
-            "bindings": [],
-            "metadata": {},
-        }
-    )
 
 
 def _workspace(timeline: dict[str, object]) -> StudioWorkspaceSpec:
@@ -167,42 +139,6 @@ def test_timeline_semantics_change_identity_while_layout_is_excluded() -> None:
     layout_only = {"analysis_canvas_layout": {"stages": {"train": {"pages": {}}}}}
     assert layout_only
     assert studio_semantic_document_sha256(graph, first) == identity
-
-
-def test_admission_failure_writes_nothing(tmp_path) -> None:
-    bad_workspace = _workspace(_timeline()).model_dump(mode="json")
-    bad_workspace["scenarios"]["scenario:train"]["task_spec"]["timeline"]["schema_version"] = (
-        "feedbax.spec.studio.task_timeline.v99"
-    )
-    with pytest.raises(ValidationError):
-        StudioPersistenceDocument.model_validate(
-            {
-                "schema_id": "feedbax.spec.studio.persistence_document",
-                "schema_version": "feedbax.spec.studio.persistence_document.v1",
-                "graph": GraphSpec().model_dump(mode="json"),
-                "workspace": bad_workspace,
-            }
-        )
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_execution_applies_distinct_values_at_exact_epoch_boundary() -> None:
-    task = TaskSpec.model_validate(
-        {"type": "DelayedReaches", "params": {}, "timeline": _timeline()}
-    )
-    data = _materialize_task_data(_binding(), task, 5, key=jr.PRNGKey(0))
-    assert jnp.array_equal(data["hold"][:, 0], jnp.asarray([1, 1, 3, 3, 3]))
-
-
-def test_execution_rejects_authored_target_missing_from_runtime_binding() -> None:
-    task = TaskSpec.model_validate(
-        {"type": "DelayedReaches", "params": {}, "timeline": _timeline()}
-    )
-    binding = _binding().model_copy(
-        update={"exposed_data": []},
-    )
-    with pytest.raises(ValueError, match="not exposed by task_binding_spec"):
-        _validate_epoch_value_targets(task.timeline, binding)
 
 
 def test_equivalent_reordering_is_rejected_instead_of_changing_identity() -> None:

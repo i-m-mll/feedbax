@@ -103,17 +103,6 @@ function ScalarEditor({ control, name, value, onChange }: {
   );
 }
 
-export function StudioDocumentPicker({ field, selection, onEdit }: Pick<FormProps, 'selection' | 'onEdit'> & {
-  field: StudioDefinitionField;
-}) {
-  const value = field.resolved[0];
-  if (!value) return null;
-  const change = field.actions.includes('set') && field.resolved.length === 1
-    ? (next: JsonPrimitive) => onEdit({ fieldId: field.id, selection, edit: { kind: 'set', value: next } })
-    : undefined;
-  return <ScalarEditor name={field.label} value={value} control={field.control} onChange={change} />;
-}
-
 function ValueSource({ value }: { value: FieldValue }) {
   return (
     <>

@@ -12,7 +12,11 @@ from feedbax.contracts.training import (
     TrainingProgramRegistry,
     evolve_training_program,
     standard_supervised_method_contract,
-    standard_supervised_training_program,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+    STANDARD_SUPERVISED_METHOD_REF,
+    TrainingProgramDeclaration,
+    TrainingProgramRuntimeFacet,
 )
 from feedbax.contracts.worker import MethodContractSpec, ProgressCoordinate, StateSlotSpec
 from feedbax.plugins import (
@@ -59,10 +63,18 @@ def synthetic_supervised_update_kernels(
 def synthetic_supervised_training_program() -> DeclaredTrainingProgram[
     StandardSupervisedMethodPayload
 ]:
-    return evolve_training_program(
-        standard_supervised_training_program(),
-        update_kernels_factory=synthetic_supervised_update_kernels,
-        owner="tests.support.training_fixtures",
+    return DeclaredTrainingProgram(
+        declaration=TrainingProgramDeclaration(
+            STANDARD_SUPERVISED_METHOD_REF,
+            STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            StandardSupervisedMethodPayload,
+            owner="tests.support.training_fixtures",
+        ),
+        runtime=TrainingProgramRuntimeFacet(
+            contract_compiler=lambda _payload: standard_supervised_method_contract(),
+            update_kernels_factory=synthetic_supervised_update_kernels,
+        ),
     )
 
 

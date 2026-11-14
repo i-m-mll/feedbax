@@ -11,8 +11,6 @@ from pathlib import PurePosixPath
 from feedbax.checkpoint_coordinates import cadence_coordinates, finite_coordinates
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 
-EVALUATION_ENTRYPOINT = "feedbax.training.private_evaluation:main"
-
 
 @dataclass(frozen=True)
 class CheckpointSelection:
@@ -31,10 +29,8 @@ def is_checkpoint_producer(launch: dict, *, continues: str | None, manifest_root
 
 
 def requested_checkpoint_selection(request: str, launch: dict) -> CheckpointSelection | None:
-    """Read the coordinate demand from the canonical or private input binding."""
+    """Read the coordinate demand from the canonical input binding."""
     payload = launch["payload"]
-    if launch.get("warm_entrypoint") == EVALUATION_ENTRYPOINT:
-        return CheckpointSelection(finite_coordinates(payload["coordinates"]), requires_catalog=True)
     if request.startswith("evaluate:"):
         binding = payload.get("canonical_request") or {}
         selector = (binding.get("checkpoint") or {}).get("select")

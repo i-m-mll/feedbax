@@ -1,6 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence, ValuesView
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, TypeGuard
+from typing import Annotated, Any, Literal, Optional, TypeGuard
 
 import jax.tree as jt
 import feedbax._vendor.jax_cookbook.tree as jtree
@@ -15,7 +15,7 @@ from plotly.subplots import make_subplots
 
 from feedbax.models.feedback import SimpleFeedbackState
 from feedbax.plot import apply_default_template
-from feedbax.plot._effector import resolve_effector_endpoints, resolve_effector_trajectory_vars
+from feedbax.plot._effector import resolve_effector_trajectory_vars
 from feedbax.plot.colors import _compute_colors, arr_to_rgb
 from feedbax.plot.misc import (
     AxesLabels,
@@ -28,9 +28,6 @@ from feedbax.plot.misc import (
     unshare_axes,
 )
 from feedbax._vendor.jax_cookbook import MaskedArray, is_type
-
-if TYPE_CHECKING:
-    from feedbax.tasks import TaskTrialSpec
 
 # Plotly copies the process-default template into each figure as it is constructed, so
 # the Feedbax default has to be in place before any function here runs. Importing a
@@ -56,7 +53,6 @@ def effector_trajectories(
     ] = None,
     var_labels: Optional[tuple[str, ...]] = None,
     step: int = 1,  # plot every step-th trial
-    trial_specs: Optional["TaskTrialSpec"] = None,
     endpoints: Optional[tuple[Float[Array, "trial xy=2"], Float[Array, "trial xy=2"]]] = None,
     straight_guides: bool = False,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
@@ -85,10 +81,7 @@ def effector_trajectories(
         step: Plot every `step`-th trial. This is useful when `states` contains
             information about a very large set of trials, and we only want to
             plot a subset of them.
-        trial_specs: The specifications for the trials being plotted. If supplied,
-            this is used to plot markers at the initial and goal positions.
         endpoints: The initial and goal positions for the trials being plotted.
-            Overrides `trial_specs`.
         straight_guides: If this is `True` and `endpoints` are provided, straight
             dashed lines will be drawn between the initial and goal positions.
         workspace: The workspace bounds. If provided, the bounds are drawn as a
@@ -98,7 +91,7 @@ def effector_trajectories(
         colors: A sequence of colors, one for each plotted trial. Overrides `cmap_name`.
         color: A single color to use for all trials. Overrides `cmap_name` but not `colors`.
         ms: Marker size for plots of states (trajectories).
-        ms_source: Marker size for the initial position, if `trial_specs`/`endpoints`
+        ms_source: Marker size for the initial position, if `endpoints`
             is provided.
         ms_target: Marker size for the goal position.
         control_label_type: If `'linear'`, labels the final (controller output/force)
@@ -181,11 +174,7 @@ def effector_trajectories(
     fig.update_traces(marker_size=ms)
 
     if endpoints is not None:
-        endpoints_arr = np.array(endpoints)  # type: ignore
-    else:
-        endpoints_arr = resolve_effector_endpoints(trial_specs)
-
-    if endpoints_arr is not None:
+        endpoints_arr = np.asarray(endpoints)
         colors = [d.marker.color for d in fig.data[::n_vars]]
 
         n_trials = endpoints_arr.shape[1]

@@ -5,18 +5,19 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { openProjectEditor } from '../../src/features/projectFolder/openProjectEditor';
-import { reachingDocument } from './reachingProject';
+import type { StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { fixture } from './fixtures/canonicalTrain';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
-const gainPath = '/payload/nodes/gain/params/gain';
+const massPath = '/payload/interior/components/plant/fields/mass';
 type Probe = {
   folderEditor: Awaited<ReturnType<typeof openProjectEditor>>;
   renameCommand?: ReturnType<Probe['folderEditor']['editor']['rename']>;
   createCommand?: ReturnType<Probe['folderEditor']['editor']['createFile']>;
 };
 
-async function folderFixture(action: 'seed' | 'read' | 'inspect-authoring', root: string) {
+async function folderFixture(action: 'seed' | 'read', root: string) {
   return run('uv', ['run', '--no-sync', 'python', '-B', 'web/e2e/studio/fixtures/folder_project.py', action, root],
     { cwd: repo, timeout: 10_000 });
 }
@@ -33,21 +34,23 @@ async function state(page: Page) {
   return page.evaluate(() => {
     const editor = (window as unknown as Probe).folderEditor.editor;
     const { saved, draft, outside, pending, configuration, undoName } = editor.getSnapshot();
-    const gain = (project: typeof draft) => {
-      const payload = project.documents?.model?.payload as { nodes: { gain: { params: { gain: number } } } };
-      return payload.nodes.gain.params.gain;
+    const mass = (project: typeof draft) => {
+      const payload = project.documents?.['point-mass']?.payload as {
+        interior: { components: { plant: { fields: { mass: number } } } };
+      };
+      return payload.interior.components.plant.fields.mass;
     };
     return {
-      saved: gain(saved.project), draft: gain(draft), outside: outside ? gain(outside.project) : null,
+      saved: mass(saved.project), draft: mass(draft), outside: outside ? mass(outside.project) : null,
       pending, revision: saved.revision, id: saved.project_id, name: configuration.project, undoName,
     };
   });
 }
 
-async function outsideWrite(root: string, gain: number) {
-  const path = join(root, 'documents', 'model.json');
+async function outsideWrite(root: string, mass: number) {
+  const path = join(root, 'documents', 'point-mass.json');
   const doc = JSON.parse(await readFile(path, 'utf-8'));
-  doc.payload.nodes.gain.params.gain = gain;
+  doc.payload.interior.components.plant.fields.mass = mass;
   const replacement = `${path}.outside`;
   await writeFile(replacement, JSON.stringify(doc));
   await rename(replacement, path);
@@ -119,8 +122,8 @@ test('M2 folder controller settles, reopens, observes disk changes, and resolves
   await open(page, projectId);
   expect((await state(page)).saved).toBe(1);
   await page.evaluate(({ path }) => {
-    (window as unknown as Probe).folderEditor.editor.edit({ kind: 'document', id: 'model' }, 'Gain', [{ op: 'replace', path, value: 3 }]);
-  }, { path: gainPath });
+    (window as unknown as Probe).folderEditor.editor.edit({ kind: 'document', id: 'point-mass' }, 'Mass', [{ op: 'replace', path, value: 3 }]);
+  }, { path: massPath });
   await expect.poll(() => state(page)).toMatchObject({ saved: 3, draft: 3, pending: 0 });
   await page.reload();
   await open(page, projectId);
@@ -140,10 +143,10 @@ test('M2 folder controller settles, reopens, observes disk changes, and resolves
   });
   const refused = await page.evaluate(async ({ path }) => {
     const editor = (window as unknown as Probe).folderEditor.editor;
-    editor.edit({ kind: 'document', id: 'model' }, 'Gain', [{ op: 'replace', path, value: 6 }]);
+    editor.edit({ kind: 'document', id: 'point-mass' }, 'Mass', [{ op: 'replace', path, value: 6 }]);
     try { await editor.flush(); } catch (error) { return (error as { status?: number }).status; }
     return null;
-  }, { path: gainPath });
+  }, { path: massPath });
   expect(refused).toBe(409);
   expect(competed).toBe(true);
   expect(await state(page)).toMatchObject({ saved: 4, draft: 6, outside: 5, pending: 1 });
@@ -160,7 +163,7 @@ test('M2 folder controller settles, reopens, observes disk changes, and resolves
   expect(revisions.undone).not.toBe(revisions.saved);
   expect(await state(page)).toMatchObject({ saved: 5, draft: 5, outside: null, revision: revisions.undone });
   const { stdout } = await folderFixture('read', root);
-  expect(JSON.parse(stdout)).toEqual({ gain: 5, revision: revisions.undone });
+  expect(JSON.parse(stdout)).toEqual({ mass: 5, revision: revisions.undone });
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
 });
 
@@ -201,18 +204,18 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
   try {
     await page.evaluate((path) => {
       const probe = window as unknown as Probe;
-      probe.folderEditor.editor.edit({ kind: 'document', id: 'model' }, 'Before Rename', [{ op: 'replace', path, value: 3 }]);
+      probe.folderEditor.editor.edit({ kind: 'document', id: 'point-mass' }, 'Before Rename', [{ op: 'replace', path, value: 3 }]);
       probe.renameCommand = probe.folderEditor.editor.rename('renamed');
-    }, gainPath);
+    }, massPath);
     const sent = await renameSeen;
     const before = await state(page);
     expect(before).toMatchObject({ saved: 3, pending: 0 });
     expect(sent.postDataJSON()).toEqual({ name: 'renamed', revision: before.revision });
     await page.evaluate((path) => {
       (window as unknown as Probe).folderEditor.editor.edit(
-        { kind: 'document', id: 'model' }, 'During Rename', [{ op: 'replace', path, value: 4 }],
+        { kind: 'document', id: 'point-mass' }, 'During Rename', [{ op: 'replace', path, value: 4 }],
       );
-    }, gainPath);
+    }, massPath);
   } finally {
     releaseRename();
   }
@@ -279,9 +282,9 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
     await openSeen;
     await page.evaluate((path) => {
       (window as unknown as Probe).folderEditor.editor.edit(
-        { kind: 'document', id: 'model' }, 'During Open', [{ op: 'replace', path, value: 5 }],
+        { kind: 'document', id: 'point-mass' }, 'During Open', [{ op: 'replace', path, value: 5 }],
       );
-    }, gainPath);
+    }, massPath);
   } finally {
     releaseOpen();
   }
@@ -297,24 +300,16 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
     return revision;
   });
   const { stdout } = await folderFixture('read', root);
-  expect(JSON.parse(stdout)).toEqual({ gain: 4, revision });
+  expect(JSON.parse(stdout)).toEqual({ mass: 4, revision });
   await page.reload();
   await open(page, projectId);
   expect(await state(page)).toMatchObject({ id: projectId, name: 'outside-name', saved: 4, revision });
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
 });
 
-test('M2 managed New authors a Train with named reaching model and task', async ({ page, request }, info) => {
-  const fixture = await reachingDocument(8);
-  const model = { kind: 'document' as const, id: 'model', document: {
-    schema: fixture.graph.schema_id, payload: fixture.graph,
-  } };
-  const task = { kind: 'document' as const, id: 'task', document: {
-    schema: 'feedbax.spec.task', payload: fixture.workspace!.scenarios['scenario:train'].task_spec!,
-  } };
-  const train = { kind: 'step' as const, id: 'train', step: {
-    kind: 'train' as const, base: { inline: {} },
-  } };
+test('M2 managed New authors a Train with named trial documents', async ({ page, request }, info) => {
+  const [model, task, objective, definedTrain] = await fixture('ordinary-files', '8');
+  const train = { ...definedTrain, step: { ...definedTrain.step, base: { inline: {} } } };
   await page.goto('/');
   const id = await page.evaluate(async (file) => {
     const entry = '/src/features/projectFolder/openProjectEditor.ts';
@@ -340,8 +335,8 @@ test('M2 managed New authors a Train with named reaching model and task', async 
     return null;
   }, model);
   expect(refusal).toBe(409);
-  expect(JSON.parse(await readFile(join(root, 'documents', 'task.json'), 'utf8'))).toEqual(task.document);
-  await expect(readFile(join(root, 'documents', 'model.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(join(root, 'documents', `${task.id}.json`), 'utf8'))).toEqual(task.document);
+  await expect(readFile(join(root, 'documents', 'point-mass.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   await page.unroute(routePath);
 
   let committed!: () => void;
@@ -363,41 +358,36 @@ test('M2 managed New authors a Train with named reaching model and task', async 
       probe.createCommand = probe.folderEditor.editor.createFile(file);
     }, model);
     await savedOnServer;
-    await page.evaluate(() => {
-      (window as unknown as Probe).folderEditor.editor.edit({ kind: 'step', id: 'train' }, 'Bind Task', [
-        { op: 'add', path: '/base/inline/task', value: { document: 'task' } },
+    await page.evaluate((inline) => {
+      (window as unknown as Probe).folderEditor.editor.edit({ kind: 'step', id: 'train' }, 'Bind Trial Documents', [
+        { op: 'replace', path: '/base/inline', value: inline },
       ]);
-    });
+    }, definedTrain.step.base.inline);
   } finally {
     release();
   }
-  const saved = await page.evaluate(async () => {
+  await page.evaluate(async () => { await (window as unknown as Probe).createCommand; });
+  await page.unroute(routePath);
+  const saved = await page.evaluate(async (file) => {
     const probe = window as unknown as Probe;
-    await probe.createCommand;
     const { editor } = probe.folderEditor;
     await editor.flush();
-    editor.edit({ kind: 'step', id: 'train' }, 'Bind Model', [
-      { op: 'add', path: '/base/inline/graph', value: { document: 'model' } },
-    ]);
-    await editor.flush();
+    await editor.createFile(file);
     const result = editor.getSnapshot();
     probe.folderEditor.close();
     return result;
-  });
+  }, objective);
   expect(requests).toBe(1);
-  await page.unroute(routePath);
-  expect(saved).toMatchObject({ outside: null, pending: 0, undoName: 'Bind Model' });
-  expect(saved.saved.project.documents).toEqual({ model: model.document, task: task.document });
-  expect(saved.saved.project.steps).toEqual({ train: { kind: 'train', base: {
-    inline: { task: { document: 'task' }, graph: { document: 'model' } },
-  } } });
-  const { stdout } = await folderFixture('inspect-authoring', root);
-  expect(JSON.parse(stdout)).toEqual({
-    revision: saved.saved.revision, runs: 0,
-    diagnostics: ['method_payload', 'method_ref', 'objective', 'training_config'].map(
-      (field) => ['invalid_payload', `payload.${field}`],
-    ),
+  expect(saved).toMatchObject({ outside: null, pending: 0, undoName: 'Bind Trial Documents' });
+  expect(saved.saved.project.documents).toEqual({
+    [model.id]: model.document, [task.id]: task.document, [objective.id]: objective.document,
   });
+  expect(saved.saved.project.steps).toEqual({ train: definedTrain.step });
+  const response = await request.get(`/api/projects/${id}/train-runs?revision=${saved.saved.revision}&window_map=true`);
+  expect(response.ok(), await response.text()).toBe(true);
+  const plan = await response.json() as StudioSavedTrainRuns;
+  expect(plan.window_map?.problems).toEqual([]);
+  expect(plan.rows).toMatchObject([{ status: 'not_run', request_id: expect.any(String) }]);
   await page.reload();
   await open(page, id);
   const reopened = await page.evaluate(() => {

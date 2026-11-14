@@ -43,7 +43,6 @@ from feedbax.contracts.request_specs import (
     RenderRequestSpec,
     ReportRequestSpec,
     RequestSpec,
-    TrainingRequestSpec,
 )
 
 _IDENTITY = "feedbax.identity.request.v1"
@@ -60,24 +59,21 @@ class RequestDescriptor:
     storage_schema: str = _STORAGE_SCHEMA
 
 
+DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
+    DocumentTrainingRequestSpec, ("method_payload",), _DOCUMENT_TRAIN_STORAGE_SCHEMA
+)
+
 REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
-    "train": RequestDescriptor(
-        TrainingRequestSpec, ("graph", "task", "objective", "method_payload")
-    ),
+    "train": DOCUMENT_TRAIN_REQUEST,
     "evaluate": RequestDescriptor(EvaluationRequestSpec),
     "analyze": RequestDescriptor(AnalysisRequestSpec),
     "render": RequestDescriptor(RenderRequestSpec),
     "report": RequestDescriptor(ReportRequestSpec),
 }
 
-DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
-    DocumentTrainingRequestSpec, ("method_payload",), _DOCUMENT_TRAIN_STORAGE_SCHEMA
-)
-_REQUEST_FORMATS = (*REQUEST_KINDS.items(), ("train", DOCUMENT_TRAIN_REQUEST))
-
 
 def stored_request_descriptor(schema: str, kind: RequestKind) -> RequestDescriptor:
-    for request_kind, descriptor in _REQUEST_FORMATS:
+    for request_kind, descriptor in REQUEST_KINDS.items():
         if request_kind == kind and descriptor.storage_schema == schema:
             return descriptor
     raise ValueError("Unsupported stored request envelope")
@@ -152,7 +148,7 @@ def request_codec_authority() -> tuple[object, ...]:
         encode,
         tuple(
             (kind, descriptor, descriptor.spec_type.__pydantic_validator__)
-            for kind, descriptor in _REQUEST_FORMATS
+            for kind, descriptor in REQUEST_KINDS.items()
         ),
         sha256_bytes(to_json(_identity_contract())),
     )
@@ -160,7 +156,7 @@ def request_codec_authority() -> tuple[object, ...]:
 
 def generate_identity_fields() -> dict[str, Any]:
     roots = [InputMember]
-    for _, descriptor in _REQUEST_FORMATS:
+    for _, descriptor in REQUEST_KINDS.items():
         for name in descriptor.documents:
             if not descriptor.spec_type.model_fields[name].is_required():
                 raise ValueError(
@@ -228,7 +224,7 @@ def encode_request(
 ) -> EncodedRequest:
     """Encode a typed, validated author request and compute its identity."""
     match = next(
-        ((kind, descriptor) for kind, descriptor in _REQUEST_FORMATS
+        ((kind, descriptor) for kind, descriptor in REQUEST_KINDS.items()
          if descriptor.spec_type is type(spec)),
         None,
     )

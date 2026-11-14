@@ -6,7 +6,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 test('navigates and resizes the saved pipeline canvas without changing zoom', async ({ page, request }) => {
   test.setTimeout(42_000);
-  const [model, task, train, successor] = await fixture('files');
+  const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };
   train.step.base.inline.method_payload.payload.seed = 0;
   train.step.sweep = { axes: { seed: { values: {
@@ -15,7 +15,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
     third: { label: '3', patches: { 'method_payload.payload.seed': { value: 3 } } },
   } } } };
   successor.step.inputs.checkpoint.where = { axes: { seed: ['first', 'third'] } };
-  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, train, successor, unrelated]);
+  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train, successor, unrelated]);
   const region = page.locator('[data-studio-focus-region="map"]:visible');
   const canvas = page.locator('[data-map-canvas]');
   const edge = canvas.locator('[data-map-edge]');

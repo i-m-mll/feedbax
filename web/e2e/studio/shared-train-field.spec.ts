@@ -6,7 +6,7 @@ test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900
 
 test('Training and Runs edit the same saved values and project the selected source', async ({ page, request }) => {
   test.setTimeout(55_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, (await fixture('files')).slice(0, 3));
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const clip = page.getByRole('region', { name: 'Grad Clip field', exact: true });
@@ -24,9 +24,7 @@ test('Training and Runs edit the same saved values and project the selected sour
     if (response.status() === 409) return undefined;
     expect(response.ok(), await response.text()).toBe(true);
     const projection = await response.json() as StudioSavedTrainRuns;
-    expect(projection.window_map?.problems).toEqual(projection.rows.map(({ key }) => expect.objectContaining({
-      code: 'cannot_run', path: '/trial_documents', row: key.row,
-    })));
+    expect(projection.window_map?.problems).toEqual([]);
     return projection;
   }
 
@@ -35,8 +33,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(rateText).toHaveValue('0.001');
   await enter(rateText, 'geomspace(1e-4, 1e-2, 5)');
-  await expect(rate.getByRole('alert')).toContainText('writes more than one setting');
-  await rateText.press('Escape');
+  await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 5');
   await enter(rateText, '1e-3, 2e-3, 3e-3');
   await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 3');
   const before = (await plan())!.rows;
@@ -46,7 +43,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   const values = (initial as { values: Record<string, { patches: Record<string, { value: number }> }> }).values;
   for (const entry of Object.values(values)) {
     const patches = entry.patches;
-    expect(patches['training_config.learning_rate'].value).toBe(patches['method_payload.payload.optimizer.params.learning_rate'].value);
+    expect(Object.keys(patches)).toEqual(['method_payload.payload.optimizer.params.learning_rate']);
   }
   const second = rate.getByRole('textbox', { name: 'Learning Rate value 2', exact: true });
   await enter(second, '0.0025');
@@ -58,12 +55,12 @@ test('Training and Runs edit the same saved values and project the selected sour
   const selectValue = rate.getByRole('button', { name: 'Select Learning Rate 0.0025', exact: true });
   await selectValue.click();
   await expect(selectValue).toHaveAttribute('aria-pressed', 'true');
-  await expect(rate.getByLabel('Learning Rate selected value 0.0025', { exact: true })).toBeVisible();
+  await expect(rate.getByLabel('Learning Rate selected value', { exact: true })).toHaveAccessibleDescription('0.0025');
   const batchText = batches.getByRole('textbox', { name: 'N Batches', exact: true });
   const initialBatches = await batchText.inputValue();
   const override = String(Number(initialBatches) + 1);
   await enter(batchText, override);
-  await expect(batches.getByLabel(`N Batches selected value ${override}`, { exact: true })).toBeVisible();
+  await expect(batches.getByLabel('N Batches selected value', { exact: true })).toHaveAccessibleDescription(override);
   const scoped = (await plan())!.rows;
   expect(scoped.filter((row, index) => row.request_id !== after[index].request_id)).toHaveLength(1);
   await batchText.fill('77');

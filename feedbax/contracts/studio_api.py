@@ -13,14 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.domain import (
     DomainCompileReport,
-    DomainDiagnostic,
     DomainRegistryPayload,
-)
-from feedbax.contracts.graph import (
-    GraphMetadata,
-    GraphSpec,
-    StudioWorkspaceSpec,
-    WorkspaceDocument,
 )
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
@@ -55,96 +48,6 @@ class SuccessResponse(StudioApiModel):
     """Standard API envelope for success-only mutations."""
 
     data: SuccessPayload
-
-
-class GraphListItem(StudioApiModel):
-    """A saved graph listing row."""
-
-    id: str
-    metadata: GraphMetadata
-
-
-class UnreadableGraphListItem(StudioApiModel):
-    """A project whose persisted document could not be read."""
-
-    id: str
-    name: str
-    reason: str
-    detail: str
-
-
-class GraphListPayload(StudioApiModel):
-    """Payload for ``GET /api/graphs``."""
-
-    graphs: list[GraphListItem | UnreadableGraphListItem]
-
-
-class GraphListResponse(StudioApiModel):
-    """Standard API envelope for saved graph listings."""
-
-    data: GraphListPayload
-
-
-class GraphCreatePayload(StudioApiModel):
-    """Payload returned after creating a graph."""
-
-    id: str
-    metadata: GraphMetadata
-
-
-class GraphCreateResponse(StudioApiModel):
-    """Standard API envelope for graph creation."""
-
-    data: GraphCreatePayload
-
-
-class GraphUpdatePayload(StudioApiModel):
-    """Payload returned after updating a graph."""
-
-    success: bool
-    metadata: GraphMetadata
-
-
-class GraphUpdateResponse(StudioApiModel):
-    """Standard API envelope for graph updates."""
-
-    data: GraphUpdatePayload
-
-
-class GraphDetailPayload(StudioApiModel):
-    """Payload for ``GET /api/graphs/{graph_id}``."""
-
-    graph: GraphSpec
-    workspace_document: WorkspaceDocument
-    demo_training_data: Optional[Any] = None
-    metadata: Optional[GraphMetadata] = None
-    workspace: Optional[StudioWorkspaceSpec] = None
-    compile_reports: Optional[dict[str, DomainCompileReport]] = None
-
-
-class GraphDetailResponse(StudioApiModel):
-    """Standard API envelope for graph detail retrieval."""
-
-    data: GraphDetailPayload
-
-
-class GraphValidationResponse(StudioApiModel):
-    """Standard API envelope for graph validation."""
-
-    data: list[DomainDiagnostic]
-
-
-class GraphExportPayload(StudioApiModel):
-    """Payload for graph export endpoints."""
-
-    content: str
-    filename: str
-
-
-class GraphExportResponse(StudioApiModel):
-    """Standard API envelope for graph exports."""
-
-    data: GraphExportPayload
 
 
 class ComponentListPayload(StudioApiModel):

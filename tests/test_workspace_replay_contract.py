@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from feedbax.contracts.graph import GraphSpec, StudioArtifactRef, StudioSelectorRef, WireSpec
+from feedbax.contracts.graph import StudioArtifactRef, StudioSelectorRef
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
@@ -15,108 +15,16 @@ from feedbax.contracts.workspace_replay import (
     WorkspaceReplayTrial,
     WorkspaceReplayTrialIdentity,
     WorkspaceReplayTrialSpecSnapshot,
-    compile_workspace_replay_retention,
     imported_npz_workspace_replay_product,
     workspace_replay_metadata,
 )
-from feedbax.integrations.provider import provider_manifest
-from feedbax.runtime.retained_observables import lower_retention_plan
 
 
-pytestmark = [pytest.mark.feedbax_contract, pytest.mark.provider_contract]
+pytestmark = [pytest.mark.feedbax_contract]
 
 
 def _selector(namespace: str, compact: str, **kwargs: object) -> StudioSelectorRef:
     return StudioSelectorRef(namespace=namespace, compact=compact, **kwargs)
-
-
-def _graph() -> GraphSpec:
-    return GraphSpec(
-        nodes={
-            "plant": {
-                "type": "PointMass",
-                "params": {},
-                "input_ports": ["force"],
-                "output_ports": ["effector"],
-            }
-        },
-        output_ports=["effector"],
-        output_bindings={"effector": ("plant", "effector")},
-    )
-
-
-def test_workspace_replay_required_selectors_compile_to_trajectory_retention() -> None:
-    observables = compile_workspace_replay_retention(
-        {
-            "required_selectors": [
-                {
-                    "anchor_id": "effector",
-                    "selector": _selector("graph_output", "graph_output:effector"),
-                    "value_schema": {
-                        "id": "effector",
-                        "label": "Effector",
-                        "kind": "array",
-                        "shape": ["time", 2],
-                    },
-                },
-                {
-                    "anchor_id": "target",
-                    "selector": _selector("task_data", "task_data:targets.effector"),
-                },
-            ]
-        }
-    )
-
-    assert [item.id for item in observables] == [
-        "workspace_replay:effector",
-        "workspace_replay:target",
-    ]
-    assert {item.retention.mode for item in observables} == {"trajectory"}
-    assert observables[0].target is not None
-    assert observables[0].target.kind == "graph_output"
-    assert observables[0].target.selector == "graph_output:effector"
-    assert observables[0].metadata["workspace_replay"] is True
-
-    graph = _graph()
-    graph.retained_observables = observables[:1]
-    plan = lower_retention_plan(graph)
-
-    assert plan.by_selector["graph_output:effector"].retention.mode == "trajectory"
-    assert plan.by_selector["graph_output:effector"].retention.reasons == (
-        "workspace_replay",
-    )
-
-
-def test_workspace_replay_compile_rejects_unresolved_representation_anchor() -> None:
-    with pytest.raises(ValueError, match="server-resolved"):
-        compile_workspace_replay_retention(
-            [
-                {
-                    "anchor_id": "muscle-origin",
-                    "selector": _selector(
-                        "mechanics_object",
-                        "mechanics_object:arm.origin",
-                    ),
-                }
-            ]
-        )
-
-
-def test_workspace_replay_retains_recurrent_carry_with_stable_wire_id() -> None:
-    graph = _graph()
-    graph.wires = [
-        WireSpec(
-            id="carry", source_node="plant", source_port="effector",
-            target_node="plant", target_port="force", temporality="recurrent",
-            recurrent_initializer={"kind": "zeros", "shape": [2]},
-        ),
-    ]
-    endpoint = "edge:plant.effector->plant.force"
-    graph.retained_observables = compile_workspace_replay_retention([{
-        "anchor_id": "carry",
-        "selector": _selector("recurrent_carry", endpoint, target_id="carry"),
-    }])
-    assert lower_retention_plan(graph).by_selector[endpoint].selector.edge_id == endpoint
 
 
 def test_workspace_replay_product_records_trials_tracks_and_manifest_refs() -> None:
@@ -224,10 +132,3 @@ def test_workspace_replay_schema_policy_accepts_current_and_rejects_v0() -> None
     message = str(exc_info.value)
     assert "WorkspaceReplayProduct" in message
     assert "migration_intentionally_absent=yes" in message
-
-
-def test_provider_manifest_exposes_workspace_replay_product_schema() -> None:
-    manifest = provider_manifest()
-
-    assert "workspace_replay" in manifest.artifact_roles
-    assert manifest.schemas["WorkspaceReplayProduct"] == WorkspaceReplayProduct.model_json_schema()

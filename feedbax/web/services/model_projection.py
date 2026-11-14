@@ -1,45 +1,14 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
-from collections.abc import Iterator
-
 from feedbax.compiler.model_document import lower_model_document
-from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
 from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
 from feedbax.expression_check import references
-from feedbax.objectives.service import loss_service
 from feedbax.studio.schema import _enumerate_graph_ports
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
-
-
-def _objective_selectors(value: object) -> Iterator[str]:
-    if not isinstance(value, dict):
-        return
-    if value.get("kind") == "loss_term":
-        pending = [value.get("loss")]
-        while pending:
-            item = pending.pop()
-            if not isinstance(item, dict):
-                continue
-            for name in ("selector", "target_selector"):
-                if isinstance(selector := item.get(name), str):
-                    yield selector
-            if isinstance(children := item.get("children"), dict):
-                pending.extend(children.values())
-    elif value.get("kind") == "objective_spec" and isinstance(payload := value.get("payload"), dict):
-        terms = payload.get("terms")
-        if not isinstance(terms, list):
-            return
-        for term in terms:
-            if not isinstance(term, dict):
-                continue
-            for name in ("selector", "target"):
-                selection = term.get(name)
-                if isinstance(selection, dict) and isinstance(selector := selection.get("selector"), str):
-                    yield selector
 
 
 def _port(document, composites, component, direction, port):
@@ -51,34 +20,27 @@ def _port(document, composites, component, direction, port):
 
 
 def model_projection(folders, project_id, body, components):
-    model, task, objective, managed, overrides = selected_model_and_task(folders, project_id, body)
+    model, task, objective, overrides = selected_model_and_task(folders, project_id, body)
     task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable)
     names = {signal.id for signal in task_signals}
     supplied = {port.name for port in model.ports.inputs if overrides.get(port.name, port.name) in names}
     try:
         lowered = lower_model_document(
-            body.document, model, components, None if managed else task,
-            supplied_inputs=frozenset(supplied) if managed else frozenset(),
+            body.document, model, components, supplied_inputs=frozenset(supplied),
         )
     except ValueError:
         # The selected Plan carries the addressed failure. Exposed task signals
         # are still known when the Model cannot be lowered.
         return ModelProjection(task_signals=task_signals, resolved_model=model)
-    if managed:
-        task_inputs = tuple(
-            ModelAddress.model_validate({
-                "document": body.document, "composites": [],
-                "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
-            }) for port in model.ports.inputs if port.name in supplied
-        )
-    else:
-        task_inputs = tuple(
-            address for path, address in lowered.origins.items() if path[:2] == ("task_binding_spec", "bindings")
-        )
+    task_inputs = tuple(
+        ModelAddress.model_validate({
+            "document": body.document, "composites": [],
+            "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
+        }) for port in model.ports.inputs if port.name in supplied
+    )
     try:
         resolution = resolve_graph_parameters(
-            lowered.graph, prototypes_from_task_bindings(lowered.task) if lowered.task else {},
-            components, allow_incomplete=True,
+            lowered.graph, {}, components, allow_incomplete=True,
         )
     except ValueError:
         return ModelProjection(task_signals=task_signals, task_inputs=task_inputs, resolved_model=model)
@@ -108,7 +70,7 @@ def model_projection(folders, project_id, body, components):
                 collect(branch, component, (*composites, child))
     collect(resolution, model, ())
     objective_ports = {}
-    if managed and isinstance(objective, dict):
+    if isinstance(objective, dict):
         document = ObjectiveDocument.model_validate(objective)
         for term in document.terms:
             for reference in references(term.measure):
@@ -120,11 +82,6 @@ def model_projection(folders, project_id, body, components):
                     continue
                 if address.document == body.document and isinstance(address.element, PortElement):
                     objective_ports[reference] = address
-    for selector in _objective_selectors(objective):
-        selected = loss_service.resolve_probe_selector(selector, lowered.graph)
-        if selected and selected["type"] == "port" and selected["node"] in model.interior.components:
-            address = _port(body.document, (), selected["node"], "output", selected["port"])
-            objective_ports[address.to_text()] = address
     return ModelProjection(
         ports=tuple(ports), task_signals=task_signals, task_inputs=task_inputs,
         objective_ports=tuple(objective_ports.values()), resolved_model=model,

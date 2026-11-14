@@ -1320,32 +1320,6 @@ export interface AnalysisPageSpec {
   expanded_field_paths?: string[];
 }
 
-export interface AnalysisCanvasPosition {
-  x: number;
-  y: number;
-}
-
-export interface AnalysisCanvasViewport {
-  x?: number;
-  y?: number;
-  zoom?: number;
-}
-
-export interface AnalysisCanvasPageLayout {
-  node_positions?: Record<string, AnalysisCanvasPosition>;
-  viewport?: AnalysisCanvasViewport;
-}
-
-export interface AnalysisCanvasStageLayout {
-  pages?: Record<string, AnalysisCanvasPageLayout>;
-}
-
-export interface AnalysisCanvasLayoutDocument {
-  schema_id: "feedbax.spec.studio.analysis_canvas_layout";
-  schema_version: "feedbax.spec.studio.analysis_canvas_layout.v1";
-  stages?: Record<string, AnalysisCanvasStageLayout>;
-}
-
 export interface StudioValidationIssue {
   type: string;
   message: string;
@@ -1550,97 +1524,6 @@ export interface StudioBiomechanicsSpec {
   schema_id?: "feedbax.spec.studio.biomechanics";
   schema_version?: "feedbax.spec.studio.biomechanics.v1";
   metadata?: Record<string, unknown>;
-}
-
-export interface StudioScenarioSpec {
-  id: string;
-  schema_version?: "feedbax.spec.studio.scenario.v3";
-  label: string;
-  stage_id?: string | null;
-  parent_scenario_id?: string | null;
-  training_spec?: Record<string, unknown> | null;
-  task_spec?: Record<string, unknown> | null;
-  task_binding_spec?: StudioTaskBindingSpec | null;
-  objective_spec?: Record<string, unknown> | null;
-  probe_specs?: RetainedObservableSpec[];
-  temporal_spec?: Record<string, unknown> | null;
-  biomechanics_spec?: StudioBiomechanicsSpec | null;
-  analysis_spec?: Record<string, unknown> | null;
-  report_spec?: Record<string, unknown> | null;
-  validation?: StudioValidationState;
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioStageSpec {
-  id: string;
-  schema_id?: "feedbax.spec.studio.stage";
-  schema_version?: "feedbax.spec.studio.stage.v2";
-  kind: "train" | "eval" | "analysis" | "report" | "import" | "compare" | "export" | "protocol";
-  label: string;
-  status?: "draft" | "invalid" | "ready" | "running" | "completed" | "failed" | "cancelled";
-  scenario_id?: string | null;
-  input_collections?: StudioCollectionRef[];
-  output_collections?: StudioCollectionRef[];
-  manifest_refs?: StudioManifestRef[];
-  artifact_refs?: StudioArtifactRef[];
-  execution_spec?: Record<string, unknown> | null;
-  selection_spec?: Record<string, unknown>;
-  validation?: StudioValidationState;
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioWorkspaceSpec {
-  id: string;
-  schema_id?: "feedbax.spec.studio.workspace";
-  schema_version?: "feedbax.spec.studio.workspace.v2";
-  label: string;
-  active_stage_id?: string | null;
-  stages?: StudioStageSpec[];
-  scenarios?: Record<string, StudioScenarioSpec>;
-  collections?: StudioCollectionRef[];
-  manifest_refs?: StudioManifestRef[];
-  artifact_refs?: StudioArtifactRef[];
-  validation?: StudioValidationState;
-  metadata?: Record<string, unknown>;
-}
-
-export interface SemanticAnchor {
-  semantic_document_sha256: string;
-  authored_path: string;
-}
-
-export interface WorkspaceDocument {
-  schema_id?: "feedbax.workspace_document";
-  schema_version?: "1";
-  semantic_root: SemanticAnchor;
-  graph_ui_state?: GraphUIState;
-  workspace_ui_state?: Record<string, unknown>;
-  stage_ui_state?: Record<string, Record<string, unknown>>;
-  scenario_ui_state?: Record<string, Record<string, unknown>>;
-  analysis_pages?: AnalysisPageSpec[];
-  active_analysis_page_id?: string | null;
-  analysis_canvas_layout?: AnalysisCanvasLayoutDocument;
-  semantic_anchors?: Record<string, SemanticAnchor>;
-}
-
-export interface StudioPersistenceDocument {
-  schema_id: "feedbax.spec.studio.persistence_document";
-  schema_version: "feedbax.spec.studio.persistence_document.v1";
-  graph?: GraphSpec | null;
-  workspace_document?: WorkspaceDocument | null;
-  workspace?: StudioWorkspaceSpec | null;
-  expected_save_revision?: number | null;
-}
-
-export interface GraphProject {
-  schema_id?: "feedbax.spec.studio.graph_project";
-  schema_version?: "feedbax.spec.studio.graph_project.v1";
-  metadata: GraphMetadata;
-  graph: GraphSpec;
-  workspace_document: WorkspaceDocument;
-  demo_training_data?: unknown | null;
-  workspace?: StudioWorkspaceSpec | null;
-  compile_reports?: Record<string, DomainCompileReport> | null;
 }
 
 export interface ValidationError {
@@ -2104,55 +1987,6 @@ export interface OptimizerSpec {
   lr_schedule?: LrScheduleSpec | null;
 }
 
-export interface TimeAggregationSpec {
-  mode?: "all" | "mean" | "sum" | "final" | "range" | "segment" | "custom";
-  start?: number | null;
-  end?: number | null;
-  segment_name?: string | null;
-  time_idxs?: number[] | null;
-  discount?: "none" | "power" | "linear" | null;
-  discount_exp?: number | null;
-}
-
-export interface LossTermSpec {
-  schema_id?: "feedbax.spec.training.loss_term";
-  schema_version?: string;
-  type: string;
-  label: string;
-  weight?: number;
-  selector?: string | null;
-  target_selector?: string | null;
-  target_value?: unknown | null;
-  retention?: RetentionPolicySpec | null;
-  norm?: "squared_l2" | "l2" | "l1" | "huber" | null;
-  matrix?: unknown | null;
-  matrix_kind?: "dense" | "diagonal" | null;
-  time_agg?: TimeAggregationSpec | null;
-  children?: Record<string, LossTermSpec> | null;
-}
-
-export interface EarlyStoppingSpec {
-  metric: string;
-  patience: number;
-  min_delta: number;
-}
-
-export interface TrainingSpec {
-  optimizer: OptimizerSpec;
-  loss: LossTermSpec;
-  n_batches: number;
-  batch_size: number;
-  n_epochs?: number | null;
-  checkpoint_interval?: number | null;
-  early_stopping?: EarlyStoppingSpec | null;
-}
-
-export interface TaskSpec {
-  type: string;
-  params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  timeline?: StudioTaskTimelineSpec | null;
-}
-
 export interface TrainingConfig {
   n_batches?: number;
   batch_size?: number;
@@ -2259,96 +2093,6 @@ export interface SuccessResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
   data: SuccessPayload;
-}
-
-export interface GraphListItem {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  id: string;
-  metadata: GraphMetadata;
-}
-
-export interface UnreadableGraphListItem {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  id: string;
-  name: string;
-  reason: string;
-  detail: string;
-}
-
-export interface GraphListPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  graphs: Array<GraphListItem | UnreadableGraphListItem>;
-}
-
-export interface GraphListResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphListPayload;
-}
-
-export interface GraphCreatePayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  id: string;
-  metadata: GraphMetadata;
-}
-
-export interface GraphCreateResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphCreatePayload;
-}
-
-export interface GraphUpdatePayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  success: boolean;
-  metadata: GraphMetadata;
-}
-
-export interface GraphUpdateResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphUpdatePayload;
-}
-
-export interface GraphDetailPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  graph: GraphSpec;
-  workspace_document: WorkspaceDocument;
-  demo_training_data?: unknown | null;
-  metadata?: GraphMetadata | null;
-  workspace?: StudioWorkspaceSpec | null;
-  compile_reports?: Record<string, DomainCompileReport> | null;
-}
-
-export interface GraphDetailResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphDetailPayload;
-}
-
-export interface GraphValidationResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: DomainDiagnostic[];
-}
-
-export interface GraphExportPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  content: string;
-  filename: string;
-}
-
-export interface GraphExportResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphExportPayload;
 }
 
 export interface ComponentListPayload {
@@ -2588,75 +2332,6 @@ export interface TrainingTrajectoryPayload {
   t?: unknown[] | null;
 }
 
-export interface TrainingRunInfo {
-  id: string;
-  name: string;
-  created_at: string;
-  status: string;
-  hyperparams: Record<string, unknown>;
-  metrics?: Record<string, unknown>;
-  uri?: string | null;
-  stage_id?: string | null;
-  scenario_id?: string | null;
-  planned?: boolean;
-  checkpoint_available?: boolean;
-  source_issue?: string | null;
-  provenance_id?: string | null;
-  superseded_by?: string | null;
-}
-
-export interface EvalRunInfo {
-  id: string;
-  training_run_id: string;
-  name: string;
-  created_at: string;
-  status: string;
-  description?: string | null;
-  training_run_ids?: string[];
-  uri?: string | null;
-}
-
-export interface CreateEvalRunRequest {
-  training_run_id: string;
-  name: string;
-  eval_params?: Record<string, unknown>;
-}
-
-export interface TrainingRunCompareRequest {
-  run_ids: string[];
-  param_fields?: string[];
-  metric_fields?: string[];
-}
-
-export interface TrainingRunCompareRow {
-  id: string;
-  params?: Record<string, unknown>;
-  metrics?: Record<string, unknown>;
-}
-
-export interface TrainingRunCompareResponse {
-  rows: TrainingRunCompareRow[];
-}
-
-export interface ManifestImportRequest {
-  path: string;
-  root?: string | null;
-}
-
-export interface ManifestImportResponse {
-  root: string;
-  source_path: string;
-  imported_manifest_ids?: string[];
-  skipped_manifest_ids?: string[];
-  manifest_count?: number;
-  artifact_count?: number;
-  included_artifact_count?: number;
-  external_artifact_count?: number;
-  index_path?: string | null;
-  training_runs?: TrainingRunInfo[];
-  eval_runs?: EvalRunInfo[];
-}
-
 export interface DatasetInfo {
   name: string;
   file_size: number;
@@ -2781,12 +2456,6 @@ export interface DiagnosticsResponse {
 export interface CycleAnnotationModel {
   source: string;
   target: string;
-}
-
-export interface TreescopeRequest {
-  max_depth?: number;
-  project_cycles?: boolean;
-  roundtrip_mode?: boolean;
 }
 
 export interface InlineTreescopeRequest {
@@ -3647,33 +3316,6 @@ export type StudioCheckpointRuleToSweep = {
   "kind": "to_sweep";
 };
 
-export type StudioDocumentAuthoring = {
-  "revision": Sha256;
-  "document": string;
-  "payload": JsonValue;
-  "sources": Record<string, StudioAuthoringSource>;
-  "variant_model_paths"?: Array<DocumentOverridePath> | null;
-  "variant_model_reason"?: string | null;
-  "files": Array<StudioProjectFilePatch>;
-  "created_component"?: string | null;
-  "presentation_revision"?: Sha256 | null;
-};
-
-export type StudioDocumentAuthoringChange = {
-  "scope"?: "variant" | null;
-  "lit_steps": Array<string>;
-  "path": DocumentOverridePath;
-  "value": string | number | boolean;
-};
-
-export type StudioDocumentAuthoringRequest = {
-  "revision": Sha256;
-  "run": StudioSavedTrainKey;
-  "field": "graph" | "task";
-  "presentation_revision"?: Sha256 | null;
-  "change"?: StudioDocumentAuthoringChange | StudioModelAuthoringChange | null;
-};
-
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "base": Base;
@@ -3685,29 +3327,6 @@ export type StudioEvaluateStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
-};
-
-export type StudioModelAddComponent = {
-  "kind": "addComponent";
-  "component": "feedbax.GRU" | "feedbax.Linear" | "feedbax.PointMass";
-  "revision": number;
-  "position"?: PresentationPosition | null;
-};
-
-export type StudioModelAuthoringChange = {
-  "lit_steps": Array<string>;
-  "operation": StudioModelAddComponent | StudioModelConnectPorts | StudioModelExposeOutput;
-};
-
-export type StudioModelConnectPorts = {
-  "kind": "connectPorts";
-  "wire": WireSpec;
-};
-
-export type StudioModelExposeOutput = {
-  "kind": "exposeOutput";
-  "source_node": string;
-  "source_port": string;
 };
 
 export type StudioNameSweepValue = {
@@ -3875,23 +3494,6 @@ export type StudioProjectWindowMapSubset = {
   "members"?: Array<StudioSavedTrainKey> | null;
 };
 
-export type StudioReachPosition = {
-  "x": number;
-  "y": number;
-};
-
-export type StudioReachTargetAuthoring = {
-  "inputs": Array<StudioAuthoringOption>;
-  "input": string | null;
-  "position": StudioReachPosition | null;
-};
-
-export type StudioReachTargetEdit = {
-  "kind": "bindReachTarget";
-  "input": string;
-  "position": StudioReachPosition;
-};
-
 export type StudioReplayFile = {
   "address": ReplayFileAddress | ReplayDeclarationAddress;
   "before": Sha256 | null;
@@ -3951,12 +3553,11 @@ export type StudioTrainAuthoring = {
   "fields": Array<StudioAuthoringField>;
   "patches": Array<ProjectValueEdit>;
   "documents": Array<string>;
-  "reach_target"?: StudioReachTargetAuthoring | null;
 };
 
 export type StudioTrainAuthoringRequest = {
   "revision": Sha256;
-  "change"?: StudioAuthoringChange | StudioAuthoringSweepChange | StudioReachTargetEdit | null;
+  "change"?: StudioAuthoringChange | StudioAuthoringSweepChange | null;
 };
 
 export type StudioTrainStep = {
@@ -6552,52 +6153,6 @@ export const AnalysisPageSpecSchema: z.ZodType<AnalysisPageSpec> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<AnalysisPageSpec>;
 
-export const AnalysisCanvasPositionSchema: z.ZodType<AnalysisCanvasPosition> = z.lazy(() =>
-  z
-    .object({
-      "x": z.number().finite().gte(-10000000).lte(10000000),
-      "y": z.number().finite().gte(-10000000).lte(10000000),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasPosition>;
-
-export const AnalysisCanvasViewportSchema: z.ZodType<AnalysisCanvasViewport> = z.lazy(() =>
-  z
-    .object({
-      "x": z.number().finite().gte(-10000000).lte(10000000).optional(),
-      "y": z.number().finite().gte(-10000000).lte(10000000).optional(),
-      "zoom": z.number().finite().gte(0.1).lte(2.5).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasViewport>;
-
-export const AnalysisCanvasPageLayoutSchema: z.ZodType<AnalysisCanvasPageLayout> = z.lazy(() =>
-  z
-    .object({
-      "node_positions": z.record(z.string(), AnalysisCanvasPositionSchema).optional(),
-      "viewport": AnalysisCanvasViewportSchema.optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasPageLayout>;
-
-export const AnalysisCanvasStageLayoutSchema: z.ZodType<AnalysisCanvasStageLayout> = z.lazy(() =>
-  z
-    .object({
-      "pages": z.record(z.string(), AnalysisCanvasPageLayoutSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasStageLayout>;
-
-export const AnalysisCanvasLayoutDocumentSchema: z.ZodType<AnalysisCanvasLayoutDocument> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.analysis_canvas_layout"),
-      "schema_version": z.literal("feedbax.spec.studio.analysis_canvas_layout.v1"),
-      "stages": z.record(z.string(), AnalysisCanvasStageLayoutSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasLayoutDocument>;
-
 export const StudioValidationIssueSchema: z.ZodType<StudioValidationIssue> = z.lazy(() =>
   z
     .object({
@@ -7041,147 +6596,6 @@ export const StudioBiomechanicsSpecSchema: z.ZodType<StudioBiomechanicsSpec> = z
     })
     .strict()
 ) as unknown as z.ZodType<StudioBiomechanicsSpec>;
-
-export const StudioScenarioSpecSchema: z.ZodType<StudioScenarioSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "schema_version": z.literal("feedbax.spec.studio.scenario.v3").optional(),
-      "label": z.string(),
-      "stage_id": z.string().nullable().optional(),
-      "parent_scenario_id": z.string().nullable().optional(),
-      "training_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "task_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "task_binding_spec": StudioTaskBindingSpecSchema.nullable().optional(),
-      "objective_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "probe_specs": z.array(RetainedObservableSpecSchema).optional(),
-      "temporal_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "biomechanics_spec": StudioBiomechanicsSpecSchema.nullable().optional(),
-      "analysis_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "report_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "validation": StudioValidationStateSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Studio scenario task_spec must satisfy the generated TaskSpec contract",
-        });
-      }
-    })
-) as unknown as z.ZodType<StudioScenarioSpec>;
-
-export const StudioStageSpecSchema: z.ZodType<StudioStageSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "schema_id": z.literal("feedbax.spec.studio.stage").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.stage.v2").optional(),
-      "kind": z.union([z.literal("train"), z.literal("eval"), z.literal("analysis"), z.literal("report"), z.literal("import"), z.literal("compare"), z.literal("export"), z.literal("protocol")]),
-      "label": z.string(),
-      "status": z.union([z.literal("draft"), z.literal("invalid"), z.literal("ready"), z.literal("running"), z.literal("completed"), z.literal("failed"), z.literal("cancelled")]).optional(),
-      "scenario_id": z.string().nullable().optional(),
-      "input_collections": z.array(StudioCollectionRefSchema).optional(),
-      "output_collections": z.array(StudioCollectionRefSchema).optional(),
-      "manifest_refs": z.array(StudioManifestRefSchema).optional(),
-      "artifact_refs": z.array(StudioArtifactRefSchema).optional(),
-      "execution_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "selection_spec": z.record(z.string(), z.unknown()).optional(),
-      "validation": StudioValidationStateSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioStageSpec>;
-
-export const StudioWorkspaceSpecSchema: z.ZodType<StudioWorkspaceSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "schema_id": z.literal("feedbax.spec.studio.workspace").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.workspace.v2").optional(),
-      "label": z.string(),
-      "active_stage_id": z.string().nullable().optional(),
-      "stages": z.array(StudioStageSpecSchema).optional(),
-      "scenarios": z.record(z.string(), StudioScenarioSpecSchema).optional(),
-      "collections": z.array(StudioCollectionRefSchema).optional(),
-      "manifest_refs": z.array(StudioManifestRefSchema).optional(),
-      "artifact_refs": z.array(StudioArtifactRefSchema).optional(),
-      "validation": StudioValidationStateSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioWorkspaceSpec>;
-
-export const SemanticAnchorSchema: z.ZodType<SemanticAnchor> = z.lazy(() =>
-  z
-    .object({
-      "semantic_document_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "authored_path": z.string().regex(new RegExp("^/")),
-    })
-    .strict()
-) as unknown as z.ZodType<SemanticAnchor>;
-
-export const WorkspaceDocumentSchema: z.ZodType<WorkspaceDocument> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.workspace_document").optional(),
-      "schema_version": z.literal("1").optional(),
-      "semantic_root": SemanticAnchorSchema,
-      "graph_ui_state": GraphUIStateSchema.optional(),
-      "workspace_ui_state": z.record(z.string(), z.unknown()).optional(),
-      "stage_ui_state": z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
-      "scenario_ui_state": z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
-      "analysis_pages": z.array(AnalysisPageSpecSchema).optional(),
-      "active_analysis_page_id": z.string().nullable().optional(),
-      "analysis_canvas_layout": AnalysisCanvasLayoutDocumentSchema.optional(),
-      "semantic_anchors": z.record(z.string(), SemanticAnchorSchema).optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.semantic_root.authored_path !== '/graph') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "WorkspaceDocument semantic_root must target /graph",
-        });
-      }
-      if (Object.values(value.semantic_anchors).some((anchor) => anchor.semantic_document_sha256 !== value.semantic_root.semantic_document_sha256)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "WorkspaceDocument semantic anchors must target the semantic root revision",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceDocument>;
-
-export const StudioPersistenceDocumentSchema: z.ZodType<StudioPersistenceDocument> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.persistence_document"),
-      "schema_version": z.literal("feedbax.spec.studio.persistence_document.v1"),
-      "graph": GraphSpecSchema.nullable().optional(),
-      "workspace_document": WorkspaceDocumentSchema.nullable().optional(),
-      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
-      "expected_save_revision": z.number().int().safe().gte(0).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPersistenceDocument>;
-
-export const GraphProjectSchema: z.ZodType<GraphProject> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.graph_project").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.graph_project.v1").optional(),
-      "metadata": GraphMetadataSchema,
-      "graph": GraphSpecSchema,
-      "workspace_document": WorkspaceDocumentSchema,
-      "demo_training_data": z.unknown().nullable().optional(),
-      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
-      "compile_reports": z.record(z.string(), DomainCompileReportSchema).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphProject>;
 
 export const ValidationErrorSchema: z.ZodType<ValidationError> = z.lazy(() =>
   z
@@ -8020,75 +7434,6 @@ export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<OptimizerSpec>;
 
-export const TimeAggregationSpecSchema: z.ZodType<TimeAggregationSpec> = z.lazy(() =>
-  z
-    .object({
-      "mode": z.union([z.literal("all"), z.literal("mean"), z.literal("sum"), z.literal("final"), z.literal("range"), z.literal("segment"), z.literal("custom")]).optional(),
-      "start": z.number().int().safe().nullable().optional(),
-      "end": z.number().int().safe().nullable().optional(),
-      "segment_name": z.string().nullable().optional(),
-      "time_idxs": z.array(z.number().int().safe()).nullable().optional(),
-      "discount": z.union([z.literal("none"), z.literal("power"), z.literal("linear")]).nullable().optional(),
-      "discount_exp": z.number().finite().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TimeAggregationSpec>;
-
-export const LossTermSpecSchema: z.ZodType<LossTermSpec> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.training.loss_term").optional(),
-      "schema_version": z.string().optional(),
-      "type": z.string(),
-      "label": z.string(),
-      "weight": z.number().finite().optional(),
-      "selector": z.string().nullable().optional(),
-      "target_selector": z.string().nullable().optional(),
-      "target_value": z.unknown().nullable().optional(),
-      "retention": RetentionPolicySpecSchema.nullable().optional(),
-      "norm": z.union([z.literal("squared_l2"), z.literal("l2"), z.literal("l1"), z.literal("huber")]).nullable().optional(),
-      "matrix": z.unknown().nullable().optional(),
-      "matrix_kind": z.union([z.literal("dense"), z.literal("diagonal")]).nullable().optional(),
-      "time_agg": TimeAggregationSpecSchema.nullable().optional(),
-      "children": z.record(z.string(), LossTermSpecSchema).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<LossTermSpec>;
-
-export const EarlyStoppingSpecSchema: z.ZodType<EarlyStoppingSpec> = z.lazy(() =>
-  z
-    .object({
-      "metric": z.string(),
-      "patience": z.number().int().safe(),
-      "min_delta": z.number().finite(),
-    })
-    .strict()
-) as unknown as z.ZodType<EarlyStoppingSpec>;
-
-export const TrainingSpecSchema: z.ZodType<TrainingSpec> = z.lazy(() =>
-  z
-    .object({
-      "optimizer": OptimizerSpecSchema,
-      "loss": LossTermSpecSchema,
-      "n_batches": z.number().int().safe(),
-      "batch_size": z.number().int().safe(),
-      "n_epochs": z.number().int().safe().nullable().optional(),
-      "checkpoint_interval": z.number().int().safe().nullable().optional(),
-      "early_stopping": EarlyStoppingSpecSchema.nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingSpec>;
-
-export const TaskSpecSchema: z.ZodType<TaskSpec> = z.lazy(() =>
-  z
-    .object({
-      "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "timeline": StudioTaskTimelineSpecSchema.nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TaskSpec>;
-
 export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
   z
     .object({
@@ -8266,148 +7611,6 @@ export const SuccessResponseSchema: z.ZodType<SuccessResponse> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<SuccessResponse>;
-
-export const GraphListItemSchema: z.ZodType<GraphListItem> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "id": z.string(),
-      "metadata": GraphMetadataSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphListItem>;
-
-export const UnreadableGraphListItemSchema: z.ZodType<UnreadableGraphListItem> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "id": z.string(),
-      "name": z.string(),
-      "reason": z.string(),
-      "detail": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<UnreadableGraphListItem>;
-
-export const GraphListPayloadSchema: z.ZodType<GraphListPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "graphs": z.array(z.union([GraphListItemSchema, UnreadableGraphListItemSchema])),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphListPayload>;
-
-export const GraphListResponseSchema: z.ZodType<GraphListResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphListPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphListResponse>;
-
-export const GraphCreatePayloadSchema: z.ZodType<GraphCreatePayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "id": z.string(),
-      "metadata": GraphMetadataSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphCreatePayload>;
-
-export const GraphCreateResponseSchema: z.ZodType<GraphCreateResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphCreatePayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphCreateResponse>;
-
-export const GraphUpdatePayloadSchema: z.ZodType<GraphUpdatePayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "success": z.boolean(),
-      "metadata": GraphMetadataSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphUpdatePayload>;
-
-export const GraphUpdateResponseSchema: z.ZodType<GraphUpdateResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphUpdatePayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphUpdateResponse>;
-
-export const GraphDetailPayloadSchema: z.ZodType<GraphDetailPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "graph": GraphSpecSchema,
-      "workspace_document": WorkspaceDocumentSchema,
-      "demo_training_data": z.unknown().nullable().optional(),
-      "metadata": GraphMetadataSchema.nullable().optional(),
-      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
-      "compile_reports": z.record(z.string(), DomainCompileReportSchema).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphDetailPayload>;
-
-export const GraphDetailResponseSchema: z.ZodType<GraphDetailResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphDetailPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphDetailResponse>;
-
-export const GraphValidationResponseSchema: z.ZodType<GraphValidationResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": z.array(DomainDiagnosticSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphValidationResponse>;
-
-export const GraphExportPayloadSchema: z.ZodType<GraphExportPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "content": z.string(),
-      "filename": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphExportPayload>;
-
-export const GraphExportResponseSchema: z.ZodType<GraphExportResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphExportPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphExportResponse>;
 
 export const ComponentListPayloadSchema: z.ZodType<ComponentListPayload> = z.lazy(() =>
   z
@@ -8762,107 +7965,6 @@ export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayloa
     .strict()
 ) as unknown as z.ZodType<TrainingTrajectoryPayload>;
 
-export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "name": z.string(),
-      "created_at": z.string(),
-      "status": z.string(),
-      "hyperparams": z.record(z.string(), z.unknown()),
-      "metrics": z.record(z.string(), z.unknown()).optional(),
-      "uri": z.string().nullable().optional(),
-      "stage_id": z.string().nullable().optional(),
-      "scenario_id": z.string().nullable().optional(),
-      "planned": z.boolean().optional(),
-      "checkpoint_available": z.boolean().optional(),
-      "source_issue": z.string().nullable().optional(),
-      "provenance_id": z.string().nullable().optional(),
-      "superseded_by": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunInfo>;
-
-export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "training_run_id": z.string(),
-      "name": z.string(),
-      "created_at": z.string(),
-      "status": z.string(),
-      "description": z.string().nullable().optional(),
-      "training_run_ids": z.array(z.string()).optional(),
-      "uri": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<EvalRunInfo>;
-
-export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.lazy(() =>
-  z
-    .object({
-      "training_run_id": z.string(),
-      "name": z.string(),
-      "eval_params": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<CreateEvalRunRequest>;
-
-export const TrainingRunCompareRequestSchema: z.ZodType<TrainingRunCompareRequest> = z.lazy(() =>
-  z
-    .object({
-      "run_ids": z.array(z.string()).min(2),
-      "param_fields": z.array(z.string()).max(64).optional(),
-      "metric_fields": z.array(z.string()).max(64).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunCompareRequest>;
-
-export const TrainingRunCompareRowSchema: z.ZodType<TrainingRunCompareRow> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "params": z.record(z.string(), z.unknown()).optional(),
-      "metrics": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunCompareRow>;
-
-export const TrainingRunCompareResponseSchema: z.ZodType<TrainingRunCompareResponse> = z.lazy(() =>
-  z
-    .object({
-      "rows": z.array(TrainingRunCompareRowSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunCompareResponse>;
-
-export const ManifestImportRequestSchema: z.ZodType<ManifestImportRequest> = z.lazy(() =>
-  z
-    .object({
-      "path": z.string(),
-      "root": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ManifestImportRequest>;
-
-export const ManifestImportResponseSchema: z.ZodType<ManifestImportResponse> = z.lazy(() =>
-  z
-    .object({
-      "root": z.string(),
-      "source_path": z.string(),
-      "imported_manifest_ids": z.array(z.string()).optional(),
-      "skipped_manifest_ids": z.array(z.string()).optional(),
-      "manifest_count": z.number().int().safe().optional(),
-      "artifact_count": z.number().int().safe().optional(),
-      "included_artifact_count": z.number().int().safe().optional(),
-      "external_artifact_count": z.number().int().safe().optional(),
-      "index_path": z.string().nullable().optional(),
-      "training_runs": z.array(TrainingRunInfoSchema).optional(),
-      "eval_runs": z.array(EvalRunInfoSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ManifestImportResponse>;
-
 export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
   z
     .object({
@@ -9056,16 +8158,6 @@ export const CycleAnnotationModelSchema: z.ZodType<CycleAnnotationModel> = z.laz
     })
     .strict()
 ) as unknown as z.ZodType<CycleAnnotationModel>;
-
-export const TreescopeRequestSchema: z.ZodType<TreescopeRequest> = z.lazy(() =>
-  z
-    .object({
-      "max_depth": z.number().int().safe().gte(1).lte(50).optional(),
-      "project_cycles": z.boolean().optional(),
-      "roundtrip_mode": z.boolean().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TreescopeRequest>;
 
 export const InlineTreescopeRequestSchema: z.ZodType<InlineTreescopeRequest> = z.lazy(() =>
   z
@@ -10237,39 +9329,6 @@ export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleTo
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
 
-export const StudioDocumentAuthoringSchema: z.ZodType<StudioDocumentAuthoring> = z.lazy(() =>
-  z.object({
-    "revision": Sha256Schema,
-    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "payload": jsonValueSchema,
-    "sources": z.record(z.string(), StudioAuthoringSourceSchema),
-    "variant_model_paths": z.union([z.array(DocumentOverridePathSchema), z.null()]).optional(),
-    "variant_model_reason": z.union([z.string().min(1), z.null()]).optional(),
-    "files": z.array(StudioProjectFilePatchSchema),
-    "created_component": z.union([z.string(), z.null()]).optional(),
-    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
-  }).strict()
-) as unknown as z.ZodType<StudioDocumentAuthoring>;
-
-export const StudioDocumentAuthoringChangeSchema: z.ZodType<StudioDocumentAuthoringChange> = z.lazy(() =>
-  z.object({
-    "scope": z.union([z.literal("variant"), z.null()]).optional(),
-    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
-    "path": DocumentOverridePathSchema,
-    "value": z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean()]),
-  }).strict()
-) as unknown as z.ZodType<StudioDocumentAuthoringChange>;
-
-export const StudioDocumentAuthoringRequestSchema: z.ZodType<StudioDocumentAuthoringRequest> = z.lazy(() =>
-  z.object({
-    "revision": Sha256Schema,
-    "run": StudioSavedTrainKeySchema,
-    "field": z.union([z.literal("graph"), z.literal("task")]),
-    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
-    "change": z.union([StudioDocumentAuthoringChangeSchema, StudioModelAuthoringChangeSchema, z.null()]).optional(),
-  }).strict()
-) as unknown as z.ZodType<StudioDocumentAuthoringRequest>;
-
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -10284,37 +9343,6 @@ export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(()
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluateStep>;
-
-export const StudioModelAddComponentSchema: z.ZodType<StudioModelAddComponent> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("addComponent"),
-    "component": z.union([z.literal("feedbax.GRU"), z.literal("feedbax.Linear"), z.literal("feedbax.PointMass")]),
-    "revision": z.number().int().safe().gt(0),
-    "position": z.union([PresentationPositionSchema, z.null()]).optional(),
-  }).strict()
-) as unknown as z.ZodType<StudioModelAddComponent>;
-
-export const StudioModelAuthoringChangeSchema: z.ZodType<StudioModelAuthoringChange> = z.lazy(() =>
-  z.object({
-    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
-    "operation": z.union([StudioModelAddComponentSchema, StudioModelConnectPortsSchema, StudioModelExposeOutputSchema]),
-  }).strict()
-) as unknown as z.ZodType<StudioModelAuthoringChange>;
-
-export const StudioModelConnectPortsSchema: z.ZodType<StudioModelConnectPorts> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("connectPorts"),
-    "wire": WireSpecSchema,
-  }).strict()
-) as unknown as z.ZodType<StudioModelConnectPorts>;
-
-export const StudioModelExposeOutputSchema: z.ZodType<StudioModelExposeOutput> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("exposeOutput"),
-    "source_node": z.string().min(1),
-    "source_port": z.string().min(1),
-  }).strict()
-) as unknown as z.ZodType<StudioModelExposeOutput>;
 
 export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
   z.object({
@@ -10525,29 +9553,6 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
-export const StudioReachPositionSchema: z.ZodType<StudioReachPosition> = z.lazy(() =>
-  z.object({
-    "x": z.number().finite().min(-3.4028234663852886e+38).max(3.4028234663852886e+38),
-    "y": z.number().finite().min(-3.4028234663852886e+38).max(3.4028234663852886e+38),
-  }).strict()
-) as unknown as z.ZodType<StudioReachPosition>;
-
-export const StudioReachTargetAuthoringSchema: z.ZodType<StudioReachTargetAuthoring> = z.lazy(() =>
-  z.object({
-    "inputs": z.array(StudioAuthoringOptionSchema),
-    "input": z.union([z.string(), z.null()]),
-    "position": z.union([StudioReachPositionSchema, z.null()]),
-  }).strict()
-) as unknown as z.ZodType<StudioReachTargetAuthoring>;
-
-export const StudioReachTargetEditSchema: z.ZodType<StudioReachTargetEdit> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("bindReachTarget"),
-    "input": z.string().min(1),
-    "position": StudioReachPositionSchema,
-  }).strict()
-) as unknown as z.ZodType<StudioReachTargetEdit>;
-
 export const StudioReplayFileSchema: z.ZodType<StudioReplayFile> = z.lazy(() =>
   z.object({
     "address": z.union([ReplayFileAddressSchema, ReplayDeclarationAddressSchema]),
@@ -10624,14 +9629,13 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "fields": z.array(StudioAuthoringFieldSchema),
     "patches": z.array(ProjectValueEditSchema),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
-    "reach_target": z.union([StudioReachTargetAuthoringSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoring>;
 
 export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRequest> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
-    "change": z.union([StudioAuthoringChangeSchema, StudioAuthoringSweepChangeSchema, StudioReachTargetEditSchema, z.null()]).optional(),
+    "change": z.union([StudioAuthoringChangeSchema, StudioAuthoringSweepChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 
@@ -10984,8 +9988,6 @@ export const contractSchemas = {
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
-  StudioDocumentAuthoring: StudioDocumentAuthoringSchema,
-  StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequestSchema,
   StudioTrainAuthoring: StudioTrainAuthoringSchema,
   StudioTrainAuthoringRequest: StudioTrainAuthoringRequestSchema,
   AuthoredFileAddress: AuthoredFileAddressSchema,
@@ -11004,12 +10006,6 @@ export const contractSchemas = {
   StudioProjectRevision: StudioProjectRevisionSchema,
   StudioProjectSnapshot: StudioProjectSnapshotSchema,
   ProjectValueEdit: ProjectValueEditSchema,
-  GraphListResponse: GraphListResponseSchema,
-  GraphCreateResponse: GraphCreateResponseSchema,
-  GraphUpdateResponse: GraphUpdateResponseSchema,
-  GraphDetailResponse: GraphDetailResponseSchema,
-  GraphValidationResponse: GraphValidationResponseSchema,
-  GraphExportResponse: GraphExportResponseSchema,
   ComponentListResponse: ComponentListResponseSchema,
   ComponentDetailResponse: ComponentDetailResponseSchema,
   ComponentRefreshResponse: ComponentRefreshResponseSchema,
@@ -11026,11 +10022,6 @@ export const contractSchemas = {
   AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponseSchema,
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
-  TrainingRunInfo: TrainingRunInfoSchema,
-  EvalRunInfo: EvalRunInfoSchema,
-  CreateEvalRunRequest: CreateEvalRunRequestSchema,
-  TrainingRunCompareResponse: TrainingRunCompareResponseSchema,
-  ManifestImportResponse: ManifestImportResponseSchema,
   SelectionSpec: SelectionSpecSchema,
   SelectionPreview: SelectionPreviewSchema,
   DatasetInfo: DatasetInfoSchema,
@@ -11042,7 +10033,6 @@ export const contractSchemas = {
   HistogramResponse: HistogramResponseSchema,
   ScatterResponse: ScatterResponseSchema,
   DiagnosticsResponse: DiagnosticsResponseSchema,
-  TreescopeRequest: TreescopeRequestSchema,
   InlineTreescopeRequest: InlineTreescopeRequestSchema,
   TreescopeResponse: TreescopeResponseSchema,
   InspectionStatusResponse: InspectionStatusResponseSchema,
@@ -11125,8 +10115,6 @@ export interface ContractTypeMap {
   StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringCatalog: StudioAuthoringCatalog;
   StudioAuthoringSurface: StudioAuthoringSurface;
-  StudioDocumentAuthoring: StudioDocumentAuthoring;
-  StudioDocumentAuthoringRequest: StudioDocumentAuthoringRequest;
   StudioTrainAuthoring: StudioTrainAuthoring;
   StudioTrainAuthoringRequest: StudioTrainAuthoringRequest;
   AuthoredFileAddress: AuthoredFileAddress;
@@ -11145,12 +10133,6 @@ export interface ContractTypeMap {
   StudioProjectRevision: StudioProjectRevision;
   StudioProjectSnapshot: StudioProjectSnapshot;
   ProjectValueEdit: ProjectValueEdit;
-  GraphListResponse: GraphListResponse;
-  GraphCreateResponse: GraphCreateResponse;
-  GraphUpdateResponse: GraphUpdateResponse;
-  GraphDetailResponse: GraphDetailResponse;
-  GraphValidationResponse: GraphValidationResponse;
-  GraphExportResponse: GraphExportResponse;
   ComponentListResponse: ComponentListResponse;
   ComponentDetailResponse: ComponentDetailResponse;
   ComponentRefreshResponse: ComponentRefreshResponse;
@@ -11167,11 +10149,6 @@ export interface ContractTypeMap {
   AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponse;
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
-  TrainingRunInfo: TrainingRunInfo;
-  EvalRunInfo: EvalRunInfo;
-  CreateEvalRunRequest: CreateEvalRunRequest;
-  TrainingRunCompareResponse: TrainingRunCompareResponse;
-  ManifestImportResponse: ManifestImportResponse;
   SelectionSpec: SelectionSpec;
   SelectionPreview: SelectionPreview;
   DatasetInfo: DatasetInfo;
@@ -11183,7 +10160,6 @@ export interface ContractTypeMap {
   HistogramResponse: HistogramResponse;
   ScatterResponse: ScatterResponse;
   DiagnosticsResponse: DiagnosticsResponse;
-  TreescopeRequest: TreescopeRequest;
   InlineTreescopeRequest: InlineTreescopeRequest;
   TreescopeResponse: TreescopeResponse;
   InspectionStatusResponse: InspectionStatusResponse;

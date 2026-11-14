@@ -49,7 +49,6 @@ export function mapStep(page: Page, stepId: string) {
 }
 
 export async function chooseTrainSuccessor(page: Page) {
-  if (process.env.FEEDBAX_STUDIO_EVALUATION_CANDIDATE !== '1') return;
   await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
 }
 

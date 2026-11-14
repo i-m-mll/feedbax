@@ -462,7 +462,7 @@ class BarrierArtifactSinkSpec(StrictModel):
     role: str = "barrier_artifact"
     logical_name: str | None = None
     media_type: str = "application/octet-stream"
-    encoding: Literal["raw", "json", "pickle"] = "raw"
+    encoding: Literal["raw", "json"] = "raw"
     suffix: str | None = None
     required: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -726,19 +726,6 @@ class CheckpointSlotManifest(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class WorkerMappingRow(StrictModel):
-    """Doc-testable mapping row from an existing trainer to worker vocabulary."""
-
-    source: str
-    phase: str
-    axes: list[str] = Field(default_factory=list)
-    state_slots: list[str] = Field(default_factory=list)
-    optimizer_bindings: list[str] = Field(default_factory=list)
-    progress_coordinate: str
-    checkpoint_transaction: str | None = None
-    notes: str = ""
-
-
 def migrate_consistency_predicate_payload(value: Any) -> Any:
     """Migrate v2 by pinning its existing digest bytes to ``canonical_json_v1``."""
 
@@ -813,63 +800,6 @@ def derive_consistency_predicate(program: PhaseProgramSpec) -> ConsistencyPredic
         phase_program_digest=hashlib.sha256(canonical_json_v2_bytes(payload)).hexdigest(),
         pin_algorithm=CANONICAL_JSON_V2,
     )
-
-
-def supervised_executor_mapping() -> tuple[WorkerMappingRow, ...]:
-    """Map the standard supervised executor loop to worker vocabulary."""
-    return (
-        WorkerMappingRow(
-            source="feedbax.training.executor.execute_training_run_spec",
-            phase="train_batch",
-            axes=["batch"],
-            state_slots=["model", "optimizer", "prng", "trial_specs", "auxiliary_losses"],
-            optimizer_bindings=["task_optimizer_to_model"],
-            progress_coordinate="run_id/phase/program_step",
-            checkpoint_transaction="manifested multi-slot checkpoint transaction",
-            notes="Executor-owned phase step using declared kernels and checkpoint custody.",
-        ),
-    )
-
-
-PPO_MAPPING_TABLE: tuple[WorkerMappingRow, ...] = (
-    WorkerMappingRow(
-        source="feedbax.training.rl.ppo.train_ppo_batched",
-        phase="collect_rollout",
-        axes=["environment", "rollout"],
-        state_slots=["policy", "environment_state", "prng", "rollout", "observation_norm"],
-        progress_coordinate="run_id/phase/program_step/outer_step",
-        checkpoint_transaction="policy+optimizer+environment_state+prng",
-        notes="Rollout collection scans over time and vmaps over environments.",
-    ),
-    WorkerMappingRow(
-        source="feedbax.training.rl.ppo.compute_gae_scan",
-        phase="compute_gae",
-        axes=["environment", "rollout"],
-        state_slots=["rollout", "gae_state", "returns"],
-        progress_coordinate="run_id/phase/outer_step",
-        notes="GAE is an auxiliary/intermediate state slot, not a method runner.",
-    ),
-    WorkerMappingRow(
-        source="feedbax.training.rl.ppo.train_ppo_batched",
-        phase="ppo_epoch_minibatch",
-        axes=["epoch", "minibatch", "environment"],
-        state_slots=["policy", "policy_optimizer", "value_optimizer", "gae_state", "prng"],
-        optimizer_bindings=["policy_loss_to_policy", "value_loss_to_policy"],
-        progress_coordinate="run_id/phase/outer_step/inner_step",
-        checkpoint_transaction="policy+optimizer+prng after update",
-        notes="Epoch x minibatch loop is represented as nested worker axes.",
-    ),
-    WorkerMappingRow(
-        source="feedbax.training.rl.ppo.train_ppo_batched",
-        phase="batched_body_collect_and_update",
-        axes=["replicate", "environment", "rollout", "minibatch"],
-        state_slots=["batched_policy", "batched_optimizer", "environment_state", "prng"],
-        optimizer_bindings=["body_policy_loss_to_body_policy"],
-        progress_coordinate="run_id/phase/outer_step/replicate",
-        checkpoint_transaction="body-indexed policy+optimizer+environment_state+prng",
-        notes="Body/population axis covers independent batched policies.",
-    ),
-)
 
 
 def toy_minimax_method_contract() -> MethodContractSpec:

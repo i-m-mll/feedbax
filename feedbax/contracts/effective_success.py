@@ -30,7 +30,7 @@ from feedbax.contracts.request_refs import (
     RequestId,
     Sha256,
 )
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 
 
@@ -320,7 +320,7 @@ def select_bound_product(
     spec = request.spec
     if (
         reference.role != "checkpoint"
-        or not isinstance(spec, (TrainingRequestSpec, DocumentTrainingRequestSpec))
+        or not isinstance(spec, DocumentTrainingRequestSpec)
         or spec.method_ref != STUDIO_GRAPH_METHOD
     ):
         return product, None

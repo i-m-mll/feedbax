@@ -1,7 +1,7 @@
 import { expect, test, type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import type { StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
@@ -191,7 +191,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
 });
 
 test('the managed window shares selection and retains the folded slot without editing the folder', async ({ page, request }) => {
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('managed-files'));
   const id = snapshot.project_id;
   await page.goto(`/?project=${encodeURIComponent(id)}`);
   await mapStep(page, 'train').click();
@@ -235,8 +235,8 @@ test('the managed window shares selection and retains the folded slot without ed
 });
 
 test('keyboard reaches the last Runs column in a narrow split', async ({ page, request }, info) => {
-  const files = (await fixture('files')).slice(0, 3);
-  files[2].step.sweep = { axes: { seed: { values: {
+  const files = await fixture('ordinary-files', '2');
+  files.at(-1).step.sweep = { axes: { seed: { values: {
     a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 7 } } },
     b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 9 } } },
   } } } };
@@ -274,29 +274,32 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
 });
 
 test('mounted Scene owns its drawer and inspector and Problems matches the saved Plan', async ({ page, request }, info) => {
-  const home = String(info.config.metadata.home);
-  const id = 'project-window-scene';
-  const path = `/api/projects/${id}`;
-  await runProjectFixture('tests.fixtures.scene_geometry', 'seed',
-    join(home, 'state', 'web', 'projects', id));
-  const initial = await request.get(path);
-  expect(initial.ok()).toBe(true);
-  let snapshot = await initial.json() as StudioProjectSnapshot;
-  const [modelFile, task, template] = await fixture('files');
-  for (const file of [
-    task,
-    { ...template, step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'chain' } } } } },
-    { ...template, id: 'single', step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'single' } } } } },
-    { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: {} } } },
+  const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
+  const [,,, template] = await fixture('ordinary-files', '2');
+  const task = { kind: 'document', id: 'task', document: {
+    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.task.reaching.v1', params: {} },
+  } };
+  const objective = { kind: 'document', id: 'objective', document: {
+    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+  } };
+  const emptyModel = { ...singleModel, id: 'empty-model', document: {
+    ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+  } };
+  const documents = (model: string) => ({
+    model_name: model, model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+  });
+  const step = (id: string, model: string) => ({
+    ...template, id, step: { ...template.step, base: { inline: {
+      ...template.step.base.inline, trial_documents: documents(model),
+    } } },
+  });
+  const { snapshot, projectPath } = await seedManagedProject(request, [
+    singleModel, chainModel, task, objective, emptyModel,
+    step('train', 'chain'), step('single', 'single'), step('empty', 'empty-model'),
+    { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: { trial_documents: documents('empty-model') } } } },
     { kind: 'step', id: 'rowless', step: { kind: 'train', base: { document: 'absent-base' } } },
-    { ...modelFile, id: 'empty-model', document: { ...modelFile.document, payload: { nodes: {} } } },
-    { ...template, id: 'empty', step: { ...template.step, base: { inline: { ...template.step.base.inline, graph: { document: 'empty-model' } } } } },
-  ]) {
-    const saved = await request.post(`${path}/files`, { data: { revision: snapshot.revision, file } });
-    expect(saved.status(), await saved.text()).toBe(201);
-    ({ snapshot } = await saved.json() as StudioProjectDocument);
-  }
-  await page.goto(`/?project=${id}`);
+  ]);
+  await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const scene = page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Scene', exact: true });
@@ -373,7 +376,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(upper).toBeVisible();
 
-  const read = await request.get(`${path}/train-runs?revision=${snapshot.revision}&window_map=true`);
+  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`);
   expect(read.ok()).toBe(true);
   const { window_map } = await read.json() as StudioSavedTrainRuns;
   const problems = window_map!.problems;

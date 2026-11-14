@@ -14,12 +14,13 @@ from feedbax.contracts.model_checkpoint import (
 )
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, NamedMember, ProductRef
-from feedbax.contracts.request_specs import ReportRequestSpec, TrainingRequestSpec
+from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.array_container import encode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.store_sync import sync_store
+from tests.test_request_identity import _managed_train
 
 
 def test_selected_model_tree_publishes_binds_and_imports(tmp_path):
@@ -27,16 +28,7 @@ def test_selected_model_tree_publishes_binds_and_imports(tmp_path):
     packet = ImmutableArtifactBlobProvider(tmp_path / "packet")
     destination = ImmutableArtifactBlobProvider(tmp_path / "destination")
     graph = GraphSpec()
-    spec = TrainingRequestSpec.model_validate(
-        {
-            "graph": graph,
-            "task": {"type": "proof"},
-            "objective": {"kind": "external", "payload": {}},
-            "method_ref": {"package": "feedbax", "name": "proof", "version": "1"},
-            "method_payload": {"schema_id": "proof.method", "schema_version": "1"},
-            "training_config": {},
-        }
-    )
+    spec = _managed_train()
     request = store_request(source, encode_request(spec, {}))
     encoded = encode_array_container(
         {"weight": np.array([1.25, -2], dtype=np.float32)}, metadata={}
