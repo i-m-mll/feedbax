@@ -25,6 +25,7 @@ export type ModelCardData = {
   collapsed?: boolean;
   stacked?: boolean;
   locked: boolean;
+  physicalConnections: boolean;
   selected?: boolean;
   holdsSelection?: boolean;
   problem?: string;
@@ -116,14 +117,15 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
     {ports.map(({ port, key, reason, available, problem, verdict }) => {
       const location = side(port, Boolean(data.flipped));
       const physical = port.direction === 'physical';
-      const connectable = !data.locked && !data.canPick;
+      const interactive = !data.locked && !data.canPick;
+      const connectable = interactive && (!physical || data.physicalConnections);
       return <div key={key} className="studio-model-port" data-collapsed={data.collapsed}
         data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
         data-verdict={verdict}>
         <Handle id={key} type={port.direction === 'input' ? 'target' : 'source'}
           position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
           role="button" tabIndex={data.collapsed ? -1 : 0}
-          aria-disabled={!connectable && !available}
+          aria-disabled={!interactive && !available}
           aria-description={[studioName(port.direction), portTypeLabel(port), reason ?? problem].filter(Boolean).join(' · ')}
           aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
             event.stopPropagation();

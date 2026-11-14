@@ -1028,9 +1028,9 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
     key = jax.random.key(7)
     state = graph.init_state(key=key)
     initial = graph.nodes["arm"].initial_outputs(graph.nodes["arm"].state_view(state))["pos"]
+    trace = (GraphTraceRequest("port", "sample", node="hold", port="output"),)
     outputs, _, traces = graph.rollout_with_trace(
-        {}, state, n_steps=3, key=key,
-        trace=(GraphTraceRequest("port", "sample", node="hold", port="output"),),
+        {}, state, n_steps=5, key=key, trace=trace,
     )
     np.testing.assert_array_equal(traces["sample"][0], initial)
     np.testing.assert_array_equal(traces["sample"][1:], outputs["position"][:-1])
@@ -1050,6 +1050,11 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
     delayed = compile_graph(GraphDocument(graph=linked.graph), registry).graph
     carries = delayed.initial_cycle_port_values(delayed.init_state(key=key))
     np.testing.assert_array_equal(carries["hold", "input"], np.stack([initial, initial]))
+    _, _, delayed_traces = delayed.rollout_with_trace(
+        {}, delayed.init_state(key=key), n_steps=5, key=key, trace=trace,
+    )
+    np.testing.assert_array_equal(delayed_traces["sample"][:2], np.stack([initial, initial]))
+    np.testing.assert_array_equal(delayed_traces["sample"][2:], traces["sample"][:-2])
     payload["interior"]["wires"]["sample"]["attachments"] = []
     payload["interior"]["components"].pop("hold")
     payload["interior"]["wires"].pop("sampled")

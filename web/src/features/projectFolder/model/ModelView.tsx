@@ -560,7 +560,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       selectable: !!definition && !pick,
       data: {
         address, name, caption, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
-        locked: locked || !editTopology, stacked: definition?.kind === 'composite',
+        locked: locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         selected: !!definition && selectedIds.has(key),
         holdsSelection: definition?.kind === 'composite' && selected.some((item) => item.document === graph.document &&
           currentPath.every((parent, offset) => item.composites[offset] === parent) && item.composites[currentPath.length] === id),
