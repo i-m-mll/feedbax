@@ -524,27 +524,13 @@ def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     )
 
 
-def _nested_scale_variation():
-    prefix = "graph.subgraphs.wrapper.subgraphs.controller"
-    return {
-        "scale": {"op": "add", "path": f"{prefix}.nodes.scale", "value": {
-            "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
-            "input_ports": ["input"], "output_ports": ["output"],
-        }},
-        "incoming": {"op": "replace", "path": f"{prefix}.wires.decode.target_node", "value": "scale"},
-        "outgoing": {"op": "add", "path": f"{prefix}.wires.scaled", "value": {
-            "source_node": "scale", "source_port": "output",
-            "target_node": "readout", "target_port": "input",
-        }},
-    }
-
-
 def test_nested_evaluate_variation_uses_scoped_wire_ids():
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents(), evaluation=True)
-    settings = raw["steps"]["baseline"]["base"]["inline"]["params"]
-    settings["variation"] = _nested_scale_variation()
+    owner = _attachment_owner("decode") | {"composites": ["wrapper", "controller"]}
+    record = _add_attachment(owner, "scale", None)
+    raw["steps"]["baseline"]["model_attachments"] = {"scale": [record]}
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics
     train = next(run for run in plan.runs if run.kind == "train")
@@ -558,25 +544,20 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
     )
     variant = resolve_evaluation_variant(graph, documents.task_source, params.variation)
     child = variant.graph.subgraphs["wrapper"].subgraphs["controller"]
-    assert next(wire for wire in child.wires if wire.id == "decode").target_node == "scale"
-    assert next(wire for wire in child.wires if wire.id == "scaled").target_node == "readout"
-    index = next(i for i, wire in enumerate(child.wires) if wire.id == "scaled")
-    assert variant.edit_location(
-        f"/graph/subgraphs/wrapper/subgraphs/controller/wires/{index}/target_port",
-    ) == "/params/variation/outgoing"
+    (outgoing,) = (wire for wire in child.wires if wire.id == "decode")
+    (incoming,) = (wire for wire in child.wires if wire.target_node == outgoing.source_node)
+    assert outgoing.target_node == "readout"
     executable = compile_graph(
         GraphDocument(graph=variant.graph), registry,
         input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
     )
-    assert executable.graph.nodes["wrapper"].nodes["controller"].nodes["scale"].scale == 0.5
-    settings["variation"]["outgoing"]["path"] = settings["variation"]["outgoing"]["path"].replace(
-        ".subgraphs.controller.", ".subgraphs.missing.",
-    )
+    assert executable.graph.nodes["wrapper"].nodes["controller"].nodes[incoming.target_node].scale == 0.5
+    record["owner"] = owner | {"composites": ["wrapper", "missing"]}
     invalid = compile_project(Project.model_validate(raw))
     assert not any(run.kind == "evaluate" for run in invalid.runs)
     problem, = invalid.diagnostics
-    assert problem.path == "/params/variation/outgoing"
-    assert "unknown causal composite" in problem.detail
+    assert problem.model_address.composites == ("wrapper", "missing")
+    assert "composite no longer exists" in problem.detail
 
 
 @pytest.mark.parametrize(("kind", "scope"), [

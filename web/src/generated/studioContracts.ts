@@ -618,6 +618,13 @@ export interface EvaluateAttachmentState {
   records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   resolved_model?: ModelDocument | null;
+  source?: StudioEvaluateValueSource | null;
+  field_sources?: Record<string, StudioEvaluateValueSource>;
+}
+
+export interface StudioEvaluateValueSource {
+  kind: "trained" | "evaluate";
+  step: string;
 }
 
 export interface EvaluateAttachmentStep {
@@ -2802,6 +2809,12 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export type AddModelComponent = {
+  "op": "add_component";
+  "address": ModelAddress;
+  "component": LeafComponent;
+};
+
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
   "operations"?: Record<string, OperationElement>;
@@ -3168,6 +3181,13 @@ export type MatrixCompositionDelta = {
   "schema_version"?: string | null;
 };
 
+export type ModelWireDifference = {
+  "op": "add_wire" | "rewire";
+  "address": ModelAddress;
+  "source": ComponentPortEnd | InputBoundaryEnd;
+  "target": ComponentPortEnd | OutputBoundaryEnd;
+};
+
 export type Name = string;
 
 export type NameValue = {
@@ -3427,7 +3447,7 @@ export type Step = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3497,7 +3517,7 @@ export type StudioAnalyzeStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3659,7 +3679,7 @@ export type StudioEvaluateStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3824,6 +3844,7 @@ export type StudioProjectWindowMapProblem = {
   "model_address"?: ModelAddress | null;
   "address"?: string | null;
   "layer"?: string | null;
+  "authored_path"?: string | null;
 };
 
 export type StudioProjectWindowMapRow = {
@@ -3882,7 +3903,7 @@ export type StudioReportStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3943,7 +3964,7 @@ export type StudioTrainStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField>>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3958,6 +3979,8 @@ export type StudioTrialAuthoring = {
   "task_document": string | null;
   "objective_document": string | null;
   "task": TaskDocument | PythonTaskSelection;
+  "task_source"?: StudioEvaluateValueSource | null;
+  "task_field_sources"?: Record<string, StudioEvaluateValueSource>;
   "objective": ObjectiveDocument | null;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
@@ -5315,9 +5338,20 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "source": StudioEvaluateValueSourceSchema.nullable().optional(),
+      "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentState>;
+
+export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSource> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("trained"), z.literal("evaluate")]),
+      "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluateValueSource>;
 
 export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
   z
@@ -9065,6 +9099,14 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
+export const AddModelComponentSchema: z.ZodType<AddModelComponent> = z.lazy(() =>
+  z.object({
+    "op": z.literal("add_component"),
+    "address": ModelAddressSchema,
+    "component": LeafComponentSchema,
+  }).strict()
+) as unknown as z.ZodType<AddModelComponent>;
+
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -9561,6 +9603,15 @@ export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z
   }).strict()
 ) as unknown as z.ZodType<MatrixCompositionDelta>;
 
+export const ModelWireDifferenceSchema: z.ZodType<ModelWireDifference> = z.lazy(() =>
+  z.object({
+    "op": z.union([z.literal("add_wire"), z.literal("rewire")]),
+    "address": ModelAddressSchema,
+    "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+    "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+  }).strict()
+) as unknown as z.ZodType<ModelWireDifference>;
+
 export const NameSchema: z.ZodType<Name> = z.lazy(() =>
   z.string()
 ) as unknown as z.ZodType<Name>;
@@ -9925,7 +9976,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10015,7 +10066,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10225,7 +10276,7 @@ export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(()
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10436,6 +10487,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
     "address": z.union([z.string(), z.null()]).optional(),
     "layer": z.union([z.string(), z.null()]).optional(),
+    "authored_path": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -10510,7 +10562,7 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10589,7 +10641,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]))).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10606,6 +10658,8 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
+    "task_source": z.union([StudioEvaluateValueSourceSchema, z.null()]).optional(),
+    "task_field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),

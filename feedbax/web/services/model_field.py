@@ -211,8 +211,6 @@ def model_fields(
     evaluate = None
     variant = None
     if body.evaluate_scope is not None and body.run is not None:
-        if not isinstance(body.owner.element, AttachmentElement):
-            raise ProjectFolderInvalid("Choose an attachment in the selected Evaluate.")
         evaluate = EvaluateAttachmentReadRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
         effective_model = read_evaluate_attachments(folders, project_id, evaluate, components).resolved_model
     elif body.run is not None:
@@ -227,6 +225,8 @@ def model_fields(
                     step = project.steps[key.step]
                 elif key.variant != plan.variants[0] and project.sweep.rows.get(key.variant) is not None:
                     variant = key.variant
+    if evaluate is not None and effective_model is None:
+        return ModelFieldResponse()
     effective_fields = {
         field.address.to_text(): field for field in _fields(effective_model, body.owner, components)
     } if effective_model is not None else {}

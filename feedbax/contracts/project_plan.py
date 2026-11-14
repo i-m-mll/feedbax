@@ -415,6 +415,37 @@ def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference
     )
 
 
+def _authored_variation_problem(problem: ProjectDiagnostic, names: tuple[str, ...]) -> ProjectDiagnostic:
+    parts = json_pointer_parts(problem.path) if problem.path.startswith("/") else ()
+    if len(parts) >= 3 and parts[:2] == ("params", "variation") and parts[2].isdigit():
+        index = int(parts[2])
+        if index < len(names):
+            return replace(problem, path=pointer((*parts[:2], names[index], *parts[3:])))
+    return problem
+
+
+def _raw_graph_target(value: object) -> bool:
+    return isinstance(value, str) and (value == "graph" or value.startswith("graph."))
+
+
+def _authored_graph_variation_problem(key: RunKey, payload: Payload) -> ProjectDiagnostic | None:
+    params = payload.get("params")
+    variation = params.get("variation") if isinstance(params, dict) else None
+    entries = (
+        sorted(variation.items()) if isinstance(variation, dict)
+        else enumerate(variation) if isinstance(variation, list) else ()
+    )
+    for name, edit in entries:
+        if isinstance(edit, dict) and _raw_graph_target(edit.get("path")):
+            return ProjectDiagnostic(
+                ResolutionCode.AUTHORED_GRAPH_VARIATION,
+                pointer(("params", "variation", str(name), "path")),
+                "Use an addressed Model operation for this saved Evaluate edit.",
+                step=key.step, row=key.row, variant=key.variant,
+            )
+    return None
+
+
 def _train_model_path(payload: Payload) -> tuple[str, ...]:
     return ("trial_documents", "model") if "trial_documents" in payload else ("graph",)
 
@@ -468,9 +499,11 @@ def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSour
     return replace(definition, payload=payload, sources=MappingProxyType(sources))
 
 
-def _model_difference_problem(key: RunKey, address: ModelAddress | None, detail: str) -> ProjectDiagnostic:
+def _model_difference_problem(
+    key: RunKey, address: ModelAddress | None, detail: str, *, path: str | None = None,
+) -> ProjectDiagnostic:
     return ProjectDiagnostic(
-        ResolutionCode.INVALID_PAYLOAD, f"payload.{MODEL_ATTACHMENTS}", detail, key.step,
+        ResolutionCode.INVALID_PAYLOAD, path or f"payload.{MODEL_ATTACHMENTS}", detail, key.step,
         row=key.row, variant=key.variant, document=address.document if address else None, model_address=address,
     )
 
@@ -1251,6 +1284,16 @@ class _Compiler:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
+            if kind == "evaluate" and payload.get("evaluation_type") == ROLLOUT_TYPE:
+                params = payload.get("params")
+                managed_subject = model_source is not None and (
+                    model_source.evaluation_graph is not None or source_problem is not None
+                )
+                if managed_subject or (isinstance(params, dict) and "trial_set" in params):
+                    if problem := _authored_graph_variation_problem(key, payload):
+                        return _LoweredRow(
+                            None, (problem,), encoding_stamp, document_ids=document_ids, document_uses=document_uses,
+                        )
             if source_problem is not None and payload.get("evaluation_type") == ROLLOUT_TYPE:
                 return _LoweredRow(
                     None, (replace(source_problem, step=key.step, row=key.row, variant=key.variant),),
@@ -1258,12 +1301,9 @@ class _Compiler:
                 )
             if kind == "train":
                 payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
-            elif has_differences:
-                payload = self.lower_evaluate_model(
-                    key, payload, model_source, subject.member.reference if subject is not None else None,
-                )
-            if kind == "evaluate" and isinstance(payload, dict) and subject is not None:
-                payload = self.lower_evaluate_trials(key, payload, subject.member.reference, model_source)
+            elif kind == "evaluate":
+                reference = subject.member.reference if subject is not None else None
+                payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             lowered = _encode_row(
@@ -1335,10 +1375,30 @@ class _Compiler:
             detail = str(error)
         return _model_difference_problem(key, address, detail), None
 
+    def lower_evaluate_payload(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
+        reference: object, has_differences: bool,
+    ) -> Payload | ProjectDiagnostic:
+        if not has_differences:
+            return self.lower_evaluate_trials(key, payload, reference, model_source)
+        original = payload.get("params")
+        lowered = self.lower_evaluate_model(key, payload, model_source, reference)
+        if isinstance(lowered, ProjectDiagnostic):
+            return lowered
+        result = self.lower_evaluate_trials(key, lowered, reference, model_source)
+        # Derived Model patches append to an ordered copy. Report a Task
+        # refusal at the original named edit without changing request encoding.
+        if isinstance(result, ProjectDiagnostic) and isinstance(original, dict):
+            named = original.get("variation")
+            params = lowered.get("params")
+            if isinstance(named, dict) and isinstance(params, dict) and isinstance(params.get("variation"), list):
+                return _authored_variation_problem(result, tuple(sorted(named)))
+        return result
+
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
     ) -> Payload | ProjectDiagnostic:
-        from feedbax.compiler.trial_execution import evaluation_conditions
+        from feedbax.compiler.trial_execution import evaluation_conditions, pair_trial_source
         from feedbax.studio.canonical_evaluate import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
@@ -1361,10 +1421,23 @@ class _Compiler:
             if "trial_set" not in raw or "trials" in raw:
                 raise ValueError("Declare a trial-set rule for managed Evaluate.")
             settings = authored_rollout_settings(raw)
-            task = resolve_evaluation_variant(
-                model_source.evaluation_graph, train.trial_documents.task_source, settings.variation,
-            ).task
-            conditions = evaluation_conditions(task, self.python_tasks)
+            documents = train.trial_documents
+            variant = resolve_evaluation_variant(
+                model_source.evaluation_graph, documents.task_source, settings.variation,
+            )
+            if any(target[0] == "task" for target in variant.edit_origins):
+                pairing = pair_trial_source(
+                    documents.model_name, documents.model, variant.task,
+                    self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
+                    python_tasks=self.python_tasks, input_overrides=documents.input_overrides,
+                    graph_override=variant.graph,
+                )
+                problems = pairing if isinstance(pairing, tuple) else pairing.problems
+                if problems:
+                    raise variant.task_refusal(problems[0])
+                conditions = pairing.task.condition_ids
+            else:
+                conditions = evaluation_conditions(variant.task, self.python_tasks)
             trials = resolve_trial_ids(raw["trial_set"], conditions)
             return payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
                 "trials": list(trials),
@@ -1383,6 +1456,7 @@ class _Compiler:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.studio.schema import validate_graph_connection_schema
+        from feedbax.studio.canonical_evaluate import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         address = None
@@ -1438,9 +1512,11 @@ class _Compiler:
         except ModelCompilationProblem as error:
             address = error.address
             detail = str(error)
+        except CannotRun as error:
+            return _model_difference_problem(key, address, error.reason, path=error.path)
         except ValueError as error:
             detail = str(error)
-        return _model_difference_problem(key, address, detail)
+        return _model_difference_problem(key, address, detail, path=pointer(address.stored_path()) if address else None)
 
     def compile_step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
@@ -1511,6 +1587,7 @@ class _Compiler:
 
         basis = template.row_basis if self.previous is not None else None
         result = []
+        tracked_template = template if wanted else None
         for row in rows:
             run_key = RunKey(variant, name, row.id)
             key = row.input_keys.get(role.name)
@@ -1584,9 +1661,32 @@ class _Compiler:
                     result.append(analyze)
                 continue
             lowered = self.lower_row(template, run_key, row, kind, inputs, basis, definition)
+            if len(lowered.diagnostics) == 1 and lowered.diagnostics[0].code == ResolutionCode.AUTHORED_GRAPH_VARIATION:
+                (problem,) = lowered.diagnostics
+                sources_available = variant not in self.variant_sources or self.variant_sources[variant] is not None
+                if definition is None and sources_available:
+                    if tracked_template is None:
+                        tracked_template = self.compose(variant, name, track=True)
+                    if isinstance(tracked_template, StepComposition):
+                        definition = self.project_definition(tracked_template, run_key, row, inputs)
+                origin = definition.sources.get("/payload" + problem.path) if definition is not None else None
+                if origin is not None:
+                    problem = self.locate_authored_problem(problem, origin)
+                    lowered = replace(lowered, diagnostics=(problem,))
             if (run := self.record_run(run_key, lowered, inputs, omissions, template.requires)) is not None:
                 result.append(run)
         return tuple(result)
+
+    def locate_authored_problem(self, problem: ProjectDiagnostic, origin: ValueSource) -> ProjectDiagnostic:
+        if origin.kind == "document":
+            if origin.name in self.project.documents:
+                return replace(
+                    problem, document=origin.name, document_path=origin.path,
+                    authored_file=f"documents/{origin.name}.json", authored_path="/payload" + origin.path,
+                )
+        elif origin.step is not None and origin.step in self.project.steps:
+            return replace(problem, authored_file=f"steps/{origin.step}.json", authored_path=origin.path)
+        return problem
 
     def select_definition(
         self, template: StepComposition, key: RunKey, row: ExpandedRow,

@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 
 from pydantic import TypeAdapter, ValidationError
 
-from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.model_attachment import is_generated_attachment_node
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
@@ -35,6 +36,17 @@ class EvaluationVariant:
         )
         _, wires = _addressable_graph(self.graph)
         return _edit_location(tokens, wires, self.edit_origins)
+
+    def task_refusal(self, problem: Problem) -> CannotRun:
+        """Locate a failed trial pairing at the responsible Task edit when identifiable."""
+        if problem.path[:2] == ("python_task", "params") and len(problem.path) > 2:
+            if field := self.edit_origins.get(("task", "params", str(problem.path[2]))):
+                return CannotRun(field, problem.reason)
+        if problem.path[:1] in {("task",), ("python_task",)} or problem.path[:2] == ("model", "inputs"):
+            task_edits = [origin for target, origin in self.edit_origins.items() if target[0] == "task"]
+            if len(task_edits) == 1:
+                return CannotRun(task_edits[0], problem.reason)
+        return CannotRun(pointer(("inputs", "subject", *problem.path)), problem.reason)
 
 
 def _edit_location(
@@ -150,7 +162,14 @@ def resolve_evaluation_variant(
         try:
             if parts == ["task"] and patch.op == "replace":
                 replacement = _replacement_task(task, patch, f"{path}/value")
+                edit_origins = {target: origin for target, origin in edit_origins.items() if target[0] != "task"}
                 edit_origins[("task",)] = path
+                continue
+            if len(parts) == 3 and parts[:2] == ["task", "params"] and isinstance(replacement, PythonTaskSelection):
+                selected = {"task": replacement.model_dump(mode="json")}
+                apply_override_patch_in_place(selected, patch)
+                replacement = PythonTaskSelection.model_validate(selected["task"])
+                edit_origins[tuple(parts)] = path
                 continue
             if parts[0] != "graph":
                 raise ValueError("expected an addressed model or task patch")

@@ -496,9 +496,11 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     selectedSweepValues: input.selectedSweepValues,
     fieldLitSteps: graphScope?.lit,
     fieldRows: input.fieldRows,
-    fieldEditable: !outside && !pending && !saving && input.step?.kind === 'train' &&
-      Boolean(input.namedRun && (saved.project.sweep ? canEdit && graphScope?.localVariant
-        : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')),
+    fieldEditable: !outside && !pending && !saving && Boolean(input.namedRun && (
+      input.step?.kind === 'evaluate' ? input.evaluateScope
+        : input.step?.kind === 'train' && (saved.project.sweep ? canEdit && graphScope?.localVariant
+          : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
+    )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
     editable: canEdit && !pending && !saving && !!saved.presentation && input.step?.kind === 'train' &&
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,

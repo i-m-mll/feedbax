@@ -430,23 +430,24 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
 
 
 def _curl_addition():
-    return {
-        "curl": {"path": "graph.nodes.curl", "op": "add", "value": {
-            "type": "feedbax.CurlField", "params": {"active": True, "scale": 2.0},
-            "input_ports": ["effector", "force"], "output_ports": ["force"],
-        }},
-        "insert": {"path": "graph.wires.plant-wire.target_node", "op": "replace", "value": "curl"},
-        "drive": {"path": "graph.wires.curl-drive", "op": "add", "value": {
-            "source_node": "curl", "source_port": "force", "target_node": "plant", "target_port": "force",
-        }},
-        "feedback": {"path": "graph.wires.curl-feedback", "op": "add", "value": {
-            "source_node": "plant", "source_port": "effector", "target_node": "curl", "target_port": "effector",
-            "temporality": "recurrent", "recurrent_initializer": {
-                "kind": "state_output", "model_state_sample": True,
-                "source_node": "plant", "source_port": "effector",
+    return [
+        {
+            "op": "add_component",
+            "address": {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "curl"}},
+            "component": {
+                "kind": "leaf", "name": "Curl field", "type": "feedbax.CurlField",
+                "fields": {"active": True, "scale": 2.0},
             },
-        }},
-    }
+        },
+        *(
+            {"op": op, "address": _attachment_owner(wire) | {"composites": []}, "source": source, "target": target}
+            for op, wire, source, target in (
+                ("rewire", "plant-wire", _end("wrapper", "force"), _end("curl", "force")),
+                ("add_wire", "curl-drive", _end("curl", "force"), _end("plant", "force")),
+                ("add_wire", "curl-feedback", _end("plant", "effector"), _end("curl", "effector")),
+            )
+        ),
+    ]
 
 
 def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host, tmp_path, authored):  # noqa: F811
@@ -465,7 +466,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
         result["base"]["inline"]["params"]["variation"] = variation
         return result
 
-    steps["curl"] = step(_curl_addition())
+    steps["curl"] = step([]) | {"model_attachments": {"curl": _curl_addition()}}
     steps["learned"] = step({"kernel": {
         "path": "graph.subgraphs.wrapper.subgraphs.controller.nodes.cell.params.input_kernel",
         "op": "add", "value": [[0.0]],
@@ -476,8 +477,8 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     snapshot = folders.read_plan(project, revision=None)
     problems = {item.step: item for item in snapshot.plan.diagnostics}
     assert set(problems) == {"learned", "retired"}, problems
-    assert problems["learned"].path == "/params/variation/kernel"
-    assert "preserves retained learned values" in problems["learned"].detail
+    assert problems["learned"].path == "/params/variation/kernel/path"
+    assert problems["learned"].code == "authored_graph_variation"
     assert problems["retired"].path == "/params/variation/mass"
     view = read_settled_project_plan(snapshot, jobs)
     rows = {row.key.step: row for row in view.status_rows()}
@@ -503,6 +504,14 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
     slot = open_published_model_slot(published.checkpoint_root, published.pointer)
     assert slot is not None and "curl" not in slot.graph.nodes
+    documents = decode_request(
+        snapshot.plan.requests[next(run.request_id for run in snapshot.plan.runs if run.key == keys["train"])],
+        snapshot.plan.documents.__getitem__,
+    ).spec.trial_documents
+    with pytest.raises(CannotRun, match="preserves retained learned values"):
+        edits = {name: OverridePatch.model_validate(edit) for name, edit in
+                 steps["learned"]["base"]["inline"]["params"]["variation"].items()}
+        resolve_evaluation_variant(slot.graph, documents.task_source, edits)
     results = {}
     for step, item in zip(("baseline", "curl"), evaluations, strict=True):
         (edge,) = settled(item.job_id)["edges"]

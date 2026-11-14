@@ -260,6 +260,7 @@
     "addIntervention": "Add Intervention",
     "addProbe": "Add Probe",
     "removeAttachment": "Remove Attachment",
+    "removeVariation": "Remove Variation",
     "moveAttachment": "Move Attachment",
     "after": "After",
     "source": "Source",
@@ -371,6 +372,8 @@
     "invalidCheckpointRule": "{value} has invalid syntax"
   },
   "format": {
+    "trainedValue": "Trained by {step}",
+    "evaluateChangedValue": "Changed by {step}",
     "ofCount": "{count} of {total}",
     "lastLossAtUpdate": "Last loss at update {end}",
     "lossIntervalDescription": "Interval mean loss with minimum and maximum bars",

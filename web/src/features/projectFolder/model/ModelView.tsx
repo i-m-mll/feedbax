@@ -156,20 +156,13 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   const registryQuery = useQuery({ queryKey: ['components'], queryFn: fetchComponents, enabled: active && !!model, staleTime: 300_000 });
   const registry = useMemo(() => modelRegistry(registryQuery.data ?? []), [registryQuery.data]);
-  const resolved = useMemo(() => model && modelPath(model.value, path), [model?.value, path]);
-  const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
-  const graph = useMemo(() => currentGraph(model?.id ?? '', currentPath), [model?.id, currentPath]);
-  const graphId = addressKey(graph);
-  const owner = resolved?.owner;
-  const interior = owner?.interior;
-  const physical = interior?.physical_domain ?? null;
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
   const projectionBody = projectionRun && model && { run: projectionRun, document: model.id, revision: saved.revision };
   const projectionRunId = projectionRun && JSON.stringify(projectionRun);
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
-    enabled: active && !!projectionBody, retry: false,
+    enabled: active && !!projectionBody && !evaluate, retry: false,
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
@@ -181,14 +174,24 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
     enabled: active && !!model && !!readBody, retry: false,
   });
+  const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
+  const shownModel = evaluate ? effectiveModel : model?.value;
+  const resolved = useMemo(() => shownModel && modelPath(shownModel, path), [shownModel, path]);
+  const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
+  const graph = useMemo(() => currentGraph(model?.id ?? '', currentPath), [model?.id, currentPath]);
+  const graphId = addressKey(graph);
+  const owner = resolved?.owner;
+  const interior = owner?.interior;
+  const physical = interior?.physical_domain ?? null;
   const editTopology = editable && !busy && !evaluate;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
-  const fieldOwner = selection?.element.kind === 'attachment' || selection?.element.kind === 'component' && !evaluate
-    ? selection : !selection && !evaluate ? graph : undefined;
-  const canEditField = evaluate ? !busy && attachments.data?.revision === saved.revision : fieldEditable;
-  const fieldBody = model && fieldOwner && !libraryItem
+  const fieldOwner = selection?.element.kind === 'attachment' || selection?.element.kind === 'component'
+    ? selection : !selection ? graph : undefined;
+  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.revision === saved.revision);
+  const canEditField = evaluate ? !busy && canEvaluate : fieldEditable;
+  const fieldBody = shownModel && fieldOwner && !libraryItem
     ? { owner: fieldOwner, revision: saved.revision, run: evaluate?.run ?? projectionRun, evaluate_scope: evaluate?.scope } : undefined;
   const fields = useQuery({
     queryKey: ['model-fields', saved.project_id, fieldBody],
@@ -230,9 +233,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const fieldControls = projectedFields.map((field) => <StudioFieldControl
     key={JSON.stringify([saved.project_id, projectionRun?.variant, projectionRun?.step, fieldRows, addressKey(field.address)])}
     field={field}
+    source={attachments.data?.field_sources?.[addressKey(field.address)] ??
+      (fieldOwner && attachments.data?.field_sources?.[addressKey(fieldOwner)]) ??
+      attachments.data?.source ?? undefined}
     commit={canEditField && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined}
     rowSelection={!!fieldRows?.length}
-    multipleRows={(fieldRows?.length ?? 0) > 1}
+    multipleRows={!evaluate && (fieldRows?.length ?? 0) > 1}
     selectedValues={field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined} />);
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {
@@ -283,8 +289,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     setPath(reveal.composites);
   }, [active, model?.id, reveal, setPath, state]);
   useEffect(() => {
-    if (model && active && path.length !== currentPath.length) setPath(currentPath);
-  }, [model?.id, active, currentPath, path, setPath]);
+    if (resolved && active && path.length !== currentPath.length) setPath(currentPath);
+  }, [resolved, active, currentPath, path, setPath]);
   const problemAddress = problem?.address;
   useEffect(() => {
     if (!model || !active || !problemAddress) return;
@@ -343,7 +349,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         dependencies: model ? [{ kind: 'document', id: model.id }] : [],
       });
       await editor.flush();
-      selectModel(state, difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed);
+      if (difference.op !== 'set_field') {
+        selectModel(state, difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed);
+      }
     } catch (error) {
       setIssue({ reason: apiErrorMessage(error) });
     } finally {
@@ -495,7 +503,6 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     }
   }
 
-  const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   const effectiveInterior = effectiveModel ? modelPath(effectiveModel, currentPath).owner.interior : interior;
   const effective = new Map<string, readonly Attachment[]>();
   for (const [id, wire] of Object.entries(effectiveInterior?.wires ?? {})) {
@@ -621,7 +628,6 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     ? effective.get(addressKey(attachmentOwner))?.find(({ id }) => id === element.id) : undefined;
   const ownerAddress = selection && (element?.kind === 'wire' || element?.kind === 'port') ? selection : attachmentOwner;
   const chain = ownerAddress && effective.get(addressKey(ownerAddress));
-  const canEvaluate = Boolean(readBody && attachments.data?.revision === saved.revision);
   const authored = attachments.data?.records ?? [];
   function isAuthored(address: ModelAddress) {
     return authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
@@ -739,9 +745,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       {fieldControls}
       <ComponentFields component={component} definition={component.kind === 'leaf' ? registry.get(component.type) : undefined}
         projected={projectedNames}
-        change={editTopology ? (path, value) => void apply(studioName('setValue'), {
-          op: 'set_field', address: fieldAddress(selection, ...path), value,
-        }, false) : undefined} />
+        change={editTopology || canEvaluate && !busy ? (path, value) => {
+          const difference = { op: 'set_field', address: fieldAddress(selection, ...path), value } as const;
+          if (evaluate) void applyEvaluate(studioName('setValue'), difference);
+          else void apply(studioName('setValue'), difference, false);
+        } : undefined} />
     </> : port ? <>
       <strong>{port.name}</strong><PortFields port={port} />
       {selection && editTopology && port.end.owner !== 'component' && <Field label={studioName('name')} value={port.name}

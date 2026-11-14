@@ -8,7 +8,9 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_edit import EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentVariant
+from feedbax.contracts.model_edit import (
+    EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentVariant, StudioEvaluateValueSource,
+)
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
@@ -103,6 +105,8 @@ class StudioTrialAuthoring(StrictModel):
     task_document: ProjectName | None
     objective_document: ProjectName | None
     task: TaskDocument | PythonTaskSelection
+    task_source: StudioEvaluateValueSource | None = None
+    task_field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
     objective: ObjectiveDocument | None
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]

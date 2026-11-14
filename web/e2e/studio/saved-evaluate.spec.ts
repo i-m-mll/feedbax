@@ -3,9 +3,10 @@ import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
-import { captureStudioWindow, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
+  channel: 'chrome',
   trace: 'off',
   launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
   viewport: { width: 1440, height: 900 },
@@ -235,6 +236,185 @@ test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by 
   test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal application backend');
   test.setTimeout(60_000);
   await runSavedEvaluation(page, request, info);
+});
+
+test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
+  test.skip(!enabled || process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal Evaluate candidate backend');
+  test.setTimeout(59_000);
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const path = `${projectPath}/train-runs`;
+  const saved = async () => {
+    const response = await request.get(projectPath);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  };
+  const plan = async () => {
+    const { revision } = await saved();
+    const response = await request.get(path, { params: { revision, window_map: true } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  };
+  const selectedKey = { variant: 'default', step: 'conditions', row: 'seed=control' };
+  const siblingKey = { ...selectedKey, row: 'seed=comparison' };
+  const unselectedKey = { ...selectedKey, row: 'seed=unselected' };
+  const row = (view: StudioSavedTrainRuns, key: typeof selectedKey) => view.window_map?.evaluations?.find(
+    (item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row,
+  );
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+  const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+  const target = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+  const targetY = task.getByRole('spinbutton', { name: 'Target y (m)', exact: true });
+  const taskSteps = task.getByRole('spinbutton', { name: 'N Steps', exact: true });
+  const stepField = inspector.getByRole('textbox', { name: 'Step', exact: true });
+  const chooseRow = async (run = selectedKey, extend = false) => {
+    const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
+    expect(definition).toBeDefined();
+    await plans(page).getByRole('button', { name: definition!.label, exact: true })
+      .click(extend ? { modifiers: ['Shift'] } : {});
+  };
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await chooseStep(page, 'train');
+  const [train] = await submit(page, path);
+  expect(train.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 16_000 });
+  const before = await plan();
+  const [trained] = before.rows;
+  const sibling = row(before, siblingKey);
+  const unselected = row(before, unselectedKey);
+  const graphPath = '/params/variation/raw-mass/path';
+  const authoredPath = '/sweep/exceptions/raw-control/patches/params.variation/value/raw-mass/path';
+  const invalidGraph = (view: StudioSavedTrainRuns) => view.window_map?.problems.find(({ code, step, row }) =>
+    code === 'authored_graph_variation' && step === selectedKey.step && row === selectedKey.row);
+  const storedControl = (state: StudioProjectSnapshot) =>
+    state.project.steps?.conditions?.sweep?.exceptions?.['raw-control']?.patches?.['params.variation'];
+  const problem = invalidGraph(before);
+  expect(problem).toMatchObject({ path: graphPath, address: 'steps/conditions.json', authored_path: authoredPath });
+  expect(row(before, selectedKey)).toBeUndefined();
+  expect(sibling?.can_run).toBe(true);
+  await chooseStep(page, 'conditions');
+  await chooseRow();
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(inspector).toContainText(graphPath);
+  const revealVariation = async () => {
+    await page.getByRole('button', { name: /^Problems\b/ }).click();
+    await page.getByRole('dialog', { name: 'Problems' }).getByRole('button')
+      .filter({ hasText: problem!.detail.replace(`${graphPath}: `, '') }).click();
+  };
+  await revealVariation();
+  await expect(model).toBeVisible();
+  const remove = model.getByRole('button', { name: 'Remove Variation', exact: true });
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  await expect.poll(async () => row(await plan(), selectedKey)?.can_run).toBe(true);
+  const repaired = await plan();
+  const original = row(repaired, selectedKey);
+  expect(invalidGraph(repaired)).toBeUndefined();
+  expect(repaired.rows).toEqual(before.rows);
+  expect(row(repaired, siblingKey)).toEqual(sibling);
+  expect(row(repaired, unselectedKey)).toEqual(unselected);
+  expect(storedControl(await saved())).toEqual({
+    op: 'replace', value: { 'row-y': { op: 'replace', path: 'task.params.y', value: 0.04 } },
+  });
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(async () => invalidGraph(await plan())?.path).toBe(graphPath);
+  expect(storedControl(await saved())).toEqual(storedControl(snapshot));
+  await page.keyboard.press('Meta+Shift+Z');
+  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(original?.request_id);
+  await expect(remove).toHaveCount(0);
+
+  await model.locator('[data-id="plant"] header').click();
+  await expect(mass).toHaveAccessibleDescription('Trained by train');
+  await expect(mass).toHaveValue('1.25');
+  await enter(mass, '2');
+  await expect(mass).toHaveAccessibleDescription('Changed by conditions');
+  await expect(mass).toHaveValue('2');
+  await tab(page, 'Runs').click();
+  await chooseRow(siblingKey, true);
+  await tab(page, 'Task').click();
+  await expect(target).toHaveAccessibleDescription('Trained by train');
+  await expect(target).toHaveValue('0.18');
+  await enter(target, '0.24');
+  await expect(target).toHaveAccessibleDescription('Changed by conditions');
+  await expect(target).toHaveValue('0.24');
+  await tab(page, 'Runs').click();
+  await chooseRow(siblingKey);
+  await tab(page, 'Task').click();
+  await expect(target).toHaveValue('0.24');
+  await expect(targetY).toHaveValue('0.06');
+  await expect(targetY).toHaveAccessibleDescription('Changed by conditions');
+
+  const changed = await plan();
+  const edited = await saved();
+  expect(changed.rows).toEqual(before.rows);
+  expect(row(changed, siblingKey)?.request_id).not.toBe(sibling?.request_id);
+  expect(row(changed, unselectedKey)).toEqual(unselected);
+  expect(row(changed, selectedKey)?.request_id).not.toBe(original?.request_id);
+  expect(edited.project.documents).toEqual(snapshot.project.documents);
+  expect(edited.project.steps?.train).toEqual(snapshot.project.steps?.train);
+  expect(Object.values(edited.project.steps?.conditions?.sweep?.exceptions ?? {}).map((item) => item?.where))
+    .toEqual(expect.arrayContaining([{ rows: [selectedKey.row] }, { rows: [siblingKey.row, selectedKey.row] }]));
+
+  await page.reload();
+  await chooseStep(page, 'conditions');
+  await chooseRow();
+  await tab(page, 'Task').click();
+  await expect(target).toHaveValue('0.24');
+  await expect(targetY).toHaveValue('0.04');
+  await expect(taskSteps).toHaveAccessibleDescription('Trained by train');
+  await expect(taskSteps).toHaveValue('12');
+  await enter(taskSteps, '0');
+  await expect.poll(async () => (await plan()).window_map?.problems.find(({ step, row }) =>
+    step === selectedKey.step && row === selectedKey.row)).toMatchObject({
+    path: '/params/variation/task-n_steps', detail: expect.stringMatching(/greater than 0/),
+  });
+  await tab(page, 'Runs').click();
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(inspector).toContainText('/params/variation/task-n_steps');
+  await tab(page, 'Task').click();
+  await expect(taskSteps).toBeEditable();
+  await expect(taskSteps).toHaveValue('0');
+  await enter(taskSteps, '12');
+  await expect.poll(async () => row(await plan(), selectedKey)?.can_run).toBe(true);
+  const repairedTask = await plan();
+  expect(row(repairedTask, siblingKey)).toEqual(row(changed, siblingKey));
+  expect(row(repairedTask, unselectedKey)).toEqual(unselected);
+  await tab(page, 'Model').click();
+  await model.locator('[data-id="plant"] header').click();
+  await expect(mass).toHaveValue('2');
+  await model.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await expect(stepField).toBeEditable();
+  const clock = await stepField.inputValue();
+  await enter(stepField, '0.03 s');
+  await expect(stepField).toBeEditable();
+  await expect(stepField).toHaveValue('0.03 s');
+  await expect.poll(async () => (await plan()).window_map?.problems.find(({ step, row }) =>
+    step === selectedKey.step && row === selectedKey.row)).toMatchObject({
+    path: '/step_seconds', detail: 'This Model field changes the trained graph interface or clock',
+    model_address: { document: 'point-mass', element: { kind: 'field', path: ['step_seconds'] } },
+  });
+  await tab(page, 'Runs').click();
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(inspector).toContainText('/step_seconds: This Model field changes the trained graph interface or clock');
+  await tab(page, 'Model').click();
+  await expect(stepField).toBeEditable();
+  await enter(stepField, clock);
+  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(row(repairedTask, selectedKey)?.request_id);
+  await tab(page, 'Runs').click();
+  await chooseRow();
+  const [evaluation] = await submit(page, path);
+  expect(evaluation.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  const complete = await plan();
+  expect(complete.rows).toEqual(before.rows);
+  expect(row(complete, siblingKey)).toEqual(row(changed, siblingKey));
+  expect(row(complete, unselectedKey)).toEqual(unselected);
+  expect(row(complete, selectedKey)?.result).toMatchObject({
+    job_id: evaluation.job_id, checkpoint_source: { job_id: train.job_id, request_id: trained.request_id, completed_updates: 2 },
+    receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+  });
 });
 
 test('authors checkpoint rules and replays covered updates from Results', async ({ page, request }, info) => {

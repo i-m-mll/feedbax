@@ -1,4 +1,4 @@
-"""Apply authored attachment differences and derive executable Evaluate patches."""
+"""Apply authored Model differences and derive executable Evaluate patches."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import AttachmentElement, FieldElement, ModelAddress, WireElement
 from feedbax.contracts.model_attachment import (
-    AddModelAttachment, ChangeModelAttachment, ModelAttachmentDifference, ModelDifference, SetField,
-    is_generated_attachment_node,
+    AddModelAttachment, AddModelComponent, ChangeModelAttachment, ModelAttachmentDifference, ModelDifference,
+    ModelWireDifference, SetField, is_generated_attachment_node,
 )
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_document import ModelDocument, ModelWire
 from feedbax.contracts.model_edit import ModelEditState
 from feedbax.studio.model_edit import ModelEditDraft
 from feedbax.studio.model_ports import ModelRegistryPorts
@@ -137,6 +137,29 @@ def resolve_effective_model(
         try:
             if document != address.document:
                 raise ValueError("This step does not use the addressed Model document")
+            if isinstance(difference, AddModelComponent):
+                _, graph = edit.context(address)
+                if element.id in graph["components"]:
+                    raise ValueError("The addressed component already exists")
+                graph["components"][element.id] = difference.component.model_dump(mode="json")
+                continue
+            if isinstance(difference, ModelWireDifference):
+                _, graph = edit.context(address)
+                wires = graph["wires"]
+                if difference.op == "add_wire":
+                    if element.id in wires:
+                        raise ValueError("The addressed wire already exists")
+                    wires[element.id] = ModelWire(
+                        source=difference.source, target=difference.target,
+                    ).model_dump(mode="json")
+                else:
+                    if element.id not in wires:
+                        raise ValueError("The addressed wire no longer exists")
+                    wires[element.id].update(
+                        source=difference.source.model_dump(mode="json"),
+                        target=difference.target.model_dump(mode="json"),
+                    )
+                continue
             if isinstance(difference, SetField):
                 if not isinstance(element, FieldElement) or any(not isinstance(part, str) for part in element.path):
                     raise ValueError("A Model difference must name a field using named parts")

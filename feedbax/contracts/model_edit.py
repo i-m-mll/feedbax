@@ -8,7 +8,7 @@ from pydantic import Field, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
-from feedbax.contracts.model_attachment import ModelAttachmentDifference, ModelDifference, SetField as SetField
+from feedbax.contracts.model_attachment import EditableModelDifference, ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType,
@@ -312,7 +312,12 @@ class EvaluateAttachmentReadRequest(StrictModel):
 
 
 class EvaluateAttachmentRequest(EvaluateAttachmentReadRequest):
-    difference: ModelDifference
+    difference: EditableModelDifference
+
+
+class StudioEvaluateValueSource(StrictModel):
+    kind: Literal["trained", "evaluate"]
+    step: ProjectName
 
 
 class EvaluateAttachmentState(StrictModel):
@@ -320,6 +325,8 @@ class EvaluateAttachmentState(StrictModel):
     records: tuple[ModelAttachmentDifference, ...]
     effective: tuple[ModelAttachmentDifference, ...]
     resolved_model: ModelDocument | None = None
+    source: StudioEvaluateValueSource | None = None
+    field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
 
 
 class EvaluateAttachmentEdit(StrictModel):

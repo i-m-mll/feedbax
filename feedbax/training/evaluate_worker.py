@@ -162,8 +162,7 @@ def resolve_rollout(
             initialization_key=key, graph_override=variant.graph,
         )
     if not isinstance(paired, PreparedTrialExecution):
-        problem = paired[0]
-        raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
+        raise variant.task_refusal(paired[0])
     assert paired.objective is not None
     try:
         scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials)

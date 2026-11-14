@@ -5,8 +5,10 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.model_address import AttachmentElement, ModelAddress, ModelElementId
-from feedbax.contracts.model_document import WireAttachment
+from feedbax.contracts.model_address import (
+    AttachmentElement, ComponentElement, ModelAddress, ModelElementId, SignalSource, SignalTarget, WireElement,
+)
+from feedbax.contracts.model_document import LeafComponent, WireAttachment
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 
@@ -59,11 +61,36 @@ class SetField(StrictModel):
     value: JsonValue
 
 
-ModelAttachmentDifference = Annotated[
-    AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment, Field(discriminator="op")
-]
+class AddModelComponent(StrictModel):
+    op: Literal["add_component"]
+    address: ModelAddress
+    component: LeafComponent
+
+    @model_validator(mode="after")
+    def _component_address(self) -> "AddModelComponent":
+        if not isinstance(self.address.element, ComponentElement):
+            raise ValueError("A component addition requires a component address")
+        return self
+
+
+class ModelWireDifference(StrictModel):
+    op: Literal["add_wire", "rewire"]
+    address: ModelAddress
+    source: SignalSource
+    target: SignalTarget
+
+    @model_validator(mode="after")
+    def _wire_address(self) -> "ModelWireDifference":
+        if not isinstance(self.address.element, WireElement):
+            raise ValueError("A wire difference requires a wire address")
+        return self
+
+
+AttachmentDifference = AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment
+ModelAttachmentDifference = Annotated[AttachmentDifference, Field(discriminator="op")]
+EditableModelDifference = Annotated[AttachmentDifference | SetField, Field(discriminator="op")]
 ModelDifference = Annotated[
-    AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField,
+    AttachmentDifference | SetField | AddModelComponent | ModelWireDifference,
     Field(discriminator="op"),
 ]
 

@@ -251,12 +251,13 @@ class StudioProjectWindowMapProblem(StrictModel):
 
     address: str | None = Field(default=None, exclude_if=lambda value: value is None)
     layer: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    authored_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
         source = f"steps/{diagnostic.step}.json" if diagnostic.step else declaration
         problem = cls.model_validate(diagnostic, from_attributes=True)
-        problem.address = source
+        problem.address = diagnostic.authored_file or source
         problem.layer = diagnostic.layer
         return problem
 

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import type { ComponentDefinition, DelayAttachment, InterventionAttachment, JsonValue, ModelAddress, ModelDocument, ModelTime, ParamSchema, ProbeAttachment } from '@/generated/studioContracts';
 import { ModelAddressSchema } from '@/generated/studioContracts';
 import { z } from 'zod';
@@ -10,11 +10,12 @@ export type Attachment = DelayAttachment | InterventionAttachment | ProbeAttachm
 const inputClass = 'min-w-0 w-full rounded border border-shell-divider bg-shell-chrome px-1 py-0.5';
 const action = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 
-export function Field({ label, value, parse, commit, type = 'text', suffix }: {
+export function Field({ label, value, parse, commit, type = 'text', suffix, description }: {
   label: string; value: string; parse(value: string): JsonValue | undefined;
-  commit?: (value: JsonValue) => void; type?: 'text' | 'number'; suffix?: ReactNode;
+  commit?: (value: JsonValue) => void; type?: 'text' | 'number'; suffix?: ReactNode; description?: string;
 }) {
   const [invalid, setInvalid] = useState(false);
+  const descriptionId = useId();
   return <form className="grid gap-1" onSubmit={(event) => {
     event.preventDefault();
     if (!commit) return;
@@ -25,8 +26,10 @@ export function Field({ label, value, parse, commit, type = 'text', suffix }: {
   }}>
     <label className="grid gap-1">{label}
       <input key={value} className={inputClass} name="value" type={type} step="any" defaultValue={value}
-        disabled={!commit} aria-invalid={invalid || undefined} onChange={() => setInvalid(false)} />
+        disabled={!commit} aria-invalid={invalid || undefined} aria-describedby={description ? descriptionId : undefined}
+        onChange={() => setInvalid(false)} />
     </label>
+    {description && <span id={descriptionId} className="text-xs text-shell-muted">{description}</span>}
     {suffix}
   </form>;
 }
