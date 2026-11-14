@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, ObjectiveDocument, PythonTaskSelection, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
-import { authorLearningRateSweep, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
   trace: 'off',
@@ -374,14 +374,19 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(batchSize).toHaveValue('4');
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
-  await authorLearningRateSweep(rate);
+  await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
+  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  await expect(rateText).toHaveValue('0.001,');
+  await number(page, rateText, '0.001, 0.002, 0.003');
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
   const swept = await savedProject();
   const sourceRows = (await plan(swept.revision)).window_map!.rows.filter(({ key }) => key.step === 'train');
-  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   const [selected] = sourceRows;
   await page.keyboard.press('Control+Meta+2');
   await activate(page, train.getByRole('button', { name: 'Sweep learning-rate', exact: true }));
-  const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate Slow · 0.001', exact: true });
+  const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate 0.001', exact: true });
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
   await expect(train).toContainText('1 of 3');
