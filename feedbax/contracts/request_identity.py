@@ -43,6 +43,7 @@ from feedbax.contracts.request_specs import (
     RenderRequestSpec,
     ReportRequestSpec,
     RequestSpec,
+    TrialDocuments,
 )
 from feedbax.contracts.task_document import PythonTaskSelection
 
@@ -113,11 +114,18 @@ class _FactoredDocument:
     data: bytes
 
 
+@dataclass(frozen=True)
+class _InlineTrialDocuments:
+    data: bytes
+    task: EncodedTrainTask | None
+
+
 class RequestDocumentMemo:
     """Reuse verified documents and pinned defaults under one codec authority."""
 
     def __init__(self) -> None:
         self._entries: dict[tuple[type[RequestSpec], str], _FactoredDocument] = {}
+        self._inline_trial: tuple[TrialDocuments, _InlineTrialDocuments] | None = None
         self._pins = PinnedFields(_identity_contract()["fields"])
 
     def fork(self) -> RequestDocumentMemo:
@@ -246,6 +254,16 @@ def _encoded_train_task(projection: dict[str, Any]) -> EncodedTrainTask | None:
     return EncodedTrainTask(_dump_canonical_json_v2(selection) if selection is not None else None)
 
 
+def _encode_spec_with_trial_documents(spec: dict[str, Any], trial: _InlineTrialDocuments) -> bytes:
+    # Place the inline member among the fixed ASCII Train spec keys.
+    name = "trial_documents"
+    before = {key: value for key, value in spec.items() if key < name}
+    after = {key: value for key, value in spec.items() if key > name}
+    prefix = _dump_canonical_json_v2(before)[:-1] + (b"," if before else b"")
+    suffix = b"," + _dump_canonical_json_v2(after)[1:] if after else b"}"
+    return prefix + b'"trial_documents":' + trial.data + suffix
+
+
 def decode_python_task_selection(selection: bytes) -> PythonTaskSelection:
     """Rehydrate a Python Task subtree captured by the local request encoder."""
     spec = decode(json.loads(selection), PythonTaskSelection, _identity_contract()["fields"])
@@ -278,15 +296,26 @@ def encode_request(
             for name in descriptor.documents
             if (entry := document_memo.lookup(spec, name)) is not None
         }
+    trial_documents = None
+    trial = None
+    projected_fields = {name: entry.projection for name, entry in reused.items()}
+    if capture_train_task and document_memo is not None and isinstance(spec, DocumentTrainingRequestSpec):
+        trial_documents = spec.trial_documents
+        if (previous := document_memo._inline_trial) is not None and same_typed_value(trial_documents, previous[0]):
+            trial = previous[1]
+            # The required field keeps its place in validation order.
+            projected_fields["trial_documents"] = None
     projection = encode(
-        spec, descriptor.spec_type, pins,
-        projected_fields={name: entry.projection for name, entry in reused.items()},
+        spec, descriptor.spec_type, pins, projected_fields=projected_fields,
     )
     train_task = None
     if descriptor is DOCUMENT_TRAIN_REQUEST:
-        omit_model_display_names(projection["trial_documents"]["model"])
+        if trial is None:
+            omit_model_display_names(projection["trial_documents"]["model"])
         if capture_train_task:
-            train_task = _encoded_train_task(projection)
+            train_task = _encoded_train_task(projection) if trial is None else (
+                trial.task if not _may_spell_unsafe_integer(projection) else None
+            )
     documents = {}
     for name in descriptor.documents:
         if name in reused:
@@ -313,13 +342,22 @@ def encode_request(
     validate_canonical_json_v2(preimage)
     del preimage["spec"]
     identity_fields = _dump_canonical_json_v2(preimage)
-    canonical_spec = _dump_canonical_json_v2(projection)
-    return EncodedRequest(
+    canonical_spec = (
+        _dump_canonical_json_v2(projection) if trial is None else _encode_spec_with_trial_documents(projection, trial)
+    )
+    encoded = EncodedRequest(
         id=kind + ":" + sha256_bytes(_append_spec(identity_fields, canonical_spec)),
         data=_append_spec(canonical_json_v2_bytes(envelope), canonical_spec),
         documents=documents,
         train_task=train_task,
     )
+    if trial_documents is not None and trial is None:
+        assert document_memo is not None
+        inline = projection["trial_documents"]
+        document_memo._inline_trial = deepcopy(trial_documents), _InlineTrialDocuments(
+            _dump_canonical_json_v2(inline), _encoded_train_task({"trial_documents": inline}),
+        )
+    return encoded
 
 
 def _read_object(data: bytes, *, nullable: bool = False) -> dict | None:
