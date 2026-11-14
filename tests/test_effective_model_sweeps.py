@@ -50,6 +50,30 @@ def _managed_project(authored):
     return raw
 
 
+def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_path, authored):
+    raw = document_project(authored)
+    train = raw["steps"]["train"]
+    train["document_overrides"] = {"reach-model": {"/step_seconds": 0.02}}
+    baseline = compile_project(Project.model_validate(raw))
+    assert not baseline.diagnostics, baseline.diagnostics
+    (original,) = baseline.runs
+    assert original.admission_problem is None
+    assert _decode(baseline, original.key).trial_documents.model.step_seconds == 0.02
+
+    clock = _field({"document": "reach-model", "composites": [], "element": {"kind": "graph"}}, "step_seconds")
+    train["sweep"] = {"axes": {"clock": {
+        "path": clock.to_text(), "range": {"start": 0.01, "stop": 0.03, "count": 3},
+    }}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "clock-range", Project.model_validate(raw))
+    plan = folders.read_plan("clock-range", revision=None).plan
+    assert not plan.diagnostics, plan.diagnostics
+    assert all(run.admission_problem is None for run in plan.runs)
+    assert [_decode(plan, run.key).trial_documents.model.step_seconds for run in plan.runs] == [0.01, 0.02, 0.03]
+    assert len(plan.requests) == 3
+    assert plan.runs[1].request_id == original.request_id
+
+
 def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, authored):
     registry = new_application_registry_bundle()
     folders = ProjectFolderService(
