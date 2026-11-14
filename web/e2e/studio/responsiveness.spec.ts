@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type CDPSession, type TestInfo, type Locator, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
@@ -318,9 +318,9 @@ async function measureDrag(page: Page, model: Locator, context: CDPSession, proj
   return observations;
 }
 
-async function measureReplay(page: Page, request: APIRequestContext, context: CDPSession) {
+async function measureReplay(page: Page, request: APIRequestContext, context: CDPSession, home: string) {
   const project = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.canonical_evaluate', 'seed', String(info.config.metadata.home), 'playback-cadence',
+    'web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'playback-cadence',
   ));
   const path = '/api/projects/' + project;
   const opened = await request.get(path);
@@ -462,7 +462,7 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
     await info.attach('mounted-runs-scroll', { body: JSON.stringify(scroll), contentType: 'application/json' });
     expect(scroll.end.lastRowVisible).toBe(true);
     expect(Math.abs(scroll.end.offset - scroll.end.distance)).toBeLessThanOrEqual(1);
-    const replay = await measureReplay(page, request, context, info);
+    const replay = await measureReplay(page, request, context, String(info.config.metadata.home));
     await info.attach('mounted-scene-playback', { body: JSON.stringify(replay), contentType: 'application/json' });
     const longTasks = [...field.commit.longTasks, ...drag.flatMap(({ samples }) => samples.longTasks), ...replay.samples.longTasks];
     expect.soft(longTasks.filter(({ duration }) => duration > 50), 'drag, commit and active playback main-thread tasks over 50 ms').toEqual([]);
