@@ -168,7 +168,9 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
   );
 }
 
-export function StudioRunDetails({ step, state }: Pick<RunSelectionProps, "step" | "state">) {
+export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps, "step" | "state"> & {
+  detail?: ReactNode;
+}) {
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   if (!selected.length) return null;
   const single = selected.length === 1;
@@ -186,7 +188,7 @@ export function StudioRunDetails({ step, state }: Pick<RunSelectionProps, "step"
         <StudioRunStatus status={status} />
       </li>)}
     </ul>
-    {reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
+    {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
     </ul>}
   </section>;

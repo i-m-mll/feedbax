@@ -220,6 +220,7 @@ export interface StudioSavedEvaluationRow {
   result: StudioSavedEvaluationResult | null;
   subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
+  checkpoint_attempt?: StudioEvaluationCheckpointAttempt | null;
   checkpoint_rule?: unknown | null;
   bound_subject?: StudioBoundBestSubject | null;
 }
@@ -3391,6 +3392,30 @@ export type StudioEvaluateStep = {
   "group"?: string | null;
 };
 
+export type StudioEvaluationCheckpointAttempt = {
+  "job_id": string;
+  "placement": ValidationPlacement;
+  "pending"?: StudioEvaluationPendingCheckpoint | null;
+  "points"?: Array<StudioEvaluationPointProgress>;
+};
+
+export type StudioEvaluationPendingCheckpoint = {
+  "producer_job_id": string;
+  "producer_request_id": string;
+  "state": "queued" | "assigned" | "running" | "stopping" | "resumable";
+  "next_update"?: number | null;
+  "recovery_update"?: number | null;
+};
+
+export type StudioEvaluationPointProgress = {
+  "job_id": string;
+  "request_id": string;
+  "completed_updates": number;
+  "publication_cursor": number;
+  "transaction_root_sha256": string;
+  "status": "scored" | "failed";
+};
+
 export type StudioNameSweepValue = {
   "kind": "nameSweepValue";
   "sweep_id": string;
@@ -3821,6 +3846,12 @@ export type UpdateCheckpoint = {
 };
 
 export type UpdateRule = UpdateCadence | Array<UpdateCheckpoint>;
+
+export type ValidationPlacement = {
+  "location": "live" | "ordinary";
+  "reason": "within_budget" | "late" | "unqualified" | "unmeasured" | "over_budget" | "driver_occupied";
+  "predicted_update_fraction"?: number | null;
+};
 
 export type ValidationTrial = {
   "variables"?: Record<string, ValidationValue>;
@@ -4284,6 +4315,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "result": StudioSavedEvaluationResultSchema.nullable(),
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
+      "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
       "checkpoint_rule": z.unknown().nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
@@ -9484,6 +9516,36 @@ export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluateStep>;
 
+export const StudioEvaluationCheckpointAttemptSchema: z.ZodType<StudioEvaluationCheckpointAttempt> = z.lazy(() =>
+  z.object({
+    "job_id": z.string(),
+    "placement": ValidationPlacementSchema,
+    "pending": z.union([StudioEvaluationPendingCheckpointSchema, z.null()]).optional(),
+    "points": z.array(StudioEvaluationPointProgressSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpointAttempt>;
+
+export const StudioEvaluationPendingCheckpointSchema: z.ZodType<StudioEvaluationPendingCheckpoint> = z.lazy(() =>
+  z.object({
+    "producer_job_id": z.string(),
+    "producer_request_id": z.string(),
+    "state": z.union([z.literal("queued"), z.literal("assigned"), z.literal("running"), z.literal("stopping"), z.literal("resumable")]),
+    "next_update": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "recovery_update": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluationPendingCheckpoint>;
+
+export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPointProgress> = z.lazy(() =>
+  z.object({
+    "job_id": z.string(),
+    "request_id": z.string(),
+    "completed_updates": z.number().int().safe().min(0),
+    "publication_cursor": z.number().int().safe().gt(0),
+    "transaction_root_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+    "status": z.union([z.literal("scored"), z.literal("failed")]),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluationPointProgress>;
+
 export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
   z.object({
     "kind": z.literal("nameSweepValue"),
@@ -10034,6 +10096,14 @@ export const UpdateCheckpointSchema: z.ZodType<UpdateCheckpoint> = z.lazy(() =>
 export const UpdateRuleSchema: z.ZodType<UpdateRule> = z.lazy(() =>
   z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])
 ) as unknown as z.ZodType<UpdateRule>;
+
+export const ValidationPlacementSchema: z.ZodType<ValidationPlacement> = z.lazy(() =>
+  z.object({
+    "location": z.union([z.literal("live"), z.literal("ordinary")]),
+    "reason": z.union([z.literal("within_budget"), z.literal("late"), z.literal("unqualified"), z.literal("unmeasured"), z.literal("over_budget"), z.literal("driver_occupied")]),
+    "predicted_update_fraction": z.union([z.number().finite(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ValidationPlacement>;
 
 export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>
   z.object({

@@ -72,6 +72,7 @@ from feedbax.jobs import (
     PlanJobAttempt,
     PlanJobAttempts,
     PlanJobReader,
+    active_plan_attempt,
     saved_request_status,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -632,10 +633,14 @@ def _evaluation_row(
             bound_subject=success.bound_subject,
         )
     status, reason = saved_request_status(attempts, success=success, problem=problem.detail if problem else None)
+    displayed_attempt = active_plan_attempt(attempts)
+    if displayed_attempt is None and attempts:
+        displayed_attempt = success if status is JobStatus.SUCCEEDED else attempts[-1]
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
         can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
+        checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
         subject_rank_key=reference.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=attempts[-1].bound_subject if attempts else None,
     ), problem

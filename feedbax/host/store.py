@@ -5,12 +5,14 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_refs import BestRank
+from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
 from feedbax.host.best_selection import BestMetricUnavailable, completion_score
 from feedbax.host.checkpoint_selection import (
@@ -19,6 +21,7 @@ from feedbax.host.checkpoint_selection import (
 from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
+from feedbax.persistence.store_damage import inspect_without_recording
 
 
 class StorePublicationPending(Exception):
@@ -109,6 +112,14 @@ class _CompletionRejection(NamedTuple):
     message: str
 
 
+class _CompletionCandidate(NamedTuple):
+    binding: dict | None
+    error: dict | None
+    rejections: list[_CompletionRejection]
+    pending: dict | None = None
+    members: tuple[dict, ...] = ()
+
+
 def dump(value, *, sort_keys: bool = False) -> str:
     return json.dumps(value, sort_keys=sort_keys, separators=(",", ":"), allow_nan=False)
 
@@ -132,6 +143,37 @@ def require_text(value, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise HostError("invalid_request", f"{field} must be a nonempty string.")
     return value
+
+
+def _scheduled_checkpoint(update: int, interval: int, horizon: int) -> bool:
+    return update <= horizon and (update == horizon or update % interval == 0)
+
+
+def _pending_checkpoint(attempt: sqlite3.Row, boundary: dict | None, absent: Sequence[int]) -> dict:
+    state = attempt["state"]
+    recovering = state not in LIVE_STATES
+    recovery_update = boundary["completed_updates"] if boundary is not None else None
+    published = recovery_update or 0
+    completed = published
+    if not recovering:
+        progress = json.loads(attempt["progress"] or "{}")
+        latest = json.loads(attempt["checkpoint"] or "{}")
+        published = max(published, latest.get("completed_updates", 0))
+        completed = max(published, progress.get("completed_updates", 0))
+    spec = json.loads(attempt["launch"])["payload"].get("spec", {})
+    horizon = spec.get("method_payload", {}).get("payload", {}).get("target_total")
+    interval = spec.get("checkpoint_progress", {}).get("checkpoint_interval")
+    next_update = min((
+        update for update in absent
+        if update > published and update >= completed and _scheduled_checkpoint(update, interval, horizon)
+    ), default=None) if type(horizon) is int and type(interval) is int and interval > 0 else None
+    return {
+        "producer_job_id": attempt["id"],
+        "producer_request_id": attempt["request"],
+        "state": "resumable" if recovering else state,
+        "next_update": next_update,
+        "recovery_update": recovery_update if recovering else None,
+    }
 
 
 class Store:
@@ -761,11 +803,70 @@ class Store:
             cursor = max(after, self.event_head)
         return {"events": events, "cursor": cursor, "head": self.event_head, "oldest_cursor": 0}
 
-    def jobs_snapshot(self, *, record_keys: list[str] | None = None, **filters) -> dict:
+    def jobs_snapshot(
+        self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None, **filters,
+    ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
+        if checkpoint_progress_root is not None and filters.get("include_launch"):
+            for job in snapshot["jobs"]:
+                if (
+                    job["state"] in LIVE_STATES and job["request"].startswith("evaluate:")
+                    and job["data"].get("manifest_root") == checkpoint_progress_root
+                    and job["data"].get("placement_detail") is not None
+                ):
+                    job["checkpoint_progress"] = self._checkpoint_progress(job)
         if record_keys:
             snapshot["records"] = self.record_get_many(record_keys)
         return snapshot
+
+    @inspect_without_recording()
+    def _checkpoint_progress(self, job: dict) -> dict:
+        """Read the adjudicated Train path and its live point progress at the snapshot cursor."""
+        edge = next(edge for edge in job["edges"] if edge.get("authenticated_completion"))
+        binding = edge["binding"]
+        pending = None
+        points: Sequence[dict] = ()
+        is_live = job["data"]["placement"] == "live"
+        if binding is not None:
+            points = binding.get("live_evaluation_points", ())
+        else:
+            launch = job["launch"]
+            anchor = edge["job_id"]
+            selection = requested_checkpoint_selection(job["request"], launch)
+            tip = live_evaluate.pinned_tip(self.db, job["id"]) if is_live else None
+            if is_live and tip is None:
+                # Before delegation only the admitted root can receive the live owner.
+                tip = self.get(anchor)
+                if tip["state"] in TERMINAL_STATES:
+                    return {}
+            tip_id = tip["id"] if tip is not None else None
+            candidate = self._completion_candidate(anchor, selection, tip=tip_id, observe=True)
+            pending = candidate.pending
+            if tip is not None:
+                points = live_evaluate.selected_points(self.db, job["id"], candidate.members)
+                if pending is not None and tip["state"] in LIVE_STATES:
+                    reported = {point["publication_cursor"] for point in points}
+                    scoring = min((
+                        member["checkpoint"]["completed_updates"] for member in candidate.members
+                        if member["producer_job_id"] == tip["id"] and member["publication_cursor"] not in reported
+                    ), default=None)
+                    if scoring is not None:
+                        pending = pending | {"next_update": scoring}
+        subject = job["launch"]["payload"]["canonical_request"]["checkpoint"]
+        return {
+            "pending": pending,
+            "points": [
+                {
+                    "job_id": point["checkpoint"]["pointer"]["run_id"],
+                    "request_id": subject["request_id"],
+                    "completed_updates": point["checkpoint"]["completed_updates"],
+                    "publication_cursor": point["publication_cursor"],
+                    "transaction_root_sha256": point["checkpoint"]["pointer"]["transaction_root_sha256"],
+                    "status": point["result"]["status"],
+                }
+                for point in points
+            ],
+        }
 
     def stopped_checkpoint(self, *, job_id: str, project: str, manifest_root: str) -> int | None:
         """Project exact stopped subjects through the same binding check used at delivery."""
@@ -791,7 +892,7 @@ class Store:
         ]
         if len(anchors) != 1:
             return None
-        binding, _, _ = self._completion_candidate(anchors[0], CheckpointSelection((update,), False))
+        binding = self._completion_candidate(anchors[0], CheckpointSelection((update,), False)).binding
         if binding is not None:
             (member,) = binding["checkpoint_selection"]["members"]
             if member["producer_job_id"] == job_id and member["checkpoint"] == checkpoint:
@@ -995,8 +1096,8 @@ class Store:
 
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None, *,
-        train_slots: frozenset[str] | None = None, tip: str | None = None,
-    ) -> tuple[dict | None, dict | None, list[_CompletionRejection]]:
+        train_slots: frozenset[str] | None = None, tip: str | None = None, observe: bool = False,
+    ) -> _CompletionCandidate:
         """Select an authenticated final product or exact checkpoint publications.
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
@@ -1022,6 +1123,7 @@ class Store:
             attempts = reversed(pinned)
         resume_checkpoints: dict[str, str] = {}
         paths: dict[str, tuple[sqlite3.Row, ...]] = {}
+        pending_paths: dict[str, tuple[dict, tuple[dict, ...]]] = {}
         pending = False
         rejections: list[_CompletionRejection] = []
         missing = None
@@ -1051,6 +1153,7 @@ class Store:
 
             can_publish = True
             absent = ()
+            members = []
             if selection is not None:
                 prior = paths.get(attempt["continues"], ()) if attempt_id != anchor else ()
                 path = (*prior, attempt)
@@ -1074,8 +1177,13 @@ class Store:
                                 "members": members,
                             },
                         }
-                        if not absent:
-                            return binding, None, rejections
+                        if not absent and (not observe or pinned_tip is None or attempt_id == pinned_tip):
+                            observation = _pending_checkpoint(attempt, resume, ()) if (
+                                observe and pinned_tip is not None and attempt["state"] in LIVE_STATES
+                            ) else None
+                            return _CompletionCandidate(
+                                binding, None, rejections, observation, tuple(members) if observe else (),
+                            )
                         binding["checkpoint_selection"]["gaps"] = [
                             {"update": update, "reason": "checkpoint_unavailable"} for update in absent
                         ]
@@ -1101,7 +1209,9 @@ class Store:
                     rejections.append(_CompletionRejection(attempt_id, "completion", str(error)))
                 else:
                     if completion is not None:
-                        return {"dependency_job_id": anchor, "completion": completion}, None, rejections
+                        return _CompletionCandidate(
+                            {"dependency_job_id": anchor, "completion": completion}, None, rejections,
+                        )
                     missing = missing or message
             resumable = can_resume_attempt(state, attempt["checkpoint"], attempt["delivery"])
             boundary = resume
@@ -1111,31 +1221,42 @@ class Store:
                 resume_checkpoints[attempt_id] = dump(boundary, sort_keys=True)
             if (pinned_tip is None or attempt_id == pinned_tip) and (resumable or state in LIVE_STATES):
                 # A continuation starts after its recovery coordinate.
-                pending |= (selection is not None and selection.allows_gaps and state in LIVE_STATES)
-                pending |= can_publish and (
-                    selection is None or selection.requires_catalog
-                    or boundary is None
-                    or any(update > boundary["completed_updates"] for update in (
-                        absent if selection.allows_gaps else selection.coordinates[:1]
-                    ))
+                path_pending = (selection is not None and selection.allows_gaps and state in LIVE_STATES) or (
+                    can_publish and (
+                        selection is None or selection.requires_catalog
+                        or boundary is None
+                        or any(update > boundary["completed_updates"] for update in (
+                            absent if selection.allows_gaps else selection.coordinates[:1]
+                        ))
+                    )
                 )
+                pending |= path_pending
+                if observe and path_pending and selection is not None and selection.allows_gaps:
+                    for ancestor in path[:-1]:
+                        pending_paths.pop(ancestor["id"], None)
+                    pending_paths[attempt_id] = (
+                        _pending_checkpoint(attempt, boundary, absent), tuple(members),
+                    )
 
         if completed_series is not None:
-            return completed_series, None, rejections
+            return _CompletionCandidate(completed_series, None, rejections)
         if pending:
-            return None, None, rejections
+            if len(pending_paths) == 1:
+                observation, members = next(iter(pending_paths.values()))
+                return _CompletionCandidate(None, None, rejections, observation, members)
+            return _CompletionCandidate(None, None, rejections)
         if rejections:
-            return None, {
+            return _CompletionCandidate(None, {
                 "code": "dependency_corrupt",
                 "message": rejections[0].message,
-            }, rejections
+            }, rejections)
         if settled_series is not None:
-            return settled_series, None, rejections
-        return None, {
+            return _CompletionCandidate(settled_series, None, rejections)
+        return _CompletionCandidate(None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",
             **({"path": "/inputs/subject/checkpoint"} if selection is not None else {}),
-        }, rejections
+        }, rejections)
 
     def _record_completion_rejections(
         self, job: sqlite3.Row, anchor: str, rejections: list[_CompletionRejection]
@@ -1193,7 +1314,7 @@ class Store:
 
     def _place_evaluation(self, job: dict, producer: sqlite3.Row, selection: CheckpointSelection, occupied: set[str]) -> dict:
         from feedbax.training.validation_placement import (
-            ValidationPlacement, ValidationQualification, place_validation, validation_runtime,
+            ValidationQualification, place_validation, validation_runtime,
         )
 
         source = json.loads(producer["launch"])
@@ -1208,7 +1329,7 @@ class Store:
             and producer["continues"] is None
             and method.get("checkpoint_initialization") is None
             and type(interval) is int and interval > 0 and type(horizon) is int
-            and all(update <= horizon and (update == horizon or update % interval == 0) for update in selection.coordinates)
+            and all(_scheduled_checkpoint(update, interval, horizon) for update in selection.coordinates)
         )
         qualification = None
         if raw := job["data"].pop("validation_qualification", None):
@@ -1249,7 +1370,8 @@ class Store:
             key = anchor, None, None, None
             if key not in candidates:
                 candidates[key] = self._completion_candidate(anchor)
-            binding, error, rejections = candidates[key]
+            candidate = candidates[key]
+            binding, error, rejections = candidate.binding, candidate.error, candidate.rejections
             self._record_completion_rejections(job, anchor, rejections)
             if error is not None:
                 self.finished(job, {"outcome": "blocked", "error": error | {"path": "/inputs/subject"}})
@@ -1333,7 +1455,8 @@ class Store:
                     candidates[key] = self._completion_candidate(
                         anchor, selection, train_slots=train_slots, tip=tip_id,
                     )
-                binding, error, rejections = candidates[key]
+                candidate = candidates[key]
+                binding, error, rejections = candidate.binding, candidate.error, candidate.rejections
                 self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:
                     outcome = "interrupted" if is_live and error["code"] == "input_unavailable" else "blocked"

@@ -14,6 +14,7 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
 from tests.test_saved_update_series import definition
@@ -94,6 +95,42 @@ _Events.append = append
     wait_until(lambda: (tmp_path / "before-point").exists(), timeout=20)
     prefix = wait_until(lambda: found if len(found := points(evaluation)) == 2 else None)
     assert [point["checkpoint"]["completed_updates"] for point in prefix] == [2, 4]
+    service = ProjectPlanService(folders, jobs)
+
+    def saved_attempt(step="baseline"):
+        return service.read(project, revision=plan.revision).evaluations[rows[step].key].checkpoint_attempt
+
+    attempt = saved_attempt()
+    assert attempt.job_id == evaluation
+    assert attempt.placement.location == "live"
+    assert attempt.pending.producer_job_id == producer
+    assert attempt.pending.next_update == 6
+    assert [point.model_dump(mode="json") for point in attempt.points] == [
+        {
+            "job_id": producer,
+            "request_id": rows["train"].request_id,
+            "completed_updates": point["checkpoint"]["completed_updates"],
+            "publication_cursor": point["publication_cursor"],
+            "transaction_root_sha256": point["checkpoint"]["pointer"]["transaction_root_sha256"],
+            "status": "scored",
+        }
+        for point in prefix
+    ]
+    ordinary_attempt = saved_attempt("other")
+    assert ordinary_attempt.placement.model_dump(mode="json") == {
+        "location": "ordinary", "reason": "driver_occupied",
+    }
+    assert not ordinary_attempt.points
+    last_point_cursor = max(
+        event["cursor"] for event in host.events(after=0, projects=(project,))["events"]
+        if event["job_id"] == evaluation and event["kind"] == "evaluation_point"
+    )
+    _, activity = jobs.events(after=last_point_cursor - 1, projects=(project,), wait=0, machine=True)
+    assert any(
+        event.cursor == last_point_cursor and event.job_id == evaluation
+        and event.kind == "activity" and event.activity is not None and not event.data
+        for event in activity.events
+    )
     assert job_row(host, evaluation)["data"]["placement"] == "live"
     assert job_row(host, ordinary)["data"]["placement_detail"]["reason"] == "driver_occupied"
     assert {item.job_id: item.placement for item in jobs.jobs(project=project).jobs}[evaluation] == "live"
@@ -105,6 +142,11 @@ _Events.append = append
     restart(host)
     assert points(evaluation) == prefix
     assert job_row(host, evaluation, "queued") is not None
+    restarted = saved_attempt()
+    assert restarted.pending.state == "resumable"
+    assert restarted.pending.recovery_update == 6
+    assert restarted.pending.next_update == 8
+    assert restarted.points == attempt.points
     assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="joint") == admission
 
     resumed = jobs.resume(producer, "exact-resume")
@@ -143,6 +185,7 @@ _Events.append = append
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):
+    from feedbax.host.checkpoint_selection import CheckpointSelection
     from feedbax.host.live_evaluate import choose_evaluation
     from feedbax.host.store import Store, dump
 
@@ -178,3 +221,15 @@ def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypa
     attempt = store.get("evaluate")
     assert attempt["state"] == "interrupted"
     assert json.loads(attempt["outcome"])["error"]["code"] == "input_unavailable"
+
+    with store.db:
+        store.db.execute("UPDATE jobs SET checkpoint=? WHERE id='resumed'", (dump(checkpoint),))
+    selection = CheckpointSelection((4,), requires_catalog=False, allows_gaps=True)
+    assert store._completion_candidate("parent", selection, observe=True).pending is None
+    assert store._completion_candidate("parent", selection, tip="resumed", observe=True).pending == {
+        "producer_job_id": "resumed",
+        "producer_request_id": "train:request",
+        "state": "resumable",
+        "next_update": None,
+        "recovery_update": 2,
+    }

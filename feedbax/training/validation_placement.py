@@ -1,7 +1,6 @@
 """Choose a placement from measured capacity and the resolved Evaluate workload."""
 
 from hashlib import sha256
-from typing import Literal
 
 from pydantic import Field
 
@@ -9,6 +8,7 @@ from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.request_refs import Sha256
+from feedbax.contracts.validation_placement import ValidationPlacement
 
 
 class ValidationBudget(StrictModel):
@@ -26,12 +26,6 @@ class ValidationQualification(StrictModel):
     runtime: Sha256
     evidence: str = Field(min_length=1)
     budget: ValidationBudget
-
-
-class ValidationPlacement(StrictModel):
-    location: Literal["live", "ordinary"]
-    reason: Literal["within_budget", "late", "unqualified", "unmeasured", "over_budget", "driver_occupied"]
-    predicted_update_fraction: float | None = None
 
 
 def validation_runtime(launch: dict) -> str:
