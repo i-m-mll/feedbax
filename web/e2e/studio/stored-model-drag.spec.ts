@@ -27,7 +27,10 @@ function modelFixture(cards: number): ModelDocument {
 
 type EventSample = { name: string; duration: number; inputDelay: number; processing: number };
 type Samples = { timeOrigin: number; callbacks: number[]; updates: number[]; longTasks: number[]; events: EventSample[] };
-type SampleWindow = Window & { finishStudioSample?: () => Samples };
+type SampleWindow = Window & {
+  finishStudioSample?: () => Samples;
+  settledPlanStatus?: { visibleAt: number; text: string };
+};
 
 async function startSamples(target: Locator, kind: 'drag' | 'field' | 'scroll', label: string) {
   await target.evaluate(async (element, { kind, label }) => {
@@ -163,6 +166,24 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     return !body.edit && body.revision === (await savedEdit).snapshot.revision;
   }, { timeout: 12_000 });
   void projected.catch(() => {});
+  const planCard = page.getByRole('article', { name: 'Train train', exact: true });
+  const planStatus = planCard.getByRole('button', { name: /^\d+ Can't run$/ });
+  await expect(planStatus).toBeVisible();
+  await planStatus.evaluate((status) => {
+    const state = window as SampleWindow;
+    const card = status.closest<HTMLElement>('[data-map-step]')!;
+    let pending = false;
+    const observer = new MutationObserver(() => {
+      const restored = Array.from(card.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]'))
+        .find((button) => /^\d+ Can't run$/.test(button.textContent?.trim() ?? '') && button.checkVisibility());
+      if (!restored) pending = true;
+      if (!pending || !restored) return;
+      state.settledPlanStatus = { visibleAt: performance.timeOrigin + performance.now(), text: restored.textContent!.trim() };
+      performance.mark('studio-commit-plan-status-visible');
+      observer.disconnect();
+    });
+    observer.observe(card, { subtree: true, childList: true, characterData: true, attributes: true });
+  });
   await startSamples(field, 'field', 'commit');
   const beforeCommit = await chromeMetrics(context);
   const submittedAt = performance.now();
@@ -178,15 +199,21 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   const plan = await (await settled).json() as StudioSavedTrainRuns;
   expect(plan.revision).toBe(snapshot.revision);
   expect(plan.window_map?.rows).toHaveLength(1);
+  const cannotRun = plan.window_map?.steps.find(({ step_id }) => step_id === 'train')?.status_counts.cannot_run;
+  expect(cannotRun).toBe(1);
   await projected;
   await expect(field).toBeEditable();
   await expect(field).toHaveValue(value);
   const visibleAt = performance.now();
   const commitWork = chromeWork(beforeCommit, await chromeMetrics(context));
   const commit = await endSamples(page);
+  const planVisible = await page.evaluate(() => (window as SampleWindow).settledPlanStatus);
+  if (!planVisible) throw new Error('The Plan status did not return from the pending state');
+  expect(planVisible.text).toBe(`${cannotRun} Can't run`);
   return { keys: value.length, typing, typingWork, commit, commitWork,
     submitToAcknowledgementMs: acknowledgedAt - submittedAt,
-    acknowledgementToEditableFieldMs: visibleAt - acknowledgedAt };
+    acknowledgementToEditableFieldMs: visibleAt - acknowledgedAt,
+    acknowledgementToVisiblePlanStatusMs: planVisible.visibleAt - (performance.timeOrigin + acknowledgedAt) };
 }
 
 async function measureScroll(page: Page, request: APIRequestContext, context: CDPSession) {
