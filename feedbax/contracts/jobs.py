@@ -92,6 +92,17 @@ class StudioEvaluationCheckpointSeries(StrictModel):
     requested: list[int]
 
 
+class StudioBoundBestSubject(StrictModel):
+    key: str
+    variant: str
+    row: str
+    consumer_job_id: str
+    producer_job_id: str
+    producer_request_id: str
+    completed_updates: int
+    selection_sha256: str = Field(pattern=_DigestPattern)
+
+
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
     receipt: JobReceipt
@@ -104,6 +115,7 @@ class StudioSavedEvaluationResult(StrictModel):
     placement: Literal["ordinary", "live"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    bound_subject: StudioBoundBestSubject | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSavedEvaluationRow(StrictModel):
@@ -118,6 +130,7 @@ class StudioSavedEvaluationRow(StrictModel):
         default=None, exclude_if=lambda value: value is None,
     )
     checkpoint_rule: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
+    bound_subject: StudioBoundBestSubject | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSavedEvaluationRead(StrictModel):
@@ -201,6 +214,7 @@ class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
+    member_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -212,6 +226,7 @@ class StudioProjectWindowMapSubset(StrictModel):
     total: int
     document: str | None
     members: list[StudioSavedTrainKey] | None = Field(default=None, exclude_if=lambda value: value is None)
+    ranks: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class StudioProjectWindowMapInput(StrictModel):

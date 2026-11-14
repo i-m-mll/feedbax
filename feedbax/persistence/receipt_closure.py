@@ -12,7 +12,7 @@ from feedbax.contracts.effective_success import (
     select_success_product,
 )
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import ProductRef
+from feedbax.contracts.request_refs import ContentRef, ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
@@ -155,7 +155,7 @@ class ReceiptClosure:
                             pending.append(
                                 (ReceiptRoot(receipt=selection.receipt, product=reference), (decoded, bound))
                             )
-                    elif selection is not None or bound.descriptor is not None:
+                    elif not isinstance(reference, ContentRef) or selection is not None or bound.descriptor is not None:
                         raise ValueError(f"Unexpected producer evidence for {role}.{bound.key}")
                     elif closure.include_ancestry:
                         for ref in success_content_objects(self.store, reference):

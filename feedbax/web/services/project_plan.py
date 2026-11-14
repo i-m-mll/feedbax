@@ -41,7 +41,11 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRow,
     StudioSavedTrainRuns,
 )
-from feedbax.contracts.project_inputs import BatchCheckpoint, InputBinding, StepReference
+from feedbax.contracts.project_inputs import (
+    BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
+)
+from feedbax.contracts.studio_project import AuthoredFileAddress
+from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
     ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey,
@@ -232,7 +236,8 @@ class ProjectPlanRead:
                 counts[key.variant, key.step][status.status.value] += 1
 
         edge_keys = [
-            (binding.producer, run.key) for run in plan.runs for binding in run.inputs.values()
+            (producer, run.key) for run in plan.runs for binding in run.inputs.values()
+            for producer in binding.sources
         ]
         edge_keys.extend(
             (row.states.producer, row.key) for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
@@ -257,6 +262,7 @@ class ProjectPlanRead:
                         checkpoint_axis=axis[0] if axis is not None else None,
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.members), total=subset.candidates,
+                            ranks=list(subset.ranks),
                             document=subset.document,
                             members=[
                                 StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in subset.members
@@ -286,6 +292,8 @@ class ProjectPlanRead:
                     status=statuses[row.key].status,
                     reason=statuses[row.key].reason,
                     evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
+                    member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
+                    if row.kind == "train" else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True
@@ -401,6 +409,40 @@ class ProjectPlanService:
         evaluation_tasks = self.jobs.registries.python_tasks
         return view.response(include_window_map=include_window_map, evaluation_tasks=evaluation_tasks)
 
+    def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
+        from feedbax.web.services.trial_scope import file_value
+
+        view = self.read(project_id, revision=body.revision)
+        subset = view.settled.plan.subsets.get((body.variant, body.step, "subject"))
+        project = self.folders.read(project_id, revision=body.revision).project
+        step = project.steps.get(body.step)
+        subject = step.inputs.get("subject") if step else None
+        if project.sweep is not None or not isinstance(subject, StepReference) or subject.where is None:
+            raise ProjectFolderInvalid("Choose a locally authored Best input in the base project.")
+        if subset is None or not subset.ranks or len(body.attempts) != len(subset.ranks):
+            raise ProjectFolderInvalid("Choose one bound attempt for every Best rank.")
+        attempts = set(body.attempts)
+        bound = {
+            attempt.job_id: attempt.bound_subject
+            for key, history in view.attempts_by_run.items()
+            if (key.variant, key.step) == (body.variant, body.step)
+            for attempt in history if attempt.job_id in attempts and attempt.bound_subject is not None
+        }
+        by_rank = {member.key: member for member in bound.values()}
+        if (
+            bound.keys() != attempts or by_rank.keys() != set(subset.ranks)
+            or len({item.selection_sha256 for item in bound.values()}) != 1
+        ):
+            raise ProjectFolderInvalid("The chosen attempts do not share one complete Best selection.")
+        frozen = subset_to_rows(subset.terms, (
+            SelectedRow(key=key, variant=by_rank[key].variant, row=by_rank[key].row) for key in subset.ranks
+        ))
+        file = file_value(
+            AuthoredFileAddress(kind="step", id=body.step), step.model_dump(mode="json", exclude_unset=True),
+            ("inputs", "subject", "where"), frozen.model_dump(mode="json", exclude_unset=True),
+        )
+        return StudioSubsetToRowsEdit(revision=body.revision, files=[file])
+
     def _evaluation_result(
         self, project_id: str, body: StudioSavedEvaluationRead,
     ) -> tuple[ProjectPlanRead, StudioSavedEvaluationRow, EvaluationResult]:
@@ -504,9 +546,12 @@ def _evaluation_row(
     try:
         params, subject = reader.evaluation_parameters(settled.plan, run)
         trials = list(params.trials)
-        if subject.request_id not in jobs.checkpoint_producers:
+        producers = (subject.request_id,) if isinstance(subject, ProductRef) else tuple(
+            candidate.reference.request_id for candidate in subject.candidates
+        )
+        if not set(producers) <= jobs.checkpoint_producers:
             raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
-        if isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
+        if isinstance(subject, ProductRef) and isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
             jobs.checkpoint_catalogs.get(subject.request_id, ())
         ):
             raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
@@ -529,12 +574,14 @@ def _evaluation_row(
             checkpoint_sources=list(success.checkpoint_sources) or None,
             checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
             placement=success.evaluation_placement if series is not None else None,
+            bound_subject=success.bound_subject,
         )
     status, reason = saved_request_status(attempts, success=success, problem=problem.detail if problem else None)
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
         can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
+        bound_subject=attempts[-1].bound_subject if attempts else None,
     ), problem
 
 

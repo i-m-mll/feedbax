@@ -6,7 +6,7 @@ import {
   formatCheckpointRule, parseCheckpointRule, validTrialSet,
   type EditableCheckpointRule, type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
-import { savedRunId } from './projectWindowPlan';
+import { savedRunId, selectedProducerRow } from './projectWindowPlan';
 
 type Choice = { id: string; label: string };
 const field = 'rounded border border-shell-divider bg-shell-chrome px-2 py-1';
@@ -132,18 +132,34 @@ export function StudioEvaluateAuthoring({
   const changed = JSON.stringify(draft) !== JSON.stringify(terms);
   const canApplySubject = changed && draft.rows?.length !== 0 &&
     Object.values(draft.axes ?? {}).every((values) => values.length > 0);
-  const rowKeys = new Map(projection.rows.map(({ key }) => [savedRunId(key), key.row]));
-  const rows = source.runs.flatMap(({ id, label }) => {
-    const key = rowKeys.get(id);
-    return key === undefined ? [] : [{ id: key, label }];
+  const rowLabels = new Map(source.runs.map(({ id, label }) => [id, label]));
+  const producerRows = projection.window_map?.rows ?? [];
+  const rows = producerRows.flatMap(({ key, member_key }) => {
+    const id = savedRunId(key);
+    const label = rowLabels.get(id);
+    return label === undefined || member_key == null ? [] : [{ id, label }];
   });
+  const savedRows = draft.rows ?? [];
+  const rowId = ({ variant, row }: NonNullable<SubsetTerms['rows']>[number]) =>
+    savedRunId({ step: source.id, variant, row });
+  const selectedRowIds = savedRows.map(rowId);
+  function toggleRow(id: string, checked: boolean) {
+    const selected = new Set(toggle(selectedRowIds, id, checked));
+    setDraft({ ...draft, rows: producerRows.flatMap((producer) => {
+      const { key } = producer;
+      const candidate = savedRunId(key);
+      if (key.step !== source.id || !selected.has(candidate)) return [];
+      const existing = savedRows.filter((row) => rowId(row) === candidate);
+      const member = selectedProducerRow(producer);
+      return existing.length ? existing : member ? [member] : [];
+    }) });
+  }
   const editRows = terms.rows !== undefined;
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
   return <div className="grid gap-3">
     {editSubject && (editRows || sweeps.length > 0) && <fieldset className="grid gap-1" disabled={disabled}>
       <legend className="font-semibold">{studioName('subjectSubset')}</legend>
-      {editRows && <Checkboxes options={rows} selected={draft.rows ?? []}
-        onToggle={(id, checked) => setDraft({ ...draft, rows: toggle(draft.rows ?? [], id, checked) })} />}
+      {editRows && <Checkboxes options={rows} selected={selectedRowIds} onToggle={toggleRow} />}
       {sweeps.map(({ id, label, values }) => {
         const selected = draft.axes?.[id] ?? values.map((value) => value.id);
         return <fieldset key={id}>

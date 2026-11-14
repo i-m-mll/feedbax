@@ -207,6 +207,7 @@ export interface StudioSavedEvaluationResult {
   checkpoint_sources?: StudioTrainCheckpointSource[] | null;
   checkpoint_gaps?: StudioEvaluationCheckpointGap[] | null;
   placement?: "live" | "ordinary" | null;
+  bound_subject?: StudioBoundBestSubject | null;
 }
 
 export interface StudioSavedEvaluationRow {
@@ -219,6 +220,7 @@ export interface StudioSavedEvaluationRow {
   result: StudioSavedEvaluationResult | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_rule?: unknown | null;
+  bound_subject?: StudioBoundBestSubject | null;
 }
 
 export interface StudioSavedTrainAttempt {
@@ -3104,6 +3106,12 @@ export type ScopedValue = {
   "level": Level;
 };
 
+export type SelectedRow = {
+  "key": string;
+  "variant": string;
+  "row": string;
+};
+
 export type SetProjectValue = {
   "op": "add" | "replace";
   "path": DocumentOverridePath;
@@ -3188,9 +3196,9 @@ export type StepReference = {
 
 export type StoreSubset = {
   "axes"?: Record<string, Array<string>>;
-  "rows"?: Array<string>;
   "best"?: Best | null;
   "when"?: When | null;
+  "rows"?: Array<SelectedRow>;
   "query": ManifestPredicate;
 };
 
@@ -3322,6 +3330,17 @@ export type StudioAuthoringSurface = {
 export type StudioAuthoringSweepChange = {
   "field": string;
   "edit": StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue;
+};
+
+export type StudioBoundBestSubject = {
+  "key": string;
+  "variant": string;
+  "row": string;
+  "consumer_job_id": string;
+  "producer_job_id": string;
+  "producer_request_id": string;
+  "completed_updates": number;
+  "selection_sha256": string;
 };
 
 export type StudioCheckpointRuleEdit = {
@@ -3499,6 +3518,7 @@ export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
   "label": string;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
+  "member_key"?: string | null;
   "status": JobStatus;
   "reason"?: string | null;
   "evaluation_conditions"?: Array<string> | null;
@@ -3521,6 +3541,7 @@ export type StudioProjectWindowMapSubset = {
   "total": number;
   "document": string | null;
   "members"?: Array<StudioSavedTrainKey> | null;
+  "ranks"?: Array<string>;
 };
 
 export type StudioReplayFile = {
@@ -3547,6 +3568,18 @@ export type StudioSetSweepValue = {
   "sweep_id": string;
   "value_id": string;
   "value": number;
+};
+
+export type StudioSubsetToRowsEdit = {
+  "revision": string;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioSubsetToRowsRequest = {
+  "revision": string;
+  "variant": string;
+  "step": string;
+  "attempts": Array<string>;
 };
 
 export type StudioSweepEdit = {
@@ -3691,9 +3724,9 @@ export type StudioTrialStepScope = {
 
 export type SubsetTerms = {
   "axes"?: Record<string, Array<string>>;
-  "rows"?: Array<string>;
   "best"?: Best | null;
   "when"?: When | null;
+  "rows"?: Array<SelectedRow>;
 };
 
 export type Sweep = {
@@ -3706,8 +3739,15 @@ export type Sweep = {
 
 export type SweepException = {
   "patches"?: Record<string, PatchValue | null>;
-  "where"?: SubsetTerms | null;
+  "where"?: SweepExceptionTerms | null;
   "exclude"?: boolean;
+};
+
+export type SweepExceptionTerms = {
+  "axes"?: Record<string, Array<string>>;
+  "best"?: Best | null;
+  "when"?: When | null;
+  "rows"?: Array<string>;
 };
 
 export type SweepList = {
@@ -4212,6 +4252,7 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "checkpoint_sources": z.array(StudioTrainCheckpointSourceSchema).nullable().optional(),
       "checkpoint_gaps": z.array(StudioEvaluationCheckpointGapSchema).nullable().optional(),
       "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
+      "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationResult>;
@@ -4228,6 +4269,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "result": StudioSavedEvaluationResultSchema.nullable(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_rule": z.unknown().nullable().optional(),
+      "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationRow>;
@@ -9054,6 +9096,14 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
+export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
+  z.object({
+    "key": z.string().min(1),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SelectedRow>;
+
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add"), z.literal("replace")]),
@@ -9167,9 +9217,9 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
-    "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
+    "rows": z.array(SelectedRowSchema).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
@@ -9341,6 +9391,19 @@ export const StudioAuthoringSweepChangeSchema: z.ZodType<StudioAuthoringSweepCha
     "edit": z.union([StudioToSweepSchema, StudioSweepEditSchema, StudioToFieldSchema, StudioSetSweepValueSchema, StudioNameSweepValueSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSweepChange>;
+
+export const StudioBoundBestSubjectSchema: z.ZodType<StudioBoundBestSubject> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "variant": z.string(),
+    "row": z.string(),
+    "consumer_job_id": z.string(),
+    "producer_job_id": z.string(),
+    "producer_request_id": z.string(),
+    "completed_updates": z.number().int().safe(),
+    "selection_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+  }).strict()
+) as unknown as z.ZodType<StudioBoundBestSubject>;
 
 export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit> = z.lazy(() =>
   z.object({
@@ -9566,6 +9629,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "key": StudioSavedTrainKeySchema,
     "label": z.string(),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
+    "member_key": z.union([z.string(), z.null()]).optional(),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
     "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
@@ -9592,6 +9656,7 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
     "total": z.number().int().safe(),
     "document": z.union([z.string(), z.null()]),
     "members": z.union([z.array(StudioSavedTrainKeySchema), z.null()]).optional(),
+    "ranks": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
@@ -9626,6 +9691,22 @@ export const StudioSetSweepValueSchema: z.ZodType<StudioSetSweepValue> = z.lazy(
     "value": z.union([z.number().int().safe(), z.number().finite()]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetSweepValue>;
+
+export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioSubsetToRowsEdit>;
+
+export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "attempts": z.array(z.string()).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
 
 export const StudioSweepEditSchema: z.ZodType<StudioSweepEdit> = z.lazy(() =>
   z.object({
@@ -9808,9 +9889,9 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
-    "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
+    "rows": z.array(SelectedRowSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;
 
@@ -9827,10 +9908,19 @@ export const SweepSchema: z.ZodType<Sweep> = z.lazy(() =>
 export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
   z.object({
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
-    "where": z.union([SubsetTermsSchema, z.null()]).optional(),
+    "where": z.union([SweepExceptionTermsSchema, z.null()]).optional(),
     "exclude": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<SweepException>;
+
+export const SweepExceptionTermsSchema: z.ZodType<SweepExceptionTerms> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "best": z.union([BestSchema, z.null()]).optional(),
+    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<SweepExceptionTerms>;
 
 export const SweepListSchema: z.ZodType<SweepList> = z.lazy(() =>
   z.object({
@@ -10020,6 +10110,8 @@ export const contractSchemas = {
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
   StudioCheckpointRuleEdit: StudioCheckpointRuleEditSchema,
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
+  StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
+  StudioSubsetToRowsRequest: StudioSubsetToRowsRequestSchema,
   FieldTextResult: FieldTextResultSchema,
   Problem: ProblemSchema,
   RangeValues: RangeValuesSchema,
@@ -10148,6 +10240,8 @@ export interface ContractTypeMap {
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
   StudioCheckpointRuleEdit: StudioCheckpointRuleEdit;
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
+  StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
+  StudioSubsetToRowsRequest: StudioSubsetToRowsRequest;
   FieldTextResult: FieldTextResult;
   Problem: Problem;
   RangeValues: RangeValues;

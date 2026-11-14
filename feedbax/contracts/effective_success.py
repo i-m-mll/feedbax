@@ -113,11 +113,19 @@ class EvaluationClosure(ReferenceValue):
         return self
 
 
+class BestCandidateEvidence(ReferenceValue):
+    attempt: Name
+    producer: RequestObject
+    receipt: ContentObjectRef
+    checkpoint: EvaluationCheckpointSource
+
+
 class EvaluationSubjectSource(ReferenceValue):
     producer: RequestObject
     checkpoints: tuple[EvaluationCheckpointSource, ...]
     closure: EvaluationClosure | None = None
     terminal_receipt: ContentObjectRef | None = None
+    ranked_candidates: tuple[BestCandidateEvidence, ...] = Field(default=(), exclude_if=lambda items: not items)
 
 
 class BoundMember(EffectiveInputMember):

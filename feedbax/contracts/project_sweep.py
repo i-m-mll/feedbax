@@ -27,8 +27,8 @@ from feedbax.contracts.project_inputs import (
     ProjectName,
     StepReference,
     SubsetSelectionError,
-    SubsetTerms,
-    select_static_rows,
+    SweepExceptionTerms,
+    select_sweep_exception_rows,
 )
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
 type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:steps\.[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
@@ -153,7 +153,7 @@ class Row(AxisValue):
 
 
 class SweepException(PatchSet):
-    where: SubsetTerms | None = None
+    where: SweepExceptionTerms | None = None
     exclude: bool = False
 
 
@@ -907,7 +907,7 @@ def _select_exception_rows(
             SweepExpansionCode.INVALID_EXCEPTION, path, "exclusion cannot also patch a row"
         )
     try:
-        return select_static_rows(
+        return select_sweep_exception_rows(
             exception.where,
             rows,
             key=lambda row: row.id,
@@ -1199,7 +1199,7 @@ def sweep_to_rows(
             members = _select_exception_rows(name, exception, candidates)
             exceptions[name] = exception.model_copy(
                 update={
-                    "where": SubsetTerms(
+                    "where": SweepExceptionTerms(
                         rows=[row.id for row in members if row.id in retained_ids]
                     ),
                 }

@@ -327,7 +327,10 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
-  expect(withSecond.project.steps['evaluate-2'].inputs?.subject).toMatchObject({ where: { rows: [sourceRows[2].key.row] } });
+  const { variant, row } = sourceRows[2].key;
+  expect(withSecond.project.steps['evaluate-2'].inputs?.subject).toMatchObject({
+    where: { rows: [{ key: row, variant, row }] },
+  });
   await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
   await select(page, 'evaluate');
   await expect(trialSet.getByRole('combobox')).toHaveValue('conditions');
