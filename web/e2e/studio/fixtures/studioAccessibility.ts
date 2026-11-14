@@ -1,4 +1,4 @@
-import { expect, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Locator, type Page, type TestInfo } from '@playwright/test';
 import axe from 'axe-core';
 import type { AxeResults, Result } from 'axe-core';
 
@@ -30,5 +30,12 @@ export async function scanStudio(page: Page, info: TestInfo, name: string) {
     }, null, 2),
     contentType: 'application/json',
   });
-  expect.soft(violations, name).toEqual([]);
+  expect.soft(violations.map(({ id, nodes }) => ({ id, targets: nodes.map(({ target }) => target) })), name).toEqual([]);
+}
+
+export async function expectVisibleFocus(control: Locator) {
+  await expect(control).toBeFocused();
+  await expect(control).toBeInViewport({ ratio: 0.75 });
+  await expect(control).toHaveCSS('outline-style', 'solid');
+  await expect(control).toHaveCSS('outline-width', '2px');
 }

@@ -411,9 +411,10 @@ export function ProjectWindow({
             }}>
             {projectWindowViews.map((view) => {
               const command = tabCommands.find(({ id }) => id === view);
+              const selected = detailsVisible && shownViews[focusedSlot] === view;
               return command ? (
-                <WindowButton key={view} command={command} icon={views[view]} controls={ids[focusedSlot]}
-                  pressed={detailsVisible && shownViews[focusedSlot] === view} tab={{ id: tabId(view), tabbable: tabView === view }} />
+                <WindowButton key={view} command={command} icon={views[view]} controls={selected ? ids[focusedSlot] : undefined}
+                  pressed={selected} tab={{ id: tabId(view), tabbable: tabView === view }} />
               ) : <span key={view} className="studio-window-control" aria-hidden="true" />;
             })}
           </div>

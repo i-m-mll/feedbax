@@ -50,10 +50,11 @@ function StudioRunLineage({
               return (
                 <li key={step.id}>
                   <button
-                    type="button" aria-label={studioAccessibleName("select", `${step.label} · ${summary}`)}
+                    type="button" aria-label={studioAccessibleName("select", `${step.label} ${summary}`)}
                     onClick={() => onChoose(step.id)} className="flex w-full justify-between gap-2 text-left hover:underline"
                   >
-                    <span className="min-w-0">{step.label}</span><span className="shrink-0 tabular-nums text-shell-muted">{summary}</span>
+                    <span className="min-w-0">{step.label}</span>{" "}
+                    <span className="shrink-0 tabular-nums text-shell-muted">{summary}</span>
                   </button>
                   {single && <ul className="ps-2 text-shell-muted">
                     {step.runs.filter(({ id }) => members.has(id)).map(({ id, label }) => <li key={id}>{label}</li>)}

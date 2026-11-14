@@ -152,7 +152,7 @@ it('shows partial folded marks and preserves group selection when sweeps move', 
   };
   const { selectionChanged, presentationChanged } = mapWithState({ steps: [step], edges: [] });
   const card = within(screen.getByRole('article'));
-  fireEvent.click(card.getByLabelText(studioAccessibleName('sweep', curl.label)));
+  fireEvent.click(card.getByRole('button', { name: 'Sweep curl 2' }));
   fireEvent.click(card.getByRole('button', { name: studioAccessibleName('fold', curl.label) }));
   fireEvent.click(card.getByRole('button', { name: select('curl 1') }));
   const aggregate = (coordinates: string) => select(
@@ -162,8 +162,8 @@ it('shows partial folded marks and preserves group selection when sweeps move', 
   expect(foldedMark.getAttribute('aria-pressed')).toBe('mixed');
 
   const dataTransfer = { effectAllowed: 'none', setData: vi.fn() };
-  fireEvent.dragStart(card.getByLabelText(studioAccessibleName('sweep', seed.label)), { dataTransfer });
-  fireEvent.drop(card.getByLabelText(studioAccessibleName('sweep', rate.label)), { dataTransfer });
+  fireEvent.dragStart(card.getByRole('button', { name: 'Sweep seed 2' }), { dataTransfer });
+  fireEvent.drop(card.getByRole('button', { name: 'Sweep rate 3' }), { dataTransfer });
   expect(presentationChanged).toHaveBeenLastCalledWith(train.id, {
     foldedSweepId: curl.id,
     sweepOrder: [seed.id, rate.id, curl.id],
@@ -193,7 +193,7 @@ it('automatically folds a large sweep into a group with explicit value IDs', () 
   };
   const { selectionChanged } = mapWithState({ steps: [step], edges: [] });
   const card = within(screen.getByRole('article'));
-  expect(card.getByLabelText(studioAccessibleName('sweep', seed.label)).textContent).toBe('(seed 1100)');
+  expect(card.getByRole('button', { name: 'Sweep seed 1100' }).textContent).toBe('(seed 1100)');
   const aggregate = select(`1100 ${studioName('runs')} · 1100 ${studioRunStatus('not_run')}`);
   fireEvent.click(card.getByRole('button', { name: aggregate }));
   expect(selectionChanged).toHaveBeenLastCalledWith({
@@ -261,8 +261,10 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   const state: PipelineSelectionState = { selection: { kind: 'steps', stepIds: [evalStep.id] }, focus: null };
   render(<StudioPipelineMap mode="line" plan={plan} state={state} onSelectionChange={onSelectionChange} />);
   const buttons = screen.getAllByRole('button');
-  expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
-    select(train.label), select(evalStep.label), select(report.label),
+  expect(buttons).toEqual([
+    screen.getByRole('button', { name: 'Select reach Train', exact: true }),
+    screen.getByRole('button', { name: `${select(evalStep.label)} Evaluate`, exact: true }),
+    screen.getByRole('button', { name: `${select(report.label)} Report`, exact: true }),
   ]);
   fireEvent.click(buttons[2]);
   expect(onSelectionChange).toHaveBeenCalledWith({

@@ -66,12 +66,12 @@ export function StudioProblems({ command, count, open, opener, onOpen, onClose, 
         event.stopPropagation();
         closeAndRestore();
       }}>
-      <button ref={trigger} type="button" {...commandAttributes(command)} aria-haspopup="dialog"
-        aria-expanded={open} aria-controls={open ? id : undefined} aria-describedby={`${id}-count`}
+      <button ref={trigger} type="button" {...commandAttributes(command)} aria-label={undefined} aria-haspopup="dialog"
+        aria-expanded={open} aria-controls={open ? id : undefined}
         onClick={(event) => onOpen(event.currentTarget)}
         className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-shell-foreground hover:bg-shell-hover">
         <TriangleAlert aria-hidden="true" className="size-4" />
-        {studioName('problems')} <span id={`${id}-count`} className="tabular-nums">{count}</span>
+        {studioName('problems')} <span className="tabular-nums">{count}</span>
       </button>
       {open && (
         <section ref={panel} id={id} role="dialog" aria-labelledby={`${id}-title`}

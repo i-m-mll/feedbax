@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
   trace: 'off',
@@ -347,6 +348,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await drawer.getByRole('region', { name: 'Bodies' }).getByRole('button', { name: 'upper', exact: true }).click();
   await expect(upper).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
+  await scanStudio(page, info, 'train-scene-geometry');
   const primary = page.locator('[data-slot="primary"] > section');
   await primary.focus();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
@@ -423,7 +425,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   expect(window_map!.steps.find(({ step_id }) => step_id === 'broken')?.status_counts).toEqual({ cannot_run: 1 });
   expect(window_map!.rows.filter(({ key }) => key.step === 'rowless')).toHaveLength(0);
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
-  const problemButton = page.getByRole('button', { name: 'Problems', exact: true });
+  const problemButton = page.getByRole('button', { name: /^Problems \d+$/ });
   await expect(problemButton).toHaveText(`Problems ${problems.length}`);
   await expect(problemButton).toHaveAccessibleDescription(String(problems.length));
   await problemButton.click();

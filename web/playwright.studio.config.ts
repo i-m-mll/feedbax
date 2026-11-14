@@ -25,6 +25,7 @@ export default defineConfig({
   timeout: 30_000,
   use: {
     ...devices['Desktop Chrome'],
+    channel: process.env.FEEDBAX_STUDIO_E2E_CHROME === '1' ? 'chrome' : undefined,
     baseURL,
     headless: true,
     actionTimeout: 5_000,

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { scanStudio } from './fixtures/studioAccessibility';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
@@ -330,6 +331,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await page.reload();
   await select('train');
   await compare();
+  await scanStudio(page, info, 'train-results-comparison');
   const current = page.getByRole('region', { name: 'Current Result' });
   const previous = page.getByRole('region', { name: 'Previous Result' });
   await expect(current).not.toContainText(changed.result!.receipt.manifest_sha256);
@@ -391,7 +393,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(mapStep(page, 'train')).toHaveCSS('background-color', await source.evaluate((node) => getComputedStyle(node).color));
   await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
-  const sweep = source.getByRole('button', { name: 'Sweep learning-rate', exact: true });
+  const sweep = source.getByRole('button', { name: /^Sweep \(?learning-rate / });
   await expect(sweep).toHaveText('learning-rate 3');
   const saved = await request.get(projectPath);
   expect(saved.ok(), await saved.text()).toBe(true);
@@ -449,7 +451,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     deltas: [{ patches: [{ value: 'initialize_from' }] }],
   });
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
-  await expect(child.getByRole('button', { name: `Select ${childId}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
   await expect(drawer.getByRole('combobox', { name: 'Edit Training method' })).toBeFocused();
 
@@ -519,7 +521,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const unselected = compiled.rows.find(({ key }) => key.step === 'train' && !rowKeys.includes(key.row))!;
   expect(unselected.attempts).toEqual([]);
 
-  await source.getByRole('button', { name: 'Select train', exact: true }).click();
+  await mapStep(page, 'train').click();
   await sweep.click();
   await valueButton('Slow · 0.001').click();
   await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
@@ -538,7 +540,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(firstRow).toHaveCSS('outline-style', 'solid');
   await captureStudioWindow(page, info, '01-map-runs');
 
-  await source.getByRole('button', { name: 'Select train', exact: true }).click();
+  await mapStep(page, 'train').click();
   await table.getByRole('row').filter({ hasText: selected[0].label }).getByRole('button').click();
   const explicit = submitted(page, filesPath);
   await runs.getByRole('button', { name: 'New Step', exact: true }).click();

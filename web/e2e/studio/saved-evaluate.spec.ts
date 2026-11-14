@@ -500,6 +500,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   await expect(results.getByRole('row').filter({ has: page.getByRole('rowheader', { name: '3', exact: true }) }))
     .toContainText('Checkpoint unavailable');
   await expect(page.getByText('From saved checkpoints', { exact: true })).toBeVisible();
+  await scanStudio(page, info, 'evaluate-checkpoint-results');
   await captureStudioWindow(page, info, 'checkpoint-results');
   const replay = posted(page, projectPath + '/evaluate-replay');
   await results.getByRole('button', { name: 'Replay update 2' }).click();
@@ -765,6 +766,9 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await scanStudio(page, info, 'evaluate-runs');
   await tab(page, 'Model').click();
   await expect(page.getByRole('tabpanel', { name: 'Model', exact: true }).locator('[data-id="plant"]')).toBeVisible();
+  const descriptions = await page.locator('[id^="react-flow__"][id*="-desc-"]').evaluateAll((nodes) => nodes.map(({ id }) => id));
+  expect(descriptions.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(descriptions).size).toBe(descriptions.length);
   await scanStudio(page, info, 'evaluate-model');
   await tab(page, 'Task').click();
   await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();

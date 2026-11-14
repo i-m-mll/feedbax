@@ -215,7 +215,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await page.goto(mounted);
   await select(page, 'train');
   await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
-  const sweep = train.getByRole('button', { name: 'Sweep learning-rate', exact: true });
+  const sweep = train.getByRole('button', { name: /^Sweep learning-rate / });
   await expect(sweep).toHaveText('learning-rate 3');
   const definition = await readPlan();
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
@@ -273,11 +273,11 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const fast = runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button');
   await fast.click();
   await expect(primary(page).getByRole('region', { name: 'Used By' })).toHaveCount(0);
-  await expect(steps.getByRole('button', { name: 'Select evaluate', exact: true })).toContainText('0 of 2');
+  await expect(steps.getByRole('button', { name: 'Select evaluate Evaluate 0 of 2', exact: true })).toBeVisible();
   const slow = runs(page).getByRole('row').filter({ hasText: 'Slow' }).getByRole('button');
   await slow.click();
   await expect(primary(page).getByRole('region', { name: 'Used By' })).toContainText('1 of 2');
-  await expect(steps.getByRole('button', { name: 'Select evaluate', exact: true })).toContainText('1 of 2');
+  await expect(steps.getByRole('button', { name: 'Select evaluate Evaluate 1 of 2', exact: true })).toBeVisible();
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
@@ -301,7 +301,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
   await runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button').click();
   await expect(primary(page).getByRole('region', { name: 'Made From' })).toContainText('1 of 3');
-  await expect(steps.getByRole('button', { name: 'Select train', exact: true })).toContainText('1 of 3');
+  await expect(steps.getByRole('button', { name: 'Select train Train 1 of 3', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Show Map', exact: true }).click();
   await expect(train.locator('[data-map-focus="upstream"]')).toHaveCount(1);
   const final = await readPlan();

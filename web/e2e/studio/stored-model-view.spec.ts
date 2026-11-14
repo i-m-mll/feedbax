@@ -214,9 +214,9 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
   const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
-  await evaluation.getByRole('button', { name: 'Sweep seed', exact: true }).click();
+  await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
   await evaluation.getByRole('listitem').getByRole('button', { name: 'Select seed control', exact: true }).click();
-  await evaluation.getByRole('button', { name: 'Sweep seed', exact: true }).click();
+  await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
   await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
   await addIntervention(page, projectPath, add, { kind: 'axis_value', axis: 'seed', value: 'control' });

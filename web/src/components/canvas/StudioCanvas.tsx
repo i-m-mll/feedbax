@@ -3,7 +3,7 @@ import {
   type ReactFlowProps, type Rect,
 } from '@xyflow/react';
 import {
-  useCallback, useEffect, useImperativeHandle, useRef, useState,
+  useCallback, useEffect, useId, useImperativeHandle, useRef, useState,
   type KeyboardEvent, type ReactNode, type Ref,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -68,6 +68,7 @@ export function StudioCanvas({
   contentBounds, fitReady = true, fitNewContent = false, lockAutoFit = false, viewportRef, navigateContent = false,
   children, onMove, minZoom = 0.5, maxZoom = 2, ...flow
 }: Props) {
+  const flowId = useId();
   const { viewportInitialized, getViewport, setViewport, zoomIn, zoomOut } = useReactFlow();
   const store = useStoreApi();
   const { width, height } = useStore((state) => ({ width: state.width, height: state.height }),
@@ -157,7 +158,7 @@ export function StudioCanvas({
       setMenu({ x: event.clientX, y: event.clientY });
     } : undefined}>
     <ReactFlow nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null}
-      {...flow} minZoom={minZoom} maxZoom={maxZoom} proOptions={{ hideAttribution: true }}
+      id={flowId} {...flow} minZoom={minZoom} maxZoom={maxZoom} proOptions={{ hideAttribution: true }}
       onMove={(event, camera) => { if (event) moved.current = true; onMove?.(event, camera); }}>
       {children}
     </ReactFlow>

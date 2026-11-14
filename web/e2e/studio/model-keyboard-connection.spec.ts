@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { expectVisibleFocus } from './fixtures/studioAccessibility';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -35,7 +36,8 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
     await page.keyboard.press('Tab');
     expect(await model.evaluate((panel) => panel.contains(document.activeElement))).toBe(true);
   }
-  await expect(source).toBeFocused();
+  await expectVisibleFocus(source);
+  await expect(source).toHaveRole('button');
   await expect(source).toHaveAccessibleDescription(/^Output · /);
   const review = post('connections');
   await page.keyboard.press('Enter');
@@ -51,10 +53,11 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   await expect(source).toBeFocused();
   await expect(source).not.toHaveAttribute('data-test-lost-focus', '');
   await page.keyboard.press('ArrowRight');
-  await expect(input).toBeFocused();
+  await expectVisibleFocus(input);
+  await expect(input).toHaveRole('button');
   await expect(input).toHaveAccessibleDescription(/^Input · /);
   const edit = post('edit');
-  await page.keyboard.press('Enter');
+  await page.keyboard.press('Space');
   const applied = await edit;
   const { result } = await applied.json() as ModelEditResponse;
   expect(applied.ok(), JSON.stringify(result)).toBe(true);

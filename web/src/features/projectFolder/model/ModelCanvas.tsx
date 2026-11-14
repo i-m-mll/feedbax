@@ -122,7 +122,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         data-verdict={verdict}>
         <Handle id={key} type={port.direction === 'input' ? 'target' : 'source'}
           position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
-          tabIndex={data.collapsed ? -1 : 0}
+          role="button" tabIndex={data.collapsed ? -1 : 0}
           aria-disabled={!connectable && !available}
           aria-description={[studioName(port.direction), portTypeLabel(port), reason ?? problem].filter(Boolean).join(' · ')}
           aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
@@ -152,7 +152,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
               event.stopPropagation();
               return;
             }
-            if (event.key !== 'Enter') return;
+            if (event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
             event.stopPropagation();
             if (available) data.pickPort?.(port);

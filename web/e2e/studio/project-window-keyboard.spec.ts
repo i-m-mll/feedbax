@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, ObjectiveDocument, PythonTaskSelection, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { scanStudio } from './fixtures/studioAccessibility';
+import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
   trace: 'off',
@@ -396,7 +396,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   const [selected] = sourceRows;
   await page.keyboard.press('Control+Meta+2');
-  await activate(page, train.getByRole('button', { name: 'Sweep learning-rate', exact: true }));
+  await activate(page, train.getByRole('button', { name: /^Sweep learning-rate / }));
   const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate 0.001', exact: true });
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
@@ -472,7 +472,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
-  const sweep = train.getByRole('button', { name: 'Sweep learning-rate', exact: true });
+  const sweep = train.getByRole('button', { name: /^Sweep learning-rate / });
   if (!(await slow.isVisible())) await activate(page, sweep);
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
@@ -712,24 +712,27 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(tabs.getByRole('tab', { name: 'Runs', exact: true })).toBeFocused();
   await page.keyboard.press('ArrowDown');
   const modelTab = tabs.getByRole('tab', { name: 'Model', exact: true });
-  await expect(modelTab).toBeFocused();
+  await expectVisibleFocus(modelTab);
   await expect(modelTab).toHaveAttribute('tabindex', '0');
   await expect(tabs.getByRole('tab', { name: 'Runs', exact: true })).toHaveAttribute('tabindex', '-1');
   await expect(page.getByRole('tooltip')).toHaveText('Model · ⌘2');
   await expect(modelTab).not.toHaveAttribute('title', /.+/);
   await page.keyboard.press('Enter');
   await expect(modelTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('tabpanel', { name: 'Model', exact: true })).toBeFocused();
+  const modelPanel = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await expect(modelPanel).toBeFocused();
+  await expect(modelTab).toHaveAttribute('aria-controls', (await modelPanel.getAttribute('id'))!);
+  await expect(tabs.getByRole('tab', { name: 'Runs', exact: true })).not.toHaveAttribute('aria-controls');
 
   await page.keyboard.press('Meta+0');
   await expect(region(page, 'drawer')).toHaveCount(0);
   await palette(page, 'showDrawer', 'Show Drawer');
   await expect(region(page, 'drawer')).toBeFocused();
+  await activate(page, region(page, 'drawer').getByRole('button', { name: 'Outline', exact: true }));
   const plant = region(page, 'drawer').getByRole('button', { name: 'Point mass', exact: true });
   await activate(page, plant);
   await expect(plant).toHaveAttribute('aria-pressed', 'true');
-  await expect(region(page, 'inspector').getByRole('spinbutton', { name: 'Edit Mass', exact: true })).toHaveValue('1');
-  await expect(plant).toHaveAttribute('aria-pressed', 'true');
+  await expect(region(page, 'inspector').getByRole('textbox', { name: 'Mass', exact: true })).toHaveValue('1');
   await page.keyboard.press('Alt+Meta+0');
   await expect(region(page, 'inspector')).toHaveCount(0);
   await page.keyboard.press('Alt+Meta+0');
@@ -812,7 +815,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.reload();
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
-  await activate(page, card.getByRole('button', { name: 'Sweep learning-rate', exact: true }));
+  await activate(page, card.getByRole('button', { name: /^Sweep learning-rate / }));
   const value = (name: string) => card.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true });
   await activate(page, value('0.001'));
   await activate(page, value('0.003'), 'Shift+Enter');

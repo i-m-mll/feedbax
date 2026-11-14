@@ -946,7 +946,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       </div>
     </div> : null,
     drawer: model && <section className="space-y-2 p-1 text-sm">
-      <div className="flex" aria-label={studioName('modelDrawer')}>
+      <div className="flex" role="group" aria-label={studioName('modelDrawer')}>
         <button className={button} type="button" aria-pressed={drawer === 'library'} onClick={() => setDrawer('library')}>{studioName('library')}</button>
         <button className={button} type="button" aria-pressed={drawer === 'outline'} onClick={() => setDrawer('outline')}>{studioName('outline')}</button>
       </div>

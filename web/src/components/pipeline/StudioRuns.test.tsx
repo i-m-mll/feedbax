@@ -76,7 +76,7 @@ it("preserves the sweep and row handles through the same Run command", () => {
   expect(screen.getByText("Learning rate 0.001 → 0.003")).toBeDefined();
   const runs = screen.getByRole("region", { name: "Runs" });
   expect(within(within(runs).getByRole("region", { name: "Used By" }))
-    .getByRole("button", { name: "Select Test reach · 1 of 1" })).toBeDefined();
+    .getByRole("button", { name: "Select Test reach 1 of 1" })).toBeDefined();
 });
 
 it("virtualizes an authoritative 1,000-row result and keeps its full accessible count", () => {

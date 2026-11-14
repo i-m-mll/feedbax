@@ -128,9 +128,13 @@
   order: -1;
 }
 
-.studio-project-window :where(button, input, select, summary, [data-studio-focus-region]):focus-visible {
+.studio-project-window :where(button, input, select, summary, [role='button'], [data-studio-focus-region]):focus-visible {
   outline: 2px solid var(--shell-focus-color);
   outline-offset: -2px;
+}
+
+.studio-project-window :where([data-model-port], svg [role='button']):focus-visible {
+  outline-offset: 2px;
 }
 
 .studio-window-side {

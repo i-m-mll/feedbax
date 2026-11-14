@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('navigates and resizes the saved pipeline canvas without changing zoom', async ({ page, request }) => {
+test('navigates and resizes the saved pipeline canvas without changing zoom', async ({ page, request }, info) => {
   test.setTimeout(42_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };
@@ -64,11 +65,15 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
     await page.keyboard.press('Tab');
   }
   await expect(mark(included)).toBeFocused();
+  await expect(mark(included)).toBeInViewport();
+  await expect(mark(included)).not.toHaveCSS('box-shadow', 'none');
+  await expect(mark(included)).toHaveAccessibleName(/ · Not run$/);
   await page.keyboard.press('Enter');
   await expect(mark(included)).toHaveAttribute('aria-pressed', 'true');
   await expect(child.locator('[data-map-focus="downstream"]')).toHaveCount(1);
   await expect(child).toHaveAttribute('data-map-related', '1');
   await expect(edge).toHaveAttribute('data-map-emphasis', 'strong');
+  await scanStudio(page, info, 'train-map-sweep');
   await mark(excluded).press('Enter');
   await expect(child.locator('[data-map-focus]')).toHaveCount(0);
   await expect(edge).toHaveAttribute('data-map-emphasis', 'light');
@@ -98,7 +103,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await expect.poll(async () => (await camera()).zoom).toBe(zoomed.zoom);
   await page.keyboard.press('Control+Meta+3');
   await expect(canvas).toBeHidden();
-  await expect(region.getByRole('button', { name: 'Select train', exact: true })).toBeVisible();
+  await expect(region.getByRole('button', { name: 'Select train Train', exact: true })).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
   await page.setViewportSize({ width: 540, height: 850 });
   await expect(child).toHaveAttribute('data-map-density', 'compact');

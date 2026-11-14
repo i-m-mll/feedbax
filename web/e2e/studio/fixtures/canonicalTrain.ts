@@ -45,7 +45,7 @@ export async function appendManagedFiles(
 }
 
 export function mapStep(page: Page, stepId: string) {
-  return page.locator('[data-map-card]').getByRole('button', { name: `Select ${stepId}`, exact: true });
+  return page.locator(`[data-map-step="${stepId}"] button[data-canvas-focus]`);
 }
 
 export async function chooseTrainSuccessor(page: Page) {

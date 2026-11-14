@@ -3,6 +3,7 @@ import { ReactFlowProvider, ViewportPortal, useReactFlow } from '@xyflow/react';
 import {
   memo,
   useCallback,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -74,7 +75,7 @@ function documentLevel(scope: MapDocumentScope | undefined, step: string) {
   return !scope ? undefined : scope.lit.has(step) ? 'lit' : scope.users.has(step) ? 'plain' : 'faint';
 }
 
-const documentLevelStyle = 'data-[document-scope=faint]:opacity-60 focus-within:opacity-100';
+const documentLevelStyle = 'data-[document-scope=faint]:border-dashed';
 const documentLitStyle = 'data-[document-scope=lit]:ring-1 data-[document-scope=lit]:ring-shell-muted';
 
 function chooseMapStep(apply: ApplyMapSelection, toggle?: ChooseStep): ChooseStep {
@@ -136,12 +137,17 @@ function StatusCounts({ id, counts, onProblems }: {
   );
 }
 
+function stepSelectionName(step: PlanStepView, count?: string | number) {
+  const label = [step.label, studioStep(step.kind).name, count].filter((part) => part !== undefined).join(' ');
+  return studioAccessibleName('select', label);
+}
+
 function StepName({ step }: { step: PlanStepView }) {
   const { Icon, name } = studioStep(step.kind);
   return (
     <span className="flex min-w-0 items-center gap-1.5">
       <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-      <span className="truncate font-medium">{step.label}</span>
+      <span className="truncate font-medium">{step.label}</span>{' '}
       <span data-map-kind-label className="shrink-0 text-xs text-shell-muted">{name}</span>
     </span>
   );
@@ -226,6 +232,7 @@ function StepShape({
     <div className="flex flex-wrap items-center gap-1 text-xs text-shell-muted">
       {sweeps.map((sweep, index) => {
         const isFolded = sweep.id === folded?.id;
+        const label = `${sweep.label} ${sweep.values.length}`;
         return (
           <div key={sweep.id} className="inline-flex items-center gap-1">
             {index > 0 && <span aria-hidden="true">×</span>}
@@ -233,7 +240,7 @@ function StepShape({
               <button
                 type="button"
                 className="rounded px-1 py-0.5 hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-shell-accent aria-expanded:bg-shell-subtle"
-                aria-label={studioAccessibleName('sweep', sweep.label)}
+                aria-label={studioAccessibleName('sweep', label)}
                 aria-expanded={openSweep === sweep.id}
                 draggable={Boolean(onPresentationChange)}
                 onClick={() => setOpenSweep((open) => open === sweep.id ? null : sweep.id)}
@@ -248,7 +255,7 @@ function StepShape({
                 }}
                 onDrop={(event) => dropSweep(event, index)}
               >
-                {isFolded ? '(' : ''}{sweep.label} {sweep.values.length}{isFolded ? ')' : ''}
+                {isFolded ? `(${label})` : label}
               </button>
               {openSweep === sweep.id && (
                 <div className="absolute left-0 top-full z-20 w-max max-w-56 rounded-md border border-shell-divider bg-shell-surface p-2 shadow-md">
@@ -335,6 +342,7 @@ const StepCard = memo(function StepCard({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
 }) {
+  const id = useId();
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
   const folded = foldedMapSweep(step, sweeps, presentation);
   const level = documentLevel(documentScope, step.id);
@@ -342,7 +350,7 @@ const StepCard = memo(function StepCard({
     (compact ? [] : level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
   ), [step, selection, level, compact]);
   const terms = selection?.kind === 'steps' ? [] : selectionTerms(step, selection);
-  const { tint, name: kind } = studioStep(step.kind);
+  const { tint } = studioStep(step.kind);
   const related = (upstream?.size ?? 0) + (downstream?.size ?? 0) -
     (upstream && downstream ? [...upstream].filter((id) => downstream.has(id)).length : 0);
   const problem = onProblems && ((opener: HTMLButtonElement) => onProblems(step.id, opener));
@@ -357,11 +365,11 @@ const StepCard = memo(function StepCard({
       data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
       aria-label={studioAccessibleName(step.kind, step.label)}
-      className={`studio-map-card nopan pointer-events-auto relative space-y-2 rounded-lg border-2 bg-shell-surface px-3 py-2 text-sm shadow-sm focus-within:z-20 data-[map-dimmed=true]:opacity-60 ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
+      className={`studio-map-card nopan pointer-events-auto relative space-y-2 rounded-lg border-2 bg-shell-surface px-3 py-2 text-sm shadow-sm focus-within:z-20 data-[map-dimmed=true]:border-dashed ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
       style={{ borderColor: selection?.kind === 'steps' ? 'var(--text-primary)' : tint, width: compact ? compactMapCardWidth : mapCardWidth }}
     >
-      <span id={`map-step-${step.id}-summary`} className="sr-only">
-        {[kind, ...sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`)].join(' · ')}
+      <span id={`${id}-summary`} className="sr-only">
+        {sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`).join(' · ')}
       </span>
       <header className="relative">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-3 top-1/2" />
@@ -370,18 +378,18 @@ const StepCard = memo(function StepCard({
           type="button"
           data-canvas-focus
           className="studio-map-card__head w-full rounded px-1 py-1 text-left hover:bg-shell-hover"
-          aria-label={studioAccessibleName('select', step.label)}
-          aria-describedby={`map-step-${step.id}-summary map-step-${step.id}-status`}
-          aria-description={related ? studioCountOf(related, step.runs.length) : undefined}
+          aria-label={stepSelectionName(step, compact ? step.runs.length : undefined)}
+          aria-describedby={[`${id}-summary`, `${id}-status`, related ? `${id}-related` : ''].filter(Boolean).join(' ')}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
           {...selectionButton((extend) => chooseStep(step.id, extend))}
         >
-          {compact ? <span className="flex items-center gap-1"><StepName step={step} />
+          {compact ? <span className="flex items-center gap-1"><StepName step={step} />{' '}
             <span className="ml-auto tabular-nums text-xs">{step.runs.length}</span></span> : <StepName step={step} />}
         </button>
       </header>
-      {compact ? <CompactStatus id={`map-step-${step.id}-status`} counts={step.statusCounts}
+      {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
+      {compact ? <CompactStatus id={`${id}-status`} counts={step.statusCounts}
         onProblems={problem} related={related} total={step.runs.length} /> : <>
       <StepShape
         step={step}
@@ -393,7 +401,7 @@ const StepCard = memo(function StepCard({
         onPresentationChange={onPresentationChange}
         newSweep={newSweep}
       />
-      <StatusCounts id={`map-step-${step.id}-status`} counts={step.statusCounts} onProblems={problem} />
+      <StatusCounts id={`${id}-status`} counts={step.statusCounts} onProblems={problem} />
       <PipelineRunMarks
         step={step}
         sweeps={sweeps}
@@ -561,17 +569,18 @@ function MapDrawer({
           const count = related?.get(step.id)?.size ?? 0;
           const level = documentLevel(documentScope, step.id);
           return (
-            <li key={step.id} data-document-scope={level} className={documentLevelStyle}>
+            <li key={step.id}>
               <button
                 type="button"
-                className={`w-full space-y-1 rounded p-1.5 text-left text-sm hover:bg-shell-hover aria-[current=step]:bg-shell-divider ${related && !count && focusedStepId !== step.id ? 'opacity-60' : ''} ${!scope ? documentLitStyle : ''}`}
-                aria-label={studioAccessibleName('select', step.label)}
+                className={`w-full space-y-1 rounded border border-transparent p-1.5 text-left text-sm hover:bg-shell-hover aria-[current=step]:bg-shell-divider data-[map-dimmed=true]:border-dashed data-[map-dimmed=true]:border-shell-divider data-[document-scope=faint]:border-shell-divider ${documentLevelStyle} ${!scope ? documentLitStyle : ''}`}
                 aria-current={scope ? 'step' : undefined}
+                aria-label={stepSelectionName(step, related && focusedStepId !== step.id ? studioCountOf(count, step.runs.length) : undefined)}
                 aria-pressed={documentScope ? level === 'lit' : undefined}
+                data-map-dimmed={Boolean(related && !count && focusedStepId !== step.id) || undefined}
                 data-document-scope={level}
                 {...selectionButton((extend) => chooseStep(step.id, extend))}
               >
-                <StepName step={step} />
+                <StepName step={step} />{' '}
                 {related && focusedStepId !== step.id && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
               </button>
               <div className="px-1.5"><StatusCounts counts={step.statusCounts}
@@ -584,7 +593,7 @@ function MapDrawer({
             <button type="button" className={`${smallButton} inline-flex items-center gap-1`}
               {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke}>
               <Plus aria-hidden="true" className="h-3 w-3" />
-              {studioName('newStep')}
+              {newStep.label}
             </button>
           </li>
         )}
@@ -632,7 +641,7 @@ function MapLine({
               type="button"
               className={`studio-map-line-step ${smallButton} border-2 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
               style={{ borderColor: stepSelection(selection, step.id)?.kind === 'steps' ? 'var(--text-primary)' : studioStep(step.kind).tint }}
-              aria-label={studioAccessibleName('select', step.label)}
+              aria-label={stepSelectionName(step)}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
               aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
               data-map-selection={stepSelection(selection, step.id)?.kind}
