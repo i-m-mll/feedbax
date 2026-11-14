@@ -520,7 +520,7 @@ class JobService(PlanJobReader):
             run_key=data["run_key"],
             job=Job(
                 id=uuid4().hex, project=project, request=request_id, launch=launch,
-                data=data | {"manifest_root": str(root), "runtime": sys.executable},
+                data=data | {"manifest_root": str(root), "runtime": launch.argv[0]},
             ),
         )
 
@@ -568,14 +568,15 @@ class JobService(PlanJobReader):
             canonical_request=canonical_request,
             checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
+        launch = replace(self._training_worker, payload=payload)
         return AdmissionItem(
             run_key=data["run_key"],
             job=Job(
                 id=uuid4().hex,
                 project=project,
                 request=request_id,
-                launch=replace(self._training_worker, payload=payload),
-                data=data | {"manifest_root": str(root), "runtime": sys.executable},
+                launch=launch,
+                data=data | {"manifest_root": str(root), "runtime": launch.argv[0]},
             ),
         )
 
@@ -619,8 +620,7 @@ class JobService(PlanJobReader):
             if self._accepting:
                 self.host.warm(
                     self._training_worker,
-                    runtime_owner=os.path.realpath(sys.executable)
-                    if os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT") else None,
+                    runtime_owner=os.path.realpath(self._training_worker.argv[0]),
                 )
 
     def retire_runtime(self, release: str, disposition: str) -> dict:

@@ -210,7 +210,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.studio.canonical_train import (
         BoundStudioTrainingJobInput,
         PinnedTrainCheckpoint,
-        verify_training_request_binding,
+        resolve_training_request_binding,
     )
     from feedbax.training.checkpoint_custody import (
         CheckpointCustodyError,
@@ -226,7 +226,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     )
     from feedbax.training.preparation import ExecutionPreparationResult
     from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
-    from feedbax.training.managed_studio import prepare_managed_training
+    from feedbax.training.managed_studio import prepare_resolved_training
     from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
     from feedbax.persistence.model_assets import model_artifact_provider
 
@@ -241,7 +241,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     manifest_root = launch.manifest_root.resolve()
     if launch.manifest_root != manifest_root:
         raise ValueError("Canonical Train store must be absolute and canonical")
-    verify_training_request_binding(launch)
+    registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
+    trial = resolve_training_request_binding(launch, registries=registries).trial
     if launch.checkpoint_input is not None:
         raise ValueError("The Host delivery owns the resolved Train checkpoint input.")
     checkpoint_root = _attempt_root(manifest_root, job_id)
@@ -338,9 +339,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         if semantic_model is None:
             raise ModelCheckpointError("/graph", "Managed Train requires a typed model checkpoint owner")
         events.phase("building")
-        registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
         events.phase("compiling")
-        preparation = prepare_managed_training(launch.spec, registries, model_assets=model_assets)
+        preparation = prepare_resolved_training(launch.spec, trial, model_assets=model_assets)
         if not isinstance(preparation, ExecutionPreparationResult):
             raise ValueError("Studio graph training requires scalar execution preparation")
         if source_model is not None and source_model.graph != effective_model_graph(

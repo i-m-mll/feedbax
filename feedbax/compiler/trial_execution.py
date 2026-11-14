@@ -13,7 +13,9 @@ from feedbax.compiler.graph import (
     ExecutableGraph,
     GraphCompilationError,
     GraphDocument,
-    compile_graph,
+    GraphResolution,
+    realize_graph,
+    resolve_graph,
 )
 from feedbax.compiler.model_document import (
     LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document,
@@ -42,6 +44,31 @@ class PreparedTrialExecution:
     objective: ObjectiveExecutor | None
     lowered: LoweredModelDocument
     task_source: TaskDocument | PythonTaskSelection
+
+
+@dataclass(frozen=True)
+class ResolvedTrialExecution:
+    graph: GraphResolution
+    execution: TrialExecution
+    objective: ObjectiveExecutor | None
+    lowered: LoweredModelDocument
+    task_source: TaskDocument | PythonTaskSelection
+
+    def realize(
+        self,
+        *,
+        initialization_key: jax.Array | None = None,
+        artifact_provider: ArtifactBlobProvider | None = None,
+    ) -> PreparedTrialExecution | tuple[Problem, ...]:
+        try:
+            executable = realize_graph(
+                self.graph, initialization_key=initialization_key, artifact_provider=artifact_provider,
+            )
+        except GraphCompilationError as error:
+            return _graph_problems(error)
+        return PreparedTrialExecution(
+            executable, self.execution, self.objective, self.lowered, self.task_source,
+        )
 
 
 _DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase.REAL: jnp.float32}
@@ -222,6 +249,30 @@ def compile_trial_execution(
     graph_override: GraphSpec | None = None,
 ) -> PreparedTrialExecution | tuple[Problem, ...]:
     """Bind a trial source and compile the paired model and optional objective."""
+    trial = resolve_trial_execution(
+        model_name, model, task, components, functions, python_tasks=python_tasks,
+        objective=objective, objective_use=objective_use, input_overrides=input_overrides,
+        graph_override=graph_override,
+    )
+    if isinstance(trial, tuple):
+        return trial
+    return trial.realize(initialization_key=initialization_key, artifact_provider=artifact_provider)
+
+
+def resolve_trial_execution(
+    model_name: str,
+    model: ModelDocument,
+    task: TaskDocument | PythonTaskSelection,
+    components: ComponentRegistry,
+    functions: FunctionRegistry,
+    *,
+    python_tasks: PythonTaskRegistry | None = None,
+    objective: ObjectiveDocument | None = None,
+    objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
+    input_overrides: Mapping[str, str] | None = None,
+    graph_override: GraphSpec | None = None,
+) -> ResolvedTrialExecution | tuple[Problem, ...]:
+    """Validate the paired Model, Task and Objective before runtime construction."""
     try:
         pairing = pair_trial_source(
             model_name, model, task, components, functions, python_tasks=python_tasks,
@@ -253,12 +304,8 @@ def compile_trial_execution(
                 for output in interface.outputs
                 if output.id in referenced
             )
-        executable = compile_graph(
-            GraphDocument(graph=pairing.lowered.graph),
-            components,
-            input_prototypes=pairing.prototypes,
-            initialization_key=initialization_key,
-            artifact_provider=artifact_provider,
+        graph = resolve_graph(
+            GraphDocument(graph=pairing.lowered.graph), components, pairing.prototypes,
         )
     except ModelCompilationProblem as error:
         return (
@@ -270,18 +317,22 @@ def compile_trial_execution(
             ),
         )
     except GraphCompilationError as error:
-        return tuple(
-            Problem(
-                code=ProblemCode.STRUCTURE,
-                reason=item.observed_condition,
-                path=("model", *json_pointer_parts(item.source_anchor.authored_path)),
-            )
-            for item in error.record.diagnostics
-        )
-    return PreparedTrialExecution(
-        executable,
+        return _graph_problems(error)
+    return ResolvedTrialExecution(
+        graph,
         TrialExecution(compiled_task, interface.reset, pairing.input_bindings, observations),
         scorer,
         pairing.lowered,
         pairing.task_source,
+    )
+
+
+def _graph_problems(error: GraphCompilationError) -> tuple[Problem, ...]:
+    return tuple(
+        Problem(
+            code=ProblemCode.STRUCTURE,
+            reason=item.observed_condition,
+            path=("model", *json_pointer_parts(item.source_anchor.authored_path)),
+        )
+        for item in error.record.diagnostics
     )

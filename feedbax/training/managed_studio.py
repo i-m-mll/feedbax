@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import optax
 
 from feedbax.compiler.trainability import compile_trainability
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.compiler.trial_execution import ResolvedTrialExecution, resolve_trial_execution
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.studio_training import StudioGraphMethodPayload
 from feedbax.contracts.training import TrainingRunSpec
@@ -75,20 +75,35 @@ def prepare_managed_training(
 ) -> ExecutionPreparationResult:
     """Prepare the document pair through the existing bounded update kernel."""
     documents = spec.trial_documents
-    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
-    paired = compile_trial_execution(
+    trial = resolve_trial_execution(
         documents.model_name, documents.model, documents.task_source,
         registries.components, registries.expression_functions,
         python_tasks=registries.python_tasks, objective=documents.objective, input_overrides=documents.input_overrides,
+    )
+    if isinstance(trial, tuple):
+        problem = trial[0]
+        raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+    return prepare_resolved_training(spec, trial, model_assets=model_assets)
+
+
+def prepare_resolved_training(
+    spec: TrainingRunSpec,
+    trial: ResolvedTrialExecution,
+    *,
+    model_assets: ArtifactBlobProvider | None = None,
+) -> ExecutionPreparationResult:
+    """Realize the validated trial with the training method's initialization key."""
+    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
+    paired = trial.realize(
         initialization_key=studio_training_key(method.seed, "model"),
         artifact_provider=model_assets,
     )
-    if not isinstance(paired, PreparedTrialExecution):
+    if isinstance(paired, tuple):
         problem = paired[0]
         raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
     assert paired.objective is not None
     graph = paired.executable.graph
-    _, mask = compile_trainability(paired.executable.resolved.graph, graph, registries.components)
+    _, mask = compile_trainability(paired.executable.resolved.graph, graph, trial.graph.component_registry)
     optimizer = standard_train_optimizer(method, gradient_clip=spec.training_config.grad_clip)
     kernel = prepare_trial_update(
         graph, paired.execution, paired.objective, parameters=TaskParameters(),
