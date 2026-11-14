@@ -242,7 +242,7 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   const evaluation = within(screen.getByRole('article', { name: studioAccessibleName('evaluate', evalStep.label) }));
   expect(evaluation.getByText('rate 0.003')).toBeTruthy();
   expect(evaluation.getByText(studioCountOf(2, 6))).toBeTruthy();
-  expect(view.container.querySelectorAll('path[stroke="currentColor"]')).toHaveLength(2);
+  expect(view.container.querySelectorAll('path[data-map-edge]')).toHaveLength(2);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
   const evalRow = within(drawer.getByRole('button', { name: /^Select perturbations Evaluate\b/ }));
   const reportRow = within(drawer.getByRole('button', { name: /^Select summary Report\b/ }));
