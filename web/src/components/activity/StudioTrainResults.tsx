@@ -28,8 +28,11 @@ function checkpointLineage(
   rows: readonly StudioSavedTrainRow[], row: Stage['row'], attempt: StudioSavedTrainAttempt,
   through: number | null = null,
 ) {
-  const history = rows.flatMap((candidate) => historicalRequest(candidate) ?? []);
-  const byJob = new Map([...history, ...rows].flatMap((candidate) =>
+  const history = rows.flatMap((candidate): Stage['row'][] => {
+    const historical = historicalRequest(candidate);
+    return historical ? [historical] : [];
+  });
+  const byJob = new Map<string, Omit<Stage, 'through'>>([...history, ...rows].flatMap((candidate) =>
     candidate.attempts.map((job) => [job.job_id, { row: candidate, attempt: job }] as const),
   ));
   const stages: Stage[] = [{ row, attempt, through }];
