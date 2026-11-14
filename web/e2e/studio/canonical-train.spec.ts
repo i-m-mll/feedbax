@@ -501,7 +501,8 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
       schedule_origin_step: 0,
       initialization: {
         mode: 'continue_from', optimizer_policy: 'preserve', rng_policy: 'carry', cursor_policy: 'carry',
-        learning_rate_schedule_policy: 'continue', producer_content_binding: { root_kind: 'checkpoint-custody' },
+        learning_rate_schedule_policy: 'continue',
+        producer_content_binding: { root_kind: 'checkpoint-custody:batch_counter,model,optimizer,prng' },
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
