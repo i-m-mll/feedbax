@@ -184,6 +184,7 @@ class Host:
             raise HostError("shutting_down", "The desktop runtime is stopping.")
         if launch["warm_entrypoint"]:
             key, profile = self._profile(launch, "compute", runtime_owner)
+            self.profiles.pop(key, None)
             self.profiles[key] = profile
 
     def _maintain_pool(self) -> None:

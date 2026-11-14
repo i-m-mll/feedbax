@@ -11,17 +11,22 @@ import pytest
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetProductRef
+from feedbax.contracts.effective_success import INDEX_REF
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
+from feedbax.host.evaluate_success import publish_evaluate_success
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, ROLLOUT_TYPE, STATES_SCHEMA, state_key
+from feedbax.studio.canonical_evaluate import (
+    RAW_STATES_SCHEMA, ROLLOUT_TYPE, STATES_SCHEMA, evaluation_manifest_id, state_key,
+)
 from feedbax.tasks.document import TaskParameters
 from feedbax.training import evaluate_worker
 from feedbax.training.checkpoint_custody import open_published_model_slot
@@ -402,6 +407,29 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert dataset.descriptor.schema_id == STATES_SCHEMA
         assert "source_graph_sha256" not in dataset.descriptor.attrs
         np.testing.assert_array_equal(dataset.data(position)[0, 0], base_pos)
+
+    (raw_attempt,) = host.jobs(job_id=submitted.items[0].job_id, include_launch=True)
+    view = SuccessView(store)
+    raw_success = view.read_attempt(raw_attempt["id"])
+    observation_success = view.read_attempt(legacy_attempt.job_id)
+    assert raw_success.receipt.inputs == observation_success.receipt.inputs
+    assert raw_success.receipt.effective != observation_success.receipt.effective
+    binding = next(edge["binding"] for edge in raw_attempt["edges"] if edge["authenticated_completion"])
+    attempt = "incompatible-states-layout"
+    wrong_manifest = outcomes[baseline]._manifest().model_copy(update={
+        "id": evaluation_manifest_id(attempt),
+        "artifacts": legacy_result._manifest().artifacts,
+    })
+    wrong_ref = store.bind_manifest(wrong_manifest.kind, wrong_manifest.id, wrong_manifest.model_dump_json().encode())
+    before = store.read_ref(INDEX_REF)
+    with pytest.raises(ValueError, match="states differ from accepted checkpoint coverage or trials"):
+        publish_evaluate_success(
+            attempt=attempt, request_id=raw_attempt["request"], project=project,
+            payload=raw_attempt["launch"]["payload"], binding=binding,
+            receipt={"manifest_id": wrong_manifest.id, "manifest_sha256": wrong_ref.object.sha256},
+        )
+    assert store.read_ref(INDEX_REF) == before
+    assert SuccessView(store).attempt_ref(attempt) is None
 
     restart(host)
     assert launch(jobs, keys, "evaluate") == submitted

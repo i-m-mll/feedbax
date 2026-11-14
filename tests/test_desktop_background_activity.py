@@ -20,7 +20,7 @@ from feedbax.host import HostClient
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
-from tests.test_local_job_host import admit, host as host_fixture, job_row, run_job, wait_until
+from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
 
 host = host_fixture
 ACTIVITY = "/_desktop/activity"
@@ -194,6 +194,29 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
         }
         assert control.post(f"{ACTIVITY}/stop", json={"mode": "checkpoint"}).json() == []
         assert not HostClient(root).address.exists()
+
+
+def test_open_studio_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    app = create_app(projects_dir=tmp_path / "projects")
+
+    def profiles():
+        return set((host.root / "workers").glob("*/profile.json"))
+
+    with TestClient(app) as studio:
+        assert studio.get("/api/jobs").status_code == 200
+        original = wait_until(profiles)
+
+        restart(host)
+
+        assert studio.get("/api/jobs").status_code == 200
+        replacement = wait_until(lambda: profiles() - original)
+        assert len(replacement) == 1
+
+        assert studio.get("/api/jobs").status_code == 200
+        assert profiles() - original == replacement
 
 
 def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):

@@ -6,12 +6,16 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from feedbax.contracts.effective_success import EvaluationSubjectValue
 from feedbax.contracts.project import Project
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_identity import decode_request, effective_binding_id
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, CheckpointCadence
 from feedbax.contracts.rollout import ResolvedRolloutBinding
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.evaluation_subject import evaluation_subject_objects
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -186,16 +190,17 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         with pytest.raises(CannotRun, match="absent from the retained set"):
             result.replay_trial(trials[0], anchor_id="effector", checkpoint=3)
         reads = []
-        original = ArrayContainerReader.read_tensor
+        read_slice = ArrayContainerReader.read_unverified_slice
 
-        def observed(reader, field):
-            reads.append(field)
-            return original(reader, field)
+        def observed(reader, field, selection):
+            reads.append((field, selection))
+            return read_slice(reader, field, selection)
 
         with monkeypatch.context() as context:
-            context.setattr(ArrayContainerReader, "read_tensor", observed)
+            context.setattr(ArrayContainerReader, "read_unverified_slice", observed)
             replay = result.replay_trial(trials[1], anchor_id="effector", checkpoint=4)
-        assert reads == ["checkpoint", "state_time", position]
+        assert [field for field, _ in reads] == ["checkpoint", "state_time", position]
+        assert reads[-1] == (position, (coordinates.index(4), 0, 1))
         assert replay.identity.stable_id == trials[1] and replay.identity.index == 1
         np.testing.assert_allclose(replay.tracks[0].samples, trajectories[-1][coordinates.index(4), 0, 1])
     assert not np.array_equal(trajectories[0][0], trajectories[0][1])
@@ -204,6 +209,38 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert first.members == second.members[::-1]
     assert len({member.model_tree for member in first.members}) == 2
     assert first.digest() != second.digest()
+
+    store = ImmutableArtifactBlobProvider(plan.store_path)
+    view = SuccessView(store)
+    reversed_result, cadence_result = (view.read_attempt(row["id"]) for row in rows)
+    assert reversed_result is not None and cadence_result is not None
+    assert reversed_result.receipt.effective != cadence_result.receipt.effective
+    fixed = decode_request(plan.plan.requests[by_step["ascending"].request_id], plan.plan.documents.__getitem__)
+    (fixed_member,) = fixed.inputs["subject"]
+    (bound,) = cadence_result.receipt.inputs["subject"]
+    value = EvaluationSubjectValue.model_validate(bound.descriptor)
+    assert value.resolved == second
+    evaluation_subject_objects(store, fixed, fixed_member, bound)
+    assert effective_binding_id(fixed, cadence_result.receipt.inputs) == cadence_result.receipt.effective
+    (reversed_bound,) = reversed_result.receipt.inputs["subject"]
+    with pytest.raises(ValueError, match="coverage differs from the authored selector"):
+        evaluation_subject_objects(store, fixed, fixed_member, reversed_bound)
+
+    source = bound.evaluation_subject
+    swapped_models = bound.model_copy(update={"evaluation_subject": source.model_copy(update={
+        "checkpoints": source.checkpoints[::-1],
+    })})
+    with pytest.raises(ValueError, match="checkpoint differs from its resolved model and coordinate"):
+        evaluation_subject_objects(store, fixed, fixed_member, swapped_models)
+
+    first_member, second_member = second.members
+    wrong_trials = first_member.model_copy(update={"trials": first_member.trials[::-1]})
+    wrong_binding = second.model_copy(update={"members": (wrong_trials, second_member)})
+    wrong_value = value.model_copy(update={"resolved": wrong_binding})
+    with pytest.raises(ValueError, match="trial binding differs from its authored parameters"):
+        evaluation_subject_objects(store, fixed, fixed_member, bound.model_copy(update={
+            "descriptor": wrong_value.model_dump(mode="json"),
+        }))
 
     (short,) = launch("short-producer", "short").items
     (missing,) = launch("missing-consumer", "missing").items
