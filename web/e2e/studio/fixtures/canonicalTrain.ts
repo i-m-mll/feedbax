@@ -76,10 +76,13 @@ export async function authorLearningRateSweep(rate: Locator) {
   await rate.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   const text = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await expect(text).toHaveValue('0.001,');
+  await expect(text).toBeEditable();
   await enter(text, '0.001, 0.002, 0.003');
   await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
   for (const [index, name] of ['Slow', 'Medium', 'Fast'].entries()) {
-    await enter(rate.getByRole('textbox', { name: `Learning Rate value ${index + 1} name`, exact: true }), name);
+    const valueName = rate.getByRole('textbox', { name: `Learning Rate value ${index + 1} name`, exact: true });
+    await expect(valueName).toBeEditable();
+    await enter(valueName, name);
     await expect(rate.getByRole('textbox', { name: `Value ${name}`, exact: true })).toBeVisible();
   }
 }
