@@ -66,11 +66,11 @@ Run the isolated browser walkthrough with `cd web && bun run test:studio`. Set `
 
 Application packages extend Feedbax with their own scientific models, tasks, objectives, perturbations, analyses, and numerical methods. Start with the modules you need; split them as their responsibilities become distinct. There is no required directory scaffold.
 
-Keep reusable problem-domain facilities outside whichever method first used them. A method owns its numerical updates, configuration, and declarations, and can retain its scientific algorithm name. Experiment labels belong in authored envelopes and study materials.
+Keep reusable problem-domain facilities outside whichever method first used them. A method owns its numerical updates, configuration, and declarations, and can retain its scientific algorithm name. Experiment labels belong in saved projects and study materials.
 
 Keep authored inputs, frozen inputs, and generated outputs distinct. Preserve frozen input bytes and their pinned provenance exactly. Let the compiler produce resolved outputs and locks, and retain execution evidence through the artifact and custody interfaces. Moving source can change source-derived identities: refresh active authoring and regenerate its outputs through the existing public authoring and compilation tools while preserving frozen inputs.
 
-Both editable development installs and installed wheels can provide plugins. Configure resource, output, and custody locations through the relevant public interfaces rather than assuming the installed package is a writable repository checkout. Use the [downstream interface stability policy](docs/design/downstream_interface_stability.md) to choose supported imports and protocols, and the [downstream conformance kit](docs/design/downstream_conformance_kit.md) to check your package's integration.
+Both editable development installs and installed wheels can provide plugins. Configure resource, output, and custody locations through the relevant public interfaces rather than assuming the installed package is a writable repository checkout. The [downstream stability inventory](docs/design/downstream_interface_stability.md) lists the implemented interfaces during the rebuild and links the historical ratification. The [downstream conformance kit](docs/design/downstream_conformance_kit.md) documents the test helpers available to extension packages.
 
 Declare your plugin entry point in `pyproject.toml`, for example:
 
