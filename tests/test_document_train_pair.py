@@ -1,6 +1,8 @@
 """The document pair uses the native update and fixed validation scorer."""
 
 import json
+from copy import deepcopy
+from functools import wraps
 
 import equinox as eqx
 import jax
@@ -10,13 +12,14 @@ import numpy as np
 import optax
 import pytest
 
+from feedbax.compiler import trial_execution
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import PlanRequests, compile_project
+from feedbax.contracts.project_plan import PlanRequests, ProjectPlanMemo, compile_project
 from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -54,6 +57,20 @@ def authored_documents():
 @pytest.fixture
 def authored():
     return authored_documents()
+
+
+@pytest.fixture
+def prepared_trials(monkeypatch):
+    calls = []
+
+    @wraps(compile_trial_execution)
+    def prepare(*args, **kwargs):
+        calls.append((args, kwargs))
+        return compile_trial_execution(*args, **kwargs)
+
+    monkeypatch.setattr(trial_execution, "compile_trial_execution", prepare)
+    return calls
+
 
 def test_bounded_train_and_evaluate_share_trial_objective(authored):
     functions, model, task, objective = authored
@@ -169,17 +186,59 @@ def test_plan_round_trips_the_authored_task_and_objective(authored):
     assert encode_request(decoded.spec, decoded.inputs).data == data
 
 
-def test_plan_refuses_a_model_with_an_unwired_linear_input(authored):
+def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_trials):
     raw = document_project(authored)
     model = raw["documents"]["reach-model"]["payload"]
     controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
     del controller["interior"]["wires"]["decode"]
-    plan = compile_project(Project.model_validate(raw))
-    assert not plan.runs
-    assert any(
-        issue.path.endswith(".components.readout") and "input 'input' needs a connection" in issue.detail
-        for issue in plan.diagnostics
+    name = (
+        "documents.reach-model.payload.interior.components.wrapper.interior"
+        ".components.controller.interior.components.readout.name"
     )
+    raw["sweep"] = {"rows": {
+        "base": {},
+        "renamed": {"patches": {name: {"value": "Renamed readout"}}},
+    }}
+    _two_optimizer_rates(raw)
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert not plan.runs
+    assert len(prepared_trials) == 2
+    original = controller["interior"]["components"]["readout"]["name"]
+    assert {
+        (issue.variant, issue.step, issue.row, issue.detail)
+        for issue in plan.diagnostics
+        if issue.path.endswith(".components.readout")
+    } == {
+        (variant, "train", row, f"{label} input 'input' needs a connection.")
+        for variant, label in (("base", original), ("renamed", "Renamed readout"))
+        for row in ("rate=low", "rate=high")
+    }
+
+
+def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_trials):
+    raw = document_project(authored)
+    model = raw["documents"]["reach-model"]
+    model["payload"]["interior"]["components"]["plant"]["type"] = "unknown.Plant"
+    raw["documents"]["other-model"] = deepcopy(model)
+    _two_optimizer_rates(raw)
+    other = deepcopy(raw["steps"]["train"])
+    other["base"]["inline"]["trial_documents"].update(
+        model_name="other-model", model={"document": "other-model"},
+    )
+    raw["steps"]["other"] = other
+
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert not plan.runs
+    assert len(prepared_trials) == 2
+    assert len(plan.diagnostics) == 4
+    for issue in plan.diagnostics:
+        document = {"train": "reach-model", "other": "other-model"}[issue.step]
+        assert issue.variant == "default"
+        assert issue.row in {"rate=low", "rate=high"}
+        assert issue.document == document
+        assert issue.model_address == ModelAddress.model_validate({
+            "document": document, "composites": [], "element": {"kind": "component", "id": "plant"},
+        })
 
 
 def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, authored):
@@ -207,7 +266,7 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
     assert folders.read("variant").revision == revision
 
 
-def test_document_learning_rate_sweep_projects_only_after_expansion(authored):
+def test_document_learning_rate_sweep_projects_only_after_expansion(authored, prepared_trials):
     from feedbax.plugins.application import new_application_registry_bundle
     from feedbax.studio.canonical_train import lower_canonical_train
 
@@ -216,9 +275,11 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored):
         "path": "method_payload.payload.optimizer.params.learning_rate",
         "range": {"start": 1e-4, "stop": 1e-2, "count": 3, "scale": "log"},
     }}}
-    plan = compile_project(Project.model_validate(raw))
+    memo = ProjectPlanMemo()
+    plan = compile_project(Project.model_validate(raw), memo=memo)
     assert not plan.diagnostics, plan.diagnostics
     assert len(plan.requests) == len(plan.runs) == 3
+    assert len(prepared_trials) == 1
     reviewed = PlanRequests.from_plan(plan)
     restored, _ = load_plan_requests(dump_plan_requests(reviewed, None))
     assert restored.requests == reviewed.requests
@@ -242,11 +303,60 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored):
     np.testing.assert_allclose(rates, [0.0001, 0.001, 0.01])
 
     raw["steps"]["train"]["base"]["inline"]["training_config"]["learning_rate"] = 0.004
-    refused = compile_project(Project.model_validate(raw))
+    before = len(prepared_trials)
+    refused = compile_project(Project.model_validate(raw), memo=memo)
     assert not refused.runs
-    assert any(
-        problem.path == "payload.training_config.learning_rate" for problem in refused.diagnostics
-    )
+    assert len(prepared_trials) == before + 1
+    assert len(refused.diagnostics) == 3
+    assert all(problem.path == "payload.training_config.learning_rate" for problem in refused.diagnostics)
+
+
+def _two_optimizer_rates(raw):
+    path = "method_payload.payload.optimizer.params.learning_rate"
+    raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
+        name: {"patches": {path: {"value": value}}}
+        for name, value in (("low", 0.001), ("high", 0.01))
+    }}}}
+
+
+def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, prepared_trials):
+    raw = document_project(authored)
+    mass = ModelAddress.model_validate({
+        "document": "reach-model", "composites": [],
+        "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+    })
+    task = "documents.task.payload.id"
+    objective = "documents.objective.payload.terms.0.weight.value"
+    binding = "steps.train.base.inline.trial_documents.input_overrides.reach_target"
+    raw["sweep"] = {"rows": {
+        "base": {},
+        "model": {"patches": {f"steps.train.{mass.to_text()}": {"value": 2.0}}},
+        "task": {"patches": {task: {"value": "alternate-task"}}},
+        "objective": {"patches": {objective: {"value": 2}}},
+        "bad-binding": {"patches": {binding: {"value": "missing-signal"}}},
+    }}
+    _two_optimizer_rates(raw)
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    original_mass = authored[1].interior.components["plant"].fields["mass"]
+    assert len(prepared_trials) == 5
+    assert {
+        (
+            model.interior.components["plant"].fields["mass"], task_source.id,
+            kwargs["objective"].terms[0].weight.value, kwargs["input_overrides"]["reach_target"],
+        )
+        for (_, model, task_source, *_), kwargs in prepared_trials
+    } == {
+        (original_mass, "delayed-reaches", 1, "target_pos"),
+        (2.0, "delayed-reaches", 1, "target_pos"),
+        (original_mass, "alternate-task", 1, "target_pos"),
+        (original_mass, "delayed-reaches", 2, "target_pos"),
+        (original_mass, "delayed-reaches", 1, "missing-signal"),
+    }
+    assert len(plan.requests) == len(plan.runs) == 8
+    assert len(plan.diagnostics) == 2
+    assert {(issue.variant, issue.row) for issue in plan.diagnostics} == {
+        ("bad-binding", "rate=low"), ("bad-binding", "rate=high"),
+    }
 
 
 def test_managed_train_stores_only_scientific_model_names(authored):

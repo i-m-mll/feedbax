@@ -2,6 +2,7 @@
 
 
 from copy import deepcopy
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -10,11 +11,12 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.jobs import JobService
 from feedbax.contracts.request_identity import decode_request
-from feedbax.tasks.reaching import REACHING_TASK, ReachingParameters, reaching_document
+from feedbax.tasks.reaching import REACHING_TASK, ReachingParameters, builtin_python_tasks, reaching_document
+from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
@@ -266,6 +268,26 @@ def test_python_task_integer_sweep_uses_registered_site():
         for run in plan.runs if run.kind == "train"
     ]
     assert [request.trial_documents.python_task.params["n_steps"] for request in selected] == [11, 13, 15]
+
+
+def test_memoized_plan_uses_supplied_python_tasks():
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    declaration = builtin_python_tasks().resolve(REACHING_TASK)
+    assert declaration is not None
+    registry = PythonTaskRegistry()
+    registry.register(replace(declaration, key="test.reaching"))
+    registry.seal()
+    raw["documents"]["task"]["payload"]["type"] = "test.reaching"
+    project = Project.model_validate(raw)
+    memo = ProjectPlanMemo()
+    expected = compile_project(project, python_tasks=registry)
+    actual = compile_project(project, memo=memo, python_tasks=registry)
+    assert not actual.diagnostics
+    assert len(actual.runs) == 1
+    assert actual == expected
+    assert compile_project(project, memo=memo).diagnostics[0].path == "payload.trial_documents.python_task.type"
 
 
 @pytest.mark.parametrize("kind", ["step", "axis_value", "rows", "variant"])
