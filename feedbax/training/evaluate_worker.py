@@ -23,7 +23,7 @@ from feedbax.contracts.manifest import (
     normalize_manifest_spec_payloads,
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
-from feedbax.contracts.request_refs import UpdateSeriesMember
+from feedbax.contracts.request_refs import ProductRef, UpdateSeriesMember
 from feedbax.contracts.rollout import ResolvedRolloutBinding, ResolvedRolloutMember
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -38,6 +38,7 @@ from feedbax.studio.canonical_evaluate import (
     RolloutParameters,
     decode_rollout_request,
     evaluation_checkpoint_coordinates,
+    exact_evaluation_subject,
     evaluation_manifest_id,
     evaluation_subject_provenance,
 )
@@ -88,8 +89,8 @@ def _bound_subject(
         verify_bound_training_completion,
     )
 
-    subject = request.canonical_request.checkpoint
     binding = read_host_completion_binding()
+    subject = exact_evaluation_subject(request.canonical_request.checkpoint, binding, verify_metrics=True)
     if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
         return load_bound_checkpoint_selection(
             binding, root=request.manifest_root, producer_request=subject.request_id,
@@ -438,7 +439,7 @@ def main(argv: Sequence[str]) -> int:
         events.phase("restoring")
         members, binding = _bound_subject(request)
         events.phase("running")
-        is_series = isinstance(subject.select, UpdateSeriesMember)
+        is_series = isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember)
         with ExitStack() as opened:
             result = _series_dataset(
                 members, binding, params, stop, update_axis="update" if is_series else "checkpoint",

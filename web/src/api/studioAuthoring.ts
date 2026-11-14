@@ -2,6 +2,7 @@ import { asApiRequestError, requestJson } from '@/api/request';
 import {
   parseContract,
   type StudioCheckpointRuleRequest,
+  type StudioSubsetToRowsRequest,
   type StudioTrialAuthoring,
   type StudioTrialAuthoringRequest,
   type StudioTrainAuthoring,
@@ -21,6 +22,20 @@ export async function prepareCheckpointRuleEdit(projectId: string, body: StudioC
     return edit;
   } catch (error) {
     throw asApiRequestError(error, path, 'The checkpoint edit did not match its contract');
+  }
+}
+
+export async function prepareSubsetToRows(projectId: string, body: StudioSubsetToRowsRequest, signal: AbortSignal) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/subset-to-rows`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioSubsetToRowsRequest', body)), cache: 'no-store', signal,
+    });
+    const edit = parseContract('StudioSubsetToRowsEdit', response);
+    if (edit.revision !== body.revision) throw new Error('The subset edit revision changed');
+    return edit;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The subset edit did not match its contract');
   }
 }
 

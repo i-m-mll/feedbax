@@ -717,7 +717,9 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: saved } = await created.json() as StudioProjectDocument;
   expect(saved.project.steps.evaluate.inputs?.subject).toMatchObject({
-    step: 'train', where: { rows: [train.key.row] }, checkpoint: { at },
+    step: 'train',
+    where: { rows: [{ key: train.key.row, variant: train.key.variant, row: train.key.row }] },
+    checkpoint: { at },
   });
   await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
   await expect(page.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();
@@ -737,9 +739,8 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   await row.click();
   const lineage = page.getByRole('tabpanel', { name: 'Runs', exact: true })
     .getByRole('region', { name: 'Made From', exact: true });
-  await expect(lineage).toContainText(producer.job_id!);
-  await lineage.getByRole('button', { name: new RegExp(label) }).click();
-  await expect(checkpoint).toBeVisible();
+  await lineage.getByRole('button', { name: label, exact: true }).click();
+  await expect(checkpoint.getByRole('heading')).toHaveText(label);
 
   const plannedLabel = (await projection(saved.revision)).window_map!.rows
     .find(({ key }) => key.step === evaluation.key.step && key.row === evaluation.key.row)!.label;

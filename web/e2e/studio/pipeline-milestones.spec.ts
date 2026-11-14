@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
@@ -33,6 +33,25 @@ async function admit(page: Page, projectPath: string) {
   expect(items).toHaveLength(1);
   expect(items[0].disposition).toBe('admitted');
   return items[0];
+}
+
+async function savedPlan(request: APIRequestContext, projectPath: string) {
+  const definition = await request.get(projectPath);
+  expect(definition.ok(), await definition.text()).toBe(true);
+  const { revision } = await definition.json() as StudioProjectSnapshot;
+  const response = await request.get(projectPath + '/train-runs', { params: { revision, window_map: 'true' } });
+  expect(response.ok(), await response.text()).toBe(true);
+  return await response.json() as StudioSavedTrainRuns;
+}
+
+async function launchRows(page: Page, projectPath: string, keys: StudioSavedTrainKey[]) {
+  const posted = responseFor(page, projectPath + '/train-runs');
+  await runButton(page).click();
+  const response = await posted;
+  expect(response.status(), await response.text()).toBe(202);
+  expect(response.request().postDataJSON().run_keys).toEqual(keys);
+  const { items } = await response.json() as StudioJobSubmission;
+  expect(items.map(({ disposition }) => disposition)).toEqual(keys.map(() => 'admitted'));
 }
 
 test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity',
@@ -178,39 +197,141 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
+test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ page, request }, info) => {
+  test.setTimeout(58_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
+  const metricName = 'program_step';
+  const files = JSON.parse(await runProjectFixture(evaluation, 'measured-subset-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const path = '/?project=' + snapshot.project_id;
+  const readPlan = () => savedPlan(request, projectPath);
+  await page.goto(path);
+  await select(page, 'train');
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const created = responseFor(page, projectPath + '/files');
+  await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  expect((await created).status()).toBe(201);
+  const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
+  const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
+  const count = subset.getByRole('spinbutton', { name: 'Count', exact: true });
+  const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
+  const apply = subset.getByRole('button', { name: 'Apply Subset', exact: true });
+  const order = subset.getByRole('combobox', { name: 'Order', exact: true });
+  const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
+  const members = inputs.getByRole('list', { name: 'Members', exact: true }).getByRole('listitem');
+  const freeze = drawer.getByRole('button', { name: 'To Rows', exact: true });
+  const saveWhere = async (click: () => Promise<void>) => {
+    const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
+      && new URL(response.url()).pathname === projectPath
+      && JSON.stringify(response.request().postDataJSON()).includes('/inputs/subject/where'));
+    await click();
+    const response = await saved;
+    expect(response.ok(), await response.text()).toBe(true);
+    return (await response.json() as StudioProjectSnapshot).project.steps.evaluate.inputs?.subject;
+  };
+
+  await best.check();
+  await expect(apply).toBeDisabled();
+  await metric.fill(metricName);
+  await count.fill('0');
+  await expect(apply).toBeDisabled();
+  await count.fill('2');
+  expect(await saveWhere(() => apply.click())).toMatchObject({
+    step: 'train', checkpoint: 'last', where: { best: { by: metricName, k: 2, order: 'min' } },
+  });
+
+  await page.reload();
+  await select(page, 'evaluate');
+  await expect(best).toBeChecked();
+  await expect(metric).toHaveValue(metricName);
+  await expect(count).toHaveValue('2');
+  await expect(order).toHaveValue('min');
+  await expect(inputs).toContainText('2 of 3');
+  await expect(members).toHaveText(['Rank 1', 'Rank 2']);
+  const waiting = await readPlan();
+  const ranks = waiting.window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
+  expect(ranks).toHaveLength(2);
+  for (const [index] of ranks.entries()) {
+    await expect(runs(page).getByRole('row').filter({ hasText: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+  }
+
+  await select(page, 'train');
+  const source = waiting.rows.filter(({ key }) => key.step === 'train');
+  expect(source).toHaveLength(3);
+  await launchRows(page, projectPath, source.map(({ key }) => key));
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 22_000 });
+  const finished = (await readPlan()).rows.filter(({ key }) => key.step === 'train');
+  const attempts = finished.map(({ result }) => result!.job_id);
+  const measures: Record<string, number> = JSON.parse(await runProjectFixture(
+    evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, metricName, ...attempts,
+  ));
+  expect(attempts.map((attempt) => measures[attempt])).toEqual([4, 3, 2]);
+  const expected = [finished[2], finished[1]];
+
+  await select(page, 'evaluate');
+  await expect(members).toHaveText(['Rank 1', 'Rank 2']);
+  await expect(freeze).toHaveCount(0);
+  const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
+  expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
+  await launchRows(page, projectPath, ranked.map(({ key }) => key));
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
+  const completed = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
+  for (const [index, producer] of expected.entries()) {
+    expect(completed[index].result?.checkpoint_source).toEqual({
+      job_id: producer.result!.job_id, request_id: producer.request_id,
+      completed_updates: measures[producer.result!.job_id],
+    });
+  }
+  for (const [index, producer] of expected.entries()) {
+    await expect(members.nth(index)).toContainText(producer.label);
+    await expect(runs(page).getByRole('row').filter({ hasText: producer.label })).toHaveCount(1);
+  }
+  await expect(freeze).toBeEnabled();
+  await count.fill('1');
+  await expect(freeze).toBeDisabled();
+  await count.fill('2');
+  await expect(freeze).toBeEnabled();
+  const preparing = responseFor(page, projectPath + '/authoring/subset-to-rows');
+  const frozen = await saveWhere(() => freeze.click());
+  const prepared = await preparing;
+  expect(prepared.ok(), await prepared.text()).toBe(true);
+  const preparedBody = prepared.request().postDataJSON();
+  expect(preparedBody).toEqual({
+    revision: expect.stringMatching(/^[a-f0-9]{64}$/), variant: 'default', step: 'evaluate',
+    attempts: completed.map(({ result }) => result!.job_id),
+  });
+  expect(frozen).toMatchObject({
+    step: 'train', checkpoint: 'last',
+    where: { rows: expected.map(({ key: { variant, row } }, index) => ({ key: `rank-${index + 1}`, variant, row })) },
+  });
+  expect(frozen).not.toHaveProperty('where.best');
+  const staleFreeze = await request.post(projectPath + '/authoring/subset-to-rows', { data: preparedBody });
+  expect(staleFreeze.status()).toBe(409);
+  const replanned = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
+  expect(replanned.map(({ key }) => key)).toEqual(completed.map(({ key }) => key));
+  for (const [index, row] of replanned.entries()) expect(row.request_id).not.toBe(completed[index].request_id);
+  await page.reload();
+  await select(page, 'evaluate');
+  await expect(best).not.toBeChecked();
+  await expect(members).toHaveText(expected.map(({ label }) => label));
+});
+
 test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', async ({ page, request }) => {
   test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
   const files = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
-  const path = projectPath + '/train-runs';
   const mounted = '/?project=' + snapshot.project_id;
   const map = page.getByRole('region', { name: 'Pipeline Map', exact: true });
   const train = map.getByRole('article', { name: 'Train train', exact: true });
   const evaluated = map.getByRole('article', { name: 'Evaluate evaluate', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const steps = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
-  const readSnapshot = async () => {
-    const response = await request.get(projectPath);
-    expect(response.ok(), await response.text()).toBe(true);
-    return await response.json() as StudioProjectSnapshot;
-  };
-  const readPlan = async () => {
-    const { revision } = await readSnapshot();
-    const response = await request.get(path, { params: { revision, window_map: 'true' } });
-    expect(response.ok(), await response.text()).toBe(true);
-    return await response.json() as StudioSavedTrainRuns;
-  };
-  const run = async (keys: StudioSavedTrainKey[]) => {
-    const posted = responseFor(page, path);
-    await runButton(page).click();
-    const response = await posted;
-    expect(response.status(), await response.text()).toBe(202);
-    expect(response.request().postDataJSON().run_keys).toEqual(keys);
-    const { items } = await response.json() as StudioJobSubmission;
-    expect(items.map(({ disposition }) => disposition)).toEqual(keys.map(() => 'admitted'));
-  };
+  const readPlan = () => savedPlan(request, projectPath);
 
   await page.goto(mounted);
   await select(page, 'train');
@@ -220,10 +341,12 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const definition = await readPlan();
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  expect(sourceRows.map(({ key, member_key }) => member_key === key.row)).toEqual([true, true, true]);
+  const authoredRows = sourceRows.map(({ key: { variant, row }, member_key }) => ({ key: member_key, variant, row }));
   const ids = sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value_id);
   const conditionIds = sourceRows[0].evaluation_conditions!.slice(0, 2);
   expect(conditionIds).toHaveLength(2);
-  await run(sourceRows.map(({ key }) => key));
+  await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 22_000 });
 
   await sweep.click();
@@ -245,6 +368,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   });
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
   await expect(inputs).toContainText('learning-rate Slow · 0.001, Medium · 0.002 · 2 of 3');
+  const members = inputs.getByRole('list', { name: 'Members', exact: true });
+  await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
   const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
   await expect(trialSet.getByRole('combobox')).toBeFocused();
   await trialSet.getByRole('combobox').selectOption('conditions');
@@ -264,7 +389,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
 
   const keys = (await readPlan()).window_map!.evaluations!.map(({ key }) => key);
   expect(keys).toHaveLength(2);
-  await run(keys);
+  await launchRows(page, projectPath, keys);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
   const before = (await readPlan()).window_map!.evaluations!;
   await expect(runButton(page)).toBeDisabled();
@@ -288,11 +413,12 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const savedSubset = await subsetEdit;
   expect(savedSubset.ok(), await savedSubset.text()).toBe(true);
   await expect(inputs).toContainText('3 of 3');
+  await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2);
   const widened = (await readPlan()).window_map!.evaluations!;
   expect(widened.slice(0, 2)).toEqual(before);
   expect(widened).toHaveLength(3);
-  await run([widened[2].key]);
+  await launchRows(page, projectPath, [widened[2].key]);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 16_000 });
 
   await page.reload();
@@ -320,20 +446,35 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
 
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   await select(page, 'train');
-  await runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button').click();
+  await fast.click();
+  await slow.click({ modifiers: ['Shift'] });
   const second = responseFor(page, projectPath + '/files');
   await primary(page).getByRole('button', { name: 'New Step', exact: true }).click();
   await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
-  expect(withSecond.project.steps['evaluate-2'].inputs?.subject).toMatchObject({ where: { rows: [sourceRows[2].key.row] } });
+  const picked = [sourceRows[0], sourceRows[2]];
+  expect(withSecond.project.steps['evaluate-2'].inputs?.subject).toMatchObject({
+    where: { rows: [authoredRows[0], authoredRows[2]] },
+  });
+  await expect(members.getByRole('listitem')).toHaveText(picked.map(({ label }) => label));
   await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
   await select(page, 'evaluate');
   await expect(trialSet.getByRole('combobox')).toHaveValue('conditions');
   await select(page, 'evaluate-2');
   await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
   await expect(trialSet.getByRole('button', { name: 'Apply Trials', exact: true })).toBeDisabled();
+  await subset.getByRole('checkbox', { name: sourceRows[1].label, exact: true }).check();
+  const widenRows = edited('/inputs/subject/where');
+  await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
+  const widenedRows = await widenRows;
+  expect(widenedRows.ok(), await widenedRows.text()).toBe(true);
+  const widenedSnapshot = await widenedRows.json() as StudioProjectSnapshot;
+  expect(widenedSnapshot.project.steps['evaluate-2'].inputs?.subject).toMatchObject({
+    where: { rows: authoredRows },
+  });
+  await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
   console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
 });
 

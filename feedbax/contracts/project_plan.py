@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
+from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
@@ -38,10 +39,12 @@ from feedbax.contracts.project_inputs import (
     InputBinding,
     NamedSubset,
     OmittedReference,
+    SelectedRow,
     StepReference,
     SubsetSelectionError,
     SubsetTerms,
-    select_static_rows,
+    producer_member_key,
+    select_step_rows,
 )
 from feedbax.contracts.project_resolution import (
     BaseReaders,
@@ -54,7 +57,7 @@ from feedbax.contracts.project_resolution import (
     compose_step,
     _select,
 )
-from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, resolve_trial_ids
+from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET,
     CheckpointRuleAxis,
@@ -78,6 +81,8 @@ from feedbax.contracts.request_refs import (
     BatchMember,
     BatchSetMember,
     BestMember,
+    BestCandidate,
+    BestRank,
     InputMember,
     LastMember,
     ProductRef,
@@ -133,17 +138,23 @@ class PlannedSubset:
     candidates: int
     members: tuple[RunKey, ...]
     document: str | None
+    ranks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class PlannedInput:
-    producer: RunKey
+    producer: RunKey | None
     member: InputMember
     producer_element: str | None = None
+    candidates: tuple[RunKey, ...] = ()
+
+    @property
+    def sources(self) -> tuple[RunKey, ...]:
+        return (self.producer,) if self.producer is not None else self.candidates
 
     @property
     def element(self) -> ElementKey | None:
-        return ElementKey(self.producer, self.producer_element) if self.producer_element else None
+        return ElementKey(self.producer, self.producer_element) if self.producer and self.producer_element else None
 
 
 @dataclass(frozen=True)
@@ -983,9 +994,11 @@ class _Compiler:
 
     def plan(self) -> ProjectPlan:
         self.expand_variants()
+        if self.previous is not None:
+            self.authored_inputs.update(
+                (variant, _AuthoredInputs(project)) for variant, project in self.variants.items()
+            )
         for variant, project in self.variants.items():
-            if self.previous is not None:
-                self.authored_inputs[variant] = _AuthoredInputs(project)
             for name in sorted(project.steps):
                 self.step(variant, name, ())
         return ProjectPlan(
@@ -1067,7 +1080,9 @@ class _Compiler:
         fanout = {
             role: tuple(
                 SweepInputMember(
-                    item.member.key, producer.coordinates, producer.label,
+                    item.member.key,
+                    producer.coordinates if item.producer is not None else {},
+                    producer.label if item.producer is not None else item.member.key,
                     self.checkpoint_horizon(producer.request_id)
                     if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
                 )
@@ -1076,7 +1091,9 @@ class _Compiler:
             for role, bindings in members.items()
         }
         subjects = tuple(
-            self.model_sources.get(item.producer) for item, _ in members.get("subject", ())
+            self.model_sources.get(key)
+            for item, _ in members.get("subject", ())
+            for key in item.sources
         ) if kind == "evaluate" else ()
 
         def expand(read_document=None, _previous=None):
@@ -1190,6 +1207,8 @@ class _Compiler:
             sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
             for role, binding in inputs.items():
                 producer = binding.producer
+                if producer is None:
+                    continue
                 path = ""
                 if binding.producer_element is not None and isinstance(binding.member.reference, ProductRef):
                     path = pointer(("elements", binding.producer_element, "products", binding.member.reference.role))
@@ -1242,7 +1261,7 @@ class _Compiler:
             (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
         ))
         subject = inputs.get("subject") if kind == "evaluate" else None
-        model_source = self.model_sources.get(subject.producer) if subject is not None else None
+        model_source = self.model_sources.get(subject.producer) if subject is not None and subject.producer else None
         source_stamp = model_source.stamp if model_source is not None else None
         source_problem = model_source.evaluation_problem if model_source is not None else None
 
@@ -1308,7 +1327,11 @@ class _Compiler:
                     payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
             elif kind == "evaluate":
                 reference = subject.member.reference if subject is not None else None
-                payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
+                if isinstance(reference, BestRank):
+                    assert subject is not None
+                    payload = self.lower_best_evaluate(key, payload, subject, reference, has_differences)
+                else:
+                    payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             lowered = _encode_row(
@@ -1432,6 +1455,41 @@ class _Compiler:
             if isinstance(named, dict) and isinstance(params, dict) and isinstance(params.get("variation"), list):
                 return _authored_variation_problem(result, tuple(sorted(named)))
         return result
+
+    def lower_best_evaluate(
+        self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
+    ) -> Payload | ProjectDiagnostic:
+        def problem(detail: str) -> ProjectDiagnostic:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, "inputs.subject.where.best", detail, key.step,
+                row=key.row, variant=key.variant,
+            )
+
+        if payload.get("evaluation_type") != ROLLOUT_TYPE:
+            return problem("Best requires managed rollout Evaluate.")
+        common = None
+        for producer, candidate in zip(subject.candidates, rank.candidates, strict=True):
+            model = self.model_sources.get(producer)
+            name = f"{producer.variant}/{producer.step}/{producer.row}"
+            if model is None or model.evaluation_graph is None:
+                message = model.evaluation_problem.detail if model and model.evaluation_problem else "no managed Model and Task"
+                return problem(f"Best candidate {name}: {message}")
+            if refusal := _authored_graph_variation_problem(key, payload):
+                return refusal
+            lowered = self.lower_evaluate_payload(key, payload, model, candidate.reference, has_differences)
+            if isinstance(lowered, ProjectDiagnostic):
+                return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
+            try:
+                if "trial_set" in lowered["params"]:
+                    raise ValueError("Task trial rule was not resolved")
+                RolloutParameters.model_validate(lowered["params"])
+            except (KeyError, ValueError) as error:
+                return problem(f"Best candidate {name}: {error}")
+            if common is not None and not same_typed_value(common, lowered):
+                return problem(f"Best candidate {name} resolves a different Evaluate definition or trial order.")
+            common = lowered
+        assert common is not None
+        return common
 
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
@@ -1662,9 +1720,18 @@ class _Compiler:
                 continue
             if chosen is None and members:
                 chosen = members[0][0]
-            if kind == "evaluate" and chosen is not None:
+            if (
+                chosen is not None and isinstance(chosen.member.reference, BestRank)
+                and CHECKPOINT_RULE_TARGET in row.patches
+            ):
+                self.diagnostics.append(ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint",
+                    "Best requires the selected Train's last checkpoint without row overrides.",
+                    name, row=row.id, variant=variant,
+                ))
+                continue
+            if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef):
                 reference = chosen.member.reference
-                assert isinstance(reference, ProductRef)
                 try:
                     write = row.patches.get(CHECKPOINT_RULE_TARGET)
                     selected_subject = checkpoint_rule_write(subject, write) if write is not None else subject
@@ -1865,6 +1932,62 @@ class _Compiler:
         self.rows[key] = run
         return run
 
+    def rank_input(
+        self, name: str, template: StepComposition, role: _Role, members: _Members,
+        subset: PlannedSubset, reference: StepReference,
+    ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
+        path = f"inputs.{role.name}.where"
+        terms = subset.terms
+        if terms.when is not None:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.when",
+                "When requires a many-valued input and cannot supply an input axis.", name,
+            )
+        best = terms.best
+        assert best is not None
+        if role.name != "subject":
+            reason = "Best currently binds saved Evaluate subjects."
+        elif best.per:
+            reason = "Best per group is unavailable for managed Evaluate."
+        elif best.k > len(members):
+            reason = f"Best requests {best.k} ranks from {len(members)} candidates."
+        elif reference.checkpoint not in (None, "last") or (
+            template.sweep is not None and any(isinstance(axis, CheckpointRuleAxis) for axis in template.sweep.axes.values())
+        ):
+            reason = "Best requires the selected Train's last checkpoint."
+        elif best.k > 1 and not (
+            template.sweep is not None and any(
+                isinstance(axis, InputAxis) and axis.input == role.name for axis in template.sweep.axes.values()
+            )
+        ):
+            reason = "Best with more than one rank requires a subject input axis."
+        else:
+            candidates = []
+            keys = []
+            for item, producer in members:
+                assert isinstance(producer, PlannedRun)
+                if producer.admission_problem is not None:
+                    return ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE, f"{path}.best",
+                        f"Best candidate {producer.key.row!r} cannot produce a checkpoint: "
+                        f"{producer.admission_problem.detail}", name,
+                    )
+                keys.append(producer.key)
+                candidates.append(BestCandidate(
+                    key=item.member.key, variant=producer.key.variant, row=producer.key.row,
+                    reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
+                ))
+            ranked = []
+            for position in range(1, best.k + 1):
+                rank = BestRank(
+                    metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
+                )
+                ranked.append((PlannedInput(
+                    None, InputMember(key=rank.key, reference=rank), candidates=tuple(keys),
+                ), members[0][1]))
+            return tuple(ranked), {}, replace(subset, ranks=tuple(item.member.key for item, _ in ranked))
+        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
+
     def select_input(
         self,
         variant: str,
@@ -1908,45 +2031,8 @@ class _Compiler:
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
                 "this product does not take a Train checkpoint selector", name,
             )
-        variants = (
-            (variant,)
-            if reference.variants is None
-            else self.variant_order
-            if reference.variants == "all"
-            else tuple(reference.variants)
-        )
-        if not variants or len(variants) != len(set(variants)):
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE,
-                f"{path}.variants",
-                "variants must name a nonempty set of distinct variants",
-                name,
-            )
-        runs: tuple[_CompiledRun, ...] = ()
-        failures: list[ProjectDiagnostic] = []
-        for source_variant in variants:
-            target = source_variant, reference.step
-            if target in active:
-                chain = " -> ".join(f"{v}/{s}" for v, s in (*active, target))
-                return ProjectDiagnostic(ResolutionCode.STEP_CYCLE, path, chain, name)
-            project = self.variants.get(source_variant)
-            producer = project.steps.get(reference.step) if project is not None else None
-            if producer is None or producer.kind != role.producer_kind:
-                return ProjectDiagnostic(
-                    ResolutionCode.BAD_REFERENCE,
-                    path,
-                    f"{source_variant}/{reference.step} must be a {role.producer_kind} step",
-                    name,
-                )
-            runs += self.step(*target, active)
-            failures.extend(
-                problem for problem in self.diagnostics if (problem.variant, problem.step) == target
-                and (not element_input or problem.element is None)
-            )
         terms = reference.where
         subset_document = None
-        if reference.row is not None:
-            terms = SubsetTerms(rows=[reference.row])
         if isinstance(terms, NamedSubset):
             subset_document = terms.subset
             document = self.variants[variant].documents.get(subset_document)
@@ -1968,11 +2054,63 @@ class _Compiler:
                     name,
                     document=subset_document,
                 )
-        if failures and (
-            terms is None
-            or terms.rows is None
-            or any(failure.row is None or failure.row in terms.rows for failure in failures)
-        ):
+        variants = (
+            (variant,)
+            if reference.variants is None
+            else self.variant_order
+            if reference.variants == "all"
+            else tuple(reference.variants)
+        )
+        if not variants or len(variants) != len(set(variants)):
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE,
+                f"{path}.variants",
+                "variants must name a nonempty set of distinct variants",
+                name,
+            )
+        if terms is not None and terms.rows:
+            addressed_variants = tuple(dict.fromkeys(row.variant for row in terms.rows))
+            if reference.variants is None:
+                variants = addressed_variants
+            elif outside := sorted(set(addressed_variants).difference(variants)):
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, f"{path}.where.rows",
+                    f"row variants outside reference scope: {outside!r}", name,
+                )
+        runs: tuple[_CompiledRun, ...] = ()
+        failures: list[ProjectDiagnostic] = []
+        for source_variant in variants:
+            target = source_variant, reference.step
+            if target in active:
+                chain = " -> ".join(f"{v}/{s}" for v, s in (*active, target))
+                return ProjectDiagnostic(ResolutionCode.STEP_CYCLE, path, chain, name)
+            project = self.variants.get(source_variant)
+            producer = project.steps.get(reference.step) if project is not None else None
+            if producer is None or producer.kind != role.producer_kind:
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE,
+                    path,
+                    f"{source_variant}/{reference.step} must be a {role.producer_kind} step",
+                    name,
+                )
+            runs += self.step(*target, active)
+            failures.extend(
+                problem for problem in self.diagnostics if (problem.variant, problem.step) == target
+                and (not element_input or problem.element is None)
+            )
+        addresses = (
+            {(row.variant, row.row) for row in terms.rows}
+            if terms is not None and terms.rows is not None else None
+        )
+
+        def selected_failure(failure: ProjectDiagnostic) -> bool:
+            if failure.row is None:
+                return True
+            if reference.row is not None:
+                return failure.row == reference.row
+            return addresses is None or (failure.variant, failure.row) in addresses
+
+        if any(map(selected_failure, failures)):
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE,
                 path,
@@ -1980,11 +2118,28 @@ class _Compiler:
                 name,
             )
         candidate_count = len(runs)
+
+        def member_key(run: _CompiledRun) -> str:
+            key = run.key
+            return producer_member_key(key.variant, key.row, gathers_variants=reference.variants is not None)
+
+        if reference.row is not None:
+            selected = [
+                SelectedRow(key=member_key(run), variant=run.key.variant, row=run.key.row)
+                for run in runs if run.key.row == reference.row
+            ]
+            if not selected:
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, f"{path}.row",
+                    f"unknown row ID {reference.row!r}", name,
+                )
+            terms = SubsetTerms(rows=selected)
         try:
-            runs = select_static_rows(
+            keyed_runs = select_step_rows(
                 terms,
                 runs,
-                key=lambda run: run.key.row,
+                address=lambda run: (run.key.variant, run.key.row),
+                member_key=member_key,
                 coordinates=lambda run: {
                     axis: coordinate.value_id for axis, coordinate in run.coordinates.items()
                 },
@@ -1997,7 +2152,7 @@ class _Compiler:
             isinstance(axis, InputAxis) and axis.input == role.name
             for axis in template.sweep.axes.values()
         )
-        if not runs and not expands_input:
+        if not keyed_runs and not expands_input:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE,
                 path,
@@ -2011,7 +2166,7 @@ class _Compiler:
                 "finite checkpoint sets require an Evaluate subject", name,
             )
         members = []
-        for run in runs:
+        for key, run in keyed_runs:
             try:
                 selector = _checkpoint(rule)
             except ValueError as error:
@@ -2034,9 +2189,7 @@ class _Compiler:
                 PlannedInput(
                     run.key,
                     InputMember(
-                        key=run.key.row
-                        if reference.variants is None
-                        else f"{run.key.variant}/{run.key.row}",
+                        key=key,
                         reference=ProductRef(
                             request_id=request,
                             role=role.product_role,
@@ -2049,11 +2202,14 @@ class _Compiler:
             ))
         subset = (
             PlannedSubset(
-                deepcopy(terms), candidate_count, tuple(run.key for run in runs), subset_document
+                deepcopy(terms), candidate_count,
+                tuple(run.key for _, run in keyed_runs), subset_document,
             )
             if terms is not None
             else None
         )
+        if terms is not None and (terms.best is not None or terms.when is not None):
+            return self.rank_input(name, template, role, tuple(members), subset, reference)
         return tuple(members), {}, subset
 
 

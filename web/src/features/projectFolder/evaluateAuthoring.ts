@@ -122,7 +122,7 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
   if ((editableCheckpointRule(subject.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
       subject.row != null || subject.variants != null) return undefined;
   const terms = subject.where ?? {};
-  if ('subset' in terms || terms.best || terms.when) return undefined;
+  if ('subset' in terms || terms.when) return undefined;
   const sweep = step.sweep;
   const axis = sweep?.axes?.subject;
   if (!axis || !('input' in axis) || axis.input !== 'subject' ||

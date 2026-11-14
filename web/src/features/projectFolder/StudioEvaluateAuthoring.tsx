@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanStepView } from '@/features/pipeline/planView';
-import type { ProjectValueEdit, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
+import { BestSchema, type Best, type ProjectValueEdit, type SelectedRow, type SubsetTerms } from '@/generated/studioContracts';
 import {
   formatCheckpointRule, parseCheckpointRule, validTrialSet,
   type EditableCheckpointRule, type TrialDomain, type TrialSet,
@@ -68,6 +68,35 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
   return checked ? [...ids, id] : ids.filter((entry) => entry !== id);
 }
 
+function BestEditor({ rule, onChange }: {
+  rule: Best;
+  onChange(rule: Best): void;
+}) {
+  return <div className="grid gap-1">
+    <label className="grid gap-1">
+      {studioName('metric')}
+      <input className={field} type="text" value={rule.by} spellCheck={false}
+        onChange={(event) => onChange({ ...rule, by: event.currentTarget.value })} />
+    </label>
+    <div className="grid grid-cols-2 gap-1">
+      <label className="grid gap-1">
+        {studioName('order')}
+        <select className={field} value={rule.order ?? 'max'}
+          onChange={(event) => onChange({ ...rule, order: event.currentTarget.value === 'min' ? 'min' : 'max' })}>
+          <option value="min">{studioName('lowest')}</option>
+          <option value="max">{studioName('highest')}</option>
+        </select>
+      </label>
+      <label className="grid gap-1">
+        {studioName('count')}
+        <input className={field + ' min-w-0'} type="number" min={1} step={1}
+          value={Number.isNaN(rule.k) ? '' : rule.k}
+          onChange={(event) => onChange({ ...rule, k: event.currentTarget.valueAsNumber })} />
+      </label>
+    </div>
+  </div>;
+}
+
 function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; onSave(rule: TrialSet): void;
   focus: boolean; onFocused(): void;
@@ -115,35 +144,49 @@ function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }:
 }
 
 export function StudioEvaluateAuthoring({
-  authored, source, projection, domain, disabled, editSubject, focusTrialSet, onTrialSetFocused, onEdit,
+  authored, source, sourceRows, domain, disabled, editSubject, focusTrialSet, onTrialSetFocused, onEdit, onToRows,
 }: {
   authored: { terms: SubsetTerms; trialSet: TrialSet; hasWhere: boolean };
   source: PlanStepView;
-  projection: StudioSavedTrainRuns;
+  sourceRows: readonly SelectedRow[];
   domain: TrialDomain | undefined;
   disabled: boolean;
   editSubject: boolean;
   focusTrialSet: boolean;
   onTrialSetFocused(): void;
   onEdit(name: string, edit: ProjectValueEdit): void;
+  onToRows?(): void;
 }) {
   const { terms, trialSet } = authored;
   const [draft, setDraft] = useState(terms);
   const changed = JSON.stringify(draft) !== JSON.stringify(terms);
-  const canApplySubject = changed && draft.rows?.length !== 0 &&
-    Object.values(draft.axes ?? {}).every((values) => values.length > 0);
-  const rowKeys = new Map(projection.rows.map(({ key }) => [savedRunId(key), key.row]));
-  const rows = source.runs.flatMap(({ id, label }) => {
-    const key = rowKeys.get(id);
-    return key === undefined ? [] : [{ id: key, label }];
-  });
+  const best = draft.best ? BestSchema.safeParse({ ...draft.best, by: draft.best.by.trim() }) : undefined;
+  const hasMembers = draft.rows?.length !== 0 && Object.values(draft.axes ?? {}).every((values) => values.length > 0);
+  const canApplySubject = changed && hasMembers && (!best || best.success);
+  const address = ({ variant, row }: SelectedRow) => savedRunId({ step: source.id, variant, row });
+  const labels = new Map(source.runs.map(({ id, label }) => [id, label]));
+  const rows = sourceRows.map((row) => ({ id: address(row), label: labels.get(address(row)) ?? row.row }));
+  const selectedRows = draft.rows?.map(address) ?? [];
   const editRows = terms.rows !== undefined;
+  const uniqueRows = !draft.rows || new Set(draft.rows.map(({ key }) => key)).size === draft.rows.length;
+  function toggleRow(id: string, checked: boolean) {
+    const selected = new Set(toggle(selectedRows, id, checked));
+    const picked = sourceRows.filter((row) => selected.has(address(row)));
+    const initial = terms.rows ?? [];
+    const entries = new Set(initial.map(address));
+    const ordinary = sourceRows.filter((row) => entries.has(address(row)));
+    const hasAuthoredOrder = ordinary.length !== initial.length || ordinary.some((row, index) =>
+      row.key !== initial[index].key || address(row) !== address(initial[index]));
+    const rows = hasAuthoredOrder
+      ? [...initial.filter((row) => selected.has(address(row))), ...picked.filter((row) => !entries.has(address(row)))]
+      : picked;
+    setDraft({ ...draft, rows });
+  }
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
   return <div className="grid gap-3">
-    {editSubject && (editRows || sweeps.length > 0) && <fieldset className="grid gap-1" disabled={disabled}>
+    {editSubject && <fieldset className="grid gap-1" disabled={disabled}>
       <legend className="font-semibold">{studioName('subjectSubset')}</legend>
-      {editRows && <Checkboxes options={rows} selected={draft.rows ?? []}
-        onToggle={(id, checked) => setDraft({ ...draft, rows: toggle(draft.rows ?? [], id, checked) })} />}
+      {editRows && rows.length > 0 && <Checkboxes options={rows} selected={selectedRows} onToggle={toggleRow} />}
       {sweeps.map(({ id, label, values }) => {
         const selected = draft.axes?.[id] ?? values.map((value) => value.id);
         return <fieldset key={id}>
@@ -154,11 +197,22 @@ export function StudioEvaluateAuthoring({
             })} />
         </fieldset>;
       })}
-      <button type="button" className={apply} disabled={!canApplySubject}
+      <label className="flex gap-2">
+        <input type="checkbox" checked={draft.best != null} onChange={(event) => {
+          const { best: _best, ...staticTerms } = draft;
+          setDraft(event.currentTarget.checked ? { ...staticTerms, best: { by: '', k: 1, order: 'min' } } : staticTerms);
+        }} />
+        {studioName('best')}
+      </label>
+      {draft.best && <BestEditor rule={draft.best}
+        onChange={(rule) => setDraft({ ...draft, best: rule })} />}
+      <button type="button" className={apply} disabled={!canApplySubject || !uniqueRows}
         onClick={() => onEdit(studioName('applySubset'), {
-          op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where', value: { ...draft },
+          op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where',
+          value: { ...draft, ...(best?.success && { best: best.data }) },
         })}>{studioName('applySubset')}</button>
-      {changed && !canApplySubject && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
+      {onToRows && <button type="button" className={apply} disabled={changed} onClick={onToRows}>{studioName('toRows')}</button>}
+      {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
     </fieldset>}
     {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled} focus={focusTrialSet} onFocused={onTrialSetFocused}
       onSave={(rule) => onEdit(studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}

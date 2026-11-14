@@ -3,7 +3,7 @@ import type { PlanView } from '@/features/pipeline/planView';
 import { selectedRuns } from '@/features/pipeline/selection';
 import type { StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
-import { savedRunId } from './projectWindowPlan';
+import { savedRunId, stepSourceRows } from './projectWindowPlan';
 
 export function trainSourceSubset(
   source: PipelineMapStepSource,
@@ -21,12 +21,12 @@ export function trainSourceSubset(
     if (selection.kind === 'values') {
       where = { axes: Object.fromEntries(selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])) };
     } else {
-      const sourceRows = projection.rows.filter(({ key }) => key.step === stepId);
-      const rows = new Set(sourceRows.filter(({ key }) => selected.has(savedRunId(key))).map(({ key }) => key.row));
-      if (sourceRows.some(({ key }) => rows.has(key.row) && !selected.has(savedRunId(key)))) {
-        throw new Error('This row selection would include other variants in the shared continuation.');
-      }
-      where = { rows: [...rows] };
+      const variant = members[0]?.variant;
+      if (!variant || projection.window_map?.variants.length !== 1) throw new ProjectEditConflictError();
+      const rows = stepSourceRows(projection, stepId, variant).filter((row) =>
+        selected.has(savedRunId({ ...row, step: stepId })));
+      if (rows.length !== selected.size) throw new ProjectEditConflictError();
+      where = { rows };
     }
   }
   return { step, members, where };
