@@ -1831,6 +1831,13 @@ export interface DomainRegistryPayload {
   domains: DomainMeta[];
 }
 
+export interface StudioRenderFailure {
+  region: string;
+  error_type: string;
+  detail: string;
+  component_stack: string;
+}
+
 export interface DomainCompileReport {
   schema_id?: "feedbax.spec.domain_compile_report";
   schema_version?: "feedbax.spec.domain_compile_report.v1";
@@ -7141,6 +7148,17 @@ export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.l
     .strict()
 ) as unknown as z.ZodType<DomainRegistryPayload>;
 
+export const StudioRenderFailureSchema: z.ZodType<StudioRenderFailure> = z.lazy(() =>
+  z
+    .object({
+      "region": z.string().min(1).max(80),
+      "error_type": z.string().min(1).max(80),
+      "detail": z.string().max(2048),
+      "component_stack": z.string().max(4096),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRenderFailure>;
+
 export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(() =>
   z
     .object({
@@ -10035,6 +10053,7 @@ export const contractSchemas = {
   DomainCompileReport: DomainCompileReportSchema,
   StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
   StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
+  StudioRenderFailure: StudioRenderFailureSchema,
   WorkspaceReplayTrial: WorkspaceReplayTrialSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
@@ -10162,6 +10181,7 @@ export interface ContractTypeMap {
   DomainCompileReport: DomainCompileReport;
   StudioPlanarSceneRequest: StudioPlanarSceneRequest;
   StudioPlanarSceneResponse: StudioPlanarSceneResponse;
+  StudioRenderFailure: StudioRenderFailure;
   WorkspaceReplayTrial: WorkspaceReplayTrial;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;

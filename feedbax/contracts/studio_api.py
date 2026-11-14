@@ -15,7 +15,7 @@ from feedbax.contracts.domain import (
     DomainCompileReport,
     DomainRegistryPayload,
 )
-from feedbax.contracts.base import ParentRef
+from feedbax.contracts.base import ParentRef, StrictModel
 from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
@@ -25,6 +25,13 @@ STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
 STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v3"
 TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
 TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
+
+
+class StudioRenderFailure(StrictModel):
+    region: str = Field(min_length=1, max_length=80)
+    error_type: str = Field(min_length=1, max_length=80)
+    detail: str = Field(max_length=2048)
+    component_stack: str = Field(max_length=4096)
 
 
 class StudioApiModel(BaseModel):

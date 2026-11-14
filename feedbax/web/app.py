@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from feedbax.contracts.studio_api import StudioRenderFailure
 from feedbax.host import HostClient
 from feedbax.jobs import JobService
 from feedbax.plugins.composition import compose_application
@@ -32,6 +34,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 
 STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
+service_log = logging.getLogger("uvicorn.error")
 
 
 def create_app(
@@ -93,6 +96,13 @@ def create_app(
     @app.get("/api/health")
     async def health():
         return {"status": "ready"}
+
+    @app.post("/api/studio/render-failure", status_code=204)
+    async def render_failure(report: StudioRenderFailure) -> None:
+        service_log.error(
+            "Studio render failure region=%r type=%r detail=%r components=%r",
+            report.region, report.error_type, report.detail, report.component_stack,
+        )
 
     app.include_router(jobs.router)
     app.include_router(projects.router)

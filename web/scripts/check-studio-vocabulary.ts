@@ -13,7 +13,6 @@ const sources = [
   resolve(src, 'App.tsx'),
   resolve(src, 'main.tsx'),
   resolve(src, 'components/layout/HeaderActivity.tsx'),
-  resolve(src, 'components/layout/StudioErrorBoundary.tsx'),
   resolve(src, 'components/values/StudioFieldControl.tsx'),
 ].filter((path) => !path.endsWith('.test.tsx'));
 const errors: string[] = [];

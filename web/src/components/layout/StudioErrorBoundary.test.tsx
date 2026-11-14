@@ -2,7 +2,9 @@
 
 import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
+import { StudioRegionBoundary } from '@/components/activity/StudioRegion';
+
+vi.mock('@/api/studioDiagnostics', () => ({ reportStudioRenderFailure: vi.fn(async () => {}) }));
 
 function Train({ broken }: { broken: boolean }) {
   if (broken) throw new Error('Train renderer failed');
@@ -12,12 +14,12 @@ function Train({ broken }: { broken: boolean }) {
 it('contains a panel crash and reloads that panel while the editor keeps its draft', () => {
   const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
   const studio = (broken: boolean) => (
-    <StudioErrorBoundary region="Studio">
+    <StudioRegionBoundary name="studio" recoveryLabel="reload">
       <input aria-label="Project name" defaultValue="Reach" />
-      <StudioErrorBoundary region="Train">
+      <StudioRegionBoundary name="train">
         <Train broken={broken} />
-      </StudioErrorBoundary>
-    </StudioErrorBoundary>
+      </StudioRegionBoundary>
+    </StudioRegionBoundary>
   );
 
   try {
@@ -30,7 +32,7 @@ it('contains a panel crash and reloads that panel while the editor keeps its dra
     expect(editor.value).toBe('Point mass');
 
     view.rerender(studio(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(screen.getByRole('button', { name: 'Run' })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(editor.value).toBe('Point mass');

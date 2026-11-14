@@ -125,16 +125,19 @@ export function StudioTrainAuthoringForm(props: Props) {
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
-  const [projection, setProjection] = useState<StudioTrainAuthoring | null>(null);
-  const [loadError, setLoadError] = useState<unknown>();
-  const [loadAttempt, setLoadAttempt] = useState(0);
+  const definition = useQuery({
+    queryKey: ['train-authoring', projectId, stepId, revision],
+    queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision }, signal),
+    retry: false,
+    placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
+  });
   const [editError, setEditError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
   const fieldSet = useRef<HTMLFieldSetElement | null>(null);
   const numericRegion = useRef<HTMLDivElement | null>(null);
-  const shown = projection?.project_id === projectId && projection.step_id === stepId ? projection : null;
+  const shown = definition.data;
   const current = shown?.revision === revision ? shown : null;
   const disabled = !current || editing || pending > 0 || outside !== null;
   const showNumeric = !picker;
@@ -182,16 +185,7 @@ export function StudioTrainAuthoringForm(props: Props) {
     return () => lifetime.abort();
   }, [editor, stepId]);
 
-  useEffect(() => {
-    const request = new AbortController();
-    setLoadError(undefined);
-    setEditError(null);
-    void readStudioTrainAuthoring(projectId, stepId, { revision }, request.signal).then(
-      (result) => { if (!request.signal.aborted) setProjection(result); },
-      (error: unknown) => { if (!request.signal.aborted) setLoadError(error); },
-    );
-    return () => request.abort();
-  }, [projectId, stepId, revision, loadAttempt]);
+  useEffect(() => { setEditError(null); }, [projectId, stepId, revision]);
 
   async function apply(change: StudioTrainAuthoringRequest['change']) {
     const lifetime = active.current;
@@ -249,7 +243,7 @@ export function StudioTrainAuthoringForm(props: Props) {
             ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined} />)}
       </div>}
       <StudioRegion state={studioReadState(
-        'definition', shown ?? undefined, loadError, () => setLoadAttempt((count) => count + 1),
+        'definition', shown, definition.error, () => { void definition.refetch(); },
       )}>
         {shown && <fieldset ref={fieldSet} disabled={disabled}>
             {picker ? <StudioSweepPicker fields={fields} onChoose={(fieldId) => {
