@@ -341,6 +341,9 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         model_assets = (
             source_model.provider if source_model is not None else model_artifact_provider(graph)
         )
+        semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
+        if semantic_model is None and launch.canonical_request is not None:
+            raise ModelCheckpointError("/graph", "Managed Train requires a typed model checkpoint owner")
         events.phase("building")
         registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
         events.phase("compiling")
@@ -493,7 +496,6 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         fork_plan = None
         fork_bindings = None
         source_content = None
-        semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
         provider = None
         source_root = resume.checkpoint_root if resume is not None else None
         if resume is not None or launch.checkpoint_input is not None:
@@ -563,16 +565,11 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                     completion_error={"code": code, "message": str(error)},
                 )
             model_product = None
-            unavailable = None
             if launch.canonical_request is not None:
-                if semantic_model is None:
-                    unavailable = "The terminal checkpoint has no declared semantic model tree"
-                else:
-                    product, _ = verify_training_model_product(completion)
-                    model_product = product.model_dump(mode="json")
+                product, _ = verify_training_model_product(completion)
+                model_product = product.model_dump(mode="json")
             return _Result(
                 "succeeded", receipt=terminal_receipt, completion=completion, model_product=model_product,
-                store_publication_error={"code": "input_unavailable", "message": unavailable} if unavailable else None,
             )
         if result.status == "cancelled" and stop_requested and events.checkpoint is not None:
             return _Result("stopped", receipt=receipt("cancelled"))

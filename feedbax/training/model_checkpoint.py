@@ -14,7 +14,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from feedbax.compiler.model_assets import model_asset_refs
-from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.artifact_custody import (
     CONTENT_OBJECT_REF_PREFIX,
     CONTENT_TREE_REF_PREFIX,
@@ -48,7 +47,7 @@ from feedbax.persistence.model_tree import (
     model_tree_assets,
 )
 from feedbax.runtime.graph import Graph
-from feedbax.runtime.model_values import MODEL_OWNERS, SPATIAL_OWNER
+from feedbax.contracts.model_values import MODEL_OWNERS, model_owner_problem
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
@@ -114,29 +113,7 @@ class SemanticModelWriter:
     def for_graph(
         cls, graph: GraphSpec, assets: ArtifactBlobProvider | None,
     ) -> SemanticModelWriter | None:
-        if not graph.nodes:
-            return None
-        for path, node in graph_leaf_specs(graph):
-            interior = (graph.subgraphs or {}).get(path[0]) if len(path) == 1 else None
-            owner = MODEL_OWNERS.get(node.type)
-            if (
-                owner is not None and owner.fixed_configuration and node.params.get("fixed") is True
-                and node.revision in {None, owner.revision}
-            ):
-                continue
-            if owner is None or not owner.checkpointable or node.revision not in {None, owner.revision}:
-                return None
-            if node.type != SPATIAL_OWNER and interior is None:
-                continue
-            if (
-                node.type == SPATIAL_OWNER
-                and isinstance(interior, AcausalGraphSpec)
-                and interior.mujoco_asset is not None
-                and interior.solver.solver_type == "mujoco"
-                and interior.solver.mjx_backend == "jax"
-                and node.params.get("trainable") is not True
-            ):
-                continue
+        if not graph.nodes or model_owner_problem(graph, "checkpoint") is not None:
             return None
         return cls(graph, assets)
 

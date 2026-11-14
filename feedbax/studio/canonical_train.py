@@ -11,6 +11,8 @@ from pydantic import Field, field_validator
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
+from feedbax.contracts.model_values import model_owner_problem
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, TrainingRequestSpec
@@ -127,6 +129,10 @@ def lower_canonical_train(
     if not isinstance(paired, PreparedTrialExecution):
         problem = paired[0]
         raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+    if problem := model_owner_problem(paired.executable.resolved.graph, "checkpoint"):
+        address = paired.lowered.source_address(pointer(problem.path))
+        path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
+        raise ValueError(f"{pointer(path)}: {problem.reason}")
     raw = request.method_payload.payload
     if request.seed is not None and "seed" in raw and request.seed != raw["seed"]:
         raise ValueError("/seed: top-level and method seeds disagree")

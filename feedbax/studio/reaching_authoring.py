@@ -20,7 +20,7 @@ from feedbax.contracts.studio_authoring import (
     StudioReachTargetEdit,
 )
 from feedbax.contracts.value_schema import ValueSchema
-from feedbax.runtime.model_values import MODEL_OWNERS
+from feedbax.contracts.model_values import MODEL_OWNERS
 from feedbax.studio.protocol import task_binding_id
 from feedbax.studio.schema import validate_task_binding_schema
 

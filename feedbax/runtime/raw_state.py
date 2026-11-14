@@ -19,7 +19,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
 from feedbax.runtime.graph import Graph, _nested_cycle_key, init_state_from_component
-from feedbax.runtime.model_values import MODEL_OWNERS, StateValue
+from feedbax.contracts.model_values import MODEL_OWNERS, StateValue
 
 
 class StateLayoutError(ValueError):

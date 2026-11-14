@@ -25,6 +25,7 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFEREN
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
 from feedbax.contracts.project_inputs import (
@@ -160,6 +161,7 @@ class PlannedRow:
 class RunProblem:
     path: str
     detail: str
+    model_address: ModelAddress | None = None
 
 
 @dataclass(frozen=True)
@@ -571,6 +573,7 @@ def _encode_row(
     python_tasks: PythonTaskRegistry | None = None,
     model_source: _ModelSource | None = None,
 ) -> _LoweredRow:
+    checkpoint_problem = None
     document_train = kind == "train" and payload.get("trial_documents") is not None
     if document_train:
         from feedbax.compiler.trial_execution import (
@@ -609,18 +612,19 @@ def _encode_row(
                 ResolutionCode.INVALID_PAYLOAD,
                 ".".join(("payload.trial_documents", *map(str, problem.path))),
                 problem.reason, key.step, row=key.row, variant=key.variant,
+                document=problem.model_address.document if problem.model_address else None,
+                model_address=problem.model_address,
             ) for problem in paired), encoding_stamp)
-        from feedbax.studio.canonical_evaluate import CannotRun
-        from feedbax.training.evaluation_variant import validate_evaluation_source
-
         graph = paired.executable.resolved.graph
+        if problem := model_owner_problem(graph, "checkpoint"):
+            address = paired.lowered.source_address(pointer(problem.path))
+            path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
+            checkpoint_problem = RunProblem(pointer(path), problem.reason, address)
         assert model_source is not None
-        try:
-            validate_evaluation_source(graph)
-        except CannotRun as error:
-            address = paired.lowered.source_address(error.path.removeprefix("/inputs/subject"))
+        if problem := model_owner_problem(graph, "evaluate"):
+            address = paired.lowered.source_address(pointer(problem.path))
             model_source = replace(model_source, evaluation_problem=ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, error.path, error.reason,
+                ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
                 document=address.document if address is not None else None, model_address=address,
             ))
         else:
@@ -720,7 +724,7 @@ def _encode_row(
             ) else
             RunProblem("/graph/nodes", "Model has no components.")
             if isinstance(spec, TrainingRequestSpec) and spec.graph is not None and not spec.graph.nodes
-            else None
+            else checkpoint_problem
         )
         return _LoweredRow(
             encoded, (), encoding_stamp, admission_problem=problem,

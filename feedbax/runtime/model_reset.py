@@ -19,7 +19,7 @@ from feedbax.contracts.model_address import ComponentElement, FieldElement, Mode
 from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime._signal_schedule import ScopedPort, resolve_signal_schedule
 from feedbax.runtime.graph import Graph, GraphNode
-from feedbax.runtime.model_values import MODEL_OWNERS
+from feedbax.contracts.model_values import MODEL_OWNERS
 
 if TYPE_CHECKING:
     from feedbax.compiler.resolution import GraphParameterResolution

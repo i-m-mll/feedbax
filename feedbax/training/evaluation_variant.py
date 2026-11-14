@@ -9,13 +9,12 @@ from pydantic import TypeAdapter, ValidationError
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
 from feedbax.contracts.model_attachment import is_generated_attachment_node
-from feedbax.contracts.model_occurrence import graph_leaf_specs
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.training import TaskSpec
-from feedbax.runtime.model_values import MODEL_OWNERS, SPATIAL_OWNER
+from feedbax.contracts.model_values import MODEL_OWNERS, SPATIAL_OWNER, model_owner_problem
 from feedbax.studio.canonical_evaluate import CannotRun
 
 
@@ -78,28 +77,8 @@ def _addressable_graph(graph: GraphSpec) -> tuple[dict, dict[tuple[str, ...], tu
 
 
 def validate_evaluation_source(graph: GraphSpec) -> None:
-    for path, node in graph_leaf_specs(graph):
-        declaration = MODEL_OWNERS.get(node.type)
-        if (
-            declaration is not None and declaration.fixed_configuration and node.params.get("fixed") is True
-            and node.revision in {None, declaration.revision}
-        ):
-            continue
-        if node.type == SPATIAL_OWNER:
-            reason = "native or physical owner has no qualified Evaluate realization"
-        elif (
-            declaration is None or not declaration.checkpointable or declaration.states is None
-            or node.revision not in {None, declaration.revision}
-        ):
-            reason = f"owner {node.type!r} has no declared Evaluate layout for this revision"
-        else:
-            continue
-        raise CannotRun(
-            pointer(("inputs", "subject", "graph", *(
-                part for owner in path[:-1] for part in ("subgraphs", owner)
-            ), "nodes", path[-1])),
-            reason,
-        )
+    if problem := model_owner_problem(graph, "evaluate"):
+        raise CannotRun(pointer(("inputs", "subject", *problem.path)), problem.reason)
 
 
 def _finite_float32(value: object) -> bool:
