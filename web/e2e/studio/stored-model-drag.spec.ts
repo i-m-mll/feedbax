@@ -275,14 +275,24 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
       await expect(model.locator('.react-flow__edge')).toHaveCount(cards * 3);
       const card = model.locator(selector);
       const edge = model.locator('.react-flow__edge[data-id="wire-5-a"] .react-flow__edge-path');
+      const header = card.locator('header');
+      const lock = model.getByRole('button', { name: 'Lock', exact: true });
+      await expect(lock).toBeEnabled();
+      await expect(lock).toHaveAttribute('aria-pressed', 'false');
+      await model.getByRole('button', { name: 'Fit View', exact: true }).click();
       const samplesByDrag = [];
       for (let repetition = 0; repetition < 4; repetition++) {
+        await expect(lock).toBeEnabled();
+        await header.hover();
         const prior = await edge.getAttribute('d');
-        const box = await card.locator('header').boundingBox();
+        const box = await header.boundingBox();
         if (!box) throw new Error('The mounted card is not measurable');
         const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
         await page.mouse.move(start.x, start.y);
         await startSamples(card, 'drag', `drag-${cards}-${repetition}`);
+        const hitCard = await header.evaluate((element, point) =>
+          element.contains(document.elementFromPoint(point.x, point.y)), start);
+        expect(hitCard, 'The drag start must hit the Model card header').toBe(true);
         const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
           new URL(response.url()).pathname === `${projectPath}/model/edit`);
         await page.mouse.down();
