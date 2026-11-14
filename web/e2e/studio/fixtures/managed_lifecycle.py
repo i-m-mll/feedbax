@@ -90,8 +90,10 @@ def result(paths, host, project, attempt, successor, revision, evaluation, trial
 
 def main():
     action, home, project, attempt, *args = sys.argv[1:]
-    assert Path(home).resolve() == Path(os.environ["FEEDBAX_STUDIO_TEST_HOME"]).resolve()
-    paths = AppPaths.resolve(instance_root=Path(home))
+    root = Path(home).resolve(strict=True)
+    assert root == Path(os.environ["FEEDBAX_STUDIO_TEST_HOME"]).resolve(strict=True)
+    paths = AppPaths.resolve(instance_root=root)
+    paths.configure_studio(desktop=False)
     host = HostClient(paths.host)
     match action:
         case "restart":

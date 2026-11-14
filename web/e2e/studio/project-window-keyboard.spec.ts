@@ -177,7 +177,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
 
 test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', async ({ page, request }, info) => {
   test.setTimeout(100_000);
-  const totalUpdates = 1200;
+  const totalUpdates = 6000;
   const home = String(info.config.metadata.home);
   const creation = post(page, '/api/projects');
   await page.goto('/');
@@ -403,15 +403,18 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     return submission.items;
   }
 
-  const [initial] = await submit([selected.key], swept.revision);
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
   await page.keyboard.press('Meta+1');
   const trainTable = runs.getByRole('table', { name: 'Runs', exact: true });
-  await activate(page, trainTable.getByRole('button', { name: selected.label, exact: true }));
+  const producerButton = trainTable.getByRole('row').filter({
+    has: page.getByRole('cell', { name: '0.001', exact: true }),
+  }).getByRole('button');
+  await activate(page, producerButton);
+  const [initial] = await submit([selected.key], swept.revision);
   await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();
   await palette(page, 'openRun', 'Open Run');
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
-  await expect(loss.locator('line title').filter({ hasText: initial.job_id! }).first()).toBeAttached({ timeout: 16_000 });
+  await expect(loss.locator(`line[data-attempt="${initial.job_id}"] title`).first()).toBeAttached({ timeout: 16_000 });
   const stopping = post(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
   const stop = await stopping;
@@ -464,7 +467,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
   await expect(train).toContainText('1 of 3');
   const creating = post(page, projectPath + '/files');
-  await palette(page, 'newStep', 'New Step');
+  await activate(page, train.getByRole('button', { name: 'New Step train', exact: true }));
   const choice = page.getByRole('dialog', { name: 'New Step', exact: true });
   await activate(page, choice.getByRole('button', { name: 'Evaluate', exact: true }));
   const createdEvaluate = await creating;
