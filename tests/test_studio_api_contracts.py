@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections import Counter
+import re
+
 from feedbax.component_registry import ComponentPack
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -425,18 +428,23 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
 
 
 def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
-    registered_models = set(MODEL_TYPES).union(AUTHORED_CONTRACT_MODELS)
-    missing = {
-        model.__name__: sorted(
-            dependency.__name__
-            for dependency in model_dependencies(model)
-            if dependency not in registered_models
-        )
+    rendered = generate()
+    types = re.findall(r"^export (?:interface|type) (\w+)\b", rendered, re.MULTILINE)
+    validators = re.findall(r"^export const (\w+)Schema:", rendered, re.MULTILINE)
+    type_counts = Counter(types)
+    validator_counts = Counter(validators)
+    referenced_models = {
+        dependency.__name__
         for model in MODEL_TYPES
+        for dependency in model_dependencies(model)
     }
 
-    assert {name: dependencies for name, dependencies in missing.items() if dependencies} == {}
-    assert MODEL_TYPES.index(LrScheduleSpec) < MODEL_TYPES.index(OptimizerSpec)
+    assert {
+        name: (type_counts[name], validator_counts[name])
+        for name in sorted(referenced_models)
+        if (type_counts[name], validator_counts[name]) != (1, 1)
+    } == {}
+    assert types.index(LrScheduleSpec.__name__) < types.index(OptimizerSpec.__name__)
 
 
 def test_generated_studio_contracts_are_current() -> None:
