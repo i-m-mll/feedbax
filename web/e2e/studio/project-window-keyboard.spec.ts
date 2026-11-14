@@ -1,5 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, StudioDocumentAuthoring, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioDocumentAuthoring, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
@@ -41,6 +41,9 @@ async function palette(page: Page, id: string, label: string) {
 async function number(page: Page, target: Locator, value: string) {
   await expect(target).toBeEditable();
   await tabTo(page, target);
+  // A saved edit can refresh the field projection while focus moves.
+  await expect(target).toBeEditable();
+  await expect(target).toBeFocused();
   await page.keyboard.press('Meta+A');
   await page.keyboard.type(value);
   await expect(target).toHaveValue(value);
@@ -49,6 +52,12 @@ async function number(page: Page, target: Locator, value: string) {
 
 function post(page: Page, path: string) {
   return page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === path);
+}
+
+async function readSaved(request: APIRequestContext, projectPath: string) {
+  const response = await request.get(projectPath);
+  expect(response.ok(), await response.text()).toBe(true);
+  return await response.json() as StudioProjectSnapshot;
 }
 
 test('an empty saved project starts its first Train by pointer', async ({ page, request }) => {
@@ -121,21 +130,23 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   const reach = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
   await expect(reach).toHaveValue('0.15');
   await expect(task.getByRole('alert')).toHaveCount(0);
-  const edit = page.waitForResponse((response) =>
-    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
   await enter(reach, '0.6');
-  const edited = await edit;
-  expect(edited.ok(), await edited.text()).toBe(true);
-  const current = await edited.json() as StudioProjectSnapshot;
-  await tab('Model').click();
+  await expect.poll(async () => (await readSaved(request, projectPath)).project.documents?.task?.payload)
+    .toMatchObject({ params: { x: 0.6 } });
+  const current = await readSaved(request, projectPath);
+  expect(current.revision).not.toBe(saved.revision);
 
   await page.reload();
+  await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
+  await mapStep(page, 'train').click();
+  await tab('Model').click();
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
   await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
-  const persisted = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
-  expect(persisted).toMatchObject({ revision: current.revision, project: current.project });
-  expect(persisted.project.documents?.task).toMatchObject({ payload: { params: { x: 0.6 } } });
+  await tab('Task').click();
+  await expect(reach).toHaveValue('0.6');
+  const persisted = await readSaved(request, projectPath);
+  expect(persisted).toMatchObject({ project_id: snapshot.project_id, revision: current.revision, project: current.project });
   const reopened = await readPlan(persisted.revision);
   expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
   expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
@@ -152,22 +163,15 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   expect(snapshot.project.documents).toEqual({});
   const projectPath = '/api/projects/' + snapshot.project_id;
   const runsPath = projectPath + '/train-runs';
-  const readSaved = async () => {
-    const response = await request.get(projectPath + '/open');
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json() as StudioProjectDocument).snapshot;
-  };
+  const savedProject = () => readSaved(request, projectPath);
   const plan = async (revision: string) => {
     const response = await request.get(runsPath, { params: { revision, window_map: 'true' } });
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioSavedTrainRuns;
   };
-  const patch = () => page.waitForResponse((response) =>
-    response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  const setNumber = async (target: Locator, value: string) => {
-    await expect(target).toBeEditable();
-    const [saved] = await Promise.all([patch(), number(page, target, value)]);
-    expect(saved.ok(), await saved.text()).toBe(true);
+  const setNumber = async (target: Locator, value: number, projectValue: (project: StudioProjectSnapshot['project']) => unknown) => {
+    await number(page, target, String(value));
+    await expect.poll(async () => projectValue((await savedProject()).project)).toBe(value);
   };
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
@@ -175,6 +179,22 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const taskX = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+  const nSteps = task.getByRole('spinbutton', { name: /N Steps/i });
+  const weight = objective.getByRole('textbox', { name: 'Weight', exact: true });
+  const nBatches = training.getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchSize = training.getByRole('textbox', { name: 'Batch Size', exact: true });
+  const taskValues = (project: StudioProjectSnapshot['project']) => (
+    project.documents?.task?.payload as PythonTaskSelection | undefined
+  )?.params;
+  const terms = (project: StudioProjectSnapshot['project']) =>
+    (project.documents?.objective?.payload as unknown as ObjectiveDocument | undefined)?.terms ?? [];
+  const config = (project: StudioProjectSnapshot['project']) => {
+    const base = project.steps?.train?.base;
+    return base && 'inline' in base
+      ? base.inline.training_config as { n_batches?: number; batch_size?: number }
+      : undefined;
+  };
 
   await expect(page.getByRole('button', { name: 'New Step', exact: true })).toBeEnabled();
   await palette(page, 'newStep', 'New Step');
@@ -183,8 +203,8 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   await page.keyboard.press('Enter');
   await expect(model).toBeFocused();
   await page.keyboard.press('Meta+3');
-  await setNumber(task.getByRole('spinbutton', { name: 'Target x (m)', exact: true }), '0.22');
-  await setNumber(task.getByRole('spinbutton', { name: /N Steps/i }), '12');
+  await setNumber(taskX, 0.22, (project) => taskValues(project)?.x);
+  await setNumber(nSteps, 12, (project) => taskValues(project)?.n_steps);
 
   await page.keyboard.press('Meta+2');
   const component = (name: string) => model.locator('.react-flow__node').filter({
@@ -204,18 +224,21 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
     return component(name);
   }
   const linear = await add('Linear', 'Runtime');
-  async function modelField(name: string, field: string, value: string) {
-    await number(page, inspector.getByRole('textbox', { name, exact: true }), value);
-    await expect.poll(async () => {
-      const model = (await readSaved()).project.documents?.model?.payload as unknown as ModelDocument;
-      const linear = Object.values(model.interior.components ?? {}).find(({ name }) => name === 'Linear');
-      return linear?.kind === 'leaf' ? linear.fields?.[field] : undefined;
-    }).toBe(Number(value));
+  const linearId = await linear.getAttribute('data-id');
+  expect(linearId).toBeTruthy();
+  function modelField(name: string, field: string, value: number) {
+    return setNumber(inspector.getByRole('textbox', { name, exact: true }), value, (project) => {
+      const model = project.documents?.model?.payload as unknown as ModelDocument | undefined;
+      const component = model?.interior.components?.[linearId!];
+      return component?.kind === 'leaf' ? component.fields?.[field] : undefined;
+    });
   }
-  await modelField('Input size', 'input_size', '2');
-  await modelField('Output size', 'output_size', '2');
+  await modelField('Input size', 'input_size', 2);
+  await modelField('Output size', 'output_size', 2);
   await page.keyboard.press('Meta+2');
   const plant = await add('PointMass', 'Mechanics');
+  const plantId = await plant.getAttribute('data-id');
+  expect(plantId).toBeTruthy();
   const output = model.locator('[data-id="@outputs"]');
   await page.keyboard.press('Meta+2');
   await expect(model).toBeFocused();
@@ -255,43 +278,105 @@ test('the keyboard authors a managed Train from an empty folder and runs it afte
   await expect(measure.locator('option:checked')).toHaveText('Command');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
-  await setNumber(objective.getByRole('textbox', { name: 'Weight', exact: true }), '2');
+  await setNumber(weight, 2, (project) => {
+    const authored = terms(project)[0]?.weight;
+    return authored && 'value' in authored ? authored.value : undefined;
+  });
   await page.keyboard.press('Meta+5');
-  await setNumber(training.getByRole('textbox', { name: 'N Batches', exact: true }), '2');
-  await setNumber(training.getByRole('textbox', { name: 'Batch Size', exact: true }), '4');
+  await setNumber(nBatches, 2, (project) => config(project)?.n_batches);
+  await expect(nBatches).toBeEditable();
+  await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
-  const saved = await readSaved();
+  const saved = await savedProject();
+  expect(saved.project_id).toBe(snapshot.project_id);
+  expect(saved.revision).not.toBe(snapshot.revision);
+  expect(saved.project.steps?.train?.base).toMatchObject({ inline: {
+    trial_documents: { model: { document: 'model' }, python_task: { document: 'task' }, objective: { document: 'objective' } },
+    training_config: { n_batches: 2, batch_size: 4 },
+  } });
   const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;
-  expect(Object.values(savedModel.interior.wires ?? {})).toHaveLength(3);
+  expect(savedModel.interior.components).toMatchObject({
+    [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: { input_size: 2, output_size: 2 } },
+    [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
+  });
+  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'reach_target');
+  const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'Command');
+  expect(reachPort?.id).toBeTruthy();
+  expect(commandPort?.id).toBeTruthy();
+  const linearOutput = { owner: 'component', component: linearId, port: 'output' };
+  const wires = Object.values(savedModel.interior.wires ?? {});
+  expect(wires).toHaveLength(3);
+  expect(wires).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      source: { owner: 'inputs', port: reachPort!.id },
+      target: { owner: 'component', component: linearId, port: 'input' },
+    }),
+    expect.objectContaining({
+      source: linearOutput, target: { owner: 'component', component: plantId, port: 'force' },
+    }),
+    expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
+  ]));
   expect(saved.project.documents?.task?.payload).toMatchObject({ params: { x: 0.22, n_steps: 12 } });
-  expect(saved.project.documents?.objective?.payload).toMatchObject({
-    terms: [{ measure: { function: 'sqnorm' }, weight: { value: 2 } }],
+  const [term] = terms(saved.project);
+  expect(terms(saved.project)).toHaveLength(1);
+  expect(term).toMatchObject({
+    id: expect.any(String),
+    measure: { function: 'sqnorm', args: [{ kind: 'name', reference: expect.any(String) }] },
+    weight: { value: 2 },
+  });
+  const measureArgument = 'args' in term.measure ? term.measure.args?.[0] : undefined;
+  expect(JSON.parse(measureArgument && 'reference' in measureArgument ? measureArgument.reference : 'null')).toEqual({
+    document: 'model', composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort!.id } },
   });
   const before = await plan(saved.revision);
   expect(before.window_map?.problems).toEqual([]);
-  expect(before.rows).toMatchObject([{ status: 'not_run', attempts: [] }]);
-  await page.reload();
-  await expect(objective.or(training)).toBeVisible();
+  expect(before.rows).toMatchObject([{ key: { variant: 'default', step: 'train', row: 'default' },
+    request_id: expect.any(String), status: 'not_run', attempts: [] }]);
+  const [planned] = before.rows;
+  async function reopen() {
+    await page.reload();
+    await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
+    await activate(page, mapStep(page, 'train'));
+    await expect(runs).toBeVisible();
+  }
+  await reopen();
+  expect(await savedProject()).toMatchObject({ project_id: saved.project_id, revision: saved.revision, project: saved.project });
+  expect((await plan(saved.revision)).rows).toEqual(before.rows);
   await page.keyboard.press('Meta+4');
-  await expect(objective.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('2');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
+  await expect(weight).toHaveValue('2');
+  await page.keyboard.press('Meta+5');
+  await expect(nBatches).toHaveValue('2');
+  await expect(batchSize).toHaveValue('4');
   await page.keyboard.press('Meta+1');
   await expect(runs.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
   const posted = post(page, runsPath);
   await page.keyboard.press('Meta+R');
   const admission = await posted;
   expect(admission.status(), await admission.text()).toBe(202);
-  expect(admission.request().postDataJSON()).toMatchObject({ revision: saved.revision, run_keys: [before.rows[0].key] });
-  const { items } = await admission.json() as StudioJobSubmission;
+  expect(admission.request().postDataJSON()).toMatchObject({ revision: saved.revision, run_keys: [planned.key] });
+  const { items, project_id } = await admission.json() as StudioJobSubmission;
+  expect(project_id).toBe(saved.project_id);
   expect(items).toMatchObject([{ disposition: 'admitted', job_id: expect.any(String) }]);
   await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 16_000 });
   const [completed] = (await plan(saved.revision)).rows;
-  expect(completed.request_id).toBe(before.rows[0].request_id);
-  expect(completed.result).toMatchObject({
-    job_id: items[0].job_id,
-    progress: { completed_updates: 2 },
-    receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+  const progress = { completed_updates: 2, total_updates: 2 };
+  const receipt = { manifest_id: expect.any(String), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) };
+  expect(completed).toMatchObject({
+    key: planned.key, request_id: planned.request_id, status: 'succeeded',
+    attempts: [{ job_id: items[0].job_id, status: 'succeeded', progress, successful_receipt: receipt }],
+    result: { job_id: items[0].job_id, request_id: planned.request_id, progress, receipt },
   });
-  console.info('Keyboard first managed Train', JSON.stringify({ revision: saved.revision, result: completed.result }));
+  await reopen();
+  await expect(runs.getByText('Done', { exact: true })).toBeVisible();
+  expect((await plan(saved.revision)).rows).toEqual([completed]);
+  await palette(page, 'openRun', 'Open Run');
+  const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
+  await expect(results.getByRole('img', { name: 'Loss' })
+    .locator(`line[data-attempt="${items[0].job_id}"]`).first()).toBeAttached();
+  console.info('Keyboard first managed Train', JSON.stringify({
+    project: saved.project_id, revision: saved.revision, key: planned.key, attempt: completed.attempts[0], result: completed.result,
+  }));
 });
 
 test('Model edits follow the lit users of a saved shared document', async ({ page, request }) => {
@@ -495,8 +580,11 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(region(page, 'drawer')).toHaveCount(0);
   await palette(page, 'showDrawer', 'Show Drawer');
   await expect(region(page, 'drawer')).toBeFocused();
-  await activate(page, region(page, 'drawer').getByRole('button', { name: 'plant', exact: true }));
-  await expect(region(page, 'inspector').getByRole('spinbutton', { name: 'Edit Mass' })).toBeVisible();
+  const plant = region(page, 'drawer').getByRole('button', { name: 'plant', exact: true });
+  await activate(page, plant);
+  await expect(plant).toHaveAttribute('aria-pressed', 'true');
+  await expect(region(page, 'inspector').getByRole('spinbutton', { name: 'Edit Mass', exact: true })).toHaveValue('1');
+  await expect(plant).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Alt+Meta+0');
   await expect(region(page, 'inspector')).toHaveCount(0);
   await page.keyboard.press('Alt+Meta+0');
