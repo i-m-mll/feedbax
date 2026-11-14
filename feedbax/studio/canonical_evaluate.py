@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,7 +11,6 @@ from pydantic import ValidationError
 
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, DatasetProductRef
@@ -21,6 +19,7 @@ from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
     StudioEvaluationObjectivePoint, StudioEvaluationObjectiveSeries, StudioEvaluationObjectiveTerm,
 )
+from feedbax.contracts.live_evaluate import LiveEvaluationObservation, ScoredEvaluationPoint
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
@@ -38,6 +37,8 @@ from feedbax.contracts.rollout import (
     STATES_SCHEMA as STATES_SCHEMA,
     RolloutParameters as RolloutParameters,
     authored_variation,
+    rollout_objective_sha256,
+    rollout_semantics,
 )
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.workspace_replay import (
@@ -52,6 +53,7 @@ from feedbax.host.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 if TYPE_CHECKING:
     from feedbax.dataset import Dataset
+    from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 
 class CannotRun(ValueError):
     """A capability required by the authored request is unavailable."""
@@ -446,7 +448,7 @@ class EvaluationResult:
         params = RolloutParameters.model_validate(
             EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline).params,
         )
-        objective_hash = sha256(canonical_json_v2_bytes(objective.model_dump(mode="json"))).hexdigest()
+        objective_hash = rollout_objective_sha256(objective)
         lineage = selection["lineage"]
         if not lineage or len(set(lineage)) != len(lineage) or (
             lineage[0] != selection["anchor"] or lineage[-1] != selection["lineage_tip"]
@@ -470,7 +472,7 @@ class EvaluationResult:
                 (condition,) = dataset.data("condition").tolist()
                 effective = ResolvedRolloutBinding.model_validate(manifest.metadata["effective_binding"])
                 if (
-                    condition != canonical_sha256(params.model_dump(mode="json")["variation"])
+                    condition != params.condition_id()
                     or effective.digest() != manifest.metadata["effective_binding_sha256"]
                     or effective.objective != objective_hash
                     or effective.seed != params.seed or effective.trial_policy != params.trial_policy
@@ -485,6 +487,113 @@ class EvaluationResult:
             lineage=lineage, condition=condition, trials=list(params.trials), seed=params.seed,
             objective=objective_hash, requested=requested, points=points, gaps=gaps,
         )
+
+
+def live_objective_series(
+    store: ImmutableArtifactBlobProvider, *, project_id: str, job_id: str, request_id: str,
+    producer_request: str, params: RolloutParameters, requested: list[int],
+    objective: ObjectiveDocument, observation: LiveEvaluationObservation,
+) -> StudioEvaluationObjectiveSeries:
+    """Authenticate a live objective from the exact datasets accepted by the Host."""
+    from feedbax.job_completion import read_training_binding
+    from feedbax.persistence.content_retention import read_active_roots
+    from feedbax.persistence.dataset import open_stored_dataset
+    from feedbax.training.checkpoint_custody import published_model_tree_sha256
+
+    objective_hash = rollout_objective_sha256(objective)
+    condition = params.condition_id()
+    if params.variation or len(set(observation.lineage)) != len(observation.lineage):
+        raise ValueError("Live objectives require one unchanged scientific lineage.")
+    points = []
+    scored = []
+    seen_updates = set()
+    for selected in observation.points:
+        point = selected.point
+        checkpoint = point.checkpoint
+        update = checkpoint.completed_updates
+        if (
+            point.evaluation_job_id != job_id or selected.producer_request_id != producer_request
+            or selected.producer_job_id != checkpoint.pointer.run_id
+            or selected.producer_job_id not in observation.lineage
+            or checkpoint.checkpoint_root != store.root / "checkpoints" / selected.producer_job_id
+            or update not in requested or update in seen_updates
+        ):
+            raise ValueError("Live objective differs from its selected publication.")
+        seen_updates.add(update)
+        if isinstance(result := point.result, ScoredEvaluationPoint):
+            scored.append((selected, result))
+    if seen_updates.intersection(gap.update for gap in observation.gaps):
+        raise ValueError("Live objective gaps overlap accepted observations.")
+
+    launches: dict[str, BoundStudioTrainingJobInput] = {}
+    semantics: dict[bytes, tuple[str, str]] = {}
+    roots = read_active_roots(store, tuple(selected.point.root_id for selected, _ in scored)) if scored else ()
+    for (selected, result), root in zip(scored, roots, strict=True):
+        point = selected.point
+        checkpoint = point.checkpoint
+        pointer = checkpoint.pointer
+        update = checkpoint.completed_updates
+        if len(root.targets) != 1 or root.targets[0].object != result.states.object_ref:
+            raise ValueError("Live objective lacks its exact active dataset.")
+        if selected.binding_sha256 not in launches:
+            launches[selected.binding_sha256] = read_training_binding(
+                store.root, selected.producer_job_id, selected.binding_sha256,
+            )
+        source = launches[selected.binding_sha256]
+        if (
+            source.project_id != project_id or source.request_id != producer_request
+            or source.manifest_root != store.root or source.spec.trial_documents is None
+            or source.spec.trial_documents.objective != objective
+        ):
+            raise ValueError("Live objective differs from its bound Train request.")
+        identity = canonical_json_v2_bytes(source.model_dump(mode="json", exclude={"resume"}))
+        if identity not in semantics:
+            semantics[identity] = _unchanged_rollout_semantics(source)
+        model, task = semantics[identity]
+        member = result.member
+        if (
+            (member.model, member.task, result.objective) != (model, task, objective_hash)
+            or member.model_tree != published_model_tree_sha256(checkpoint.checkpoint_root, pointer)
+            or member.coordinate != update or member.trials != params.trials
+        ):
+            raise ValueError("Live objective differs from its resolved scientific inputs.")
+        subject = StudioEvaluationCheckpoint(
+            job_id=selected.producer_job_id, request_id=selected.producer_request_id,
+            completed_updates=update, publication_cursor=point.publication_cursor,
+            transaction=JobReceipt(manifest_id=pointer.transaction_id, manifest_sha256=pointer.manifest_sha256),
+            transaction_root_sha256=pointer.transaction_root_sha256, binding_sha256=selected.binding_sha256,
+        )
+        with open_stored_dataset(store, result.states, verify=True) as dataset:
+            if (
+                dataset.descriptor.schema_id != params.states_schema
+                or dataset.data("update").tolist() != [update]
+                or dataset.data("condition").tolist() != [condition]
+                or dataset.data("trial").tolist() != list(params.trials)
+            ):
+                raise ValueError("Live objective dataset differs from its authored axes.")
+            (numeric,) = _objective_points(dataset, [subject], objective, len(params.trials))
+            if numeric.total != result.total:
+                raise ValueError("Live objective total differs from its accepted dataset.")
+            points.append(numeric)
+    return StudioEvaluationObjectiveSeries(
+        job_id=job_id, request_id=request_id, receipt=None, lineage=observation.lineage,
+        condition=condition if points else None, trials=list(params.trials), seed=params.seed,
+        objective=objective_hash, requested=requested, points=points, gaps=list(observation.gaps),
+    )
+
+
+def _unchanged_rollout_semantics(source: BoundStudioTrainingJobInput) -> tuple[str, str]:
+    import asyncio
+
+    from feedbax.compiler.graph import resolve_graph_schedule
+    from feedbax.plugins.composition import compose_application
+    from feedbax.studio.canonical_train import resolve_training_request_binding
+
+    registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
+    trial = resolve_training_request_binding(source, registries=registry).trial
+    graph = trial.graph.graph
+    _, key_schedule = resolve_graph_schedule(graph)
+    return rollout_semantics(graph, key_schedule, trial.task_source, trial.execution.input_bindings, {})
 
 
 def _objective_checkpoint(parent: ParentRef) -> StudioEvaluationCheckpoint:

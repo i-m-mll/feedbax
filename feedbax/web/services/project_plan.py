@@ -76,7 +76,8 @@ from feedbax.jobs import (
     saved_request_status,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.studio.canonical_evaluate import CannotRun, EvaluationResult
+from feedbax.persistence.store_damage import inspect_without_recording
+from feedbax.studio.canonical_evaluate import CannotRun, EvaluationResult, decode_rollout_request, live_objective_series
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
@@ -529,22 +530,38 @@ class ProjectPlanService:
         except (OSError, ValueError, KeyError) as error:
             raise JobConflict("The retained data for the selected Evaluate trial could not be read and authenticated.") from error
 
+    @inspect_without_recording()
     def evaluation_objective(
         self, project_id: str, body: StudioSavedEvaluationRead,
     ) -> StudioEvaluationObjectiveSeries:
-        view, row, result = self._evaluation_result(project_id, body)
-        if (series := row.checkpoint_series) is None:
+        settled = self.folders.read_plan(project_id, revision=body.revision)
+        plan = settled.plan
+        key = RunKey(body.key.variant, body.key.step, body.key.row)
+        run = next((run for run in plan.runs if run.key == key and run.kind == "evaluate"), None)
+        if run is None:
             raise JobNotFound(body.job_id)
         try:
-            plan = view.settled.plan
-            subject = RunKey(series.subject.variant, series.subject.step, series.subject.row)
-            run = next(run for run in plan.runs if run.key == subject)
-            train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+            _, params, subject = decode_rollout_request(run.request_id, plan.requests[run.request_id])
+            if not isinstance(subject, ProductRef) or not isinstance(subject.select, UpdateSeriesMember):
+                raise JobNotFound(body.job_id)
+            train = decode_request(plan.requests[subject.request_id], plan.documents.__getitem__).spec
             if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Evaluate subject has no authored Objective.")
-            return result.objective_series(series.requested, objective=train.trial_documents.objective)
-        except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:
-            raise JobConflict("The retained Evaluate objective could not be read and authenticated.") from error
+            result = self.jobs.read_evaluation_objective_attempt(
+                project=project_id, store=settled.store_path, job_id=body.job_id, request_id=run.request_id,
+            )
+            requested = list(subject.select.updates)
+            objective = train.trial_documents.objective
+            if isinstance(result, EvaluationResult):
+                return result.objective_series(requested, objective=objective)
+            return live_objective_series(
+                ImmutableArtifactBlobProvider(settled.store_path),
+                project_id=project_id, job_id=body.job_id, request_id=run.request_id,
+                producer_request=subject.request_id, params=params, requested=requested,
+                objective=objective, observation=result,
+            )
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise JobConflict("The selected Evaluate objective could not be read and authenticated.") from error
 
 
 def read_settled_project_plan(

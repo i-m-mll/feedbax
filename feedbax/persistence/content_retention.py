@@ -193,20 +193,36 @@ def _validate_targets(
     return digests
 
 
+def _active_roots(index: ContentRetentionIndex, root_ids: tuple[str, ...]) -> tuple[ContentRootRecord, ...]:
+    if index.pending_gc is not None:
+        raise ContentRetentionError("recover the pending GC generation before verifying roots")
+    wanted = set(root_ids)
+    active = {
+        root.root_id: root for root in index.roots
+        if root.root_id in wanted and not root.released and root.domain == "canonical"
+    }
+    try:
+        return tuple(active[root_id] for root_id in root_ids)
+    except KeyError as error:
+        raise ContentRetentionError(f"active retention root is unavailable: {error.args[0]}") from error
+
+
+def read_active_roots(
+    provider: ImmutableArtifactBlobProvider, root_ids: tuple[str, ...],
+) -> tuple[ContentRootRecord, ...]:
+    """Read active retention metadata for a caller that authenticates selected data."""
+    with provider._exclusive_lock(create=False):
+        return _active_roots(_read_index(provider), root_ids)
+
+
 def require_active_root(
-    provider: ImmutableArtifactBlobProvider,
-    root_id: str,
+    provider: ImmutableArtifactBlobProvider, root_id: str,
 ) -> ContentRootRecord:
     """Verify one active canonical root and its retained objects without changing it."""
     with provider._exclusive_lock():
-        index = _read_index(provider)
-        if index.pending_gc is not None:
-            raise ContentRetentionError("recover the pending GC generation before verifying roots")
-        for root in index.roots:
-            if root.root_id == root_id and not root.released and root.domain == "canonical":
-                _validate_targets(provider, root.targets)
-                return root
-    raise ContentRetentionError(f"active retention root is unavailable: {root_id}")
+        (root,) = _active_roots(_read_index(provider), (root_id,))
+        _validate_targets(provider, root.targets)
+        return root
 
 
 def register_root(

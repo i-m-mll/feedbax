@@ -47,4 +47,14 @@ describe('held-out objective tracks', () => {
     expect(heldOutTracks('evaluate', stopped, { ...stage, starts: new Map([['first', 6]]) })).toEqual([]);
     expect(heldOutTracks('evaluate', { ...result, points: [] }, stage)).toEqual([]);
   });
+
+  it('keeps a plotted publication identity through finalization and adds the backfilled point once', () => {
+    const live = { ...result, receipt: null, points: [point(8, 'first'), point(12, 'resumed')] };
+    const [active] = heldOutTracks('evaluate', live, stage);
+    const [retained] = heldOutTracks('evaluate', result, stage);
+    expect(retained.id).toBe(active.id);
+    expect(active.segments.flat()).toEqual(retained.segments.flat().filter(({ update }) => update !== 17));
+    const all = retained.segments.flat().map(({ id }) => id);
+    expect(new Set(all).size).toBe(all.length);
+  });
 });

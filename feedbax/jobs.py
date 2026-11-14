@@ -46,7 +46,7 @@ from feedbax.contracts.jobs import (
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
 )
-from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
+from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT, LiveEvaluationObservation
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     canonical_manifest_path,
@@ -562,9 +562,6 @@ class JobService(PlanJobReader):
 
     def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
         """Locate an authenticated Evaluate result by exact project and attempt."""
-        from feedbax.studio.canonical_evaluate import EvaluationResult
-        from feedbax.persistence.effective_success import SuccessView
-
         rows = self.host.jobs_snapshot(job_id=job_id, project=project, start_host=False)["jobs"]
         if not rows:
             raise JobNotFound(job_id)
@@ -574,6 +571,35 @@ class JobService(PlanJobReader):
             or not job["request"].startswith("evaluate:") or job["state"] != "succeeded"
         ):
             raise JobNotFound(job_id)
+        return self._retained_evaluation(job, store)
+
+    @inspect_without_recording()
+    def read_evaluation_objective_attempt(
+        self, *, project: str, store: Path, job_id: str, request_id: str,
+    ) -> EvaluationResult | LiveEvaluationObservation:
+        rows = self.host.jobs_snapshot(
+            job_id=job_id, project=project, start_host=False, include_launch=True,
+            checkpoint_objective_root=str(store),
+        )["jobs"]
+        if not rows:
+            raise JobNotFound(job_id)
+        (job,) = rows
+        if job["request"] != request_id or job["data"].get("manifest_root") != str(store):
+            raise JobNotFound(job_id)
+        if job["state"] == "succeeded":
+            return self._retained_evaluation(job, store)
+        if job.get("checkpoint_objective_error"):
+            raise JobConflict("The live Evaluate checkpoint evidence could not be authenticated.")
+        evidence = job.get("checkpoint_objective")
+        if evidence is None:
+            raise JobNotFound(job_id)
+        return LiveEvaluationObservation.model_validate(evidence)
+
+    @staticmethod
+    def _retained_evaluation(job: dict[str, Any], store: Path) -> EvaluationResult:
+        from feedbax.persistence.effective_success import SuccessView
+        from feedbax.studio.canonical_evaluate import EvaluationResult
+
         damage = _owned_result_damage(SuccessView(ImmutableArtifactBlobProvider(store)), job)
         if damage is not None:
             raise JobConflict(damage)
@@ -581,7 +607,7 @@ class JobService(PlanJobReader):
         if result is None:
             raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
         return EvaluationResult(
-            store, job_id, job["request"], result.receipt, manifest_object=result.manifest_object,
+            store, job["id"], job["request"], result.receipt, manifest_object=result.manifest_object,
         )
 
     def _training_item(

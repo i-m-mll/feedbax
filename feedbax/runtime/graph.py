@@ -19,12 +19,13 @@ from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
 
 from feedbax.contracts.array_values import ArrayValueSpec
-from feedbax.contracts.portable import ComponentOwner
+from feedbax.contracts.portable import ComponentOptions, ComponentOwner, GraphTemplate
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.contracts.model_delay import ModelDelayCarry
-from feedbax.runtime._graph import detect_cycles_and_sort
+from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import (
     derive_key,
     keyed_nodes,
@@ -645,21 +646,9 @@ class Graph(GraphNode):
         return outgoing
 
     def _analyze_execution_order(self) -> tuple[str, ...]:
-        adjacency = {name: set() for name in self.nodes}
-        for wire in self.wires:
-            if wire.temporality == "recurrent":
-                continue
-            adjacency[wire.source_node].add(wire.target_node)
-
-        execution_order, back_edges = detect_cycles_and_sort(adjacency)
-        if back_edges:
-            cycle_text = ", ".join(f"{src}->{tgt}" for src, tgt in back_edges)
-            raise ValueError(
-                "Instant graph wires contain a same-step cycle. "
-                f"Mark one cycle edge recurrent: {cycle_text}"
-            )
-
-        return tuple(execution_order)
+        return instant_execution_order(self.nodes, (
+            (wire.source_node, wire.target_node) for wire in self.wires if wire.temporality != "recurrent"
+        ))
 
     def state_view(self, state: State) -> PyTree:
         return self._view_from_state_and_carry(state, {})
@@ -1930,10 +1919,6 @@ class _InterleavedGraph(Graph):
     @property
     def _scoped_schedule(self) -> SignalSchedule:
         return self.schedule
-
-
-from pydantic import BaseModel, ConfigDict
-from feedbax.contracts.portable import GraphTemplate, ComponentOptions
 
 
 class _SubgraphConfig(BaseModel):

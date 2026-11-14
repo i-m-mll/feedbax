@@ -49,6 +49,12 @@ def training_binding_path(root: Path, job_id: str) -> Path:
     return root / "checkpoints" / job_id / "binding.json"
 
 
+def read_training_binding(root: Path, attempt: str, digest: str) -> BoundStudioTrainingJobInput:
+    return BoundStudioTrainingJobInput.model_validate_json(
+        _read_exact(root, training_binding_path(root, attempt), digest),
+    )
+
+
 def _read_exact(root: Path, path: Path, digest: str) -> bytes:
     relative = path.relative_to(root).as_posix()
     with completion_file(root, relative) as (stream, _):
@@ -338,9 +344,7 @@ def load_bound_checkpoint_selection(
             or checkpoint.pointer.completed_training_batches != update
         ):
             raise CompletionFileError("/inputs: selected checkpoint has a different attempt or batch")
-        launch = BoundStudioTrainingJobInput.model_validate_json(
-            _read_exact(root, training_binding_path(root, attempt), member["binding_sha256"]),
-        )
+        launch = read_training_binding(root, attempt, member["binding_sha256"])
         if (
             launch.request_id != producer_request
             or launch.project_id != member["project_id"]

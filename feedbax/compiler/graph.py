@@ -42,8 +42,9 @@ from feedbax.component_registry.declarations import ComponentParamValidationErro
 from feedbax.compiler.serialization import (
     _instantiate_graph,
 )
+from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
-from feedbax.runtime._signal_schedule import needs_signal_schedule, resolve_signal_schedule
+from feedbax.runtime._signal_schedule import SignalSchedule, needs_signal_schedule, resolve_signal_schedule
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
@@ -675,6 +676,18 @@ def resolve_graph(
     )
 
 
+def resolve_graph_schedule(graph: GraphSpec) -> tuple[SignalSchedule | None, GraphKeySchedule]:
+    """Compute runtime and PRNG order from the resolved topology alone."""
+    scoped = resolve_signal_schedule(graph) if needs_signal_schedule(graph) else None
+    return scoped, GraphKeySchedule(
+        schedule_id=KEY_SCHEDULE_ID,
+        node_order=() if scoped is not None else instant_execution_order(graph.nodes, (
+            (wire.source_node, wire.target_node) for wire in graph.wires if wire.temporality != "recurrent"
+        )),
+        scoped_node_order=scoped.order if scoped is not None else None,
+    )
+
+
 def realize_graph(
     resolved: GraphResolution,
     *,
@@ -693,7 +706,7 @@ def realize_graph(
             if not path or path in leaf_keys:
                 raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
             leaf_keys[path] = key
-        scoped_schedule = resolve_signal_schedule(graph) if needs_signal_schedule(graph) else None
+        scoped_schedule, key_schedule = resolve_graph_schedule(graph)
         instantiated = _instantiate_graph(
             graph,
             resolved.component_registry,
@@ -704,11 +717,6 @@ def realize_graph(
             scoped_schedule=scoped_schedule,
         )
         executable = apply_parameter_constraints(instantiated).prepare()
-        key_schedule = GraphKeySchedule(
-            schedule_id=KEY_SCHEDULE_ID,
-            node_order=executable._execution_order if scoped_schedule is None else (),
-            scoped_node_order=scoped_schedule.order if scoped_schedule is not None else None,
-        )
         return executable, key_schedule
 
     executable, key_schedule = _compile_phase(

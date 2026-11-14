@@ -2540,12 +2540,27 @@ def open_published_model_slot(
     root: Path, pointer: CheckpointLatestPointer,
 ) -> SemanticModelSlot | None:
     """Select a model from one exact publication without reading sibling slots."""
+    transaction, slot = _published_model_slot(root, pointer)
+    if slot is None:
+        return None
+    return SemanticModelSlot.open(transaction, slot)
+
+
+def published_model_tree_sha256(root: Path, pointer: CheckpointLatestPointer) -> str | None:
+    """Read the semantic model tree identity from the authenticated transaction."""
+    _, slot = _published_model_slot(root, pointer)
+    return slot.sha256 if slot is not None else None
+
+
+def _published_model_slot(
+    root: Path, pointer: CheckpointLatestPointer,
+) -> tuple[Path, CheckpointSlotBlobRef | None]:
     manifest_path, manifest = _bound_checkpoint_manifest(root, pointer)
     slot = _validate_checkpoint_transaction_integrity_records(manifest).get("model")
     if slot is None or slot.media_type != MODEL_TREE_MEDIA_TYPE:
-        return None
+        return manifest_path.parent, None
     _supported_slot_serializer(slot)
-    return SemanticModelSlot.open(manifest_path.parent, slot)
+    return manifest_path.parent, slot
 
 
 def _bound_checkpoint_manifest(

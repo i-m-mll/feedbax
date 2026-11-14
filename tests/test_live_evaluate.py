@@ -7,8 +7,13 @@ import os
 from pathlib import Path
 import signal
 
+import pytest
+
+from feedbax.contracts.jobs import StudioSavedEvaluationRead
+from feedbax.contracts.live_evaluate import LiveEvaluationObservation, ScoredEvaluationPoint
 from feedbax.contracts.project import Project
-from feedbax.jobs import JobService
+from feedbax.jobs import JobConflict, JobNotFound, JobService
+from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
@@ -105,6 +110,60 @@ _Events.append = append
     assert attempt.placement.location == "live"
     assert attempt.pending.producer_job_id == producer
     assert attempt.pending.next_update == 6
+    key = service.read(project, revision=plan.revision).evaluations[rows["baseline"].key].key
+    read = StudioSavedEvaluationRead(revision=plan.revision, key=key, job_id=evaluation)
+    with monkeypatch.context() as probe:
+        verify = ArrayContainerReader.read_tensor
+        checked = set()
+
+        def selected_tensor(reader, name):
+            assert name in {"update", "condition", "trial"} or name.startswith("objective/")
+            checked.add(name)
+            return verify(reader, name)
+
+        probe.setattr(ArrayContainerReader, "read_tensor", selected_tensor)
+        active_curve = service.evaluation_objective(project, read)
+    assert active_curve.receipt is None and active_curve.lineage == [producer]
+    assert active_curve.requested == [2, 4, 6, 8] and active_curve.gaps == []
+    assert [point.checkpoint.completed_updates for point in active_curve.points] == [2, 4]
+    assert [point.total for point in active_curve.points] == [point["result"]["total"] for point in prefix]
+    assert {"objective/total", "objective/terms/effort", "objective/coverage/effort"} <= checked
+    with pytest.raises(JobNotFound):
+        service.evaluation_objective(project, read.model_copy(update={"job_id": ordinary}))
+
+    store = ImmutableArtifactBlobProvider(plan.store_path)
+    evidence = jobs.read_evaluation_objective_attempt(
+        project=project, store=plan.store_path, job_id=evaluation, request_id=rows["baseline"].request_id,
+    )
+    assert isinstance(evidence, LiveEvaluationObservation)
+    selected = evidence.points[0]
+    point = selected.point
+    assert isinstance(point.result, ScoredEvaluationPoint)
+    for field in ("model", "task", "model_tree"):
+        wrong_member = point.result.member.model_copy(update={field: "f" * 64})
+        wrong_point = selected.model_copy(update={"point": point.model_copy(update={
+            "result": point.result.model_copy(update={"member": wrong_member}),
+        })})
+        with monkeypatch.context() as probe:
+            probe.setattr(jobs, "read_evaluation_objective_attempt", lambda **_: evidence.model_copy(update={
+                "points": (wrong_point, *evidence.points[1:]),
+            }))
+            with pytest.raises(JobConflict):
+                service.evaluation_objective(project, read)
+    states = point.result.states
+    path = store.object_path(states.object_ref)
+    raw_dataset = path.read_bytes()
+    header_end = 8 + int.from_bytes(raw_dataset[:8], "little")
+    begin, _ = json.loads(raw_dataset[8:header_end])["objective/total"]["data_offsets"]
+    offset = header_end + begin
+    path.chmod(0o644)
+    try:
+        path.write_bytes(raw_dataset[:offset] + bytes([raw_dataset[offset] ^ 1]) + raw_dataset[offset + 1:])
+        with pytest.raises(JobConflict):
+            service.evaluation_objective(project, read)
+    finally:
+        path.write_bytes(raw_dataset)
+        path.chmod(0o444)
     assert [point.model_dump(mode="json") for point in attempt.points] == [
         {
             "job_id": producer,
@@ -147,6 +206,7 @@ _Events.append = append
     assert restarted.pending.recovery_update == 6
     assert restarted.pending.next_update == 8
     assert restarted.points == attempt.points
+    assert service.evaluation_objective(project, read) == active_curve
     assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="joint") == admission
 
     resumed = jobs.resume(producer, "exact-resume")
@@ -167,6 +227,11 @@ _Events.append = append
 
     live = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation)
     assert live._manifest().metadata["placement"] == "live"
+    retained_curve = service.evaluation_objective(project, read)
+    assert retained_curve.receipt == live.receipt
+    assert retained_curve.lineage == [producer, resumed.job_id]
+    assert retained_curve.points[:2] == active_curve.points
+    assert [point.checkpoint.completed_updates for point in retained_curve.points] == [2, 4, 6, 8]
     with live.open_states() as dataset:
         assert dataset.data("update").tolist() == [2, 4, 6, 8]
     (late,) = jobs.admit_plan(folders, plan, run_keys=(rows["baseline"].key,), token="late").items
