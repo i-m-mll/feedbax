@@ -790,6 +790,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
             "visible-consumer",
             "raise AssertionError('Withheld publication must prevent delivery')",
             project=project,
+            request=f"train:{'0' * 64}",
             edges=(
                 Edge(producer, authenticated_completion=True),
                 Edge("gate", "withheld"),

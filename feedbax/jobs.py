@@ -34,6 +34,7 @@ from feedbax.contracts.jobs import (
     StopMode,
     StudioActivityJob,
     StudioBoundBestSubject,
+    StudioEvaluationCheckpointAttempt,
     StudioEvaluationCheckpointGap,
     StudioJobEvent,
     StudioJobEventHistory,
@@ -45,6 +46,7 @@ from feedbax.contracts.jobs import (
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
 )
+from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     canonical_manifest_path,
@@ -55,8 +57,10 @@ from feedbax.contracts.project_plan import PlannedRun, ProjectPlan, RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BatchSetMember, BestRank, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
+from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -80,6 +84,7 @@ if TYPE_CHECKING:
 
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
 _HOST_ONLY_EVENTS = frozenset({"dependency_bound", "dependency_rejected"})
+_CHECKPOINT_ACTIVITY_EVENTS = frozenset({LIVE_EVALUATE_POINT, DELEGATION_EVENT})
 _ACTIVITY_EVENTS = frozenset(
     {
         "queued",
@@ -92,7 +97,11 @@ _ACTIVITY_EVENTS = frozenset(
         "blocked",
         "terminal",
     }
-)
+) | _CHECKPOINT_ACTIVITY_EVENTS
+_ACTIVE_PLAN_STATUSES = frozenset({
+    JobStatus.QUEUED, JobStatus.AWAITING_AUTHORIZATION, JobStatus.STARTING,
+    JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
+})
 EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
 
 
@@ -121,6 +130,7 @@ class PlanJobAttempt:
     checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None = None
     evaluation_placement: Literal["ordinary", "live"] | None = None
     bound_subject: StudioBoundBestSubject | None = None
+    checkpoint_attempt: StudioEvaluationCheckpointAttempt | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +190,7 @@ class PlanJobReader:
         include_producers = any(request.startswith("evaluate:") for request in requests)
         snapshot = self.host.jobs_snapshot(
             project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
+            checkpoint_progress_root=manifest_root if include_producers else None,
         )
         plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
         wanted = set(requests)
@@ -261,6 +272,7 @@ class PlanJobReader:
                     checkpoint_gaps=result.checkpoint_gaps if result is not None else None,
                     evaluation_placement=result.placement if result is not None else None,
                     bound_subject=_best_subject(job) if evaluate and (not succeeded or result is not None) else None,
+                    checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
                 )
             )
         return PlanJobAttempts(
@@ -796,6 +808,7 @@ class JobService(PlanJobReader):
             event["job_id"]: event["cursor"]
             for event in visible
             if event["kind"] in _ACTIVITY_EVENTS
+            or (event["kind"] == "dependency_bound" and rows[event["job_id"]]["data"].get("placement_detail"))
         }
         activity = self._activity_rows([rows[job_id] for job_id in activity_events])
         events = []
@@ -805,7 +818,7 @@ class JobService(PlanJobReader):
             snapshot = (
                 activity.get(job_id) if activity_events.get(job_id) == event["cursor"] else None
             )
-            if detail or snapshot is not None:
+            if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or snapshot is not None:
                 events.append(_project_event(event, activity=snapshot, detail=detail))
         return page["head"], StudioJobEventHistory(
             cursor=page["cursor"],
@@ -827,7 +840,7 @@ class JobService(PlanJobReader):
     def _visible_events(
         self, events: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        visible = [event for event in events if event["kind"] not in _HOST_ONLY_EVENTS]
+        visible = [event for event in events if event["kind"] != "dependency_rejected"]
         if not visible:
             return [], {}
         ids = tuple(dict.fromkeys(event["job_id"] for event in visible))
@@ -836,7 +849,12 @@ class JobService(PlanJobReader):
             for row in self.host.jobs_snapshot(job_ids=ids)["jobs"]
             if _is_studio_job(row)
         }
-        return [event for event in visible if event["job_id"] in rows], rows
+        return [
+            event for event in visible
+            if (row := rows.get(event["job_id"])) is not None and (
+                event["kind"] != "dependency_bound" or row["data"].get("placement_detail")
+            )
+        ], rows
 
     def _retry(
         self,
@@ -1005,6 +1023,8 @@ def _project_event(
     detail: bool = True,
 ) -> StudioJobEvent:
     kind = event["kind"]
+    if kind in _HOST_ONLY_EVENTS | _CHECKPOINT_ACTIVITY_EVENTS:
+        detail = False
     data = event["data"] if detail else {}
     if kind in {"result", "terminal"}:
         data = {
@@ -1104,6 +1124,18 @@ def _pinned_dependencies(job: dict[str, Any]):
         edge["binding"] for edge in job["edges"]
         if edge.get("authenticated_completion") and edge["satisfied"] and edge.get("binding") is not None
     )
+
+
+def _evaluation_checkpoint_attempt(job: dict[str, Any]) -> StudioEvaluationCheckpointAttempt | None:
+    detail = job["data"].get("placement_detail")
+    if detail is None:
+        return None
+    placement = ValidationPlacement.model_validate({
+        field: detail[field] for field in ValidationPlacement.model_fields if field in detail
+    })
+    return StudioEvaluationCheckpointAttempt.model_validate({
+        "job_id": job["id"], "placement": placement, **job.get("checkpoint_progress", {}),
+    })
 
 
 def _best_subject(job: dict[str, Any]) -> StudioBoundBestSubject | None:
@@ -1240,6 +1272,10 @@ def _job_status(
     return JobStatus(state), reason
 
 
+def active_plan_attempt(attempts: Sequence[PlanJobAttempt]) -> PlanJobAttempt | None:
+    return next((attempt for attempt in reversed(attempts) if attempt.status in _ACTIVE_PLAN_STATUSES), None)
+
+
 def saved_request_status(
     attempts: Sequence[PlanJobAttempt],
     *,
@@ -1249,10 +1285,7 @@ def saved_request_status(
 ) -> tuple[JobStatus, str | None]:
     if problem is not None:
         return JobStatus.CANNOT_RUN, problem
-    live = next((attempt for attempt in reversed(attempts) if attempt.status in {
-        JobStatus.QUEUED, JobStatus.AWAITING_AUTHORIZATION, JobStatus.STARTING,
-        JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
-    }), None)
+    live = active_plan_attempt(attempts)
     if live is not None:
         return live.status, live.reason
     if attempts:

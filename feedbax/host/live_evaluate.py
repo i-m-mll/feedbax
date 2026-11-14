@@ -1,5 +1,6 @@
 """Host ownership and verified event delivery for delegated Evaluate scoring."""
 
+from collections.abc import Sequence
 import json
 from pathlib import Path
 import sqlite3
@@ -117,7 +118,7 @@ def authenticate_point(
     return point, publication["cursor"]
 
 
-def selected_points(db: sqlite3.Connection, evaluation: str, members: list[dict]) -> list[dict]:
+def selected_points(db: sqlite3.Connection, evaluation: str, members: Sequence[dict]) -> list[dict]:
     accepted = {
         item["publication_cursor"]: item
         for row in db.execute(

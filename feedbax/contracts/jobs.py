@@ -13,6 +13,7 @@ from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
+from feedbax.contracts.validation_placement import ValidationPlacement
 
 
 if TYPE_CHECKING:
@@ -93,6 +94,27 @@ class StudioEvaluationCheckpointSeries(StrictModel):
     requested: list[int]
 
 
+class StudioEvaluationPendingCheckpoint(StrictModel):
+    producer_job_id: str
+    producer_request_id: str
+    state: Literal["queued", "assigned", "running", "stopping", "resumable"]
+    next_update: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
+    recovery_update: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
+
+
+class StudioEvaluationPointProgress(StudioTrainCheckpointSource):
+    publication_cursor: int = Field(gt=0)
+    transaction_root_sha256: str = Field(pattern=_DigestPattern)
+    status: Literal["scored", "failed"]
+
+
+class StudioEvaluationCheckpointAttempt(StrictModel):
+    job_id: str
+    placement: ValidationPlacement
+    pending: StudioEvaluationPendingCheckpoint | None = Field(default=None, exclude_if=lambda value: value is None)
+    points: list[StudioEvaluationPointProgress] = Field(default_factory=list, exclude_if=lambda value: not value)
+
+
 class StudioBoundBestSubject(StrictModel):
     key: str
     variant: str
@@ -129,6 +151,9 @@ class StudioSavedEvaluationRow(StrictModel):
     result: StudioSavedEvaluationResult | None
     subject_rank_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_series: StudioEvaluationCheckpointSeries | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    checkpoint_attempt: StudioEvaluationCheckpointAttempt | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
     checkpoint_rule: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)

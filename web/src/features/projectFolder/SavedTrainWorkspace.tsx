@@ -41,7 +41,7 @@ import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSource
 import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
-import { StudioEvaluationResults } from './StudioEvaluationResults';
+import { StudioEvaluationAttemptDetails, StudioEvaluationResults } from './StudioEvaluationResults';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, TrialTaskPicker, useTrialAuthoring } from './StudioTrialAuthoring';
 import { useManagedAnalyze } from './useManagedAnalyze';
@@ -1098,7 +1098,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
                 onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
             </div> : undefined,
             inspector: selectedRuns(step, state.selection).length > 0
-              ? <StudioRunDetails step={step} state={state} /> : undefined,
+              ? <StudioRunDetails step={step} state={state}
+                detail={selectedEvaluation?.checkpoint_series
+                  ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation} /> : undefined} /> : undefined,
             body: withProblem(<StudioRuns plan={plan} {...runSelection}
               region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                 ? { kind: 'result', missing: [] } : { kind: 'empty' })}
