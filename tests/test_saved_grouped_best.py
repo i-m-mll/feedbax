@@ -1,6 +1,7 @@
 """Rank each known group independently in saved Evaluate."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 
 import pytest
@@ -56,7 +57,7 @@ def _rank_review(root, target, plan, capsys):
     data = target.read_bytes()
     review, variants = load_plan_requests(data)
     expected = PlanRequests.from_plan(plan)
-    assert review == expected
+    assert replace(review, source_index=None) == expected
     assert tuple(review.entries) == tuple(expected.entries)
     assert dump_plan_requests(review, variants) == data
     return review

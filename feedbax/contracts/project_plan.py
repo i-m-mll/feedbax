@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from functools import cache
+from functools import cache, cached_property
 from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
@@ -177,6 +177,18 @@ class PlannedInput:
         return ElementKey(self.producer, self.producer_element) if self.producer and self.producer_element else None
 
 
+def _upstream_source(binding: PlannedInput) -> ValueSource | None:
+    producer = binding.producer
+    if producer is None:
+        return None
+    path = ""
+    if binding.producer_element is not None and isinstance(binding.member.reference, ProductRef):
+        path = pointer(("elements", binding.producer_element, "products", binding.member.reference.role))
+    return ValueSource(
+        "upstream", producer.step, path, step=producer.step, variant=producer.variant, row=producer.row,
+    )
+
+
 @dataclass(frozen=True)
 class PlannedRow:
     """An expanded row, including a row whose request validation fails."""
@@ -272,6 +284,88 @@ class _TrainEvaluationSource:
 
 
 @dataclass(frozen=True)
+class SourceSweep:
+    inputs: dict[str, tuple[SweepInputMember, ...]] = field(default_factory=dict)
+    integer_sites: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SourceSnapshot:
+    project: Project
+    variant_sites: dict[str, bool]
+    sweeps: dict[tuple[str, str], SourceSweep]
+
+
+@dataclass(frozen=True)
+class PlanSourceIndex:
+    snapshot: SourceSnapshot
+    producers: Mapping[RunKey | ElementKey, Mapping[str, ValueSource]] = field(default_factory=dict)
+    externals: Mapping[str, bytes] = field(default_factory=dict)
+
+    @cached_property
+    def _resolver(self) -> _Compiler:
+        readers = BaseReaders(external=self.externals.get, figure_external=self.externals.get)
+        return _Compiler(self.snapshot.project, readers, ())
+
+    @cached_property
+    def _templates(self) -> Callable[[str, str], tuple[StepTemplate, dict[str, ExpandedRow]]]:
+        @cache
+        def template(variant: str, step: str):
+            compiler = self._resolver
+            if variant not in compiler.variants:
+                compiler.source_variants = frozenset({variant})
+                compiler.expand_variants(self.snapshot.variant_sites)
+            project = compiler.variants[variant]
+            template = compose_step(
+                project, step, readers=compiler.readers, track_sources=True,
+                variant_sources=compiler.variant_sources.get(variant),
+            )
+            if isinstance(template, ProjectDiagnostic):
+                raise ValueError(f"Cannot resolve saved source for {variant}/{step}: {template.detail}")
+            sweep = self.snapshot.sweeps.get((variant, step), SourceSweep())
+            rows = expand_sweep(
+                template.sweep, inputs=sweep.inputs, integer_site=sweep.integer_sites.__getitem__,
+                checkpoint_subject=project.steps[step].kind == "evaluate",
+            )
+            return template, {row.id: row for row in rows}
+        return template
+
+    def source(self, key: RunKey | ElementKey, parts: tuple[str, ...]) -> ValueSource | None:
+        if not parts:
+            return None
+        if parts[0] == "inputs":
+            return self.producers.get(key, {}).get(parts[1]) if len(parts) == 2 else None
+        run = key.run if isinstance(key, ElementKey) else key
+        try:
+            template, rows = self._templates(run.variant, run.step)
+            row = rows[run.row]
+            if (
+                parts[:3] == ("payload", "trial_documents", "model")
+                and self._resolver.variants[run.variant].steps[run.step].kind == "train"
+                and template.has_model_differences(row)
+            ):
+                return self._model_field_source(template, run, row, parts)
+            return template.source_leaf(row, parts[1:])
+        except (KeyError, ValueError) as error:
+            raise ValueError(f"Invalid saved source for {run.variant}/{run.step}/{run.row}: {error}") from error
+
+    def _model_field_source(
+        self, template: StepTemplate, run: RunKey, row: ExpandedRow, parts: tuple[str, ...],
+    ) -> ValueSource | None:
+        definition = self._resolver.project_definition(template.composition, run, row, {})
+        if definition is None:
+            raise ValueError("Cannot resolve the managed Model sources")
+        payload, model = self._resolver.lower_train_model(
+            run, definition.payload, definition.document_ids, definition.document_pointers,
+        )
+        if isinstance(payload, ProjectDiagnostic):
+            raise ValueError(payload.detail)
+        if model is not None:
+            definition = _train_model_definition(definition, model)
+        return definition.sources.get(pointer(parts))
+
+
+@dataclass(frozen=True)
 class ProjectPlan:
     """Named runs and deduplicated objects encoded by the shared request codec."""
 
@@ -287,6 +381,7 @@ class ProjectPlan:
     _train_evaluation_sources: Mapping[RequestId, _TrainEvaluationSource] = field(
         default_factory=lambda: MappingProxyType({}), repr=False,
     )
+    source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
 
     def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
         """Read the compiled Task facts only for their exact request and documents."""
@@ -852,6 +947,8 @@ class _Compiler:
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
+        *,
+        capture_sources: bool = False,
     ):
         self.project = project
         self.readers = readers
@@ -860,6 +957,9 @@ class _Compiler:
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
+        self.source_sweeps: dict[tuple[str, str], SourceSweep] | None = {} if capture_sources else None
+        self.variant_sites: dict[str, bool] = {}
+        self.source_variants: frozenset[str] = frozenset()
         self.trial_preparations: dict[bytes, _TrainPreparation | tuple[Problem, ...]] = {}
         self.work = _PlanWork()
         if previous is not None:
@@ -888,7 +988,7 @@ class _Compiler:
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.checkpoint_horizons: dict[RequestId, int | None] = {}
 
-    def expand_variants(self) -> None:
+    def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
         def integer_site(path: str) -> bool:
             if (target := model_field_target(path)) is not None:
                 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
@@ -923,13 +1023,23 @@ class _Compiler:
                     return _integer_train_site(parts[4], step.base.inline, self.python_tasks)
             return False
 
+        def capture_site(path: str) -> bool:
+            self.variant_sites[path] = answer = integer_site(path)
+            return answer
+
         try:
-            variants = expand_sweep(self.project.sweep, integer_site=integer_site)
+            variants = expand_sweep(
+                self.project.sweep,
+                integer_site=known_sites.__getitem__ if known_sites is not None
+                else capture_site if self.source_sweeps is not None else integer_site,
+            )
         except SweepExpansionError as error:
             self.diagnostics.append(_sweep_problem(error))
             return
         self.variant_order = tuple(row.id for row in variants)
         for row in variants:
+            if self.source_variants and row.id not in self.source_variants:
+                continue
             self.variant_rows[row.id] = row
             if not row.patches:
                 self.variants[row.id] = self.project
@@ -938,7 +1048,7 @@ class _Compiler:
             data.pop("sweep", None)
             data.setdefault("documents", {})
             data.setdefault("steps", {})
-            track = any(variant == row.id for variant, _ in self.wanted_sources)
+            track = row.id in self.source_variants or any(variant == row.id for variant, _ in self.wanted_sources)
             if track and self.previous is not None:
                 self.variant_stamps[row.id] = sha256_bytes(to_json(tuple(row.patches.items())))
             origins = source_shape(data, None) if track else None
@@ -1036,6 +1146,8 @@ class _Compiler:
             MappingProxyType(self.subsets),
             MappingProxyType(self.selected_definitions),
             MappingProxyType(self.train_evaluation_sources),
+            SourceSnapshot(self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps)
+            if self.source_sweeps is not None else None,
         )
 
     def step(
@@ -1162,11 +1274,33 @@ class _Compiler:
                     raise ValueError("The addressed range has different site types in the selected Train subjects")
                 return True in types
 
+            sites: dict[str, bool] = {}
+
+            def capture_site(path: str) -> bool:
+                sites[path] = answer = integer_site(path)
+                return answer
+
             try:
-                return expand_sweep(
-                    composition.sweep, inputs=fanout, integer_site=integer_site,
+                rows = expand_sweep(
+                    composition.sweep, inputs=fanout,
+                    integer_site=capture_site if self.source_sweeps is not None else integer_site,
                     checkpoint_subject=kind == "evaluate",
                 )
+                if self.source_sweeps is not None:
+                    axes = composition.sweep.axes if composition.sweep is not None else {}
+                    roles = {axis.input for axis in axes.values() if isinstance(axis, InputAxis)}
+                    if checkpoint_axis:
+                        roles.add("subject")
+                    source = SourceSweep({
+                        role: tuple(
+                            replace(member, coordinates=deepcopy(dict(member.coordinates)))
+                            for member in members
+                        )
+                        for role, members in fanout.items() if role in roles
+                    }, sites)
+                    if source.inputs or source.integer_sites:
+                        self.source_sweeps[variant, name] = source
+                return rows
             except SweepExpansionError as error:
                 return _sweep_problem(error, step=name, variant=variant)
 
@@ -1235,20 +1369,8 @@ class _Compiler:
                 subset = self.subsets.get((key.variant, key.step, role))
                 if subset is not None and subset.source is not None:
                     sources[pointer(("inputs", role, "where"))] = subset.source.origin
-                producer = binding.producer
-                if producer is None:
-                    continue
-                path = ""
-                if binding.producer_element is not None and isinstance(binding.member.reference, ProductRef):
-                    path = pointer(("elements", binding.producer_element, "products", binding.member.reference.role))
-                sources[pointer(("inputs", role))] = ValueSource(
-                    "upstream",
-                    producer.step,
-                    path=path,
-                    step=producer.step,
-                    variant=producer.variant,
-                    row=producer.row,
-                )
+                if (source := _upstream_source(binding)) is not None:
+                    sources[pointer(("inputs", role))] = source
             return SelectedRunDefinition(
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
                 MappingProxyType(resolved.document_pointers),
@@ -2330,6 +2452,7 @@ def compile_project(
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
     python_tasks: PythonTaskRegistry | None = None,
+    capture_sources: bool = False,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
     readers = replace(
@@ -2337,10 +2460,13 @@ def compile_project(
         external=cache(readers.external) if readers.external is not None else None,
         figure_external=cache(readers.figure_external) if readers.figure_external is not None else None,
     )
-    if memo is None or any(
+    if capture_sources or memo is None or any(
         reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)
     ):
-        return _Compiler(project, readers, source_runs, operations=operations, components=components, functions=functions, python_tasks=python_tasks).plan()
+        return _Compiler(
+            project, readers, source_runs, operations=operations, components=components,
+            functions=functions, python_tasks=python_tasks, capture_sources=capture_sources,
+        ).plan()
     authority = _compiler_authority(components, operations, functions, python_tasks)
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions, python_tasks)
@@ -2375,6 +2501,7 @@ class PlanRequests:
     requests: Mapping[RequestId, bytes]
     documents: Mapping[str, bytes]
     subset_sources: Mapping[tuple[str, str, str], SubsetSource] = field(default_factory=dict)
+    source_index: PlanSourceIndex | None = None
 
     @classmethod
     def from_plan(cls, plan: ProjectPlan) -> PlanRequests:
@@ -2384,6 +2511,7 @@ class PlanRequests:
     def _from_requests(
         cls, plan: ProjectPlan, requests: Iterable[PlannedRun | PlannedElement],
     ) -> PlanRequests:
+        requests = tuple(requests)
         entries = {
             request.key: PlanRequest(
                 request.key,
@@ -2402,7 +2530,17 @@ class PlanRequests:
         }
         steps = {(key.variant, key.step) for key in entries if isinstance(key, RunKey)} if sources else set()
         subset_sources = {key: source for key, source in sources.items() if key[:2] in steps}
-        return cls(entries, plan.requests, plan.documents, subset_sources)
+        source_index = None
+        if plan.source_snapshot is not None:
+            producers = {
+                request.key: sources for request in requests
+                if (sources := {
+                    role: source for role, binding in request.inputs.items()
+                    if (source := _upstream_source(binding)) is not None
+                })
+            }
+            source_index = PlanSourceIndex(plan.source_snapshot, producers)
+        return cls(entries, plan.requests, plan.documents, subset_sources, source_index)
 
 
 def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[ElementKey, ElementChange]:
@@ -2455,21 +2593,50 @@ def _request_change(
         if cause != left.element_inputs.get(role):
             cause = None
         input_path = f"inputs.{role}"
+        parts = ("inputs", role)
         if isinstance(right.key, ElementKey):
-            return ElementChange("changed", f"{right.path}.{input_path}", cause)
+            return ElementChange(
+                "changed", f"{right.path}.{input_path}", cause,
+                _review_source(before, left.key, parts), _review_source(after, right.key, parts),
+            )
         source_key = right.key.variant, right.key.step, role
         old_source = before.subset_sources.get(source_key)
         new_source = after.subset_sources.get(source_key)
         return ElementChange(
             "changed", input_path, cause,
-            before_source=old_source.origin if old_source is not None else None,
-            after_source=new_source.origin if new_source is not None else None,
+            before_source=old_source.origin if old_source is not None else _review_source(before, left.key, parts),
+            after_source=new_source.origin if new_source is not None else _review_source(after, right.key, parts),
         )
-    relative = change.path.removeprefix("payload.")
-    if relative == "analysis_type":
-        relative = "operation"
-    elif right.kind == "render" and relative.startswith("document."):
-        relative = "figure." + relative.removeprefix("document.")
-    elif right.kind == "report":
-        relative = relative.removeprefix("document.")
-    return ElementChange("changed", f"{right.path}.{relative}")
+    if not change.parts:
+        return ElementChange("changed", f"{right.path}.{change.path}")
+    relative = change.parts[1:]
+    if relative == ("analysis_type",):
+        relative = ("operation",)
+    elif right.kind == "render" and relative[:1] == ("document",):
+        relative = ("figure", *relative[1:])
+    elif right.kind == "report" and relative[:1] == ("document",):
+        relative = relative[1:]
+    prefix = ("payload",)
+    if isinstance(right.key, ElementKey):
+        prefix += ("operations" if right.kind == "analyze" else "views", right.key.name)
+    parts = (*prefix, *relative)
+    return ElementChange(
+        "changed", ".".join(parts),
+        before_source=_review_source(before, left.key, parts),
+        after_source=_review_source(after, right.key, parts),
+    )
+
+
+def _review_source(
+    plan: PlanRequests, key: RunKey | ElementKey, parts: tuple[str, ...],
+) -> ValueSource | None:
+    if plan.source_index is None:
+        return None
+    if (source := plan.source_index.source(key, parts)) is not None:
+        return source
+    if plan.entries[key].kind == "evaluate" and parts[:3] == ("payload", "params", "trials"):
+        for rule in (("ids", *parts[3:]), ("count",)):
+            if (source := plan.source_index.source(key, ("payload", "params", "trial_set", *rule))) is not None:
+                return source
+        return plan.source_index.source(key, ("inputs", "subject"))
+    return None

@@ -498,6 +498,32 @@ class _Documents:
             if source is not None:
                 yield output, source
 
+    def source_leaf(
+        self, value: Any, shape: Any, parts: tuple[str, ...], path: str = "payload",
+        active: tuple[tuple[str, str], ...] = (),
+    ) -> ValueSource | None:
+        if isinstance(value, DocumentReference):
+            selected, active = self._follow(value, path, active)
+            if (
+                value.document not in self.pinned and value.document not in self.overrides
+                and value.document not in self.row_patches and self.variant_sources is None
+            ):
+                return self.source_leaf(selected, ValueSource(
+                    "document", value.document, value.pointer or "",
+                ), parts, path, active)
+            return self.source_leaf(selected, self.source(value, selected), parts, path, active)
+        if not parts:
+            if isinstance(shape, (SourceObject, SourceList)):
+                return shape.source
+            return first_source(shape)
+        part, *rest = parts
+        try:
+            child = _select(value, (part,))
+        except KeyError:
+            return None
+        child_shape = shape.child(part) if isinstance(shape, ValueSource) else source_at(shape, (part,))
+        return self.source_leaf(child, child_shape, tuple(rest), f"{path}.{part}", active)
+
     def inline(
         self,
         value: Any,
@@ -1095,6 +1121,17 @@ class StepTemplate:
         if not isinstance(payload, dict):
             raise ValueError("A root document reference is not an editable payload.")
         return to_jsonable_python(payload, by_alias=True)
+
+    def source_leaf(self, row: ExpandedRow, parts: tuple[str, ...]) -> ValueSource | None:
+        try:
+            state = self._resolver.apply_row(self.name, self.composition._state, row)
+            return self._resolver.row_documents(self.name, state).source_leaf(state.payload, state.origins, parts)
+        except _Problem as error:
+            raise ValueError(error.diagnostic.detail) from error
+
+    def has_model_differences(self, row: ExpandedRow) -> bool:
+        state = self._resolver.apply_row(self.name, self.composition._state, row)
+        return isinstance(state.payload, dict) and bool(state.payload.get(MODEL_ATTACHMENTS))
 
     def resolve(
         self, row: ExpandedRow | None = None, *, include_sources: bool = False, partial_figures: bool = False,

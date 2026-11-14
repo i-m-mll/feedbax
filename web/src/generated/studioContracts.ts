@@ -300,6 +300,11 @@ export interface StudioPlanReviewSource {
   kind: "document" | "step" | "sweep_value" | "exception" | "variant" | "upstream";
   name: string;
   path: string;
+  step?: string | null;
+  axis?: string | null;
+  value?: string | null;
+  variant?: string | null;
+  row?: string | null;
 }
 
 export interface StudioTrainCheckpointSource {
@@ -4404,6 +4409,11 @@ export const StudioPlanReviewSourceSchema: z.ZodType<StudioPlanReviewSource> = z
       "kind": z.union([z.literal("document"), z.literal("step"), z.literal("sweep_value"), z.literal("exception"), z.literal("variant"), z.literal("upstream")]),
       "name": z.string(),
       "path": z.string(),
+      "step": z.string().nullable().optional(),
+      "axis": z.string().nullable().optional(),
+      "value": z.string().nullable().optional(),
+      "variant": z.string().nullable().optional(),
+      "row": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioPlanReviewSource>;

@@ -9,11 +9,14 @@ from typing import TYPE_CHECKING, Any
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.run_composition import FlattenedIntent
 
 if TYPE_CHECKING:
     from feedbax.contracts.migrations import SpecSchemaRegistry
     from feedbax.contracts.request_identity import DecodedRequest
+
+_ABSENT = object()
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,7 @@ class SemanticDifference:
     right: Any
     left_layer: str | None = None
     right_layer: str | None = None
+    parts: tuple[str, ...] = ()
 
 
 class ContractIdentityReference(StrictModel):
@@ -90,7 +94,7 @@ def layered_semantic_diff(
     left_attr = left.attribution if isinstance(left, FlattenedIntent) else {}
     right_attr = right.attribution if isinstance(right, FlattenedIntent) else {}
     result: list[SemanticDifference] = []
-    _diff(left_payload, right_payload, "", left_attr, right_attr, result)
+    _diff(left_payload, right_payload, (), left_attr, right_attr, result)
     return result
 
 
@@ -100,7 +104,7 @@ def first_request_change(left: DecodedRequest, right: DecodedRequest) -> Semanti
         left.spec.model_dump(mode="json"), right.spec.model_dump(mode="json"),
     )
     if differences:
-        return replace(differences[0], path=f"payload.{differences[0].path}")
+        return replace(differences[0], path=f"payload.{differences[0].path}", parts=("payload", *differences[0].parts))
     if left.inputs != right.inputs:
         return SemanticDifference(
             "inputs",
@@ -126,27 +130,29 @@ def detect_near_duplicate_lanes(
 def _diff(
     left: Any,
     right: Any,
-    path: str,
+    parts: tuple[str, ...],
     left_attr: Mapping[str, str],
     right_attr: Mapping[str, str],
     output: list[SemanticDifference],
 ) -> None:
     if isinstance(left, Mapping) and isinstance(right, Mapping):
         for key in sorted(set(left) | set(right)):
-            _diff(left.get(key), right.get(key), _join(path, str(key)), left_attr, right_attr, output)
+            _diff(left.get(key, _ABSENT), right.get(key, _ABSENT), (*parts, str(key)), left_attr, right_attr, output)
         return
     if isinstance(left, Sequence) and not isinstance(left, (str, bytes)) and isinstance(
         right, Sequence
     ) and not isinstance(right, (str, bytes)):
         for index in range(max(len(left), len(right))):
-            lhs = left[index] if index < len(left) else None
-            rhs = right[index] if index < len(right) else None
-            _diff(lhs, rhs, _join(path, str(index)), left_attr, right_attr, output)
+            lhs = left[index] if index < len(left) else _ABSENT
+            rhs = right[index] if index < len(right) else _ABSENT
+            _diff(lhs, rhs, (*parts, str(index)), left_attr, right_attr, output)
         return
-    if left != right:
-        output.append(
-            SemanticDifference(path, left, right, left_attr.get(path), right_attr.get(path))
-        )
+    if left is _ABSENT or right is _ABSENT or not same_typed_value(left, right):
+        path = ".".join(parts)
+        output.append(SemanticDifference(
+            path, None if left is _ABSENT else left, None if right is _ABSENT else right,
+            left_attr.get(path), right_attr.get(path), parts,
+        ))
 
 
 def _join(parent: str, child: str) -> str:

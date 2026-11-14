@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Mapping
+from dataclasses import replace
 import os
 from pathlib import Path
 
@@ -113,14 +114,16 @@ def _write_review(
     for key, change in changes.items():
         request = current.entries.get(key) or before.entries[key]
         status = f"changed({change.path})" if change.state == "changed" else change.state
-        origin = f" step=steps/{run_key(key).step}.json" if change.path else ""
         upstream = f" upstream={_address(change.upstream)}" if change.upstream else ""
         sources = "".join(
-            f" {side}={source.kind}:{source.name}{source.path}"
+            f" {side}={source.kind}:{source.name}{source.path}" + "".join(
+                f",{name}={value}" for name in ("step", "axis", "value", "variant", "row")
+                if (value := getattr(source, name)) is not None
+            )
             for side, source in (("before", change.before_source), ("after", change.after_source))
             if source is not None
         )
-        output.write(f"{_address(key)} {status} {request.request_id}{origin}{upstream}{sources}")
+        output.write(f"{_address(key)} {status} {request.request_id}{sources}{upstream}")
 
 
 def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
@@ -130,7 +133,9 @@ def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
         raise ProjectReadError(path, str(error)) from error
 
 
-def _read_plan(project_dir: Path) -> tuple[TextProject, ProjectPlan, set[Path]]:
+def _read_plan(
+    project_dir: Path, *, capture_sources: bool = False,
+) -> tuple[TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
     from feedbax.analysis.builtin_operations import register_builtin_operations
     from feedbax.analysis.operations import OperationRegistry
 
@@ -141,8 +146,17 @@ def _read_plan(project_dir: Path) -> tuple[TextProject, ProjectPlan, set[Path]]:
     register_builtin_operations(operations)
     operations.seal()
     external = TextProjectExternalInputs(text)
-    readers = BaseReaders(external=external.read, figure_external=external.read)
-    return text, compile_project(text.project, operations=operations, readers=readers), external.paths
+    observed: dict[str, bytes] = {}
+
+    def read_pin(name: str) -> bytes:
+        observed[name] = data = external.read(name)
+        return data
+
+    read = read_pin if capture_sources else external.read
+    readers = BaseReaders(external=read, figure_external=read)
+    return text, compile_project(
+        text.project, operations=operations, readers=readers, capture_sources=capture_sources,
+    ), external.paths, observed
 
 
 def _variants(selected: list[str] | None) -> tuple[str, ...] | None:
@@ -181,8 +195,12 @@ def write_diagnostics(
 
 
 def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
-    text, plan, external_paths = _read_plan(args.project_dir)
+    text, plan, external_paths, observed = _read_plan(
+        args.project_dir, capture_sources=args.out is not None or args.check is not None,
+    )
     current = PlanRequests.from_plan(plan)
+    if current.source_index is not None:
+        current = replace(current, source_index=replace(current.source_index, externals=observed))
     known_variants = set(plan.variants)
     variants = _variants(args.variant)
     before = None
@@ -203,7 +221,10 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
     changes: Mapping[RunKey | ElementKey, ElementChange] = {}
     if before is not None:
         before = select_plan_requests(before, variants)
-        changes = diff_plan_requests(before, scoped)
+        try:
+            changes = diff_plan_requests(before, scoped)
+        except ValueError as error:
+            raise ProjectReadError(args.check, str(error)) from error
     elif not output.json:
         for key, request in scoped.entries.items():
             output.write(f"{_address(key)} {request.request_id}")
@@ -260,7 +281,7 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.web.services.project_plan import read_settled_project_plan
 
     try:
-        text, plan, _ = _read_plan(args.project_dir)
+        text, plan, _, _ = _read_plan(args.project_dir)
         variants = _variants(args.variant)
         _validate_variants(text.root, variants, set(plan.variants))
         problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
