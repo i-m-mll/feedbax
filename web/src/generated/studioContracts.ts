@@ -5,7 +5,27 @@ import { z } from 'zod';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)]));
+class JsonValueSchema extends z.ZodType<JsonValue> {
+  _parse(input: z.ParseInput): z.ParseReturnType<JsonValue> {
+    switch (this._getType(input)) {
+      case z.ZodParsedType.string: return jsonString._parse(input);
+      case z.ZodParsedType.number: return jsonNumber._parse(input);
+      case z.ZodParsedType.boolean: return jsonBoolean._parse(input);
+      case z.ZodParsedType.null: return jsonNull._parse(input);
+      case z.ZodParsedType.array: return jsonArray._parse(input);
+      case z.ZodParsedType.object: return jsonObject._parse(input);
+      default: return invalidJsonValue._parse(input);
+    }
+  }
+}
+const jsonValueSchema: z.ZodType<JsonValue> = new JsonValueSchema({});
+const jsonString = z.string();
+const jsonNumber = z.number().finite();
+const jsonBoolean = z.boolean();
+const jsonNull = z.null();
+const jsonArray = z.array(jsonValueSchema);
+const jsonObject = z.record(jsonString, jsonValueSchema);
+const invalidJsonValue = z.never({ invalid_type_error: 'Expected a JSON value' });
 export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;
 
 export interface JobError {

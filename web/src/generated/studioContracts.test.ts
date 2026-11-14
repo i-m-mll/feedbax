@@ -4,12 +4,15 @@ import {
   AdditiveGraphChannelTargetSpecSchema,
   ConstantArrayValueSpecSchema,
   ChangeModelAttachmentSchema,
+  DocumentSchema,
   GraphMetadataSchema,
+  ModelDocumentSchema,
   SparseCooArrayValueSpecSchema,
   SparseCooEntrySpecSchema,
   StudioTaskTimelineSpecSchema,
   StudioValueEnumerableSpecSchema,
 } from '@/generated/studioContracts';
+import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
   ConstantArrayValueSpec,
   SparseCooArrayValueSpec,
@@ -20,6 +23,27 @@ const tags = {
   schema_id: 'feedbax.spec.component_param.array_value',
   schema_version: 'feedbax.spec.component_param.array_value.v1',
 } as const;
+
+it('preserves JSON payloads and reports the nested path for invalid values', () => {
+  const payload = { sample: [null, false, '', -0, 1.25, { scalar: Number.MAX_VALUE }], empty: {} };
+  const document = { schema: 'example', payload };
+  const parsed = DocumentSchema.parse(document);
+  expect(parsed).toEqual(document);
+  expect(Object.is(parsed.payload, payload)).toBe(false);
+  expect(canonicalJsonV2(parsed)).toBe(canonicalJsonV2(document));
+  expect(DocumentSchema.safeParse({ ...document, extra: true }).success).toBe(false);
+  expect(DocumentSchema.safeParse({ schema: 'example' }).success).toBe(false);
+
+  for (const invalid of [Infinity, -Infinity, NaN, undefined, 1n, new Date(0), new Map(), new Set()]) {
+    const result = DocumentSchema.safeParse({ schema: 'example', payload: { sample: [0, invalid] } });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['payload', 'sample', 1]);
+  }
+
+  const malformedModel = { step_seconds: 'zero', ports: {}, interior: {} };
+  expect(DocumentSchema.safeParse({ schema: 'feedbax.spec.model', payload: malformedModel }).success).toBe(true);
+  expect(ModelDocumentSchema.safeParse(malformedModel).success).toBe(false);
+});
 
 it('validates an attachment owner, source-end anchor, and retained ID', () => {
   const owner = { document: 'model', composites: ['controller'], element: { kind: 'wire', id: 'feedback' } };
