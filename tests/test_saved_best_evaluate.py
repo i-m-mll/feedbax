@@ -153,6 +153,10 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
 
     restart(host)
     response = service.response(service.read(project, revision=saved.revision), include_window_map=True)
+    card = next(step for step in response.window_map.steps if step.step_id == "baseline")
+    planned_subset = card.inputs[0].subset
+    assert (planned_subset.count, planned_subset.total) == (2, 3)
+    assert planned_subset.ranks == ["rank-1", "rank-2"]
     by_key = {item.key.row: item for item in response.window_map.evaluations}
     best_results = [by_key[run.key.row].result for run in rankings]
     assert [item.bound_subject.row for item in best_results] == ranked

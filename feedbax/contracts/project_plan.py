@@ -1720,6 +1720,16 @@ class _Compiler:
                 continue
             if chosen is None and members:
                 chosen = members[0][0]
+            if (
+                chosen is not None and isinstance(chosen.member.reference, BestRank)
+                and CHECKPOINT_RULE_TARGET in row.patches
+            ):
+                self.diagnostics.append(ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint",
+                    "Best requires the selected Train's last checkpoint without row overrides.",
+                    name, row=row.id, variant=variant,
+                ))
+                continue
             if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef):
                 reference = chosen.member.reference
                 try:
@@ -1941,7 +1951,7 @@ class _Compiler:
             reason = "Best per group is unavailable for managed Evaluate."
         elif best.k > len(members):
             reason = f"Best requests {best.k} ranks from {len(members)} candidates."
-        elif reference.checkpoint != "last" or (
+        elif reference.checkpoint not in (None, "last") or (
             template.sweep is not None and any(isinstance(axis, CheckpointRuleAxis) for axis in template.sweep.axes.values())
         ):
             reason = "Best requires the selected Train's last checkpoint."

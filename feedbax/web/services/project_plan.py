@@ -261,7 +261,7 @@ class ProjectPlanRead:
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
                         subset=StudioProjectWindowMapSubset(
-                            terms=subset.terms, count=len(subset.members), total=subset.candidates,
+                            terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
                             ranks=list(subset.ranks),
                             document=subset.document,
                             members=[
@@ -411,6 +411,8 @@ class ProjectPlanService:
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
         from feedbax.web.services.trial_scope import file_value
+        from feedbax.web.services.project_folder import preview_authored_files
+        from feedbax.contracts.project_plan import compile_project
 
         view = self.read(project_id, revision=body.revision)
         subset = view.settled.plan.subsets.get((body.variant, body.step, "subject"))
@@ -437,10 +439,35 @@ class ProjectPlanService:
         frozen = subset_to_rows(subset.terms, (
             SelectedRow(key=key, variant=by_rank[key].variant, row=by_rank[key].row) for key in subset.ranks
         ))
+        address = AuthoredFileAddress(kind="step", id=body.step)
+        authored = step.model_dump(mode="json", exclude_unset=True)
         file = file_value(
-            AuthoredFileAddress(kind="step", id=body.step), step.model_dump(mode="json", exclude_unset=True),
+            address, authored,
             ("inputs", "subject", "where"), frozen.model_dump(mode="json", exclude_unset=True),
         )
+        if subject.checkpoint is None:
+            file.patches.extend(file_value(address, authored, ("inputs", "subject", "checkpoint"), "last").patches)
+        before = view.settled.plan
+        after = compile_project(
+            preview_authored_files(project, [file]), readers=view.settled.readers,
+            operations=self.folders.operations, components=self.folders.components,
+            functions=self.folders.functions, python_tasks=self.folders.python_tasks,
+        )
+        selected = {
+            run.key: run.inputs["subject"] for run in after.runs
+            if (run.key.variant, run.key.step) == (body.variant, body.step)
+        }
+        before_rows = {
+            run.key for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
+        }
+        if selected.keys() != before_rows or any(
+            binding.producer is None or binding.member.key not in by_rank
+            or (binding.producer.variant, binding.producer.row)
+            != (by_rank[binding.member.key].variant, by_rank[binding.member.key].row)
+            or binding.member.reference.request_id != by_rank[binding.member.key].producer_request_id
+            for binding in selected.values()
+        ):
+            raise ProjectFolderInvalid("The selected producer rows cannot preserve this Evaluate definition.")
         return StudioSubsetToRowsEdit(revision=body.revision, files=[file])
 
     def _evaluation_result(
