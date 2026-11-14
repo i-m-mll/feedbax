@@ -1,4 +1,4 @@
-"""Author and qualify the MJX CPU Studio fixtures through installed entry points."""
+"""Author MJX CPU Studio fixtures and qualify their retained source execution."""
 
 from __future__ import annotations
 
@@ -400,51 +400,77 @@ def cache_probe(paths):
 
 
 def source_smoke(name, case):
-    import jax
-    import jax.numpy as jnp
+    from feedbax.desktop.release import AppPaths
 
-    from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.training import TrainingSpec
-    from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.studio.canonical_train import lower_canonical_train
-    from feedbax.training.optimizers import build_optimizer
-    from feedbax.training.studio_executor import StudioUpdateKernel
+    with TemporaryDirectory(prefix="fbx-mjx-source-smoke-") as temporary:
+        root = Path(temporary)
+        AppPaths.resolve(instance_root=root).configure_studio(desktop=False)
+        return retained_source_update(name, case, root)
+
+
+def retained_source_update(name, case, root):
+    from feedbax.contracts.training import TrainingRunSpec
     from feedbax.persistence.model_assets import import_mujoco_asset
-    from feedbax.training.retained_graph import compile_training_run, evaluate_graph_loss, rollout_graph
+    from feedbax.plugins.retained import new_retained_registry_bundle
+    from feedbax.training.checkpoint_custody import (
+        authenticate_published_checkpoint_custody,
+        load_latest_checkpoint,
+    )
+    from feedbax.training.invocation import prepare_training_invocation
+    from feedbax.training.retained_executor import execute_training_run_spec
 
     if "mjcf" in case:
-        require(import_mujoco_asset(case["mjcf"].encode()).model_dump(mode="json") == (
-            case["interior"]["mujoco_asset"]["asset"]
-        ), "source import changed the fixture identity")
-    spec = lower_canonical_train(
-        request_for(name, case, batches=2, checkpoint_interval=1),
-        new_application_registry_bundle().training_programs,
-    )
-    optimizer_spec = spec.method_payload.payload["optimizer"]
-    compiled = compile_training_run(
-        graph_spec=spec.graph.inline, component_registry=ComponentRegistry(),
-        training_spec=TrainingSpec(
-            optimizer=optimizer_spec, loss=spec.objective.loss, n_batches=2, batch_size=1,
-        ),
-        task_spec=spec.task.model_dump(mode="json", exclude_none=True),
-        task_binding_spec=spec.task_binding_spec, cfg=spec.training_config,
-    )
-    import equinox as eqx
-
-    optimizer = build_optimizer(optimizer_spec, schedule_origin_step=0, current_step=0, gradient_clip=None)
-    trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
-    update = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer, evaluate_loss_fn=evaluate_graph_loss,
-        rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
-    )
-    result = update.reported_update({
-        "model": compiled.graph, "optimizer": optimizer.init(trainable),
-        "prng": jax.random.PRNGKey(0), "batch_counter": jnp.array(0, dtype=jnp.int32),
+        imported = import_mujoco_asset(case["mjcf"].encode())
+        require(imported.model_dump(mode="json") == case["interior"]["mujoco_asset"]["asset"],
+                "source import changed the fixture identity")
+    request = request_for(name, case, batches=2, checkpoint_interval=1)
+    registries = new_retained_registry_bundle()
+    # A fresh run must declare the key schedule even when its authored seed is zero.
+    method = request.method_payload.model_copy(update={
+        "payload": {**request.method_payload.payload, "key_schedule": "independent_v1"},
     })
-    require(int(result["batch_counter"]) == 1 and math.isfinite(result["train_loss"])
-            and result["grad_norm"] > 0, "source fixture failed its first numerical update")
-    return {"case": name, "loss": result["train_loss"], "grad_norm": result["grad_norm"],
-            "model": inspect_model(result["model"], case)}
+    resolved = registries.training_programs.resolve_execution(request.method_ref, method)
+    spec = TrainingRunSpec(
+        graph={"inline": request.graph.model_dump(mode="json", exclude_none=True)},
+        task=request.task, task_binding_spec=request.task_binding_spec,
+        objective=request.objective, training_config=request.training_config,
+        method_ref=request.method_ref, method_payload=method,
+        worker_execution={"method_contract": resolved.contract, "effective_phase": resolved.effective_phase},
+        checkpoint_progress={"checkpoint_interval": request.training_config.snapshot_interval, "progress_interval": 1},
+    )
+    prepared = prepare_training_invocation(spec, registries, run_id=name, resume=False)
+    checkpoints = root / "checkpoints"
+    result = execute_training_run_spec(
+        spec, run_id=name, preparation=prepared, registry=registries.training_programs,
+        manifest_root=root / "runs", checkpoint_root=checkpoints, stop_after_barrier="after_train_batch",
+    )
+    require(result.status == "completed" and result.end_completed_batches == 1,
+            f"source fixture did not checkpoint after its first update: {result.status}")
+    loss, grad_norm = (float(result.final_slots[slot]) for slot in ("train_loss", "grad_norm"))
+    require(math.isfinite(loss) and math.isfinite(grad_norm) and grad_norm > 0,
+            "source fixture failed its first numerical update")
+    (write,) = result.checkpoint_writes
+    pointer = write.latest_pointer
+    custody = authenticate_published_checkpoint_custody(checkpoints, require_single_transaction=True)
+    require(custody.manifest_sha256 == pointer.manifest_sha256
+            and custody.manifest.transaction_id == pointer.transaction_id
+            and custody.manifest.completed_training_batches == 1,
+            "checkpoint custody differs from the published update")
+    resumed = load_latest_checkpoint(
+        checkpoints, expected_run_spec=spec, expected_phase_program=resolved.effective_phase.phase_program,
+        expected_slots=prepared.initial_slots, published_pointer=pointer,
+    )
+    require(int(resumed.slots["batch_counter"]) == 1, "checkpoint reopened at a different update")
+    model = inspect_model(resumed.slots["model"], case)
+    require(model == inspect_model(result.final_slots["model"], case), "restored model differs from the committed update")
+    return {
+        "case": name, "loss": loss, "grad_norm": grad_norm, "model": model,
+        "checkpoint": {
+            "transaction": pointer.transaction_id, "manifest_sha256": pointer.manifest_sha256,
+            "batches": pointer.completed_training_batches,
+            "checkpoint_set": write.checkpoint_set.exact_ref.model_dump(mode="json"),
+        },
+    }
 
 
 def source_plan(name, case):
@@ -468,7 +494,8 @@ def source_plan(name, case):
             settled = app.state.project_folders.read_plan(plan["project_id"], revision=plan["revision"])
             require(not settled.plan.diagnostics, f"fixture Plan did not compile: {settled.plan.diagnostics}")
             (run,) = settled.plan.runs
-            require(run.kind == "train" and run.admission_problem is None, "fixture did not compile a runnable Train")
+            require(run.kind == "train" and run.admission_problem is None,
+                    f"fixture did not compile a runnable Train: {run.admission_problem}")
             return {**plan, "request_id": run.request_id}
 
 
