@@ -99,6 +99,84 @@ def test_factored_document_reuse_keeps_current_values_and_input_bindings():
     assert changed.id != bound.id and len(changed.documents.keys() - bound.documents.keys()) == 1
 
 
+def test_inline_trial_memo_preserves_canonical_requests_and_window_facts():
+    spec = _managed_train()
+    memo = RequestDocumentMemo()
+    first = encode_request(spec, {}, document_memo=memo, capture_train_task=True)
+    assert first.train_task is not None
+
+    def compare(current, inputs):
+        expected = encode_request(current, inputs, capture_train_task=True)
+        actual = encode_request(current, inputs, document_memo=memo, capture_train_task=True)
+        assert actual == expected
+        assert actual.train_task == expected.train_task
+        return actual
+
+    inputs = {"checkpoint": (
+        InputMember(key="first", reference=ProductRef(request_id=first.id, role="checkpoint")),
+    )}
+    spec.method_payload.payload["optimizer"]["params"]["learning_rate"] = 0.007
+    assert compare(spec, inputs).id != first.id
+    spec.method_payload.metadata["wide"] = 1e20
+    wide = compare(spec, inputs)
+    assert wide.train_task is None
+    with pytest.raises(CanonicalJsonError, match="unsafe_integer"):
+        decode_request(wide.data, wide.documents.__getitem__)
+    del spec.method_payload.metadata["wide"]
+    assert compare(spec, inputs).train_task == first.train_task
+
+    for document in ("model", "task", "objective"):
+        prior = compare(spec, inputs)
+        documents = spec.trial_documents
+        old = getattr(documents, document)
+        field, value = {"model": ("step_seconds", 0.02), "task": ("id", "different-task"),
+                        "objective": ("id", "different-objective")}[document]
+        spec = spec.model_copy(update={
+            "trial_documents": documents.model_copy(update={document: old.model_copy(update={field: value})}),
+        })
+        assert compare(spec, inputs).id != prior.id
+
+    prior = compare(spec, inputs)
+    spec.trial_documents.input_overrides["extra"] = "different"
+    assert compare(spec, inputs).id != prior.id
+
+
+def test_inline_trial_memo_keeps_canonical_error_precedence_and_paths():
+    spec = _managed_train()
+    memo = RequestDocumentMemo()
+    first = encode_request(spec, {}, document_memo=memo, capture_train_task=True)
+    bad = InputMember(
+        key="candidate", reference=ContentRef(sha256="a" * 64, size=2**53),
+    )
+    inputs = {"checkpoint": (bad,)}
+    with pytest.raises(CanonicalJsonError) as raised:
+        encode_request(spec, inputs, document_memo=memo, capture_train_task=True)
+    assert raised.value.path == "/inputs/checkpoint/0/reference/size"
+
+    for name, path in (
+        ("model_name", "/spec/trial_documents/model_name"),
+        ("input_overrides", "/target"),
+    ):
+        malformed = spec.model_copy(update={"trial_documents": spec.trial_documents.model_copy(
+            update={name: "\ud800" if name == "model_name" else {"target": "\ud800"}},
+        )})
+        errors = []
+        for document_memo in (None, memo):
+            with pytest.raises(CanonicalJsonError) as raised:
+                encode_request(malformed, inputs, document_memo=document_memo, capture_train_task=True)
+            errors.append(raised.value)
+        assert errors[0].path == errors[1].path == path
+        assert errors[0].code == errors[1].code == CanonicalJsonErrorCode.LONE_SURROGATE
+    assert encode_request(spec, {}, document_memo=memo, capture_train_task=True) == first
+
+    spec.trial_documents.input_overrides["1"] = "target"
+    encode_request(spec, {}, document_memo=memo, capture_train_task=True)
+    spec.trial_documents.input_overrides[1] = spec.trial_documents.input_overrides.pop("1")
+    with pytest.raises(CanonicalJsonError) as raised:
+        encode_request(spec, {}, document_memo=memo, capture_train_task=True)
+    assert raised.value.code == CanonicalJsonErrorCode.NON_STRING_KEY
+
+
 def test_absent_values_and_retired_spellings_contract():
     checked = identity_contract()
     assert checked["fields"] == generate_identity_fields()
