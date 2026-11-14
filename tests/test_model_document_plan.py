@@ -46,7 +46,8 @@ from feedbax.web.services.evaluate_attachment import prepare_evaluate_attachment
 from feedbax.contracts.model_edit import EvaluateAttachmentRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
-from feedbax.web.worker.execution import compile_training_run, prototypes_from_task_bindings
+from feedbax.compiler.prototypes import prototypes_from_task_bindings
+from feedbax.training.retained_graph import compile_training_run
 from tests.test_canonical_evaluate_admission import _save_project, authored_evaluation_project
 from tests.test_local_job_host import host as host_fixture, job_row, wait_until
 

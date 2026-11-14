@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 import feedbax.web.services.worker_driver as worker_driver_module
 import feedbax.web.worker.app as worker_app
 import feedbax.web.worker.checkpoint as worker_checkpoint
+from feedbax.training import retained_graph
 import feedbax.web.worker.execution as worker_execution
 from feedbax.contracts.studio_training import (
     STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
@@ -771,7 +772,7 @@ def test_worker_preserves_checkpoint_custody_when_handoff_fails(
         task_spec={},
         task_binding_spec={},
     )
-    monkeypatch.setattr(worker_execution, "compile_training_run", lambda **_kwargs: object())
+    monkeypatch.setattr(retained_graph, "compile_training_run", lambda **_kwargs: object())
     monkeypatch.setattr(worker_execution, "run_training_graph", lambda *_args, **_kwargs: result)
 
     if cleanup_denied:

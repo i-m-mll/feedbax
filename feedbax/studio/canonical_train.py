@@ -114,7 +114,7 @@ def lower_canonical_train(
     from feedbax.plugins.application import new_application_registry_bundle
 
     registries = registries or new_application_registry_bundle()
-    from feedbax.web.model_assets import model_artifact_provider
+    from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.compiler.model_document import lower_model_document
 
     graph_spec = lower_model_document(documents.model_name, documents.model, registries.components).graph

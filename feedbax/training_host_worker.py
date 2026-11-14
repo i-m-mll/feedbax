@@ -232,7 +232,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
     from feedbax.training.managed_studio import prepare_managed_training
     from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
-    from feedbax.web.model_assets import model_artifact_provider
+    from feedbax.persistence.model_assets import model_artifact_provider
 
     events.current_phase = "binding"
     launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))

@@ -9,7 +9,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.mapping import WhereDict
 from feedbax.tasks import TaskTrialSpec, prepare_trial
-from feedbax.web.worker.execution import compile_training_run, rollout_graph
+from feedbax.training.retained_graph import compile_training_run, rollout_graph
 
 
 def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> None:

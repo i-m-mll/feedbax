@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.web.model_assets import import_mujoco_asset
+from feedbax.persistence.model_assets import import_mujoco_asset
 
 
 router = APIRouter()

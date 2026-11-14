@@ -65,6 +65,7 @@ def _evaluate(request: PrivateEvaluationRequest, checkpoint, launch):
     import numpy as np
 
     from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler.prototypes import prototypes_from_task_bindings
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.matrix_core import apply_override_patches
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
@@ -77,10 +78,9 @@ def _evaluate(request: PrivateEvaluationRequest, checkpoint, launch):
     from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
     from feedbax.training.checkpoint_custody import open_published_model_slot
     from feedbax.training.studio_executor import studio_training_key
-    from feedbax.web.worker.execution import (
-        _evaluate_loss,
+    from feedbax.training.retained_graph import (
+        evaluate_graph_loss,
         compile_training_run,
-        prototypes_from_task_bindings,
         rollout_graph,
     )
 
@@ -177,7 +177,7 @@ def _evaluate(request: PrivateEvaluationRequest, checkpoint, launch):
         trace = rollout_graph(model, compiled, key=key)
         position = np.asarray(trace["outputs"]["effector"].pos)
         target = np.asarray(trace["task_data"]["reach_target"])
-        loss, terms = _evaluate_loss(compiled, trace)
+        loss, terms = evaluate_graph_loss(compiled, trace)
         np.testing.assert_allclose(loss, np.sum((position[-1] - target[-1]) ** 2), rtol=2e-5)
         np.testing.assert_allclose(loss, sum(map(float, terms.values())), rtol=2e-5)
         return (

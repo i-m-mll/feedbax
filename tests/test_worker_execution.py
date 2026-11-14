@@ -13,6 +13,7 @@ import numpy as np
 import optax
 import pytest
 
+from feedbax.training import retained_graph
 import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
 from feedbax.compiler import GraphDocument, compile_graph
@@ -32,12 +33,8 @@ from feedbax.contracts.graph import (
 )
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.web.worker.execution import (
-    _build_optimizer,
-    compile_training_run,
-    rollout_graph,
-    run_training_graph,
-)
+from feedbax.training.retained_graph import compile_training_run, rollout_graph
+from feedbax.web.worker.execution import _build_optimizer, run_training_graph
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.retained import new_retained_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
@@ -47,7 +44,7 @@ from feedbax.training.checkpoint_custody import (
 )
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
-from feedbax.web.worker.diagnostics import GraphCompilationError
+from feedbax.training.retained_diagnostics import GraphCompilationError
 from feedbax.contracts.training import TaskSpec, TrainingRunSpec
 
 
@@ -1029,7 +1026,7 @@ def test_studio_update_reproduces_v4_seeded_training(fixture, expected_losses, e
         compiled=compiled,
         optimizer=optimizer,
         rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
-        evaluate_loss_fn=worker_execution._evaluate_loss,
+        evaluate_loss_fn=retained_graph.evaluate_graph_loss,
     )
     slots = {
         "model": compiled.graph,
@@ -1799,8 +1796,8 @@ def test_studio_sampling_follows_task_data_and_epoch_ids() -> None:
             }
         )
         binding = StudioTaskBindingSpec(exposed_data=exposed)
-        values = worker_execution._materialize_task_data(binding, task, 12, key=key)
-        bounds = worker_execution._timeline_epoch_bounds(task.timeline, 12, key)
+        values = retained_graph._materialize_task_data(binding, task, 12, key=key)
+        bounds = retained_graph._timeline_epoch_bounds(task.timeline, 12, key)
         return values, bounds
 
     before, original_bounds = sample(

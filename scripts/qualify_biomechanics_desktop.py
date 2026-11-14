@@ -328,7 +328,7 @@ def checkpoint(fixture, job_id, case, service, *, stopped=False):
         authenticate_checkpoint_custody_ref, load_checkpoint_set, open_published_model_slot,
     )
     from feedbax.training.studio_executor import studio_training_key
-    from feedbax.web.worker.execution import prototypes_from_task_bindings
+    from feedbax.compiler.prototypes import prototypes_from_task_bindings
 
     job, _ = host_job(fixture, job_id, include_launch=True)
     expected = {"stopped"} if stopped else {"stopped", "succeeded"}
@@ -409,8 +409,8 @@ def source_smoke(name, case):
     from feedbax.studio.canonical_train import lower_canonical_train
     from feedbax.training.optimizers import build_optimizer
     from feedbax.training.studio_executor import StudioUpdateKernel
-    from feedbax.web.model_assets import import_mujoco_asset
-    from feedbax.web.worker.execution import _evaluate_loss, compile_training_run, rollout_graph
+    from feedbax.persistence.model_assets import import_mujoco_asset
+    from feedbax.training.retained_graph import compile_training_run, evaluate_graph_loss, rollout_graph
 
     if "mjcf" in case:
         require(import_mujoco_asset(case["mjcf"].encode()).model_dump(mode="json") == (
@@ -434,7 +434,7 @@ def source_smoke(name, case):
     optimizer = build_optimizer(optimizer_spec, schedule_origin_step=0, current_step=0, gradient_clip=None)
     trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
     update = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer, evaluate_loss_fn=_evaluate_loss,
+        compiled=compiled, optimizer=optimizer, evaluate_loss_fn=evaluate_graph_loss,
         rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
     )
     result = update.reported_update({

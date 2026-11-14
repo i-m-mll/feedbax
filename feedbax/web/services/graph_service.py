@@ -6,7 +6,7 @@ import json
 
 from feedbax.compiler.graph import GraphCompilationError
 from feedbax.web.config import GRAPHS_DIR
-from feedbax.web.model_assets import model_artifact_provider
+from feedbax.persistence.model_assets import model_artifact_provider
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
