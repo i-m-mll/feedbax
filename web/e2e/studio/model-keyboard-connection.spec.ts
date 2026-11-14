@@ -10,11 +10,12 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   const definition = modelFile.document.payload as ModelDocument;
   const firstWire = definition.interior.wires?.target;
   if (!firstWire) throw new Error('Expected the saved task wire in the managed fixture');
+  const signal = firstWire.source.port;
   delete definition.interior.wires!.target;
   definition.ports.inputs = [];
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
-  const source = model.locator('[data-handleid="output:@task:reach_target"]');
+  const source = model.locator(`[data-handleid="output:@task:${signal}"]`);
   const input = model.locator('[data-id="cell"] [data-handleid="input:input"]');
   const post = (operation: 'connections' | 'edit') => page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === `${projectPath}/model/${operation}`);
@@ -41,7 +42,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   expect(reviewed.ok(), await reviewed.text()).toBe(true);
   expect(reviewed.request().postDataJSON()).toMatchObject({
     revision: snapshot.revision,
-    source: { owner: 'task', signal: 'reach_target', run: { step: 'train' } },
+    source: { owner: 'task', signal, run: { step: 'train' } },
   });
   await expect(source).toHaveAttribute('aria-disabled', 'true');
   await expect(input).toHaveAttribute('aria-disabled', 'false');
@@ -57,8 +58,8 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   expect(applied.ok(), JSON.stringify(result)).toBe(true);
   if (result.status !== 'applied') throw new Error(result.problem.detail);
   const saved = result.snapshot.project.documents[modelFile.id].payload as unknown as ModelDocument;
-  expect(saved.ports.inputs).toContainEqual(expect.objectContaining({ name: 'reach_target' }));
-  const taskPort = saved.ports.inputs?.find(({ name }) => name === 'reach_target');
+  const taskPort = saved.ports.inputs?.find(({ name }) => name === signal);
+  expect(taskPort).toBeDefined();
   expect(Object.values(saved.interior.wires ?? {})).toContainEqual(expect.objectContaining({
     source: { owner: 'inputs', port: taskPort?.id }, target: firstWire.target,
   }));
