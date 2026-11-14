@@ -205,6 +205,7 @@ async function measureScroll(page: Page, request: APIRequestContext, context: CD
   const { rows: planned } = await plan.json() as StudioSavedTrainRuns;
   expect(planned).toHaveLength(rowCount);
   expect(planned.every((row) => row.status === 'not_run' && row.request_id)).toBe(true);
+  expect(new Set(planned.map((row) => row.request_id)).size).toBe(rowCount);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   const table = page.getByRole('table', { name: 'Runs', exact: true });
@@ -212,8 +213,8 @@ async function measureScroll(page: Page, request: APIRequestContext, context: CD
   const rows = table.locator('tbody tr[data-index]');
   await expect(rows.first()).toHaveAttribute('data-index', '0');
   const viewport = table.locator('..');
-  const distance = await viewport.evaluate((node) => node.scrollHeight - node.clientHeight);
-  expect(distance).toBeGreaterThan(0);
+  const estimatedDistance = await viewport.evaluate((node) => node.scrollHeight - node.clientHeight);
+  expect(estimatedDistance).toBeGreaterThan(0);
   const inputs = 100;
   await viewport.hover();
   await startSamples(viewport, 'scroll', 'idle');
@@ -227,14 +228,22 @@ async function measureScroll(page: Page, request: APIRequestContext, context: CD
   const idle = await endSamples(page);
   await startSamples(viewport, 'scroll', 'scroll');
   const before = await chromeMetrics(context);
-  await paceInputs(inputs, () => page.mouse.wheel(0, Math.ceil(distance / inputs)));
-  await expect(rows.last()).toHaveAttribute('data-index', String(rowCount - 1));
-  const end = await viewport.evaluate((node) => node.scrollTop);
-  expect(end).toBeGreaterThanOrEqual(distance - 1);
+  const roundTrip = await paceInputs(inputs, () => page.mouse.wheel(0, Math.ceil(estimatedDistance / inputs)));
+  const end = await viewport.evaluate(async (node, lastIndex) => {
+    await new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+    const viewportTop = node.getBoundingClientRect().top + node.clientTop;
+    const viewportBottom = viewportTop + node.clientHeight;
+    const row = node.querySelector(`tbody tr[data-index="${lastIndex}"]`)?.getBoundingClientRect();
+    return {
+      offset: node.scrollTop,
+      distance: node.scrollHeight - node.clientHeight,
+      lastRowVisible: row !== undefined && row.top >= viewportTop - 1 && row.bottom <= viewportBottom + 1,
+    };
+  }, rowCount - 1);
   const work = chromeWork(before, await chromeMetrics(context));
   const samples = await endSamples(page);
-  expect(samples.updates.length).toBeGreaterThan(1);
-  return { rowCount, inputs, distance, end, work, idle, samples, scrollUpdates: statistics(gaps(samples.updates)) };
+  return { rowCount, inputs, estimatedDistance, end, work, idle, samples, roundTrip,
+    scrollUpdates: statistics(gaps(samples.updates)) };
 }
 
 async function paceInputs(count: number, send: (index: number) => Promise<void>) {
@@ -336,6 +345,9 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
     if (measureInteractions) {
       const scroll = await measureScroll(page, request, context);
       await info.attach('mounted-runs-scroll', { body: JSON.stringify(scroll, null, 2), contentType: 'application/json' });
+      expect(scroll.samples.updates.length).toBeGreaterThan(1);
+      expect(scroll.end.lastRowVisible).toBe(true);
+      expect(Math.abs(scroll.end.offset - scroll.end.distance)).toBeLessThanOrEqual(1);
     }
   } finally {
     if (measureInteractions) {
