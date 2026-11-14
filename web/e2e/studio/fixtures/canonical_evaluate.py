@@ -111,6 +111,18 @@ def measured_subset_files():
     return files
 
 
+def grouped_subset_files():
+    files = measured_subset_files()
+    train = files[-1]["step"]
+    del train["sweep"]["axes"]["updates"]["values"]["Medium"]
+    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["sweep"]["axes"]["replicate"] = {"values": {
+        name: {"label": label, "patches": {"method_payload.payload.seed": {"value": seed}}}
+        for name, label, seed in (("zeta", "First", 1), ("alpha", "Second", 2))
+    }}
+    return files
+
+
 def scoped_series_files():
     evaluation = _evaluation_step()
     evaluation["inputs"]["subject"]["checkpoint"] = {"every": 2}
@@ -236,5 +248,5 @@ if __name__ == "__main__":
         "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
-        "train-measures": train_measures,
+        "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
     }[action](*args)))

@@ -68,8 +68,9 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
   return checked ? [...ids, id] : ids.filter((entry) => entry !== id);
 }
 
-function BestEditor({ rule, onChange }: {
+function BestEditor({ rule, sweeps, onChange }: {
   rule: Best;
+  sweeps: PlanStepView['sweeps'];
   onChange(rule: Best): void;
 }) {
   return <div className="grid gap-1">
@@ -94,6 +95,11 @@ function BestEditor({ rule, onChange }: {
           onChange={(event) => onChange({ ...rule, k: event.currentTarget.valueAsNumber })} />
       </label>
     </div>
+    {sweeps.length > 0 && <fieldset>
+      <legend>{studioName('per')}</legend>
+      <Checkboxes options={sweeps} selected={rule.per ?? []}
+        onToggle={(id, checked) => onChange({ ...rule, per: toggle(rule.per ?? [], id, checked) })} />
+    </fieldset>}
   </div>;
 }
 
@@ -204,7 +210,7 @@ export function StudioEvaluateAuthoring({
         }} />
         {studioName('best')}
       </label>
-      {draft.best && <BestEditor rule={draft.best}
+      {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps}
         onChange={(rule) => setDraft({ ...draft, best: rule })} />}
       <button type="button" className={apply} disabled={!canApplySubject || !uniqueRows}
         onClick={() => onEdit(studioName('applySubset'), {

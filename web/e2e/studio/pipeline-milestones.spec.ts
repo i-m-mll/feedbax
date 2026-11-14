@@ -197,12 +197,12 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
-test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ page, request }, info) => {
-  test.setTimeout(58_000);
+for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request }, info) => {
+  test.setTimeout(59_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
   const metricName = 'program_step';
-  const files = JSON.parse(await runProjectFixture(evaluation, 'measured-subset-files'));
+  const files = JSON.parse(await runProjectFixture(evaluation, grouped ? 'grouped-subset-files' : 'measured-subset-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const path = '/?project=' + snapshot.project_id;
   const readPlan = () => savedPlan(request, projectPath);
@@ -220,8 +220,12 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
   const apply = subset.getByRole('button', { name: 'Apply Subset', exact: true });
   const order = subset.getByRole('combobox', { name: 'Order', exact: true });
+  const per = subset.getByRole('group', { name: 'Per', exact: true })
+    .getByRole('checkbox', { name: 'replicate', exact: true });
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
   const members = inputs.getByRole('list', { name: 'Members', exact: true }).getByRole('listitem');
+  const groupLabels = ['replicate First', 'replicate Second'];
+  const groupedLists = groupLabels.map((label) => inputs.getByRole('list', { name: label, exact: true }).getByRole('listitem'));
   const freeze = drawer.getByRole('button', { name: 'To Rows', exact: true });
   const saveWhere = async (click: () => Promise<void>) => {
     const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
@@ -239,8 +243,10 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   await count.fill('0');
   await expect(apply).toBeDisabled();
   await count.fill('2');
+  if (grouped) await per.check();
   expect(await saveWhere(() => apply.click())).toMatchObject({
-    step: 'train', checkpoint: 'last', where: { best: { by: metricName, k: 2, order: 'min' } },
+    step: 'train', checkpoint: 'last',
+    where: { best: { by: metricName, k: 2, order: 'min', ...(grouped && { per: ['replicate'] }) } },
   });
 
   await page.reload();
@@ -249,45 +255,91 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   await expect(metric).toHaveValue(metricName);
   await expect(count).toHaveValue('2');
   await expect(order).toHaveValue('min');
-  await expect(inputs).toContainText('2 of 3');
-  await expect(members).toHaveText(['Rank 1', 'Rank 2']);
+  await expect(inputs).toContainText(grouped ? '4 of 4' : '2 of 3');
+  const memberLists = grouped ? groupedLists : [members];
+  if (grouped) {
+    await expect(per).toBeChecked();
+    await expect(inputs).toContainText('Per replicate');
+    await expect(inputs.getByRole('list')).toHaveCount(2);
+    await expect(inputs.getByRole('list').nth(0)).toHaveAccessibleName(groupLabels[0]);
+    await expect(inputs.getByRole('list').nth(1)).toHaveAccessibleName(groupLabels[1]);
+  }
+  for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
   const waiting = await readPlan();
   const ranks = waiting.window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
-  expect(ranks).toHaveLength(2);
-  for (const [index] of ranks.entries()) {
-    await expect(runs(page).getByRole('row').filter({ hasText: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+  const projection = waiting.window_map!.steps.find(({ step_id }) => step_id === 'evaluate')!
+    .inputs.find(({ id }) => id === 'subject')!.subset!;
+  const keys = projection.ranks!;
+  expect(ranks).toHaveLength(grouped ? 4 : 2);
+  if (grouped) {
+    expect(projection.rank_groups?.map(({ coordinates }) => coordinates)).toEqual([
+      { replicate: 'zeta' }, { replicate: 'alpha' },
+    ]);
+    expect(projection.rank_groups?.map(({ ranks }) => ranks.length)).toEqual([2, 2]);
+    expect(projection.rank_groups?.flatMap(({ ranks }) => ranks)).toEqual(keys);
+    for (const [index, label] of groupLabels.entries()) {
+      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveText(`${label} · Rank 1`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveText(`${label} · Rank 2`);
+    }
+  } else {
+    expect(keys).toEqual(['rank-1', 'rank-2']);
+    for (const [index] of ranks.entries()) {
+      await expect(runs(page).getByRole('row').filter({ hasText: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+    }
   }
 
   await select(page, 'train');
   const source = waiting.rows.filter(({ key }) => key.step === 'train');
-  expect(source).toHaveLength(3);
+  expect(source).toHaveLength(grouped ? 4 : 3);
   await launchRows(page, projectPath, source.map(({ key }) => key));
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 22_000 });
-  const finished = (await readPlan()).rows.filter(({ key }) => key.step === 'train');
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(source.length, { timeout: 24_000 });
+  const finishedPlan = await readPlan();
+  const finished = finishedPlan.rows.filter(({ key }) => key.step === 'train');
   const attempts = finished.map(({ result }) => result!.job_id);
   const measures: Record<string, number> = JSON.parse(await runProjectFixture(
     evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, metricName, ...attempts,
   ));
-  expect(attempts.map((attempt) => measures[attempt])).toEqual([4, 3, 2]);
-  const expected = [finished[2], finished[1]];
+  expect(attempts.map((attempt) => measures[attempt])).toEqual(grouped ? [4, 4, 2, 2] : [4, 3, 2]);
+  const expected = grouped ? ['zeta', 'alpha'].flatMap((group) => {
+    const candidates = finishedPlan.window_map!.rows.filter(({ key, coordinates }) =>
+      key.step === 'train' && coordinates.replicate?.value_id === group);
+    return candidates.toReversed().map(({ key }) => finished.find((row) => row.key.row === key.row)!);
+  }) : [finished[2], finished[1]];
 
   await select(page, 'evaluate');
-  await expect(members).toHaveText(['Rank 1', 'Rank 2']);
+  for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
   await expect(freeze).toHaveCount(0);
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
-  await launchRows(page, projectPath, ranked.map(({ key }) => key));
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
+  if (grouped) {
+    const firstGroup = runs(page).getByRole('rowheader').getByRole('button', { name: /^replicate First · Rank/ });
+    await firstGroup.nth(0).click();
+    await firstGroup.nth(1).click({ modifiers: ['Shift'] });
+    await launchRows(page, projectPath, ranked.slice(0, 2).map(({ key }) => key));
+    await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 18_000 });
+    await select(page, 'evaluate');
+    await expect(groupedLists[0]).toHaveText(expected.slice(0, 2).map(({ label }, index) => `Rank ${index + 1} · ${label}`));
+    await expect(groupedLists[1]).toHaveText(['Rank 1', 'Rank 2']);
+    await expect(freeze).toHaveCount(0);
+  }
+  await launchRows(page, projectPath, (grouped ? ranked.slice(2) : ranked).map(({ key }) => key));
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(ranked.length, { timeout: 18_000 });
   const completed = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   for (const [index, producer] of expected.entries()) {
+    expect(completed[index].bound_subject?.key).toBe(keys[index]);
     expect(completed[index].result?.checkpoint_source).toEqual({
       job_id: producer.result!.job_id, request_id: producer.request_id,
       completed_updates: measures[producer.result!.job_id],
     });
   }
+  if (grouped) expect(new Set(completed.map(({ bound_subject }) => bound_subject!.selection_sha256)).size).toBe(2);
   for (const [index, producer] of expected.entries()) {
-    await expect(members.nth(index)).toContainText(producer.label);
+    const group = Math.floor(index / 2);
+    const position = index % 2;
+    await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${producer.label}`);
     await expect(runs(page).getByRole('row').filter({ hasText: producer.label })).toHaveCount(1);
+    if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
+      .toHaveText(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
   }
   await expect(freeze).toBeEnabled();
   await count.fill('1');
@@ -305,7 +357,7 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   });
   expect(frozen).toMatchObject({
     step: 'train', checkpoint: 'last',
-    where: { rows: expected.map(({ key: { variant, row } }, index) => ({ key: `rank-${index + 1}`, variant, row })) },
+    where: { rows: expected.map(({ key: { variant, row } }, index) => ({ key: keys[index], variant, row })) },
   });
   expect(frozen).not.toHaveProperty('where.best');
   const staleFreeze = await request.post(projectPath + '/authoring/subset-to-rows', { data: preparedBody });

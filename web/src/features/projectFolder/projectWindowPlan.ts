@@ -1,7 +1,8 @@
 import { studioFormat, studioName } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns, SubsetTerms,
+  Project, SelectedRow, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  SubsetTerms,
 } from '@/generated/studioContracts';
 
 export type SavedTrainRow = StudioSavedTrainRuns['rows'][number];
@@ -17,6 +18,11 @@ export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, varian
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
   return saved?.window_map?.variants ?? [...new Set(saved?.rows.map(({ key }) => key.variant))];
+}
+
+export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | undefined): readonly StudioBestRankGroup[] {
+  if (subset?.rank_groups?.length) return subset.rank_groups;
+  return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
 }
 
 function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
@@ -56,24 +62,30 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     if (runs) runs.push(run);
     else runsByStep.set(step, [run]);
   }
-  function inputMembers(
+  function inputMemberGroups(
     subset: StudioProjectWindowMapSubset,
     consumer: string,
     producer: string,
-  ): NonNullable<PlanStepView['inputs'][number]['subset']>['members'] {
-    if (subset.ranks?.length) {
-      return subset.ranks.map((id, index) => {
-        const bound = subjectsByStep.get(consumer)?.get(id);
-        const rank = index + 1;
-        return { id, label: bound ? studioFormat('boundRankedMember', {
-          rank, producer: sourceRows.get(savedRunId({ ...bound, step: producer }))?.label ?? bound.row,
-        }) : studioFormat('rankedMember', { rank }) };
+  ): NonNullable<PlanStepView['inputs'][number]['subset']>['memberGroups'] {
+    const groups = bestRankGroups(subset);
+    if (groups.length) {
+      const sweeps = sweepsByStep.get(producer);
+      return groups.map(({ coordinates, ranks }) => {
+        const label = Object.entries(coordinates).map(([axis, value]) =>
+          `${axis} ${sweeps?.get(axis)?.get(value) ?? value}`).join(' · ');
+        return { label, members: ranks.map((id, index) => {
+          const bound = subjectsByStep.get(consumer)?.get(id);
+          const rank = index + 1;
+          return { id, label: bound ? studioFormat('boundRankedMember', {
+            rank, producer: sourceRows.get(savedRunId({ ...bound, step: producer }))?.label ?? bound.row,
+          }) : studioFormat('rankedMember', { rank }) };
+        }) };
       });
     }
-    return subset.members?.map((key) => {
+    return subset.members?.length ? [{ members: subset.members.map((key) => {
       const id = savedRunId(key);
       return { id, label: sourceRows.get(id)?.label ?? key.row };
-    });
+    }) }] : undefined;
   }
   for (const row of map?.rows ?? []) {
     if (row.key.variant !== scope) continue;
@@ -112,22 +124,39 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       id, kind: step.kind, group: step.group, projected: undefined,
     }));
   const steps = source.map(({ id, kind, group, projected }): PlanStepView => {
+    const inputs = projected?.inputs.map((input): PlanStepView['inputs'][number] => ({
+      id: input.id, label: input.id, sourceStepId: input.source_step_id,
+      subset: input.subset ? {
+        ...input.subset,
+        terms: subsetTerms(input.subset.terms, sweepsByStep.get(input.source_step_id)),
+        memberGroups: inputMemberGroups(input.subset, id, input.source_step_id),
+      } : undefined,
+    })) ?? [];
+    const subjectGroups = inputs.find((input) => input.id === 'subject')?.subset?.memberGroups ?? [];
+    const groupedLabels = new Map<string, string>();
+    for (const { label, members } of subjectGroups) {
+      if (!label) continue;
+      for (const member of members) {
+        groupedLabels.set(member.id, studioFormat('groupedRank', { group: label, rank: member.label }));
+      }
+    }
+    const subjectAxis = Object.entries(project.steps[id]?.sweep?.axes ?? {})
+      .find(([, axis]) => axis && 'input' in axis && axis.input === 'subject')?.[0];
+    const runs = runsByStep.get(id) ?? [];
     return {
       id, label: id, kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
-      inputs: projected?.inputs.map((input) => ({
-        id: input.id, label: input.id, sourceStepId: input.source_step_id ?? undefined,
-        subset: input.subset ? {
-          ...input.subset,
-          terms: subsetTerms(input.subset.terms, sweepsByStep.get(input.source_step_id)),
-          members: inputMembers(input.subset, id, input.source_step_id),
-        } : undefined,
-      })) ?? [],
+      inputs,
       sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
-        id, label: id, values: [...values].map(([id, label]) => ({ id, label })),
+        id, label: id, values: [...values].map(([value, label]) =>
+          ({ id: value, label: id === subjectAxis ? groupedLabels.get(value) ?? label : label })),
       })),
-      statusCounts: projected?.status_counts ?? {}, runs: runsByStep.get(id) ?? [],
+      statusCounts: projected?.status_counts ?? {},
+      runs: subjectAxis && groupedLabels.size ? runs.map((run) => {
+        const label = groupedLabels.get(run.values[subjectAxis]);
+        return label ? { ...run, label } : run;
+      }) : runs,
     };
   });
   return {
