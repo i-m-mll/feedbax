@@ -234,6 +234,20 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     )).toEqual(expected);
     await expect.poll(() => series.locator('polyline').evaluate((line: SVGPolylineElement) => line.points.numberOfItems))
       .toBe(expected.length);
+    const locations = await series.evaluate((group) => {
+      const curve = group.querySelector('polyline')!;
+      return Array.from(group.querySelectorAll<SVGLineElement>('line[data-update]'), (line, index) => {
+        const point = curve.points.getItem(index);
+        const first = Number(line.getAttribute('y1'));
+        const last = Number(line.getAttribute('y2'));
+        return {
+          update: Number(line.getAttribute('data-update')),
+          aligned: Math.abs(point.x - Number(line.getAttribute('x1'))) < 0.001
+            && point.y >= Math.min(first, last) - 0.001 && point.y <= Math.max(first, last) + 0.001,
+        };
+      });
+    });
+    expect(locations).toEqual(expected.map(({ update }) => ({ update, aligned: true })));
   }
   async function editNumber(label: string, value: number, before: string) {
     await mapStep(page, 'train').click();
@@ -297,14 +311,14 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   const changed = await trainRow();
   expect(changed.result!.job_id).toBe(changedJob);
   expect(changed.previous).toEqual(first);
-  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: 0, after: 7 });
+  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: null, after: 7 });
   const evidence = await observed();
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   async function compare() {
     await openResultsSlot(page);
     await results.locator('summary').getByText('Compare Results', { exact: true }).click();
     await expect(results.locator('details[open]')).toContainText(changed.change!.path);
-    await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
+    await expect(results.locator('details[open]')).toContainText(/null\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
     await expectLoss(changedJob, evidence.loss.current);
     await expectLoss(firstJob, evidence.loss.previous);
