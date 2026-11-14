@@ -297,7 +297,7 @@ export function ModelCanvas(props: Props) {
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, onToggleLock, onToggleCollapse, onCanvasPoint,
   onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
   onLibraryDrop, onAttachmentDrop }: Props) {
-  const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge } = useReactFlow<ModelCard, ModelEdge>();
+  const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
   const viewport = useRef<CanvasViewport>(null);
   useImperativeHandle(viewportRef, () => ({
     fitView: () => viewport.current?.fitView(),
@@ -312,10 +312,15 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
       const current = new Map(prior.map((node) => [node.id, node]));
       return nodes.map((node) => {
         const live = current.get(node.id);
-        return live?.dragging ? { ...node, position: live.position, dragging: true } : node;
+        if (!live) return node;
+        return {
+          ...node,
+          measured: getInternalNode(node.id)?.measured,
+          ...(live.dragging ? { position: live.position, dragging: true } : {}),
+        };
       });
     });
-  }, [nodes, setNodes]);
+  }, [nodes, setNodes, getInternalNode]);
   useEffect(() => { setEdges(edges); }, [edges, setEdges]);
   return <div className="studio-model-canvas">
     <div className="studio-model-strip">
