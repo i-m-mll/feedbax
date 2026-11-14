@@ -212,7 +212,7 @@ test('a mounted Model render failure reports to the service and retries only its
     window.ResizeObserver = class extends NativeObserver {
       observe(target: Element, options?: ResizeObserverOptions) {
         if (document.documentElement.dataset.failModelObserve === 'true' &&
-            target.closest('[data-slot="secondary"] .studio-model-canvas')) {
+            target.matches('[data-slot="secondary"] .studio-model-canvas .react-flow__renderer')) {
           throw new Error(detail);
         }
         super.observe(target, options);
