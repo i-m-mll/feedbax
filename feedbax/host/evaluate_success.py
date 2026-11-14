@@ -6,13 +6,13 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef
 from feedbax.contracts.effective_success import (
-    EVALUATION_SUBJECT_MEDIA_TYPE, BoundMember, EvaluationCheckpointSource, EvaluationClosure,
+    EVALUATION_SUBJECT_MEDIA_TYPE, BestCandidateEvidence, BoundMember, EvaluationCheckpointSource, EvaluationClosure,
     EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, success_content_ref,
 )
 from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import canonical_manifest_path
-from feedbax.contracts.request_refs import ContentRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.checkpoint_selection import verify_dependency_files
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -22,7 +22,7 @@ from feedbax.persistence.evaluation_subject import checkpoint_transaction, model
 from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.studio.canonical_evaluate import (
     BoundEvaluationJobInput, RolloutParameters, evaluation_checkpoint_coordinates,
-    states_product, states_ref, verify_evaluation_receipt,
+    exact_evaluation_subject, states_product, states_ref, verify_evaluation_receipt,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 
@@ -89,6 +89,7 @@ def publish_evaluate_success(
             return existing.ref
 
         verify_dependency_files(binding)
+        exact_evaluation_subject(subject, binding, verify_metrics=True)
         closure = None
         terminal_receipt = None
         if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
@@ -110,7 +111,7 @@ def publish_evaluate_success(
             selected = {}
         resolved = manifest.metadata.get("effective_binding")
         value = EvaluationSubjectValue(
-            axis="update" if isinstance(subject.select, UpdateSeriesMember) else "checkpoint",
+            axis="update" if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) else "checkpoint",
             requested=coordinates, gaps=selected.get("gaps", ()), resolved=resolved,
         )
         if value.resolved is not None and value.resolved.digest() != manifest.metadata.get("effective_binding_sha256"):
@@ -170,6 +171,17 @@ def publish_evaluate_success(
             raise ValueError("Evaluate result has no authenticated Train subject")
         value_ref = store.store_object(canonical_json_v2_bytes(value.model_dump(mode="json")))
         tree = store.store_tree(subject_tree(store, value_ref, tuple(trees)))
+        ranked_candidates = []
+        for claim in binding.get("best_rank", {}).get("candidates", ()):
+            completion = claim["completion"]
+            checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
+            source = _retain_checkpoint(store, checkpoint, completion)
+            ranked_candidates.append(BestCandidateEvidence(
+                attempt=completion["producer_job_id"],
+                producer=_producer(store, completion, source.train_binding),
+                receipt=_retain_train_receipt(store, completion),
+                checkpoint=source,
+            ))
         bound = BoundMember(
             key=member.key, content=ContentRef(
                 sha256=tree.descriptor.sha256, size=tree.descriptor.size_bytes,
@@ -179,6 +191,7 @@ def publish_evaluate_success(
             evaluation_subject=EvaluationSubjectSource(
                 producer=producer, checkpoints=tuple(checkpoints), closure=closure,
                 terminal_receipt=terminal_receipt,
+                ranked_candidates=tuple(ranked_candidates),
             ),
         )
         result = view.publish_bound(

@@ -717,7 +717,9 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: saved } = await created.json() as StudioProjectDocument;
   expect(saved.project.steps.evaluate.inputs?.subject).toMatchObject({
-    step: 'train', where: { rows: [train.key.row] }, checkpoint: { at },
+    step: 'train',
+    where: { rows: [{ key: train.key.row, variant: train.key.variant, row: train.key.row }] },
+    checkpoint: { at },
   });
   await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
   await expect(page.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();

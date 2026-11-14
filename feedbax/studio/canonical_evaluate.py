@@ -29,7 +29,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, ContentRef, LastMember, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
@@ -48,6 +48,7 @@ from feedbax.contracts.workspace_replay import (
     WorkspaceReplayTrialIdentity,
 )
 from feedbax.host.checkpoint_selection import selected_coordinates
+from feedbax.host.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 if TYPE_CHECKING:
     from feedbax.dataset import Dataset
@@ -63,7 +64,7 @@ class CannotRun(ValueError):
 
 class EvaluationRequestBinding(StrictModel):
     request: ContentObjectRef
-    checkpoint: ProductRef
+    checkpoint: ProductRef | BestRank
 
 
 class BoundEvaluationJobInput(StrictModel):
@@ -77,7 +78,9 @@ def _unexpected_document(digest: str) -> bytes:
     raise CannotRun("/params", f"this candidate does not support a factored document {digest}")
 
 
-def evaluation_checkpoint_coordinates(subject: ProductRef) -> tuple[int, ...] | None:
+def evaluation_checkpoint_coordinates(subject: ProductRef | BestRank) -> tuple[int, ...] | None:
+    if isinstance(subject, BestRank):
+        return None
     if isinstance(subject.select, BatchMember):
         return finite_coordinates((subject.select.batch,))
     if isinstance(subject.select, UpdateSeriesMember):
@@ -89,7 +92,7 @@ def evaluation_checkpoint_coordinates(subject: ProductRef) -> tuple[int, ...] | 
 
 def decode_rollout_request(
     request_id: str, raw: bytes,
-) -> tuple[EvaluationRequestSpec, RolloutParameters, ProductRef]:
+) -> tuple[EvaluationRequestSpec, RolloutParameters, ProductRef | BestRank]:
     decoded = decode_request(raw, _unexpected_document)
     spec = decoded.spec
     if decoded.id != request_id or not isinstance(spec, EvaluationRequestSpec):
@@ -102,7 +105,7 @@ def decode_rollout_request(
     if decoded.inputs.keys() != {"subject"} or len(members) != 1:
         raise CannotRun("/inputs/subject", "requires one Train checkpoint")
     subject = members[0].reference
-    if (
+    if not isinstance(subject, BestRank) and (
         not isinstance(subject, ProductRef)
         or subject.role != "checkpoint"
         or not subject.request_id.startswith("train:")
@@ -126,6 +129,38 @@ def decode_rollout_request(
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")
     return spec, params, subject
+
+
+def best_bound_rank(subject: BestRank, binding: dict, *, verify_metrics: bool = False) -> int:
+    evidence = binding["best_rank"]
+    if (evidence["key"], evidence["rank"]) != (subject.key, subject.rank):
+        raise ValueError("Best binding differs from the requested rank.")
+    candidates = evidence["candidates"]
+    scores = []
+    for candidate, claim in zip(subject.candidates, candidates, strict=True):
+        completion = claim["completion"]
+        score = claim["score"]
+        if (
+            completion["request_id"] != candidate.reference.request_id
+            or type(score) not in (int, float)
+            or (verify_metrics and completion_score(completion, subject.metric) != score)
+        ):
+            raise ValueError("Best binding differs from its authenticated candidate result.")
+        scores.append(score)
+    winner = subject.winner(scores)
+    if binding["completion"] != candidates[winner]["completion"]:
+        raise ValueError("Evaluate completion differs from the ranked Train subject.")
+    return winner
+
+
+def exact_evaluation_subject(
+    subject: ProductRef | BestRank, binding: dict, *, verify_metrics: bool = False,
+) -> ProductRef:
+    if isinstance(subject, ProductRef):
+        if "best_rank" in binding:
+            raise ValueError("Fixed Evaluate subject received Best evidence.")
+        return subject
+    return subject.candidates[best_bound_rank(subject, binding, verify_metrics=verify_metrics)].reference
 
 
 def state_key(owner: str, symbol: str) -> str:
@@ -174,6 +209,20 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
             kind="TrainingRunManifest", id=receipt.manifest_id, role="subject",
             metadata={"manifest_sha256": receipt.manifest_sha256},
         )]
+        if best := binding.get("best_rank"):
+            metadata["best_rank"] = {
+                "rank": best["rank"], "key": best["key"],
+                "candidates": [
+                    {
+                        "attempt": claim["completion"]["producer_job_id"],
+                        "request_id": claim["completion"]["request_id"],
+                        "receipt_sha256": claim["completion"]["receipt"]["manifest_sha256"],
+                        "binding_sha256": claim["completion"]["binding_sha256"],
+                        "score": claim["score"],
+                    }
+                    for claim in best["candidates"]
+                ],
+            }
     parents = []
     for member in members:
         checkpoint = member["checkpoint"]
@@ -200,7 +249,7 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
 def decode_evaluation_manifest(
     store: ImmutableArtifactBlobProvider, raw: bytes, ref: ContentObjectRef,
     job_id: str, request_id: str, receipt: JobReceipt,
-) -> tuple[EvaluationRunManifest, ProductRef]:
+) -> tuple[EvaluationRunManifest, ProductRef | BestRank]:
     if receipt.manifest_id != evaluation_manifest_id(job_id):
         raise ValueError("Evaluation receipt names a different attempt.")
     if ref.sha256 != receipt.manifest_sha256:
@@ -229,13 +278,14 @@ def decode_evaluation_manifest(
 def verify_evaluation_receipt(
     root: Path, *, attempt: str, request_id: str, project: str, receipt: JobReceipt, binding: dict,
     manifest_object: ContentObjectRef,
-) -> tuple[EvaluationRunManifest, ProductRef]:
+) -> tuple[EvaluationRunManifest, ProductRef | BestRank]:
     """Authenticate the worker receipt against the exact Host dependency."""
     store = ImmutableArtifactBlobProvider(root)
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, attempt, request_id, receipt,
     )
-    if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
+    selected_subject = exact_evaluation_subject(subject, binding)
+    if (coordinates := evaluation_checkpoint_coordinates(selected_subject)) is not None:
         selection = binding["checkpoint_selection"]
         members = selection["members"]
         if (
@@ -251,7 +301,7 @@ def verify_evaluation_receipt(
     else:
         members = [binding["completion"]]
     if any(
-        member["request_id"] != subject.request_id
+        member["request_id"] != selected_subject.request_id
         or member["project_id"] != project
         or member["manifest_root"] != str(root)
         for member in members

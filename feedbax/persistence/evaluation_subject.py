@@ -11,16 +11,18 @@ from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, ContentRef, InputMember, LastMember, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_projection
 from feedbax.contracts.studio_training import StudioGraphMethodPayload
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.studio.canonical_evaluate import decode_evaluation_manifest, evaluation_manifest_id, states_product
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects
+from feedbax.host.best_selection import rank_train_metric
 
 
 def checkpoint_transaction(
@@ -110,13 +112,58 @@ def evaluation_subject_objects(
     """Verify a frozen Evaluate projection without selecting a current Train result."""
     source, reference = bound.evaluation_subject, member.reference
     if (
-        source is None or bound.key != member.key or not isinstance(reference, ProductRef)
-        or reference.role != "checkpoint" or source.producer.id != reference.request_id
+        source is None or bound.key != member.key
         or not isinstance(request.spec, EvaluationRequestSpec) or request.spec.evaluation_type != ROLLOUT_TYPE
         or bound.content.media_type != EVALUATION_SUBJECT_MEDIA_TYPE or not bound.content.tree
     ):
         raise ValueError("Malformed managed Evaluate subject")
     objects = [source.producer.object, *source.producer.documents]
+    if isinstance(reference, BestRank):
+        scores = []
+        for candidate, claim in zip(reference.candidates, source.ranked_candidates, strict=True):
+            if claim.producer.id != candidate.reference.request_id:
+                raise ValueError("Best receipt lists a different candidate")
+            checkpoint = claim.checkpoint
+            refs = (
+                claim.receipt, checkpoint.transaction, checkpoint.train_binding,
+                claim.producer.object, *claim.producer.documents,
+            )
+            if visitors is not None:
+                for ref in refs:
+                    visitors.object(ref)
+            raw = store.get_object(claim.receipt)
+            scores.append(rank_train_metric(raw, JobReceipt(
+                manifest_id=training_run_manifest_id(claim.attempt), manifest_sha256=claim.receipt.sha256,
+            ), claim.attempt, reference.metric))
+            producer_request = read_success_request(claim.producer, store.get_object)
+            transaction = checkpoint_transaction(store, checkpoint)
+            method = _verify_train_contract(store, checkpoint, transaction, producer_request, claim.producer)
+            _verify_terminal(store, claim.receipt, checkpoint, method.target_total)
+            receipt = load_manifest_bytes(raw)
+            launch = BoundStudioTrainingJobInput.model_validate_json(store.get_object(checkpoint.train_binding))
+            if (
+                not isinstance(receipt, TrainingRunManifest) or receipt.training_spec is None
+                or TrainingRunSpec.model_validate(receipt.training_spec.inline) != launch.spec
+                or transaction.completed_training_batches != method.target_total
+            ):
+                raise ValueError("Best score is detached from its admitted Train execution")
+            if receipt.inherited_terminal_checkpoint is not None:
+                resume = launch.resume
+                if (
+                    resume is None or resume.completed_updates != method.target_total
+                    or (resume.pointer.run_id, resume.pointer.transaction_id, resume.pointer.manifest_sha256)
+                    != (checkpoint.occurrence.run_id, checkpoint.occurrence.transaction_id, checkpoint.occurrence.manifest_sha256)
+                ):
+                    raise ValueError("Best receipt inherited a different terminal checkpoint")
+            objects.extend(refs)
+        winner = reference.winner(scores)
+        if source.terminal_receipt != source.ranked_candidates[winner].receipt:
+            raise ValueError("Evaluate receipt does not retain the ranked producer's terminal receipt")
+        reference = reference.candidates[winner].reference
+    elif source.ranked_candidates:
+        raise ValueError("Fixed Evaluate subject contains Best evidence")
+    if not isinstance(reference, ProductRef) or reference.role != "checkpoint" or source.producer.id != reference.request_id:
+        raise ValueError("Evaluate receipt names a different Train request")
     if visitors is not None:
         for ref in objects:
             visitors.object(ref)
@@ -209,7 +256,7 @@ def verify_evaluation_success_evidence(
 ) -> tuple[ContentObjectRef, ...]:
     ref = success.evaluation_manifest
     assert ref is not None
-    manifest, _ = decode_evaluation_manifest(
+    manifest, subject = decode_evaluation_manifest(
         store, store.get_object(ref), ref, success.attempt, success.request.id,
         JobReceipt(manifest_id=evaluation_manifest_id(success.attempt), manifest_sha256=ref.sha256),
     )
@@ -242,6 +289,22 @@ def verify_evaluation_success_evidence(
     ):
         raise ValueError("Accepted Evaluate manifest names different checkpoint coverage")
     evidence = [ref]
+    best = manifest.provenance.metadata.get("best_rank")
+    if isinstance(subject, BestRank):
+        if (
+            not isinstance(best, dict)
+            or (best.get("rank"), best.get("key")) != (subject.rank, subject.key)
+            or len(source.ranked_candidates) != len(subject.candidates)
+        ):
+            raise ValueError("Accepted Evaluate manifest lacks its ranked candidate evidence")
+        for evidence_item, claim in zip(best["candidates"], source.ranked_candidates, strict=True):
+            if (
+                evidence_item["attempt"], evidence_item["request_id"],
+                evidence_item["receipt_sha256"], evidence_item["binding_sha256"],
+            ) != (claim.attempt, claim.producer.id, claim.receipt.sha256, claim.checkpoint.train_binding.sha256):
+                raise ValueError("Accepted Evaluate manifest names different ranked candidate evidence")
+    elif best is not None or source.ranked_candidates:
+        raise ValueError("Fixed Evaluate manifest contains ranked candidate evidence")
     if source.closure is not None and verify_bound_closure:
         evidence.append(source.closure.checkpoint.transaction)
         if visitors is not None:

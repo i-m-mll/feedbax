@@ -9,11 +9,13 @@ from unittest.mock import patch
 import numpy as np
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
+from feedbax.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
@@ -130,6 +132,21 @@ def seed_series_variants(home: str):
     return project_id
 
 
+def train_measures(home: str, project: str, metric: str, *attempts: str):
+    host = HostClient(AppPaths.resolve(instance_root=Path(home)).host)
+    jobs = {job["id"]: job for job in host.jobs_snapshot(project=project, start_host=False)["jobs"]}
+    values = {}
+    for attempt in attempts:
+        completion = jobs[attempt]["outcome"]["completion"]
+        verify_bound_training_completion(completion)
+        manifest = load_manifest(canonical_manifest_path(
+            "TrainingRunManifest", completion["receipt"]["manifest_id"],
+            root=Path(completion["manifest_root"]),
+        ))
+        values[attempt] = manifest.summary_metrics[metric]
+    return values
+
+
 def observe(home: str, project: str, revision: str, trial_index: str):
     paths = AppPaths.resolve(instance_root=Path(home))
     folders = ProjectFolderService(paths.web / "projects")
@@ -206,5 +223,5 @@ if __name__ == "__main__":
     print(json.dumps({
         "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
-        "scoped-series-files": scoped_series_files,
+        "scoped-series-files": scoped_series_files, "train-measures": train_measures,
     }[action](*args)))

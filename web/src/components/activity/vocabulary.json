@@ -98,7 +98,6 @@
     "overlays": "Overlays",
     "path": "Path",
     "pause": "Pause",
-    "per": "Per",
     "pipelineMap": "Pipeline Map",
     "pivot": "Pivot",
     "play": "Play",
@@ -382,6 +381,8 @@
   "format": {
     "bestSubset": "{order} {metric} · {count}",
     "subsetPer": "Per {axes}",
+    "rankedMember": "Rank {rank}",
+    "boundRankedMember": "Rank {rank} · {producer}",
     "trainedValue": "Trained by {step}",
     "evaluateChangedValue": "Changed by {step}",
     "ofCount": "{count} of {total}",

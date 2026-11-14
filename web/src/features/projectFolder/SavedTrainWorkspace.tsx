@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
-import { prepareCheckpointRuleEdit } from '@/api/studioAuthoring';
+import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
@@ -37,7 +37,7 @@ import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { projectWindowPlan, planVariants, savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
+import { projectWindowPlan, planVariants, savedRunId, stepSourceRows, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
@@ -331,11 +331,24 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         status === 'stopped' || status === 'interrupted' || status === 'corrupt'))] : runnableTrainRows;
   const evaluationAuthoring = wholeStep && !saved.project.sweep && authored && ordinaryEvaluation(authored);
   const evaluationSource = evaluationAuthoring && plan.steps.find(({ id }) => id === evaluationAuthoring.subject.step);
-  const authoredMap = projection.data?.window_map;
+  const authoredMap = data?.window_map;
   const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
     ?.inputs.find(({ id }) => id === 'subject');
   const subjectSubset = subject?.subset;
-  const subjectIds = subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
+  const rankCount = subjectSubset?.ranks?.length ?? 0;
+  const rankedSubjects = rankCount > 0 ? authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
+    key.variant === variant && key.step === step?.id && bound_subject ? [bound_subject] : []) ?? [] : [];
+  const subjectsByRank = new Map(rankedSubjects.map((bound) => [bound.key, bound]));
+  const rankedAttempts = subjectSubset?.ranks?.flatMap((key) => {
+    const attempt = subjectsByRank.get(key)?.consumer_job_id;
+    return attempt ? [attempt] : [];
+  }) ?? [];
+  const freezeAttempts = rankCount > 0 && rankedAttempts.length === rankCount &&
+    new Set(rankedSubjects.map(({ selection_sha256 }) => selection_sha256)).size === 1
+    ? rankedAttempts : undefined;
+  const subjectIds = rankCount > 0
+    ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
+    : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
   const evaluationEditor = evaluationSource && evaluationAuthoring && authoredMap?.rows.some(({ key, evaluation_conditions }) =>
     key.step === evaluationSource.id && key.variant === variant && evaluation_conditions != null)
     ? {
@@ -691,6 +704,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     void perform(async () => {
       editor.editFiles(name, [{ address: { kind: 'step', id: step.id }, patches: [patch] }], {
         reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }],
+      });
+      await editor.flush();
+    });
+  }
+
+  function freezeEvaluationSubset() {
+    if (!step || !variant || !subject || !freezeAttempts || !ready) return;
+    void perform(async () => {
+      const reviewed = await prepareSubsetToRows(saved.project_id, {
+        revision: saved.revision, variant, step: step.id, attempts: freezeAttempts,
+      }, editor.signal);
+      editor.editFiles(studioName('toRows'), reviewed.files, {
+        reviewedRevision: reviewed.revision, dependencies: [{ kind: 'step', id: subject.source_step_id }],
       });
       await editor.flush();
     });
@@ -1062,12 +1088,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
                   disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
                   onSave={editEvaluationCheckpoint}
                   onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-              {evaluationEditor && projection.data && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
+              {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
                 authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
-                source={evaluationEditor.source} projection={projection.data} domain={evaluationEditor.domain}
+                source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
+                domain={evaluationEditor.domain}
                 editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
                 disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
-                onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation} />}
+                onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
+                onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
             </div> : undefined,
             inspector: selectedRuns(step, state.selection).length > 0
               ? <StudioRunDetails step={step} state={state} /> : undefined,

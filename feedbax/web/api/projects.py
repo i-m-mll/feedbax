@@ -33,6 +33,7 @@ from feedbax.contracts.studio_project import (
 )
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
+from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, TrainFieldRequest, TrainFieldResponse
 from feedbax.web.services.project_folder import (
@@ -155,6 +156,13 @@ def edit_checkpoint_rule(
     return _project_response(response, lambda: prepare_checkpoint_rule_edit(
         request.app.state.project_folders, project_id, body,
     ))
+
+
+@router.post("/{project_id}/authoring/subset-to-rows", response_model_exclude_unset=True)
+def prepare_subset_to_rows(
+    project_id: ProjectName, body: StudioSubsetToRowsRequest, request: Request, response: Response,
+) -> StudioSubsetToRowsEdit:
+    return _project_response(response, lambda: request.app.state.project_plan.subset_to_rows(project_id, body))
 
 
 @router.post("/{project_id}/authoring/trials")
