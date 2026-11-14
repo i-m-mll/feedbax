@@ -389,6 +389,7 @@
     "withUnit": "{name} ({unit})",
     "fieldLabel": "{label} {name}",
     "fieldKind": "{label} {name}: {value}",
+    "runAnnouncement": "{run}: {status}",
     "fieldValue": "{label} {name} {index}",
     "fieldValueName": "{label} {name} {index} {nameField}"
   },

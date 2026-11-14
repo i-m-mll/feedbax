@@ -200,9 +200,13 @@ export function StudioRunControls({ commands, pivotCommand, pivotActive, reason 
 }) {
   return <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
     {commands?.map((command) => (
-      <button type="button" key={command.id} {...commandAttributes(command)} disabled={!command.enabled}
+      <button type="button" key={command.id} {...commandAttributes(command)}
+        disabled={!command.enabled && command.id !== 'run'}
+        aria-disabled={!command.enabled && command.id === 'run' || undefined}
+        tabIndex={!command.enabled && command.id === 'run' ? -1 : undefined}
         aria-description={!command.enabled ? reason : undefined}
-        className="shrink-0 rounded border border-shell-divider px-2 py-1 disabled:opacity-50" onClick={command.invoke}>
+        className="shrink-0 rounded border border-shell-divider px-2 py-1 disabled:opacity-50 aria-disabled:opacity-50"
+        onClick={command.enabled ? command.invoke : undefined}>
         {studioName(command.name)}
       </button>
     ))}

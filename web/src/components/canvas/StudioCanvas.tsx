@@ -4,7 +4,7 @@ import {
 } from '@xyflow/react';
 import {
   useCallback, useEffect, useId, useImperativeHandle, useRef, useState,
-  type KeyboardEvent, type ReactNode, type Ref,
+  type KeyboardEvent, type MouseEvent, type ReactNode, type Ref,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { studioName } from '@/components/activity/studioVocabulary';
@@ -66,7 +66,7 @@ function adjacentControl(root: HTMLElement, current: HTMLElement, [dx, dy]: read
 /** The shared mounted canvas, with a viewport independent of the region's size. */
 export function StudioCanvas({
   contentBounds, fitReady = true, fitNewContent = false, lockAutoFit = false, viewportRef, navigateContent = false,
-  children, onMove, minZoom = 0.5, maxZoom = 2, ...flow
+  children, onMove, minZoom = 0.5, maxZoom = 2, zoomOnDoubleClick = true, ...flow
 }: Props) {
   const flowId = useId();
   const { viewportInitialized, getViewport, setViewport, zoomIn, zoomOut } = useReactFlow();
@@ -142,7 +142,26 @@ export function StudioCanvas({
     event.preventDefault();
     next?.focus({ preventScroll: true });
   }
+  function zoomWithoutMotion(event: MouseEvent<HTMLDivElement>) {
+    if (!zoomOnDoubleClick || event.ctrlKey || !(event.target instanceof HTMLElement) ||
+        !event.target.classList.contains('react-flow__pane') ||
+        !window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current = getViewport();
+    const zoom = Math.max(minZoom, Math.min(maxZoom, current.zoom * (event.shiftKey ? 0.5 : 2)));
+    const bounds = event.target.getBoundingClientRect();
+    const x = event.clientX - bounds.left;
+    const y = event.clientY - bounds.top;
+    moved.current = true;
+    void setViewport({
+      x: x - (x - current.x) * zoom / current.zoom,
+      y: y - (y - current.y) * zoom / current.zoom,
+      zoom,
+    });
+  }
   return <div ref={root} className="relative h-full min-h-0 min-w-0 flex-1 overflow-hidden"
+    onDoubleClickCapture={zoomWithoutMotion}
     onFocusCapture={navigateContent ? (event) => {
       const control = event.target;
       if (!control.closest('[data-canvas-item]')) return;
@@ -158,7 +177,8 @@ export function StudioCanvas({
       setMenu({ x: event.clientX, y: event.clientY });
     } : undefined}>
     <ReactFlow nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null}
-      id={flowId} {...flow} minZoom={minZoom} maxZoom={maxZoom} proOptions={{ hideAttribution: true }}
+      id={flowId} {...flow} minZoom={minZoom} maxZoom={maxZoom} zoomOnDoubleClick={zoomOnDoubleClick}
+      proOptions={{ hideAttribution: true }}
       onMove={(event, camera) => { if (event) moved.current = true; onMove?.(event, camera); }}>
       {children}
     </ReactFlow>

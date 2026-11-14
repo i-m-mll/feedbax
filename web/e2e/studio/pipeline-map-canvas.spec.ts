@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
-import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { captureStudioWindow, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('navigates and resizes the saved pipeline canvas without changing zoom', async ({ page, request }, info) => {
-  test.setTimeout(42_000);
+  test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };
   train.step.base.inline.method_payload.payload.seed = 0;
@@ -81,6 +81,45 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await mark(excluded).press('Escape');
   await expect(mark(excluded)).toHaveAttribute('aria-pressed', 'true');
 
+  const fitMap = async () => {
+    await mapStep(page, 'train').press('Shift+F10');
+    await page.getByRole('menuitem', { name: 'Fit View', exact: true }).press('Enter');
+  };
+  const paneControl = canvas.locator('.react-flow__pane');
+  const motion = [];
+  for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+    await page.emulateMedia({ reducedMotion });
+    await fitMap();
+    const before = await camera();
+    const bounds = (await paneControl.boundingBox())!;
+    const point = { x: bounds.width - 80, y: bounds.height - 40 };
+    const samples = viewport.evaluate((node) => new Promise<number[]>((resolve) => {
+      node.ownerDocument.addEventListener('dblclick', () => {
+        const start = performance.now();
+        const frames: number[] = [];
+        const sample = () => {
+          frames.push(new DOMMatrixReadOnly(getComputedStyle(node).transform).a);
+          if (performance.now() - start < 350) requestAnimationFrame(sample);
+          else resolve(frames);
+        };
+        sample();
+      }, { capture: true, once: true });
+    }));
+    await paneControl.dblclick({ position: point });
+    const frames = await samples;
+    const after = await camera();
+    expect(after.zoom).toBeCloseTo(before.zoom * 2);
+    expect((point.x - after.x) / after.zoom).toBeCloseTo((point.x - before.x) / before.zoom);
+    expect((point.y - after.y) / after.zoom).toBeCloseTo((point.y - before.y) / before.zoom);
+    const intermediate = frames.filter((zoom) => zoom > before.zoom + 0.001 && zoom < after.zoom - 0.001);
+    if (reducedMotion === 'reduce') expect(intermediate).toEqual([]);
+    else expect(intermediate.length).toBeGreaterThan(0);
+    motion.push({ reducedMotion, before, after, frames });
+  }
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await fitMap();
+  await info.attach('pipeline-zoom-motion', { body: JSON.stringify(motion), contentType: 'application/json' });
+
   const initial = await camera();
   await mapStep(page, 'train').press('Shift+F10');
   const menu = page.getByRole('menu', { name: 'Pipeline Map' });
@@ -124,4 +163,29 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   const persisted = await reopened.json() as StudioProjectSnapshot;
   expect(persisted.revision).toBe(snapshot.revision);
   expect(persisted.presentation_revision).toBe(snapshot.presentation_revision);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const submitted = await request.post(`${projectPath}/train-runs`, {
+    data: { revision: snapshot.revision, run_keys: [included.key], token: crypto.randomUUID() },
+  });
+  expect(submitted.status(), await submitted.text()).toBe(202);
+  expect((await submitted.json() as StudioJobSubmission).items[0].disposition).toBe('admitted');
+  await mapStep(page, 'train').press('Enter');
+  await expect(mark(included)).toHaveAccessibleName(/ · Done$/, { timeout: 18_000 });
+  await expect(mark(excluded)).toHaveAccessibleName(/ · Not run$/);
+  const done = mark(included).locator('[data-run-status-mark="succeeded"] path');
+  const idle = mark(excluded).locator('[data-run-status-mark="not_run"] path');
+  await expect(done).toBeVisible();
+  await expect(idle).toBeVisible();
+  expect(await done.getAttribute('d')).not.toBe(await idle.getAttribute('d'));
+  await expect(child.getByText('2 Not run', { exact: true })).toBeVisible();
+  await expect(page.getByRole('log', { name: 'Status' }).getByText(/^Train · train · seed=.+: Done$/)).toHaveCount(1);
+  const vision = await page.context().newCDPSession(page);
+  try {
+    await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'achromatopsia' });
+    await captureStudioWindow(page, info, 'mixed-authored-status-glyphs');
+  } finally {
+    await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'none' });
+    await vision.detach();
+  }
 });

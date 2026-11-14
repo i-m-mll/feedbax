@@ -81,7 +81,7 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
   }
 });
 
-test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }) => {
+test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
@@ -89,11 +89,39 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   const card = page.getByRole('article', { name: 'Train train' });
   const drawer = page.getByRole('navigation', { name: 'Steps' });
   const table = page.getByRole('table', { name: 'Runs' });
+  const status = page.getByRole('log', { name: 'Status', exact: true });
+  const runButton = page.getByRole('button', { name: 'Run', exact: true });
+  await expect(status).toBeEmpty();
+  await expect(status).toHaveAttribute('aria-live', 'polite');
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const activityRow = activity.getByRole('listitem').filter({
+    has: page.getByRole('button', { name: `Train ${snapshot.project_id} train`, exact: true }),
+  });
+  let submissions = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === projectPath + '/train-runs') submissions += 1;
+  });
   const run = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === `${projectPath}/train-runs`);
-  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await runButton.press('Enter');
+  await expect(runButton).toBeFocused();
+  await expect(runButton).toBeDisabled();
+  await page.keyboard.press('Enter');
   expect((await run).status()).toBe(202);
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(runButton).toBeFocused();
+  expect(submissions).toBe(1);
+  await expect(activityRow.getByText('Done', { exact: true })).toBeVisible();
+  await expect(status.getByText('Train · train: Done', { exact: true })).toHaveCount(1);
+  const messages = await status.locator(':scope > div').allTextContents();
+  expect(messages.length).toBeGreaterThan(1);
+  expect(new Set(messages).size).toBe(messages.length);
+  for (const message of messages) expect(message).toMatch(/^Train · train: /);
+  await expect(table.locator('tbody [aria-live]')).toHaveCount(0);
+  await expect(activityRow.locator('[aria-live]')).toHaveCount(0);
+  await info.attach('train-status-announcements', { body: JSON.stringify(messages), contentType: 'application/json' });
+  await activity.getByRole('button', { name: 'Close', exact: true }).click();
 
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });

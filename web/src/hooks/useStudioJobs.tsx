@@ -15,7 +15,8 @@ import {
   resumeStudioJob,
   stopStudioJobs,
 } from '@/api/jobs';
-import type { StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
+import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
+import { studioFormat, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import {
   STUDIO_JOBS_WORKER_NAME,
   type StudioJobConnection,
@@ -41,6 +42,7 @@ function useStudioJobsContext() {
 
 export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ projectId: string | null }>) {
   const cache = useQueryClient();
+  const ownsAnnouncements = !useContext(StudioJobsContext);
   // The window owns replay. Closing its last inspector must not cancel it.
   useQuery<StudioJobEvent[]>({
     queryKey: historyKey(projectId),
@@ -48,6 +50,8 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     notifyOnChangeProps: [],
   });
   const [connection, setConnection] = useState<StudioJobConnection>('connecting');
+  const [announcements, setAnnouncements] = useState<{ id: number; text: string }[]>([]);
+  const announcementId = useRef(0);
   const retry = useRef<(() => void) | null>(null);
   const activePort = useRef<MessagePort | null>(null);
 
@@ -57,7 +61,30 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     let buffered: StudioJobEvent[] | null = null;
     let historyReady = false;
     let snapshotReady = false;
+    let announcedThrough = 0;
+    const statuses = new Map<string, StudioActivityJob['status']>();
+    let initialSnapshot = true;
     const history = historyKey(projectId);
+
+    function announce(jobs: readonly StudioActivityJob[], silent = false) {
+      if (!ownsAnnouncements) return;
+      const updates = jobs.flatMap((job) => {
+        if (projectId !== null && projectId !== job.project_id) return [];
+        const previous = statuses.get(job.job_id);
+        statuses.set(job.job_id, job.status);
+        if (silent || previous === job.status) return [];
+        const run = [
+          projectId === null && job.project_id,
+          studioName(job.kind),
+          job.stage_id,
+          job.label !== job.stage_id && job.label,
+          job.scenario_id !== 'default' && job.scenario_id,
+        ].filter(Boolean).join(' · ');
+        return [{ id: ++announcementId.current,
+          text: studioFormat('runAnnouncement', { run, status: studioRunStatus(job.status) }) }];
+      });
+      if (updates.length) setAnnouncements((items) => [...items, ...updates].slice(-20));
+    }
 
     function apply(event: StudioJobEvent) {
       const { activity } = event;
@@ -70,6 +97,10 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
             : [...snapshot.jobs, activity];
           return { ...snapshot, cursor: event.cursor, jobs };
         });
+        if (snapshotReady && event.cursor > announcedThrough) {
+          announcedThrough = event.cursor;
+          announce([activity]);
+        }
       }
       if (projectId === event.project_id && historyReady) {
         cache.setQueryData<StudioJobEvent[]>(history, (events = []) => {
@@ -99,6 +130,9 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         });
         if (current !== generation) return;
         through = snapshot.cursor;
+        announcedThrough = through;
+        announce(snapshot.jobs, initialSnapshot);
+        initialSnapshot = false;
         snapshotReady = true;
         if (projectId !== null) {
           await cache.fetchQuery({
@@ -194,7 +228,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       retry.current = null;
       close();
     };
-  }, [cache, projectId]);
+  }, [cache, ownsAnnouncements, projectId]);
 
   const context = useMemo(() => ({
     connection,
@@ -205,7 +239,12 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     },
   }), [connection]);
 
-  return <StudioJobsContext.Provider value={context}>{children}</StudioJobsContext.Provider>;
+  return <StudioJobsContext.Provider value={context}>
+    {children}
+    {ownsAnnouncements && <div role="log" aria-label={studioName('status')} aria-live="polite" aria-relevant="additions" className="sr-only">
+      {announcements.map(({ id, text }) => <div key={id}>{text}</div>)}
+    </div>}
+  </StudioJobsContext.Provider>;
 }
 
 export function useStudioJobs() {

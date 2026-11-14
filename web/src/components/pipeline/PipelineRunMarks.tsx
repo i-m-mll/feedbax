@@ -1,6 +1,6 @@
 import { memo, useMemo, type KeyboardEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { studioRunMarkClass } from '@/components/activity/StudioRunStatus';
+import { StudioRunMark } from '@/components/activity/StudioRunStatus';
 import {
   studioAccessibleName,
   studioCountOf,
@@ -109,17 +109,13 @@ function MarkButton({
       data-map-focus={lineage}
       data-boxed={selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}
-      className="studio-map-run-mark relative h-3 w-3 shrink-0 rounded-[2px]"
+      className="studio-map-run-mark relative inline-flex shrink-0 gap-px rounded-sm"
       {...selectionButton((extend) => {
         if (mark.kind === 'group') applySelection(() => selectSweepGroup(stepId, mark.terms));
         else applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
       })}
     >
-      <span aria-hidden="true" className="absolute inset-0 flex overflow-hidden rounded-[2px]">
-        {statuses.map(([state, count]) => (
-          <span key={state} className={studioRunMarkClass(state)} style={{ flexGrow: count }} />
-        ))}
-      </span>
+      {statuses.map(([state, count]) => <StudioRunMark key={state} status={state} count={count} />)}
       {selectedCount > 0 && mark.kind === 'group' && (
         <span
           aria-hidden="true"

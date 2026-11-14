@@ -12,7 +12,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { studioRunMarkClass } from '@/components/activity/StudioRunStatus';
+import { StudioRunMark } from '@/components/activity/StudioRunStatus';
 import {
   studioAccessibleName,
   studioCountOf,
@@ -126,7 +126,7 @@ function StatusCounts({ id, counts, onProblems }: {
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
         if (count <= 0 && !problem) return null;
-        const mark = <><span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${studioRunMarkClass(status)}`} />
+        const mark = <><StudioRunMark status={status} />
           {count > 0 ? `${count} ` : ''}{studioRunStatus(status)}</>;
         return problem
           ? <button type="button" key={status} className={`${className} underline`} aria-haspopup="dialog"
@@ -150,30 +150,6 @@ function StepName({ step }: { step: PlanStepView }) {
       <span data-map-kind-label className="shrink-0 text-xs text-shell-muted">{name}</span>
     </span>
   );
-}
-
-function CompactStatus({ id, counts, onProblems, related, total }: {
-  id: string;
-  counts: PlanStepView['statusCounts'];
-  onProblems?: (opener: HTMLButtonElement) => void;
-  related: number;
-  total: number;
-}) {
-  const statuses = (Object.entries(counts) as [StudioRunStatusId, number][]).filter(([, count]) => count > 0);
-  const names = statuses.map(([status, count]) => `${count} ${studioRunStatus(status)}`);
-  if (onProblems && !counts.cannot_run) names.push(studioRunStatus('cannot_run'));
-  return <>
-    <span id={id} className="sr-only">{names.join(' · ')}</span>
-    <div aria-hidden="true" className="relative flex h-1.5 overflow-hidden rounded-sm">
-      {statuses.map(([status, count]) => <span key={status} className={studioRunMarkClass(status)} style={{ flexGrow: count }} />)}
-      {related > 0 && total > 0 && <span className="absolute left-0 top-0 border-t-2 border-dotted border-shell-foreground"
-        style={{ width: `${100 * related / total}%` }} />}
-    </div>
-    {onProblems && <button type="button" className="text-xs text-shell-muted underline"
-      aria-haspopup="dialog" onClick={(event) => onProblems(event.currentTarget)}>
-      {counts.cannot_run ? `${counts.cannot_run} ` : ''}{studioRunStatus('cannot_run')}
-    </button>}
-  </>;
 }
 
 export function bindSweepFold(
@@ -388,8 +364,11 @@ const StepCard = memo(function StepCard({
         </button>
       </header>
       {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
-      {compact ? <CompactStatus id={`${id}-status`} counts={step.statusCounts}
-        onProblems={problem} related={related} total={step.runs.length} /> : <>
+      {compact ? <>
+        <StatusCounts id={`${id}-status`} counts={step.statusCounts} onProblems={problem} />
+        {related > 0 && <span aria-hidden="true" className="block border-t-2 border-dotted border-shell-foreground"
+          style={{ width: `${100 * related / step.runs.length}%` }} />}
+      </> : <>
       <StepShape
         step={step}
         sweeps={sweeps}

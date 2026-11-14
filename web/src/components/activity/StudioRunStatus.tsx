@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import type { StudioActivityJob } from '@/generated/studioContracts';
 import {
   studioName,
@@ -8,34 +9,42 @@ import {
   type StudioRunStatusId,
 } from './studioVocabulary';
 
-const statusColors: Record<StudioRunStatusId, string> = {
-  not_run: 'bg-shell-status-idle',
-  cannot_run: 'bg-shell-status-failure',
-  stale: 'bg-shell-status-warning',
-  queued: 'bg-shell-status-neutral',
-  awaiting_authorization: 'bg-shell-status-warning',
-  blocked: 'bg-shell-status-failure',
-  starting: 'bg-shell-status-running',
-  running: 'bg-shell-status-running',
-  stopping: 'bg-shell-status-warning',
-  collecting: 'bg-shell-status-running',
-  succeeded: 'bg-shell-status-success',
-  failed: 'bg-shell-status-failure',
-  stopped: 'bg-shell-status-neutral',
-  interrupted: 'bg-shell-status-warning',
-  corrupt: 'bg-shell-status-failure',
-};
+const statusMarks = {
+  not_run: ['bg-shell-status-idle', 'M3 6h6'],
+  cannot_run: ['bg-shell-status-failure', 'M6 2v5m0 2v1'],
+  stale: ['bg-shell-status-warning', 'M3 7a3 3 0 1 0 1-3m-1-2v3h3'],
+  queued: ['bg-shell-status-neutral', 'M2 4h8M2 8h8'],
+  awaiting_authorization: ['bg-shell-status-warning', 'M4 5V4a2 2 0 0 1 4 0v1M3 5h6v5H3z'],
+  blocked: ['bg-shell-status-failure', 'M4 2v8M8 2v8'],
+  starting: ['bg-shell-status-running', 'M3 8l3-4 3 4'],
+  running: ['bg-shell-status-running', 'M4 3l5 3-5 3z'],
+  stopping: ['bg-shell-status-warning', 'M3 3h6v6H3z'],
+  collecting: ['bg-shell-status-running', 'M6 2v6M3 5l3 3 3-3M3 10h6'],
+  succeeded: ['bg-shell-status-success', 'M2.5 6l2.5 2.5 4.5-5'],
+  failed: ['bg-shell-status-failure', 'M3 3l6 6m0-6L3 9'],
+  stopped: ['bg-shell-status-neutral', 'M3 6h6M6 3v6'],
+  interrupted: ['bg-shell-status-warning', 'M4 8l4-4'],
+  corrupt: ['bg-shell-status-failure', 'M3 9l3-6 3 6z'],
+} satisfies Record<StudioRunStatusId, readonly [string, string]>;
 
 const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
-export function studioRunMarkClass(status: StudioRunStatusId) {
-  return statusColors[status];
+export function StudioRunMark({ status, count }: { status: StudioRunStatusId; count?: number }) {
+  const [color, path] = statusMarks[status];
+  return (
+    <span aria-hidden="true" data-run-status-mark={status} className={`flex h-4 min-w-4 items-center justify-center rounded-sm text-white ${color}`}
+      style={count === undefined ? undefined : { flexGrow: count } satisfies CSSProperties}>
+      <svg className="size-4 shrink-0" viewBox="0 0 12 12">
+        <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
 }
 
 export function StudioRunStatus({ status }: { status: StudioRunStatusId }) {
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-shell-muted" aria-live="polite">
-      <span aria-hidden="true" className={`size-2 rounded-full ${studioRunMarkClass(status)}`} />
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-shell-muted">
+      <span aria-hidden="true" className={`size-2 rounded-full ${statusMarks[status][0]}`} />
       {studioRunStatus(status)}
     </span>
   );
