@@ -461,7 +461,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await list.getByRole('button', { name: /Components · Model has no components/ }).click();
   const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
-  await expect(empty.locator('header')).toContainText('empty-model');
+  await expect(empty.locator(':scope > header')).toContainText('empty-model');
   await expect(emptyReason).toBeFocused();
   await expect(page.getByRole('article', { name: 'Train empty' }).locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
