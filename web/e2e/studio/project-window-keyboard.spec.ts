@@ -273,17 +273,25 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(portDialog).toBeHidden();
 
   async function connect(source: Locator, target: Locator) {
-    await expect(source).toHaveAttribute('aria-disabled', 'false');
+    const { revision } = await savedProject();
     await page.keyboard.press('Meta+2');
     await expect(model).toBeFocused();
+    await expect(source).toBeVisible();
+    await expect(source).toHaveAttribute('aria-disabled', 'false');
     await expect(source).toHaveAttribute('tabindex', '0');
-    await source.focus();
+    for (let hop = 0; hop < 20 && !await source.evaluate((handle) => handle === document.activeElement); hop += 1) {
+      await page.keyboard.press('Tab');
+      expect(await model.evaluate((panel) => panel.contains(document.activeElement))).toBe(true);
+    }
     await expect(source).toBeFocused();
     const reviewed = post(page, projectPath + '/model/connections');
     await page.keyboard.press('Enter');
-    expect((await reviewed).ok()).toBe(true);
+    const review = await reviewed;
+    expect(review.ok(), await review.text()).toBe(true);
+    expect(review.request().postDataJSON()).toMatchObject({ revision });
     await expect(source).toHaveAttribute('aria-disabled', 'true');
     await expect(target).toHaveAttribute('aria-disabled', 'false');
+    await expect(source).toBeFocused();
     for (let count = 0; count < 8 && !await target.evaluate((node) => node === document.activeElement); count += 1) {
       await page.keyboard.press('ArrowRight');
     }
@@ -296,7 +304,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     expect(result.status, result.problem?.detail).toBe('applied');
   }
   const source = linear.locator('[data-handleid="output:output"]');
-  await connect(model.locator('[aria-label="Port reach_target"].react-flow__handle'), linear.locator('[data-handleid="input:input"]'));
+  await connect(model.locator('[data-handleid="output:@task:reach_target"]'), linear.locator('[data-handleid="input:input"]'));
   await connect(source, plant.locator('[data-handleid="input:force"]'));
   await connect(source, output.locator('[aria-label="Port Command"].react-flow__handle'));
 
