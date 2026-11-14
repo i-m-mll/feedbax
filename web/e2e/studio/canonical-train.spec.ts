@@ -283,7 +283,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(await trainRow()).toMatchObject({ result: null, previous: first });
 
   await openResultsSlot(page);
-  await results.getByText('Previous Result', { exact: true }).click();
+  await results.locator('summary').getByText('Previous Result', { exact: true }).click();
   const stopped = await observed();
   expect(stopped).toMatchObject({ current: null, previous: first });
   await expectLoss(firstJob, stopped.loss.previous);
@@ -302,7 +302,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   async function compare() {
     await openResultsSlot(page);
-    await results.getByText('Compare Results', { exact: true }).click();
+    await results.locator('summary').getByText('Compare Results', { exact: true }).click();
     await expect(results.locator('details[open]')).toContainText(changed.change!.path);
     await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
