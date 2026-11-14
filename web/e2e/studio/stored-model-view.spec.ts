@@ -142,6 +142,9 @@ test('authors and reopens an addressed Model through the project history', async
   await card(groupAddress.element.id).locator('header').dblclick();
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
   await page.reload();
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await card(groupAddress.element.id).locator('header').dblclick();
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
   await expect(cell).toHaveCount(1);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
