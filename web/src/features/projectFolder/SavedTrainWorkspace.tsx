@@ -5,7 +5,7 @@ import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
-import { studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -1074,7 +1074,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
                     {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
                     {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
                       {label && <div className="font-medium">{label}</div>}
-                      <ol aria-label={label || studioName('members')} className="list-decimal space-y-0.5 ps-5">
+                      <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
+                        className="list-decimal space-y-0.5 ps-5">
                         {members.map(({ id, label }) => <li key={id}>{label}</li>)}
                       </ol>
                     </div>)}

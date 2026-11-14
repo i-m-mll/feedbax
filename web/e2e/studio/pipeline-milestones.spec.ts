@@ -225,7 +225,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
   const members = inputs.getByRole('list', { name: 'Members', exact: true }).getByRole('listitem');
   const groupLabels = ['replicate First', 'replicate Second'];
-  const groupedLists = groupLabels.map((label) => inputs.getByRole('list', { name: label, exact: true }).getByRole('listitem'));
+  const groupedLists = groupLabels.map((label) =>
+    inputs.getByRole('list', { name: `Members ${label}`, exact: true }).getByRole('listitem'));
   const freeze = drawer.getByRole('button', { name: 'To Rows', exact: true });
   const saveWhere = async (click: () => Promise<void>) => {
     const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
@@ -261,8 +262,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await expect(per).toBeChecked();
     await expect(inputs).toContainText('Per replicate');
     await expect(inputs.getByRole('list')).toHaveCount(2);
-    await expect(inputs.getByRole('list').nth(0)).toHaveAccessibleName(groupLabels[0]);
-    await expect(inputs.getByRole('list').nth(1)).toHaveAccessibleName(groupLabels[1]);
+    await expect(inputs.getByRole('list').nth(0)).toHaveAccessibleName(`Members ${groupLabels[0]}`);
+    await expect(inputs.getByRole('list').nth(1)).toHaveAccessibleName(`Members ${groupLabels[1]}`);
   }
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
   const waiting = await readPlan();
