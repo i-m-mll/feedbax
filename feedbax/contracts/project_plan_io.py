@@ -1,6 +1,6 @@
 """Portable review files for the authored request portion of a Project Plan."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import json
 from typing import Literal
 
@@ -9,9 +9,9 @@ from pydantic import Field, JsonValue
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.project_plan import ElementKey, PlanRequest, PlanRequests, RunKey
-from feedbax.contracts.request_identity import decode_request, stored_request_descriptor
-from feedbax.contracts.request_refs import ProductRef, RequestId, RequestKind, Sha256
+from feedbax.contracts.project_plan import ElementKey, PlanRequest, PlanRequests, RunKey, SubsetSource
+from feedbax.contracts.request_identity import DecodedRequest, decode_request, stored_request_descriptor
+from feedbax.contracts.request_refs import BestRank, ProductRef, RequestId, RequestKind, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
 
@@ -26,12 +26,20 @@ class _RequestGroup(StrictModel):
     requests: dict[RequestId, JsonObject]
 
 
+class _SubsetSource(StrictModel):
+    variant: str
+    step: str
+    role: str
+    source: SubsetSource
+
+
 class _PlanFile(StrictModel):
     schema_version: Literal["feedbax.project-plan.v2"]
     variants: tuple[str, ...] | None = None
     entries: list[PlanRequest]
     request_groups: list[_RequestGroup]
     documents: dict[Sha256, JsonObject | None]
+    subset_sources: list[_SubsetSource] | None = None
 
 
 def run_key(key: RunKey | ElementKey) -> RunKey:
@@ -46,6 +54,7 @@ def select_plan_requests(plan: PlanRequests, variants: Iterable[str] | None) -> 
         {key: entry for key, entry in plan.entries.items() if run_key(key).variant in names},
         plan.requests,
         plan.documents,
+        {key: source for key, source in plan.subset_sources.items() if key[0] in names},
     )
 
 
@@ -119,6 +128,10 @@ def dump_plan_requests(plan: PlanRequests, variants: tuple[str, ...] | None) -> 
         entries=list(scoped.entries.values()),
         request_groups=groups,
         documents={digest: json.loads(scoped.documents[digest]) for digest in sorted(digests)},
+        subset_sources=[
+            _SubsetSource(variant=variant, step=step, role=role, source=source)
+            for (variant, step, role), source in sorted(scoped.subset_sources.items())
+        ] or None,
     )
     return (file.model_dump_json(indent=1, exclude_none=True, by_alias=True) + "\n").encode()
 
@@ -192,4 +205,63 @@ def load_plan_requests(data: bytes) -> tuple[PlanRequests, tuple[str, ...] | Non
                 raise ValueError(
                     f"Element input {role!r} names the wrong producer for {entry.request_id}"
                 )
-    return PlanRequests(entries, requests, documents), file.variants
+    sources = {}
+    for item in file.subset_sources or ():
+        key = item.variant, item.step, item.role
+        if key in sources:
+            raise ValueError(f"Duplicate subset source {key!r}")
+        sources[key] = item.source
+    _validate_subset_sources(entries, decoded, sources, file.variants)
+    return PlanRequests(entries, requests, documents, sources), file.variants
+
+
+def _validate_subset_sources(
+    entries: Mapping[RunKey | ElementKey, PlanRequest],
+    decoded: Mapping[RequestId, DecodedRequest],
+    sources: Mapping[tuple[str, str, str], SubsetSource],
+    variants: tuple[str, ...] | None,
+) -> None:
+    if not sources:
+        return
+    by_step = {}
+    for key, entry in entries.items():
+        if isinstance(key, RunKey):
+            by_step.setdefault((key.variant, key.step), []).append(entry)
+    for (variant, step, role), source in sources.items():
+        rows = {row.key: row for row in source.rows}
+        if len(rows) != len(source.rows):
+            raise ValueError(f"Duplicate subset member for {variant}/{step}/{role}")
+        if role != "subject":
+            raise ValueError(f"Invalid subset source role {role!r}")
+        # Ordered static rows are in the source table. Request inputs keep rank keys,
+        # but a frozen ProductRef alone does not identify its producer row.
+        uses = by_step.get((variant, step), ())
+        if not uses:
+            raise ValueError(f"Subset source has no requests at {variant}/{step}")
+        for entry in uses:
+            members = decoded[entry.request_id].inputs.get(role, ())
+            if rows:
+                valid = all(
+                    isinstance(member.reference, ProductRef)
+                    and (row := rows.get(member.key)) is not None
+                    and _matches_producer(entries, variants, source, row.variant, row.row, member.reference)
+                    for member in members
+                )
+            else:
+                valid = all(isinstance(member.reference, BestRank) and all(
+                    _matches_producer(entries, variants, source, candidate.variant, candidate.row, candidate.reference)
+                    for candidate in member.reference.candidates
+                ) for member in members)
+            if entry.kind != "evaluate" or not members or not valid:
+                raise ValueError(f"Invalid subset source for {entry.request_id} input {role!r}")
+
+
+def _matches_producer(
+    entries: Mapping[RunKey | ElementKey, PlanRequest],
+    variants: tuple[str, ...] | None, source: SubsetSource, variant: str, row: str, reference: ProductRef,
+) -> bool:
+    if variants is not None and variant not in variants:
+        return True
+    key = RunKey(variant, source.producer_step, row)
+    producer = entries.get(key)
+    return producer is not None and producer.request_id == reference.request_id

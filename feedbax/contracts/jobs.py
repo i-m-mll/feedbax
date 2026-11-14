@@ -12,6 +12,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
+from feedbax.contracts.project_sources import SourceKind
 
 
 if TYPE_CHECKING:
@@ -294,10 +295,18 @@ class StudioPlanRequest(StudioPlanRequestAddress):
     request_id: str
 
 
+class StudioPlanReviewSource(StrictModel):
+    kind: SourceKind
+    name: str
+    path: str
+
+
 class StudioPlanReviewEntry(StudioPlanRequest):
     state: Literal["unchanged", "changed", "added", "removed"]
     path: str | None = None
     upstream: StudioPlanRequestAddress | None = None
+    before_source: StudioPlanReviewSource | None = Field(default=None, exclude_if=lambda value: value is None)
+    after_source: StudioPlanReviewSource | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapFigure(StrictModel):

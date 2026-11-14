@@ -9,7 +9,7 @@ from typing import Any, Literal
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patch_copy
 
-type SourceKind = Literal["document", "step", "sweep_value", "exception", "variant", "upstream"]
+SourceKind = Literal["document", "step", "sweep_value", "exception", "variant", "upstream"]
 type Path = tuple[str, ...]
 
 

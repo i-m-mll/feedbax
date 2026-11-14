@@ -1,16 +1,19 @@
 """Rank each known group independently in saved Evaluate."""
 
 from copy import deepcopy
+import json
 
 import pytest
 
+from feedbax.cli import main
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import PlanRequests, compile_project
+from feedbax.contracts.project_plan import ElementChange, PlanRequests, compile_project, diff_plan_requests
 from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
+from feedbax.contracts.project_sources import ValueSource
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.request_refs import BestRank
+from feedbax.contracts.request_refs import BestRank, ProductRef
 from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_subset import StudioSubsetToRowsRequest
 from feedbax.host.best_selection import rank_train_metric
@@ -47,6 +50,18 @@ def evaluation_ranks(plan):
     }
 
 
+def _rank_review(root, target, plan, capsys):
+    assert main(["plan", str(root), "--out", str(target)]) == 0
+    capsys.readouterr()
+    data = target.read_bytes()
+    review, variants = load_plan_requests(data)
+    expected = PlanRequests.from_plan(plan)
+    assert review == expected
+    assert tuple(review.entries) == tuple(expected.entries)
+    assert dump_plan_requests(review, variants) == data
+    return review
+
+
 def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
     raw = grouped_project()
     plan = compile_project(Project.model_validate(raw))
@@ -66,8 +81,34 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
             assert encode_request(request.spec, request.inputs).data == plan.requests[run.request_id]
             assert len(rank.candidates) == 2
             assert {item.row.split("seed=")[1] for item in rank.candidates} == {group.coordinates["seed"]}
-    portable = PlanRequests.from_plan(plan)
-    assert load_plan_requests(dump_plan_requests(portable, None))[0] == portable
+    named = deepcopy(raw)
+    subject = named["steps"]["baseline"]["inputs"]["subject"]
+    named["documents"]["ranked"] = {"schema": "subset", "payload": subject["where"]}
+    subject["where"] = {"subset": "ranked"}
+    named_plan = compile_project(Project.model_validate(named), source_runs=(next(iter(ranks.values())).key,))
+    assert named_plan.requests == plan.requests
+    assert named_plan.subsets["default", "baseline", "subject"].source.origin == ValueSource(
+        "document", "ranked", "/best",
+    )
+    sources, = named_plan.sources.values()
+    assert sources["/inputs/subject/where"] == ValueSource("document", "ranked", "/best")
+    assert "/inputs/subject" not in sources
+
+    named["sweep"] = {"rows": {
+        "default": {},
+        "reverse": {"patches": {"documents.ranked.payload.best.order": {"value": "max"}}},
+    }}
+    varied = Project.model_validate(named)
+    unnamed_plan = compile_project(varied)
+    named_key = next(run.key for run in unnamed_plan.runs if (run.key.variant, run.kind) == ("reverse", "evaluate"))
+    projected = compile_project(varied, source_runs=(named_key,))
+    origin = ValueSource("variant", "reverse", "/documents/ranked/payload/best/order", variant="reverse")
+    assert projected.sources[named_key]["/inputs/subject/where"] == origin
+    review = PlanRequests.from_plan(unnamed_plan)
+    restored, scope = load_plan_requests(dump_plan_requests(review, ("reverse",)))
+    assert scope == ("reverse",)
+    assert list(restored.subset_sources) == [("reverse", "baseline", "subject")]
+    assert restored.subset_sources["reverse", "baseline", "subject"].origin == origin
 
     added = deepcopy(raw)
     axes = added["steps"]["train"]["sweep"]["axes"]
@@ -116,7 +157,7 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
     assert diagnostic.path == "inputs.subject.where.best" and "subject input axis" in diagnostic.detail
 
 
-def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeypatch):
+def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     host.policy(compute=1)
@@ -130,6 +171,35 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     trains = [run for run in saved.plan.runs if run.kind == "train"]
     ranks = evaluation_ranks(saved.plan)
     groups = saved.plan.subsets["default", "baseline", "subject"].rank_groups
+    source_key = ("default", "baseline", "subject")
+    before_origin = ValueSource("step", "baseline", "/inputs/subject/where/best", step="baseline")
+    after_origin = ValueSource("step", "baseline", "/inputs/subject/where/rows", step="baseline")
+    root = folders.root / project
+    baseline = tmp_path / "best.json"
+    before_review = _rank_review(root, baseline, saved.plan, capsys)
+    assert before_review.subset_sources[source_key].origin == before_origin
+    assert before_review.subset_sources[source_key].producer_step == "train"
+    assert not before_review.subset_sources[source_key].rows
+    named_keys = tuple(run.key for run in ranks.values())
+    named_plan = service.read(project, revision=saved.revision, source_runs=named_keys).settled.plan
+    assert set(named_plan.sources) == set(named_keys)
+    for run in ranks.values():
+        input_ = run.inputs["subject"]
+        expected = [
+            (key, next(train.request_id for train in trains if train.key == key))
+            for key in input_.candidates
+        ]
+        binding, = decode_request(
+            before_review.requests[run.request_id], before_review.documents.__getitem__,
+        ).inputs["subject"]
+        reference = binding.reference
+        assert isinstance(reference, BestRank) and binding.key == input_.member.key
+        assert [(item.variant, item.row, item.reference.request_id) for item in reference.candidates] == [
+            (key.variant, key.row, request_id) for key, request_id in expected
+        ]
+        origins = named_plan.sources[run.key]
+        assert origins["/inputs/subject/where"] == before_origin
+        assert "/inputs/subject" not in origins
 
     release = tmp_path / "release"
     gate = run_job("gate", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
@@ -202,10 +272,44 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     frozen = folders.read_plan(project, revision=snapshot.revision)
     fixed = evaluation_ranks(frozen.plan)
     assert tuple(fixed) == tuple(ranks)
+    after_review = _rank_review(root, tmp_path / "rows.json", frozen.plan, capsys)
+    frozen_source = after_review.subset_sources[source_key]
+    assert (frozen_source.origin, frozen_source.rows) == (after_origin, tuple(rows))
+    tampered = json.loads((tmp_path / "rows.json").read_bytes())
+    (subset,) = tampered["subset_sources"]
+    first, second, *_ = subset["source"]["rows"]
+    first["row"] = second["row"]
+    with pytest.raises(ValueError, match="Invalid subset source for"):
+        load_plan_requests(json.dumps(tampered).encode())
+    changes = diff_plan_requests(before_review, after_review)
+    assert changes == diff_plan_requests(saved.plan, frozen.plan)
+    named_plan = service.read(project, revision=snapshot.revision, source_runs=named_keys).settled.plan
+    assert set(named_plan.sources) == set(named_keys)
+    assert main(["plan", str(root), "--check", str(baseline), "--json"]) == 1
+    reviewed = json.loads(capsys.readouterr().out)["review"]
+    assert len([item for item in reviewed if item["state"] == "changed"]) == len(fixed)
     for key, run in fixed.items():
         assert run.key == ranks[key].key and run.request_id != ranks[key].request_id
         assert run.inputs["subject"].producer == expected[key]
         assert run.coordinates["seed"] == ranks[key].coordinates["seed"]
+        binding, = decode_request(
+            after_review.requests[run.request_id], after_review.documents.__getitem__,
+        ).inputs["subject"]
+        assert isinstance(binding.reference, ProductRef) and binding.key == key
+        assert binding.reference.request_id == next(train.request_id for train in trains if train.key == expected[key])
+        assert changes[run.key] == ElementChange(
+            "changed", "inputs.subject", before_source=before_origin, after_source=after_origin,
+        )
+        entry = next(item for item in reviewed if item["request_id"] == run.request_id)
+        assert entry["path"] == "inputs.subject"
+        assert entry["before_source"]["path"] == before_origin.path
+        assert entry["after_source"]["path"] == after_origin.path
+        sources = named_plan.sources[run.key]
+        assert sources["/inputs/subject/where"] == after_origin
+        winner = expected[key]
+        assert sources["/inputs/subject"] == ValueSource(
+            "upstream", winner.step, step=winner.step, variant=winner.variant, row=winner.row,
+        )
     key = groups[-1].ranks[0]
     evaluated, = jobs.admit_plan(folders, frozen, run_keys=(fixed[key].key,), token="frozen").items
     assert evaluated.disposition == "admitted"

@@ -292,6 +292,14 @@ export interface StudioPlanReviewEntry {
   state: "unchanged" | "changed" | "added" | "removed";
   path?: string | null;
   upstream?: StudioPlanRequestAddress | null;
+  before_source?: StudioPlanReviewSource | null;
+  after_source?: StudioPlanReviewSource | null;
+}
+
+export interface StudioPlanReviewSource {
+  kind: "document" | "step" | "sweep_value" | "exception" | "variant" | "upstream";
+  name: string;
+  path: string;
 }
 
 export interface StudioTrainCheckpointSource {
@@ -4384,9 +4392,21 @@ export const StudioPlanReviewEntrySchema: z.ZodType<StudioPlanReviewEntry> = z.l
       "state": z.union([z.literal("unchanged"), z.literal("changed"), z.literal("added"), z.literal("removed")]),
       "path": z.string().nullable().optional(),
       "upstream": StudioPlanRequestAddressSchema.nullable().optional(),
+      "before_source": StudioPlanReviewSourceSchema.nullable().optional(),
+      "after_source": StudioPlanReviewSourceSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioPlanReviewEntry>;
+
+export const StudioPlanReviewSourceSchema: z.ZodType<StudioPlanReviewSource> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("document"), z.literal("step"), z.literal("sweep_value"), z.literal("exception"), z.literal("variant"), z.literal("upstream")]),
+      "name": z.string(),
+      "path": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanReviewSource>;
 
 export const StudioTrainCheckpointSourceSchema: z.ZodType<StudioTrainCheckpointSource> = z.lazy(() =>
   z
@@ -10097,6 +10117,7 @@ export const contractSchemas = {
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
   StudioPlanRequestAddress: StudioPlanRequestAddressSchema,
   StudioPlanReviewEntry: StudioPlanReviewEntrySchema,
+  StudioPlanReviewSource: StudioPlanReviewSourceSchema,
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
@@ -10227,6 +10248,7 @@ export interface ContractTypeMap {
   StudioSavedTrainRuns: StudioSavedTrainRuns;
   StudioPlanRequestAddress: StudioPlanRequestAddress;
   StudioPlanReviewEntry: StudioPlanReviewEntry;
+  StudioPlanReviewSource: StudioPlanReviewSource;
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioSubmissionItem: StudioSubmissionItem;

@@ -115,7 +115,12 @@ def _write_review(
         status = f"changed({change.path})" if change.state == "changed" else change.state
         origin = f" step=steps/{run_key(key).step}.json" if change.path else ""
         upstream = f" upstream={_address(change.upstream)}" if change.upstream else ""
-        output.write(f"{_address(key)} {status} {request.request_id}{origin}{upstream}")
+        sources = "".join(
+            f" {side}={source.kind}:{source.name}{source.path}"
+            for side, source in (("before", change.before_source), ("after", change.after_source))
+            if source is not None
+        )
+        output.write(f"{_address(key)} {status} {request.request_id}{origin}{upstream}{sources}")
 
 
 def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
@@ -208,7 +213,7 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         write_bytes_atomic(destination, dump_plan_requests(current, variants))
 
     if output.json:
-        from feedbax.contracts.jobs import StudioPlanReviewEntry
+        from feedbax.contracts.jobs import StudioPlanReviewEntry, StudioPlanReviewSource
         from feedbax.project_folder import SettledProjectPlan
         from feedbax.web.services.project_plan import ProjectPlanRead, plan_request_address
 
@@ -221,6 +226,12 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
                     request_id=(scoped.entries.get(key) or before.entries[key]).request_id,
                     state=change.state, path=change.path,
                     upstream=plan_request_address(change.upstream) if change.upstream else None,
+                    before_source=StudioPlanReviewSource.model_validate(
+                        change.before_source, from_attributes=True,
+                    ) if change.before_source else None,
+                    after_source=StudioPlanReviewSource.model_validate(
+                        change.after_source, from_attributes=True,
+                    ) if change.after_source else None,
                 )
                 for key, change in changes.items()
             ]

@@ -139,12 +139,22 @@ class PlannedRankGroup:
 
 
 @dataclass(frozen=True)
+class SubsetSource:
+    """The authored selector and producer step shared by a step input's runs."""
+
+    origin: ValueSource
+    producer_step: str
+    rows: tuple[SelectedRow, ...] = ()
+
+
+@dataclass(frozen=True)
 class PlannedSubset:
     terms: SubsetTerms
     candidates: int
     members: tuple[RunKey, ...]
     document: str | None
     rank_groups: tuple[PlannedRankGroup, ...] = ()
+    source: SubsetSource | None = None
 
     @property
     def ranks(self) -> tuple[str, ...]:
@@ -229,6 +239,8 @@ class ElementChange:
     state: Literal["unchanged", "changed", "added", "removed"]
     path: str | None = None
     upstream: ElementKey | None = None
+    before_source: ValueSource | None = None
+    after_source: ValueSource | None = None
 
 
 @dataclass(frozen=True)
@@ -859,6 +871,7 @@ class _Compiler:
         self.variants: dict[str, Project] = {}
         self.variant_order: tuple[str, ...] = ()
         self.variant_sources: dict[str, Any] = {}
+        self.variant_rows: dict[str, ExpandedRow] = {}
         self.variant_stamps: dict[str, str] = {}
         self.authored_inputs: dict[str, _AuthoredInputs] = {}
         self.steps: dict[tuple[str, str], PlannedStep] = {}
@@ -917,6 +930,7 @@ class _Compiler:
             return
         self.variant_order = tuple(row.id for row in variants)
         for row in variants:
+            self.variant_rows[row.id] = row
             if not row.patches:
                 self.variants[row.id] = self.project
                 continue
@@ -1218,13 +1232,16 @@ class _Compiler:
                 return None
             sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
             for role, binding in inputs.items():
+                subset = self.subsets.get((key.variant, key.step, role))
+                if subset is not None and subset.source is not None:
+                    sources[pointer(("inputs", role, "where"))] = subset.source.origin
                 producer = binding.producer
                 if producer is None:
                     continue
                 path = ""
                 if binding.producer_element is not None and isinstance(binding.member.reference, ProductRef):
                     path = pointer(("elements", binding.producer_element, "products", binding.member.reference.role))
-                sources[f"/inputs/{role}"] = ValueSource(
+                sources[pointer(("inputs", role))] = ValueSource(
                     "upstream",
                     producer.step,
                     path=path,
@@ -1253,6 +1270,12 @@ class _Compiler:
                     tuple(row.coordinates.items()),
                 )),
                 tuple(sorted(inputs.items())),
+                tuple(
+                    subset.source.origin
+                    for role in inputs
+                    if (subset := self.subsets.get((key.variant, key.step, role))) is not None
+                    and subset.source is not None
+                ),
             ),
             self.authored_inputs[key.variant],
             project,
@@ -2040,6 +2063,26 @@ class _Compiler:
             planned_groups.append(PlannedRankGroup(MappingProxyType(coordinates), tuple(ranks)))
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
+    def subset_origin(
+        self, variant: str, step: str, role: str, document: str | None, term: Literal["best", "rows"],
+    ) -> ValueSource:
+        if document is not None:
+            authored = ("documents", document, "payload", term)
+            source = ValueSource("document", document, pointer((term,)))
+        else:
+            steps = self.variants[variant].steps
+            while role not in steps[step].inputs and isinstance(base := steps[step].base, StepBase):
+                step = base.step
+            path = ("inputs", role, "where", term)
+            authored = ("steps", step, *path)
+            source = ValueSource("step", step, pointer(path), step=step)
+        for target in reversed(self.variant_rows[variant].patches):
+            parts = tuple(target.split("."))
+            shared = min(len(authored), len(parts))
+            if authored[:shared] == parts[:shared]:
+                return ValueSource("variant", variant, pointer(parts), variant=variant)
+        return source
+
     def select_input(
         self,
         variant: str,
@@ -2252,10 +2295,22 @@ class _Compiler:
                 ),
                 run,
             ))
+        source = None
+        if terms is not None and role.name == "subject":
+            if terms.best is not None:
+                source = SubsetSource(
+                    self.subset_origin(variant, name, role.name, subset_document, "best"), reference.step,
+                )
+            elif reference.row is None and terms.rows is not None:
+                source = SubsetSource(
+                    self.subset_origin(variant, name, role.name, subset_document, "rows"), reference.step,
+                    tuple(SelectedRow(key=key, variant=run.key.variant, row=run.key.row) for key, run in keyed_runs),
+                )
         subset = (
             PlannedSubset(
                 deepcopy(terms), candidate_count,
                 tuple(run.key for _, run in keyed_runs), subset_document,
+                source=source,
             )
             if terms is not None
             else None
@@ -2319,6 +2374,7 @@ class PlanRequests:
     entries: Mapping[RunKey | ElementKey, PlanRequest]
     requests: Mapping[RequestId, bytes]
     documents: Mapping[str, bytes]
+    subset_sources: Mapping[tuple[str, str, str], SubsetSource] = field(default_factory=dict)
 
     @classmethod
     def from_plan(cls, plan: ProjectPlan) -> PlanRequests:
@@ -2340,7 +2396,13 @@ class PlanRequests:
             )
             for request in requests
         }
-        return cls(entries, plan.requests, plan.documents)
+        sources = {
+            key: subset.source for key, subset in plan.subsets.items()
+            if subset.source is not None
+        }
+        steps = {(key.variant, key.step) for key in entries if isinstance(key, RunKey)} if sources else set()
+        subset_sources = {key: source for key, source in sources.items() if key[:2] in steps}
+        return cls(entries, plan.requests, plan.documents, subset_sources)
 
 
 def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[ElementKey, ElementChange]:
@@ -2394,8 +2456,15 @@ def _request_change(
             cause = None
         input_path = f"inputs.{role}"
         if isinstance(right.key, ElementKey):
-            input_path = f"{right.path}.{input_path}"
-        return ElementChange("changed", input_path, cause)
+            return ElementChange("changed", f"{right.path}.{input_path}", cause)
+        source_key = right.key.variant, right.key.step, role
+        old_source = before.subset_sources.get(source_key)
+        new_source = after.subset_sources.get(source_key)
+        return ElementChange(
+            "changed", input_path, cause,
+            before_source=old_source.origin if old_source is not None else None,
+            after_source=new_source.origin if new_source is not None else None,
+        )
     relative = change.path.removeprefix("payload.")
     if relative == "analysis_type":
         relative = "operation"
