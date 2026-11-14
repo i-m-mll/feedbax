@@ -50,7 +50,7 @@ def _managed_project(authored):
     return raw
 
 
-def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_path, authored):
+def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_path, authored):  # noqa: F811
     raw = document_project(authored)
     train = raw["steps"]["train"]
     train["document_overrides"] = {"reach-model": {"/step_seconds": 0.02}}
