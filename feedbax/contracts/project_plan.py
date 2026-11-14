@@ -50,6 +50,7 @@ from feedbax.contracts.project_resolution import (
     ResolvedStep,
     StepComposition,
     StepTemplate,
+    _TrialResolution,
     compose_step,
     _select,
 )
@@ -604,6 +605,19 @@ class _TrainPreparation:
     condition_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _PreparedTrainRow:
+    documents: TrialDocuments
+    preparation: _TrainPreparation
+    model: _ModelSource
+
+
+@dataclass
+class _TrainRows:
+    resolution: _TrialResolution = field(default_factory=_TrialResolution)
+    prepared: tuple[Payload, _PreparedTrainRow] | None = None
+
+
 @cache
 def _builtin_expression_registry():
     from feedbax.expression_builtins import register_builtins
@@ -625,10 +639,17 @@ def _encode_row(
     prepare_trial: Callable[[TrialDocuments], _TrainPreparation | tuple[Problem, ...]],
     python_tasks: PythonTaskRegistry | None = None,
     model_source: _ModelSource | None = None,
+    prepared_train: _PreparedTrainRow | None = None,
+    remember_train: Callable[[_PreparedTrainRow], None] | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
-    if kind == "train":
+    if prepared_train is not None:
+        payload = payload | {"trial_documents": prepared_train.documents}
+        checkpoint_problem = prepared_train.preparation.checkpoint_problem
+        condition_ids = prepared_train.preparation.condition_ids
+        model_source = prepared_train.model
+    elif kind == "train":
         from feedbax.compiler.trial_execution import validate_python_task
         from feedbax.tasks.reaching import builtin_python_tasks
         from feedbax.contracts.request_specs import TrialDocuments
@@ -704,6 +725,9 @@ def _encode_row(
     except ValueError as error:
         problems = (("", str(error)),)
     else:
+        if remember_train is not None:
+            assert isinstance(spec, DocumentTrainingRequestSpec) and model_source is not None
+            remember_train(_PreparedTrainRow(spec.trial_documents, preparation, model_source))
         evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
@@ -1139,6 +1163,7 @@ class _Compiler:
         reader: Callable[[str], Document | None] | None,
         *,
         sources: bool = False,
+        trial_resolution: _TrialResolution | None = None,
     ) -> ResolvedStep | ProjectDiagnostic:
         project = self.variants[key.variant]
         return composition.bind(
@@ -1146,7 +1171,10 @@ class _Compiler:
             readers=self.readers,
             variant_sources=self.variant_sources.get(key.variant),
             read_document=reader,
-        ).resolve(row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze")
+        ).resolve(
+            row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze",
+            trial_resolution=trial_resolution,
+        )
 
     def project_definition(
         self,
@@ -1208,6 +1236,7 @@ class _Compiler:
         inputs: Mapping[str, PlannedInput],
         basis: str | None,
         definition: SelectedRunDefinition | None,
+        train_rows: _TrainRows | None = None,
     ) -> _LoweredRow:
         member = to_json(tuple(
             (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
@@ -1219,7 +1248,10 @@ class _Compiler:
 
         def lower(reader=None, previous=None):
             if definition is None:
-                resolved = self.resolve_row(composition, key, row, reader)
+                resolved = self.resolve_row(
+                    composition, key, row, reader,
+                    trial_resolution=train_rows.resolution if train_rows is not None else None,
+                )
                 if isinstance(resolved, ProjectDiagnostic):
                     return _LoweredRow(None, (replace(resolved, variant=key.variant),))
                 payload = resolved.payload
@@ -1235,6 +1267,8 @@ class _Compiler:
                 document_uses = definition.document_uses
                 document_pointers = definition.document_pointers
             authored_model = None
+            prepared_train = None
+            remember_train = None
             has_differences = MODEL_ATTACHMENTS in payload
             encoding_stamp = (
                 (kind, sha256_bytes(to_json((payload, document_ids.get("payload.graph"), source_stamp))), member)
@@ -1260,7 +1294,18 @@ class _Compiler:
                     encoding_stamp, document_ids=document_ids, document_uses=document_uses,
                 )
             if kind == "train":
-                payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
+                trial = payload.get("trial_documents")
+                if (
+                    train_rows is not None and isinstance(trial, dict)
+                    and train_rows.resolution.contains(trial) and not has_differences
+                ):
+                    if (entry := train_rows.prepared) is not None and entry[0] is trial:
+                        prepared_train = entry[1]
+                    else:
+                        def remember_train(prepared):
+                            train_rows.prepared = trial, prepared
+                if prepared_train is None:
+                    payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
             elif kind == "evaluate":
                 reference = subject.member.reference if subject is not None else None
                 payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
@@ -1270,6 +1315,7 @@ class _Compiler:
                 key, kind, payload, inputs, encoding_stamp,
                 self.work.request_documents, self.prepare_train_trial,
                 self.python_tasks, model_source=authored_model,
+                prepared_train=prepared_train, remember_train=remember_train,
             )
             return replace(
                 lowered,
@@ -1571,6 +1617,7 @@ class _Compiler:
             return ()
 
         basis = template.row_basis if self.previous is not None else None
+        train_rows = _TrainRows() if kind == "train" and not wanted and len(rows) > 1 else None
         result = []
         tracked_template = template if wanted else None
         for row in rows:
@@ -1645,7 +1692,9 @@ class _Compiler:
                 if analyze is not None:
                     result.append(analyze)
                 continue
-            lowered = self.lower_row(template, run_key, row, kind, inputs, basis, definition)
+            lowered = self.lower_row(
+                template, run_key, row, kind, inputs, basis, definition, train_rows,
+            )
             if len(lowered.diagnostics) == 1 and lowered.diagnostics[0].code == ResolutionCode.AUTHORED_GRAPH_VARIATION:
                 (problem,) = lowered.diagnostics
                 sources_available = variant not in self.variant_sources or self.variant_sources[variant] is not None
