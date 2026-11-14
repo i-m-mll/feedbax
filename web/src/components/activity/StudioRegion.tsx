@@ -1,5 +1,6 @@
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 import { ApiRequestError } from '@/api/request';
+import { reportStudioRenderFailure } from '@/api/studioDiagnostics';
 import { studioName, studioReason, studioRunStatus, type StudioNameId, type StudioRunStatusId } from './studioVocabulary';
 
 export interface StudioRegionIssue {
@@ -78,7 +79,9 @@ function RegionLoading({ children }: { children: ReactNode }) {
   return <div aria-busy="true">{showSkeleton ? children : null}</div>;
 }
 
-function RegionFailure({ issue, retry }: { issue: StudioRegionIssue; retry: () => void }) {
+function RegionFailure({ issue, retry, recoveryLabel = 'retry' }: {
+  issue: StudioRegionIssue; retry: () => void; recoveryLabel?: 'retry' | 'reload';
+}) {
   return (
     <div className="space-y-2 rounded-md border border-shell-divider bg-shell-subtle p-3 text-sm">
       <p role="alert" className="text-shell-status-failure">{issue.reason}</p>
@@ -90,7 +93,7 @@ function RegionFailure({ issue, retry }: { issue: StudioRegionIssue; retry: () =
           retry();
         }}
       >
-        {studioName('retry')}
+        {studioName(recoveryLabel)}
       </button>
       {issue.detail && issue.detail !== issue.reason && (
         <details className="text-xs text-shell-muted">
@@ -103,17 +106,21 @@ function RegionFailure({ issue, retry }: { issue: StudioRegionIssue; retry: () =
 }
 
 export class StudioRegionBoundary extends Component<
-  { name: StudioNameId; children: ReactNode },
+  { name: StudioNameId; children: ReactNode; recoveryLabel?: 'reload' },
   { error: Error | null }
 > {
   state: { error: Error | null } = { error: null };
 
-  static getDerivedStateFromError(error: Error) {
-    return { error };
+  static getDerivedStateFromError(failure: unknown) {
+    return { error: asRenderError(failure) };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error(studioName(this.props.name), error, info.componentStack);
+  componentDidCatch(failure: unknown, info: ErrorInfo) {
+    const { name } = this.props;
+    const error = asRenderError(failure);
+    void reportStudioRenderFailure(name, error, info.componentStack ?? '').catch((reportError: unknown) => {
+      console.error('Studio render failure could not be sent', name, error, reportError);
+    });
   }
 
   render() {
@@ -125,7 +132,13 @@ export class StudioRegionBoundary extends Component<
           detail: this.state.error.message,
         }}
         retry={() => this.setState({ error: null })}
+        recoveryLabel={this.props.recoveryLabel}
       />
     );
   }
+}
+
+function asRenderError(failure: unknown) {
+  if (failure instanceof Error) return failure;
+  return new Error(typeof failure === 'string' ? failure : undefined);
 }

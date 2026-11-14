@@ -264,6 +264,10 @@
   overflow: auto;
 }
 
+.studio-window-region-content {
+  display: contents;
+}
+
 .studio-window-slot__strip {
   display: block;
   width: 100%;

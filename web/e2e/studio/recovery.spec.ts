@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import type { StudioJobSnapshot, StudioJobSubmission, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { StudioJobSnapshot, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -78,6 +78,7 @@ interface RecoveryStudio {
   home: string;
   stopBackend: () => Promise<void>;
   startBackend: () => Promise<void>;
+  serviceLog: () => string;
 }
 
 const test = base.extend<{ studio: RecoveryStudio }>({
@@ -122,6 +123,7 @@ const test = base.extend<{ studio: RecoveryStudio }>({
           start('--backend-only');
           await expect.poll(healthy, { timeout: 10_000 }).toBe(true);
         },
+        serviceLog: () => log.join(''),
       });
     } finally {
       const stopped = await Promise.allSettled(launchers.map(stop));
@@ -133,28 +135,136 @@ const test = base.extend<{ studio: RecoveryStudio }>({
   },
 });
 
+test.use({
+  channel: 'chrome',
+  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
+  viewport: { width: 1440, height: 900 },
+});
+
 test('reports that the backend stopped and recovers in the same window', async ({ page, studio, request }) => {
   test.setTimeout(50_000);
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await page.goto(studio.origin + '/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
-  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  const secondary = page.locator('[data-slot="secondary"]').getByRole('tabpanel');
+  const runs = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Runs', exact: true });
   await expect(runs.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
-  await studio.stopBackend();
+  await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
+  const tab = (name: string) => page.getByRole('tab', { name, exact: true });
+  await tab('Task').click();
+  const task = secondary.getByRole('combobox', { name: 'Task Document', exact: true });
+  await expect(task).toBeVisible();
   const footer = page.locator('[data-studio-focus-region="bottom"]');
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const openActivity = footer.getByRole('button', { name: 'Activity', exact: true });
+  await openActivity.click();
+  await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
+  await studio.stopBackend();
   const failure = footer.getByRole('alert');
-  await expect(failure).toBeVisible();
-  await expect(failure).toContainText('Service unreachable');
-  await expect(runs.getByRole('alert')).toHaveText('Service unreachable');
-  await expect(page.locator('[data-studio-focus-region="map"]').getByRole('alert')).toHaveText('Service unreachable');
-  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
-  const retry = failure.getByRole('button', { name: 'Retry', exact: true });
+  const unreachable = (region: ReturnType<typeof page.locator>) =>
+    expect(region.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
+  await unreachable(activity);
+  await activity.getByRole('button', { name: 'Close', exact: true }).click();
+  await unreachable(footer);
+  await unreachable(runs);
+  await unreachable(secondary);
+  await unreachable(page.locator('[data-studio-focus-region="map"]'));
+  await unreachable(page.locator('[data-studio-focus-region="steps"]'));
+  await expect(task).toBeHidden();
+  await expect(runs.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+  await runs.focus();
+  await unreachable(page.getByRole('complementary', { name: 'Details Drawer', exact: true }));
+  await unreachable(page.getByRole('complementary', { name: 'Inspector', exact: true }));
+  // Visit the remaining data-backed M2 views in the second slot during the same outage.
+  await secondary.focus();
+  for (const view of ['Model', 'Objective', 'Scene', 'Results', 'Training']) {
+    await tab(view).click();
+    await expect(secondary).toHaveAccessibleName(view);
+    await unreachable(secondary);
+  }
+  const retry = footer.getByRole('button', { name: 'Retry', exact: true });
   await expect(retry).toBeEnabled();
+  const batchCount = secondary.getByRole('textbox', { name: 'N Batches', exact: true });
   await studio.startBackend();
-  if (await retry.isVisible()) await retry.click();
+  await expect(batchCount).toBeEnabled();
+  await tab('Task').click();
+  await expect(task).toBeVisible();
   await expect(failure).toHaveCount(0);
   await expect(runs.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  await expect(runs.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  await expect(mapStep(page, 'train')).toBeVisible();
+  await expect(page.locator('[data-studio-focus-region="steps"]').getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true }).getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('alert')).toHaveCount(0);
+  await openActivity.click();
+  await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
+});
+
+test('a mounted Model render failure reports to the service and retries only its slot', async ({
+  page, studio, request,
+}) => {
+  test.setTimeout(50_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
+  await hostPid(studio.home);
+  const message = 'Model canvas observer failed';
+  await page.addInitScript((detail) => {
+    const NativeObserver = window.ResizeObserver;
+    window.ResizeObserver = class extends NativeObserver {
+      observe(target: Element, options?: ResizeObserverOptions) {
+        if (document.documentElement.dataset.failModelObserve === 'true' &&
+            target.matches('[data-slot="secondary"] .studio-model-canvas .react-flow__renderer')) {
+          throw new Error(detail);
+        }
+        super.observe(target, options);
+      }
+    };
+  }, message);
+  await page.goto(studio.origin + '/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  const table = runs.getByRole('table', { name: 'Runs', exact: true });
+  const row = table.getByRole('row').filter({ has: page.getByRole('button') });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(table).toBeVisible();
+  await row.getByRole('button').click();
+  await expect(inspector.getByRole('heading')).toBeVisible();
+  await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await page.evaluate(() => { document.documentElement.dataset.failModelObserve = 'true'; });
+  const report = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/studio/render-failure'
+    && response.request().postDataJSON()?.detail === message);
+  void report.catch(() => {});
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await expect(model.getByRole('alert')).toHaveText('Model failed to render');
+  expect((await report).status()).toBe(204);
+  await expect.poll(studio.serviceLog).toContain(`Studio render failure region='model' type='Error' detail='${message}'`);
+  await page.evaluate(() => { delete document.documentElement.dataset.failModelObserve; });
+
+  await runs.focus();
+  await expect(inspector.getByRole('heading')).toBeVisible();
+  await expect(mapStep(page, 'train')).toBeVisible();
+  await expect(table).toBeVisible();
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
+  await activity.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const failedReports = () => studio.serviceLog().split(`detail='${message}'`).length - 1;
+  expect(failedReports()).toBe(1);
+  await model.getByRole('button', { name: 'Retry', exact: true }).press('Enter');
+  await expect(model).toBeFocused();
+  await expect(model.getByRole('alert')).toHaveCount(0);
+  await expect(model.locator('.react-flow__node').first()).toBeVisible();
+  await expect(table).toBeVisible();
+  await expect(mapStep(page, 'train')).toBeVisible();
+  await runs.focus();
+  await expect(inspector.getByRole('heading')).toBeVisible();
+  const saved = await request.get(studio.origin + projectPath);
+  expect(saved.ok()).toBe(true);
+  const current = await saved.json() as StudioProjectSnapshot;
+  expect(current).toMatchObject({ revision: snapshot.revision, presentation_revision: snapshot.presentation_revision });
+  expect(current.project).toEqual(snapshot.project);
+  expect(failedReports()).toBe(1);
 });
 
 test('reopens the same live run and restores loss after backend and host restart', async ({

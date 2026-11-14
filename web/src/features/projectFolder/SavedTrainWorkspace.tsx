@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
-import { apiErrorMessage } from '@/api/request';
+import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit } from '@/api/studioAuthoring';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -159,6 +159,18 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const { saved, configuration, pending, outside } = snapshot;
   const jobs = useStudioJobs();
   const connection = useStudioConnection();
+  const queries = useQueryClient();
+  const wasDisconnected = useRef(false);
+  useEffect(() => {
+    if (connection.isError) wasDisconnected.current = true;
+    if (!connection.isSuccess || !wasDisconnected.current) return;
+    wasDisconnected.current = false;
+    void queries.refetchQueries({
+      type: 'active',
+      predicate: ({ state: { error } }) => error instanceof ApiRequestError &&
+        (error.kind === 'network' || (error.status ?? 0) >= 500),
+    });
+  }, [connection.isError, connection.isSuccess, queries]);
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
   const modelWindow = useModelSelectionStore();
@@ -575,14 +587,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   }
 
   const projectFailure = snapshot.error ?? stoppedPlan.error;
-  const failure = commandError ?? (projectFailure ? apiErrorMessage(projectFailure)
-    : connection.isError ? studioReason('unreachable', studioName('service')) : null);
+  const serviceIssue = connection.isError ? studioRegionIssue('service', connection.error, true) : undefined;
+  const failure = serviceIssue?.reason ?? commandError ?? (projectFailure ? apiErrorMessage(projectFailure) : null);
   const retryPlan = () => {
-    if (connection.isError) connection.refetch();
     void projection.refetch();
   };
-  const planError = (name: 'runs' | 'pipelineMap' | 'results'): StudioRegionState | undefined => connection.isError || projection.error
-    ? { kind: 'failed', issue: studioRegionIssue(name, projection.error, connection.isError), retry: retryPlan }
+  const planError = (name: 'runs' | 'pipelineMap' | 'results'): StudioRegionState | undefined => projection.error
+    ? { kind: 'failed', issue: studioRegionIssue(name, projection.error), retry: retryPlan }
     : undefined;
   const planUnavailable: StudioRegionState | undefined = planError('runs') ??
     (!data ? { kind: 'loading' } : undefined);
@@ -592,6 +603,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     : body;
   function retry() {
     setCommandError(undefined);
+    if (connection.isError) {
+      connection.refetch();
+      return;
+    }
     if (snapshot.error && snapshot.pending) void editor.flush().catch((error) => setCommandError(apiErrorMessage(error)));
     connection.refetch();
     void projection.refetch();
@@ -959,6 +974,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
         onToggle={activity.invoke}
         onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} />}
+      serviceFailure={serviceIssue && { kind: 'failed', issue: serviceIssue, retry: connection.refetch }}
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
         const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot

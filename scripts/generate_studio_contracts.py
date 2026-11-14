@@ -138,6 +138,7 @@ from feedbax.contracts.array_values import (
     SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
+    StudioRenderFailure,
     AnalysisBundleDryRunPayload,
     AnalysisBundleDryRunRequest,
     AnalysisBundleDryRunResponse,
@@ -690,6 +691,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
     DomainRegistryPayload,
+    StudioRenderFailure,
     DomainCompileReport,
     WorkspaceReplayWarning,
     WorkspaceReplayTrialIdentity,
@@ -874,6 +876,7 @@ CONTRACT_MODEL_NAMES = [
     "DomainCompileReport",
     "StudioPlanarSceneRequest",
     "StudioPlanarSceneResponse",
+    "StudioRenderFailure",
     "WorkspaceReplayTrial",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
