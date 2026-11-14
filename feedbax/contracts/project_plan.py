@@ -1266,16 +1266,18 @@ class _Compiler:
                 payload = self.lower_evaluate_trials(key, payload, subject.member.reference, model_source)
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
+            lowered = _encode_row(
+                key, kind, payload, inputs, encoding_stamp,
+                self.work.request_documents,
+                document_ids.get("payload.graph"),
+                definition.sources if definition is not None else None,
+                self.components, self.functions, self.python_tasks, model_source=authored_model,
+            )
             return replace(
-                _encode_row(
-                    key, kind, payload, inputs, encoding_stamp,
-                    self.work.request_documents,
-                    document_ids.get("payload.graph"),
-                    definition.sources if definition is not None else None,
-                    self.components, self.functions, self.python_tasks, model_source=authored_model,
-                ),
+                lowered,
                 document_ids=document_ids,
                 document_uses=document_uses,
+                model_source=lowered.model_source or authored_model,
             )
 
         if self.previous is None:

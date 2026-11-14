@@ -241,12 +241,18 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         keys = tuple(row.key for row in plan.rows)
         assert len(keys) == 3
         plan = folders.read_plan("fields", revision=snapshot.revision, source_runs=keys).plan
+        assert not plan.runs and not plan.requests
+        assert {(problem.step, problem.row, problem.path) for problem in plan.diagnostics} == {
+            (key.step, key.row, "payload.alias") for key in keys
+        }
         for key, period in zip(keys, (0.01, 0.02, 0.03), strict=True):
             definition = plan.selected_definitions[key]
             assert definition.payload["graph"]["step_seconds"] == pytest.approx(period)
             assert definition.payload["alias"] == pytest.approx(period)
             assert definition.document_ids["payload.graph"] == "reach-model"
-            assert definition.sources["/payload/graph/step_seconds"].kind == "sweep_value"
+            source = definition.sources["/payload/graph/step_seconds"]
+            assert source.kind == "sweep_value"
+            assert definition.sources["/payload/alias"] == source
         assert snapshot.project.documents["reach-model"].payload == model
 
         component_owner = {"document": "reach-model", "composites": [],
