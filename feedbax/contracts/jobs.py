@@ -324,6 +324,11 @@ class StudioPlanReviewSource(StrictModel):
     kind: SourceKind
     name: str
     path: str
+    step: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    value: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    variant: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    row: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioPlanReviewEntry(StudioPlanRequest):

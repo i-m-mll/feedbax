@@ -1,5 +1,6 @@
 """Portable review files for the authored request portion of a Project Plan."""
 
+from base64 import b64decode, b64encode
 from collections.abc import Iterable, Mapping
 import json
 from typing import Literal
@@ -9,7 +10,11 @@ from pydantic import Field, JsonValue
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.project_plan import ElementKey, PlanRequest, PlanRequests, RunKey, SubsetSource
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_plan import (
+    ElementKey, PlanRequest, PlanRequests, PlanSourceIndex, RunKey, SourceSnapshot, SourceSweep, SubsetSource,
+)
+from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, stored_request_descriptor
 from feedbax.contracts.request_refs import BestRank, ProductRef, RequestId, RequestKind, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
@@ -33,6 +38,25 @@ class _SubsetSource(StrictModel):
     source: SubsetSource
 
 
+class _SourceSweep(StrictModel):
+    variant: str
+    step: str
+    expansion: SourceSweep
+
+
+class _SourceBinding(StrictModel):
+    key: RunKey | ElementKey
+    roles: dict[str, ValueSource]
+
+
+class _SourceFile(StrictModel):
+    project: JsonObject
+    variant_sites: dict[str, bool]
+    sweeps: list[_SourceSweep]
+    bindings: list[_SourceBinding]
+    externals: dict[str, str]
+
+
 class _PlanFile(StrictModel):
     schema_version: Literal["feedbax.project-plan.v2"]
     variants: tuple[str, ...] | None = None
@@ -40,6 +64,7 @@ class _PlanFile(StrictModel):
     request_groups: list[_RequestGroup]
     documents: dict[Sha256, JsonObject | None]
     subset_sources: list[_SubsetSource] | None = None
+    sources: _SourceFile | None = None
 
 
 def run_key(key: RunKey | ElementKey) -> RunKey:
@@ -50,11 +75,22 @@ def select_plan_requests(plan: PlanRequests, variants: Iterable[str] | None) -> 
     if variants is None:
         return plan
     names = frozenset(variants)
+    source_index = plan.source_index
+    if source_index is not None:
+        snapshot = source_index.snapshot
+        source_index = PlanSourceIndex(
+            SourceSnapshot(snapshot.project, snapshot.variant_sites, {
+                key: expansion for key, expansion in snapshot.sweeps.items() if key[0] in names
+            }),
+            {key: sources for key, sources in source_index.producers.items() if run_key(key).variant in names},
+            source_index.externals,
+        )
     return PlanRequests(
         {key: entry for key, entry in plan.entries.items() if run_key(key).variant in names},
         plan.requests,
         plan.documents,
         {key: source for key, source in plan.subset_sources.items() if key[0] in names},
+        source_index,
     )
 
 
@@ -133,7 +169,25 @@ def dump_plan_requests(plan: PlanRequests, variants: tuple[str, ...] | None) -> 
             for (variant, step, role), source in sorted(scoped.subset_sources.items())
         ] or None,
     )
-    return (file.model_dump_json(indent=1, exclude_none=True, by_alias=True) + "\n").encode()
+    review = file.model_dump_json(indent=1, exclude_none=True, by_alias=True)
+    if (index := scoped.source_index) is not None:
+        snapshot = index.snapshot
+        source_file = _SourceFile(
+            project=snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True),
+            variant_sites=snapshot.variant_sites,
+            sweeps=[
+                _SourceSweep(variant=variant, step=step, expansion=expansion)
+                for (variant, step), expansion in sorted(snapshot.sweeps.items())
+            ],
+            bindings=[_SourceBinding(key=key, roles=dict(roles)) for key, roles in index.producers.items()],
+            externals={name: b64encode(data).decode("ascii") for name, data in sorted(index.externals.items())},
+        )
+        sources = source_file.model_dump(mode="json", exclude_none=True)
+        # Authored records use one compact JSON line each, including large listed sweeps.
+        lines = [f"  {json.dumps(name)}: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
+                 for name, value in sources.items()]
+        review = review[:-2] + ",\n \"sources\": {\n" + ",\n".join(lines) + "\n }\n}"
+    return (review + "\n").encode()
 
 
 def _restore_requests(groups: list[_RequestGroup]) -> dict[RequestId, bytes]:
@@ -212,7 +266,46 @@ def load_plan_requests(data: bytes) -> tuple[PlanRequests, tuple[str, ...] | Non
             raise ValueError(f"Duplicate subset source {key!r}")
         sources[key] = item.source
     _validate_subset_sources(entries, decoded, sources, file.variants)
-    return PlanRequests(entries, requests, documents, sources), file.variants
+    index = _load_sources(file.sources, entries, decoded, file.variants) if file.sources else None
+    return PlanRequests(entries, requests, documents, sources, index), file.variants
+
+
+def _load_sources(
+    file: _SourceFile, entries: Mapping[RunKey | ElementKey, PlanRequest],
+    decoded: Mapping[RequestId, DecodedRequest], variants: tuple[str, ...] | None,
+) -> PlanSourceIndex:
+    project = Project.model_validate(file.project)
+    sweeps = {(sweep.variant, sweep.step): sweep.expansion for sweep in file.sweeps}
+    bindings = {binding.key: binding.roles for binding in file.bindings}
+    if len(sweeps) != len(file.sweeps) or len(bindings) != len(file.bindings):
+        raise ValueError("Duplicate saved Plan source address")
+    for key, roles in bindings.items():
+        if key not in entries:
+            raise ValueError(f"Source names unknown request address {key!r}")
+        for role, source in roles.items():
+            members = decoded[entries[key].request_id].inputs.get(role, ())
+            if len(members) != 1 or not isinstance(reference := members[0].reference, ProductRef):
+                raise ValueError(f"Invalid source for {key!r} input {role!r}")
+            if (
+                source.kind != "upstream" or source.variant is None or source.step is None
+                or source.row is None or source.name != source.step
+            ):
+                raise ValueError(f"Incomplete input source for {key!r}")
+            producer: RunKey | ElementKey = RunKey(source.variant, source.step, source.row)
+            if (element := entries[key].element_inputs.get(role)) is not None:
+                if element.run != producer or source.path != pointer(("elements", element.name, "products", reference.role)):
+                    raise ValueError(f"Invalid element source for {key!r}")
+                producer = element
+            elif source.path:
+                raise ValueError(f"Invalid run source for {key!r}")
+            if (variants is None or source.variant in variants) and (
+                producer not in entries or entries[producer].request_id != reference.request_id
+            ):
+                raise ValueError(f"Input source names the wrong producer for {key!r}")
+    return PlanSourceIndex(
+        SourceSnapshot(project, file.variant_sites, sweeps), bindings,
+        {name: b64decode(data, validate=True) for name, data in file.externals.items()},
+    )
 
 
 def _validate_subset_sources(
