@@ -511,9 +511,17 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await expect(runs.getByRole('region', { name: 'Made From', exact: true })).toContainText('1 of 3');
   expect(await evaluatedRow()).toEqual(result);
-  const replaying = post(page, projectPath + '/evaluate-replay');
-  await activate(page, page.getByRole('tab', { name: 'Scene', exact: true }));
-  const replayed = await replaying;
+  await info.attach('managed-checkpoint-and-evaluate', {
+    body: JSON.stringify({ project: saved.project_id, paused, continued, result }),
+    contentType: 'application/json',
+  });
+  const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
+  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+6');
+  const [replayed] = await Promise.all([
+    post(page, projectPath + '/evaluate-replay'),
+    page.keyboard.press('Meta+6'),
+  ]);
+  await expect(sceneTab).toHaveAttribute('aria-selected', 'true');
   expect(replayed.ok(), await replayed.text()).toBe(true);
   expect(replayed.request().postDataJSON()).toMatchObject({ revision: evaluated.revision, key: result.key, job_id: evaluation.job_id, trial });
   const replay: WorkspaceReplayTrial = await replayed.json();
@@ -527,8 +535,8 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(observed.samples.length).toBeGreaterThan(1);
   expect(observed.samples.every((sample: number[]) => sample.length === 2 && sample.every(Number.isFinite))).toBe(true);
   await expect(page.getByRole('slider', { name: 'Playback Position' })).toBeVisible();
-  await info.attach('managed-checkpoint-and-evaluate', {
-    body: JSON.stringify({ project: saved.project_id, paused, continued, result, observed }),
+  await info.attach('authenticated-scene-replay', {
+    body: JSON.stringify({ replay, observed }),
     contentType: 'application/json',
   });
 });
