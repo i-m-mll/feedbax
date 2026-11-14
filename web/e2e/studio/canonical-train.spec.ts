@@ -3,6 +3,7 @@ import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fix
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
+  StudioJobEventHistory,
   StudioJobSnapshot,
   StudioJobSubmission,
   StudioProjectDocument,
@@ -338,6 +339,29 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     await section.getByRole('button', { name: 'Copy Details', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => JSON.parse(await navigator.clipboard.readText()))).toEqual(result);
   }
+  await captureStudioWindow(page, info, 'saved-train-loss-comparison');
+
+  let withheld = 0;
+  await page.route('**/api/events/history?**', async (route) => {
+    const response = await route.fetch();
+    const history = await response.json() as StudioJobEventHistory;
+    const events = history.events.map((event) => {
+      if (event.job_id !== firstJob || event.kind !== 'progress' || !event.data.metric_interval) return event;
+      withheld += 1;
+      const { metrics: _metrics, metric_interval: _interval, ...data } = event.data;
+      return { ...event, data };
+    });
+    await route.fulfill({ response, json: { ...history, events } });
+  });
+  await page.reload();
+  await select('train');
+  await openResultsSlot(page);
+  await results.locator('summary').getByText('Compare Results', { exact: true }).click();
+  await expectLoss(changedJob, evidence.loss.current);
+  expect(withheld).toBe(evidence.loss.previous.length);
+  await expect(loss.locator(`[data-result-attempt="${firstJob}"] polyline`)).toHaveCount(0);
+  await expect(results.getByRole('list', { name: 'Loss', exact: true })
+    .getByRole('listitem').filter({ hasText: 'Previous Result' }).getByRole('status')).toHaveText('Loss unavailable');
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
 
