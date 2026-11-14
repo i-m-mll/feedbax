@@ -83,6 +83,10 @@ def canonical_json_v2_bytes(value: object) -> bytes:
     """
 
     validate_canonical_json_v2(value)
+    return _dump_canonical_json_v2(value)
+
+
+def _dump_canonical_json_v2(value: object) -> bytes:
     try:
         return rfc8785.dumps(cast(Any, value))
     except rfc8785.CanonicalizationError as exc:

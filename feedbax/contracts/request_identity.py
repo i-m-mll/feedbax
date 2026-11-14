@@ -21,7 +21,11 @@ from feedbax.contracts._request_codec import (
     same_typed_value,
 )
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.canonical_json import (
+    _dump_canonical_json_v2,
+    canonical_json_v2_bytes,
+    validate_canonical_json_v2,
+)
 from feedbax.contracts.model_document import omit_model_display_names, restore_model_display_names
 from feedbax.contracts.request_refs import (
     ContentRef,
@@ -182,6 +186,13 @@ def request_id(
     """Hash an already normalized spec projection and the resolved input references."""
     if kind not in REQUEST_KINDS:
         raise ValueError(f"Unknown request kind: {kind!r}")
+    preimage = _request_preimage(kind, spec, inputs, storage_schema)
+    return kind + ":" + sha256_bytes(canonical_json_v2_bytes(preimage))
+
+
+def _request_preimage(
+    kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs, storage_schema: str,
+) -> dict[str, Any]:
     pins = PinnedFields(_identity_contract()["fields"])
     references = {
         role: [
@@ -204,7 +215,12 @@ def request_id(
     preimage = {"identity": _IDENTITY, "kind": kind, "spec": spec, "inputs": references}
     if storage_schema != _STORAGE_SCHEMA:
         preimage["schema"] = storage_schema
-    return kind + ":" + sha256_bytes(canonical_json_v2_bytes(preimage))
+    return preimage
+
+
+def _append_spec(outer: bytes, canonical_spec: bytes) -> bytes:
+    """Append the final JCS key to the fixed request envelope fields."""
+    return outer[:-1] + b',"spec":' + canonical_spec + b"}"
 
 
 def encode_request(
@@ -253,15 +269,19 @@ def encode_request(
     envelope = {
         "schema": descriptor.storage_schema,
         "kind": kind,
-        "spec": projection,
         "inputs": {
             role: [encode(member, InputMember, pins) for member in members]
             for role, members in inputs.items()
         },
     }
+    preimage = _request_preimage(kind, projection, inputs, descriptor.storage_schema)
+    validate_canonical_json_v2(preimage)
+    del preimage["spec"]
+    identity_fields = _dump_canonical_json_v2(preimage)
+    canonical_spec = _dump_canonical_json_v2(projection)
     return EncodedRequest(
-        id=request_id(kind, projection, inputs, storage_schema=descriptor.storage_schema),
-        data=canonical_json_v2_bytes(envelope),
+        id=kind + ":" + sha256_bytes(_append_spec(identity_fields, canonical_spec)),
+        data=_append_spec(canonical_json_v2_bytes(envelope), canonical_spec),
         documents=documents,
     )
 

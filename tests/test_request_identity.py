@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from feedbax.contracts.canonical_json import CanonicalJsonError, CanonicalJsonErrorCode
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.request_identity import (
@@ -270,3 +271,34 @@ def test_training_documents_keep_semantic_types_and_large_integers():
     another = encode_request(edited, {})
     assert another.documents == request.documents
     assert another.id != request.id
+
+
+def test_shared_spec_keeps_canonical_error_order_and_paths():
+    spec = RenderRequestSpec(figure=FigureSpec(name="example", assembler="plot", traces=[]))
+    malformed = spec.model_copy(update={
+        "figure": spec.figure.model_copy(update={"name": chr(0xD800)}),
+    })
+    member = InputMember.model_construct(
+        key=chr(0xD800),
+        reference=ProductRef(request_id="train:" + "a" * 64, role="checkpoint"),
+    )
+    with pytest.raises(CanonicalJsonError) as error:
+        encode_request(malformed, {"initial": (member,)})
+    assert error.value.code == CanonicalJsonErrorCode.LONE_SURROGATE
+    assert error.value.path == "/spec/figure/name"
+
+    with pytest.raises(CanonicalJsonError) as error:
+        encode_request(spec, {"initial": (member,)})
+    assert error.value.code == CanonicalJsonErrorCode.LONE_SURROGATE
+    assert error.value.path == "/inputs/initial/0/key"
+
+
+def test_shared_spec_keeps_storage_only_input_diagnostics():
+    spec = EvaluationRequestSpec(evaluation_type="rollout")
+    member = InputMember(key="candidate", reference=ContentRef(
+        sha256="a" * 64, size=2**53,
+    ))
+    with pytest.raises(CanonicalJsonError) as error:
+        encode_request(spec, {"initial": (member,)})
+    assert error.value.code == CanonicalJsonErrorCode.UNSAFE_INTEGER
+    assert error.value.path == "/inputs/initial/0/reference/size"

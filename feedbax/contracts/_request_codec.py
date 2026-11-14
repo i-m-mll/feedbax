@@ -227,7 +227,15 @@ class PinnedFields:
 
     def __init__(self, fields: Mapping) -> None:
         self.fields = fields
+        self._annotations: dict[int, tuple[Any, Any]] = {}
         self._model_fields: dict[type[BaseModel], tuple[object, tuple[_EncodingField, ...]]] = {}
+
+    def annotation(self, annotation: Any) -> Any:
+        key = id(annotation)
+        entry = self._annotations.get(key)
+        if entry is None:
+            entry = self._annotations[key] = (annotation, _annotation(annotation))
+        return entry[1]
 
     def encoding_fields(self, model: type[BaseModel]) -> tuple[_EncodingField, ...]:
         validator = model.__pydantic_validator__
@@ -281,7 +289,7 @@ def encode(
     projected_fields: Mapping[str, Any] | None = None,
 ) -> Any:
     """Project a typed value into JSON. With pins, omit equal absent values."""
-    annotation = _annotation(annotation)
+    annotation = _annotation(annotation) if pins is None else pins.annotation(annotation)
     if isinstance(value, BaseModel):
         model = type(value)
         fields = _encoding_fields(model, {}) if pins is None else pins.encoding_fields(model)
