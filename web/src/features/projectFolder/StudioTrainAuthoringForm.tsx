@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
 import { projectTrainFields, readStudioTrainAuthoring } from '@/api/studioAuthoring';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import {
   StudioDefinitionForm,
   StudioDocumentPicker,
@@ -152,7 +152,7 @@ function ReachTargetForm({ target, stepId, disabled, onEdit }: {
     if (!disabled && complete && changed) onEdit({ kind: 'bindReachTarget', input, position });
   }}>
     <fieldset disabled={disabled} className="flex flex-wrap items-end gap-3 px-3 py-2 text-sm">
-      <legend className="px-3 font-medium">{studioName('reachTarget')} · {stepId}</legend>
+      <legend className="px-3 font-medium">{studioName('reachGoal')} · {stepId}</legend>
       <label className="grid gap-1">
         {studioName('modelInput')}
         <select className={control} value={input} onChange={(event) => setInput(event.target.value)} required>
@@ -161,15 +161,15 @@ function ReachTargetForm({ target, stepId, disabled, onEdit }: {
         </select>
       </label>
       <label className="grid gap-1">
-        {studioName('targetX')}
+        {studioFormat('withUnit', { name: studioName('goalX'), unit: studioUnit('meter') })}
         <input className={`${control} w-24`} type="number" step="any" value={x} onChange={(event) => setX(event.target.value)} required />
       </label>
       <label className="grid gap-1">
-        {studioName('targetY')}
+        {studioFormat('withUnit', { name: studioName('goalY'), unit: studioUnit('meter') })}
         <input className={`${control} w-24`} type="number" step="any" value={y} onChange={(event) => setY(event.target.value)} required />
       </label>
       <button type="submit" disabled={!complete || !changed} className={`${control} disabled:opacity-50`}>
-        {studioName('bindTarget')}
+        {studioName('bindGoal')}
       </button>
     </fieldset>
   </form>;
@@ -264,7 +264,7 @@ export function StudioTrainAuthoringForm(props: Props) {
       }
       const label = 'field' in change
         ? recipe.fields.find(({ id }) => id === change.field)?.label
-        : studioName('bindTarget');
+        : studioName('bindGoal');
       if (!label) throw new Error('The Train edit has no matching field.');
       if (!recipe.patches.length) return;
       const address = { kind: 'step', id: stepId } as const;
@@ -296,7 +296,7 @@ export function StudioTrainAuthoringForm(props: Props) {
       <StudioDocumentPicker field={fields[0]} selection={selection} onEdit={onEdit} />
     </fieldset>}
     {error && <p className="min-w-0 truncate text-xs" role="alert">{error}</p>}
-    {!shown && !error && <p className="sr-only" role="status">Loading Train definition</p>}
+    {!shown && !error && <span className="sr-only" aria-busy="true">{studioName('definition')}</span>}
   </>;
   return (
     <>
@@ -322,7 +322,7 @@ export function StudioTrainAuthoringForm(props: Props) {
               onEdit={onEdit} />}
           </fieldset>
         )
-        : !error && !numeric.data && <p role="status">Loading Train definition</p>}
+        : !error && !numeric.data && <div aria-busy="true" aria-label={studioName('definition')} />}
       {shown && renderAdditionalFields?.(new Set(fields.map(({ id }) => id)))}
     </>
   );

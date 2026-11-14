@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import type { ComponentDefinition, DelayAttachment, InterventionAttachment, JsonValue, ModelAddress, ModelDocument, ModelTime, ParamSchema, ProbeAttachment } from '@/generated/studioContracts';
 import { ModelAddressSchema } from '@/generated/studioContracts';
 import { z } from 'zod';
+import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import { addressKey, type Component, type Port } from './modelGraph';
 
@@ -49,7 +50,8 @@ function duration(raw: string) {
 }
 
 function conversion(delay: ModelTime, step: number) {
-  return delay.unit === 's' ? `${Math.round(delay.value / step)} st` : `${Number((delay.value * step).toPrecision(8))} s`;
+  return delay.unit === 's' ? `${Math.round(delay.value / step)} ${studioUnit('steps')}`
+    : `${Number((delay.value * step).toPrecision(8))} ${studioUnit('second')}`;
 }
 
 function linkedAddress(value: string) {
@@ -93,7 +95,7 @@ function Parameter({ name, schema, value, change }: {
 }
 
 export function ModelFields({ model, change }: { model: ModelDocument; change?: (path: string[], value: JsonValue) => void }) {
-  return <Field label="Step" value={`${model.step_seconds} s`} parse={period} commit={change && ((value) => change(['step_seconds'], value))} />;
+  return <Field label={studioName('step')} value={`${model.step_seconds} ${studioUnit('second')}`} parse={period} commit={change && ((value) => change(['step_seconds'], value))} />;
 }
 
 export function ComponentFields({ component, definition, change, projected }: {
@@ -103,7 +105,7 @@ export function ComponentFields({ component, definition, change, projected }: {
   if (component.kind === 'composite') {
     const domain = component.interior.physical_domain;
     return !projected?.has('substeps') && (domain === 'planar_multibody' || domain === 'spatial_multibody')
-      ? <Field label="Substeps" value={String(component.substeps ?? 1)} type="number"
+      ? <Field label={studioName('substeps')} value={String(component.substeps ?? 1)} type="number"
         parse={(raw) => { const value = numeric(raw); return value && value > 0 && Number.isInteger(value) ? value : undefined; }}
         commit={change && ((value) => change(['substeps'], value))} /> : null;
   }
@@ -131,32 +133,32 @@ export function AttachmentFields({ item, step, change, arm, linkLabel, projected
     const parsed = linked ? linkedAddress(linked) : undefined;
     const label = parsed ? linkLabel?.(parsed) || addressKey(parsed) : linked;
     return <>
-      {projected?.has('delay') ? <small>{conversion(item.delay, step)}</small> : <Field label="Delay" value={`${item.delay.value} ${item.delay.unit}`} parse={duration}
+      {projected?.has('delay') ? <small>{conversion(item.delay, step)}</small> : <Field label={studioName('delay')} value={`${item.delay.value} ${item.delay.unit}`} parse={duration}
         suffix={<small>{conversion(item.delay, step)}</small>}
         commit={change && ((delay) => change({ ...item, delay: delay as unknown as ModelTime }))} />}
-      {linked ? <div>Initial <output>{label}</output>
-        {change && <button className={action} type="button" onClick={() => change({ ...item, initial: 0 })}>Clear Link</button>}
-      </div> : !projected?.has('initial') && <Field label="Initial" value={String(initial ?? 0)} type="number" parse={numeric}
+      {linked ? <div>{studioName('initial')} <output>{label}</output>
+        {change && <button className={action} type="button" onClick={() => change({ ...item, initial: 0 })}>{studioName('clearLink')}</button>}
+      </div> : !projected?.has('initial') && <Field label={studioName('initial')} value={String(initial ?? 0)} type="number" parse={numeric}
         commit={change && ((value) => change({ ...item, initial: value }))} />}
-      {arm && <button className={action} type="button" onClick={arm}>Pick Initial</button>}
+      {arm && <button className={action} type="button" onClick={arm}>{studioName('pickInitial')}</button>}
     </>;
   }
-  if (item.kind === 'probe') return <Field label="Name" value={item.name} parse={(raw) => raw.trim() || undefined}
+  if (item.kind === 'probe') return <Field label={studioName('name')} value={item.name} parse={(raw) => raw.trim() || undefined}
     commit={change && ((value) => change({ ...item, name: String(value) }))} />;
   const clamp = item.operation.toLowerCase() === 'clamp';
   const names = clamp ? ['low', 'high'] : ['factor'];
   return <>
-    <label className="grid gap-1">Operation
+    <label className="grid gap-1">{studioName('operation')}
       <select className={inputClass} value={item.operation.toLowerCase()} disabled={!change} onChange={(event) => {
         const operation = event.currentTarget.value;
         change?.({ ...item, operation, fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 } });
       }}>
-        <option value="clamp">Clamp</option><option value="scale">Scale</option>
+        <option value="clamp">{studioName('clamp')}</option><option value="scale">{studioName('scale')}</option>
       </select>
     </label>
     {names.filter((name) => !projected?.has(name)).map((name) => <Field key={name} label={humanizeLabel(name)} type="number"
       value={String(item.fields?.[name] ?? '')} parse={numeric}
       commit={change && ((value) => change({ ...item, fields: { ...item.fields, [name]: value } }))} />)}
-    <div>Window <output>Whole trial</output></div>
+    <div>{studioName('window')} <output>{studioName('wholeTrial')}</output></div>
   </>;
 }

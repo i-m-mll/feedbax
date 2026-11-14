@@ -275,11 +275,10 @@ export function useManagedAnalyze({
       </> : <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); connectSelected(); }}>
         <label className="grid gap-1">{studioName('sourcePort')}
           <select data-dialog-autofocus className={control} value={sourceIndex} onChange={(event) => setSourceIndex(event.currentTarget.value)}>
-            <option value="" disabled />{sources.map(({ label, schemas }, index) =>
-              <option key={label} value={index} title={schemas.join(', ')}>{label}</option>)}
+            <option value="" disabled />{sources.map(({ label }, index) => <option key={label} value={index}>{label}</option>)}
           </select>
         </label>
-        <label className="grid gap-1">{studioName('targetPort')}
+        <label className="grid gap-1">{studioName('inputPort')}
           <select className={control} value={role} onChange={(event) => setRole(event.currentTarget.value)}>
             <option value="" disabled />{roles.map((name) => <option key={name} value={name}>{selected}.{name}</option>)}
           </select>

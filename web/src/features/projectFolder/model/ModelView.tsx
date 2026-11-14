@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { MarkerType, type OnConnectStart } from '@xyflow/react';
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
+import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Dialog } from '@/components/ui/Dialog';
 import { StudioFieldControl } from '@/components/values/StudioFieldControl';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -83,7 +84,7 @@ function stepCount(item: Attachment, step: number) {
 }
 
 function attachmentName(item: Attachment) {
-  return item.kind === 'probe' ? item.name : item.kind === 'delay' ? 'Delay' : item.operation.toLowerCase() === 'clamp' ? 'Clamp' : 'Scale';
+  return item.kind === 'probe' ? item.name : studioName(item.kind === 'delay' ? 'delay' : item.operation.toLowerCase() === 'clamp' ? 'clamp' : 'scale');
 }
 
 function searchable(definition: ComponentDefinition, query: string) {
@@ -104,6 +105,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void;
   disabled: boolean; browse?: boolean; inspect?: (definition: ComponentDefinition) => void;
 }) {
+  const categoryId = useId();
   const groups = new Map<string, ComponentDefinition[]>();
   for (const definition of definitions) {
     if (!searchable(definition, query)) continue;
@@ -111,10 +113,10 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
     if (!groups.has(definition.category)) groups.set(definition.category, group);
     group.push(definition);
   }
-  return <>{[...groups].map(([category, items]) => <section key={category} aria-label={category} className="space-y-0.5">
-    <h3 className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
+  return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
+    <h3 id={`${categoryId}-${index}`} className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
     {items.map((definition) => <button key={definition.name} className={`${button} block w-full`} type="button"
-      aria-label={`Add ${shortName(definition.name)}`} disabled={disabled && !browse}
+      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled && !browse}
       draggable={browse && !disabled} onDragStart={(event) => {
         event.dataTransfer.setData('application/x-feedbax-component', definition.name);
       }} onClick={() => browse ? inspect?.(definition) : choose(definition)}
@@ -171,8 +173,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
-    ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'Task'] as const),
-    ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'Objective'] as const),
+    ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'task'] as const),
+    ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'objective'] as const),
   ]), [projection.data]);
   const attachments = useQuery({
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
@@ -197,7 +199,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     },
   });
   async function editField(address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
-    if (!fieldBody || !canEditField || fields.isPlaceholderData) return 'Wait for the saved field.';
+    if (!fieldBody || !canEditField || fields.isPlaceholderData) return studioReason('unavailable', studioName('field'));
     try {
       const result = await projectModelFields(saved.project_id, {
         ...fieldBody, address, edit, lit_steps: [...fieldLitSteps ?? []], rows: [...fieldRows ?? []],
@@ -414,7 +416,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    void apply('Add Component', {
+    void apply(studioName('addComponent'), {
       op: 'add_component', graph, position,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
         ? { connect_from: source, connect_to_port: to } : {}),
@@ -448,7 +450,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       setIssue({ address, reason: 'This component has no matching ports for the wire.' });
       return;
     }
-    void apply('Insert Component', {
+    void apply(studioName('insertComponent'), {
       op: 'insert_component', address, component: leaf(definition), position: point, flipped,
       input_port: input.end.port, output_port: output.end.port,
     });
@@ -480,16 +482,16 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     if (!a || !b || locked) return;
     const left = wireEnd(a), right = wireEnd(b);
     if (a.taskSignal && projectionRun && b.direction === 'input' && (right.owner === 'component' || right.owner === 'outputs')) {
-      void apply('Connect Task Signal', { op: 'connect_task_signal', graph, run: projectionRun, signal: a.taskSignal, target: right });
+      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: a.taskSignal, target: right });
       return;
     }
     if (a.direction === 'physical' && b.direction === 'physical' && physical &&
         (left.owner === 'component' || left.owner === 'boundary') && (right.owner === 'component' || right.owner === 'boundary')) {
-      void apply('Connect Ports', { op: 'connect_physical', graph, connection: { a: left, b: right } });
+      void apply(studioName('connectPorts'), { op: 'connect_physical', graph, connection: { a: left, b: right } });
     } else if (a.direction === 'output' && b.direction === 'input' &&
         (left.owner === 'component' || left.owner === 'inputs') && (right.owner === 'component' || right.owner === 'outputs') &&
         !verdict?.get(endKey(right))) {
-      void apply('Connect Ports', { op: 'connect', graph, source: left, target: right, ...(b.growing ? { grow_target: true } : {}) });
+      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right, ...(b.growing ? { grow_target: true } : {}) });
     }
   }
 
@@ -514,7 +516,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       .map((node) => ({ address: node.data.address, position: node.position }));
     if (!placements.length) return;
     setHeld(new Map(placements.map(({ address, position }) => [addressKey(address), position])));
-    void apply('Move Component', { op: 'move_components', placements }, false).finally(() => setHeld(undefined));
+    void apply(studioName('moveComponent'), { op: 'move_components', placements }, false).finally(() => setHeld(undefined));
   }
 
   function makeCard(id: string, index: number, definition?: typeof objects[number][1]): ModelCard {
@@ -522,7 +524,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const key = addressKey(address);
     const type = definition?.kind === 'leaf' ? registry.get(definition.type) : undefined;
     const value = definition?.kind === 'leaf' ? definition.fields?.hidden_size ?? definition.fields?.output_size : undefined;
-    const name = definition?.name ?? (id === inputCard ? 'inputs' : 'outputs');
+    const name = definition?.name ?? studioName(id === inputCard ? 'inputs' : 'outputs');
     const caption = definition?.kind === 'leaf'
       ? [shortName(type?.name ?? definition.type), typeof value === 'number' ? value : undefined].filter((item) => item !== undefined).join(' · ')
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
@@ -554,7 +556,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         })),
         enter: definition?.kind === 'composite' ? () => go([...currentPath, id]) : undefined,
         renaming: rename === key, endRename: () => setRename(undefined),
-        rename: (name) => { void apply('Rename', { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
+        rename: (name) => { void apply(studioName('rename'), { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
         addPort: !definition && editTopology ? () => setAddPort(id === inputCard ? 'input' : 'output') : undefined,
       },
     };
@@ -639,12 +641,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
       : { id, kind, name: port?.name ?? 'Probe' };
     const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
-    if (evaluate) void applyEvaluate(`Add ${attachmentName(item)}`, difference);
-    else void apply(`Add ${attachmentName(item)}`, { op: 'set_attachment', difference });
+    if (evaluate) void applyEvaluate(studioAccessibleName('add', attachmentName(item)), difference);
+    else void apply(studioAccessibleName('add', attachmentName(item)), { op: 'set_attachment', difference });
   }
   function removeAttachment(address: ModelAddress) {
-    if (evaluate) void applyEvaluate('Remove Attachment', { op: 'remove', address });
-    else void apply('Remove Attachment', { op: 'delete', selection: [address] });
+    if (evaluate) void applyEvaluate(studioName('removeAttachment'), { op: 'remove', address });
+    else void apply(studioName('removeAttachment'), { op: 'delete', selection: [address] });
   }
   function armInitial(address: ModelAddress, item: Attachment) {
     if (item.kind !== 'delay') return;
@@ -685,9 +687,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       address.element.end.owner !== 'boundary';
     if (!(wire || signalPort) || !(editTopology || canEvaluate) || busy) return null;
     return <div className="flex flex-wrap gap-1">
-      {wire && editTopology && <button className={button} type="button" onClick={() => addAttachment(address, 'delay')}>Add Delay</button>}
-      {(wire || source) && <button className={button} type="button" onClick={() => addAttachment(address, 'intervention')}>Add Intervention</button>}
-      <button className={button} type="button" onClick={() => addAttachment(address, 'probe')}>Add Probe</button>
+      {wire && editTopology && <button className={button} type="button" onClick={() => addAttachment(address, 'delay')}>{studioName('addDelay')}</button>}
+      {(wire || source) && <button className={button} type="button" onClick={() => addAttachment(address, 'intervention')}>{studioName('addIntervention')}</button>}
+      <button className={button} type="button" onClick={() => addAttachment(address, 'probe')}>{studioName('addProbe')}</button>
     </div>;
   }
 
@@ -702,20 +704,20 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     }), { enabled: !!objects.length }),
     bindStudioCommand('modelRemove', () => {
       if (selection?.element.kind === 'attachment') removeAttachment(selection);
-      else void apply('Delete', { op: 'delete', selection: [...selectedHere] });
+      else void apply(studioName('modelRemove'), { op: 'delete', selection: [...selectedHere] });
     }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment && !busy) }),
     bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: editTopology && !!component }),
-    bindStudioCommand('modelDuplicate', () => void apply('Duplicate', { op: 'duplicate', selection: [...selectedHere] }),
+    bindStudioCommand('modelDuplicate', () => void apply(studioName('modelDuplicate'), { op: 'duplicate', selection: [...selectedHere] }),
       { enabled: editTopology && componentsOnly }),
-    bindStudioCommand('modelGroup', () => void apply('Group', { op: 'group', selection: [...selectedHere], name: 'Group' }),
+    bindStudioCommand('modelGroup', () => void apply(studioName('modelGroup'), { op: 'group', selection: [...selectedHere], name: studioName('modelGroup') }),
       { enabled: editTopology && componentsOnly && !physical }),
-    bindStudioCommand('modelUngroup', () => { if (selection) void apply('Ungroup', { op: 'ungroup', address: selection }); },
+    bindStudioCommand('modelUngroup', () => { if (selection) void apply(studioName('modelUngroup'), { op: 'ungroup', address: selection }); },
       { enabled: editTopology && component?.kind === 'composite' && !component.interior.physical_domain }),
-    bindStudioCommand('modelCopy', () => void apply('Copy', { op: 'copy', selection: [...selectedHere] }, false),
+    bindStudioCommand('modelCopy', () => void apply(studioName('modelCopy'), { op: 'copy', selection: [...selectedHere] }, false),
       { enabled: editTopology && componentsOnly }),
-    bindStudioCommand('modelCut', () => void apply('Cut', { op: 'cut', selection: [...selectedHere] }),
+    bindStudioCommand('modelCut', () => void apply(studioName('modelCut'), { op: 'cut', selection: [...selectedHere] }),
       { enabled: editTopology && componentsOnly }),
-    bindStudioCommand('modelPaste', () => { if (clipboard) void apply('Paste', { op: 'paste', graph, clipboard }); },
+    bindStudioCommand('modelPaste', () => { if (clipboard) void apply(studioName('modelPaste'), { op: 'paste', graph, clipboard }); },
       { enabled: editTopology && !!clipboard }),
     ...viewportCommands,
   ];
@@ -729,7 +731,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const inspector = libraryItem ? <section className="grid gap-2 p-2 text-sm">
     <strong>{shortName(libraryItem.name)}</strong><p>{libraryItem.description}</p>
     <ul>{[...(libraryItem.input_ports ?? []), ...(libraryItem.output_ports ?? [])].map((name, index) => <li key={index}>{name}</li>)}</ul>
-    {editTopology && <button className={button} type="button" onClick={() => add(libraryItem)}>Add {shortName(libraryItem.name)}</button>}
+    {editTopology && <button className={button} type="button" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</button>}
   </section> : model && <section className="grid gap-2 p-2 text-sm">
     {fields.isError && <p role="alert">{apiErrorMessage(fields.error)}</p>}
     {component && selection ? <>
@@ -737,13 +739,13 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       {fieldControls}
       <ComponentFields component={component} definition={component.kind === 'leaf' ? registry.get(component.type) : undefined}
         projected={projectedNames}
-        change={editTopology ? (path, value) => void apply('Set Value', {
+        change={editTopology ? (path, value) => void apply(studioName('setValue'), {
           op: 'set_field', address: fieldAddress(selection, ...path), value,
         }, false) : undefined} />
     </> : port ? <>
       <strong>{port.name}</strong><PortFields port={port} />
-      {selection && editTopology && port.end.owner !== 'component' && <Field label="Name" value={port.name}
-        parse={(raw) => raw.trim() || undefined} commit={(name) => void apply('Rename', { op: 'rename', address: selection, name: String(name) }, false)} />}
+      {selection && editTopology && port.end.owner !== 'component' && <Field label={studioName('name')} value={port.name}
+        parse={(raw) => raw.trim() || undefined} commit={(name) => void apply(studioName('rename'), { op: 'rename', address: selection, name: String(name) }, false)} />}
     </> : attachment && selection ? <>
       <strong>{attachmentName(attachment)}</strong>
       {fieldControls}
@@ -753,18 +755,18 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         arm={attachment.kind === 'delay' && editTopology ? () => armInitial(selection, attachment) : undefined}
         linkLabel={labelOfPort} />
       {(editTopology || canEvaluate && !busy) && <button className={button} type="button"
-        onClick={() => removeAttachment(selection)}>Remove Attachment</button>}
-      {canEvaluate && chain && chain.length > 1 && isAuthored(selection) && <label>After
+        onClick={() => removeAttachment(selection)}>{studioName('removeAttachment')}</button>}
+      {canEvaluate && chain && chain.length > 1 && isAuthored(selection) && <label>{studioName('after')}
         <select value={chain[chain.indexOf(attachment) - 1]?.id ?? ''} onChange={(event) => void applyEvaluate(
           'Move Attachment', { op: 'change', address: selection, attachment, after: event.currentTarget.value || null },
         )}>
-          <option value="">Source</option>
+          <option value="">{studioName('source')}</option>
           {chain.filter((item) => item.id !== attachment.id).map((item) => <option key={item.id} value={item.id}>{attachmentName(item)}</option>)}
         </select>
       </label>}
-    </> : ownerAddress ? <strong>Wire</strong>
+    </> : ownerAddress ? <strong>{studioName('wire')}</strong>
       : projectedFields.length ? fieldControls
-      : <ModelFields model={model.value} change={editTopology && !fieldBody && !currentPath.length ? (path, value) => void apply('Step', {
+      : <ModelFields model={model.value} change={editTopology && !fieldBody && !currentPath.length ? (path, value) => void apply(studioName('step'), {
         op: 'set_field', address: fieldAddress(graph, ...path), value,
       }, false) : undefined} />}
     {ownerAddress && !attachment && chain && <div className="border-t border-shell-divider pt-1">
@@ -778,7 +780,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       const address = at(graph, { kind: 'component', id });
       return <li key={id} className="flex">
         {component.kind === 'composite' && <button className={button} type="button"
-          aria-label={`Enter ${component.name}`} onClick={() => go([...currentPath, id])}>›</button>}
+          aria-label={studioAccessibleName('enter', component.name)} onClick={() => go([...currentPath, id])}>›</button>}
         <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(address))}
           onClick={(event) => select(address, event.shiftKey)}>{component.name}</button>
       </li>;
@@ -801,8 +803,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   return {
     documentId: model?.id,
     header: model && <button type="button" className={button} onClick={() => go([])}>{model.id}</button>,
-    path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label="Model Path">
-      <button type="button" className={button} aria-label="Model Root" onClick={() => go([])}>⌂</button>
+    path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label={studioName('modelPath')}>
+      <button type="button" className={button} aria-label={studioName('modelRoot')} onClick={() => go([])}>⌂</button>
       {resolved?.entries.map(({ id, name }, index) => <button key={id} type="button" className={button}
         onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</button>)}
     </nav>,
@@ -855,27 +857,27 @@ export function useStoredModelView({ model, saved, editor, window: state, active
             const id = parsed.data.element.id;
             const destination = edge.data.address;
             const after = effective.get(addressKey(destination))?.filter((item) => item.id !== id).at(-1)?.id ?? null;
-            void apply('Move Attachment', { op: 'move_wire_attachment', address, destination, after })
+            void apply(studioName('moveAttachment'), { op: 'move_wire_attachment', address, destination, after })
               .then((ok) => { if (ok) select(attachmentAddress(destination, id)); });
           }} />
       </div>
     </div> : null,
     drawer: model && <section className="space-y-2 p-1 text-sm">
-      <div className="flex" aria-label="Model Drawer">
-        <button className={button} type="button" aria-pressed={drawer === 'library'} onClick={() => setDrawer('library')}>Library</button>
-        <button className={button} type="button" aria-pressed={drawer === 'outline'} onClick={() => setDrawer('outline')}>Outline</button>
+      <div className="flex" aria-label={studioName('modelDrawer')}>
+        <button className={button} type="button" aria-pressed={drawer === 'library'} onClick={() => setDrawer('library')}>{studioName('library')}</button>
+        <button className={button} type="button" aria-pressed={drawer === 'outline'} onClick={() => setDrawer('outline')}>{studioName('outline')}</button>
       </div>
       {registryQuery.error && <p role="alert">{apiErrorMessage(registryQuery.error)}</p>}
       {drawer === 'library' ? <>
-        <input aria-label="Search Library" className="w-full border border-shell-divider px-1 py-0.5"
+        <input aria-label={studioName('searchLibrary')} className="w-full border border-shell-divider px-1 py-0.5"
           value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
         <LeafChoices definitions={definitions} query={query} choose={add} inspect={setLibraryItem} disabled={!editTopology} browse />
       </> : outline}
     </section>,
     inspector,
     commands,
-    overlay: search ? <Dialog ariaLabel="Add Component" onClose={() => setSearch(undefined)} manageFocus panelClassName={panel}>
-      <input data-dialog-autofocus aria-label="Components" className="border border-shell-divider px-2 py-1"
+    overlay: search ? <Dialog ariaLabel={studioName('addComponent')} onClose={() => setSearch(undefined)} manageFocus panelClassName={panel}>
+      <input data-dialog-autofocus aria-label={studioName('components')} className="border border-shell-divider px-2 py-1"
         value={searchText} onChange={(event) => setSearchText(event.currentTarget.value)} />
       {searchSource ? searchLibrary?.flatMap(({ component, target_port: port }) => {
         const item = registry.get(component);
@@ -884,9 +886,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
             onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</button> : [];
       })
         : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
-    </Dialog> : addPort ? <Dialog ariaLabel="Add Port" onClose={() => setAddPort(undefined)} manageFocus panelClassName={panel}>
-      <Field label="Name" value="" parse={(raw) => raw.trim() || undefined} commit={(name) => {
-        void apply('Add Port', { op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name: String(name), type: {} } }, false)
+    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus panelClassName={panel}>
+      <Field label={studioName('name')} value="" parse={(raw) => raw.trim() || undefined} commit={(name) => {
+        void apply(studioName('addPort'), { op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name: String(name), type: {} } }, false)
           .then((ok) => { if (ok) setAddPort(undefined); });
       }} />
       {addPort === 'input' && model && currentPath.flatMap((excluded, depth) => {
@@ -901,30 +903,30 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           const source = wireEnd(port);
           if (source.owner !== 'inputs' && source.owner !== 'component') return null;
           return <button key={`${depth}:${endKey(source)}`} className={button} type="button" onClick={() => {
-            void apply('Bring Signal In', { op: 'bring_signal_in', source_graph: currentGraph(graph.document, outerPath),
+            void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(graph.document, outerPath),
               source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
           }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</button>;
         });
       })}
-    </Dialog> : menu && <Dialog ariaLabel="Model Commands" onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
+    </Dialog> : menu && <Dialog ariaLabel={studioName('modelCommands')} onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
       <div role="menu" className="fixed grid rounded border border-shell-divider bg-shell-chrome p-1 text-sm shadow-lg"
         style={{ left: Math.min(menu.x, window.innerWidth - 160), top: Math.min(menu.y, window.innerHeight - 240) }}>
         {commands.filter((command) => command.enabled && command.id.startsWith('model')).map((command) =>
           <button className={button} role="menuitem" type="button" key={command.id} {...commandAttributes(command)}
             onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</button>)}
         {menu.address.element.kind === 'component' && editTopology && <button className={button} role="menuitem" type="button"
-          onClick={() => { void apply('Flip', { op: 'flip_component', address: menu.address }, false); setMenu(undefined); }}>Flip</button>}
+          onClick={() => { void apply(studioName('flip'), { op: 'flip_component', address: menu.address }, false); setMenu(undefined); }}>{studioName('flip')}</button>}
         {menu.address.element.kind === 'wire' && editTopology && <>
           <button className={button} role="menuitem" type="button" onClick={() => {
             const key = addressKey(menu.address);
-            route(menu.address, [...(waypoints?.[key] ?? []), menu.point], 'Add Waypoint');
+            route(menu.address, [...(waypoints?.[key] ?? []), menu.point], studioName('addWaypoint'));
             setMenu(undefined);
-          }}>Add Waypoint</button>
+          }}>{studioName('addWaypoint')}</button>
           {!!waypoints?.[addressKey(menu.address)]?.length && <button className={button} role="menuitem" type="button" onClick={() => {
             const key = addressKey(menu.address);
-            route(menu.address, waypoints![key].slice(0, -1), 'Remove Waypoint');
+            route(menu.address, waypoints![key].slice(0, -1), studioName('removeWaypoint'));
             setMenu(undefined);
-          }}>Remove Waypoint</button>}
+          }}>{studioName('removeWaypoint')}</button>}
         </>}
       </div>
     </Dialog>,

@@ -109,16 +109,16 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         _semantic_structural_abi_sha256,
         structural_abi_fingerprint,
     )
-    from feedbax.web import config
+    from feedbax.studio import paths
     from feedbax.web.api import graphs, projects
-    from feedbax.web.model_assets import model_artifact_provider
+    from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.web.services.project_folder import ProjectFolderService
 
     pytest.importorskip("mujoco.mjx")
     fixture = ImmutableArtifactBlobProvider(tmp_path / "fixture")
     graph = _document(fixture, 0.001).graph
     asset = graph.subgraphs["physics"].mujoco_asset.asset
-    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(paths, "STUDIO_DATA_ROOT", tmp_path)
     app = FastAPI()
     app.state.bootstrap_state = SimpleNamespace(bundle=SimpleNamespace(components=ComponentRegistry()))
     app.include_router(graphs.router, prefix="/api/graphs")

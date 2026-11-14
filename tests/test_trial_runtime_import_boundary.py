@@ -17,6 +17,8 @@ from tests.test_training_run_executor import _synthetic_cli_run_spec
 
 
 def test_entry_point_import_closures(tmp_path):
+    from tests.test_worker_execution import _studio_worker_run_spec
+
     service = JobService(HostClient(tmp_path / "host"), new_application_registry_bundle())
     launch = service._training_worker
     managed = _run_import_probe(
@@ -46,12 +48,23 @@ def test_entry_point_import_closures(tmp_path):
 
     spec = tmp_path / "envelope.json"
     spec.write_text(_synthetic_cli_run_spec().model_dump_json())
+    studio_spec = tmp_path / "studio-envelope.json"
+    studio_spec.write_text(_studio_worker_run_spec().model_dump_json(exclude_none=True))
     retained_roots = {
         "envelope": f"""
             from feedbax.cli import main
             assert main([
                 "execute-training-run-spec", "--plugin", "tests.support.training_fixtures",
                 {str(spec)!r}, "--manifest-root", {str(tmp_path / 'envelope-output')!r},
+            ]) == 0
+        """,
+        "studio-envelope": f"""
+            from feedbax.cli import main
+            assert main([
+                "execute-training-run-spec", {str(studio_spec)!r},
+                "--manifest-root", {str(tmp_path / 'studio-output')!r},
+                "--checkpoint-root", {str(tmp_path / 'studio-checkpoints')!r},
+                "--update-budget", "1", "--no-progress",
             ]) == 0
         """,
         "orchestrate": """
@@ -98,6 +111,11 @@ def test_entry_point_import_closures(tmp_path):
     assert "feedbax.plugins.retained" in retained["envelope"] & retained["orchestrate"]
     assert "feedbax.training.trainer" in retained["gradient"]
     assert "feedbax.compiler.trial_execution" in managed
+    assert "feedbax.training.retained_graph" in retained["studio-envelope"]
+    assert "feedbax.persistence.model_assets" in retained["studio-envelope"]
+    assert "feedbax.web.worker.execution" not in retained_closure
+    assert "feedbax.web.worker.diagnostics" not in retained_closure
+    assert "feedbax.web.model_assets" not in retained_closure
 
     retained_implementation = retained_implementations(retained_closure)
     assert not retained_implementation.intersection(managed)

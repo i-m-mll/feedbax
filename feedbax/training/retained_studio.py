@@ -32,7 +32,7 @@ from feedbax.training.studio_executor import (
 
 
 def _legacy_snapshot(compiled):
-    from feedbax.web.worker.execution import training_trajectory_snapshot
+    from feedbax.training.retained_graph import training_trajectory_snapshot
 
     return lambda graph, key: training_trajectory_snapshot(graph, compiled, key)
 
@@ -101,9 +101,9 @@ def studio_graph_training_program(
 ) -> DeclaredTrainingProgram[StudioGraphMethodPayload]:
     """Declare the Studio graph method with retained scenario preparation."""
     def prepare(request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
-        from feedbax.web.worker.execution import (
-            _StudioWorkerLossService,
-            _evaluate_loss,
+        from feedbax.training.retained_graph import (
+            StudioGraphLossService,
+            evaluate_graph_loss,
             compile_training_run,
             rollout_graph,
         )
@@ -134,7 +134,7 @@ def studio_graph_training_program(
         kernel = StudioUpdateKernel(
             compiled=compiled, optimizer=optimizer,
             score_batch=_score_legacy_batch(
-                compiled, lambda graph, plan, key: rollout_graph(graph, plan, key=key), _evaluate_loss,
+                compiled, lambda graph, plan, key: rollout_graph(graph, plan, key=key), evaluate_graph_loss,
             ),
             snapshot=_legacy_snapshot(compiled),
         )
@@ -148,7 +148,7 @@ def studio_graph_training_program(
                 "batch_counter": jnp.array(0, dtype=jnp.int32),
             },
             kernel_context={"studio_graph_update": kernel},
-            loss_service=_StudioWorkerLossService(compiled),
+            loss_service=StudioGraphLossService(compiled),
             restored_schedule_context_binder=studio_schedule_context_binder(payload),
         )
 

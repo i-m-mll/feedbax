@@ -14,7 +14,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.mapping import WhereDict
 from feedbax.tasks import TaskTrialSpec, prepare_trial
-from feedbax.web.worker.execution import compile_training_run, rollout_graph
+from feedbax.training.retained_graph import compile_training_run, rollout_graph
 
 
 def _compile(graph):

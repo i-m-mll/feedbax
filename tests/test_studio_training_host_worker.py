@@ -338,12 +338,12 @@ def _managed_spec(*, batches=8, batch_size=1, sampled_hold=False):
 
 def test_retained_reaching_batch_matches_independent_endpoint_reduction():
     from feedbax.plugins.retained import new_retained_registry_bundle
+    from feedbax.training import retained_graph
     from feedbax.training.invocation import prepare_training_invocation
-    from feedbax.web.worker import execution
 
     spec = _authored_spec(batches=4, batch_size=3, sampled_hold=True)
     registries = new_retained_registry_bundle()
-    compile_run = execution.compile_training_run
+    compile_run = retained_graph.compile_training_run
     compiled = None
 
     def capture(*args, **kwargs):
@@ -352,7 +352,7 @@ def test_retained_reaching_batch_matches_independent_endpoint_reduction():
         return compiled
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(execution, "compile_training_run", capture)
+        patch.setattr(retained_graph, "compile_training_run", capture)
         preparation = prepare_training_invocation(
             spec, registries, run_id="retained-endpoint-control", resume=False,
         )
@@ -360,7 +360,7 @@ def test_retained_reaching_batch_matches_independent_endpoint_reduction():
 
     @eqx.filter_jit
     def scalar_trial(model, key):
-        rollout = execution.rollout_graph(model, compiled, key=key)
+        rollout = retained_graph.rollout_graph(model, compiled, key=key)
         targets = rollout["task_data"]["reach_target"]
         return _TrialEndpoint(
             rollout["trace"]["path:plant.effector.pos"][-1],

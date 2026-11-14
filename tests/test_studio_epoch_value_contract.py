@@ -17,7 +17,7 @@ from feedbax.contracts.graph import (
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.training import TaskSpec
-from feedbax.web.worker.execution import _materialize_task_data, _validate_epoch_value_targets
+from feedbax.training.retained_graph import _materialize_task_data, _validate_epoch_value_targets
 
 
 def _literal(value: object) -> dict[str, object]:

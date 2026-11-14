@@ -22,7 +22,7 @@ from feedbax.training.preparation import (
 )
 from feedbax.training.studio_executor import studio_training_key
 from feedbax.training.worker_validation import resolve_execution_mapping
-from feedbax.web.model_assets import model_artifact_provider
+from feedbax.persistence.model_assets import model_artifact_provider
 
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider

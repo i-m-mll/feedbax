@@ -36,8 +36,8 @@ from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
-from feedbax.web.worker.diagnostics import GraphCompilationError
-from feedbax.web.worker.execution import compile_training_run
+from feedbax.training.retained_diagnostics import GraphCompilationError
+from feedbax.training.retained_graph import compile_training_run
 
 # Outcomes that count as "the build refused to guess". A fix for any of the
 # xfailed invariants may legitimately take the form of a loud rejection, so the

@@ -460,8 +460,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const taskId = element?.kind === 'taskParameter' && (!document || definitions.task?.id === document) &&
     task && Object.prototype.hasOwnProperty.call(task.params ?? {}, element.name) ? element.name : undefined;
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
-  const modelSelection = useElementSelection(JSON.stringify([subjectScope, definitions.model?.id]), reveal, revealedModelId);
-  const taskSelection = useElementSelection(JSON.stringify([subjectScope, definitions.task?.id]), reveal, taskId);
+  // An unswept project has one variant, even before the Plan names it.
+  const elementScope = [saved.project_id, stepId, saved.project.sweep ? variantId : null];
+  const modelSelection = useElementSelection(JSON.stringify([...elementScope, definitions.model?.id]), reveal, revealedModelId);
+  const taskSelection = useElementSelection(JSON.stringify([...elementScope, definitions.task?.id]), reveal, taskId);
   const change = useDefinitionEdit(input, scope);
   function editable(field: DefinitionField, definition: Definition) {
     const target = input.documentScopes[field];

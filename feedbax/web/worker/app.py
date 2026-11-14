@@ -37,12 +37,14 @@ from feedbax.orchestration.events import (
     run_event_from_legacy_worker_event,
     legacy_worker_event_from_run_event,
 )
-from feedbax.web.worker.diagnostics import (
+from feedbax.training.retained_diagnostics import (
     GraphCompilationError,
     exception_diagnostic,
+    graph_compilation_error,
+)
+from feedbax.web.worker.diagnostics import (
     model_validation_diagnostics,
     object_required_diagnostic,
-    graph_compilation_error,
 )
 from feedbax.web.worker.checkpoint import (
     CheckpointCleanupError,
@@ -412,7 +414,8 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
     Leaf components remain opaque executable components; the worker no longer
     reconstructs a hidden controller/plant/loss bridge from topology.
     """
-    from feedbax.web.worker.execution import compile_training_run, run_training_graph
+    from feedbax.training.retained_graph import compile_training_run
+    from feedbax.web.worker.execution import run_training_graph
 
     compiled = compile_training_run(
         graph_spec=_as_mapping("graph_spec", job.graph_spec),

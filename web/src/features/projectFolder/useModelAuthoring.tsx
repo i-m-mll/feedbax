@@ -73,7 +73,7 @@ function PortForm({ mode, graph, commit, busy }: {
         {outputs.map(({ id, node, port }) => <option key={id} value={id}>{node}.{port}</option>)}
       </select>
     </label>
-    {mode === 'connectPorts' && <label className="grid gap-1 text-sm">{studioName('targetPort')}
+    {mode === 'connectPorts' && <label className="grid gap-1 text-sm">{studioName('inputPort')}
       <select value={targetId} onChange={(event) => setTarget(event.currentTarget.value)}>
         <option value="" disabled>{studioName('choose')}</option>
         {inputs.map(({ id, node, port }) => <option key={id} value={id}>{node}.{port}</option>)}

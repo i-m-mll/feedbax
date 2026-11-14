@@ -189,7 +189,7 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
                   className="flex max-w-full items-center rounded border border-shell-divider data-[selected=true]:border-shell-foreground data-[selected=true]:bg-shell-selected">
                   {onChooseSweepValue
                     ? <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)}
-                      aria-description={description || undefined} title={description || undefined}
+                      aria-description={description || undefined}
                       {...selectionButton((extend) => onChooseSweepValue(sweep.id, value.id, extend))}
                       className="min-w-0 truncate px-1.5 py-0.5 tabular-nums">{label}</button>
                     : <span className="min-w-0 truncate px-1.5 py-0.5 tabular-nums">{label}</span>}
@@ -213,7 +213,7 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
             {can("nameSweepValue") && (
               <input key={edited.label ?? ""} type="text" className={`${controlClass} w-24`}
                 aria-label={studioAccessibleName("name", `${field.label} ${edited.label ?? scalarText(edited.value)}`)}
-                placeholder={scalarText(edited.value)} defaultValue={edited.label ?? ""}
+                defaultValue={edited.label ?? ""}
                 onBlur={({ currentTarget }) => {
                   const next = currentTarget.value.trim() || null;
                   if (next !== (edited.label ?? null)) edit({ kind: "nameSweepValue", sweepId: sweep.id, valueId: edited.id, label: next });

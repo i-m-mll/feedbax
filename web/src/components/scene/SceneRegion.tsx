@@ -254,7 +254,7 @@ function SceneDrawingCanvas({
         const [x, y] = project(anchor.position);
         return (
           <circle key={anchor.id} cx={x} cy={y} r={7} fill="var(--surface-main)" stroke="var(--text-primary)" strokeWidth={2}
-            role="button" tabIndex={0} aria-label={anchor.label} aria-pressed={anchor.id === selectedId}
+            role="button" tabIndex={0} aria-label={studioAccessibleName('select', anchor.label)} aria-pressed={anchor.id === selectedId}
             className="cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-shell-accent"
             onPointerDown={(event) => startAttachment(event, anchor)}
             onKeyDown={(event) => {

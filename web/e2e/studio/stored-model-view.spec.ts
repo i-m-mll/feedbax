@@ -86,7 +86,7 @@ test('authors and reopens an addressed Model through the project history', async
   expect(stored(wired.snapshot).interior.wires?.[wire.id].attachments).toMatchObject([
     { kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 },
   ]);
-  await model.getByRole('button', { name: 'Delay', exact: true }).click();
+  await model.getByRole('button', { name: 'Attachment Delay', exact: true }).click();
   await expect(inspector.getByRole('button', { name: 'Delay kind: Value' })).toBeVisible();
   await expect(inspector.getByRole('button', { name: 'Initial kind: Value' })).toBeVisible();
   const delayed = await apply(() => enter(inspector.getByRole('textbox', { name: 'Delay', exact: true }), '0.06 s'));
@@ -177,8 +177,8 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   expect(saved.project.steps?.baseline).toMatchObject({ model_attachments: expect.any(Object) });
   await page.reload();
   await mapStep(page, 'baseline').click();
-  await expect(model.getByRole('button', { name: 'Scale', exact: true })).toBeVisible();
-  await model.getByRole('button', { name: 'Scale', exact: true }).click();
+  await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
+  await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
   const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
   await evaluation.getByRole('button', { name: 'Sweep seed', exact: true }).click();
@@ -191,7 +191,7 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
   await addIntervention(page, projectPath, add, { kind: 'rows', rows: ['seed=comparison'] });
-  await expect(model.getByRole('button', { name: 'Scale', exact: true })).toHaveCount(2);
+  await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);
 });
 
 test('persists an attachment in the selected project variant', async ({ page, request }, info) => {
@@ -209,5 +209,5 @@ test('persists an attachment in the selected project variant', async ({ page, re
   await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
   await addIntervention(page, projectPath, page.getByRole('button', { name: 'Add Intervention', exact: true }),
     { kind: 'variant', variant: 'treated' });
-  await expect(model.getByRole('button', { name: 'Scale', exact: true })).toBeVisible();
+  await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
 });

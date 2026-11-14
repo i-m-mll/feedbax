@@ -1,4 +1,5 @@
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
+import { studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
 import {
   BatchCheckpointSchema, StepReferenceSchema, UpdateRuleSchema,
@@ -10,7 +11,7 @@ import { ProjectEditConflictError, type ProjectEditController } from './projectE
 import { savedRunId } from './projectWindowPlan';
 
 const rollout = 'feedbax.rollout';
-export const checkpointLabel = (update: number) => `Checkpoint at update ${update}`;
+export const checkpointLabel = (update: number) => studioFormat('checkpointAtUpdate', { update });
 
 export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule;
 
@@ -40,7 +41,7 @@ export function parseCheckpointRule(text: string): { rule: EditableCheckpointRul
   if (point) {
     const parsed = BatchCheckpointSchema.safeParse({ at: Number(point[1]) });
     if (parsed.success) return { rule: parsed.data };
-    return { reason: 'Enter a whole update number.' };
+    return { reason: studioReason('wholeUpdate', point[1]) };
   }
   const cadence = /^every\s+(\d+)(?:\s+from\s+(\d+))?(?:\s+through\s+(\d+))?$/.exec(shorthand);
   if (cadence) {
@@ -51,9 +52,9 @@ export function parseCheckpointRule(text: string): { rule: EditableCheckpointRul
       ...(through !== undefined && { through: Number(through) }),
     };
     const parsed = UpdateRuleSchema.safeParse(rule);
-    if (!parsed.success) return { reason: 'Use positive whole update numbers.' };
+    if (!parsed.success) return { reason: studioReason('positiveUpdates', text.trim()) };
     if (rule.from !== undefined && rule.through !== undefined && rule.from > rule.through) {
-      return { reason: 'The last update must be at or after the first.' };
+      return { reason: studioReason('reversedUpdates', text.trim()) };
     }
     return { rule: parsed.data };
   }
@@ -61,11 +62,11 @@ export function parseCheckpointRule(text: string): { rule: EditableCheckpointRul
     const updates = shorthand.split(',').map(Number);
     const parsed = UpdateRuleSchema.safeParse(updates.map((at) => ({ at })));
     if (!parsed.success || new Set(updates).size !== updates.length) {
-      return { reason: 'Enter 1 to 64 distinct positive whole update numbers.' };
+      return { reason: studioReason('invalidUpdateList', studioName('checkpointRule')) };
     }
     return { rule: parsed.data };
   }
-  return { reason: 'Use “last”, “at 7”, “7, 14, 21”, or “every 7”.' };
+  return { reason: studioReason('invalidCheckpointRule', studioName('checkpointRule')) };
 }
 
 export type TrialSet =

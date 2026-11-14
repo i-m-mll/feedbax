@@ -6,11 +6,11 @@ from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.graph import GraphSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.web import config
+from feedbax.studio import paths
 
 
 def _provider() -> ImmutableArtifactBlobProvider:
-    return ImmutableArtifactBlobProvider((config.BASE_DIR / "content").absolute())
+    return ImmutableArtifactBlobProvider((paths.STUDIO_DATA_ROOT / "content").absolute())
 
 
 def import_mujoco_asset(data: bytes) -> ContentObjectRef:

@@ -140,7 +140,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   const linearOutput = endpoint(linearId, 'output');
   const plantForce = endpoint(plantId, 'force');
   await model.getByRole('button', { name: 'Fit View', exact: true }).click();
-  await connect(page, model.locator('[aria-label="reach_target"].react-flow__handle'),
+  await connect(page, model.locator('[aria-label="Port reach_target"].react-flow__handle'),
     cell.locator('[data-handleid="input:input"]'), projectPath,
     { op: 'connect_task_signal', signal: 'reach_target', target: inputToCell },
     (wire) => wire.source.owner === 'inputs' && matchesFields(wire.target, inputToCell));
@@ -162,13 +162,13 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   expect(command).toBeDefined();
   const commandOutput = { owner: 'outputs', port: command!.id };
   await connect(page, linear.locator('[data-handleid="output:output"]'),
-    output.locator('[aria-label="Command"].react-flow__handle'), projectPath,
+    output.locator('[aria-label="Port Command"].react-flow__handle'), projectPath,
     { op: 'connect', source: linearOutput, target: commandOutput },
     (wire) => matchesFields(wire.source, linearOutput) && matchesFields(wire.target, commandOutput));
 
-  await expect(output.locator('[aria-label="Command"].react-flow__handle')).toBeVisible();
+  await expect(output.locator('[aria-label="Port Command"].react-flow__handle')).toBeVisible();
   await tab('Objective').click();
-  await objective.getByRole('combobox', { name: 'Measure source', exact: true }).selectOption({ label: 'Command' });
+  await objective.getByRole('combobox', { name: 'Measure Source', exact: true }).selectOption({ label: 'Command' });
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await enter(objective.getByRole('textbox', { name: 'Weight', exact: true }), '2');
