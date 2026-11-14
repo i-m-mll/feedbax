@@ -24,7 +24,6 @@ from feedbax.contracts.project_plan import PlanRequests, ProjectPlanMemo, RunKey
 from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
@@ -35,6 +34,7 @@ from feedbax.training.evaluate_worker import score_paired_validation
 from feedbax.training.managed_studio import prepare_trial_update
 from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload, _pair_model, example, expression
 from tests.test_local_job_host import host as host_fixture  # noqa: F401
@@ -544,17 +544,7 @@ def document_project(authored, *, evaluation=False):
         },
     }
     if evaluation:
-        raw["steps"]["baseline"] = {
-            "kind": "evaluate",
-            "base": {"inline": {
-                "evaluation_type": ROLLOUT_TYPE,
-                "params": {
-                    "seed": 731, "trial_policy": "paired", "variation": [],
-                    "trial_set": {"kind": "every_condition"},
-                },
-            }},
-            "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
-        }
+        raw["steps"]["baseline"] = managed_evaluation_step("train")
     return raw
 
 

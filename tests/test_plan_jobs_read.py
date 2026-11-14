@@ -27,7 +27,6 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
 from tests.support.managed_train_fixture import managed_train_payload, managed_train_project
-from tests.test_project_plan import _project_data
 
 
 def _until(read, ready=bool, *, timeout=34):
@@ -112,17 +111,19 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
-    data, _ = _project_data()
-    managed = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    data["documents"] = managed["documents"]
-    data["steps"]["fit"] = managed["steps"]["train"]
+    data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    data["steps"]["fit"] = data["steps"].pop("train")
     data["steps"]["fit"]["base"]["inline"]["seed"] = 0
     data["steps"]["fit"]["sweep"] = {"axes": {"seed": {"values": {
         "a": {"label": "11", "patches": {"seed": {"value": 11}}},
         "b": {"label": "12", "patches": {"seed": {"value": 12}}},
     }}}}
-    data["steps"]["evaluate"]["inputs"]["subject"]["where"] = {
-        "rows": [{"key": "seed=a", "variant": "default", "row": "seed=a"}],
+    data["steps"]["evaluate"] = {
+        "kind": "evaluate",
+        "base": {"inline": {"evaluation_type": "test.unsupported"}},
+        "inputs": {"subject": {"step": "fit", "where": {
+            "rows": [{"key": "seed=a", "variant": "default", "row": "seed=a"}],
+        }}},
     }
     data["steps"]["report"] = {
         "kind": "report", "base": {"inline": {}}, "inputs": {"source": {"step": "evaluate"}},
@@ -154,7 +155,7 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert window["variants"] == ["default"]
     trial_variables = [
         trial["variables"]
-        for trial in managed["documents"]["simple-reaches-task"]["payload"]["validation_trials"]
+        for trial in data["documents"]["simple-reaches-task"]["payload"]["validation_trials"]
     ]
     assert {
         (row["key"]["variant"], row["key"]["step"], row["key"]["row"]): [

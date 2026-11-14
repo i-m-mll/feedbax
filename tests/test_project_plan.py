@@ -1,6 +1,3 @@
-import json
-from pathlib import Path
-
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_inputs import SelectedRow, SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
@@ -19,40 +16,34 @@ from feedbax.contracts.project_sweep import (
     expand_sweep,
     sweep_to_rows,
 )
-from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BestMember, InputMember, LastMember, ProductRef
-from tests.support.managed_train_fixture import managed_train_project
+from feedbax.contracts.request_identity import decode_request, encode_request
+from feedbax.contracts.request_refs import InputMember, LastMember, ProductRef
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from tests.support.managed_train_fixture import (
+    managed_evaluation_step,
+    managed_train_payload,
+    managed_train_project,
+)
+
+
+LEARNING_RATE = "method_payload.payload.optimizer.params.learning_rate"
 
 
 def _project_data():
-    corpus = json.loads(
-        (Path(__file__).parent / "fixtures" / "request_identity_corpus.json").read_bytes()
-    )["requests"]
-    train = next(row for row in corpus if row["kind"] == "train")
-    evaluate = next(row for row in corpus if row["kind"] == "evaluate")
-    train_spec = train["spec"]
-    graph = train_spec.pop("graph")
-    return (
-        {
-            "documents": {"model": {"schema": graph["schema_id"], "payload": graph}},
-            "steps": {
-                "fit": {
-                    "kind": "train",
-                    "base": {"inline": {"graph": {"document": "model"}, **train_spec}},
-                },
-                "evaluate": {
-                    "kind": "evaluate",
-                    "base": {"inline": evaluate["spec"]},
-                    "inputs": {"subject": {"step": "fit", "checkpoint": {"best_by": "loss"}}},
-                },
-            },
-        },
-        train["id"],
-    )
+    data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    fit = data["steps"].pop("train")
+    fit["base"]["inline"].update(seed=0, on_nan="raise")
+    data["steps"] = {"fit": fit, "evaluate": managed_evaluation_step("fit")}
+    return data
+
+
+def _expected_train():
+    payload = managed_train_payload() | {"seed": 0}
+    return encode_request(DocumentTrainingRequestSpec.model_validate(payload), {})
 
 
 def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
-    data, expected_train = _project_data()
+    data = _project_data()
     project = Project.model_validate(data)
     files = dump_text_project(project, ProjectConfiguration(project="experiment", store="results"))
     for name, content in files.items():
@@ -70,7 +61,8 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
     assert not plan.diagnostics
     train, evaluation = plan.runs
     assert train.key == RunKey("default", "fit", "default")
-    assert train.request_id == expected_train
+    expected = _expected_train()
+    assert (train.request_id, plan.requests[train.request_id]) == (expected.id, expected.data)
     assert evaluation.key == RunKey("default", "evaluate", "default")
     assert evaluation.inputs["subject"].producer == train.key
 
@@ -87,7 +79,7 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
                 reference=ProductRef(
                     request_id=train.request_id,
                     role="checkpoint",
-                    select=BestMember(metric="loss"),
+                    select=LastMember(),
                 ),
             ),
         ),
@@ -95,7 +87,7 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
 
 
 def test_named_document_difference_is_local_and_updates_memoized_sources():
-    data, _ = _project_data()
+    data = _project_data()
     data["steps"]["sibling"] = {"kind": "train", "base": {"step": "fit"}}
     data["steps"]["fit"]["sweep"] = {
         "axes": {"seed": {"values": {"fixed": {"patches": {"seed": {"value": 2}}}}}},
@@ -106,32 +98,33 @@ def test_named_document_difference_is_local_and_updates_memoized_sources():
     fit = next(run for run in first.runs if run.key.step == "fit")
     sibling = next(run for run in first.runs if run.key.step == "sibling")
     keys = [fit.key, sibling.key]
-    assert first.document_users("default", "model") == {"fit", "sibling"}
+    assert first.document_users("default", "point-mass") == {"fit", "sibling"}
 
-    path = "/nodes/gain/params/gain"
-    data["steps"]["fit"]["document_overrides"] = {"model": {path: 3}}
+    path = "/interior/components/plant/fields/mass"
+    data["steps"]["fit"]["document_overrides"] = {"point-mass": {path: 3}}
     scoped = Project.model_validate(data)
     plan = compile_project(scoped, source_runs=keys, memo=memo)
     assert plan == compile_project(scoped, source_runs=keys)
     requests = {run.key: run.request_id for run in plan.runs}
     assert requests[fit.key] != fit.request_id
     assert requests[sibling.key] == sibling.request_id
-    assert plan.document_users("default", "model") == {"fit", "sibling"}
-    fit_source = plan.sources[fit.key]["/payload/graph" + path]
+    assert plan.document_users("default", "point-mass") == {"fit", "sibling"}
+    slot = "/payload/trial_documents/model"
+    fit_source = plan.sources[fit.key][slot + path]
     assert (fit_source.kind, fit_source.name) == ("step", "fit")
-    assert plan.sources[sibling.key]["/payload/graph" + path].name == "model"
+    assert plan.sources[sibling.key][slot + path].name == "point-mass"
     assert plan.selected_definitions[fit.key].payload["seed"] == 2
 
-    data["documents"]["model"]["payload"]["nodes"]["gain"]["params"]["gain"] = 4
+    data["documents"]["point-mass"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 4
     del data["steps"]["fit"]["document_overrides"]
     shared = Project.model_validate(data)
     plan = compile_project(shared, source_runs=keys, memo=memo)
     assert plan == compile_project(shared, source_runs=keys)
-    assert plan.sources[fit.key]["/payload/graph" + path].name == "model"
+    assert plan.sources[fit.key][slot + path].name == "point-mass"
 
 
 def test_fanout_selects_rows_and_requires_a_valid_static_subject():
-    data, _ = _project_data()
+    data = _project_data()
     fit = data["steps"]["fit"]
     fit["requires"] = ["seed"]
     fit["base"]["inline"]["seed"] = None
@@ -152,7 +145,6 @@ def test_fanout_selects_rows_and_requires_a_valid_static_subject():
     assert "seed=a" in problem.detail and "seed=b" in problem.detail
 
     evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
-    evaluation["inputs"]["subject"]["checkpoint"] = "last"
     plan = compile_project(Project.model_validate(data))
     assert not plan.diagnostics
     assert len(plan.runs) == len(plan.requests) == 4
@@ -168,7 +160,7 @@ def test_fanout_selects_rows_and_requires_a_valid_static_subject():
 
 
 def _chained_train_data():
-    data, _ = _project_data()
+    data = _project_data()
     steps = data["steps"]
     del steps["evaluate"]
     steps["fit"]["sweep"] = {
@@ -192,14 +184,17 @@ def _chained_train_data():
         "axes": {
             "rate": {
                 "values": {
-                    "fast": {"patches": {"training_config.learning_rate": {"value": 0.001}}},
-                    "slow": {"patches": {"training_config.learning_rate": {"value": 0.0001}}},
+                    "fast": {"patches": {LEARNING_RATE: {"value": 0.001}}},
+                    "slow": {"patches": {LEARNING_RATE: {"value": 0.0001}}},
                 }
             }
         }
     }
     steps["rewarm"]["deltas"] = [
-        {"layer_id": "rewarm", "patches": [{"path": "training_config.n_batches", "value": 50}]}
+        {"layer_id": "rewarm", "patches": [
+            {"path": "training_config.n_batches", "value": 50},
+            {"path": "method_payload.payload.target_total", "value": 50},
+        ]}
     ]
     return data
 
@@ -211,7 +206,8 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
             "baseline": {},
             "alternate": {
                 "patches": {
-                    "steps.fit.base.inline.training_config.n_batches": {"value": 40}
+                    "steps.fit.base.inline.training_config.n_batches": {"value": 40},
+                    "steps.fit.base.inline.method_payload.payload.target_total": {"value": 40},
                 }
             },
         }
@@ -247,7 +243,10 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
     data["steps"]["flat"]["sweep"]["exceptions"] = {
         "extend": {
             "where": {"axes": {"seed": ["b"], "rate": ["fast"]}},
-            "patches": {"training_config.n_batches": {"value": 80}},
+            "patches": {
+                "training_config.n_batches": {"value": 80},
+                "method_payload.payload.target_total": {"value": 80},
+            },
         }
     }
     edited = Project.model_validate(data)
@@ -262,18 +261,6 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
 
 def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
     data = _chained_train_data()
-    managed = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    data["documents"] = managed["documents"]
-    fit = data["steps"]["fit"]
-    fit["base"] = managed["steps"]["train"]["base"]
-    fit["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
-    for entry in (*fit["sweep"]["axes"]["seed"]["values"].values(), *fit["sweep"]["rows"].values()):
-        entry["patches"]["method_payload.payload.seed"] = entry["patches"].pop("seed")
-    rate_axis = data["steps"]["flat"]["sweep"]["axes"]["rate"]
-    for entry in rate_axis["values"].values():
-        entry["patches"]["method_payload.payload.optimizer.params.learning_rate"] = (
-            entry["patches"].pop("training_config.learning_rate")
-        )
     del data["steps"]["rewarm"]
     flat = data["steps"]["flat"]
     flat["sweep"]["axes"]["seed"] = None
@@ -355,7 +342,7 @@ def test_only_an_unswept_checkpoint_defaults_across_suffix_local_axes():
 
 
 def test_invalid_row_is_diagnosed_without_rebinding_the_consumer():
-    data, _ = _project_data()
+    data = _project_data()
     data["steps"]["fit"]["sweep"] = {
         "rows": {
             "good": {},
@@ -375,8 +362,9 @@ def test_invalid_row_is_diagnosed_without_rebinding_the_consumer():
 
 
 def test_duplicate_specs_share_one_request_without_losing_run_keys():
-    data, expected_train = _project_data()
+    data = _project_data()
     del data["steps"]["evaluate"]
+    expected_train = _expected_train().id
     data["steps"]["fit"]["sweep"] = {
         "rows": {"repeat": {"label": "Again"}, "original": {"label": "First"}}
     }
@@ -388,7 +376,8 @@ def test_duplicate_specs_share_one_request_without_losing_run_keys():
 
 
 def test_variants_keep_run_keys_separate_and_deduplicate_unchanged_requests():
-    data, expected_train = _project_data()
+    data = _project_data()
+    expected_train = _expected_train().id
     data["sweep"] = {
         "rows": {
             "base": {},
@@ -396,7 +385,6 @@ def test_variants_keep_run_keys_separate_and_deduplicate_unchanged_requests():
             "seed8": {"patches": {"steps.fit.base.inline.seed": {"value": 8}}},
         }
     }
-    data["steps"]["evaluate"]["inputs"]["subject"]["checkpoint"] = "last"
     project = Project.model_validate(data)
     requested = RunKey("seed8", "fit", "default")
     plan = compile_project(project, source_runs=[requested])
@@ -443,7 +431,7 @@ def test_variants_keep_run_keys_separate_and_deduplicate_unchanged_requests():
 
 
 def test_generated_variant_ids_can_be_named_in_references():
-    data, _ = _project_data()
+    data = _project_data()
     data["sweep"] = {"axes": {"seed": {"path": "steps.fit.base.inline.seed", "values": [1, 2]}}}
     project = Project.model_validate(data)
     first, second = expand_sweep(project.sweep)
@@ -513,7 +501,7 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
 
 
 def test_sweep_conversions_preserve_requests_and_editing_keeps_run_identity():
-    data, _ = _project_data()
+    data = _project_data()
     data["steps"]["fit"]["sweep"] = {
         "axes": {
             "seed": {
@@ -548,7 +536,7 @@ def test_sweep_conversions_preserve_requests_and_editing_keeps_run_identity():
 
 
 def test_exception_changes_only_selected_run_requests_and_exclusion_removes_run_key():
-    data, _ = _project_data()
+    data = _project_data()
     del data["steps"]["evaluate"]
     fit = data["steps"]["fit"]
     fit["sweep"] = {"axes": {"seed": {"path": "seed", "values": [1, 2, 3]}}}
@@ -572,7 +560,7 @@ def test_exception_changes_only_selected_run_requests_and_exclusion_removes_run_
 
 
 def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
-    data, _ = _project_data()
+    data = _project_data()
     fit = data["steps"]["fit"]
     fit["deltas"] = [
         {
@@ -606,10 +594,10 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
     assert set(plan.sources) == {requested, consumer}
     sources = plan.sources[requested]
     assert (
-        sources["/payload/graph/schema_id"].kind,
-        sources["/payload/graph/schema_id"].name,
-        sources["/payload/graph/schema_id"].path,
-    ) == ("document", "model", "/schema_id")
+        sources["/payload/trial_documents/model/step_seconds"].kind,
+        sources["/payload/trial_documents/model/step_seconds"].name,
+        sources["/payload/trial_documents/model/step_seconds"].path,
+    ) == ("document", "point-mass", "/step_seconds")
     seed = sources["/payload/seed"]
     assert (seed.kind, seed.step, seed.axis, seed.value) == ("sweep_value", "fit", "seed", "a")
     policy = sources["/payload/on_nan"]

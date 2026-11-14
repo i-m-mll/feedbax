@@ -2,6 +2,7 @@
 
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import InlineBase, Project
+from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.examples import load_shipped_projects
 
 
@@ -59,6 +60,19 @@ def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches")
         documents[name] = project["documents"][documents[name]["document"]]["payload"]
     return payload
 
+
+def managed_evaluation_step(subject: str) -> dict:
+    return {
+        "kind": "evaluate",
+        "base": {"inline": {
+            "evaluation_type": ROLLOUT_TYPE,
+            "params": {
+                "seed": 731, "trial_policy": "paired", "variation": [],
+                "trial_set": {"kind": "every_condition"},
+            },
+        }},
+        "inputs": {"subject": {"step": subject, "checkpoint": "last"}},
+    }
 
 
 def managed_train_spec(*, batches: int = 2):
