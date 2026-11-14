@@ -338,6 +338,16 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: { trial_documents: documents('empty-model') } } } },
     { kind: 'step', id: 'rowless', step: { kind: 'train', base: { document: 'absent-base' } } },
   ]);
+  const host = await request.get('/api/jobs');
+  expect(host.ok(), await host.text()).toBe(true);
+  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`);
+  expect(read.ok(), await read.text()).toBe(true);
+  const { window_map } = await read.json() as StudioSavedTrainRuns;
+  const problems = window_map!.problems;
+  const brokenProblems = problems.filter(({ step }) => step === 'broken');
+  expect(brokenProblems.length, JSON.stringify(window_map!.steps)).toBeGreaterThan(1);
+  expect(window_map!.steps.find(({ step_id }) => step_id === 'broken')?.status_counts).toEqual({ cannot_run: 1 });
+  expect(window_map!.rows.filter(({ key }) => key.step === 'rowless')).toHaveLength(0);
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
@@ -395,7 +405,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await primary.focus();
   await page.keyboard.press('Control+3');
   await expect(primary.getByRole('heading', { name: 'Task', exact: true })).toBeVisible();
-  await expect(primary.locator('.studio-window-slot__controls')).toContainText('task');
+  await expect(primary.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
   await scene.focus();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
@@ -406,14 +416,6 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(upper).toBeVisible();
 
-  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`);
-  expect(read.ok()).toBe(true);
-  const { window_map } = await read.json() as StudioSavedTrainRuns;
-  const problems = window_map!.problems;
-  const brokenProblems = problems.filter(({ step }) => step === 'broken');
-  expect(brokenProblems.length).toBeGreaterThan(1);
-  expect(window_map!.steps.find(({ step_id }) => step_id === 'broken')?.status_counts).toEqual({ cannot_run: 1 });
-  expect(window_map!.rows.filter(({ key }) => key.step === 'rowless')).toHaveLength(0);
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   const problemButton = page.getByRole('button', { name: /^Problems \d+$/ });
   await expect(problemButton).toHaveText(`Problems ${problems.length}`);
@@ -442,10 +444,11 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await close.press('Escape');
   await expect(scoped).toBeFocused();
   await scoped.press('Enter');
-  await list.getByRole('button', { name: 'Training Method · Field required', exact: true }).press('Enter');
+  const missingTraining = 'Training · Field required';
+  await list.getByRole('button', { name: missingTraining, exact: true }).press('Enter');
   await expect(list).toBeHidden();
   const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
-  await expect(training.getByText('Training Method · Field required', { exact: true })).toBeFocused();
+  await expect(training.getByText(missingTraining, { exact: true })).toBeFocused();
   await expect(broken.locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
   const rowless = page.getByRole('article', { name: 'Train rowless' });
