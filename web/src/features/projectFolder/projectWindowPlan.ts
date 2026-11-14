@@ -7,6 +7,10 @@ export function savedRunId({ variant, step, row }: SavedTrainRow['key']) {
   return JSON.stringify([variant, step, row]);
 }
 
+export function selectedProducerRow({ key: { variant, row }, member_key }: NonNullable<StudioSavedTrainRuns['window_map']>['rows'][number]) {
+  return member_key === undefined || member_key === null ? undefined : { key: member_key, variant, row };
+}
+
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
   return saved?.window_map?.variants ?? [...new Set(saved?.rows.map(({ key }) => key.variant))];
 }
@@ -15,7 +19,7 @@ function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMa
   return [
     ...Object.entries(terms.axes ?? {}).map(([axis, ids]) =>
       `${axis} ${ids.map((id) => sweeps?.get(axis)?.get(id) ?? id).join(', ')}`),
-    ...(terms.rows ?? []),
+    ...(terms.rows ?? []).map(({ key }) => key),
     ...(terms.best ? [terms.best.by] : []),
   ];
 }

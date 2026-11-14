@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_inputs import SubsetTerms, subset_to_rows
+from feedbax.contracts.project_inputs import SelectedRow, SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -21,6 +21,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BestMember, InputMember, LastMember, ProductRef
+from tests.support.managed_train_fixture import managed_train_project
 
 
 def _project_data():
@@ -261,6 +262,19 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
 
 def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
     data = _chained_train_data()
+    managed = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    data["documents"] = managed["documents"]
+    fit = data["steps"]["fit"]
+    fit["base"] = managed["steps"]["train"]["base"]
+    fit["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    for entry in (*fit["sweep"]["axes"]["seed"]["values"].values(), *fit["sweep"]["rows"].values()):
+        entry["patches"]["method_payload.payload.seed"] = entry["patches"].pop("seed")
+    rate_axis = data["steps"]["flat"]["sweep"]["axes"]["rate"]
+    for entry in rate_axis["values"].values():
+        entry["patches"]["method_payload.payload.optimizer.params.learning_rate"] = (
+            entry["patches"].pop("training_config.learning_rate")
+        )
+    del data["steps"]["rewarm"]
     flat = data["steps"]["flat"]
     flat["sweep"]["axes"]["seed"] = None
     flat["sweep"]["inherit_rows"] = False
@@ -274,7 +288,9 @@ def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
     assert all("manual, seed=a, seed=b" in problem.detail for problem in plan.diagnostics)
     assert all(run.key.step != "flat" for run in plan.runs)
 
-    flat["inputs"]["checkpoint"]["where"] = {"rows": ["seed=b", "manual"]}
+    flat["inputs"]["checkpoint"]["where"] = {"rows": [
+        {"key": row, "variant": "default", "row": row} for row in ("manual", "seed=b")
+    ]}
     flat["sweep"]["axes"]["parent"] = {"input": "checkpoint"}
     mapped = compile_project(Project.model_validate(data))
     assert not mapped.diagnostics
@@ -438,50 +454,58 @@ def test_generated_variant_ids_can_be_named_in_references():
     assert reader.inputs["subject"].producer.variant == first.id
 
 
-def test_selection_by_axis_or_exact_rows_binds_statically_in_upstream_order():
-    data, _ = _project_data()
-    data["steps"]["fit"]["sweep"] = {
+def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
+    from tests.test_saved_update_series import definition
+
+    data = definition("last")
+    data["steps"]["train"]["sweep"] = {
         "axes": {
             "seed": {
                 "values": {
-                    name: {"patches": {"seed": {"value": value}}}
-                    for name, value in (("a", 1), ("b", 2), ("c", 3))
+                    name: {"patches": {"method_payload.payload.optimizer.params.learning_rate": {"value": value}}}
+                    for name, value in (("a", .001), ("b", .002), ("c", .003))
                 }
             }
         }
     }
-    evaluation = data["steps"]["evaluate"]
+    evaluation = data["steps"]["baseline"]
     evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     reference = evaluation["inputs"]["subject"]
-    reference["where"] = {"axes": {"seed": ["a", "c"]}, "rows": ["seed=c", "seed=a"]}
+    reference["where"] = {
+        "axes": {"seed": ["a", "c"]},
+        "rows": [{"key": row, "variant": "default", "row": row} for row in ("seed=c", "seed=a")],
+    }
     plan = compile_project(Project.model_validate(data))
     assert not plan.diagnostics
     evaluation_runs = [run for run in plan.runs if run.kind == "evaluate"]
-    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["a", "c"]
-    subset = plan.subsets["default", "evaluate", "subject"]
+    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["c", "a"]
+    subset = plan.subsets["default", "baseline", "subject"]
     assert subset.candidates == 3
-    assert tuple(key.row for key in subset.members) == ("seed=a", "seed=c")
+    assert tuple(key.row for key in subset.members) == ("seed=c", "seed=a")
 
     data["documents"]["selected"] = {"schema": "subset", "payload": reference["where"]}
     reference["where"] = {"subset": "selected"}
     named = compile_project(Project.model_validate(data))
     assert named.runs == plan.runs and named.requests == plan.requests
-    assert named.subsets["default", "evaluate", "subject"].document == "selected"
+    assert named.subsets["default", "baseline", "subject"].document == "selected"
 
-    measured = SubsetTerms.model_validate({"best": {"by": "loss", "k": 1}})
+    measured = SubsetTerms.model_validate({"best": {"by": "train_loss", "k": 1}})
     reference["where"] = measured.model_dump(exclude_unset=True)
-    [problem] = compile_project(Project.model_validate(data)).diagnostics
-    assert problem.path == "inputs.subject.where.best"
-    reference["where"] = subset_to_rows(measured, ["seed=c"]).model_dump(exclude_unset=True)
+    ranked = compile_project(Project.model_validate(data))
+    assert not ranked.diagnostics, ranked.diagnostics
+    assert ranked.subsets["default", "baseline", "subject"].ranks == ("rank-1",)
+    reference["where"] = subset_to_rows(measured, [
+        SelectedRow(key="rank-1", variant="default", row="seed=c"),
+    ]).model_dump(exclude_unset=True)
     frozen = compile_project(Project.model_validate(data))
     assert not frozen.diagnostics
     [reader] = [run for run in frozen.runs if run.kind == "evaluate"]
     assert reader.inputs["subject"].producer.row == "seed=c"
-    assert reader.request_id == evaluation_runs[1].request_id
+    assert reader.inputs["subject"].member.key == "rank-1"
     reference["where"] = {"rows": []}
     empty = compile_project(Project.model_validate(data))
     assert not empty.diagnostics and all(run.kind == "train" for run in empty.runs)
-    assert empty.subsets["default", "evaluate", "subject"].members == ()
+    assert empty.subsets["default", "baseline", "subject"].members == ()
     reference["where"] = {"axes": {"seed": ["typo"]}}
     [problem] = compile_project(Project.model_validate(data)).diagnostics
     assert problem.path == "inputs.subject.where.axes.seed"

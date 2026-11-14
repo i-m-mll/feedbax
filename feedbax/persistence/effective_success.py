@@ -29,6 +29,7 @@ from feedbax.contracts.request_identity import (
     effective_binding_id,
 )
 from feedbax.contracts.request_refs import (
+    BestRank,
     ContentRef,
     EffectiveBindingId,
     InputMember,
@@ -83,6 +84,8 @@ class SuccessView:
         if isinstance(reference, ContentRef):
             verify_success_content(self.store, reference)
             return BoundMember(key=member.key, content=reference)
+        if isinstance(reference, BestRank):
+            raise ValueError("Best requires an authenticated Host selection")
         if origin is None:
             raise ValueError(f"Producer success is unavailable for {member.key!r}")
         producer = self.read_receipt(origin)

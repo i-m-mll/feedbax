@@ -121,7 +121,9 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
         "a": {"label": "11", "patches": {"seed": {"value": 11}}},
         "b": {"label": "12", "patches": {"seed": {"value": 12}}},
     }}}}
-    data["steps"]["evaluate"]["inputs"]["subject"]["where"] = {"rows": ["seed=a"]}
+    data["steps"]["evaluate"]["inputs"]["subject"]["where"] = {
+        "rows": [{"key": "seed=a", "variant": "default", "row": "seed=a"}],
+    }
     data["steps"]["report"] = {
         "kind": "report", "base": {"inline": {}}, "inputs": {"source": {"step": "evaluate"}},
     }
@@ -174,7 +176,9 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert (invalid["path"], invalid["code"]) == ("payload.trial_documents", "invalid_payload")
     [subject] = steps["evaluate"]["inputs"]
     assert subject["source_step_id"] == "fit"
-    assert subject["subset"]["terms"]["rows"] == ["seed=a"]
+    assert subject["subset"]["terms"]["rows"] == [
+        {"key": "seed=a", "variant": "default", "row": "seed=a"},
+    ]
     assert (subject["subset"]["count"], subject["subset"]["total"]) == (1, 2)
     assert steps["evaluate"]["status_counts"] == {"cannot_run": 1}
     [evaluation] = window["evaluations"]

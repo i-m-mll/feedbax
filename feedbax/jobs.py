@@ -33,6 +33,7 @@ from feedbax.contracts.jobs import (
     JobStatus,
     StopMode,
     StudioActivityJob,
+    StudioBoundBestSubject,
     StudioEvaluationCheckpointGap,
     StudioJobEvent,
     StudioJobEventHistory,
@@ -52,7 +53,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_plan import PlannedRun, ProjectPlan, RunKey
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import BatchSetMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchSetMember, BestRank, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
@@ -119,6 +120,7 @@ class PlanJobAttempt:
     stopped_checkpoint: int | None = None
     checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None = None
     evaluation_placement: Literal["ordinary", "live"] | None = None
+    bound_subject: StudioBoundBestSubject | None = None
 
 
 @dataclass(frozen=True)
@@ -152,14 +154,14 @@ class PlanJobReader:
 
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
-    ) -> tuple[RolloutParameters, ProductRef]:
+    ) -> tuple[RolloutParameters, ProductRef | BestRank]:
         """Resolve the saved request capability shared by Plan and admission."""
         from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
 
         if run.requires:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
-        if (source := plan.requests.get(checkpoint.request_id)) is not None:
+        if isinstance(checkpoint, ProductRef) and (source := plan.requests.get(checkpoint.request_id)) is not None:
             from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
             spec = decode_request(source, plan.documents.__getitem__).spec
@@ -258,6 +260,7 @@ class PlanJobReader:
                     stopped_checkpoint=stopped_checkpoint,
                     checkpoint_gaps=result.checkpoint_gaps if result is not None else None,
                     evaluation_placement=result.placement if result is not None else None,
+                    bound_subject=_best_subject(job) if evaluate and (not succeeded or result is not None) else None,
                 )
             )
         return PlanJobAttempts(
@@ -386,7 +389,13 @@ class JobService(PlanJobReader):
                     planned = run.inputs.get("subject")
                     if planned is None or planned.member.reference != checkpoint:
                         raise ValueError("The saved Plan disagrees with the encoded Evaluate subject.")
-                    checkpoints[name] = (planned.producer, checkpoint.request_id)
+                    if isinstance(checkpoint, BestRank):
+                        checkpoints[name] = tuple(
+                            (key, candidate.reference.request_id)
+                            for key, candidate in zip(planned.candidates, checkpoint.candidates, strict=True)
+                        )
+                    else:
+                        checkpoints[name] = ((planned.producer, checkpoint.request_id),)
                     runs[name] = data | {"request_id": run.request_id}
                     items[name] = item
                     continue
@@ -432,7 +441,7 @@ class JobService(PlanJobReader):
                     planned = run.inputs.get("checkpoint")
                     if planned is None or planned.member.reference != binding.checkpoint:
                         raise ValueError("The saved Plan disagrees with the encoded checkpoint input.")
-                    checkpoints[name] = (planned.producer, binding.checkpoint.request_id)
+                    checkpoints[name] = ((planned.producer, binding.checkpoint.request_id),)
                 data = _plan_run_data(name, run)
                 runs[name] = data | {"request_id": run.request_id}
                 items[name] = self._training_item(
@@ -446,15 +455,19 @@ class JobService(PlanJobReader):
                 for name in order:
                     if name not in checkpoints:
                         continue
-                    producer, request_id = checkpoints[name]
-                    if producer in names_by_key:
-                        source = items[names_by_key[producer]].job
-                        anchor = source.id if source is not None else None
-                    else:
-                        anchor = self._checkpoint_producer(project, current.store_path, request_id)
+                    anchors = {}
+                    for producer, request_id in checkpoints[name]:
+                        if request_id in anchors:
+                            continue
+                        if producer in names_by_key:
+                            source = items[names_by_key[producer]].job
+                            anchor = source.id if source is not None else None
+                        else:
+                            anchor = self._checkpoint_producer(project, current.store_path, request_id)
+                        anchors[request_id] = anchor
                     job = items[name].job
                     assert job is not None
-                    if anchor is None:
+                    if any(anchor is None for anchor in anchors.values()):
                         items[name] = _rejected(
                             name,
                             f"cannot_run /inputs/subject: {EVALUATION_SUBJECT_REQUIRED}"
@@ -464,7 +477,10 @@ class JobService(PlanJobReader):
                         runs.pop(name)
                     else:
                         items[name] = replace(
-                            items[name], job=replace(job, edges=(Edge(anchor, authenticated_completion=True),))
+                            items[name], job=replace(job, edges=tuple(
+                                Edge(anchor, authenticated_completion=True) for anchor in anchors.values()
+                                if anchor is not None
+                            ))
                         )
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
@@ -502,7 +518,7 @@ class JobService(PlanJobReader):
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
-        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef, params: RolloutParameters,
+        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef | BestRank, params: RolloutParameters,
     ) -> AdmissionItem:
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput,
@@ -520,7 +536,7 @@ class JobService(PlanJobReader):
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
-        if isinstance(checkpoint.select, UpdateSeriesMember) and not params.variation:
+        if isinstance(checkpoint, ProductRef) and isinstance(checkpoint.select, UpdateSeriesMember) and not params.variation:
             qualification = self._live_validation_qualifications.get((checkpoint.request_id, request_id))
             if qualification is not None:
                 data = data | {"validation_qualification": qualification.model_dump(mode="json")}
@@ -1043,10 +1059,7 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
     try:
         outcome = job.get("outcome") or {}
         receipt = JobReceipt.model_validate(outcome.get("receipt"))
-        (edge,) = (edge for edge in job["edges"] if edge.get("authenticated_completion"))
-        if not edge["satisfied"]:
-            return None
-        binding = edge["binding"]
+        binding, = _pinned_dependencies(job)
         view = SuccessView(ImmutableArtifactBlobProvider(store))
         accepted = ContentObjectRef.model_validate(outcome["store_success"])
         if view.attempt_ref(job["id"]) != accepted:
@@ -1063,7 +1076,7 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
         if success.products != {"states": (states_product(manifest),)}:
             return None
         gaps = None
-        if isinstance(subject.select, UpdateSeriesMember):
+        if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember):
             selection = binding["checkpoint_selection"]
             gaps = tuple(StudioEvaluationCheckpointGap.model_validate(gap) for gap in selection.get("gaps", ()))
         return _VerifiedEvaluation(
@@ -1081,10 +1094,43 @@ def _selected_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckp
             job_id=member["producer_job_id"], request_id=member["request_id"],
             completed_updates=member["checkpoint"]["completed_updates"],
         )
-        for edge in job["edges"]
-        if edge.get("authenticated_completion") and edge["satisfied"]
-        for member in edge["binding"].get("checkpoint_selection", {}).get("members", ())
+        for binding in _pinned_dependencies(job)
+        for member in binding.get("checkpoint_selection", {}).get("members", ())
     )
+
+
+def _pinned_dependencies(job: dict[str, Any]):
+    return (
+        edge["binding"] for edge in job["edges"]
+        if edge.get("authenticated_completion") and edge["satisfied"] and edge.get("binding") is not None
+    )
+
+
+def _best_subject(job: dict[str, Any]) -> StudioBoundBestSubject | None:
+    from feedbax.studio.canonical_evaluate import best_bound_rank, evaluation_subject_provenance
+
+    try:
+        raw = job["launch"]["payload"]["canonical_request"]["checkpoint"]
+        if raw.get("kind") != "best_rank":
+            return None
+        binding, = _pinned_dependencies(job)
+        rank = BestRank.model_validate(raw)
+        chosen = rank.candidates[best_bound_rank(rank, binding)]
+        completion = binding["completion"]
+        _, provenance = evaluation_subject_provenance(binding)
+        digest = sha256(canonical_json_v2_bytes({
+            "metric": rank.metric, "order": rank.order, "count": rank.count,
+            "candidates": [item.model_dump(mode="json") for item in rank.candidates],
+            "evidence": provenance.metadata["best_rank"]["candidates"],
+        })).hexdigest()
+        return StudioBoundBestSubject(
+            key=rank.key, variant=chosen.variant, row=chosen.row,
+            consumer_job_id=job["id"],
+            producer_job_id=completion["producer_job_id"], producer_request_id=completion["request_id"],
+            completed_updates=completion["checkpoint"]["completed_updates"], selection_sha256=digest,
+        )
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
@@ -1128,10 +1174,7 @@ def _train_checkpoint_source(
     job: dict[str, Any], by_id: Mapping[str, dict[str, Any]]
 ) -> StudioTrainCheckpointSource | None:
     """Project the producer completion pinned to this attempt, including copied Resume edges."""
-    for edge in job["edges"]:
-        if not (edge.get("authenticated_completion") and edge["satisfied"]):
-            continue
-        binding = edge["binding"]
+    for binding in _pinned_dependencies(job):
         if "completion" not in binding:
             continue
         completion = binding["completion"]
@@ -1183,6 +1226,8 @@ def _job_status(
         ):
             launch = job.get("launch") or {}
             selector = ((launch.get("payload") or {}).get("canonical_request") or {}).get("checkpoint")
+            if selector and selector.get("kind") == "best_rank":
+                return JobStatus.QUEUED, "Waiting for all Best candidate Train results."
             selection = (selector or {}).get("select")
             if isinstance(selection, dict) and selection.get("kind") == "update_series":
                 updates = ", ".join(map(str, selection["updates"]))

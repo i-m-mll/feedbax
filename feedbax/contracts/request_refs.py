@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from math import isfinite
 from typing import Annotated, ClassVar, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, field_validator, model_validator
@@ -160,9 +161,60 @@ class ContentRef(ReferenceValue):
     tree: bool = Field(default=False, strict=True)
 
 
+class BestCandidate(ReferenceValue):
+    key: Name
+    variant: Name
+    row: Name
+    reference: ProductRef
+
+    @model_validator(mode="after")
+    def _terminal_train(self):
+        if (
+            not self.reference.request_id.startswith("train:")
+            or self.reference.role != "checkpoint"
+            or not isinstance(self.reference.select, LastMember)
+        ):
+            raise ValueError("Best candidates require terminal Train checkpoints")
+        return self
+
+
+class BestRank(ReferenceValue):
+    """Select one rank over ordered candidates when their Train results settle."""
+
+    kind: Literal["best_rank"] = "best_rank"
+    metric: Name
+    order: Literal["min", "max"]
+    count: int = Field(gt=0, strict=True)
+    rank: int = Field(gt=0, strict=True)
+    candidates: tuple[BestCandidate, ...]
+
+    @model_validator(mode="after")
+    def _slots(self):
+        if not self.rank <= self.count <= len(self.candidates):
+            raise ValueError("Best rank exceeds the candidate count")
+        if len({item.key for item in self.candidates}) != len(self.candidates):
+            raise ValueError("Best candidates must have distinct keys")
+        return self
+
+    @property
+    def key(self) -> str:
+        return f"rank-{self.rank}"
+
+    def winner(self, scores: Sequence[float]) -> int:
+        if len(scores) != len(self.candidates) or any(not isfinite(score) for score in scores):
+            raise ValueError("Best rank requires a finite score for every candidate")
+        return sorted(range(len(scores)), key=scores.__getitem__, reverse=self.order == "max")[self.rank - 1]
+
+
 class InputMember(ReferenceValue):
     key: Name
-    reference: ProductRef | ContentRef
+    reference: ProductRef | ContentRef | BestRank
+
+    @model_validator(mode="after")
+    def _rank_key(self):
+        if isinstance(self.reference, BestRank) and self.key != self.reference.key:
+            raise ValueError("Best member key differs from its rank")
+        return self
 
 
 RequestInputs = dict[Name, tuple[InputMember, ...]]

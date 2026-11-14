@@ -10,7 +10,9 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
+from feedbax.contracts.request_refs import BestRank
 from feedbax.host import live_evaluate
+from feedbax.host.best_selection import BestMetricUnavailable, completion_score
 from feedbax.host.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
 )
@@ -363,17 +365,29 @@ class Store:
                 except (ValueError, KeyError, TypeError) as exc:
                     raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
-                checkpoint_parent = None
-                if evaluate and (
+                checkpoint_parents = None
+                best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
+                if best:
+                    if not evaluate or job["continues"] is not None:
+                        raise HostError("invalid_request", f"{input_path}: Best requires an Evaluate subject.")
+                    checkpoint_parents = self._best_parents(job, checkpoint, aliases)
+                    if checkpoint_parents is None:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}: a Best candidate was not admitted",
+                        })
+                        continue
+                elif evaluate and (
                     checkpoint is None or job["continues"] is not None or len(job["edges"]) != 1
                 ):
                     raise HostError("invalid_request", f"{input_path}: Evaluate requires a Train subject.")
-                if checkpoint is not None and job["continues"] is None:
+                if not best and checkpoint is not None and job["continues"] is None:
                     edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
                     if len(edges) != 1 or not isinstance(checkpoint, dict):
                         raise HostError("invalid_request", f"{input_path}: requires one authenticated checkpoint edge.")
                     parent_id = edges[0]["job_id"]
                     checkpoint_parent = aliases.get(parent_id, parent_id)
+                    checkpoint_parents = frozenset({checkpoint_parent})
                     source = self.get(checkpoint_parent)
                     if source is None:
                         results.append({
@@ -410,8 +424,8 @@ class Store:
                             "job_id_conflict", "Job id already names a different request."
                         )
                     if _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
-                        checkpoint_parent is not None
-                        and self._completion_parent(by_id["id"]) != checkpoint_parent
+                        checkpoint_parents is not None
+                        and self._completion_parents(by_id["id"]) != checkpoint_parents
                     ):
                         raise HostError(
                             "job_id_conflict", "Job id already names a different canonical binding."
@@ -421,8 +435,8 @@ class Store:
                     if _canonical_binding_conflicts(
                         job["launch"], live["launch"], evaluate=evaluate, live=True,
                     ) or (
-                        checkpoint_parent is not None
-                        and self._completion_parent(live["id"]) != checkpoint_parent
+                        checkpoint_parents is not None
+                        and self._completion_parents(live["id"]) != checkpoint_parents
                     ):
                         results.append({
                             "run_key": run_key,
@@ -553,11 +567,43 @@ class Store:
                 "admission_changed", f"Request {job['request']} succeeded during admission."
             )
 
-    def _completion_parent(self, job_id: str) -> str | None:
-        row = self.db.execute(
+    def _completion_parents(self, job_id: str) -> frozenset[str]:
+        return frozenset(row[0] for row in self.db.execute(
             "SELECT parent FROM edges WHERE job=? AND authenticated_completion", (job_id,)
-        ).fetchone()
-        return row[0] if row is not None else None
+        ))
+
+    def _best_parents(self, job: dict, checkpoint: dict, aliases: dict[str, str]) -> frozenset[str] | None:
+        path = "/inputs/subject"
+        try:
+            rule = BestRank.model_validate(checkpoint)
+        except ValueError as error:
+            raise HostError("invalid_request", f"{path}: invalid Best subject: {error}") from error
+        expected = {candidate.reference.request_id for candidate in rule.candidates}
+        root = job["launch"]["payload"].get("manifest_root")
+        if not isinstance(root, str) or not Path(root).is_absolute():
+            raise HostError("invalid_request", f"{path}: Best requires an explicit project store.")
+        edges = job["edges"]
+        if len(edges) != len(expected) or any(not edge.get("authenticated_completion") for edge in edges):
+            raise HostError("invalid_request", f"{path}: requires one authenticated edge per Best candidate request.")
+        roots = set()
+        missing = False
+        for edge in edges:
+            parent_id = aliases.get(edge["job_id"], edge["job_id"])
+            parent = self.get(parent_id)
+            if parent is None:
+                missing = True
+                continue
+            if (
+                parent["project"] != job["project"] or parent["request"] not in expected
+                or not TRAIN_REQUEST_ID.fullmatch(parent["request"])
+                or not is_checkpoint_producer(
+                    json.loads(parent["launch"]), continues=parent["continues"], manifest_root=root,
+                )
+            ):
+                raise HostError("invalid_request", f"{path}: Best candidate edge differs from its canonical input.")
+            expected.remove(parent["request"])
+            roots.add(parent_id)
+        return None if missing else frozenset(roots)
 
     def _bind_edges(self, job: dict, aliases: dict[str, str]) -> None:
         job_id, continues = job["id"], job["continues"]
@@ -1189,6 +1235,57 @@ class Store:
             {"evidence": qualification.evidence} if qualification is not None else {}
         )
 
+    def _resolve_best_completion(self, job: sqlite3.Row, rule: BestRank, candidates: dict) -> None:
+        roots = {
+            row["request"]: row["parent"] for row in self.db.execute(
+                """SELECT e.parent, parent.request FROM edges e JOIN jobs parent ON parent.id=e.parent
+                   WHERE e.job=? AND e.authenticated_completion""",
+                (job["id"],),
+            )
+        }
+        completed = {}
+        pending = False
+        for request, anchor in roots.items():
+            key = anchor, None, None, None
+            if key not in candidates:
+                candidates[key] = self._completion_candidate(anchor)
+            binding, error, rejections = candidates[key]
+            self._record_completion_rejections(job, anchor, rejections)
+            if error is not None:
+                self.finished(job, {"outcome": "blocked", "error": error | {"path": "/inputs/subject"}})
+                return
+            if binding is None:
+                pending = True
+            else:
+                completed[request] = binding
+        if pending:
+            return
+        try:
+            scored = {
+                request: completion_score(binding["completion"], rule.metric)
+                for request, binding in completed.items()
+            }
+        except (BestMetricUnavailable, CompletionFileError) as error:
+            code = "input_unavailable" if isinstance(error, BestMetricUnavailable) else "dependency_corrupt"
+            self.finished(job, {"outcome": "blocked", "error": {
+                "code": code, "message": str(error), "path": "/inputs/subject",
+            }})
+            return
+        ordered = [candidate.reference.request_id for candidate in rule.candidates]
+        winner = completed[ordered[rule.winner([scored[request] for request in ordered])]]
+        binding = winner | {"best_rank": {
+            "key": rule.key, "rank": rule.rank, "candidates": [
+                {"completion": completed[request]["completion"], "score": scored[request]}
+                for request in ordered
+            ],
+        }}
+        self.db.execute(
+            """UPDATE edges SET satisfied=1, binding=CASE WHEN parent=? THEN ? END
+               WHERE job=? AND authenticated_completion""",
+            (winner["dependency_job_id"], dump(binding), job["id"]),
+        )
+        self.append(job, "dependency_bound", binding)
+
     def resolve_completions(self) -> None:
         with self.db:
             rows = self.db.execute(
@@ -1197,12 +1294,19 @@ class Store:
                    ORDER BY j.seq, e.parent"""
             ).fetchall()
             candidates = {}
+            best_processed = set()
             for edge in rows:
                 job = self.get(edge["job"])
                 if job["state"] != "queued":
                     continue
                 anchor = edge["parent"]
                 launch = json.loads(job["launch"])
+                checkpoint = (launch["payload"].get("canonical_request") or {}).get("checkpoint")
+                if isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank":
+                    if job["id"] not in best_processed:
+                        self._resolve_best_completion(job, BestRank.model_validate(checkpoint), candidates)
+                        best_processed.add(job["id"])
+                    continue
                 selection = requested_checkpoint_selection(job["request"], launch)
                 try:
                     train_slots = train_source_slots(launch)
@@ -1250,7 +1354,7 @@ class Store:
         return [
             json.loads(row[0])
             for row in self.db.execute(
-                """SELECT binding FROM edges WHERE job=? AND authenticated_completion AND satisfied
+                """SELECT binding FROM edges WHERE job=? AND authenticated_completion AND satisfied AND binding IS NOT NULL
                    ORDER BY parent""",
                 (job_id,),
             )

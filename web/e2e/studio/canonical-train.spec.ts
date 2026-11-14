@@ -554,7 +554,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const rowChild = 'train-continuation-2';
   expect(snapshot.project.steps?.[rowChild]).toMatchObject({
     base: { step: 'train' },
-    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { rows: [rowKeys[0]] } } },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: {
+      rows: [{ key: rowKeys[0], variant: 'default', row: rowKeys[0] }],
+    } } },
   });
   const reopened = await plan();
   expect(reopened.rows.filter(({ key }) => key.step === childId)).toEqual(successorRows);
