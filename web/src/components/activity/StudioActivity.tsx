@@ -40,7 +40,7 @@ function ActivityRun({
   const actions = useStudioJobActions();
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const { Icon, tint, name } = studioStep('train');
+  const { Icon, tint, name } = studioStep(job.kind);
   const live = isLive(job);
   const coordinates = Object.entries(job.coordinates);
   const actor = job.actor;
@@ -211,7 +211,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
   return (
     <StudioRegion
       state={state}
-      skeleton={<div className="h-20 animate-pulse rounded-md bg-shell-divider" />}
+      skeleton={<div className="h-20 motion-safe:animate-pulse rounded-md bg-shell-divider" />}
       empty={(
         <>
           {machineField}

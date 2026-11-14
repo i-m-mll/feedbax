@@ -13,13 +13,20 @@ export type StudioRegionState =
   | { kind: 'failed'; issue: StudioRegionIssue; retry: () => void }
   | { kind: 'result'; missing: ReadonlyArray<{ status: StudioRunStatusId; count: number }> };
 
+export function studioReadState(
+  name: StudioNameId, data: unknown, error: unknown, retry: () => void, disconnected = false,
+): StudioRegionState {
+  if (error || disconnected) return { kind: 'failed', issue: studioRegionIssue(name, error, disconnected), retry };
+  return data === undefined ? { kind: 'loading' } : { kind: 'result', missing: [] };
+}
+
 export function studioRegionIssue(name: StudioNameId, error: unknown, disconnected = false): StudioRegionIssue {
   const message = error instanceof Error ? error.message : undefined;
   const serviceUnavailable = disconnected || (error instanceof ApiRequestError && error.kind === 'network');
   return {
     reason: serviceUnavailable
       ? studioReason('unreachable', studioName('service'))
-      : message
+      : message && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
         ? studioReason('observed', message)
         : studioReason('unavailable', studioName(name)),
     detail: message,
@@ -33,13 +40,13 @@ export function StudioRegion({
   children,
 }: {
   state: StudioRegionState;
-  skeleton: ReactNode;
-  empty: ReactNode;
-  children: ReactNode;
+  skeleton?: ReactNode;
+  empty?: ReactNode;
+  children?: ReactNode;
 }) {
   switch (state.kind) {
     case 'loading':
-      return <RegionLoading>{skeleton}</RegionLoading>;
+      return <RegionLoading>{skeleton ?? studioRegionSkeleton}</RegionLoading>;
     case 'empty':
       return <>{empty}</>;
     case 'failed':
@@ -60,6 +67,8 @@ export function StudioRegion({
   }
 }
 
+const studioRegionSkeleton = <div className="h-20 rounded bg-shell-subtle motion-safe:animate-pulse" />;
+
 function RegionLoading({ children }: { children: ReactNode }) {
   const [showSkeleton, setShowSkeleton] = useState(false);
   useEffect(() => {
@@ -76,7 +85,10 @@ function RegionFailure({ issue, retry }: { issue: StudioRegionIssue; retry: () =
       <button
         type="button"
         className="rounded-md border border-shell-control bg-shell-surface px-2 py-1 font-medium hover:bg-shell-hover"
-        onClick={retry}
+        onClick={(event) => {
+          event.currentTarget.closest<HTMLElement>('[data-studio-focus-region]')?.focus();
+          retry();
+        }}
       >
         {studioName('retry')}
       </button>

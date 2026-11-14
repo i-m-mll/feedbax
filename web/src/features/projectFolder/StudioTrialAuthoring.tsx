@@ -63,7 +63,7 @@ export function useTrialAuthoring(
       setBusy(false);
     }
   } : undefined;
-  return { view: query.data, error: query.error ? apiErrorMessage(query.error) : undefined, commit };
+  return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
 export function TrialTaskPicker({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {

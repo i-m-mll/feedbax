@@ -1,4 +1,5 @@
 import { Pause, Play, Repeat, RotateCcw, StepBack, StepForward, type LucideIcon } from 'lucide-react';
+import { appTip } from '@window-shell/browser/tooltip';
 import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { SPEED_OPTIONS, timelineOffset, usePlaybackTransport } from '@/components/viewer/usePlaybackTransport';
 import type { SceneTimeline } from './sceneView';
@@ -18,7 +19,7 @@ function ClockButton({ name, icon: Icon, onClick, pressed }: {
   pressed?: boolean;
 }) {
   return (
-    <button type="button" aria-label={studioName(name)} aria-pressed={pressed} onClick={onClick}
+    <button type="button" aria-label={studioName(name)} {...appTip(studioName(name))} aria-pressed={pressed} onClick={onClick}
       className="rounded p-1.5 text-shell-muted hover:bg-shell-hover aria-pressed:bg-shell-selected">
       <Icon className="size-4" aria-hidden="true" />
     </button>

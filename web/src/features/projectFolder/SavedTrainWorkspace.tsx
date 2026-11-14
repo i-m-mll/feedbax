@@ -4,9 +4,9 @@ import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit } from '@/api/studioAuthoring';
 import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
+import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
-import { StudioErrorBoundary } from '@/components/layout/StudioErrorBoundary';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
@@ -23,7 +23,7 @@ import {
 } from '@/features/projectWindow/projectWindowState';
 import {
   StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
-  type StudioActivityJob, type StudioProjectWindowMapProblem, type StudioSavedTrainRuns,
+  type StudioActivityJob, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest,
 } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
@@ -275,7 +275,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selectedAttempt = row && resultAttempt?.runId === savedRunId(row.key)
     ? row.attempts.find(({ job_id }) => job_id === resultAttempt?.jobId) : undefined;
   const attempt = selectedAttempt ?? row?.attempts.at(-1);
-  const ready = Boolean(data && !pending && !outside);
+  const ready = Boolean(data && !pending && !outside && !connection.isError && !projection.error);
   const canAuthorContinuation = ready && !saved.project.sweep;
   const checkpointAttempt = !saved.project.sweep && windowState.mode !== 'map' &&
     state.selection?.kind === 'rows' && state.selection.runIds.length === 1 &&
@@ -514,11 +514,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       await editor.flush();
     });
   }
-  function showRun(match: SavedRow, jobId?: string) {
-    const target = { stepId: match.key.step, runId: savedRunId(match.key) };
+  function showRun(key: StudioSavedTrainKey, jobId?: string, view: 'runs' | 'results' | 'scene' = 'results') {
+    const target = { stepId: key.step, runId: savedRunId(key) };
     setResultAttempt(jobId ? { runId: target.runId, jobId } : undefined);
-    selection.select(selectRun(state, target), match.key.variant);
-    setWindowState((current) => showProjectWindowView(current, 'results'));
+    selection.select(selectRun(state, target), key.variant);
+    setWindowState((current) => showProjectWindowView(current, view));
     requestSlotFocus((count) => count + 1);
   }
   function checkpointLineage() {
@@ -533,16 +533,26 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     const producer = producers?.length === 1 ? producers[0] : undefined;
     const label = checkpointLabel(exactSource.completed_updates);
     return <div className="ps-2">
-      {producer ? <button type="button" className="hover:underline" onClick={() => showRun(producer, exactSource.job_id)}>
+      {producer ? <button type="button" className="hover:underline" onClick={() => showRun(producer.key, exactSource.job_id)}>
         {label}
       </button> : <span>{label}</span>}
     </div>;
   }
 
   async function openActivityRun(job: StudioActivityJob) {
-    const match = data?.rows.find((item) => item.attempts.some(({ job_id }) => job_id === job.job_id));
+    if (job.project_id !== saved.project_id) return false;
+    if (job.kind === 'evaluate') {
+      const match = data?.window_map?.evaluations?.find(({ key, request_id }) =>
+        savedRunId(key) === job.run_key && request_id === job.request_id);
+      if (!match) return false;
+      const view = match.result?.job_id !== job.job_id ? 'runs' : match.checkpoint_series ? 'results' : 'scene';
+      showRun(match.key, undefined, view);
+      return true;
+    }
+    const match = data?.rows.find(({ key, attempts }) => savedRunId(key) === job.run_key &&
+      attempts.some(({ job_id }) => job_id === job.job_id));
     if (!match) return false;
-    showRun(match);
+    showRun(match.key, job.job_id);
     return true;
   }
 
@@ -564,8 +574,22 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     }
   }
 
-  const projectFailure = snapshot.error ?? projection.error ?? stoppedPlan.error ?? connection.error;
-  const failure = commandError ?? (projectFailure ? apiErrorMessage(projectFailure) : connection.isError ? studioName('unavailable') : null);
+  const projectFailure = snapshot.error ?? stoppedPlan.error;
+  const failure = commandError ?? (projectFailure ? apiErrorMessage(projectFailure)
+    : connection.isError ? studioReason('unreachable', studioName('service')) : null);
+  const retryPlan = () => {
+    if (connection.isError) connection.refetch();
+    void projection.refetch();
+  };
+  const planError = (name: 'runs' | 'pipelineMap' | 'results'): StudioRegionState | undefined => connection.isError || projection.error
+    ? { kind: 'failed', issue: studioRegionIssue(name, projection.error, connection.isError), retry: retryPlan }
+    : undefined;
+  const planUnavailable: StudioRegionState | undefined = planError('runs') ??
+    (!data ? { kind: 'loading' } : undefined);
+  const mapUnavailable = planError('pipelineMap');
+  const renderMap = (body: ReactNode) => mapUnavailable
+    ? <StudioRegion state={mapUnavailable} />
+    : body;
   function retry() {
     setCommandError(undefined);
     if (snapshot.error && snapshot.pending) void editor.flush().catch((error) => setCommandError(apiErrorMessage(error)));
@@ -780,7 +804,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         void perform(async () => { await actions.resume(resumable.job_id); });
       }, { enabled: !busy }));
     }
-    runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow); }, { enabled: !!exactJob }));
+    runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow.key); }, { enabled: !!exactJob }));
     const continuation = newStepCommand({
       stepId: step.id, selection: state.selection?.kind === 'values' || state.selection?.kind === 'rows' ? state.selection : null,
     });
@@ -836,11 +860,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       commands={commands} mapCommands={canvasViewportCommands(() => mapViewport.current, !!data && plan.steps.length > 0)}
       focusRequest={focusRequest}
       onBack={selection.back} onForward={selection.forward}
-      map={<StudioErrorBoundary region={studioName('pipelineMap')}><StudioPipelineMap {...mapProps}
+      map={renderMap(<StudioPipelineMap {...mapProps}
         activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!data}
-        presentation={presentation} onPresentationChange={changePresentation} /></StudioErrorBoundary>}
-      mapDrawer={<StudioPipelineMapDrawer {...mapProps} />}
-      compactMap={<StudioPipelineMap {...mapProps} mode="line" />}
+        presentation={presentation} onPresentationChange={changePresentation} />)}
+      mapDrawer={renderMap(<StudioPipelineMapDrawer {...mapProps} />)}
+      compactMap={renderMap(<StudioPipelineMap {...mapProps} mode="line" />)}
       variant={(variants.length > 1 || missingVariant) && <select aria-label={studioName('variant')}
         value={variant ?? ''} disabled={!data}
         onChange={(event) => selection.setVariant(event.target.value)}>
@@ -944,13 +968,15 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           </button>}>{body}</ProblemDestination> : body;
         if (view === 'analysis' || view === 'figures') {
           const detail = analyze[view];
-          return { ...detail, body: withProblem(<StudioErrorBoundary region={studioName(view)}>{detail.body}</StudioErrorBoundary>) };
+          return { ...detail, body: withProblem(detail.body) };
         }
         if ((view === 'task' || view === 'objective') && trialStep) {
           if (!namedRun) return { body: noView };
-          if (!trial.view) return { body: trial.error
-            ? withProblem(<p className="p-3 text-sm" role="alert">{trial.error}</p>)
-            : <div aria-busy="true" /> };
+          if (trial.error || !trial.view) return { body: withProblem(
+            <StudioRegion state={trial.error
+              ? { kind: 'failed', issue: studioRegionIssue(view, trial.error), retry: trial.retry }
+              : { kind: 'loading' }} />,
+          ) };
           const value = trial.view;
           const commit = trial.commit;
           if (view === 'task') return {
@@ -973,14 +999,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
               {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
             </span>}
-          </>, body: withProblem(<StudioErrorBoundary region={studioName(view)}>
-            {details[view].body}
-          </StudioErrorBoundary>) };
+          </>, body: withProblem(details[view].body) };
         }
         if (!step) return { body: null };
-        if (view === 'document') return { body: withProblem(
-          <StudioErrorBoundary region={studioName('document')}>{report.body ?? noView}</StudioErrorBoundary>,
-        ) };
+        if (view === 'document') return { body: withProblem(report.body ?? noView) };
         if (view === 'runs') {
           const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };
           const pivot = pivotCommand(slot);
@@ -1019,18 +1041,20 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             </div> : undefined,
             inspector: selectedRuns(step, state.selection).length > 0
               ? <StudioRunDetails step={step} state={state} /> : undefined,
-            body: withProblem(<StudioErrorBoundary region={studioName('runs')}>
-              <StudioRuns plan={plan} {...runSelection}
-                region={step.kind === 'train' || step.runs.length > 0
-                  ? { kind: 'result', missing: [] } : { kind: 'empty' }}
-                pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} />
-            </StudioErrorBoundary>),
+            body: withProblem(<StudioRuns plan={plan} {...runSelection}
+              region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
+                ? { kind: 'result', missing: [] } : { kind: 'empty' })}
+              pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} />),
           };
         }
         if (view === 'training' && authoring) {
           return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} run={namedRun}
             fieldRows={detailInputs.fieldRows} />) };
         }
+        const resultsUnavailable = view === 'results' && (planError('results') ?? planUnavailable);
+        if (resultsUnavailable) return {
+          body: <StudioRegion state={resultsUnavailable} />,
+        };
         if (view === 'results' && selectedEvaluation?.checkpoint_series && ready) return {
           body: <StudioEvaluationResults evaluation={selectedEvaluation} onReplay={(update) => {
             evaluationReplay.chooseCheckpoint(update);

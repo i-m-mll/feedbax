@@ -6,17 +6,22 @@ import {
 
 const groups = {
   File: ['rename'],
-  Edit: ['undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput'],
+  Edit: [
+    'undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput', 'modelSelectAll', 'modelRemove',
+    'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
+    'flip', 'enter', 'leave', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
+  ],
   View: [
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',
     'splitDetails', 'switchSlot', ...projectWindowViews, 'back', 'forward', 'nextRegion', 'previousRegion',
-    'clearFocus', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
+    'clearFocus', 'collapseAll', 'lock', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
   ],
   Run: ['run', 'stop', 'resume', 'forceStop', 'openRun'],
   Plan: ['newStep', 'newSweep', 'pivot', 'fold'],
 } as const satisfies Record<string, readonly StudioCommandId[]>;
 const sections = Object.entries(groups) as [keyof typeof groups, readonly StudioCommandId[]][];
 const menuIds = new Set<StudioCommandId>([...sections.flatMap(([, ids]) => ids), 'unfold']);
+const documentClipboard = new Set<StudioCommandId>(['modelSelectAll', 'modelCut', 'modelCopy', 'modelPaste']);
 const nativeCommandEvent = 'studio-native-command';
 type Context = ReturnType<typeof studioCommandContext>;
 
@@ -41,7 +46,7 @@ export function studioMenuPresentation(commands: readonly StudioCommand[], conte
     textEditing: context.editable,
     sections: sections.map(([title, ids]) => ({
       title,
-      items: ids.map((id) => {
+      items: ids.filter((id) => !documentClipboard.has(id) || bindings.has(id)).map((id) => {
         const command = bindings.get(id === 'fold' && bindings.has('unfold') ? 'unfold' : id) ??
           bindStudioCommand(id, () => {}, { enabled: false });
         return {

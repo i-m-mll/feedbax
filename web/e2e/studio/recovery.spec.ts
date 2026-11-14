@@ -138,16 +138,22 @@ test('reports that the backend stopped and recovers in the same window', async (
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await page.goto(studio.origin + '/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  await expect(runs.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
   await studio.stopBackend();
   const footer = page.locator('[data-studio-focus-region="bottom"]');
   const failure = footer.getByRole('alert');
   await expect(failure).toBeVisible();
+  await expect(failure).toContainText('Service unreachable');
+  await expect(runs.getByRole('alert')).toHaveText('Service unreachable');
+  await expect(page.locator('[data-studio-focus-region="map"]').getByRole('alert')).toHaveText('Service unreachable');
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   const retry = failure.getByRole('button', { name: 'Retry', exact: true });
   await expect(retry).toBeEnabled();
   await studio.startBackend();
   if (await retry.isVisible()) await retry.click();
   await expect(failure).toHaveCount(0);
+  await expect(runs.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
 });
 

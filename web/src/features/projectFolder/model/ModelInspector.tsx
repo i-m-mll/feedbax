@@ -4,7 +4,7 @@ import { ModelAddressSchema } from '@/generated/studioContracts';
 import { z } from 'zod';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import { addressKey, type Component, type Port } from './modelGraph';
+import { addressKey, type Component } from './modelGraph';
 
 export type Attachment = DelayAttachment | InterventionAttachment | ProbeAttachment;
 const inputClass = 'min-w-0 w-full rounded border border-shell-divider bg-shell-chrome px-1 py-0.5';
@@ -118,11 +118,6 @@ export function ComponentFields({ component, definition, change, projected }: {
       change={change && ((value) => change(['fields', schema.name], value))} />)}</>;
 }
 
-export function PortFields({ port }: { port: Port }) {
-  if (typeof port.type === 'string') return <span>{humanizeLabel(port.type)}</span>;
-  const type = [port.type.base, port.type.shape?.length ? `[${port.type.shape.join(', ')}]` : null, port.type.unit].filter(Boolean).join(' ');
-  return type ? <span>{type}</span> : null;
-}
 
 export function AttachmentFields({ item, step, change, arm, linkLabel, projected }: {
   item: Attachment; step: number; change?: (value: Attachment) => void; arm?: () => void;

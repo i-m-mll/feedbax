@@ -5,6 +5,7 @@ import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
+import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Dialog } from '@/components/ui/Dialog';
 import { StudioFieldControl } from '@/components/values/StudioFieldControl';
@@ -17,10 +18,10 @@ import type {
 import { ModelAddressSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
-import { AttachmentFields, ComponentFields, Field, ModelFields, PortFields, type Attachment } from './ModelInspector';
+import { AttachmentFields, ComponentFields, Field, ModelFields, type Attachment } from './ModelInspector';
 import {
   accepts, addressKey, at, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  modelRegistry, portId, shortName, wireEnd, type Port,
+  modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Port,
 } from './modelGraph';
 import { selectModel, type ModelSelectionStore } from './modelSelection';
 
@@ -378,6 +379,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     setMenu(undefined);
     setPath(path);
   }
+  function enterComposite(id: string, subject?: string) {
+    return bindStudioCommand('enter', () => go([...currentPath, id]), { subject });
+  }
   function keyboardConnect(port: Port) {
     if (locked || !editTopology || port.direction !== 'output') return;
     if (port.taskSignal && !projectionRun) return;
@@ -536,8 +540,19 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       ? [shortName(type?.name ?? definition.type), typeof value === 'number' ? value : undefined].filter((item) => item !== undefined).join(' · ')
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
     const ports = portMap.get(id) ?? emptyPorts;
+    const problem = addressedProblems.get(key);
+    const enter = definition?.kind === 'composite' ? enterComposite(id).invoke : undefined;
     return {
       id, type: 'modelCard', ariaLabel: name,
+      domAttributes: {
+        'aria-description': [caption, problem].filter(Boolean).join(' · ') || undefined,
+        ...(enter && { onKeyDownCapture: (event) => {
+          if (event.target !== event.currentTarget || event.key !== 'Enter') return;
+          event.preventDefault();
+          event.stopPropagation();
+          enter();
+        } }),
+      },
       position: held?.get(key) ?? (definition ? persisted?.[key] ?? positionAt(index) :
         { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
       selected: !!definition && selectedIds.has(key),
@@ -549,7 +564,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         selected: !!definition && selectedIds.has(key),
         holdsSelection: definition?.kind === 'composite' && selected.some((item) => item.document === graph.document &&
           currentPath.every((parent, offset) => item.composites[offset] === parent) && item.composites[currentPath.length] === id),
-        problem: addressedProblems.get(key),
+        problem,
         onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
         keyboardConnect,
         canPick: pick ? (port) => pick.accepts(at(graph, { kind: 'port', end: port.end }), port) : undefined,
@@ -561,7 +576,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           const reason = addressedProblems.get(addressKey(at(graph, { kind: 'port', end: port.end })));
           return reason ? [[portId(port), reason] as const] : [];
         })),
-        enter: definition?.kind === 'composite' ? () => go([...currentPath, id]) : undefined,
+        enter,
         renaming: rename === key, endRename: () => setRename(undefined),
         rename: (name) => { void apply(studioName('rename'), { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
         addPort: !definition && editTopology ? () => setAddPort(id === inputCard ? 'input' : 'output') : undefined,
@@ -579,13 +594,20 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const key = addressKey(address);
     const source = idFor(from);
     const target = idFor(to);
+    const endpoint = (end: typeof from) => {
+      const port = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port);
+      const owner = end.owner === 'component' ? interior?.components?.[end.component!]?.name
+        : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
+      return [owner, port?.name ?? end.port].filter(Boolean).join('.');
+    };
+    const wireLabel = `${endpoint(from)} → ${endpoint(to)}`;
     const self = !isPhysical && source === target ? selfLoops.get(source) ?? 0 : undefined;
     if (self !== undefined) selfLoops.set(source, self + 1);
     return {
-      id, source, target, type,
+      id, source, target, type, ariaLabel: studioAccessibleName('wire', wireLabel),
       sourceHandle: `${isPhysical ? 'physical' : 'output'}:${from.port}`,
       targetHandle: `${isPhysical ? 'physical' : 'input'}:${to.port}`,
-      markerEnd: isPhysical ? undefined : { type: MarkerType.Arrow, width: 12, height: 12, color: '#555860' },
+      markerEnd: isPhysical ? undefined : { type: MarkerType.Arrow, width: 12, height: 12, color: 'var(--text-muted)' },
       selected: selectedIds.has(key),
       data: {
         address, selected: selectedIds.has(key), waypoints: waypoints?.[key], problem: addressedProblems.get(key),
@@ -595,6 +617,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         } : undefined,
         attachments: effective.get(key)?.map((item) => ({
           id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds ?? 0.01),
+          description: item.kind === 'delay' ? `${item.delay.value} ${item.delay.unit} · ${wireLabel}` : wireLabel,
           delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
           drag: editTopology && !locked ? attachmentAddress(address, item.id) : undefined,
         })),
@@ -684,23 +707,62 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       </li>;
     })}
   </ul>;
-  function attachmentOptions(address: ModelAddress) {
+  function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
     const source = address.element.kind === 'port' &&
       (address.element.end.owner === 'inputs' || address.element.end.owner === 'component' && address.element.end.direction === 'output');
     const signalPort = address.element.kind === 'port' &&
       (address.element.end.owner !== 'component' || address.element.end.direction !== 'physical') &&
       address.element.end.owner !== 'boundary';
-    if (!(wire || signalPort) || !(editTopology || canEvaluate) || busy) return null;
-    return <div className="flex flex-wrap gap-1">
-      {wire && editTopology && <button className={button} type="button" onClick={() => addAttachment(address, 'delay')}>{studioName('addDelay')}</button>}
-      {(wire || source) && <button className={button} type="button" onClick={() => addAttachment(address, 'intervention')}>{studioName('addIntervention')}</button>}
-      <button className={button} type="button" onClick={() => addAttachment(address, 'probe')}>{studioName('addProbe')}</button>
-    </div>;
+    if (!(wire || signalPort) || !(editTopology || canEvaluate) || busy) return [];
+    return [
+      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'))] : []),
+      ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'))] : []),
+      bindStudioCommand('addProbe', () => addAttachment(address, 'probe')),
+    ];
   }
 
   const componentsOnly = selectedHere.length > 0 && selectedHere.every((item) => item.element.kind === 'component');
   const viewportCommands = canvasViewportCommands(() => viewport.current, !!model);
+  const isCollapsed = !!collapsed?.[graphId];
+  const collapse = bindStudioCommand('collapseAll', () => {
+    void apply(studioName(isCollapsed ? 'expandAll' : 'collapseAll'), { op: 'collapse_graph', graph, collapsed: !isCollapsed }, false);
+  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: editTopology });
+  const lock = bindStudioCommand('lock', () => setLocked((current) => !current), {
+    name: locked ? 'unlock' : 'lock', enabled: editTopology,
+  });
+  const leave = currentPath.length ? bindStudioCommand('leave', () => go(currentPath.slice(0, -1))) : undefined;
+  const attachmentsForSelection = ownerAddress && !attachment ? attachmentCommands(ownerAddress) : [];
+  function topologyCommands(address: ModelAddress, point = cursor.current) {
+    const targetElement = address.element;
+    if (targetElement.kind === 'component') return [
+      bindStudioCommand('flip', () => {
+        void apply(studioName('flip'), { op: 'flip_component', address }, false);
+      }, { enabled: editTopology }),
+      ...(interior?.components?.[targetElement.id]?.kind === 'composite' ? [enterComposite(targetElement.id)] : []),
+    ];
+    if (targetElement.kind !== 'wire') return [];
+    const routePoints = waypoints?.[addressKey(address)] ?? [];
+    return [
+      bindStudioCommand('addWaypoint', () => {
+        if (point) {
+          route(address, [...routePoints, point], studioName('addWaypoint'));
+          return;
+        }
+        const edge = connections.find((item) => item.id === targetElement.id);
+        const source = nodes.find(({ id }) => id === edge?.source);
+        const target = nodes.find(({ id }) => id === edge?.target);
+        if (!source || !target) return;
+        route(address, [...routePoints, {
+          x: (source.position.x + target.position.x) / 2 + 90,
+          y: (source.position.y + target.position.y) / 2 + 32,
+        }], studioName('addWaypoint'));
+      }, { enabled: editTopology }),
+      bindStudioCommand('removeWaypoint', () => {
+        route(address, routePoints.slice(0, -1), studioName('removeWaypoint'));
+      }, { enabled: editTopology && routePoints.length > 0 }),
+    ];
+  }
   const commands = [
     bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
@@ -725,6 +787,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       { enabled: editTopology && componentsOnly }),
     bindStudioCommand('modelPaste', () => { if (clipboard) void apply(studioName('modelPaste'), { op: 'paste', graph, clipboard }); },
       { enabled: editTopology && !!clipboard }),
+    ...attachmentsForSelection,
+    ...(selection ? topologyCommands(selection) : []),
+    ...(leave ? [leave] : []),
+    collapse, lock,
     ...viewportCommands,
   ];
   function contextual(event: MouseEvent, address: ModelAddress, point: ModelPosition) {
@@ -739,7 +805,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     <ul>{[...(libraryItem.input_ports ?? []), ...(libraryItem.output_ports ?? [])].map((name, index) => <li key={index}>{name}</li>)}</ul>
     {editTopology && <button className={button} type="button" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</button>}
   </section> : model && <section className="grid gap-2 p-2 text-sm">
-    {fields.isError && <p role="alert">{apiErrorMessage(fields.error)}</p>}
+    {fieldBody && <StudioRegion state={studioReadState(
+      'field', fields.data, fields.error, () => { void fields.refetch(); },
+    )} />}
     {component && selection ? <>
       <strong>{component.name}</strong>
       {fieldControls}
@@ -751,7 +819,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           else void apply(studioName('setValue'), difference, false);
         } : undefined} />
     </> : port ? <>
-      <strong>{port.name}</strong><PortFields port={port} />
+      <strong>{port.name}</strong><span>{portTypeLabel(port)}</span>
       {selection && editTopology && port.end.owner !== 'component' && <Field label={studioName('name')} value={port.name}
         parse={(raw) => raw.trim() || undefined} commit={(name) => void apply(studioName('rename'), { op: 'rename', address: selection, name: String(name) }, false)} />}
     </> : attachment && selection ? <>
@@ -779,16 +847,20 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       }, false) : undefined} />}
     {ownerAddress && !attachment && chain && <div className="border-t border-shell-divider pt-1">
       {shownAttachments(ownerAddress, chain)}
-      {attachmentOptions(ownerAddress)}
+      {attachmentsForSelection.length > 0 && <div className="flex flex-wrap gap-1">
+        {attachmentsForSelection.map((command) => <button key={command.id} className={button} type="button"
+          {...commandAttributes(command)} onClick={command.invoke}>{command.label}</button>)}
+      </div>}
     </div>}
   </section>;
 
   const outline = <ul className="space-y-0.5">
     {objects.map(([id, component]) => {
       const address = at(graph, { kind: 'component', id });
+      const enter = component.kind === 'composite' ? enterComposite(id, component.name) : undefined;
       return <li key={id} className="flex">
-        {component.kind === 'composite' && <button className={button} type="button"
-          aria-label={studioAccessibleName('enter', component.name)} onClick={() => go([...currentPath, id])}>›</button>}
+        {enter && <button className={button} type="button"
+          {...commandAttributes(enter)} onClick={enter.invoke}>›</button>}
         <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(address))}
           onClick={(event) => select(address, event.shiftKey)}>{component.name}</button>
       </li>;
@@ -823,15 +895,18 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         clear();
       }
     }}>
-      {(issue || problem || attachments.error || projection.error) && <p className="px-2 text-sm" role="alert">
-        {issue?.reason ?? problem?.reason ?? apiErrorMessage(attachments.error ?? projection.error)}
+      {(issue || problem) && <p className="px-2 text-sm" role="alert">
+        {issue?.reason ?? problem?.reason}
       </p>}
+      {evaluate && <StudioRegion state={studioReadState(
+        'model', attachments.data, attachments.error, () => { void attachments.refetch(); },
+      )} />}
+      {!evaluate && projection.error && <StudioRegion state={studioReadState(
+        'model', projection.data, projection.error, () => { void projection.refetch(); },
+      )} />}
       <div className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
-          collapsed={!!collapsed?.[graphId]} viewportRef={viewport}
-          onToggleLock={() => setLocked((current) => !current)}
-          onToggleCollapse={() => void apply(collapsed?.[graphId] ? 'Expand All' : 'Collapse All',
-            { op: 'collapse_graph', graph, collapsed: !collapsed?.[graphId] }, false)}
+          collapsed={isCollapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
           onCanvasPoint={(point) => { cursor.current = point; }}
           onSearch={openSearch} onNode={(node, extend) => {
             if (!pick && node.data.address.element.kind === 'component') select(node.data.address, extend);
@@ -875,11 +950,14 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         <button className={button} type="button" aria-pressed={drawer === 'library'} onClick={() => setDrawer('library')}>{studioName('library')}</button>
         <button className={button} type="button" aria-pressed={drawer === 'outline'} onClick={() => setDrawer('outline')}>{studioName('outline')}</button>
       </div>
-      {registryQuery.error && <p role="alert">{apiErrorMessage(registryQuery.error)}</p>}
       {drawer === 'library' ? <>
         <input aria-label={studioName('searchLibrary')} className="w-full border border-shell-divider px-1 py-0.5"
           value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
-        <LeafChoices definitions={definitions} query={query} choose={add} inspect={setLibraryItem} disabled={!editTopology} browse />
+        <StudioRegion state={studioReadState(
+          'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
+        )}>
+          <LeafChoices definitions={definitions} query={query} choose={add} inspect={setLibraryItem} disabled={!editTopology} browse />
+        </StudioRegion>
       </> : outline}
     </section>,
     inspector,
@@ -919,23 +997,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     </Dialog> : menu && <Dialog ariaLabel={studioName('modelCommands')} onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
       <div role="menu" className="fixed grid rounded border border-shell-divider bg-shell-chrome p-1 text-sm shadow-lg"
         style={{ left: Math.min(menu.x, window.innerWidth - 160), top: Math.min(menu.y, window.innerHeight - 240) }}>
-        {commands.filter((command) => command.enabled && command.id.startsWith('model')).map((command) =>
+        {[...commands.filter((command) => command.id.startsWith('model')),
+          ...topologyCommands(menu.address, menu.point), ...attachmentCommands(menu.address)]
+          .filter((command) => command.enabled).map((command) =>
           <button className={button} role="menuitem" type="button" key={command.id} {...commandAttributes(command)}
             onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</button>)}
-        {menu.address.element.kind === 'component' && editTopology && <button className={button} role="menuitem" type="button"
-          onClick={() => { void apply(studioName('flip'), { op: 'flip_component', address: menu.address }, false); setMenu(undefined); }}>{studioName('flip')}</button>}
-        {menu.address.element.kind === 'wire' && editTopology && <>
-          <button className={button} role="menuitem" type="button" onClick={() => {
-            const key = addressKey(menu.address);
-            route(menu.address, [...(waypoints?.[key] ?? []), menu.point], studioName('addWaypoint'));
-            setMenu(undefined);
-          }}>{studioName('addWaypoint')}</button>
-          {!!waypoints?.[addressKey(menu.address)]?.length && <button className={button} role="menuitem" type="button" onClick={() => {
-            const key = addressKey(menu.address);
-            route(menu.address, waypoints![key].slice(0, -1), studioName('removeWaypoint'));
-            setMenu(undefined);
-          }}>{studioName('removeWaypoint')}</button>}
-        </>}
       </div>
     </Dialog>,
   };

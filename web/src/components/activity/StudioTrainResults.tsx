@@ -113,7 +113,7 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, attempt
         : { kind: 'result' as const, missing: [] };
   return (
     <section aria-label={studioName('results')} className="mt-3 rounded border border-shell-divider p-3">
-      <StudioRegion state={state} skeleton={<div className="h-28 animate-pulse rounded bg-shell-divider" />} empty={null}>
+      <StudioRegion state={state} skeleton={<div className="h-28 motion-safe:animate-pulse rounded bg-shell-divider" />} empty={null}>
         {stages && <LossPlot stages={stages} objectives={tracks} />}
         {objectiveError && <StudioRegion state={{
           kind: 'failed', issue: studioRegionIssue('objective', objectiveError),

@@ -245,7 +245,7 @@ export function StudioRuns(props: StudioRunsProps) {
       <StudioRegionBoundary name="runs">
         <StudioRegion
           state={props.region}
-          skeleton={<div className="h-28 animate-pulse rounded bg-shell-divider" />}
+          skeleton={<div className="h-28 motion-safe:animate-pulse rounded bg-shell-divider" />}
           empty={<div className="h-12 rounded border border-dashed border-shell-divider" />}
         >
           <RunsContent key={props.step.id} {...props} />

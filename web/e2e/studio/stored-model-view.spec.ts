@@ -52,6 +52,7 @@ test('authors and reopens an addressed Model through the project history', async
 
   const step = await apply(() => enter(inspector.getByRole('textbox', { name: 'Step', exact: true }), '0.02 s'));
   expect(stored(step.snapshot).step_seconds).toBe(0.02);
+  await expect(model.getByRole('button', { name: 'Lock', exact: true })).toBeEnabled();
   const gru = drawer.getByRole('button', { name: 'Add GRU', exact: true });
   const added = await apply(() => gru.press('Enter'));
   const component = added.changed[0].element;
@@ -86,7 +87,9 @@ test('authors and reopens an addressed Model through the project history', async
   expect(stored(wired.snapshot).interior.wires?.[wire.id].attachments).toMatchObject([
     { kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 },
   ]);
-  await model.getByRole('button', { name: 'Attachment Delay', exact: true }).click();
+  const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
+  await expect(delay).toHaveAccessibleDescription(/1 st · .+hidden → .+hidden/);
+  await delay.click();
   await expect(inspector.getByRole('button', { name: 'Delay kind: Value' })).toBeVisible();
   await expect(inspector.getByRole('button', { name: 'Initial kind: Value' })).toBeVisible();
   const delayed = await apply(() => enter(inspector.getByRole('textbox', { name: 'Delay', exact: true }), '0.06 s'));
@@ -121,11 +124,21 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(wirePath).toHaveAttribute('d', /^M/);
   const unflippedPath = (await wirePath.getAttribute('d'))!;
   await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await cell.locator('header').click();
+  await page.keyboard.press('Meta+K');
+  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
+  const filter = palette.getByRole('combobox');
+  await filter.fill('Fit View');
+  await expect(palette.getByRole('option', { name: 'Fit View', exact: true })).toHaveCount(1);
+  await filter.fill('Flip');
+  await expect(palette.getByRole('option', { name: 'Flip', exact: true })).toBeVisible();
+  await filter.press('Escape');
   await cell.locator('header').click({ button: 'right' });
   const flipped = await apply(() => page.getByRole('menuitem', { name: 'Flip', exact: true }).press('Enter'));
   expect(flipped.snapshot.semantic_root).toBe(redone.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
   await expect(wirePath).not.toHaveAttribute('d', unflippedPath);
+  await expect(model.getByRole('button', { name: 'Collapse All', exact: true })).toBeEnabled();
   const collapsed = await apply(() => model.getByRole('button', { name: 'Collapse All', exact: true }).click());
   expect(collapsed.snapshot.semantic_root).toBe(flipped.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-collapsed', 'true');
@@ -139,8 +152,21 @@ test('authors and reopens an addressed Model through the project history', async
   });
   const groupAddress = group.changed.find(({ element }) => element.kind === 'component' && element.id !== component.id);
   if (groupAddress?.element.kind !== 'component') throw new Error('Group did not return a component address');
-  await card(groupAddress.element.id).locator('header').dblclick();
+  const composite = card(groupAddress.element.id);
+  await expect(composite).toBeVisible();
+  await expect(composite).toHaveAttribute('tabindex', '0');
+  await composite.focus();
+  await expect(composite).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
+  await model.focus();
+  await page.keyboard.press('Meta+K');
+  await filter.fill('Leave');
+  await expect(palette.getByRole('option', { name: 'Leave', exact: true })).toBeVisible();
+  await filter.press('Escape');
+  await model.focus();
+  await page.keyboard.press('Meta+ArrowUp');
+  await expect(model.getByRole('navigation', { name: 'Model Path' })).toBeHidden();
   await page.reload();
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();

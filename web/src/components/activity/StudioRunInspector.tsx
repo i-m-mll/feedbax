@@ -106,7 +106,7 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
       {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
       <StudioRegion
         state={state}
-        skeleton={<div className="h-36 animate-pulse rounded bg-shell-divider" />}
+        skeleton={<div className="h-36 motion-safe:animate-pulse rounded bg-shell-divider" />}
         empty={fields}
       >
         {fields}

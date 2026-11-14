@@ -62,6 +62,7 @@ export interface StudioActivityJob {
   job_id: string;
   project_id: string;
   request_id: string;
+  kind: "train" | "evaluate";
   run_key: string;
   stage_id: string;
   scenario_id: string;
@@ -3986,6 +3987,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "job_id": z.string(),
       "project_id": z.string(),
       "request_id": z.string(),
+      "kind": z.union([z.literal("train"), z.literal("evaluate")]),
       "run_key": z.string(),
       "stage_id": z.string(),
       "scenario_id": z.string(),

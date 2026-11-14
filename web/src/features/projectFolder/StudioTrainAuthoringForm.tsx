@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
+import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { projectTrainFields, readStudioTrainAuthoring } from '@/api/studioAuthoring';
 import { studioName } from '@/components/activity/studioVocabulary';
 import {
@@ -125,7 +126,8 @@ export function StudioTrainAuthoringForm(props: Props) {
   const { saved, pending, outside, error: editorError } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
   const [projection, setProjection] = useState<StudioTrainAuthoring | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<unknown>();
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [editError, setEditError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const active = useRef<AbortController | null>(null);
@@ -182,14 +184,14 @@ export function StudioTrainAuthoringForm(props: Props) {
 
   useEffect(() => {
     const request = new AbortController();
-    setLoadError(null);
+    setLoadError(undefined);
     setEditError(null);
     void readStudioTrainAuthoring(projectId, stepId, { revision }, request.signal).then(
       (result) => { if (!request.signal.aborted) setProjection(result); },
-      (error) => { if (!request.signal.aborted) setLoadError(apiErrorMessage(error)); },
+      (error: unknown) => { if (!request.signal.aborted) setLoadError(error); },
     );
     return () => request.abort();
-  }, [projectId, stepId, revision]);
+  }, [projectId, stepId, revision, loadAttempt]);
 
   async function apply(change: StudioTrainAuthoringRequest['change']) {
     const lifetime = active.current;
@@ -224,7 +226,7 @@ export function StudioTrainAuthoringForm(props: Props) {
     }
   }
 
-  const error = editError ?? loadError ?? (editorError ? apiErrorMessage(editorError) : null);
+  const error = editError ?? (editorError ? apiErrorMessage(editorError) : null);
   const shared = showNumeric ? numeric.data?.fields ?? [] : [];
   const projected = new Set(shared.map(({ id }) => id));
   const fields = shown ? formFields(shown, picker ? { ...props, selection: undefined } : props)
@@ -232,8 +234,10 @@ export function StudioTrainAuthoringForm(props: Props) {
   const onEdit = ({ fieldId, edit }: StudioFieldCommand) => { void apply(changeRequest(fieldId, edit)); };
   return (
     <>
-      {error && !(numeric.data && loadError === error) && <p role="alert">{error}</p>}
-      {showNumeric && numeric.isError && <p role="alert">{apiErrorMessage(numeric.error)}</p>}
+      {error && <p role="alert">{error}</p>}
+      {showNumeric && <StudioRegion state={studioReadState(
+        'definition', numeric.data, numeric.error, () => { void numeric.refetch(); },
+      )} />}
       {shared.length > 0 && <div ref={numericRegion} className="grid gap-2 px-3 py-2">
         {shared.map((field) => <StudioFieldControl key={JSON.stringify([projectId, stepId, props.fieldRows, field.id])} field={field}
           commit={!numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined}
@@ -244,17 +248,17 @@ export function StudioTrainAuthoringForm(props: Props) {
           onChooseValue={field.sweep && onChooseSweepValue
             ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined} />)}
       </div>}
-      {shown
-        ? (
-          <fieldset ref={fieldSet} disabled={disabled}>
+      <StudioRegion state={studioReadState(
+        'definition', shown ?? undefined, loadError, () => setLoadAttempt((count) => count + 1),
+      )}>
+        {shown && <fieldset ref={fieldSet} disabled={disabled}>
             {picker ? <StudioSweepPicker fields={fields} onChoose={(fieldId) => {
               const value = fields.find(({ id }) => id === fieldId)?.resolved[0]?.value;
               if (value !== undefined) void apply(changeRequest(fieldId, { kind: 'toSweep', value }));
             }} /> : <StudioDefinitionForm fields={fields} selection={selection} onChooseSweepValue={onChooseSweepValue}
               onEdit={onEdit} />}
-          </fieldset>
-        )
-        : !error && !numeric.data && <div aria-busy="true" aria-label={studioName('definition')} />}
+        </fieldset>}
+      </StudioRegion>
     </>
   );
 }

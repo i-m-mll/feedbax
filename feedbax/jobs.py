@@ -1244,6 +1244,7 @@ def _project_activity(
         job_id=job["id"],
         project_id=job["project"],
         request_id=job["request"],
+        kind=job["request"].partition(":")[0],
         continues=job.get("continues"),
         status=status,
         phase=phase,
@@ -1262,6 +1263,6 @@ def _project_activity(
         **{
             key: value
             for key, value in job["data"].items()
-            if key in StudioActivityJob.model_fields and key != "actor"
+            if key in StudioActivityJob.model_fields and key not in {"actor", "kind"}
         },
     )

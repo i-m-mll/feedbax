@@ -44,6 +44,42 @@ test('opens a readable project beside a malformed project folder', async ({ page
   await expect(alert.filter({ hasText: detail })).toHaveCount(0);
 });
 
+test('a failed Task read retries in its slot without disturbing Runs', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const routePath = '**' + projectPath + '/authoring/trials';
+  let resume!: () => void;
+  const waiting = new Promise<void>((resolve) => { resume = resolve; });
+  await page.route(routePath, async (route) => {
+    await waiting;
+    await route.fulfill({ status: 500, json: { detail: 'private Task implementation detail' } });
+  }, { times: 1 });
+  try {
+    await page.goto('/?project=' + snapshot.project_id);
+    await mapStep(page, 'train').press('Enter');
+    const primary = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+    const table = primary.getByRole('table', { name: 'Runs', exact: true });
+    await expect(table).toBeVisible();
+    await primary.getByRole('button', { name: 'Split Details' }).click();
+    await page.getByRole('tab', { name: 'Task', exact: true }).click();
+    const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+    await expect(task.locator('[aria-busy="true"]')).toBeVisible();
+    resume();
+    await expect(task.getByRole('alert')).toHaveText('Task unavailable');
+    await expect(table).toBeVisible();
+    const retry = task.getByRole('button', { name: 'Retry', exact: true });
+    await retry.press('Enter');
+    await expect(task).toBeFocused();
+    await expect(task.getByRole('alert')).toHaveCount(0);
+    await expect(task.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+    await expect(table).toBeVisible();
+    const current = await request.get(projectPath);
+    expect(current.ok()).toBe(true);
+    expect(await current.json()).toMatchObject({ revision: snapshot.revision });
+  } finally {
+    resume();
+  }
+});
+
 test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -260,15 +296,17 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   await expect(progress).not.toBeInViewport();
   const row = table.getByRole('button', { name: /FirstReplicate/ });
   await row.focus();
-  let at = await position();
-  for (let keypress = 0; keypress < 20 && at.limit - at.offset > 1; keypress++) {
+  const rowCells = row.locator('xpath=ancestor::tr').getByRole('cell');
+  for (let column = 0; column < await rowCells.count(); column++) {
     await page.keyboard.press('ArrowRight');
-    await expect.poll(async () => (await position()).offset).toBeGreaterThan(at.offset);
-    at = await position();
+    await expect(rowCells.nth(column)).toBeFocused();
   }
-  expect(at.limit - at.offset).toBeLessThanOrEqual(1);
+  await expect.poll(async () => {
+    const { limit, offset } = await position();
+    return limit - offset;
+  }).toBeLessThanOrEqual(1);
   await expect(progress).toBeInViewport({ ratio: 0.9 });
-  await expect(row).toBeFocused();
+  await expect(rowCells.last()).toBeFocused();
   await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
   await captureStudioWindow(page, info, 'narrow-runs-overflow');
 });
