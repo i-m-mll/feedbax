@@ -111,12 +111,13 @@ export class StudioRegionBoundary extends Component<
 > {
   state: { error: Error | null } = { error: null };
 
-  static getDerivedStateFromError(error: Error) {
-    return { error };
+  static getDerivedStateFromError(failure: unknown) {
+    return { error: asRenderError(failure) };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
+  componentDidCatch(failure: unknown, info: ErrorInfo) {
     const { name } = this.props;
+    const error = asRenderError(failure);
     void reportStudioRenderFailure(name, error, info.componentStack ?? '').catch((reportError: unknown) => {
       console.error('Studio render failure could not be sent', name, error, reportError);
     });
@@ -135,4 +136,9 @@ export class StudioRegionBoundary extends Component<
       />
     );
   }
+}
+
+function asRenderError(failure: unknown) {
+  if (failure instanceof Error) return failure;
+  return new Error(typeof failure === 'string' ? failure : undefined);
 }

@@ -323,10 +323,12 @@ export function ProjectWindow({
     onResize: (size: number) => resize(key, size),
   });
   const offline = serviceFailure && <StudioRegion state={serviceFailure} />;
-  const connectedBody = (body: ReactNode) => (
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true) => (
     <>
-      <div className="studio-window-region-content" hidden={!!offline}>{body}</div>
-      {offline}
+      <div className="studio-window-region-content" hidden={!!offline && dataBacked}>
+        <StudioRegionBoundary name={name}>{body}</StudioRegionBoundary>
+      </div>
+      {dataBacked && offline}
     </>
   );
 
@@ -363,12 +365,12 @@ export function ProjectWindow({
         <section id={ids.map} className="studio-window-map" aria-label={studioName('pipelineMap')}>
           <div className="studio-window-map__full" hidden={!fullMapVisible}>
             <div data-studio-focus-region="map" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-hidden">
-              <StudioRegionBoundary name="pipelineMap">{connectedBody(map)}</StudioRegionBoundary>
+              {regionBody('pipelineMap', map)}
             </div>
             <aside id={ids.mapDrawer} data-studio-focus-region="steps" tabIndex={-1} aria-label={studioName('mapDrawer')} className="studio-window-side"
               hidden={!mapDrawerVisible} style={{ width: fit.mapDrawer.size }}>
               <div className="studio-window-side__contents">
-                <StudioRegionBoundary name="mapDrawer">{connectedBody(mapDrawer)}</StudioRegionBoundary>
+                {regionBody('mapDrawer', mapDrawer)}
               </div>
               {mapDrawerVisible && (
                 <ResizeSeparator label={studioName('mapDrawer')} controls={ids.mapDrawer} axis="x" direction={1}
@@ -377,7 +379,7 @@ export function ProjectWindow({
             </aside>
           </div>
           {!fullMapVisible && <div className="studio-window-map__compact" data-studio-focus-region="map" tabIndex={-1}>
-            <StudioRegionBoundary name="pipelineMap">{connectedBody(compactMap)}</StudioRegionBoundary>
+            {regionBody('pipelineMap', compactMap)}
           </div>}
         </section>
         <div className="studio-window-panel__divider">
@@ -420,9 +422,7 @@ export function ProjectWindow({
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              <StudioRegionBoundary name="detailsDrawer">
-                {focusedRegion?.drawer && connectedBody(focusedRegion.drawer)}
-              </StudioRegionBoundary>
+              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer))}
             </div>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
@@ -470,7 +470,7 @@ export function ProjectWindow({
                     )}
                   </header>
                   <div key={view} className="studio-window-slot__body">
-                    <StudioRegionBoundary name={view}>{connectedBody(region.body)}</StudioRegionBoundary>
+                    {regionBody(view, region.body)}
                   </div>
                 </section>
                 {slot === 'secondary' && fit.secondary.open && (
@@ -483,9 +483,7 @@ export function ProjectWindow({
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              <StudioRegionBoundary name="windowInspector">
-                {focusedRegion?.inspector && connectedBody(focusedRegion.inspector)}
-              </StudioRegionBoundary>
+              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector))}
             </div>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}
