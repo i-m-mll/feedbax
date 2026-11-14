@@ -538,6 +538,9 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'task-pivot-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const read = () => savedPlan(request, projectPath);
+  await page.goto('/?project=' + snapshot.project_id);
+  await select(page, 'evaluate');
+  await primary(page).getByRole('button', { name: 'Pivot', exact: true }).click();
   const initial = await read();
   const train = initial.rows.filter(({ key }) => key.step === 'train');
   const rows = initial.window_map!.rows.filter(({ key }) => key.step === 'evaluate');
@@ -550,9 +553,6 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const evaluation = initial.window_map!.evaluations!;
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
 
-  await page.goto('/?project=' + snapshot.project_id);
-  await select(page, 'evaluate');
-  await primary(page).getByRole('button', { name: 'Pivot', exact: true }).click();
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
   await primary(page).getByRole('combobox', { name: 'Rows', exact: true }).selectOption('learning-rate');
   await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
