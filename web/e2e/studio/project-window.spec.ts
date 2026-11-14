@@ -1,6 +1,6 @@
 import { expect, test, type Locator } from '@playwright/test';
-import { readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -8,6 +8,40 @@ test.use({
   trace: 'off',
   launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
   viewport: { width: 1440, height: 900 },
+});
+
+test('opens a readable project beside a malformed project folder', async ({ page, request }, info) => {
+  const { snapshot } = await seedManagedProject(request, []);
+  const projectId = snapshot.project_id;
+  const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
+  const brokenFolder = await mkdtemp(join(projects, 'malformed-project-'));
+  const brokenId = basename(brokenFolder);
+  const declaration = brokenId + '.feedbax';
+  await writeFile(join(brokenFolder, declaration), '{', { flag: 'wx' });
+
+  async function open(id: string) {
+    const opened = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === `/api/projects/${encodeURIComponent(id)}/open`);
+    await page.goto(`/?project=${encodeURIComponent(id)}`);
+    return opened;
+  }
+
+  const heading = page.getByRole('heading', { name: projectId, exact: true, level: 1 });
+  expect((await open(projectId)).status()).toBe(200);
+  await expect(heading).toBeVisible();
+
+  const refused = await open(brokenId);
+  expect(refused.status()).toBe(422);
+  const { detail } = await refused.json() as { detail: string };
+  expect(detail).toContain(declaration);
+  expect(detail).toContain('Expecting property name enclosed in double quotes');
+  const alert = page.getByRole('alert');
+  await expect(alert).toBeVisible();
+  await expect(alert).toHaveText(detail);
+
+  expect((await open(projectId)).status()).toBe(200);
+  await expect(heading).toBeVisible();
+  await expect(alert.filter({ hasText: detail })).toHaveCount(0);
 });
 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }) => {
