@@ -170,12 +170,15 @@ fn edit_menu(
             &PredefinedMenuItem::redo(app, None)?,
         ])?;
     }
-    edit.append_items(&[
-        &PredefinedMenuItem::cut(app, None)?,
-        &PredefinedMenuItem::copy(app, None)?,
-        &PredefinedMenuItem::paste(app, None)?,
-        &PredefinedMenuItem::select_all(app, None)?,
-    ])?;
+    if !commands.is_some_and(|section| section.items.iter().any(|item| item.id == "modelSelectAll"))
+    {
+        edit.append_items(&[
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ])?;
+    }
     Ok(edit)
 }
 

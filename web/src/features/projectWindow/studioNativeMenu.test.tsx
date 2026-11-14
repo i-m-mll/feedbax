@@ -135,6 +135,24 @@ it('keeps the web shortcut in a browser without the native host', () => {
   expect(run).toHaveBeenCalledTimes(1);
 });
 
+it('dispatches Model Copy from the project Edit menu and preserves text editing', async () => {
+  setup();
+  const bridge = menu();
+  const copy = vi.fn();
+  render(studio(vi.fn(), 'First', false, undefined, [bindStudioCommand('modelCopy', copy)]));
+  await waitFor(() => expect(item(bridge.latest(), 'modelCopy')).toMatchObject({
+    label: 'Copy', accelerator: 'Cmd+C', enabled: true,
+  }));
+  const scope = bridge.latest()!.scope;
+  expect(fireEvent.keyDown(document.body, { key: 'c', metaKey: true })).toBe(true);
+  bridge.select('modelCopy', scope);
+  expect(copy).toHaveBeenCalledTimes(1);
+  act(() => { screen.getByRole('textbox', { name: 'Training field' }).focus(); });
+  await waitFor(() => expect(bridge.latest()?.textEditing).toBe(true));
+  bridge.select('modelCopy', scope);
+  expect(copy).toHaveBeenCalledTimes(1);
+});
+
 it('routes File Rename to the focused project', async () => {
   setup();
   const bridge = menu();

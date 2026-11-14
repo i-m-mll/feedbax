@@ -67,8 +67,8 @@ interface TableProps extends RunSelectionProps {
 
 export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot }: TableProps) {
   const scroll = useRef<HTMLDivElement>(null);
-  const rowButtons = useRef(new Map<string, HTMLButtonElement>());
-  const pendingKeyboardFocus = useRef<string | null>(null);
+  const mountedRows = useRef(new Map<string, HTMLTableRowElement>());
+  const pendingKeyboardFocus = useRef<{ id: string; column: number } | null>(null);
   const getScrollElement = useCallback(() => scroll.current, []);
   const itemKey = useCallback((index: number) => rows[index].id, [rows]);
   const virtual = useVirtualizer({
@@ -89,9 +89,23 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
     if (focusedIndex >= 0) virtual.scrollToIndex(focusedIndex);
   }, [focusedIndex, virtual]);
 
-  function navigate(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+  function focusCell(row: HTMLTableRowElement, column: number) {
+    (column === 0 ? row.cells[0]?.querySelector('button') : row.cells[column])?.focus();
+  }
+
+  function navigate(event: KeyboardEvent<HTMLTableRowElement>, index: number) {
+    const gridCell = (event.target as HTMLElement).closest('th,td') as HTMLTableCellElement | null;
+    if (gridCell?.parentElement !== event.currentTarget) return;
+    const { cellIndex } = gridCell;
     let destination: number;
     switch (event.key) {
+      case "ArrowLeft":
+      case "ArrowRight": {
+        event.preventDefault();
+        const column = cellIndex + (event.key === "ArrowLeft" ? -1 : 1);
+        focusCell(event.currentTarget, column);
+        return;
+      }
       case "ArrowUp": destination = Math.max(0, index - 1); break;
       case "ArrowDown": destination = Math.min(rows.length - 1, index + 1); break;
       case "Home": destination = 0; break;
@@ -100,15 +114,16 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
     }
     event.preventDefault();
     const id = rows[destination].id;
-    const button = rowButtons.current.get(id);
-    pendingKeyboardFocus.current = button ? null : id;
+    const row = mountedRows.current.get(id);
+    pendingKeyboardFocus.current = row ? null : { id, column: cellIndex };
     virtual.scrollToIndex(destination);
-    button?.focus({ preventScroll: true });
+    if (row) focusCell(row, cellIndex);
   }
   const relatedIds = related.get(step.id);
   const items = virtual.getVirtualItems();
   const measure = step.kind === "evaluate" ? "size" : "progress";
   const width = sweeps.length + (showVariant ? 4 : 3);
+  const cellClass = "border-t border-shell-divider p-2 focus-visible:outline focus-visible:-outline-offset-2 focus-visible:outline-shell-accent";
   const first = items[0];
   const last = items[items.length - 1];
   const top = first?.start ?? 0;
@@ -135,49 +150,48 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
             return (
               <tr
                 key={run.id}
-                ref={virtual.measureElement}
+                ref={(node) => {
+                  virtual.measureElement(node);
+                  if (!node) {
+                    mountedRows.current.delete(run.id);
+                    return;
+                  }
+                  mountedRows.current.set(run.id, node);
+                  if (pendingKeyboardFocus.current?.id === run.id) {
+                    const { column } = pendingKeyboardFocus.current;
+                    pendingKeyboardFocus.current = null;
+                    focusCell(node, column);
+                  }
+                }}
                 data-index={item.index}
                 data-selected={lit || undefined}
                 data-related={relatedIds?.has(run.id) || undefined}
                 aria-rowindex={item.index + 2}
+                onKeyDown={(event) => { if (!event.defaultPrevented) navigate(event, item.index); }}
                 className="studio-run-row data-[related=true]:bg-shell-subtle data-[selected=true]:bg-shell-selected"
               >
                 <th scope="row" className="border-t border-shell-divider p-2 font-medium">
                   <button
                     type="button"
-                    ref={(button) => {
-                      if (!button) {
-                        rowButtons.current.delete(run.id);
-                        return;
-                      }
-                      rowButtons.current.set(run.id, button);
-                      if (pendingKeyboardFocus.current === run.id) {
-                        pendingKeyboardFocus.current = null;
-                        button.focus({ preventScroll: true });
-                      }
-                    }}
                     aria-pressed={state.selection?.kind === "rows" && lit}
                     aria-current={focus === run.id ? true : undefined}
                     onClick={selectRow.onClick}
-                    onKeyDown={(event) => {
-                      selectRow.onKeyDown(event);
-                      if (!event.defaultPrevented) navigate(event, item.index);
-                    }}
+                    onKeyDown={selectRow.onKeyDown}
                     className="rounded text-left underline-offset-2 hover:underline aria-[current=true]:underline"
                   >
                     {run.label}
                   </button>
                 </th>
-                {showVariant && <td className="border-t border-shell-divider p-2">{run.variant}</td>}
+                {showVariant && <td tabIndex={-1} className={cellClass}>{run.variant}</td>}
                 {sweeps.map((sweep) => (
-                  <td key={sweep.id} className="border-t border-shell-divider p-2 tabular-nums">
+                  <td key={sweep.id} tabIndex={-1} className={`${cellClass} tabular-nums`}>
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </td>
                 ))}
-                <td className="border-t border-shell-divider p-2">
+                <td tabIndex={-1} className={cellClass}>
                   <StudioRunStatus status={run.status} />
                 </td>
-                <td className="border-t border-shell-divider p-2">
+                <td tabIndex={-1} className={cellClass}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </td>

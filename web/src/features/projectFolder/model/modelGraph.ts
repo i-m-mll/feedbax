@@ -4,6 +4,7 @@ import type {
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 
 export const modelSchema = 'feedbax.spec.model';
 export type Component = LeafComponent | CompositeComponent;
@@ -19,6 +20,11 @@ export type Port = {
   readonly growing?: boolean;
 };
 export type Registry = ReadonlyMap<string, ComponentDefinition>;
+
+export function portTypeLabel({ type }: Port) {
+  if (typeof type === 'string') return humanizeLabel(type);
+  return [type.base, type.shape?.length ? `[${type.shape.join(', ')}]` : null, type.unit].filter(Boolean).join(' ');
+}
 
 export function addressKey(address: ModelAddress) {
   return canonicalJsonV2(address);

@@ -337,6 +337,7 @@ class StudioActivityJob(StrictModel):
     job_id: str
     project_id: str
     request_id: str
+    kind: Literal["train", "evaluate"]
     run_key: str
     stage_id: str
     scenario_id: str

@@ -754,6 +754,26 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
     (await runSavedEvaluation(page, request, info))!;
   const labels = new Map(completed.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
+  const activityRun = single.find(({ key }) => key.step === 'conditions')!;
+  await footer(page).getByRole('button', { name: 'Activity', exact: true }).click();
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const openActivityRun = activity.getByRole('button', {
+    name: `Evaluate saved-evaluate ${labels.get(JSON.stringify(activityRun.key))}`,
+    exact: true,
+  });
+  const activityReplay = posted(page, replayPath);
+  await openActivityRun.click();
+  const opened = await activityReplay;
+  expect(opened.ok(), await opened.text()).toBe(true);
+  expect(opened.request().postDataJSON()).toMatchObject({
+    key: activityRun.key, job_id: activityRun.result!.job_id, revision,
+  });
+  expect((await opened.json() as WorkspaceReplayTrial).manifest_refs.producer_manifest).toMatchObject({
+    id: activityRun.result!.receipt.manifest_id,
+    metadata: { manifest_sha256: activityRun.result!.receipt.manifest_sha256 },
+  });
+  await expect(activity).toBeHidden();
+  await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeFocused();
   const replayRow = (row: StudioSavedEvaluationRow) => showTrial(page, replayPath, row, labels.get(JSON.stringify(row.key))!);
   const replays = new Map<string, WorkspaceReplayTrial>();
   for (const row of single) {

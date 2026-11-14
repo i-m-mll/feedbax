@@ -36,6 +36,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
     expect(await model.evaluate((panel) => panel.contains(document.activeElement))).toBe(true);
   }
   await expect(source).toBeFocused();
+  await expect(source).toHaveAccessibleDescription(/^Output · /);
   const review = post('connections');
   await page.keyboard.press('Enter');
   const reviewed = await review;
@@ -51,6 +52,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   await expect(source).not.toHaveAttribute('data-test-lost-focus', '');
   await page.keyboard.press('ArrowRight');
   await expect(input).toBeFocused();
+  await expect(input).toHaveAccessibleDescription(/^Input · /);
   const edit = post('edit');
   await page.keyboard.press('Enter');
   const applied = await edit;

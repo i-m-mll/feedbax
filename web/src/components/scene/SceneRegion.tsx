@@ -225,7 +225,7 @@ export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: Sc
     case 'empty':
     case 'failed':
       return (
-        <StudioRegion state={view} skeleton={<div className="h-full min-h-16 animate-pulse bg-shell-subtle" />}
+        <StudioRegion state={view} skeleton={<div className="h-full min-h-16 motion-safe:animate-pulse bg-shell-subtle" />}
           empty={<div className="h-full min-h-16 bg-shell-subtle" />}>
           {null}
         </StudioRegion>
