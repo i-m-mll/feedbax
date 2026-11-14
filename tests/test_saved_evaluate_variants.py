@@ -382,16 +382,22 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     assert replacement["objective/total"] > 0
     np.testing.assert_allclose(perturbed["objective/total"], 0.25 * replacement["objective/total"], rtol=2e-5)
 
-    read_tensor = ArrayContainerReader.read_tensor
-    read = []
+    read_slice = ArrayContainerReader.read_unverified_slice
+    reads = []
+    trial_index = 1
 
-    def observe(reader, name):
-        read.append(name)
-        return read_tensor(reader, name)
+    def observe(reader, name, selection):
+        reads.append((name, selection))
+        return read_slice(reader, name, selection)
+
+    def refuse_full_read(_reader, name):
+        pytest.fail(f"Store trial selection verified the whole tensor {name!r}")
 
     with monkeypatch.context() as context:
-        context.setattr(ArrayContainerReader, "read_tensor", observe)
+        context.setattr(ArrayContainerReader, "read_unverified_slice", observe)
+        context.setattr(ArrayContainerReader, "read_tensor", refuse_full_read)
         with results["perturbed"].open_states() as states:
-            position_samples = states.select(position, labels={"trial": states.data("trial")[0]})[0, 0]
-        assert read == [position]
-    np.testing.assert_array_equal(position_samples, perturbed[position][0])
+            trial = states.data("trial")[trial_index]
+            position_samples = states.select(position, labels={"trial": trial})[0, 0]
+    assert reads == [(position, (slice(None), slice(None), trial_index))]
+    np.testing.assert_array_equal(position_samples, perturbed[position][trial_index])
