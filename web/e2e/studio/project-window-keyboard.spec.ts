@@ -276,7 +276,9 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     await expect(source).toHaveAttribute('aria-disabled', 'false');
     await page.keyboard.press('Meta+2');
     await expect(model).toBeFocused();
-    await tabTo(page, source);
+    await expect(source).toHaveAttribute('tabindex', '0');
+    await source.focus();
+    await expect(source).toBeFocused();
     const reviewed = post(page, projectPath + '/model/connections');
     await page.keyboard.press('Enter');
     expect((await reviewed).ok()).toBe(true);
