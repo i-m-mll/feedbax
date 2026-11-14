@@ -13,7 +13,7 @@
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
   --shell-focus-color: var(--studio-shell-accent);
   --studio-control-border: color-mix(in srgb, var(--text-muted) 45%, var(--surface-main));
-  --studio-status-idle: var(--studio-control-border);
+  --studio-status-idle: var(--neutral-8);
   --studio-status-neutral: var(--text-muted);
   --studio-status-warning: #aa7100;
   --studio-status-running: #2459c4;

@@ -1,4 +1,5 @@
 import { Command } from 'cmdk';
+import { flushSync } from 'react-dom';
 import { Dialog } from '@/components/ui/Dialog';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { commandAttributes, shortcutLabel, type StudioCommand } from './studioCommands';
@@ -17,10 +18,10 @@ export function StudioCommandPalette({ commands, close }: {
           <Command.Empty className="p-2 text-shell-muted">{studioName('noCommands')}</Command.Empty>
           {commands.map((command) => (
             <Command.Item key={command.id} value={command.id} keywords={[command.label]} disabled={!command.enabled}
-              {...commandAttributes(command)}
+              {...commandAttributes(command)} aria-label={undefined}
               className="flex cursor-default items-center justify-between gap-3 rounded px-2 py-1.5 aria-selected:bg-shell-hover aria-disabled:opacity-50"
-              onSelect={() => { close(); command.invoke(); }}>
-              {command.label}
+              onSelect={() => { flushSync(close); command.invoke(); }}>
+              {command.label}{' '}
               {command.shortcut && <kbd aria-hidden="true" className="text-shell-muted">{shortcutLabel(command.shortcut)}</kbd>}
             </Command.Item>
           ))}

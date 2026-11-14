@@ -4,7 +4,7 @@ import type {
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { scanStudio } from './fixtures/studioAccessibility';
+import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
   channel: 'chrome',
@@ -763,6 +763,23 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await chooseStep(page, 'conditions');
   await plans(page).getByRole('button', { name: activityLabel, exact: true }).click();
   await expect(plans(page).getByText('Done', { exact: true }).first()).toBeVisible();
+  await expectStudioMapContrast(page);
+  const mapAndSteps = page.locator('[data-map-canvas], [data-studio-focus-region="steps"]');
+  const vision = await page.context().newCDPSession(page);
+  try {
+    await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'achromatopsia' });
+    await expect(mapAndSteps).toHaveCount(2);
+    for (const region of await mapAndSteps.all()) {
+      for (const kind of ['Train', 'Evaluate']) {
+        const label = region.locator('[data-map-kind-label]').getByText(kind, { exact: true }).first();
+        await expect(label).toBeVisible();
+      }
+    }
+    await captureStudioWindow(page, info, 'train-evaluate-map-greyscale');
+  } finally {
+    await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'none' });
+    await vision.detach();
+  }
   await scanStudio(page, info, 'evaluate-runs');
   await tab(page, 'Model').click();
   await expect(page.getByRole('tabpanel', { name: 'Model', exact: true }).locator('[data-id="plant"]')).toBeVisible();

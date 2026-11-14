@@ -39,3 +39,37 @@ export async function expectVisibleFocus(control: Locator) {
   await expect(control).toHaveCSS('outline-style', 'solid');
   await expect(control).toHaveCSS('outline-width', '2px');
 }
+
+export async function expectStudioMapContrast(page: Page) {
+  const ratios = await page.locator('[data-map-canvas]').evaluate((map) => {
+    const probe = document.createElement('span');
+    map.append(probe);
+    const context = document.createElement('canvas').getContext('2d')!;
+    function luminance(color: string) {
+      probe.style.color = color;
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = getComputedStyle(probe).color;
+      context.fillRect(0, 0, 1, 1);
+      const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+      if (alpha !== 255) throw new Error(`Expected an opaque Studio color: ${color}`);
+      const channels = [red, green, blue].map((byte) => {
+        const value = byte / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    }
+    const surfaces = ['surface-main', 'surface-chrome'].map((name) => luminance(`var(--${name})`));
+    const tokens = [
+      ...['idle', 'neutral', 'warning', 'running', 'success', 'failure'].map((status) => `studio-status-${status}`),
+      'studio-kind-train', 'studio-kind-evaluate', 'shell-focus-color',
+    ];
+    const result = Object.fromEntries(tokens.map((name) => {
+      const color = luminance(`var(--${name})`);
+      const ratio = (surface: number) => (Math.max(color, surface) + 0.05) / (Math.min(color, surface) + 0.05);
+      return [name, Math.min(...surfaces.map(ratio))];
+    }));
+    probe.remove();
+    return result;
+  });
+  for (const [token, ratio] of Object.entries(ratios)) expect(ratio, token).toBeGreaterThanOrEqual(3);
+}

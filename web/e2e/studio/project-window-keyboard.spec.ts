@@ -55,7 +55,8 @@ async function palette(page: Page, id: string, label: string) {
   const dialog = page.getByRole('dialog', { name: 'Command Palette' });
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await page.keyboard.type(label);
-  const item = dialog.getByRole('option', { name: label, exact: true });
+  const item = dialog.getByRole('option').and(dialog.locator(`[data-command-id="${id}"]`));
+  await expect(item).toHaveAccessibleName(new RegExp(`^${label}(?: |$)`));
   await expect(item).toHaveAttribute('data-command-id', id);
   await expect(item).toBeEnabled();
   await page.keyboard.press('Enter');
@@ -772,6 +773,9 @@ test('the window commands, tab rail and selection history work without a pointer
 
   await page.keyboard.press('Meta+K');
   const dialog = page.getByRole('dialog', { name: 'Command Palette' });
+  await expect(dialog.getByRole('combobox')).toBeFocused();
+  await expect(dialog).toHaveJSProperty('open', true);
+  await command(page, 'activity').evaluate((button) => button.focus());
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await scanStudio(page, info, 'narrow-command-palette');
   await page.keyboard.press('Shift+Tab');

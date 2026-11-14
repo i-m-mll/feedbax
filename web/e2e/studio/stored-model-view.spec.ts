@@ -162,7 +162,7 @@ test('authors and reopens an addressed Model through the project history', async
   await model.focus();
   await page.keyboard.press('Meta+K');
   await filter.fill('Leave');
-  await expect(palette.getByRole('option', { name: 'Leave', exact: true })).toBeVisible();
+  await expect(palette.getByRole('option', { name: /^Leave\b/ })).toBeVisible();
   await filter.press('Escape');
   await model.focus();
   await page.keyboard.press('Meta+ArrowUp');

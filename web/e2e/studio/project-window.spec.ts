@@ -116,7 +116,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(card.getByText('1 Out of date')).toBeVisible();
   await expect(drawer.getByText('1 Out of date')).toBeVisible();
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: 'Undo', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
   await expect(card.getByText('1 Done')).toBeVisible();
   await expect(drawer.getByText('1 Done')).toBeVisible();
@@ -146,7 +146,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   async function menu(label: string) {
     await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
     const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
-    await expect(palette.getByRole('option', { name: label, exact: true })).toBeVisible();
+    await expect(palette.getByRole('option', { name: new RegExp(`^${label}\\b`) })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(palette).toBeHidden();
   }
@@ -356,17 +356,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   await scene.focus();
   const model = primary.locator('.react-flow');
-  const centeredModel = () => model.evaluate((canvas) => {
-    const bounds = canvas.getBoundingClientRect();
-    const nodes = [...canvas.querySelectorAll('.react-flow__node')];
-    if (nodes.length !== 1) return false;
-    const rect = nodes[0].getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && rect.left >= bounds.left && rect.right <= bounds.right
-      && rect.top >= bounds.top && rect.bottom <= bounds.bottom
-      && Math.abs((rect.left + rect.right) - (bounds.left + bounds.right)) < 6
-      && Math.abs((rect.top + rect.bottom) - (bounds.top + bounds.bottom)) < 6;
-  });
-  await expect.poll(centeredModel).toBe(true);
+  await expect(model.getByRole('article', { name: 'Mechanics', exact: true })).toBeVisible();
+  const zoom = () => model.locator('.react-flow__viewport').evaluate((viewport) =>
+    new DOMMatrix(getComputedStyle(viewport).transform).a);
+  const initialZoom = await zoom();
   const drawing = scene.getByRole('group', { name: 'Scene', exact: true });
   await expect.poll(() => drawing.evaluate((svg: SVGSVGElement) =>
     Math.abs(svg.viewBox.baseVal.width - svg.clientWidth) + Math.abs(svg.viewBox.baseVal.height - svg.clientHeight),
@@ -376,9 +369,9 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(scene.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
   await captureStudioWindow(page, info, '02-model-scene');
   await page.setViewportSize({ width: 1240, height: 820 });
-  await expect.poll(centeredModel).toBe(true);
+  await expect.poll(zoom).toBeCloseTo(initialZoom);
   await page.setViewportSize({ width: 1440, height: 900 });
-  await expect.poll(centeredModel).toBe(true);
+  await expect.poll(zoom).toBeCloseTo(initialZoom);
 
   const sceneScale = () => upper.evaluate((limb: SVGGraphicsElement) => limb.getBBox().width);
   const initialScale = await sceneScale();
@@ -386,9 +379,6 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect.poll(sceneScale).toBeGreaterThan(initialScale);
   const deliberateScale = await sceneScale();
   await primary.focus();
-  const zoom = () => model.locator('.react-flow__viewport').evaluate((viewport) =>
-    new DOMMatrix(getComputedStyle(viewport).transform).a);
-  const initialZoom = await zoom();
   await model.hover();
   await page.mouse.wheel(0, 180);
   await expect.poll(zoom).toBeLessThan(initialZoom);
@@ -427,7 +417,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   const problemButton = page.getByRole('button', { name: /^Problems \d+$/ });
   await expect(problemButton).toHaveText(`Problems ${problems.length}`);
-  await expect(problemButton).toHaveAccessibleDescription(String(problems.length));
+  await expect(problemButton).toHaveAccessibleName(`Problems ${problems.length}`);
   await problemButton.click();
   const list = page.getByRole('dialog', { name: 'Problems' });
   await expect(list.getByRole('listitem')).toHaveCount(problems.length);

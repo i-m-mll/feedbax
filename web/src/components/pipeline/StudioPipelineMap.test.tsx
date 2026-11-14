@@ -103,7 +103,7 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
     newSweepCommand: (id, subject) => bindStudioCommand('newSweep', () => onNewSweep(id), { subject }),
   });
   const card = within(screen.getByRole('article'));
-  const header = card.getByRole('button', { name: select(train.label) });
+  const header = card.getByRole('button', { name: 'Select reach Train', exact: true });
   const first = card.getByRole('button', { name: mark('rate 0.003 · seed 1') });
   const second = card.getByRole('button', { name: mark('rate 0.003 · seed 2') });
 
@@ -244,8 +244,8 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   expect(evaluation.getByText(studioCountOf(2, 6))).toBeTruthy();
   expect(view.container.querySelectorAll('path[stroke="currentColor"]')).toHaveLength(2);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
-  const evalRow = within(drawer.getByRole('button', { name: select(evalStep.label) }));
-  const reportRow = within(drawer.getByRole('button', { name: select(report.label) }));
+  const evalRow = within(drawer.getByRole('button', { name: /^Select perturbations Evaluate\b/ }));
+  const reportRow = within(drawer.getByRole('button', { name: /^Select summary Report\b/ }));
   fireEvent.click(card.getByRole('button', { name: mark('rate 0.003 · seed 1') }));
   expect(evaluation.getByRole('button', { name: mark('perturbation') }).getAttribute('data-map-focus')).toBe('downstream');
   expect(view.container.querySelectorAll('[data-map-emphasis="strong"]')).toHaveLength(2);

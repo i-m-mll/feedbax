@@ -102,7 +102,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
 
   async function command(name: 'Undo' | 'Redo') {
     await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-    await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name, exact: true }).click();
+    await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: new RegExp(`^${name}\\b`) }).click();
   }
   await expect(mass).toHaveValue(/^2(?:\.0)?$/);
   await command('Undo');

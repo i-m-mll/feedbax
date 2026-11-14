@@ -68,6 +68,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await expect(mark(included)).toBeInViewport();
   await expect(mark(included)).not.toHaveCSS('box-shadow', 'none');
   await expect(mark(included)).toHaveAccessibleName(/ · Not run$/);
+  await expect(page.getByRole('tooltip')).toHaveText(/ · Not run$/);
   await page.keyboard.press('Enter');
   await expect(mark(included)).toHaveAttribute('aria-pressed', 'true');
   await expect(child.locator('[data-map-focus="downstream"]')).toHaveCount(1);

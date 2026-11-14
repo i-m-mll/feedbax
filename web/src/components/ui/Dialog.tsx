@@ -23,6 +23,7 @@ export function Dialog({
   manageFocus = false,
 }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   function tabbable(container: HTMLElement) {
     return [...container.querySelectorAll<HTMLElement>(
       'button, input, select, textarea, a[href], summary, [tabindex]',
@@ -32,7 +33,8 @@ export function Dialog({
 
   useLayoutEffect(() => {
     const container = panel.current;
-    if (!manageFocus || !container) return;
+    const modal = dialog.current;
+    if (!manageFocus || !container || !modal) return;
     const previous = document.activeElement;
     const returnTargets: HTMLElement[] = [];
     for (let candidate = previous; candidate; candidate = candidate.parentElement) {
@@ -40,9 +42,12 @@ export function Dialog({
         returnTargets.push(candidate);
       }
     }
+    modal.showModal();
     (container.querySelector<HTMLElement>('[data-dialog-autofocus]') ?? tabbable(container)[0] ?? container).focus();
     return () => {
-      if (!container.contains(document.activeElement) && document.activeElement !== document.body) return;
+      const restore = container.contains(document.activeElement) || document.activeElement === document.body;
+      modal.close();
+      if (!restore) return;
       returnTargets.find((target) => target.isConnected && target.getClientRects().length > 0 &&
         !target.matches(':disabled') && !target.closest('[hidden], [inert]'))?.focus();
     };
@@ -60,10 +65,13 @@ export function Dialog({
   }, [closeOnEscape, manageFocus, onClose]);
 
   return (
-    <div
+    <dialog
+      ref={dialog}
+      open={!manageFocus}
       className={clsx(
-        'z-50',
-        className ?? 'fixed inset-0 flex items-center justify-center bg-black/30'
+        'z-50 m-0 h-full max-h-none w-full max-w-none border-0 p-0 text-inherit backdrop:bg-transparent',
+        className ?? 'fixed inset-0 flex items-center justify-center bg-black/30',
+        className && 'bg-transparent',
       )}
       onClick={(event) => {
         if (closeOnBackdrop && event.target === event.currentTarget) onClose();
@@ -71,6 +79,7 @@ export function Dialog({
       role="dialog"
       aria-modal="true"
       aria-label={ariaLabel}
+      onCancel={manageFocus ? (event) => event.preventDefault() : undefined}
     >
       <div className={panelClassName} ref={panel} tabIndex={manageFocus ? -1 : undefined}
         onKeyDown={manageFocus ? (event) => {
@@ -85,6 +94,6 @@ export function Dialog({
         } : undefined}>
         {children}
       </div>
-    </div>
+    </dialog>
   );
 }
