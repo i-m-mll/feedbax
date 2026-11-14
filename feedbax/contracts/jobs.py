@@ -220,6 +220,11 @@ class StudioProjectWindowMapRow(StrictModel):
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
+class StudioBestRankGroup(StrictModel):
+    coordinates: dict[str, str]
+    ranks: list[str]
+
+
 class StudioProjectWindowMapSubset(StrictModel):
     terms: SubsetTerms
     count: int
@@ -227,6 +232,7 @@ class StudioProjectWindowMapSubset(StrictModel):
     document: str | None
     members: list[StudioSavedTrainKey] | None = Field(default=None, exclude_if=lambda value: value is None)
     ranks: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    rank_groups: list[StudioBestRankGroup] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class StudioProjectWindowMapInput(StrictModel):

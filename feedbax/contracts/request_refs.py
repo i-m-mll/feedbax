@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from math import isfinite
 from typing import Annotated, ClassVar, Literal, get_args
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints,
 from feedbax.checkpoint_coordinates import (
     MAX_CHECKPOINT_COORDINATE, MAX_CHECKPOINT_MEMBERS, cadence_coordinates, finite_coordinates,
 )
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 
 RequestKind = Literal["train", "evaluate", "analyze", "render", "report"]
 RequestId = Annotated[
@@ -187,6 +189,7 @@ class BestRank(ReferenceValue):
     count: int = Field(gt=0, strict=True)
     rank: int = Field(gt=0, strict=True)
     candidates: tuple[BestCandidate, ...]
+    group: dict[Name, Name] = Field(default_factory=dict, exclude_if=lambda group: not group)
 
     @model_validator(mode="after")
     def _slots(self):
@@ -198,7 +201,11 @@ class BestRank(ReferenceValue):
 
     @property
     def key(self) -> str:
-        return f"rank-{self.rank}"
+        rank = f"rank-{self.rank}"
+        if not self.group:
+            return rank
+        group_digest = sha256(canonical_json_v2_bytes(self.group)).hexdigest()
+        return f"{rank}-{group_digest}"
 
     def winner(self, scores: Sequence[float]) -> int:
         if len(scores) != len(self.candidates) or any(not isfinite(score) for score in scores):

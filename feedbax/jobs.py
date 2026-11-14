@@ -1118,11 +1118,14 @@ def _best_subject(job: dict[str, Any]) -> StudioBoundBestSubject | None:
         chosen = rank.candidates[best_bound_rank(rank, binding)]
         completion = binding["completion"]
         _, provenance = evaluation_subject_provenance(binding)
-        digest = sha256(canonical_json_v2_bytes({
+        selection = {
             "metric": rank.metric, "order": rank.order, "count": rank.count,
             "candidates": [item.model_dump(mode="json") for item in rank.candidates],
             "evidence": provenance.metadata["best_rank"]["candidates"],
-        })).hexdigest()
+        }
+        if rank.group:
+            selection["group"] = rank.group
+        digest = sha256(canonical_json_v2_bytes(selection)).hexdigest()
         return StudioBoundBestSubject(
             key=rank.key, variant=chosen.variant, row=chosen.row,
             consumer_job_id=job["id"],

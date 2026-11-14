@@ -12,11 +12,13 @@ from types import MappingProxyType
 from typing import NotRequired, TypedDict
 
 from feedbax.compiler.trial_execution import evaluation_conditions
+from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobStatus,
+    StudioBestRankGroup,
     StudioPlanRequest,
     StudioProjectWindowMap,
     StudioProjectWindowMapCoordinate,
@@ -263,6 +265,10 @@ class ProjectPlanRead:
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
                             ranks=list(subset.ranks),
+                            rank_groups=[
+                                StudioBestRankGroup(coordinates=dict(group.coordinates), ranks=list(group.ranks))
+                                for group in subset.rank_groups if group.coordinates
+                            ],
                             document=subset.document,
                             members=[
                                 StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in subset.members
@@ -433,7 +439,10 @@ class ProjectPlanService:
         by_rank = {member.key: member for member in bound.values()}
         if (
             bound.keys() != attempts or by_rank.keys() != set(subset.ranks)
-            or len({item.selection_sha256 for item in bound.values()}) != 1
+            or any(
+                len({by_rank[key].selection_sha256 for key in group.ranks}) != 1
+                for group in subset.rank_groups
+            )
         ):
             raise ProjectFolderInvalid("The chosen attempts do not share one complete Best selection.")
         frozen = subset_to_rows(subset.terms, (
@@ -454,20 +463,35 @@ class ProjectPlanService:
             functions=self.folders.functions, python_tasks=self.folders.python_tasks,
         )
         selected = {
-            run.key: run.inputs["subject"] for run in after.runs
+            run.key: run for run in after.runs
             if (run.key.variant, run.key.step) == (body.variant, body.step)
         }
         before_rows = {
-            run.key for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
+            run.key: run for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
         }
-        if selected.keys() != before_rows or any(
-            binding.producer is None or binding.member.key not in by_rank
-            or (binding.producer.variant, binding.producer.row)
-            != (by_rank[binding.member.key].variant, by_rank[binding.member.key].row)
-            or binding.member.reference.request_id != by_rank[binding.member.key].producer_request_id
-            for binding in selected.values()
-        ):
-            raise ProjectFolderInvalid("The selected producer rows cannot preserve this Evaluate definition.")
+        error = "The selected producer rows cannot preserve this Evaluate definition."
+        if selected.keys() != before_rows.keys():
+            raise ProjectFolderInvalid(error)
+        for key, run in selected.items():
+            binding = run.inputs["subject"]
+            previous = before_rows[key]
+            member = by_rank.get(binding.member.key)
+            if (
+                member is None or binding.producer is None
+                or (binding.producer.variant, binding.producer.row) != (member.variant, member.row)
+                or not isinstance(binding.member.reference, ProductRef)
+                or binding.member.reference.request_id != member.producer_request_id
+                or any(
+                    axis not in run.coordinates or run.coordinates[axis].value_id != coordinate.value_id
+                    or not same_typed_value(run.coordinates[axis].value, coordinate.value)
+                    for axis, coordinate in previous.coordinates.items()
+                )
+                or not same_typed_value(
+                    json.loads(before.requests[previous.request_id])["spec"],
+                    json.loads(after.requests[run.request_id])["spec"],
+                )
+            ):
+                raise ProjectFolderInvalid(error)
         return StudioSubsetToRowsEdit(revision=body.revision, files=[file])
 
     def _evaluation_result(
