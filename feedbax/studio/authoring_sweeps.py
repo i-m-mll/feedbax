@@ -134,13 +134,15 @@ class TrainFieldSweeps:
         if len(self.covering) != 1:
             return None
         name, axis = self.covering[0]
+        if isinstance(axis, NamedAxis) and not self.may_edit_member(axis):
+            return None
         if isinstance(axis, RangeAxis):
             return StudioSweepRange(kind="range", id=name, rule=axis.range, can_list=self._can_list(axis))
         if isinstance(axis, SampledAxis):
             return StudioSweepSampler(
                 kind="sampler", id=name, rule=axis.sampler, can_list=axis.draws is not None and self._can_list(axis),
             )
-        editable = isinstance(axis, NamedAxis) and self.may_edit_member(axis)
+        editable = isinstance(axis, NamedAxis)
         if isinstance(axis, ListedAxis):
             axis = self.to_list(axis)
         if not isinstance(axis, NamedAxis) or not axis.values:

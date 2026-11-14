@@ -546,7 +546,9 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const rows = initial.window_map!.rows.filter(({ key }) => key.step === 'evaluate');
   expect(train).toHaveLength(6);
   expect(rows).toHaveLength(4);
-  expect(initial.window_map?.problems).toEqual([]);
+  expect(initial.window_map?.problems).toHaveLength(4);
+  expect(initial.window_map?.problems.every(({ step, path, code }) =>
+    step === 'evaluate' && path === '/inputs/subject' && code === 'cannot_run')).toBe(true);
   expect(rows.map(({ coordinates }) => [coordinates['learning-rate'].label, coordinates.task.label])).toEqual([
     ['Slow', 'Short Task'], ['Slow', 'Long Task'], ['Fast', 'Short Task'], ['Fast', 'Long Task'],
   ]);
@@ -561,7 +563,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
   await expect(pivot.getByRole('rowheader')).toHaveText(['Slow · 0.001', 'Fast · 0.003']);
-  await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(4);
+  await expect(pivot.getByRole('button', { name: /Can't run$/ })).toHaveCount(4);
 
   await select(page, 'train');
   await launchRows(page, projectPath, train.map(({ key }) => key));
@@ -593,12 +595,13 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
   await rail.getByRole('tab', { name: 'Model', exact: true }).click();
-  await page.getByRole('tabpanel', { name: 'Model', exact: true })
-    .getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await model.getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   await expect(mass).toHaveAccessibleDescription('Document · reach-model');
   const rate = primary(page).getByRole('group', { name: 'learning-rate', exact: true });
   await rate.getByRole('button', { name: 'Fast · 0.003', exact: true }).click();
+  await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
@@ -613,6 +616,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const rowButton = (label: string) => runs(page).getByRole('button', { name: label, exact: true });
   await rowButton(picked[0].label).click();
   await rowButton(picked[1].label).click({ modifiers: ['Shift'] });
+  await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '3');
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(4);

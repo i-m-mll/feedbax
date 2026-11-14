@@ -281,6 +281,12 @@ def model_fields(
                    for axis, values in body.axes.items())
         }:
             raise ProjectFolderInvalid("The selected sweep values no longer address these rows.")
+        if not body.axes and axis is not None and any(
+            source.kind == "sweep_value"
+            for field_view in fields if field_view.address == body.address
+            for source in field_view.sources
+        ):
+            raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
     result = prepare_numeric_field(
         field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
         rows=tuple(body.rows) if evaluate is None else (),

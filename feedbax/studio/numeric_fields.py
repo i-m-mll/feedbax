@@ -279,7 +279,7 @@ def _prepare(
             raise ValueError("Choose a draw with scalar duration parameters.")
         seed = edit.seed if edit.seed is not None else previous.sampler.seed if isinstance(previous, SampledAxis) else 0
         return owner.write_axis(_sample_axis(value, field, functions, period, seed, path))
-    if covered:
+    if covered and selection is None:
         raise ValueError("Choose Value from the kind menu to keep one sweep member.")
     if field.duration and selection is None:
         return field.duration_value(value)
