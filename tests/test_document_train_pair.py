@@ -20,7 +20,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import PlanRequests, ProjectPlanMemo, compile_project
+from feedbax.contracts.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -323,6 +323,50 @@ def _two_optimizer_rates(raw):
         name: {"patches": {path: {"value": value}}}
         for name, value in (("low", 0.001), ("high", 0.01))
     }}}}
+
+
+def test_shared_trial_resolution_tracks_document_aliases_and_row_edits(authored):
+    raw = document_project(authored)
+    _two_optimizer_rates(raw)
+    raw["documents"]["task-alias"] = {
+        "schema": "test.alias", "payload": {"nested": {"document": "task"}},
+    }
+    step = raw["steps"]["train"]
+    step["base"]["inline"]["trial_documents"]["task"] = {"document": "task-alias", "pointer": "/nested"}
+    low, high = (RunKey("default", "train", f"rate={name}") for name in ("low", "high"))
+    memo = ProjectPlanMemo()
+
+    def compile_both():
+        project = Project.model_validate(raw)
+        fast = compile_project(project, memo=memo)
+        tracked = compile_project(project, source_runs=(low, high))
+        assert fast == replace(tracked, selected_definitions={})
+        return fast, tracked
+
+    first, _ = compile_both()
+    assert not first.diagnostics, first.diagnostics
+    assert compile_both()[0] == first
+    assert all({"task-alias", "task"} <= row.document_uses for row in first.runs)
+
+    raw["documents"]["task"]["payload"]["id"] = "edited-task"
+    edited, tracked = compile_both()
+    assert {run.request_id for run in first.runs}.isdisjoint(edited.requests)
+    assert tracked.sources[high]["/payload/trial_documents/task/id"].name == "task"
+
+    values = step["sweep"]["axes"]["rate"]["values"]
+    values["high"]["patches"]["documents.task.payload.id"] = {"value": "row-task"}
+    patched, tracked = compile_both()
+    assert not patched.diagnostics
+    assert patched.runs[0].request_id == edited.runs[0].request_id
+    assert patched.runs[1].request_id != edited.runs[1].request_id
+    assert tracked.sources[high]["/payload/trial_documents/task/id"].kind == "sweep_value"
+
+    values["high"]["patches"]["training_config.learning_rate"] = {"value": 0.1, "op": "add"}
+    refused, _ = compile_both()
+    assert [run.key for run in refused.runs] == [low]
+    assert [(problem.row, problem.path) for problem in refused.diagnostics] == [
+        (high.row, "payload.training_config.learning_rate"),
+    ]
 
 
 def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, monkeypatch):

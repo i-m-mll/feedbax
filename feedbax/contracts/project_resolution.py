@@ -126,6 +126,61 @@ class SelectedRow:
 
 
 @dataclass(frozen=True)
+class _ResolvedTrial:
+    authored: dict[str, Any]
+    payload: Payload
+    documents: frozenset[str]
+    document_ids: dict[str, str]
+    document_pointers: dict[str, str]
+
+
+@dataclass
+class _TrialResolution:
+    """Successful untracked trial resolution for one step and variant."""
+
+    previous: _ResolvedTrial | None = None
+
+    def contains(self, payload: Any) -> bool:
+        return self.previous is not None and self.previous.payload is payload
+
+    def inline(
+        self, documents: _Documents, payload: dict[str, Any], document_ids: dict[str, str],
+        document_pointers: dict[str, str],
+    ) -> Payload:
+        result = {}
+        for key, value in payload.items():
+            path = f"payload.{key}"
+            if key != "trial_documents" or not isinstance(value, dict):
+                result[key] = documents.inline(
+                    value, path, document_ids=document_ids, document_pointers=document_pointers,
+                )
+                continue
+            trial = self.previous
+            if trial is None or trial.authored is not value:
+                uses = documents.used
+                documents.used = set()
+                ids: dict[str, str] = {}
+                pointers: dict[str, str] = {}
+                try:
+                    resolved = documents.inline(
+                        value, path, document_ids=ids, document_pointers=pointers,
+                    )
+                    assert isinstance(resolved, dict)
+                    trial = _ResolvedTrial(value, resolved, frozenset(documents.used), ids, pointers)
+                finally:
+                    documents.used = uses
+                self.previous = trial
+            else:
+                for document in trial.documents:
+                    documents.read_document(document)
+            documents.used.update(trial.documents)
+            document_ids.update(trial.document_ids)
+            document_pointers.update(trial.document_pointers)
+            result[key] = trial.payload
+        return result
+
+
+@dataclass(frozen=True)
 class BaseReaders:
     """Read exact historical payloads and external bytes from caller-owned sources.
 
@@ -908,15 +963,21 @@ class _Resolver:
 
     def finish(
         self, name: str, state: _StepState, *, check_requires: bool = True, partial_figures: bool = False,
-        documents: _Documents | None = None,
+        documents: _Documents | None = None, trial_resolution: _TrialResolution | None = None,
     ) -> ResolvedStep:
         if documents is None:
             documents = self.row_documents(name, state, partial_figures=partial_figures)
         document_ids = {"payload": state.root_document} if state.root_document is not None else {}
         document_pointers: dict[str, str] = {}
-        payload = documents.inline(
-            state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
-        )
+        if (
+            trial_resolution is not None and isinstance(state.payload, dict)
+            and not state.row_document_patches and state.origins is None and not partial_figures
+        ):
+            payload = trial_resolution.inline(documents, state.payload, document_ids, document_pointers)
+        else:
+            payload = documents.inline(
+                state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
+            )
         if unused := state.row_document_patches.keys() - documents.used:
             document = min(unused)
             raise _Problem(
@@ -1037,6 +1098,7 @@ class StepTemplate:
 
     def resolve(
         self, row: ExpandedRow | None = None, *, include_sources: bool = False, partial_figures: bool = False,
+        trial_resolution: _TrialResolution | None = None,
     ) -> ResolvedStep | ProjectDiagnostic:
         try:
             state = self.composition._state
@@ -1044,7 +1106,9 @@ class StepTemplate:
                 state = replace(state, origins=None)
             if row is not None:
                 state = self._resolver.apply_row(self.composition.name, state, row)
-            return self._resolver.finish(self.composition.name, state, partial_figures=partial_figures)
+            return self._resolver.finish(
+                self.composition.name, state, partial_figures=partial_figures, trial_resolution=trial_resolution,
+            )
         except _Problem as error:
             if row is not None:
                 return replace(error.diagnostic, row=row.id)
