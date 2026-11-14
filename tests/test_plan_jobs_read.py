@@ -170,7 +170,8 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert steps["fit"]["status_counts"] == {"not_run": 2}
     assert steps["broken"]["status_counts"] == {}
     assert steps["invalid"]["status_counts"] == {"cannot_run": 1}
-    assert sum(problem["step"] == "invalid" for problem in window["problems"]) > 1
+    [invalid] = [problem for problem in window["problems"] if problem["step"] == "invalid"]
+    assert (invalid["path"], invalid["code"]) == ("payload.trial_documents", "invalid_payload")
     [subject] = steps["evaluate"]["inputs"]
     assert subject["source_step_id"] == "fit"
     assert subject["subset"]["terms"]["rows"] == ["seed=a"]
