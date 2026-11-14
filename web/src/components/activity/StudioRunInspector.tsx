@@ -83,7 +83,7 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
   const fields = (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
-        <LossPlot stages={[{ label: job.label, offset: 0, completed: 0, points: data.loss }]} />
+        <LossPlot series={[{ stages: [{ label: job.label, offset: 0, completed: 0, points: data.loss }] }]} />
         <RunScene event={data.trajectory} retry={retry} />
       </div>
       <section aria-label={studioName('log')} className="min-w-0 space-y-1">

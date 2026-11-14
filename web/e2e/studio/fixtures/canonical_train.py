@@ -270,15 +270,30 @@ def observe_history(home: Path, project: str, revision: str):
     history = view.history[RunKey("default", "train", "default")]
     snapshot = host.jobs_snapshot(project=project, start_host=False)
     jobs = {job["id"]: job for job in snapshot["jobs"]}
+    events = host.events(projects=(project,), limit=1024)["events"]
     output = {}
+    loss = {}
     for role, result in (("current", history.result), ("previous", history.previous)):
-        assert result is not None
+        if result is None:
+            output[role] = None
+            continue
         job = jobs[result.job_id]
         completion = job["outcome"]["completion"]
         verify_bound_training_completion(completion)
         assert completion["request_id"] == result.request_id
+        assert completion["producer_job_id"] == result.job_id
         assert completion["receipt"] == result.receipt.model_dump(mode="json")
         output[role] = result.model_dump(mode="json")
+        assert job["continues"] is None and result.progress is not None
+        assert completion["checkpoint"]["completed_updates"] == result.progress.completed_updates
+        loss[role] = [
+            {"update": interval["end_inclusive"], "value": interval["metrics"]["train_loss"]["mean"]}
+            for event in events
+            if event["job_id"] == result.job_id and event["kind"] == "progress"
+            and (interval := event["data"].get("metric_interval")) is not None
+        ]
+        assert loss[role][-1]["update"] == result.progress.completed_updates
+    output["loss"] = loss
     ref = view.jobs.plan_ref
     assert ref is not None
     store = ImmutableArtifactBlobProvider(view.settled.store_path)

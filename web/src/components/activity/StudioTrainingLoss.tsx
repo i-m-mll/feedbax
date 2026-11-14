@@ -3,7 +3,7 @@ import type { StudioActivityJob, StudioJobEvent } from '@/generated/studioContra
 import { useElementSize } from '@/hooks/useElementSize';
 import type { ObjectiveTrack } from './heldOutObjective';
 import { PlotTrack, formatTrainingLoss } from './studioPlot';
-import { studioAccessibleName, studioFormat, studioName } from './studioVocabulary';
+import { studioAccessibleName, studioFormat, studioName, studioReason } from './studioVocabulary';
 
 type Attempt = Pick<StudioActivityJob, 'job_id' | 'continues'>;
 
@@ -20,6 +20,13 @@ export type LossStage = {
   offset: number;
   completed: number;
   points: LossObservation[];
+};
+
+export type LossResultName = 'currentResult' | 'previousResult';
+
+export type LossSeries = {
+  result?: { name: LossResultName; jobId: string };
+  stages: LossStage[];
 };
 const lossIntervalSchema = z.object({
   start_exclusive: z.number().int().nonnegative(),
@@ -107,23 +114,31 @@ export function studioRunHistory(
   };
 }
 
-export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; objectives?: ObjectiveTrack[] }) {
+export function LossPlot({ series, objectives = [] }: { series: LossSeries[]; objectives?: ObjectiveTrack[] }) {
   const { ref, width } = useElementSize<HTMLElement>();
-  const chained = stages.length > 1;
-  const samples = stages.flatMap((stage) => stage.points.map((point) => ({
-    ...point, stage, update: stage.offset + point.end,
-  })));
+  const primary = series[0];
+  const chained = series.some(({ stages }) => stages.length > 1);
+  const tracks = series.map(({ result, stages }) => ({
+    result,
+    dashed: result?.name === 'previousResult' && series.length > 1,
+    samples: stages.flatMap((stage) => stage.points.map((point) => ({
+      ...point, stage, update: stage.offset + point.end,
+    }))),
+  }));
+  const samples = tracks.flatMap((track) => track.samples);
   const ranges = samples.flatMap((sample) => sample.interval ? [{ ...sample, ...sample.interval }] : []);
   const heldOut = objectives.flatMap(({ segments }) => segments.flat());
   const hasPoints = samples.length > 0 || heldOut.length > 0;
-  const latest = samples.at(-1);
+  const latest = tracks[0]?.samples.at(-1);
   const plotWidth = width || 320;
   const plotHeight = 148;
   const left = 58;
   const right = Math.max(left + 1, plotWidth - 16);
   const top = 12;
   const bottom = plotHeight - 26;
-  const stageEnd = stages.reduce((end, { offset, completed }) => Math.max(end, offset + completed), latest?.update ?? 0);
+  const stageEnd = series.flatMap(({ stages }) => stages)
+    .reduce((end, { offset, completed }) => Math.max(end, offset + completed),
+      samples.reduce((end, sample) => Math.max(end, sample.update), 0));
   const endUpdate = heldOut.reduce((end, { update }) => Math.max(end, update), stageEnd);
   const x = (update: number) => left + (right - left) * update / Math.max(1, endUpdate);
   const bounds = heldOut.reduce(([min, max], { value }) =>
@@ -145,7 +160,7 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
     <section ref={ref} aria-label={studioName('loss')} className="min-w-0 space-y-1">
       <div className="flex justify-between gap-2 text-xs font-medium">
         <h4>{studioName('loss')}</h4>
-        {latest && (
+        {latest && !primary?.result && (
           <span className="tabular-nums" aria-description={studioFormat('lastLossAtUpdate', { end: latest.update })}>
             {formatTrainingLoss(latest.last)}
           </span>
@@ -171,33 +186,35 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
               textAnchor={update === endUpdate ? 'end' : update === 0 ? 'start' : 'middle'}>{update.toLocaleString()}</text>
           ))}
         </g>
-        {hasPoints && stages.slice(1).map(({ offset }) => (
+        {hasPoints && [...new Set(series.flatMap(({ stages }) => stages.slice(1).map(({ offset }) => offset)))].map((offset) => (
           <line key={offset} x1={x(offset)} x2={x(offset)} y1={top} y2={bottom}
             className="text-shell-divider" stroke="currentColor" strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke" />
         ))}
-        {ranges.map(({ update, end, start, count, min, max, stage, jobId }) => (
-          <line
-            key={update}
-            data-attempt={jobId}
-            x1={x(update)}
-            x2={x(update)}
-            y1={y(min)}
-            y2={y(max)}
-            className="text-shell-foreground opacity-50"
-            stroke="currentColor"
-            vectorEffect="non-scaling-stroke"
-          >
-            <title>{[
-              studioFormat('lossInterval', {
-                start: stage.offset + start + 1, end: update, count,
-                min: formatTrainingLoss(min), max: formatTrainingLoss(max),
-              }),
-              chained && studioFormat('lossStepSample', { step: stage.label, start: start + 1, end }),
-            ].filter(Boolean).join(' · ')}</title>
-          </line>
+        {tracks.map(({ result, dashed, samples }) => (
+          <g key={result?.name ?? 'loss'} data-result-attempt={result?.jobId}
+            role={result && 'group'} aria-label={result && studioName(result.name)}>
+            {samples.map(({ update, end, interval, value, stage, jobId }) => {
+              if (!interval && !result) return null;
+              const { start, count, min, max } = interval ?? { start: end - 1, count: 1, min: value, max: value };
+              return (
+                <line key={update} data-attempt={jobId} data-update={result && update} data-loss={result && value}
+                  x1={x(update)} x2={x(update)} y1={y(min)} y2={y(max)}
+                  className="text-shell-foreground opacity-50" stroke="currentColor"
+                  strokeDasharray={dashed ? '4 3' : undefined} vectorEffect="non-scaling-stroke">
+                  <title>{[
+                    studioFormat('lossInterval', {
+                      start: stage.offset + start + 1, end: update, count,
+                      min: formatTrainingLoss(min), max: formatTrainingLoss(max),
+                    }),
+                    chained && studioFormat('lossStepSample', { step: stage.label, start: start + 1, end }),
+                  ].filter(Boolean).join(' · ')}</title>
+                </line>
+              );
+            })}
+            <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} dashed={dashed} />
+          </g>
         ))}
-        <PlotTrack points={samples.map(({ update, value }) => [x(update), y(value)])} />
         {objectives.map(({ id, label, segments }, index) => (
           <g key={id} role="group" aria-label={studioAccessibleName('objective', label)} style={{ color: objectiveColor(index) }}>
             {segments.map((segment) => (
@@ -224,15 +241,24 @@ export function LossPlot({ stages, objectives = [] }: { stages: LossStage[]; obj
         {objectives.length > 0 && <ul aria-label={studioName('objective')} className="mr-auto flex flex-wrap gap-x-3">
           {objectives.map(({ id, label }, index) => <li key={id} style={{ color: objectiveColor(index) }}>{label}</li>)}
         </ul>}
-        {chained && (
+        {chained && !primary?.result && (
           <ol aria-label={studioName('trainSteps')} className="mr-auto flex flex-wrap gap-x-3">
-            {stages.map(({ label, offset, completed }) => (
+            {primary.stages.map(({ label, offset, completed }) => (
               <li key={offset}>
                 {label}{completed > 0 && ` ${offset + 1}–${offset + completed}`}
               </li>
             ))}
           </ol>
         )}
+        {primary?.result && <ul aria-label={studioName('loss')} className="mr-auto flex flex-wrap gap-x-3">
+          {tracks.map(({ result, dashed, samples }) => result && (
+            <li key={result.name} className="flex items-center gap-1">
+              <span aria-hidden="true" className={`w-4 border-t-2 ${dashed ? 'border-dashed' : ''}`} />
+              {studioName(result.name)}{samples.length === 0 &&
+                <span role="status">{studioReason('unavailable', studioName('loss'))}</span>}
+            </li>
+          ))}
+        </ul>}
         <span>{studioName(chained ? 'cumulativeUpdates' : 'updates')}</span>
       </div>
     </section>
