@@ -84,6 +84,8 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const host = await request.get('/api/jobs');
+  expect(host.ok(), await host.text()).toBe(true);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const card = page.getByRole('article', { name: 'Train train' });
@@ -98,17 +100,23 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   const activityRow = activity.getByRole('listitem').filter({
     has: page.getByRole('button', { name: `Train ${snapshot.project_id} train`, exact: true }),
   });
+  await expect(table.getByText('Not run', { exact: true })).toBeVisible();
+  await expect(runButton).toBeEnabled();
+  const runsPanel = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  await runsPanel.focus();
+  await page.keyboard.press('Tab');
+  await expect(runButton).toBeFocused();
   let submissions = 0;
   page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname === projectPath + '/train-runs') submissions += 1;
   });
-  const run = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === `${projectPath}/train-runs`);
-  await runButton.press('Enter');
+  const run = page.waitForRequest((request) => request.method() === 'POST'
+    && new URL(request.url()).pathname === `${projectPath}/train-runs`);
+  await page.keyboard.press('Enter');
   await expect(runButton).toBeFocused();
   await expect(runButton).toBeDisabled();
   await page.keyboard.press('Enter');
-  expect((await run).status()).toBe(202);
+  expect((await (await run).response())!.status()).toBe(202);
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(runButton).toBeFocused();
   expect(submissions).toBe(1);

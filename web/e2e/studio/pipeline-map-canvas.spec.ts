@@ -173,11 +173,15 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await mapStep(page, 'train').press('Enter');
   await expect(mark(included)).toHaveAccessibleName(/ · Done$/, { timeout: 18_000 });
   await expect(mark(excluded)).toHaveAccessibleName(/ · Not run$/);
-  const done = mark(included).locator('[data-run-status-mark="succeeded"] path');
-  const idle = mark(excluded).locator('[data-run-status-mark="not_run"] path');
+  const done = mark(included).locator('[data-run-status-mark="succeeded"] svg');
+  const idle = mark(excluded).locator('[data-run-status-mark="not_run"] svg');
   await expect(done).toBeVisible();
   await expect(idle).toBeVisible();
-  expect(await done.getAttribute('d')).not.toBe(await idle.getAttribute('d'));
+  const donePath = done.locator('path');
+  const idlePath = idle.locator('path');
+  await expect(donePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
+  await expect(idlePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
+  expect(await donePath.getAttribute('d')).not.toBe(await idlePath.getAttribute('d'));
   await expect(child.getByText('2 Not run', { exact: true })).toBeVisible();
   await expect(page.getByRole('log', { name: 'Status' }).getByText(/^Train · train · seed=.+: Done$/)).toHaveCount(1);
   const vision = await page.context().newCDPSession(page);
