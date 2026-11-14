@@ -4,6 +4,7 @@ import type {
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
   channel: 'chrome',
@@ -750,7 +751,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
 });
 
 test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request }, info) => {
-  test.setTimeout(65_000);
+  test.setTimeout(85_000);
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
     (await runSavedEvaluation(page, request, info))!;
   const labels = new Map(completed.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
@@ -758,10 +759,22 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   expect(conditions).toHaveLength(2);
   const activityRun = conditions[1];
   const activityLabel = labels.get(JSON.stringify(activityRun.key))!;
+  await chooseStep(page, 'conditions');
+  await plans(page).getByRole('button', { name: activityLabel, exact: true }).click();
+  await expect(plans(page).getByText('Done', { exact: true }).first()).toBeVisible();
+  await scanStudio(page, info, 'evaluate-runs');
+  await tab(page, 'Model').click();
+  await expect(page.getByRole('tabpanel', { name: 'Model', exact: true }).locator('[data-id="plant"]')).toBeVisible();
+  await scanStudio(page, info, 'evaluate-model');
+  await tab(page, 'Task').click();
+  await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+  await scanStudio(page, info, 'evaluate-task');
+  await chooseStep(page, 'finite');
   await footer(page).getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const openActivityRun = activity.getByRole('button').filter({ has: page.getByText(activityLabel, { exact: true }) });
   await expect(openActivityRun).toHaveAccessibleName(/^Evaluate/);
+  await scanStudio(page, info, 'evaluate-activity');
   const activityReplay = page.waitForResponse((response) => {
     const submitted = response.request();
     if (submitted.method() !== 'POST' || new URL(response.url()).pathname !== replayPath) return false;
@@ -782,6 +795,8 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   });
   await expect(activity).toBeHidden();
   await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeFocused();
+  await expect(footer(page).getByRole('slider', { name: 'Playback Position' })).toBeVisible();
+  await scanStudio(page, info, 'evaluate-scene');
   const replayRow = (row: StudioSavedEvaluationRow) => showTrial(page, replayPath, row, labels.get(JSON.stringify(row.key))!);
   const replays = new Map<string, WorkspaceReplayTrial>();
   for (const row of single) {

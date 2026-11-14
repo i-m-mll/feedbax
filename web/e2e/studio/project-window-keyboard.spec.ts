@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, ObjectiveDocument, PythonTaskSelection, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
   trace: 'off',
@@ -659,7 +660,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   for (const step of ['alpha', 'beta', 'gamma', 'other']) expect(plan[step].request_id).toEqual(afterShared[step].request_id);
 });
 
-test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }) => {
+test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }, info) => {
+  test.setTimeout(50_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const { snapshot } = await seedManagedProject(request, [
     model, task, objective, train, successor, ...alternateModelFiles([model, task, objective, train], 'third'),
@@ -671,6 +673,8 @@ test('the window commands, tab rail and selection history work without a pointer
   await page.keyboard.press('F6');
   await expect(region(page, 'map')).toBeFocused();
   await activate(page, mapStep(page, 'train'));
+  await expect(page.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
+  await scanStudio(page, info, 'train-runs');
   await activate(page, mapStep(page, 'successor'));
   await activate(page, mapStep(page, 'third'));
 
@@ -730,6 +734,21 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(region(page, 'inspector')).toHaveCount(0);
   await page.keyboard.press('Alt+Meta+0');
   await expect(region(page, 'inspector')).toBeFocused();
+  await scanStudio(page, info, 'train-model-inspector');
+  const trainTab = (name: string) => page.getByRole('tabpanel', { name, exact: true });
+  await page.keyboard.press('Meta+3');
+  await expect(trainTab('Task').getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+  await scanStudio(page, info, 'train-task');
+  await page.keyboard.press('Meta+4');
+  await expect(trainTab('Objective').getByRole('table')).toBeVisible();
+  await scanStudio(page, info, 'train-objective');
+  await page.keyboard.press('Meta+5');
+  await expect(trainTab('Training').getByRole('textbox', { name: 'N Batches', exact: true })).toBeVisible();
+  await scanStudio(page, info, 'train-training');
+  await page.keyboard.press('Meta+2');
+  await expect(trainTab('Model')).toBeFocused();
+  await page.keyboard.press('F6');
+  await expect(region(page, 'inspector')).toBeFocused();
   await page.keyboard.press('F6');
   await expect(region(page, 'bottom')).toBeFocused();
   await page.keyboard.press('Shift+F6');
@@ -751,6 +770,7 @@ test('the window commands, tab rail and selection history work without a pointer
   await page.keyboard.press('Meta+K');
   const dialog = page.getByRole('dialog', { name: 'Command Palette' });
   await expect(dialog.getByRole('combobox')).toBeFocused();
+  await scanStudio(page, info, 'narrow-command-palette');
   await page.keyboard.press('Shift+Tab');
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await page.keyboard.press('Escape');
@@ -760,6 +780,7 @@ test('the window commands, tab rail and selection history work without a pointer
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const closeActivity = activity.getByRole('button', { name: 'Close', exact: true });
   await expect(closeActivity).toBeFocused();
+  await scanStudio(page, info, 'narrow-activity');
   await page.keyboard.press('Meta+K');
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await expect(dialog.locator('[data-command-id="run"], [data-command-id="stop"]')).toHaveCount(0);
