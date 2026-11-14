@@ -99,6 +99,18 @@ def series_files():
     return files
 
 
+def measured_subset_files():
+    files = walkthrough_files()
+    files[-1]["step"]["sweep"] = {"axes": {"updates": {"values": {
+        name: {"label": name, "patches": {
+            "training_config.n_batches": {"value": updates},
+            "method_payload.payload.target_total": {"value": updates},
+        }}
+        for name, updates in (("Long", 4), ("Medium", 3), ("Short", 2))
+    }}}}
+    return files
+
+
 def scoped_series_files():
     evaluation = _evaluation_step()
     evaluation["inputs"]["subject"]["checkpoint"] = {"every": 2}
@@ -223,5 +235,6 @@ if __name__ == "__main__":
     print(json.dumps({
         "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
-        "scoped-series-files": scoped_series_files, "train-measures": train_measures,
+        "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
+        "train-measures": train_measures,
     }[action](*args)))

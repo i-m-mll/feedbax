@@ -201,14 +201,14 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
-  const files = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
+  const metricName = 'program_step';
+  const files = JSON.parse(await runProjectFixture(evaluation, 'measured-subset-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const path = '/?project=' + snapshot.project_id;
   const readPlan = () => savedPlan(request, projectPath);
   await page.goto(path);
   await select(page, 'train');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
@@ -235,18 +235,18 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
 
   await best.check();
   await expect(apply).toBeDisabled();
-  await metric.fill('train_loss');
+  await metric.fill(metricName);
   await count.fill('0');
   await expect(apply).toBeDisabled();
   await count.fill('2');
   expect(await saveWhere(() => apply.click())).toMatchObject({
-    step: 'train', checkpoint: 'last', where: { best: { by: 'train_loss', k: 2, order: 'min' } },
+    step: 'train', checkpoint: 'last', where: { best: { by: metricName, k: 2, order: 'min' } },
   });
 
   await page.reload();
   await select(page, 'evaluate');
   await expect(best).toBeChecked();
-  await expect(metric).toHaveValue('train_loss');
+  await expect(metric).toHaveValue(metricName);
   await expect(count).toHaveValue('2');
   await expect(order).toHaveValue('min');
   await expect(inputs).toContainText('2 of 3');
@@ -266,23 +266,12 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   const finished = (await readPlan()).rows.filter(({ key }) => key.step === 'train');
   const attempts = finished.map(({ result }) => result!.job_id);
   const measures: Record<string, number> = JSON.parse(await runProjectFixture(
-    evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, 'train_loss', ...attempts,
+    evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, metricName, ...attempts,
   ));
-  expect(attempts.every((attempt) => Number.isFinite(measures[attempt]))).toBe(true);
-  const scores = (direction: number) => [...finished].sort((left, right) =>
-    direction * (measures[left.result!.job_id] - measures[right.result!.job_id]));
-  const positions = new Map(finished.map(({ key }, index) => [key.row, index]));
-  const descending = (rows: typeof finished) => positions.get(rows[0].key.row)! > positions.get(rows[1].key.row)!;
-  const lowest = scores(1);
-  const highest = scores(-1);
-  const expected = descending(lowest) ? lowest.slice(0, 2) : highest.slice(0, 2);
-  expect(descending(expected)).toBe(true);
+  expect(attempts.map((attempt) => measures[attempt])).toEqual([4, 3, 2]);
+  const expected = [finished[2], finished[1]];
 
   await select(page, 'evaluate');
-  if (!descending(lowest)) {
-    await order.selectOption('max');
-    expect(await saveWhere(() => apply.click())).toMatchObject({ where: { best: { order: 'max' } } });
-  }
   await expect(members).toHaveText(['Rank 1', 'Rank 2']);
   await expect(freeze).toHaveCount(0);
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
@@ -292,7 +281,8 @@ test('M2 saves, runs, and freezes a measured Evaluate subset in Runs', async ({ 
   const completed = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   for (const [index, producer] of expected.entries()) {
     expect(completed[index].result?.checkpoint_source).toEqual({
-      job_id: producer.result!.job_id, request_id: producer.request_id, completed_updates: 2,
+      job_id: producer.result!.job_id, request_id: producer.request_id,
+      completed_updates: measures[producer.result!.job_id],
     });
   }
   for (const [index, producer] of expected.entries()) {

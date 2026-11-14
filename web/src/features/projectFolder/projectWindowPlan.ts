@@ -119,7 +119,7 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       inputs: projected?.inputs.map((input) => ({
         id: input.id, label: input.id, sourceStepId: input.source_step_id ?? undefined,
         subset: input.subset ? {
-          ...input.subset, count: input.subset.ranks?.length || input.subset.count,
+          ...input.subset,
           terms: subsetTerms(input.subset.terms, sweepsByStep.get(input.source_step_id)),
           members: inputMembers(input.subset, id, input.source_step_id),
         } : undefined,
