@@ -178,6 +178,65 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
+test('M2 saves and reopens a measured Evaluate subset in Runs', async ({ page, request }) => {
+  const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
+  const files = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const path = '/?project=' + snapshot.project_id;
+  await page.goto(path);
+  await select(page, 'train');
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
+  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const created = responseFor(page, projectPath + '/files');
+  await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  expect((await created).status()).toBe(201);
+  const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
+  const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
+  const count = subset.getByRole('spinbutton', { name: 'Count', exact: true });
+  const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
+  const apply = subset.getByRole('button', { name: 'Apply Subset', exact: true });
+  const order = subset.getByRole('combobox', { name: 'Order', exact: true });
+  const per = subset.getByRole('group', { name: 'Per', exact: true })
+    .getByRole('checkbox', { name: 'learning-rate', exact: true });
+  const applyRule = async () => {
+    const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
+      && new URL(response.url()).pathname === projectPath
+      && JSON.stringify(response.request().postDataJSON()).includes('/inputs/subject/where'));
+    await apply.click();
+    const response = await saved;
+    expect(response.ok(), await response.text()).toBe(true);
+    return (await response.json() as StudioProjectSnapshot).project.steps.evaluate.inputs?.subject;
+  };
+
+  await best.check();
+  await expect(apply).toBeDisabled();
+  await metric.fill('loss');
+  await count.fill('0');
+  await expect(apply).toBeDisabled();
+  await count.fill('2');
+  expect(await applyRule()).toMatchObject({
+    step: 'train', checkpoint: 'last', where: { best: { by: 'loss', k: 2, order: 'min' } },
+  });
+
+  await page.reload();
+  await select(page, 'evaluate');
+  await expect(best).toBeChecked();
+  await expect(metric).toHaveValue('loss');
+  await expect(count).toHaveValue('2');
+  await expect(order).toHaveValue('min');
+  await per.check();
+  await count.fill('1');
+  expect(await applyRule()).toMatchObject({
+    where: { best: { by: 'loss', k: 1, order: 'min', per: ['learning-rate'] } },
+  });
+  await expect(per).toBeChecked();
+  await best.uncheck();
+  expect(await applyRule()).toMatchObject({ step: 'train', checkpoint: 'last', where: {} });
+  await expect(best).not.toBeChecked();
+});
+
 test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', async ({ page, request }) => {
   test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });

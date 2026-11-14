@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanStepView } from '@/features/pipeline/planView';
-import type { ProjectValueEdit, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
+import { BestSchema, type Best, type ProjectValueEdit, type StudioSavedTrainRuns, type SubsetTerms } from '@/generated/studioContracts';
 import {
   formatCheckpointRule, parseCheckpointRule, validTrialSet,
   type EditableCheckpointRule, type TrialDomain, type TrialSet,
@@ -68,6 +68,41 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
   return checked ? [...ids, id] : ids.filter((entry) => entry !== id);
 }
 
+function BestEditor({ rule, sweeps, onChange }: {
+  rule: Best;
+  sweeps: PlanStepView['sweeps'];
+  onChange(rule: Best): void;
+}) {
+  return <div className="grid gap-1">
+    <label className="grid gap-1">
+      {studioName('metric')}
+      <input className={field} type="text" value={rule.by} spellCheck={false}
+        onChange={(event) => onChange({ ...rule, by: event.currentTarget.value })} />
+    </label>
+    <div className="grid grid-cols-2 gap-1">
+      <label className="grid gap-1">
+        {studioName('order')}
+        <select className={field} value={rule.order ?? 'max'}
+          onChange={(event) => onChange({ ...rule, order: event.currentTarget.value === 'min' ? 'min' : 'max' })}>
+          <option value="min">{studioName('lowest')}</option>
+          <option value="max">{studioName('highest')}</option>
+        </select>
+      </label>
+      <label className="grid gap-1">
+        {studioName('count')}
+        <input className={field + ' min-w-0'} type="number" min={1} step={1}
+          value={Number.isNaN(rule.k) ? '' : rule.k}
+          onChange={(event) => onChange({ ...rule, k: event.currentTarget.valueAsNumber })} />
+      </label>
+    </div>
+    {sweeps.length > 0 && <fieldset>
+      <legend>{studioName('per')}</legend>
+      <Checkboxes options={sweeps} selected={rule.per ?? []}
+        onToggle={(id, checked) => onChange({ ...rule, per: toggle(rule.per ?? [], id, checked) })} />
+    </fieldset>}
+  </div>;
+}
+
 function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; onSave(rule: TrialSet): void;
   focus: boolean; onFocused(): void;
@@ -130,8 +165,9 @@ export function StudioEvaluateAuthoring({
   const { terms, trialSet } = authored;
   const [draft, setDraft] = useState(terms);
   const changed = JSON.stringify(draft) !== JSON.stringify(terms);
-  const canApplySubject = changed && draft.rows?.length !== 0 &&
-    Object.values(draft.axes ?? {}).every((values) => values.length > 0);
+  const best = draft.best ? BestSchema.safeParse({ ...draft.best, by: draft.best.by.trim() }) : undefined;
+  const hasMembers = draft.rows?.length !== 0 && Object.values(draft.axes ?? {}).every((values) => values.length > 0);
+  const canApplySubject = changed && hasMembers && (!best || best.success);
   const rowKeys = new Map(projection.rows.map(({ key }) => [savedRunId(key), key.row]));
   const rows = source.runs.flatMap(({ id, label }) => {
     const key = rowKeys.get(id);
@@ -140,7 +176,7 @@ export function StudioEvaluateAuthoring({
   const editRows = terms.rows !== undefined;
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
   return <div className="grid gap-3">
-    {editSubject && (editRows || sweeps.length > 0) && <fieldset className="grid gap-1" disabled={disabled}>
+    {editSubject && <fieldset className="grid gap-1" disabled={disabled}>
       <legend className="font-semibold">{studioName('subjectSubset')}</legend>
       {editRows && <Checkboxes options={rows} selected={draft.rows ?? []}
         onToggle={(id, checked) => setDraft({ ...draft, rows: toggle(draft.rows ?? [], id, checked) })} />}
@@ -154,11 +190,21 @@ export function StudioEvaluateAuthoring({
             })} />
         </fieldset>;
       })}
+      <label className="flex gap-2">
+        <input type="checkbox" checked={draft.best != null} onChange={(event) => {
+          const { best: _best, ...staticTerms } = draft;
+          setDraft(event.currentTarget.checked ? { ...staticTerms, best: { by: '', k: 1, order: 'min' } } : staticTerms);
+        }} />
+        {studioName('best')}
+      </label>
+      {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps}
+        onChange={(rule) => setDraft({ ...draft, best: rule })} />}
       <button type="button" className={apply} disabled={!canApplySubject}
         onClick={() => onEdit(studioName('applySubset'), {
-          op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where', value: { ...draft },
+          op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where',
+          value: { ...draft, ...(best?.success && { best: best.data }) },
         })}>{studioName('applySubset')}</button>
-      {changed && !canApplySubject && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
+      {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
     </fieldset>}
     {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled} focus={focusTrialSet} onFocused={onTrialSetFocused}
       onSave={(rule) => onEdit(studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}

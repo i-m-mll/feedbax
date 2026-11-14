@@ -1,3 +1,4 @@
+import { studioFormat, studioName } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import type { Project, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 
@@ -12,11 +13,17 @@ export function planVariants(saved: StudioSavedTrainRuns | undefined) {
 }
 
 function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
+  const best = terms.best;
   return [
     ...Object.entries(terms.axes ?? {}).map(([axis, ids]) =>
       `${axis} ${ids.map((id) => sweeps?.get(axis)?.get(id) ?? id).join(', ')}`),
     ...(terms.rows ?? []),
-    ...(terms.best ? [terms.best.by] : []),
+    ...(best ? [
+      studioFormat('bestSubset', {
+        order: studioName(best.order === 'min' ? 'lowest' : 'highest'), metric: best.by, count: best.k,
+      }),
+      ...(best.per?.length ? [studioFormat('subsetPer', { axes: best.per.join(', ') })] : []),
+    ] : []),
   ];
 }
 

@@ -237,6 +237,9 @@
     "selectedConditions": "Selected Conditions",
     "conditions": "Conditions",
     "subjectSubset": "Subject Subset",
+    "best": "Best",
+    "lowest": "Lowest",
+    "highest": "Highest",
     "taskDocument": "Task Document",
     "inlineTask": "Inline Task",
     "signals": "Signals",
@@ -377,6 +380,8 @@
     "invalidCheckpointRule": "{value} has invalid syntax"
   },
   "format": {
+    "bestSubset": "{order} {metric} · {count}",
+    "subsetPer": "Per {axes}",
     "trainedValue": "Trained by {step}",
     "evaluateChangedValue": "Changed by {step}",
     "ofCount": "{count} of {total}",
