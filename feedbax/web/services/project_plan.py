@@ -49,7 +49,7 @@ from feedbax.contracts.project_plan import (
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.project_sweep import CheckpointRuleAxis
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_identity import decode_python_task_selection, decode_request
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
@@ -189,18 +189,23 @@ class ProjectPlanRead:
             for run in plan.runs:
                 if run.kind != "train" or run.admission_problem is not None or run.request_id in conditions:
                     continue
-                train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-                documents = (
-                    train.trial_documents
-                    if isinstance(train, DocumentTrainingRequestSpec) else None
-                )
-                conditions[run.request_id] = None
-                if documents is not None:
-                    try:
-                        conditions[run.request_id] = list(evaluation_conditions(documents.task_source, evaluation_tasks))
-                    except ValueError:
-                        # An unresolved Task has no authorable trial domain.
+                source = plan.train_evaluation_source(run.request_id)
+                if isinstance(source, tuple):
+                    conditions[run.request_id] = list(source)
+                    continue
+                if source is not None:
+                    task = decode_python_task_selection(source)
+                else:
+                    train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+                    if not isinstance(train, DocumentTrainingRequestSpec):
                         continue
+                    task = train.trial_documents.task_source
+                conditions[run.request_id] = None
+                try:
+                    conditions[run.request_id] = list(evaluation_conditions(task, evaluation_tasks))
+                except ValueError:
+                    # An unresolved Task has no authorable trial domain.
+                    continue
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
             if isinstance(key, RunKey):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from importlib.resources import files
 from typing import Any
@@ -44,6 +44,7 @@ from feedbax.contracts.request_specs import (
     ReportRequestSpec,
     RequestSpec,
 )
+from feedbax.contracts.task_document import PythonTaskSelection
 
 _IDENTITY = "feedbax.identity.request.v1"
 _STORAGE_SCHEMA = "feedbax.request.v1"
@@ -80,12 +81,20 @@ def stored_request_descriptor(schema: str, kind: RequestKind) -> RequestDescript
 
 
 @dataclass(frozen=True)
+class EncodedTrainTask:
+    """Task projection from a locally encoded Train request."""
+
+    python_selection: bytes | None
+
+
+@dataclass(frozen=True)
 class EncodedRequest:
     """A request ID, its stored bytes, and the named bytes it references."""
 
     id: RequestId
     data: bytes
     documents: Mapping[str, bytes]
+    train_task: EncodedTrainTask | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -219,8 +228,33 @@ def _append_spec(outer: bytes, canonical_spec: bytes) -> bytes:
     return outer[:-1] + b',"spec":' + canonical_spec + b"}"
 
 
+def _may_spell_unsafe_integer(value: Any) -> bool:
+    # A wide float can serialize as an integer token the stored reader refuses.
+    if type(value) is float:
+        return abs(value) >= 2**53
+    if isinstance(value, dict):
+        return any(map(_may_spell_unsafe_integer, value.values()))
+    if isinstance(value, list):
+        return any(map(_may_spell_unsafe_integer, value))
+    return False
+
+
+def _encoded_train_task(projection: dict[str, Any]) -> EncodedTrainTask | None:
+    if _may_spell_unsafe_integer(projection):
+        return None
+    selection = projection["trial_documents"].get("python_task")
+    return EncodedTrainTask(_dump_canonical_json_v2(selection) if selection is not None else None)
+
+
+def decode_python_task_selection(selection: bytes) -> PythonTaskSelection:
+    """Rehydrate a Python Task subtree captured by the local request encoder."""
+    spec = decode(json.loads(selection), PythonTaskSelection, _identity_contract()["fields"])
+    return PythonTaskSelection.model_validate_json(json.dumps(spec))
+
+
 def encode_request(
-    spec: RequestSpec, inputs: RequestInputs, *, document_memo: RequestDocumentMemo | None = None
+    spec: RequestSpec, inputs: RequestInputs, *, document_memo: RequestDocumentMemo | None = None,
+    capture_train_task: bool = False,
 ) -> EncodedRequest:
     """Encode a typed, validated author request and compute its identity."""
     match = next(
@@ -248,8 +282,11 @@ def encode_request(
         spec, descriptor.spec_type, pins,
         projected_fields={name: entry.projection for name, entry in reused.items()},
     )
+    train_task = None
     if descriptor is DOCUMENT_TRAIN_REQUEST:
         omit_model_display_names(projection["trial_documents"]["model"])
+        if capture_train_task:
+            train_task = _encoded_train_task(projection)
     documents = {}
     for name in descriptor.documents:
         if name in reused:
@@ -270,6 +307,8 @@ def encode_request(
             for role, members in inputs.items()
         },
     }
+    if train_task is not None and _may_spell_unsafe_integer(envelope["inputs"]):
+        train_task = None
     preimage = _request_preimage(kind, projection, inputs, descriptor.storage_schema)
     validate_canonical_json_v2(preimage)
     del preimage["spec"]
@@ -279,6 +318,7 @@ def encode_request(
         id=kind + ":" + sha256_bytes(_append_spec(identity_fields, canonical_spec)),
         data=_append_spec(canonical_json_v2_bytes(envelope), canonical_spec),
         documents=documents,
+        train_task=train_task,
     )
 
 

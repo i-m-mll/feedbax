@@ -231,6 +231,13 @@ class SelectedRunDefinition:
 
 
 @dataclass(frozen=True)
+class _TrainEvaluationSource:
+    request: bytes
+    documents: tuple[tuple[str, bytes], ...]
+    task: tuple[str, ...] | bytes
+
+
+@dataclass(frozen=True)
 class ProjectPlan:
     """Named runs and deduplicated objects encoded by the shared request codec."""
 
@@ -243,6 +250,18 @@ class ProjectPlan:
     diagnostics: tuple[ProjectDiagnostic, ...]
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
     selected_definitions: Mapping[RunKey, SelectedRunDefinition]
+    _train_evaluation_sources: Mapping[RequestId, _TrainEvaluationSource] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False,
+    )
+
+    def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
+        """Read the compiled Task facts only for their exact request and documents."""
+        source = self._train_evaluation_sources.get(request_id)
+        if source is not None and self.requests.get(request_id) == source.request and all(
+            self.documents.get(digest) == data for digest, data in source.documents
+        ):
+            return source.task
+        return None
 
     @property
     def elements(self) -> Mapping[ElementKey, PlannedElement]:
@@ -575,12 +594,14 @@ class _LoweredRow:
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
     model_source: _ModelSource | None = None
+    evaluation_source: tuple[str, ...] | bytes | None = None
 
 
 @dataclass(frozen=True)
 class _TrainPreparation:
     checkpoint_problem: RunProblem | None
     evaluation: GraphSpec | ProjectDiagnostic
+    condition_ids: tuple[str, ...]
 
 
 @cache
@@ -606,6 +627,7 @@ def _encode_row(
     model_source: _ModelSource | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
+    condition_ids = None
     if kind == "train":
         from feedbax.compiler.trial_execution import validate_python_task
         from feedbax.tasks.reaching import builtin_python_tasks
@@ -641,6 +663,7 @@ def _encode_row(
                 model_address=problem.model_address,
             ) for problem in preparation), encoding_stamp)
         checkpoint_problem = preparation.checkpoint_problem
+        condition_ids = preparation.condition_ids
         assert model_source is not None
         if isinstance(preparation.evaluation, ProjectDiagnostic):
             model_source = replace(model_source, evaluation_problem=preparation.evaluation)
@@ -671,6 +694,7 @@ def _encode_row(
             spec,
             {role: (binding.member,) for role, binding in inputs.items()},
             document_memo=document_memo,
+            capture_train_task=kind == "train",
         )
     except ValidationError as error:
         problems = tuple(
@@ -680,6 +704,7 @@ def _encode_row(
     except ValueError as error:
         problems = (("", str(error)),)
     else:
+        evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
             if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
@@ -688,9 +713,12 @@ def _encode_row(
                 term.enabled for term in spec.trial_documents.objective.terms
             ) else checkpoint_problem
         )
+        if problem is None and encoded.train_task is not None:
+            selection = encoded.train_task.python_selection
+            evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
             encoded, (), encoding_stamp, admission_problem=problem,
-            model_source=model_source,
+            model_source=model_source, evaluation_source=evaluation_source,
         )
     return _LoweredRow(
         None,
@@ -798,6 +826,7 @@ class _Compiler:
         self.diagnostics: list[ProjectDiagnostic] = []
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
+        self.train_evaluation_sources: dict[RequestId, _TrainEvaluationSource] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.checkpoint_horizons: dict[RequestId, int | None] = {}
 
@@ -945,6 +974,7 @@ class _Compiler:
             tuple(self.diagnostics),
             MappingProxyType(self.subsets),
             MappingProxyType(self.selected_definitions),
+            MappingProxyType(self.train_evaluation_sources),
         )
 
     def step(
@@ -1290,7 +1320,7 @@ class _Compiler:
                     ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
                     document=address.document if address is not None else None, model_address=address,
                 )
-            result = _TrainPreparation(checkpoint_problem, evaluation)
+            result = _TrainPreparation(checkpoint_problem, evaluation, paired.execution.task.condition_ids)
         self.trial_preparations[identity] = result
         return result
 
@@ -1677,6 +1707,10 @@ class _Compiler:
             return None
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
+        if lowered.evaluation_source is not None:
+            self.train_evaluation_sources[encoded.id] = _TrainEvaluationSource(
+                encoded.data, tuple(encoded.documents.items()), lowered.evaluation_source,
+            )
         if lowered.model_source is not None:
             self.model_sources[key] = lowered.model_source
         run = PlannedRun(
