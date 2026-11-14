@@ -260,6 +260,7 @@
     "addIntervention": "Add Intervention",
     "addProbe": "Add Probe",
     "removeAttachment": "Remove Attachment",
+    "removeVariation": "Remove Variation",
     "moveAttachment": "Move Attachment",
     "after": "After",
     "source": "Source",

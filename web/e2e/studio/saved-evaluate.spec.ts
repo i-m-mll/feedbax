@@ -240,7 +240,7 @@ test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by 
 
 test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
   test.skip(!enabled || process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal Evaluate candidate backend');
-  test.setTimeout(55_000);
+  test.setTimeout(59_000);
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const path = `${projectPath}/train-runs`;
@@ -284,12 +284,47 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const [trained] = before.rows;
   const sibling = row(before, siblingKey);
   const unselected = row(before, unselectedKey);
-  const original = row(before, selectedKey);
-  expect(original?.can_run).toBe(true);
+  const graphPath = '/params/variation/raw-mass/path';
+  const authoredPath = '/sweep/exceptions/raw-control/patches/params.variation/value/raw-mass/path';
+  const invalidGraph = (view: StudioSavedTrainRuns) => view.window_map?.problems.find(({ code, step, row }) =>
+    code === 'authored_graph_variation' && step === selectedKey.step && row === selectedKey.row);
+  const storedControl = (state: StudioProjectSnapshot) =>
+    state.project.steps?.conditions?.sweep?.exceptions?.['raw-control']?.patches?.['params.variation'];
+  const problem = invalidGraph(before);
+  expect(problem).toMatchObject({ path: graphPath, address: 'steps/conditions.json', authored_path: authoredPath });
+  expect(row(before, selectedKey)).toBeUndefined();
   expect(sibling?.can_run).toBe(true);
   await chooseStep(page, 'conditions');
   await chooseRow();
-  await tab(page, 'Model').click();
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(inspector).toContainText(graphPath);
+  const revealVariation = async () => {
+    await page.getByRole('button', { name: /^Problems\b/ }).click();
+    await page.getByRole('dialog', { name: 'Problems' }).getByRole('button')
+      .filter({ hasText: problem!.detail.replace(`${graphPath}: `, '') }).click();
+  };
+  await revealVariation();
+  await expect(model).toBeVisible();
+  const remove = model.getByRole('button', { name: 'Remove Variation', exact: true });
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  await expect.poll(async () => row(await plan(), selectedKey)?.can_run).toBe(true);
+  const repaired = await plan();
+  const original = row(repaired, selectedKey);
+  expect(invalidGraph(repaired)).toBeUndefined();
+  expect(repaired.rows).toEqual(before.rows);
+  expect(row(repaired, siblingKey)).toEqual(sibling);
+  expect(row(repaired, unselectedKey)).toEqual(unselected);
+  expect(storedControl(await saved())).toEqual({
+    op: 'replace', value: { 'row-y': { op: 'replace', path: 'task.params.y', value: 0.04 } },
+  });
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(async () => invalidGraph(await plan())?.path).toBe(graphPath);
+  expect(storedControl(await saved())).toEqual(storedControl(snapshot));
+  await page.keyboard.press('Meta+Shift+Z');
+  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(original?.request_id);
+  await expect(remove).toHaveCount(0);
+
   await model.locator('[data-id="plant"] header').click();
   await expect(mass).toHaveAccessibleDescription('Trained by train');
   await expect(mass).toHaveValue('1.25');

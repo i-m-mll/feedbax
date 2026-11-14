@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.rollout import ROLLOUT_TYPE
@@ -22,11 +23,13 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_document_train_pair import authored_documents, document_project
 
 
-def _mass_variation(mass: int):
-    return [{"path": "graph.nodes.plant.params.mass", "op": "replace", "value": mass}]
+_MASS = ModelAddress.model_validate({
+    "document": "reach-model", "composites": [],
+    "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+}).to_text()
 
 
-def _evaluation_step(*, mass: int | None = None):
+def _evaluation_step():
     return {
         "kind": "evaluate",
         "base": {"inline": {
@@ -35,7 +38,7 @@ def _evaluation_step(*, mass: int | None = None):
                 "seed": 731,
                 "trial_set": {"kind": "every_condition"},
                 "trial_policy": "paired",
-                "variation": [] if mass is None else _mass_variation(mass),
+                "variation": [],
             },
         }},
         "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
@@ -49,7 +52,7 @@ def _evaluation_project():
     raw["steps"].update({
         "baseline": baseline,
         "conditions": baseline | {"sweep": {"axes": {"mass": {"values": {
-            name: {"value": mass, "patches": {"params.variation": {"value": _mass_variation(mass)}}}
+            name: {"value": mass, "patches": {"params.seed": {"value": 732}, _MASS: {"value": mass}}}
             for name, mass in (("nominal", 1), ("heavy", 2))
         }}}}},
         "unsupported": baseline | {
