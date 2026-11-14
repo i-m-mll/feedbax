@@ -250,10 +250,23 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
     return await response.json() as StudioProjectSnapshot;
   };
   const plan = async () => {
-    const { revision } = await saved();
-    const response = await request.get(path, { params: { revision, window_map: true } });
-    expect(response.ok(), await response.text()).toBe(true);
-    return await response.json() as StudioSavedTrainRuns;
+    let view: StudioSavedTrainRuns | undefined;
+    await expect.poll(async () => {
+      const { revision } = await saved();
+      const response = await request.get(path, { params: { revision, window_map: true } });
+      const body = await response.text();
+      if (response.status() === 409) {
+        const { detail } = JSON.parse(body);
+        if (detail?.resource === 'project' && /^[a-f0-9]{64}$/.test(detail.current) && detail.current !== revision) {
+          return false;
+        }
+      }
+      expect(response.ok(), body).toBe(true);
+      view = JSON.parse(body) as StudioSavedTrainRuns;
+      expect(view.revision).toBe(revision);
+      return true;
+    }, { message: 'Read the Plan at the saved project revision' }).toBe(true);
+    return view!;
   };
   const selectedKey = { variant: 'default', step: 'conditions', row: 'seed=control' };
   const siblingKey = { ...selectedKey, row: 'seed=comparison' };
@@ -307,7 +320,14 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await expect(model).toBeVisible();
   const remove = model.getByRole('button', { name: 'Remove Variation', exact: true });
   await expect(remove).toBeEnabled();
-  await remove.click();
+  const saveEdit = async (gesture: () => Promise<void>) => {
+    const response = page.waitForResponse((reply) =>
+      reply.request().method() === 'PATCH' && new URL(reply.url()).pathname === projectPath);
+    await gesture();
+    const savedEdit = await response;
+    expect(savedEdit.ok(), await savedEdit.text()).toBe(true);
+  };
+  await saveEdit(() => remove.click());
   await expect.poll(async () => row(await plan(), selectedKey)?.can_run).toBe(true);
   const repaired = await plan();
   const original = row(repaired, selectedKey);
@@ -318,10 +338,12 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   expect(storedControl(await saved())).toEqual({
     op: 'replace', value: { 'row-y': { op: 'replace', path: 'task.params.y', value: 0.04 } },
   });
-  await page.keyboard.press('Meta+Z');
+  await model.focus();
+  await saveEdit(() => page.keyboard.press('Meta+Z'));
   await expect.poll(async () => invalidGraph(await plan())?.path).toBe(graphPath);
   expect(storedControl(await saved())).toEqual(storedControl(snapshot));
-  await page.keyboard.press('Meta+Shift+Z');
+  await model.focus();
+  await saveEdit(() => page.keyboard.press('Meta+Shift+Z'));
   await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(original?.request_id);
   await expect(remove).toHaveCount(0);
 
