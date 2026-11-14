@@ -854,16 +854,6 @@ def _execute_evaluation_batch_partition_group(
 
 
 @dataclass(frozen=True)
-class SemanticChange:
-    """One path-addressed structural difference."""
-
-    path: str
-    before: Any
-    after: Any
-    kind: Literal["added", "removed", "changed"]
-
-
-@dataclass(frozen=True)
 class MaterializedRow:
     """Artifacts and execution result for one resolved condition row."""
 
@@ -934,54 +924,6 @@ def _load_execution_policy(path: str) -> _ExecutionPolicy:
         threshold_source=threshold_source,
         override_flag=override_flag,
     )
-
-
-def semantic_diff(before: Any, after: Any, *, path: str = "$") -> list[SemanticChange]:
-    """Return a deterministic, path-tracked structural diff."""
-    if isinstance(before, Mapping) and isinstance(after, Mapping):
-        changes: list[SemanticChange] = []
-        before_keys = set(before)
-        after_keys = set(after)
-        for key in sorted(before_keys | after_keys, key=str):
-            child = f"{path}.{key}"
-            if key not in before:
-                changes.append(SemanticChange(child, None, after[key], "added"))
-            elif key not in after:
-                changes.append(SemanticChange(child, before[key], None, "removed"))
-            else:
-                changes.extend(semantic_diff(before[key], after[key], path=child))
-        return changes
-    if (
-        isinstance(before, Sequence)
-        and not isinstance(before, (str, bytes))
-        and isinstance(after, Sequence)
-        and not isinstance(after, (str, bytes))
-    ):
-        changes = []
-        for index in range(max(len(before), len(after))):
-            child = f"{path}[{index}]"
-            if index >= len(before):
-                changes.append(SemanticChange(child, None, after[index], "added"))
-            elif index >= len(after):
-                changes.append(SemanticChange(child, before[index], None, "removed"))
-            else:
-                changes.extend(semantic_diff(before[index], after[index], path=child))
-        return changes
-    if before != after:
-        return [SemanticChange(path, before, after, "changed")]
-    return []
-
-
-def diff_resolved_rows(left: Mapping[str, Any], right: Mapping[str, Any]) -> list[SemanticChange]:
-    """Compare two fully resolved rows semantically."""
-    return semantic_diff(left, right)
-
-
-def diff_regenerated_archived(
-    regenerated: Mapping[str, Any], archived: Mapping[str, Any]
-) -> list[SemanticChange]:
-    """Compare regenerated output with its archived representation."""
-    return semantic_diff(archived, regenerated)
 
 
 _ROW_CONTEXT_ROLES = frozenset(
@@ -1738,8 +1680,4 @@ __all__ = [
     "HarnessResult",
     "MaterializedRow",
     "MatrixMaterializerHarness",
-    "SemanticChange",
-    "diff_regenerated_archived",
-    "diff_resolved_rows",
-    "semantic_diff",
 ]

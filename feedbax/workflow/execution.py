@@ -118,12 +118,6 @@ from feedbax.analysis.fulfillment_adapters import (
     receipt_exact_parent_entry,
     receipt_parent_ref,
 )
-from feedbax.analysis.fulfillment_custody import (
-    RebuildRun,
-    RepairResult,
-    rebuild_nodes,
-    repair_node,
-)
 from feedbax.workflow.derivation import (
     CompiledEnvelope,
     CompiledOutputIndex,
@@ -1497,44 +1491,6 @@ def workflow_requests(
     if stop_at is not None:
         raise KeyError(stop_at.text)
     return tuple(requests)
-
-
-def rebuild_workflow(
-    closure: PreparedWorkflow,
-    *,
-    environment: FulfillmentEnvironment,
-) -> RebuildRun:
-    """Verify one fulfilled closure by rebuilding every node into shadow custody.
-
-    This is feedbax's rebuild-as-verification over the whole closure: serial,
-    deterministic in order, authoritative receipts never written to, and every
-    node verified before any drift is raised so the report is complete. Altered
-    stored bytes are an admission failure and refuse before any rebuild happens.
-
-    Raises:
-        FulfillmentDriftError: Any node rebuilt to a different output projection.
-        FulfillmentAdmissionError: Any node's stored receipt fails admission.
-    """
-    requests = workflow_requests(closure, environment=environment)
-    return rebuild_nodes(requests, environment=environment)
-
-
-def repair_workflow_operation(
-    closure: PreparedWorkflow,
-    node_key: LogicalKey,
-    *,
-    environment: FulfillmentEnvironment,
-    metadata: Mapping[str, Any] | None = None,
-) -> RepairResult:
-    """Repair one node of a closure whose receipt exists but fails admission.
-
-    Every node upstream of the subject is admitted first, because a repair
-    candidate is only meaningful when the inputs it binds are the authenticated
-    ones. The repair itself — quarantine, shadow execution, complete
-    revalidation, promotion, durable repair record — is feedbax's.
-    """
-    requests = workflow_requests(closure, environment=environment, stop_at=node_key)
-    return repair_node(requests[-1], environment=environment, metadata=dict(metadata or {}))
 
 
 def truncated_workflow(closure: PreparedWorkflow, count: int) -> PreparedWorkflow:

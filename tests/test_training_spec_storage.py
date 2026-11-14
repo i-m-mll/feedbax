@@ -5,7 +5,6 @@ import importlib
 import json
 import math
 from pathlib import Path
-from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -23,7 +22,6 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.spec_storage import (
-    TrainingRunExecutionCapsule,
     build_resolved_semantics_snapshot,
     training_run_intent_hash,
     training_spec_canonical_bytes,
@@ -39,8 +37,6 @@ from feedbax.training.row_lowering import (
 )
 from feedbax.training.spec_storage import (
     compile_training_run_matrix,
-    emit_training_run_spec_storage,
-    stamp_training_run_manifest_identities,
 )
 from feedbax.orchestration.bundle import DeploymentPolicy
 from feedbax.orchestration.revision import resolve_feedbax_revision
@@ -134,141 +130,6 @@ def test_decoder_rejects_invalid_variants_missing_refs_cycles_and_hash_mismatch(
     tampered["nodes"][scalar_hash]["value"] = 2
     with pytest.raises(ValueError, match="hash mismatch"):
         decode_resolved_snapshot(tampered)
-
-
-def test_emission_round_trip_is_stable_and_materializer_drift_is_visible(
-    tmp_path: Path,
-) -> None:
-    matrix = _matrix({"value": 1e-5})
-    lock = tmp_path / "uv.lock"
-    lock.write_text("locked", encoding="utf-8")
-    with pytest.raises(ValueError, match="tests/fixtures only"):
-        emit_training_run_spec_storage(
-            matrix,
-            method_registry=_METHOD_REGISTRY,
-            repo_root=tmp_path,
-            authored_path=tmp_path / "tracked" / "rejected.json",
-            custody_root=tmp_path / "custody",
-            materializer_commit="abc",
-            dependency_lock_path=lock,
-        )
-    first = emit_training_run_spec_storage(
-        matrix,
-        method_registry=_METHOD_REGISTRY,
-        repo_root=tmp_path,
-        authored_path=tmp_path / "tracked" / "matrix.json",
-        custody_root=tmp_path / "custody",
-        materializer_commit="abc",
-        dependency_lock_path=lock,
-        environment_digest="e" * 64,
-        input_data_identities=[{"role": "dataset", "sha256": "d" * 64}],
-        allow_inline_base=True,
-        row_validator=lambda _payload, _row_id: None,
-    )
-    second = emit_training_run_spec_storage(
-        matrix,
-        method_registry=_METHOD_REGISTRY,
-        repo_root=tmp_path,
-        authored_path=tmp_path / "tracked" / "matrix-again.json",
-        custody_root=tmp_path / "custody",
-        materializer_commit="def",
-        dependency_lock_path=lock,
-        environment_digest="e" * 64,
-        input_data_identities=[{"role": "dataset", "sha256": "d" * 64}],
-        allow_inline_base=True,
-        row_validator=lambda _payload, _row_id: None,
-    )
-    assert first.intent_hash == second.intent_hash
-    assert first.execution_hash == second.execution_hash
-    stamped = stamp_training_run_manifest_identities(
-        TrainingRunManifest(id="feedbax-training-run:test"),
-        first,
-    )
-    assert stamped.intent_hash == first.intent_hash
-    assert stamped.execution_hash == first.execution_hash
-
-    def simulate_materializer_drift(materialized):
-        row = materialized.rows[0]
-        changed_row = replace(row, payload={**row.payload, "materializer_revision": 2})
-        return replace(materialized, rows=[changed_row])
-
-    drifted = emit_training_run_spec_storage(
-        matrix,
-        method_registry=_METHOD_REGISTRY,
-        repo_root=tmp_path,
-        authored_path=tmp_path / "tracked" / "matrix-drift.json",
-        custody_root=tmp_path / "custody",
-        materializer_commit="changed",
-        dependency_lock_path=lock,
-        environment_digest="e" * 64,
-        input_data_identities=[{"role": "dataset", "sha256": "d" * 64}],
-        allow_inline_base=True,
-        row_validator=lambda _payload, _row_id: None,
-        _test_materializer_transform=simulate_materializer_drift,
-    )
-    assert drifted.intent_hash == first.intent_hash
-    assert drifted.execution_hash != first.execution_hash
-    with pytest.raises(ValueError, match="materializer drift"):
-        stamp_training_run_manifest_identities(stamped, drifted)
-    with pytest.raises(ValidationError, match="materializer drift"):
-        capsule_payload = drifted.capsule.model_dump(mode="json")
-        capsule_payload["execution_hash"] = first.execution_hash
-        TrainingRunExecutionCapsule.model_validate(capsule_payload)
-    assert first.capsule.materializer_commit == "abc"
-    assert first.capsule.environment_digest == "e" * 64
-    assert first.capsule.input_data_identities[0]["sha256"] == "d" * 64
-    assert first.capsule.dependency_lock_digest == hashlib.sha256(b"locked").hexdigest()
-    assert "training_run_matrix" in first.capsule.relevant_schema_versions
-    capsule_round_trip = TrainingRunExecutionCapsule.model_validate_json(
-        Path(first.capsule_artifact.uri).read_bytes()
-    )
-    assert capsule_round_trip == first.capsule
-    with pytest.raises(ValidationError, match="64-hex"):
-        TrainingRunExecutionCapsule.model_validate(
-            {**first.capsule.model_dump(mode="json"), "intent_hash": "BAD"}
-        )
-    bad_input = first.capsule.model_dump(mode="json")
-    bad_input["input_data_identities"] = [{"sha256": "BAD"}]
-    with pytest.raises(ValidationError, match="64-hex"):
-        TrainingRunExecutionCapsule.model_validate(bad_input)
-    with pytest.raises(ValidationError, match="64-hex"):
-        TrainingRunManifest(
-            id="feedbax-training-run:bad-hash",
-            intent_hash="BAD",
-        )
-
-
-def test_snapshot_rows_are_complete(tmp_path: Path) -> None:
-    lock = tmp_path / "uv.lock"
-    lock.write_text("lock", encoding="utf-8")
-    storage = emit_training_run_spec_storage(
-        _matrix({"value": 1}),
-        method_registry=_METHOD_REGISTRY,
-        repo_root=tmp_path,
-        authored_path=tmp_path / "authored.json",
-        custody_root=tmp_path / "custody",
-        materializer_commit="abc",
-        dependency_lock_path=lock,
-        allow_inline_base=True,
-        row_validator=lambda _payload, _row_id: None,
-    )
-
-    from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
-
-    snapshot = json.loads(Path(storage.snapshot_artifact.uri).read_text(encoding="utf-8"))
-    decoded = decode_resolved_snapshot(snapshot)
-    row = decoded["rows"][0]
-    assert set(row) == {
-        "row_id",
-        "planned_run_id",
-        "seed",
-        "axis_coordinates",
-        "overrides",
-        "row_provenance",
-        "payload",
-    }
-    assert row["seed"] is None
-    assert row["axis_coordinates"]["values"]["overrides"] == []
 
 
 def test_typed_row_lowerer_is_authoritative_and_validation_cannot_mutate(
@@ -500,10 +361,9 @@ def test_sweep_planned_id_canonicalizes_payload_and_axis_coordinates(
     assert negative_zero.planned_run_id == positive_zero.planned_run_id
 
 
-def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Path) -> None:
+def test_lowered_payload_and_provenance_drive_assembly(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 
     matrix = _matrix({"compact": {"gain": 3}})
 
@@ -522,33 +382,6 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
             ],
         )
 
-    lock = tmp_path / "uv.lock"
-    lock.write_text("lock", encoding="utf-8")
-    storage = emit_training_run_spec_storage(
-        matrix,
-        method_registry=_METHOD_REGISTRY,
-        repo_root=tmp_path,
-        authored_path=tmp_path / "authored.json",
-        custody_root=tmp_path / "custody",
-        materializer_commit="abc",
-        dependency_lock_path=lock,
-        allow_inline_base=True,
-        row_lowerer=lower,
-        row_validator=lambda _payload, _row_id: None,
-    )
-    decoded = decode_resolved_snapshot(
-        json.loads(Path(storage.snapshot_artifact.uri).read_text(encoding="utf-8"))
-    )
-    stored_row = decoded["rows"][0]
-    assert stored_row["payload"]["training_config"]["gain"] == 3
-    assert stored_row["row_provenance"]["authored_payload_hash"]
-    assert stored_row["row_provenance"]["lowerer_identities"] == [
-        {
-            "lowerer_id": "example.lowerer",
-            "lowerer_version": "example.lowerer.v2",
-        }
-    ]
-
     compiled = compile_training_run_matrix(
         matrix,
         method_registry=_METHOD_REGISTRY,
@@ -559,10 +392,13 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
         row_validator=lambda _payload, _row_id: None,
     )
     compiled_row = compiled.rows[0]
-    assert compiled_row.payload == stored_row["payload"]
+    assert compiled_row.payload["training_config"]["gain"] == 3
     assert compiled_row.resolved_semantics["payload"] == compiled_row.payload
     assert compiled_row.provenance is not None
-    assert compiled_row.provenance.planned_run_id == stored_row["planned_run_id"]
+    assert compiled_row.provenance.authored_payload_hash
+    assert compiled_row.provenance.lowerer_identities == [
+        RowLowererIdentity(lowerer_id="example.lowerer", lowerer_version="example.lowerer.v2")
+    ]
     assert compiled_row.launch.collect == [
         "manifest.json",
         "training-diagnostics.json",
@@ -666,6 +502,21 @@ def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) 
     ]
     payload = json.loads(Path(bundle.rows[0].execution.payload.uri).read_text())
     assert payload["gain"] == 4
+    from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
+    from feedbax.contracts.spec_storage import TrainingRunExecutionCapsule
+
+    execution = bundle.rows[0].execution
+    snapshot = json.loads(Path(execution.resolved_snapshot.uri).read_bytes())
+    assert decode_resolved_snapshot(snapshot)["payload"] == payload
+    capsule = TrainingRunExecutionCapsule.model_validate_json(
+        Path(execution.execution_capsule.uri).read_bytes()
+    )
+    assert capsule.execution_hash == execution.execution_capsule.execution_hash
+    assert capsule.resolved_root_hash == execution.resolved_snapshot.root_hash
+    with pytest.raises(ValidationError, match="materializer drift"):
+        TrainingRunExecutionCapsule.model_validate(
+            {**capsule.model_dump(mode="json"), "execution_hash": "0" * 64}
+        )
 
     mismatched = bundle.rows[0].execution.model_dump(mode="json")
     mismatched["row_provenance"]["lowered_execution_payload_hash"] = "0" * 64
@@ -768,21 +619,14 @@ def test_custody_reuse_verifies_existing_bytes_and_public_exports(tmp_path: Path
             logical_name="test.json",
         )
     assert "training_spec_canonical_bytes" in contracts_exports.__all__
-    assert "emit_training_run_spec_storage" in training_exports.__all__
     assert "TrainingRowLoweringResult" in contracts_exports.__all__
     assert "TrainingRowProvenance" in training_exports.__all__
     assert training_exports.TrainingRowLoweringResult is TrainingRowLoweringResult
     exported_canonical = getattr(contracts_exports, "training_spec_canonical_bytes")
-    training_spec_storage = importlib.import_module("feedbax.training.spec_storage")
-    exported_emitter = getattr(training_spec_storage, "emit_training_run_spec_storage")
     assert exported_canonical(value) == training_spec_canonical_bytes(value)
     assert (exported_canonical.__module__, exported_canonical.__qualname__) == (
         training_spec_canonical_bytes.__module__,
         training_spec_canonical_bytes.__qualname__,
-    )
-    assert (exported_emitter.__module__, exported_emitter.__qualname__) == (
-        emit_training_run_spec_storage.__module__,
-        emit_training_run_spec_storage.__qualname__,
     )
 
 

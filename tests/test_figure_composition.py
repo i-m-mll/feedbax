@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis import figures as figure_execution
 from feedbax.analysis.figures import (
     _exact_value_descriptor,
     coerce_figure_spec,
@@ -871,9 +870,7 @@ def test_identity_is_deterministic_and_locator_is_not_authored_identity(tmp_path
     second = resolve_figure_spec(spec, repo_root=tmp_path)
 
     assert first == second
-    assert first.authored_identity_sha256 == figure_execution.figure_composition_envelope_hash(
-        relocated
-    )
+    assert first.authored_identity_sha256 == relocated.identity_sha256()
     assert first.resolved_identity_sha256 == sha256_bytes(
         canonical_json_bytes(first.figure_spec.model_dump(mode="json", exclude_none=True))
     )

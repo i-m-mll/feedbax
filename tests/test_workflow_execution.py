@@ -43,7 +43,6 @@ from feedbax.analysis.specs import (
 )
 from feedbax.analysis.fulfillment import FulfillmentAdmissionError, artifact_bytes_path
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
-from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
 from feedbax.workflow.derivation import (
     ExternalReceiptRecord,
     derive_workflow_plan,
@@ -63,8 +62,6 @@ from feedbax.workflow.execution import (
     workflow_requests,
     execute_workflow,
     prepare_workflow,
-    rebuild_workflow,
-    repair_workflow_operation,
     truncated_workflow,
 )
 from feedbax.workflow.operation_execution import NodeLoweringError
@@ -417,7 +414,7 @@ def test_a_consumer_binding_names_the_role_its_receipt_is_bound_under(
     assert requests[-1].spec.inputs[0].kind == "EvaluationRunManifest"
 
 
-def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
+def test_a_matrix_receipt_set_executes_analysis_in_row_order(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
     calls.deterministic_analysis = True
@@ -451,9 +448,6 @@ def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
     assert [parent.id for parent in requests[-1].spec.inputs] == [
         receipt.manifest_id for receipt in produced
     ]
-    rebuilt = rebuild_workflow(closure, environment=environment)
-    assert rebuilt.drifted == ()
-    assert rebuilt.verification_order[-1] == ("analysis:set-consumer")
 
 
 @pytest.mark.parametrize("entry_point", ["direct", "workflow"])
@@ -637,31 +631,6 @@ def test_prepare_rejects_a_producer_with_the_right_key_from_a_different_envelope
 
     with pytest.raises(PlanLockDisagreementError, match="producer_source_ref"):
         prepare_workflow(redirected, alternate_index)
-
-
-def test_repair_rebuilds_a_set_bound_analysis_from_all_admitted_rows(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    matrix = outputs.probe_matrix("repair-set", rows=2)
-    outputs.condensate(
-        "repair-consumer",
-        references=[
-            planned(
-                matrix,
-                role_path="inputs.evaluation",
-                consumer=AnalysisReceiptSetBinding(alias="evaluation", role="evaluation"),
-            )
-        ],
-    )
-    closure = _closure(outputs, "repair-consumer")
-    run = execute_workflow(closure, environment=environment)
-    _mutate(run.results[-1].receipt.path, status="failed")
-
-    repaired = repair_workflow_operation(closure, closure.target, environment=environment)
-    manifest = load_manifest(repaired.receipt.path)
-    assert [parent.id for parent in manifest.inputs] == [
-        receipt.manifest_id for receipt in run.results[0].receipts
-    ]
 
 
 def test_a_one_row_matrix_is_still_ambiguous_for_a_singular_edge(
@@ -1948,91 +1917,6 @@ def test_a_per_row_figure_input_binds_no_single_manifest_edge(
 
 
 # --------------------------------------------------------------------------
-# Rebuild as verification, repair as recovery
-# --------------------------------------------------------------------------
-
-
-def test_rebuilding_an_intact_closure_reports_no_drift_and_preserves_receipts(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    target = _chain(outputs)
-    run = _fulfill(outputs, target, environment=environment)
-    before = {result.receipt.path: result.receipt.path.read_bytes() for result in run.results}
-
-    rebuilt = rebuild_workflow(_closure(outputs, target), environment=environment)
-    assert rebuilt.verification_order == CHAIN_ORDER
-    assert rebuilt.drifted == ()
-    assert {path: path.read_bytes() for path in before} == before
-
-
-def test_a_receipt_that_disagrees_with_a_clean_re_execution_drifts(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    """Drift is reported per node against the defined projection, original intact."""
-    outputs.probe("drifting-probe")
-    receipt = _fulfill(outputs, "drifting-probe", environment=environment).results[0].receipt
-    document = json.loads(receipt.path.read_text(encoding="utf-8"))
-    document["summary_metrics"] = {**document.get("summary_metrics", {}), "stage": "tampered"}
-    receipt.path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-
-    with pytest.raises(FulfillmentDriftError) as caught:
-        rebuild_workflow(_closure(outputs, "drifting-probe"), environment=environment)
-    (outcome,) = caught.value.drifted
-    assert outcome.node_key == "evaluation:drifting-probe"
-    assert json.loads(receipt.path.read_text(encoding="utf-8"))["summary_metrics"]["stage"] == (
-        "tampered"
-    ), "the authoritative receipt is never written to by a rebuild"
-
-
-def test_altered_stored_bytes_refuse_before_any_rebuild(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
-) -> None:
-    target = _chain(outputs)
-    run = _fulfill(outputs, target, environment=environment)
-    artifact = load_manifest(run.results[0].receipt.path).artifacts[0]
-    (environment.root / artifact.metadata["relative_path"]).write_bytes(b"corrupt")
-
-    with pytest.raises(FulfillmentAdmissionError) as caught:
-        rebuild_workflow(_closure(outputs, target), environment=environment)
-    assert "artifact_sha256_mismatch" in caught.value.outcome.codes
-    assert calls.evaluation == 2, "corruption is custody loss, not drift, so nothing rebuilt"
-
-
-def test_repair_promotes_a_revalidated_candidate_and_records_the_custody_event(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    target = _chain(outputs)
-    run = _fulfill(outputs, target, environment=environment)
-    receipt = run.results[1].receipt
-    _mutate(receipt.path, status="failed")
-
-    result = repair_workflow_operation(
-        _closure(outputs, target),
-        LogicalKey("evaluation", "chain-mid"),
-        environment=environment,
-    )
-    assert result.record.node_key == "evaluation:chain-mid"
-    assert result.record.triggering_admission.codes == ("status_not_completed",)
-    assert result.record.admission_after_repair.admitted
-    assert result.record_path.is_file()
-    assert load_manifest(receipt.path).status == "completed"
-
-
-def test_resolution_refuses_before_repairing_around_a_broken_upstream(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    target = _chain(outputs)
-    run = _fulfill(outputs, target, environment=environment)
-    _mutate(run.results[0].receipt.path, status="failed")
-    with pytest.raises(FulfillmentAdmissionError):
-        repair_workflow_operation(
-            _closure(outputs, target),
-            LogicalKey("report", "chain-leaf"),
-            environment=environment,
-        )
-
-
-# --------------------------------------------------------------------------
 # What the driver refuses to guess
 # --------------------------------------------------------------------------
 
@@ -2823,19 +2707,6 @@ def test_every_operation_over_a_closure_reconstructs_the_same_node_contexts(
     context = requests[0].execution_context
     assert context is not None
     assert [location.root for location in context.parent_execution_locations] == [retained]
-
-    rebuild = rebuild_workflow(closure, environment=staged)
-    assert rebuild.drifted == ()
-
-    # Repair executes the node again into shadow custody, which means resolving
-    # its parents again. A repair that lost the node's context would look for
-    # the parent beneath the receipt root, where it is not.
-    _mutate(fulfilled.results[0].receipt.path, status="failed")
-    repaired = repair_workflow_operation(
-        closure, LogicalKey("report", "persisted-consumer"), environment=staged
-    )
-    assert repaired.record.node_key == "report:persisted-consumer"
-    assert repaired.record.admission_after_repair.admitted
 
 
 def test_a_run_declaring_no_staged_bindings_lowers_no_context(

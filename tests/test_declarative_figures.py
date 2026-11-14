@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import importlib
 import json
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -65,10 +63,6 @@ from feedbax.plot.constructors import (
     PanelContent,
     constructor_catalog,
     get_figure_constructor,
-    get_figure_piece,
-    get_figure_template,
-    load_figure_piece,
-    load_figure_template,
     register_figure_piece,
     register_figure_constructor,
     register_figure_template,
@@ -78,7 +72,6 @@ from feedbax.plot.constructors import (
 )
 from feedbax.plot.colors import adjust_color_brightness
 from feedbax.plot import calculate_array_minmax
-from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 pytestmark = [pytest.mark.feedbax_contract]
@@ -2637,84 +2630,6 @@ def test_figure_spec_fails_before_output_on_perturbation_length_mismatch(
     assert "does not match every plotted trajectory length" in str(exc_info.value.__cause__)
     assert exc_info.value.manifest.status == "failed"
     assert exc_info.value.manifest.artifacts == []
-
-
-def test_load_figure_template_and_piece_from_package_yaml(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    package_root = tmp_path / "toy_figure_pkg"
-    template_root = package_root / "config" / "figure_templates"
-    piece_root = package_root / "config" / "figure_pieces"
-    template_root.mkdir(parents=True)
-    piece_root.mkdir(parents=True)
-    for path in (
-        package_root / "__init__.py",
-        package_root / "config" / "__init__.py",
-        template_root / "__init__.py",
-        piece_root / "__init__.py",
-    ):
-        path.write_text("", encoding="utf-8")
-    (template_root / "profiles.yml").write_text(
-        """
-name: toy.profiles
-description: Toy profile template.
-assembler: feedbax.grid_figure
-slots:
-  - name: profile
-    constructor: feedbax.profile_band
-""",
-        encoding="utf-8",
-    )
-    piece_payload = tmp_path / "piece.json"
-    piece_payload.write_text("{}", encoding="utf-8")
-    (piece_root / "baseline.yaml").write_text(
-        f"""
-name: toy.baseline
-description: Toy baseline piece.
-artifact_ref:
-  role: figure_piece
-  logical_name: piece.json
-  media_type: application/json
-  uri: {piece_payload}
-label: Baseline
-constructor: feedbax.profile_band
-""",
-        encoding="utf-8",
-    )
-
-    monkeypatch.syspath_prepend(str(tmp_path))
-    importlib.invalidate_caches()
-    for module_name in list(sys.modules):
-        if module_name == "toy_figure_pkg" or module_name.startswith("toy_figure_pkg."):
-            monkeypatch.delitem(sys.modules, module_name, raising=False)
-    package = importlib.import_module("toy_figure_pkg")
-    registry = ExperimentRegistry()
-    registry.register_package(
-        "toy",
-        package,
-        parts=[],
-        analysis_module_root="analysis",
-        training_module_root="training",
-        config_resource_root="config",
-    )
-
-    template = load_figure_template("toy/profiles", registry=registry)
-    piece = load_figure_piece("toy/baseline", registry=registry)
-
-    assert template.name == "toy.profiles"
-    assert template.slots[0].constructor == "feedbax.profile_band"
-    assert piece.name == "toy.baseline"
-    assert piece.artifact_ref is not None
-    assert piece.artifact_ref.uri == str(piece_payload)
-
-    figure_registry = FigureRegistry()
-    figure_registry.register_template(template)
-    figure_registry.register_piece(piece)
-    assert get_figure_template("toy.profiles", registry=figure_registry).name == "toy.profiles"
-    assert get_figure_piece("toy.baseline", registry=figure_registry).name == "toy.baseline"
-    with pytest.raises(TypeError, match="registry"):
-        load_figure_template("toy/profiles")
 
 
 def test_bundle_figure_topology_and_default_render_role() -> None:

@@ -4,17 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Optional
 
-from feedbax.web.orchestration.startup_script import (
-    FeedbaxInstallSpec,
-    make_startup_script,
-)
 
 
 _GCLOUD_TERMINATION_GRACE_SECONDS = 5.0
@@ -40,45 +33,6 @@ _GCP_STATUS_MAP: dict[str, InstanceStatus] = {
     "PROVISIONING": InstanceStatus.CREATING,
     "REPAIRING": InstanceStatus.UNKNOWN,
 }
-
-
-@dataclass
-class InstanceConfig:
-    """Configuration for a GCP compute instance that will run the Feedbax worker.
-
-    Args:
-        project: GCP project ID.
-        zone: GCP zone, e.g. ``"us-central1-a"``.
-        machine_type: GCP machine type, e.g. ``"n1-standard-4"`` or
-            ``"ct5lp-hightpu-4t"`` for TPU.
-        image_family: Boot disk image family.
-        image_project: GCP project owning the image family.
-        preemptible: Whether to use a preemptible (spot) instance.
-        worker_port: Port the Feedbax worker will bind to.
-        auth_token: Required shared secret for the worker's auth middleware.
-        ts_auth_key: Unsupported legacy Tailscale auth key input.
-        install_spec: Structured Feedbax install request for the startup script.
-    """
-
-    project: str
-    zone: str
-    machine_type: str = "n1-standard-4"
-    image_family: str = "debian-11"
-    image_project: str = "debian-cloud"
-    preemptible: bool = True
-    worker_port: int = 8765
-    auth_token: str = ""
-    ts_auth_key: Optional[str] = None
-    install_spec: FeedbaxInstallSpec = field(default_factory=FeedbaxInstallSpec)
-
-    def __post_init__(self) -> None:
-        if not self.auth_token:
-            raise ValueError("GCP workers require an explicit worker credential")
-        if self.ts_auth_key:
-            raise ValueError(
-                "GCP Tailscale bootstrap is unsupported because it cannot keep credentials "
-                "out of process arguments"
-            )
 
 
 @dataclass
@@ -230,58 +184,6 @@ def _parse_instance(raw: dict) -> InstanceInfo:
 # ---------------------------------------------------------------------------
 # Public async API
 # ---------------------------------------------------------------------------
-
-
-async def create_instance(config: InstanceConfig, instance_name: str) -> InstanceInfo:
-    """Create a GCP compute instance and return its initial info.
-
-    The instance's startup script installs feedbax and starts the authenticated
-    worker process. This low-level helper does not establish a trusted HTTPS
-    origin; the Studio adapter therefore refuses to invoke it.
-
-    Args:
-        config: Instance configuration (project, zone, machine type, etc.).
-        instance_name: Name to give the instance.
-
-    Returns:
-        An :class:`InstanceInfo` describing the newly created instance.
-
-    Raises:
-        RuntimeError: If ``gcloud`` fails.
-    """
-    with tempfile.TemporaryDirectory(prefix="feedbax-gcp-metadata-") as directory:
-        metadata_dir = Path(directory)
-        os.chmod(metadata_dir, 0o700)
-        startup_path = metadata_dir / "startup.sh"
-        token_path = metadata_dir / "worker-token"
-        startup_path.write_text(make_startup_script(config.install_spec), encoding="utf-8")
-        token_path.write_text(config.auth_token, encoding="utf-8")
-        os.chmod(startup_path, 0o600)
-        os.chmod(token_path, 0o600)
-
-        args = [
-            "compute",
-            "instances",
-            "create",
-            instance_name,
-            f"--project={config.project}",
-            f"--zone={config.zone}",
-            f"--machine-type={config.machine_type}",
-            f"--image-family={config.image_family}",
-            f"--image-project={config.image_project}",
-            f"--metadata=WORKER_PORT={config.worker_port}",
-            f"--metadata-from-file=startup-script={startup_path},AUTH_TOKEN={token_path}",
-            "--format=json",
-        ]
-        if config.preemptible:
-            args.append("--preemptible")
-
-        raw = await _run_gcloud(*args)
-    # gcloud returns a list when creating an instance.
-    instances: list = raw if isinstance(raw, list) else [raw]
-    if not instances:
-        raise RuntimeError("gcloud create returned empty response")
-    return _parse_instance(instances[0])
 
 
 async def get_instance(project: str, zone: str, name: str) -> InstanceInfo:

@@ -15,8 +15,6 @@ from feedbax.contracts.canonical_json import (
     CANONICAL_JSON_V1,
     CANONICAL_JSON_V2,
     CanonicalJsonError,
-    CanonicalJsonErrorCode,
-    canonical_json_bytes_for_algorithm,
     canonical_json_v1_bytes,
     canonical_json_v2_bytes,
 )
@@ -136,16 +134,6 @@ def test_canonical_json_v1_bytes_are_permanently_unchanged() -> None:
     )
     assert canonical_json_v1_bytes(value) == expected
     assert canonical_json_bytes(value) == expected
-
-
-def test_algorithm_dispatch_is_explicit_and_unknown_algorithms_fail_typed() -> None:
-    value = {"integral": 1.0}
-    assert canonical_json_bytes_for_algorithm(value, CANONICAL_JSON_V1) == b'{"integral":1.0}'
-    assert canonical_json_bytes_for_algorithm(value, CANONICAL_JSON_V2) == b'{"integral":1}'
-
-    with pytest.raises(CanonicalJsonError) as exc_info:
-        canonical_json_bytes_for_algorithm(value, "canonical_json_v3")
-    assert exc_info.value.code is CanonicalJsonErrorCode.UNKNOWN_ALGORITHM
 
 
 def test_consistency_predicate_v2_migration_preserves_and_pins_its_digest() -> None:

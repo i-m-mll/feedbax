@@ -20,7 +20,6 @@ from feedbax.objectives.spec import (
     TaskTimelineSpec,
     TimelineEpochSpec,
     TimelineEventSpec,
-    canonical_objective_payload,
 )
 from feedbax.integrations.provider import provider_manifest
 
@@ -140,7 +139,7 @@ def test_b_set_like_objective_spec_covers_masks_schedules_and_differences() -> N
         ],
     )
 
-    payload = canonical_objective_payload(spec)
+    payload = spec.model_dump(mode="json", exclude_none=True)
 
     assert payload["schema_version"] == "feedbax.spec.objective.v1"
     assert [term["label"] for term in payload["terms"]] == [
@@ -179,7 +178,7 @@ def test_flat_position_schedule_uses_constant_schedule_default() -> None:
         ],
     )
 
-    assert canonical_objective_payload(spec)["terms"][0]["schedule"] == {
+    assert spec.model_dump(mode="json", exclude_none=True)["terms"][0]["schedule"] == {
         "type": "constant",
         "value": 1.0,
     }
@@ -206,7 +205,7 @@ def test_matrix_quadratic_objective_term_covers_terminal_quadratic_payload() -> 
         ],
     )
 
-    payload = canonical_objective_payload(spec)
+    payload = spec.model_dump(mode="json", exclude_none=True)
 
     assert payload["terms"][0]["type"] == "matrix_quadratic"
     assert payload["terms"][0]["matrix"] == {

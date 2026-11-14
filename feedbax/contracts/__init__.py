@@ -53,7 +53,6 @@ from feedbax.contracts.canonical_json import (
     CanonicalJsonAlgorithm,
     CanonicalJsonError,
     CanonicalJsonErrorCode,
-    canonical_json_bytes_for_algorithm,
     canonical_json_v1_bytes,
     canonical_json_v2_bytes,
 )
@@ -976,7 +975,6 @@ __all__ = [
     "descriptor_basis_hash",
     "descriptor_basis_identity_envelope",
     "derive_consistency_predicate",
-    "canonical_json_bytes_for_algorithm",
     "canonical_json_v1_bytes",
     "canonical_json_v2_bytes",
     "canonical_expression_json",

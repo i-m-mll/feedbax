@@ -9,8 +9,6 @@ import httpx
 import pytest
 
 import feedbax.web.worker.transport as transport
-from feedbax.web.orchestration import gcp
-from feedbax.web.orchestration.startup_script import make_startup_script
 from feedbax.web.services.training_service import TrainingService
 from feedbax.web.worker.transport import (
     DEFAULT_WORKER_LIMITS,
@@ -218,40 +216,3 @@ def test_training_service_remote_config_is_server_allowlisted_and_fail_closed(
     monkeypatch.setenv("FEEDBAX_WORKER_ALLOWED_ORIGINS", "not-json")
     with pytest.raises(WorkerConfigurationError, match="JSON array"):
         TrainingService()
-
-
-def test_gcp_metadata_and_worker_startup_keep_credentials_out_of_argv(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[str] = []
-
-    async def fake_run_gcloud(*args: str):
-        captured.extend(args)
-        return [{"name": "worker", "status": "PROVISIONING"}]
-
-    monkeypatch.setattr(gcp, "_run_gcloud", fake_run_gcloud)
-    config = gcp.InstanceConfig(
-        project="project",
-        zone="zone",
-        auth_token="argv-secret",
-    )
-    asyncio.run(gcp.create_instance(config, "worker"))
-
-    argv = " ".join(captured)
-    assert "argv-secret" not in argv
-    assert "--metadata-from-file=" in argv
-    script = make_startup_script()
-    assert "--auth-token" not in script
-    assert "FEEDBAX_WORKER_AUTH_TOKEN" in script
-
-
-def test_gcp_rejects_missing_or_unsupported_credentials() -> None:
-    with pytest.raises(ValueError, match="explicit worker credential"):
-        gcp.InstanceConfig(project="project", zone="zone")
-    with pytest.raises(ValueError, match="Tailscale bootstrap is unsupported"):
-        gcp.InstanceConfig(
-            project="project",
-            zone="zone",
-            auth_token="token",
-            ts_auth_key="tailscale-secret",
-        )

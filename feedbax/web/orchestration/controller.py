@@ -24,11 +24,10 @@ from feedbax.orchestration.controller import (
     OrphanHandlingPolicy,
     ProviderInventoryObservation,
     ProviderResourceObservation,
-    RunIntent,
     provider_inventory_observation,
     utc_now,
 )
-from feedbax.orchestration.realization import BackendPlan, ExpectedCost
+from feedbax.orchestration.realization import ExpectedCost
 from feedbax.web.orchestration.gcp import (
     InstanceInfo,
     InstanceStatus,
@@ -63,10 +62,6 @@ class GcpEffectAdapter:
 
     def __init__(self, training_service: Any | None = None) -> None:
         self.training_service = training_service
-        self._secret_material: dict[str, dict[str, str]] = {}
-
-    def bind_secret_material(self, reservation_id: str, secrets: Mapping[str, str]) -> None:
-        self._secret_material[reservation_id] = dict(secrets)
 
     async def dispatch(self, reservation: EffectReservation) -> EffectObservation:
         parameters = reservation.normalized_parameters
@@ -189,67 +184,6 @@ class StudioController:
         self._discovery_failed = False
         self._pending: Counter[str] = Counter()
         self._failed: set[str] = set()
-
-    def reserve_cloud_launch(
-        self,
-        invocation: Invocation,
-        backend_plan: BackendPlan,
-        *,
-        parameters: Mapping[str, Any],
-        ttl_seconds: int,
-        secrets: Mapping[str, str],
-    ) -> tuple[RunIntent, EffectReservation]:
-        if backend_plan.invocation_id != invocation.invocation_id:
-            raise ValueError("BackendPlan does not realize the submitted Invocation")
-        if backend_plan.backend_id != "gcp":
-            raise ValueError("the GCP Studio endpoint requires a GCP BackendPlan")
-        for field_name in (
-            "project",
-            "zone",
-            "machine_type",
-            "preemptible",
-            "worker_port",
-            "install_spec",
-        ):
-            if backend_plan.configuration.get(field_name) != parameters.get(field_name):
-                raise ValueError(
-                    f"GCP launch parameter {field_name!r} differs from the exact BackendPlan"
-                )
-        intent = RunIntent(
-            intent_id=f"studio-{os.urandom(12).hex()}",
-            invocation_id=invocation.invocation_id,
-            desired_outcome="remote-worker-available",
-            operator_gate_policy="per-effect-authentication",
-            idempotency_boundary=backend_plan.external_effect_key,
-        )
-        self.controller.admit_intent(intent)
-        self.controller.select_backend_plan(intent.intent_id, backend_plan)
-        reservation = self.controller.reserve_effect(
-            intent.intent_id,
-            backend_plan,
-            effect_class="cloud-machine-acquisition",
-            normalized_parameters=parameters,
-            expires_at=utc_now() + timedelta(seconds=ttl_seconds),
-            external_effect_key=str(parameters["instance_name"]),
-        )
-        self.gcp.bind_secret_material(reservation.reservation_id, secrets)
-        return intent, reservation
-
-    async def authenticate_and_dispatch(
-        self,
-        intent_id: str,
-        reservation_id: str,
-        *,
-        operator_identity: str,
-        authentication_id: str,
-    ) -> None:
-        self.authenticate_reservation(
-            intent_id,
-            reservation_id,
-            operator_identity=operator_identity,
-            authentication_id=authentication_id,
-        )
-        await self.controller.dispatch(intent_id, reservation_id, self.gcp)
 
     def authenticate_reservation(
         self,

@@ -16,7 +16,7 @@ from feedbax.web.app import create_app
 from feedbax.web.orchestration import controller as studio_controller_module
 from feedbax.web.orchestration.controller import StudioController
 from feedbax.web.services.training_service import training_service
-from tests.test_durable_controller import _Adapter, _gcp_plan
+from tests.test_durable_controller import _Adapter, _gcp_plan, _seed_gcp_reservation
 
 
 _PRIMARY_SCOPE = ("inert-project", "northamerica-northeast1-a")
@@ -50,21 +50,21 @@ def _studio(path, adapter):
 def _reserve(studio, key, *, scope=_PRIMARY_SCOPE):
     project, zone = scope
     invocation, plan = _gcp_plan(project=project, zone=zone)
-    intent, reservation = studio.reserve_cloud_launch(
+    intent, reservation = _seed_gcp_reservation(
+        studio,
         invocation,
         plan,
         parameters={**plan.configuration, "instance_name": key},
-        ttl_seconds=300,
-        secrets={},
     )
     return intent.intent_id, reservation.reservation_id
 
 
 async def _dispatch(studio, key, *, scope=_PRIMARY_SCOPE):
     intent_id, reservation_id = _reserve(studio, key, scope=scope)
-    await studio.authenticate_and_dispatch(
+    studio.authenticate_reservation(
         intent_id, reservation_id, operator_identity="operator", authentication_id=f"auth-{key}"
     )
+    await studio.controller.dispatch(intent_id, reservation_id, studio.gcp)
     return intent_id, reservation_id
 
 

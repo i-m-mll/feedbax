@@ -132,11 +132,6 @@ try:
         learning_rate_schedule,
         validate_optimizer_state_for_spec,
     )
-    from .spec_storage import (
-        TrainingSpecStorageResult,
-        emit_training_run_spec_storage,
-        stamp_training_run_manifest_identities,
-    )
     from .run_matrix import (
         TrainingRowLowerer,
         materialize_adapted_run_matrix,
@@ -212,7 +207,6 @@ __all__ = [
     "ManifestEmissionConflictError",
     "OptimizerStateCompatibilityError",
     "TrainingRunExecutionResult",
-    "TrainingSpecStorageResult",
     "AuthoredTrainingRow",
     "RowLowererIdentity",
     "TrainingRowLowerer",
@@ -270,7 +264,6 @@ __all__ = [
     "training_method_row_lowerer_registration",
     "training_method_authoring_implementation_sha256",
     "execute_training_run_spec",
-    "emit_training_run_spec_storage",
     "fingerprint_checkpoint_custody_inputs",
     "fork_checkpoint_plan",
     "isolated_checkpoint_probe",
@@ -299,7 +292,6 @@ __all__ = [
     "require_execution_preparation_provider",
     "preparation_rng_token",
     "structural_abi_fingerprint",
-    "stamp_training_run_manifest_identities",
     "training_step_for_abstract_loss",
     "validate_optimizer_state_for_spec",
     "write_checkpoint_transaction",
