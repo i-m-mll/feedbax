@@ -22,6 +22,8 @@ export function canvasViewportCommands(viewport: () => CanvasViewport | null, en
     bindStudioCommand(id, () => viewport()?.[id](), { enabled }));
 }
 
+export type CanvasViewportCommand = ReturnType<typeof canvasViewportCommands>[number];
+
 type Props = ReactFlowProps & {
   /** HTML documents supply their own bounds in canvas coordinates. */
   contentBounds?: Rect | null;

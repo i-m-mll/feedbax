@@ -68,8 +68,9 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
     await expect(table).toBeVisible();
     const retry = task.getByRole('button', { name: 'Retry', exact: true });
     await retry.press('Enter');
+    await expect(task).toBeFocused();
     await expect(task.getByRole('alert')).toHaveCount(0);
-    await expect(task.getByRole('combobox')).toBeVisible();
+    await expect(task.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
     await expect(table).toBeVisible();
     const current = await request.get(projectPath);
     expect(current.ok()).toBe(true);

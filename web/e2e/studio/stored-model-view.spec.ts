@@ -52,6 +52,7 @@ test('authors and reopens an addressed Model through the project history', async
 
   const step = await apply(() => enter(inspector.getByRole('textbox', { name: 'Step', exact: true }), '0.02 s'));
   expect(stored(step.snapshot).step_seconds).toBe(0.02);
+  await expect(model.getByRole('button', { name: 'Lock', exact: true })).toBeEnabled();
   const gru = drawer.getByRole('button', { name: 'Add GRU', exact: true });
   const added = await apply(() => gru.press('Enter'));
   const component = added.changed[0].element;
@@ -137,6 +138,7 @@ test('authors and reopens an addressed Model through the project history', async
   expect(flipped.snapshot.semantic_root).toBe(redone.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
   await expect(wirePath).not.toHaveAttribute('d', unflippedPath);
+  await expect(model.getByRole('button', { name: 'Collapse All', exact: true })).toBeEnabled();
   const collapsed = await apply(() => model.getByRole('button', { name: 'Collapse All', exact: true }).click());
   expect(collapsed.snapshot.semantic_root).toBe(flipped.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-collapsed', 'true');
@@ -152,6 +154,14 @@ test('authors and reopens an addressed Model through the project history', async
   if (groupAddress?.element.kind !== 'component') throw new Error('Group did not return a component address');
   await card(groupAddress.element.id).press('Enter');
   await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Group')).toBeVisible();
+  await model.focus();
+  await page.keyboard.press('Meta+K');
+  await filter.fill('Leave');
+  await expect(palette.getByRole('option', { name: 'Leave', exact: true })).toBeVisible();
+  await filter.press('Escape');
+  await model.focus();
+  await page.keyboard.press('Meta+ArrowUp');
+  await expect(model.getByRole('navigation', { name: 'Model Path' })).toBeHidden();
   await page.reload();
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();

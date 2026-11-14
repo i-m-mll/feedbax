@@ -10,8 +10,9 @@ import {
 import { Scan, Lock, Minus, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
-import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
+import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
+import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { portId, portTypeLabel, type Port } from './modelGraph';
 import './modelCanvas.css';
 
@@ -271,8 +272,9 @@ type Props = {
   collapsed: boolean;
   canEdit: boolean;
   viewportRef: Ref<CanvasViewport>;
-  onToggleLock(): void;
-  onToggleCollapse(): void;
+  lock: StudioCommand;
+  collapse: StudioCommand;
+  viewportCommands: readonly CanvasViewportCommand[];
   onCanvasPoint(point: ModelPosition | undefined): void;
   onSearch(point: ModelPosition): void;
   onNode(node: ModelCard, extend: boolean): void;
@@ -292,7 +294,9 @@ export function ModelCanvas(props: Props) {
   return <ReactFlowProvider><ModelHandleUpdates><Canvas {...props} /></ModelHandleUpdates></ReactFlowProvider>;
 }
 
-function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, onToggleLock, onToggleCollapse, onCanvasPoint,
+const viewportIcons = { fitView: Scan, zoomIn: Plus, zoomOut: Minus };
+
+function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, lock, collapse, viewportCommands, onCanvasPoint,
   onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
   onLibraryDrop, onAttachmentDrop }: Props) {
   const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
@@ -322,12 +326,13 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
   useEffect(() => { setEdges(edges); }, [edges, setEdges]);
   return <div className="studio-model-canvas">
     <div className="studio-model-strip">
-      <button type="button" {...appTip(studioName('collapseAll'))} aria-label={studioName('collapseAll')} aria-pressed={collapsed} onClick={onToggleCollapse}><ChevronsDownUp /></button>
-      <button type="button" {...appTip(studioName('lock'))} aria-label={studioName('lock')} aria-pressed={locked} disabled={!canEdit} onClick={onToggleLock}>{locked ? <Lock /> : <Unlock />}</button>
+      <button type="button" {...commandAttributes(collapse)} aria-pressed={collapsed} disabled={!collapse.enabled} onClick={collapse.invoke}><ChevronsDownUp /></button>
+      <button type="button" {...commandAttributes(lock)} aria-pressed={locked} disabled={!lock.enabled} onClick={lock.invoke}>{locked ? <Lock /> : <Unlock />}</button>
       <div />
-      <button type="button" {...appTip(studioName('fitView'))} aria-label={studioName('fitView')} onClick={() => viewport.current?.fitView()}><Scan /></button>
-      <button type="button" {...appTip(studioName('zoomIn'))} aria-label={studioName('zoomIn')} onClick={() => viewport.current?.zoomIn()}><Plus /></button>
-      <button type="button" {...appTip(studioName('zoomOut'))} aria-label={studioName('zoomOut')} onClick={() => viewport.current?.zoomOut()}><Minus /></button>
+      {viewportCommands.map((command) => {
+        const Icon = viewportIcons[command.id];
+        return <button key={command.id} type="button" {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}><Icon /></button>;
+      })}
     </div>
     <div className="studio-model-surface" onPointerMove={(event) => onCanvasPoint(point(event))}
       onPointerLeave={() => onCanvasPoint(undefined)}

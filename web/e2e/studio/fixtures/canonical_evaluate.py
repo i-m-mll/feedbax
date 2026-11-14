@@ -153,7 +153,7 @@ def observe(home: str, project: str, revision: str, trial_index: str):
         )
         assert result.receipt == row.result.receipt
         assert result.size_bytes == row.result.size_bytes
-        with result.open_states() as dataset:
+        with result.open_states(verify=True) as dataset:
             coordinates = dataset.data("checkpoint").tolist()
             descriptor = dataset.descriptor
             assert descriptor.schema_id == RAW_STATES_SCHEMA

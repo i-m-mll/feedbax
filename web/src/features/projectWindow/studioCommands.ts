@@ -43,19 +43,20 @@ const shortcuts = {
   modelCopy: primary('C'),
   modelCut: primary('X'),
   modelPaste: primary('V'),
+  leave: primary('ArrowUp'),
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
   'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
-  'flip' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
+  'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
   'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
-  'flip', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
+  'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
   'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
   'modelCopy', 'modelCut', 'modelPaste',
 ]);
@@ -70,12 +71,12 @@ export interface StudioCommand {
   invoke(): void;
 }
 
-export function bindStudioCommand(
-  id: StudioCommandId,
+export function bindStudioCommand<Id extends StudioCommandId>(
+  id: Id,
   perform: () => void,
   { enabled = true, name = id, subject, keyboard = true }:
     { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean } = {},
-): StudioCommand {
+): StudioCommand & { readonly id: Id } {
   const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
   const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
     (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
@@ -134,7 +135,7 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
 export function commandInContext(command: StudioCommand, context: ReturnType<typeof studioCommandContext>) {
   if (context.dialog && !(context.paletteOpen && command.id === 'commandPalette')) return false;
   if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run' ||
-      command.id === 'addComponent' || command.id.startsWith('model'))) return false;
+      command.id === 'addComponent' || command.id === 'leave' || command.id.startsWith('model'))) return false;
   return !(context.activity && command.selectionScoped);
 }
 

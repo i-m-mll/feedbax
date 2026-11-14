@@ -379,6 +379,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     setMenu(undefined);
     setPath(path);
   }
+  function enterComposite(id: string, subject?: string) {
+    return bindStudioCommand('enter', () => go([...currentPath, id]), { subject });
+  }
   function keyboardConnect(port: Port) {
     if (locked || !editTopology || port.direction !== 'output') return;
     if (port.taskSignal && !projectionRun) return;
@@ -538,12 +541,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
     const ports = portMap.get(id) ?? emptyPorts;
     const problem = addressedProblems.get(key);
-    const enter = definition?.kind === 'composite' ? () => go([...currentPath, id]) : undefined;
+    const enter = definition?.kind === 'composite' ? enterComposite(id).invoke : undefined;
     return {
       id, type: 'modelCard', ariaLabel: name,
       domAttributes: {
         'aria-description': [caption, problem].filter(Boolean).join(' · ') || undefined,
-        ...(enter && { onKeyDown: (event) => {
+        ...(enter && { onKeyDownCapture: (event) => {
           if (event.target !== event.currentTarget || event.key !== 'Enter') return;
           event.preventDefault();
           event.stopPropagation();
@@ -721,28 +724,45 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   const componentsOnly = selectedHere.length > 0 && selectedHere.every((item) => item.element.kind === 'component');
   const viewportCommands = canvasViewportCommands(() => viewport.current, !!model);
+  const isCollapsed = !!collapsed?.[graphId];
+  const collapse = bindStudioCommand('collapseAll', () => {
+    void apply(studioName(isCollapsed ? 'expandAll' : 'collapseAll'), { op: 'collapse_graph', graph, collapsed: !isCollapsed }, false);
+  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: editTopology });
+  const lock = bindStudioCommand('lock', () => setLocked((current) => !current), {
+    name: locked ? 'unlock' : 'lock', enabled: editTopology,
+  });
+  const leave = currentPath.length ? bindStudioCommand('leave', () => go(currentPath.slice(0, -1))) : undefined;
   const attachmentsForSelection = ownerAddress && !attachment ? attachmentCommands(ownerAddress) : [];
-  const topologyCommands = !selection ? [] : [
-    ...(component ? [bindStudioCommand('flip', () => {
-      void apply(studioName('flip'), { op: 'flip_component', address: selection }, false);
-    }, { enabled: editTopology })] : []),
-    ...(element?.kind === 'wire' ? [
+  function topologyCommands(address: ModelAddress, point = cursor.current) {
+    const targetElement = address.element;
+    if (targetElement.kind === 'component') return [
+      bindStudioCommand('flip', () => {
+        void apply(studioName('flip'), { op: 'flip_component', address }, false);
+      }, { enabled: editTopology }),
+      ...(interior?.components?.[targetElement.id]?.kind === 'composite' ? [enterComposite(targetElement.id)] : []),
+    ];
+    if (targetElement.kind !== 'wire') return [];
+    const routePoints = waypoints?.[addressKey(address)] ?? [];
+    return [
       bindStudioCommand('addWaypoint', () => {
-        const edge = connections.find((item) => item.id === element.id);
+        if (point) {
+          route(address, [...routePoints, point], studioName('addWaypoint'));
+          return;
+        }
+        const edge = connections.find((item) => item.id === targetElement.id);
         const source = nodes.find(({ id }) => id === edge?.source);
         const target = nodes.find(({ id }) => id === edge?.target);
         if (!source || !target) return;
-        const point = menu?.point ?? cursor.current ?? {
+        route(address, [...routePoints, {
           x: (source.position.x + target.position.x) / 2 + 90,
           y: (source.position.y + target.position.y) / 2 + 32,
-        };
-        route(selection, [...(waypoints?.[addressKey(selection)] ?? []), point], studioName('addWaypoint'));
+        }], studioName('addWaypoint'));
       }, { enabled: editTopology }),
       bindStudioCommand('removeWaypoint', () => {
-        route(selection, (waypoints?.[addressKey(selection)] ?? []).slice(0, -1), studioName('removeWaypoint'));
-      }, { enabled: editTopology && !!waypoints?.[addressKey(selection)]?.length }),
-    ] : []),
-  ];
+        route(address, routePoints.slice(0, -1), studioName('removeWaypoint'));
+      }, { enabled: editTopology && routePoints.length > 0 }),
+    ];
+  }
   const commands = [
     bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
@@ -768,7 +788,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     bindStudioCommand('modelPaste', () => { if (clipboard) void apply(studioName('modelPaste'), { op: 'paste', graph, clipboard }); },
       { enabled: editTopology && !!clipboard }),
     ...attachmentsForSelection,
-    ...topologyCommands,
+    ...(selection ? topologyCommands(selection) : []),
+    ...(leave ? [leave] : []),
+    collapse, lock,
     ...viewportCommands,
   ];
   function contextual(event: MouseEvent, address: ModelAddress, point: ModelPosition) {
@@ -835,9 +857,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const outline = <ul className="space-y-0.5">
     {objects.map(([id, component]) => {
       const address = at(graph, { kind: 'component', id });
+      const enter = component.kind === 'composite' ? enterComposite(id, component.name) : undefined;
       return <li key={id} className="flex">
-        {component.kind === 'composite' && <button className={button} type="button"
-          aria-label={studioAccessibleName('enter', component.name)} onClick={() => go([...currentPath, id])}>›</button>}
+        {enter && <button className={button} type="button"
+          {...commandAttributes(enter)} onClick={enter.invoke}>›</button>}
         <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(address))}
           onClick={(event) => select(address, event.shiftKey)}>{component.name}</button>
       </li>;
@@ -883,10 +906,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       )} />}
       <div className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
-          collapsed={!!collapsed?.[graphId]} viewportRef={viewport}
-          onToggleLock={() => setLocked((current) => !current)}
-          onToggleCollapse={() => void apply(collapsed?.[graphId] ? 'Expand All' : 'Collapse All',
-            { op: 'collapse_graph', graph, collapsed: !collapsed?.[graphId] }, false)}
+          collapsed={isCollapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
           onCanvasPoint={(point) => { cursor.current = point; }}
           onSearch={openSearch} onNode={(node, extend) => {
             if (!pick && node.data.address.element.kind === 'component') select(node.data.address, extend);
@@ -977,7 +997,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     </Dialog> : menu && <Dialog ariaLabel={studioName('modelCommands')} onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
       <div role="menu" className="fixed grid rounded border border-shell-divider bg-shell-chrome p-1 text-sm shadow-lg"
         style={{ left: Math.min(menu.x, window.innerWidth - 160), top: Math.min(menu.y, window.innerHeight - 240) }}>
-        {[...commands.filter((command) => command.id.startsWith('model')), ...topologyCommands, ...attachmentsForSelection]
+        {[...commands.filter((command) => command.id.startsWith('model')),
+          ...topologyCommands(menu.address, menu.point), ...attachmentCommands(menu.address)]
           .filter((command) => command.enabled).map((command) =>
           <button className={button} role="menuitem" type="button" key={command.id} {...commandAttributes(command)}
             onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</button>)}

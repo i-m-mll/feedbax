@@ -754,14 +754,22 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
     (await runSavedEvaluation(page, request, info))!;
   const labels = new Map(completed.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
-  const activityRun = single.find(({ key }) => key.step === 'conditions')!;
+  const conditions = single.filter(({ key }) => key.step === 'conditions');
+  expect(conditions).toHaveLength(2);
+  const activityRun = conditions[1];
+  const activityLabel = labels.get(JSON.stringify(activityRun.key))!;
   await footer(page).getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const openActivityRun = activity.getByRole('button', {
-    name: `Evaluate saved-evaluate ${labels.get(JSON.stringify(activityRun.key))}`,
-    exact: true,
+  const openActivityRun = activity.getByRole('button').filter({ has: page.getByText(activityLabel, { exact: true }) });
+  await expect(openActivityRun).toHaveAccessibleName(/^Evaluate/);
+  const activityReplay = page.waitForResponse((response) => {
+    const submitted = response.request();
+    if (submitted.method() !== 'POST' || new URL(response.url()).pathname !== replayPath) return false;
+    const body = submitted.postDataJSON();
+    return body.revision === revision && body.job_id === activityRun.result!.job_id
+      && body.key?.step === activityRun.key.step
+      && body.key?.row === activityRun.key.row && body.key?.variant === activityRun.key.variant;
   });
-  const activityReplay = posted(page, replayPath);
   await openActivityRun.click();
   const opened = await activityReplay;
   expect(opened.ok(), await opened.text()).toBe(true);

@@ -9,12 +9,12 @@ const groups = {
   Edit: [
     'undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput', 'modelSelectAll', 'modelRemove',
     'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
-    'flip', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
+    'flip', 'enter', 'leave', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
   ],
   View: [
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',
     'splitDetails', 'switchSlot', ...projectWindowViews, 'back', 'forward', 'nextRegion', 'previousRegion',
-    'clearFocus', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
+    'clearFocus', 'collapseAll', 'lock', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
   ],
   Run: ['run', 'stop', 'resume', 'forceStop', 'openRun'],
   Plan: ['newStep', 'newSweep', 'pivot', 'fold'],
