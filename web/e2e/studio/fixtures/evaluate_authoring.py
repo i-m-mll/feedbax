@@ -25,6 +25,7 @@ def files():
         task["document"]: {"/params/x": 0.18},
     }
     inline["training_config"].update(n_reach_steps=12, snapshot_interval=1)
+    rows = (("control", 731, 0.04), ("comparison", 732, 0.06), ("unselected", 733, 0.08))
     evaluate = {
         "kind": "evaluate",
         "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
@@ -33,8 +34,13 @@ def files():
         }}},
         "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
         "sweep": {"axes": {"seed": {"values": {
-            name: {"value": seed, "patches": {"params.seed": {"value": seed}}}
-            for name, seed in (("control", 731), ("comparison", 732))
+            name: {"value": seed, "patches": {
+                "params.seed": {"value": seed},
+                "params.variation.row-y": {
+                    "op": "add", "value": {"op": "replace", "path": "task.params.y", "value": y},
+                },
+            }}
+            for name, seed, y in rows
         }}}},
     }
     return [

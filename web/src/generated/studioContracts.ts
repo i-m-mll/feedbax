@@ -3965,6 +3965,7 @@ export type StudioTrialAuthoring = {
   "objective_document": string | null;
   "task": TaskDocument | PythonTaskSelection;
   "task_source"?: StudioEvaluateValueSource | null;
+  "task_field_sources"?: Record<string, StudioEvaluateValueSource>;
   "objective": ObjectiveDocument | null;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
@@ -10624,6 +10625,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
     "task_source": z.union([StudioEvaluateValueSourceSchema, z.null()]).optional(),
+    "task_field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),

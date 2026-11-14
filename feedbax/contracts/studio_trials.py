@@ -106,6 +106,7 @@ class StudioTrialAuthoring(StrictModel):
     objective_document: ProjectName | None
     task: TaskDocument | PythonTaskSelection
     task_source: StudioEvaluateValueSource | None = None
+    task_field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
     objective: ObjectiveDocument | None
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]

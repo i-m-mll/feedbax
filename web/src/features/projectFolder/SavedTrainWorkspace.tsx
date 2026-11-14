@@ -943,8 +943,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const commit = trial.commit;
           if (view === 'task') return {
             header: <TrialTaskPicker view={value} commit={commit} />,
-            body: withProblem(<TrialTaskForm view={value}
-              commit={step?.kind !== 'evaluate' || selectedDefinitionRows.length === 1 ? commit : undefined} />),
+            body: withProblem(<TrialTaskForm view={value} commit={commit} />),
           };
           const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
           const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };

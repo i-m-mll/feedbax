@@ -1,18 +1,20 @@
 """Project and prepare edits for one saved trial pairing."""
 
+import re
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from hashlib import sha256
 
 from feedbax.compiler.trial_execution import TrialPair, pair_trial_source, validate_python_task
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_edit import EvaluateAttachmentVariant
+from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
 from feedbax.contracts.project import SetProjectValue, apply_document_edits, document_edit_ops, json_pointer_parts
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, TrainingRequestSpec
-from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
+from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -44,6 +46,7 @@ class _Projection:
     epochs: tuple[Epoch, ...]
     fields: dict[tuple[str | int, ...], Site]
     problems: tuple[Problem, ...]
+    task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
 
 
 def _project(
@@ -197,18 +200,85 @@ def _authored_task_entry(raw):
     return names[-1] if names else None
 
 
-def _variation_write(definition, value):
+def _task_selection_writes(definition, value):
     raw = definition.payload["params"]["variation"]
     entry = _authored_task_entry(raw)
-    if entry is not None:
-        target, op = entry, "replace"
-    elif isinstance(raw, dict):
-        target, op = "task", "add"
-        while target in raw:
-            target += "-selection"
+    writes = []
+    if isinstance(raw, dict):
+        writes.extend(
+            _override(f"params.variation.{name}", "remove")
+            for name, edit in raw.items() if edit["path"].startswith("task.")
+        )
+        target = entry or "task"
+        if entry is None:
+            while target in raw:
+                target += "-selection"
+    elif entry is None or any(edit["path"].startswith("task.") for edit in raw[entry + 1:]):
+        target = len(raw)
     else:
-        target, op = len(raw), "add"
-    return _override(f"params.variation.{target}", op, {"op": "replace", "path": "task", "value": value})
+        target = entry
+    writes.append(_override(
+        f"params.variation.{target}", "replace" if entry == target else "add",
+        {"op": "replace", "path": "task", "value": value},
+    ))
+    return writes
+
+
+def _task_field_writes(definition, task, origins, change):
+    if not isinstance(task, PythonTaskSelection):
+        raise ProjectFolderInvalid("Evaluate Task field edits require a Python Task.")
+    raw = definition.payload["params"]["variation"]
+    prior = dict(authored_variation(authored_rollout_settings(definition.payload["params"]).variation))
+    writes = []
+    appended = 0
+    for edit in change.edits:
+        parts = json_pointer_parts(edit.path)
+        if len(parts) != 2 or parts[0] != "params" or not parts[1] or "." in parts[1]:
+            raise ProjectFolderInvalid("The edit must address one Python Task parameter.")
+        path = ("task", *parts)
+        target = ".".join(path)
+        existing = origins.get(path)
+        value = edit.value if isinstance(edit, SetProjectValue) else None
+        if existing is not None:
+            name = json_pointer_parts(existing)[-1]
+            before = prior[existing]
+            if before.op == "add" and not isinstance(edit, SetProjectValue):
+                if isinstance(raw, list):
+                    raise ProjectFolderInvalid("Removing this parameter would move other addressed variations.")
+                writes.append(_override(f"params.variation.{name}", "remove"))
+                continue
+            op = ("add" if before.op == "add" else "replace") if isinstance(edit, SetProjectValue) else "remove"
+            inner = _override(target, op, value)
+            writes.append(_override(f"params.variation.{name}", "replace", inner.model_dump(mode="json", exclude_unset=True)))
+            continue
+        op = ("replace" if parts[1] in task.params else "add") if isinstance(edit, SetProjectValue) else "remove"
+        inner = _override(target, op, value)
+        if isinstance(raw, list):
+            name = len(raw) + appended
+            appended += 1
+        else:
+            parameter = parts[1]
+            name = "task-" + (parameter if re.fullmatch(r"[A-Za-z0-9_-]+", parameter)
+                              else sha256(parameter.encode()).hexdigest())
+            occupied = set(raw) | {item.path.rpartition(".")[2] for item in writes}
+            while name in occupied:
+                name += "-field"
+        writes.append(_override(f"params.variation.{name}", "add", inner.model_dump(mode="json", exclude_unset=True)))
+    if isinstance(raw, dict) and ("task",) in origins and any(write.op == "add" for write in writes):
+        named = {name: dict(edit) for name, edit in sorted(raw.items())}
+        for name, edit in named.items():
+            reference = definition.document_ids.get(f"payload.params.variation.{name}.value")
+            if reference is not None:
+                selected = definition.document_pointers.get(f"payload.params.variation.{name}.value")
+                edit["value"] = {"document": reference, **({"pointer": selected} if selected else {})}
+        for write in writes:
+            name = write.path.rpartition(".")[2]
+            if write.op == "remove":
+                del named[name]
+            else:
+                named[name] = write.value
+        return [_override("params.variation", "replace", list(named.values()))]
+    return writes
 
 
 def _train_writes(change, project, definition, documents, projection):
@@ -313,14 +383,19 @@ def _evaluate_documents(plan, key, definition, bundle):
         if definition.payload.get("evaluation_type") != ROLLOUT_TYPE:
             raise ValueError("Task authoring requires a saved rollout Evaluate.")
         params = authored_rollout_settings(definition.payload.get("params"))
+        variant = resolve_evaluation_variant(
+            projection.pair.lowered.graph, documents.task_source, params.variation,
+        )
+        graph = variant.graph
         run = next((row for row in plan.runs if row.key == key), None)
         if run is not None:
             effective = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
             if isinstance(effective, EvaluationRequestSpec):
-                params = authored_rollout_settings(effective.params)
-        variant = resolve_evaluation_variant(
-            projection.pair.lowered.graph, documents.task_source, params.variation,
-        )
+                effective_params = authored_rollout_settings(effective.params)
+                if effective_params.variation != params.variation:
+                    graph = resolve_evaluation_variant(
+                        projection.pair.lowered.graph, documents.task_source, effective_params.variation,
+                    ).graph
     except ValueError as error:
         return documents, _Projection(
             projection.pair, projection.variables, projection.signals, projection.epochs,
@@ -329,9 +404,8 @@ def _evaluate_documents(plan, key, definition, bundle):
             )),
         ), None
     documents = _with_task(documents, variant.task)
-    return documents, _project(
-        documents, bundle, show_objective=False, graph_override=variant.graph, objective_use=ObjectiveUse.INHERITED,
-    ), variant.graph
+    paired = _project(documents, bundle, show_objective=False, graph_override=graph, objective_use=ObjectiveUse.INHERITED)
+    return documents, replace(paired, task_origins=variant.edit_origins), graph
 
 
 def _pairing(plan, key, bundle):
@@ -391,17 +465,15 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         selected = {row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in users}
     if selected != {key}:
         settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
+    evaluate_field = (step.kind == "evaluate" and isinstance(change, StudioTrialDocumentEdit) and change.kind == "task")
     if step.kind == "evaluate":
         if isinstance(change, StudioTrialSelectTask):
             _chosen_task(project, change.document)
-            value = {"document": change.document}
-        elif isinstance(change, StudioTrialDocumentEdit) and change.kind == "task":
-            if selected != {key}:
-                raise ProjectFolderInvalid("Evaluate Task field edits require one run.")
-            value = _edit_value(documents.task_source.model_dump(mode="json", exclude_unset=True), change)
+            files = [scoped_file(project, key, scope, _task_selection_writes(definition, {"document": change.document}))]
+        elif evaluate_field:
+            files = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
-        files = [scoped_file(project, key, scope, [_variation_write(definition, value)])]
     elif document is not None and isinstance(scope, StudioTrialStepScope):
         files = _document_files(project, key, change, document, lit, users)
     elif document is not None and isinstance(scope, EvaluateAttachmentVariant):
@@ -412,10 +484,30 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         files = [scoped_file(project, key, scope, writes)] if writes else []
     if not files:
         return [], ()
-    return _validate_files(files, project, settled, selected, folders, bundle, change, expression)
+    return _validate_files(files, project, settled, selected, folders, bundle, change, expression, evaluate_field=evaluate_field)
 
 
-def _validate_files(files, project, settled, selected, folders, bundle, change, expression):
+def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, documents, projected):
+    recipes = {}
+    for row in sorted(selected, key=lambda item: item.row):
+        task, projection = (documents, projected) if row == key else _pairing(plan, row, bundle)[:2]
+        recipes[row] = _task_field_writes(plan.selected_definitions[row], task.task_source, projection.task_origins, change)
+    if all(writes == recipes[key] for writes in recipes.values()):
+        return [scoped_file(project, key, scope, recipes[key])]
+    if not isinstance(scope, EvaluateAttachmentRows):
+        raise ProjectFolderInvalid("Selected runs have different authored sources for this Task field.")
+    # Explicit rows can carry independent recipes in a single saved sweep edit.
+    # A step or named axis must remain one rule over its future rows.
+    current = project
+    for row, writes in recipes.items():
+        file = scoped_file(current, row, EvaluateAttachmentRows(kind="rows", rows=(row.row,)), writes)
+        current = preview_authored_files(current, [file])
+    raw = project.steps[key.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    sweep = current.steps[key.step].sweep.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    return [file_value(AuthoredFileAddress(kind="step", id=key.step), raw, ("sweep",), sweep)]
+
+
+def _validate_files(files, project, settled, selected, folders, bundle, change, expression, *, evaluate_field):
     plan = settled.plan
     authored = preview_authored_files(project, files)
     compare_names = isinstance(change, StudioTrialDocumentEdit) and change.kind == "objective" and any(
@@ -452,15 +544,23 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
             if int(index) >= len(old.objective.terms) or old.objective.terms[int(index)].id != expression.term:
                 raise ProjectFolderInvalid("The selected runs have different Objective term orders.")
         introduced = tuple(problem for problem in after.problems if problem not in before.problems)
-        if introduced:
+        if introduced and not evaluate_field:
+            return [], introduced
+        if evaluate_field and introduced and key in current:
             return [], introduced
         if isinstance(change, StudioTrialDocumentEdit):
             old_value = old.task_source if change.kind == "task" else old.objective
             new_value = new.task_source if change.kind == "task" else new.objective
             raw = old_value.model_dump(mode="json", exclude_unset=True)
+            requested = change
+            if evaluate_field:
+                requested = change.model_copy(update={"edits": [
+                    edit.model_copy(update={"op": "replace" if json_pointer_parts(edit.path)[1] in old_value.params else "add"})
+                    if isinstance(edit, SetProjectValue) else edit for edit in change.edits
+                ]})
             if plan.steps[key.variant, key.step].kind == "train":
                 _, raw = _changed_value(old, plan.selected_definitions[key], change.kind)
-            expected = type(old_value).model_validate(_edit_value(raw, change))
+            expected = type(old_value).model_validate(_edit_value(raw, requested))
             if expected != new_value:
                 raise ProjectFolderInvalid("A selected value is controlled by a different authored source.")
         elif isinstance(change, StudioTrialSelectTask):
@@ -481,7 +581,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
                 expected[binding.name] = change.signal
             if expected != new.input_overrides:
                 raise ProjectFolderInvalid("A selected input is controlled by a different authored source.")
-        if key in previous and key not in current:
+        if not evaluate_field and key in previous and key not in current:
             diagnostic = next((
                 item for item in candidate.diagnostics if item not in before_diagnostics
                 and item.step == key.step and item.variant == key.variant and item.row == key.row
@@ -552,10 +652,21 @@ def trial_authoring(
     task_path = (f"payload.trial_documents.{_task_field(task)}" if step.kind == "train"
                  else _evaluation_task_path(definition))
     task_source = None
+    task_field_sources = {}
     if step.kind == "evaluate" and (upstream := evaluate_subject(definition)):
-        entry = _authored_task_entry(definition.payload.get("params", {}).get("variation"))
-        origin = definition.sources.get(pointer(("payload", "params", "variation", str(entry), "path")))
-        task_source = evaluate_value_source(origin, evaluate_step=key.step) if origin else evaluate_value_source(upstream[1])
+        task_source = evaluate_value_source(upstream[1])
+        for target, origin_path in projected.task_origins.items():
+            if target[0] != "task":
+                continue
+            origin = definition.sources.get(f"/payload{origin_path}/value") or definition.sources.get(
+                f"/payload{origin_path}/op",
+            )
+            if origin is not None:
+                source = evaluate_value_source(origin, evaluate_step=key.step)
+                if target == ("task",):
+                    task_source = source
+                else:
+                    task_field_sources[target[-1]] = source
     links = dict(paired.task.interface.links) if paired else {}
     expressions = {
         ("objective", "terms", term.id, field): getattr(term, field)
@@ -566,7 +677,7 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=definition.document_ids.get("payload.trial_documents.objective"),
         task=task, objective=documents.objective if step.kind == "train" else None,
-        task_source=task_source,
+        task_source=task_source, task_field_sources=task_field_sources,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),

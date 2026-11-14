@@ -413,6 +413,15 @@ def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference
     )
 
 
+def _authored_variation_problem(problem: ProjectDiagnostic, names: tuple[str, ...]) -> ProjectDiagnostic:
+    parts = json_pointer_parts(problem.path) if problem.path.startswith("/") else ()
+    if len(parts) >= 3 and parts[:2] == ("params", "variation") and parts[2].isdigit():
+        index = int(parts[2])
+        if index < len(names):
+            return replace(problem, path=pointer((*parts[:2], names[index], *parts[3:])))
+    return problem
+
+
 def _train_model_path(payload: Payload) -> tuple[str, ...]:
     return ("trial_documents", "model") if "trial_documents" in payload else ("graph",)
 
@@ -1256,12 +1265,9 @@ class _Compiler:
                 )
             if kind == "train":
                 payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
-            elif has_differences:
-                payload = self.lower_evaluate_model(
-                    key, payload, model_source, subject.member.reference if subject is not None else None,
-                )
-            if kind == "evaluate" and isinstance(payload, dict) and subject is not None:
-                payload = self.lower_evaluate_trials(key, payload, subject.member.reference, model_source)
+            elif kind == "evaluate":
+                reference = subject.member.reference if subject is not None else None
+                payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
             return replace(
@@ -1330,6 +1336,26 @@ class _Compiler:
                 return payload, None  # The ordinary Train validator reports invalid model documents.
             detail = str(error)
         return _model_difference_problem(key, address, detail), None
+
+    def lower_evaluate_payload(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
+        reference: object, has_differences: bool,
+    ) -> Payload | ProjectDiagnostic:
+        if not has_differences:
+            return self.lower_evaluate_trials(key, payload, reference, model_source)
+        original = payload.get("params")
+        lowered = self.lower_evaluate_model(key, payload, model_source, reference)
+        if isinstance(lowered, ProjectDiagnostic):
+            return lowered
+        result = self.lower_evaluate_trials(key, lowered, reference, model_source)
+        # Derived Model patches append to an ordered copy. Report a Task
+        # refusal at the original named edit without changing request encoding.
+        if isinstance(result, ProjectDiagnostic) and isinstance(original, dict):
+            named = original.get("variation")
+            params = lowered.get("params")
+            if isinstance(named, dict) and isinstance(params, dict) and isinstance(params.get("variation"), list):
+                return _authored_variation_problem(result, tuple(sorted(named)))
+        return result
 
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,

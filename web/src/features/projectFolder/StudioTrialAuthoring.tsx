@@ -92,7 +92,7 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
   const params = properties && typeof properties === 'object' && !Array.isArray(properties) ? Object.entries(properties) : [];
   const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
   return <div className="grid max-w-2xl gap-4 p-3 text-sm">
-    {source}
+    {!type && source}
     {type && <section className="grid gap-2" aria-label={studioName('parameters')}>
       <h3 className="font-medium">{type.label}</h3>
       {params.flatMap(([key, property]) => {
@@ -100,7 +100,9 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
         const name = typeof property.title === 'string' ? property.title : humanizeLabel(key);
         const value = selection?.params[key] ?? property.default;
         const number = property.type === 'number' || property.type === 'integer';
+        const origin = view.task_field_sources?.[key] ?? view.task_source;
         return <Field key={key} label={name} value={parameterValue(value)} type={number ? 'number' : 'text'}
+          description={origin ? studioEvaluateValueSource(origin) : undefined}
           parse={(raw) => number ? raw.trim() && Number.isFinite(Number(raw)) ? Number(raw) : undefined : raw}
           commit={commit && (async (value) => setError(await commit('Set ' + name, {
             kind: 'task', edits: [write(authoredPointer(['params', key]), value, !!selection && has(selection.params, key))],

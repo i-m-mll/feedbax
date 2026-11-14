@@ -257,6 +257,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   };
   const selectedKey = { variant: 'default', step: 'conditions', row: 'seed=control' };
   const siblingKey = { ...selectedKey, row: 'seed=comparison' };
+  const unselectedKey = { ...selectedKey, row: 'seed=unselected' };
   const row = (view: StudioSavedTrainRuns, key: typeof selectedKey) => view.window_map?.evaluations?.find(
     (item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row,
   );
@@ -265,12 +266,14 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
   const target = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+  const targetY = task.getByRole('spinbutton', { name: 'Target y (m)', exact: true });
+  const taskSteps = task.getByRole('spinbutton', { name: 'N Steps', exact: true });
   const stepField = inspector.getByRole('textbox', { name: 'Step', exact: true });
-  const chooseRow = async () => {
-    const definition = (await plan()).window_map?.rows.find(({ key }) =>
-      key.step === selectedKey.step && key.row === selectedKey.row);
+  const chooseRow = async (run = selectedKey, extend = false) => {
+    const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
     expect(definition).toBeDefined();
-    await plans(page).getByRole('button', { name: definition!.label, exact: true }).click();
+    await plans(page).getByRole('button', { name: definition!.label, exact: true })
+      .click(extend ? { modifiers: ['Shift'] } : {});
   };
   await page.goto(`/?project=${snapshot.project_id}`);
   await chooseStep(page, 'train');
@@ -280,6 +283,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const before = await plan();
   const [trained] = before.rows;
   const sibling = row(before, siblingKey);
+  const unselected = row(before, unselectedKey);
   const original = row(before, selectedKey);
   expect(original?.can_run).toBe(true);
   expect(sibling?.can_run).toBe(true);
@@ -292,28 +296,56 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await enter(mass, '2');
   await expect(mass).toHaveAccessibleDescription('Changed by conditions');
   await expect(mass).toHaveValue('2');
+  await tab(page, 'Runs').click();
+  await chooseRow(siblingKey, true);
   await tab(page, 'Task').click();
-  await expect(task.getByText('Trained by train', { exact: true })).toBeVisible();
+  await expect(target).toHaveAccessibleDescription('Trained by train');
   await expect(target).toHaveValue('0.18');
   await enter(target, '0.24');
-  await expect(task.getByText('Changed by conditions', { exact: true })).toBeVisible();
+  await expect(target).toHaveAccessibleDescription('Changed by conditions');
   await expect(target).toHaveValue('0.24');
+  await tab(page, 'Runs').click();
+  await chooseRow(siblingKey);
+  await tab(page, 'Task').click();
+  await expect(target).toHaveValue('0.24');
+  await expect(targetY).toHaveValue('0.06');
+  await expect(targetY).toHaveAccessibleDescription('Changed by conditions');
 
   const changed = await plan();
   const edited = await saved();
   expect(changed.rows).toEqual(before.rows);
-  expect(row(changed, siblingKey)).toEqual(sibling);
+  expect(row(changed, siblingKey)?.request_id).not.toBe(sibling?.request_id);
+  expect(row(changed, unselectedKey)).toEqual(unselected);
   expect(row(changed, selectedKey)?.request_id).not.toBe(original?.request_id);
   expect(edited.project.documents).toEqual(snapshot.project.documents);
   expect(edited.project.steps?.train).toEqual(snapshot.project.steps?.train);
   expect(Object.values(edited.project.steps?.conditions?.sweep?.exceptions ?? {}).map((item) => item?.where))
-    .toEqual([{ rows: [selectedKey.row] }, { rows: [selectedKey.row] }]);
+    .toEqual(expect.arrayContaining([{ rows: [selectedKey.row] }, { rows: [siblingKey.row, selectedKey.row] }]));
 
   await page.reload();
   await chooseStep(page, 'conditions');
   await chooseRow();
   await tab(page, 'Task').click();
   await expect(target).toHaveValue('0.24');
+  await expect(targetY).toHaveValue('0.04');
+  await expect(taskSteps).toHaveAccessibleDescription('Trained by train');
+  await expect(taskSteps).toHaveValue('12');
+  await enter(taskSteps, '0');
+  await expect.poll(async () => (await plan()).window_map?.problems.find(({ step, row }) =>
+    step === selectedKey.step && row === selectedKey.row)).toMatchObject({
+    path: '/params/variation/task-n_steps', detail: expect.stringMatching(/greater than 0/),
+  });
+  await tab(page, 'Runs').click();
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(inspector).toContainText('/params/variation/task-n_steps');
+  await tab(page, 'Task').click();
+  await expect(taskSteps).toBeEditable();
+  await expect(taskSteps).toHaveValue('0');
+  await enter(taskSteps, '12');
+  await expect.poll(async () => row(await plan(), selectedKey)?.can_run).toBe(true);
+  const repairedTask = await plan();
+  expect(row(repairedTask, siblingKey)).toEqual(row(changed, siblingKey));
+  expect(row(repairedTask, unselectedKey)).toEqual(unselected);
   await tab(page, 'Model').click();
   await model.locator('[data-id="plant"] header').click();
   await expect(mass).toHaveValue('2');
@@ -334,7 +366,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await tab(page, 'Model').click();
   await expect(stepField).toBeEditable();
   await enter(stepField, clock);
-  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(row(changed, selectedKey)?.request_id);
+  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(row(repairedTask, selectedKey)?.request_id);
   await tab(page, 'Runs').click();
   await chooseRow();
   const [evaluation] = await submit(page, path);
@@ -342,7 +374,8 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
   const complete = await plan();
   expect(complete.rows).toEqual(before.rows);
-  expect(row(complete, siblingKey)).toEqual(sibling);
+  expect(row(complete, siblingKey)).toEqual(row(changed, siblingKey));
+  expect(row(complete, unselectedKey)).toEqual(unselected);
   expect(row(complete, selectedKey)?.result).toMatchObject({
     job_id: evaluation.job_id, checkpoint_source: { job_id: train.job_id, request_id: trained.request_id, completed_updates: 2 },
     receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
