@@ -19,11 +19,17 @@ type Stage = {
 
 const emptyEvents: readonly StudioJobEvent[] = [];
 
+function historicalRequest(row: StudioSavedTrainRow): Stage['row'] | undefined {
+  return row.previous && row.previous.request_id !== row.request_id && row.previous_attempts?.length
+    ? { key: row.key, request_id: row.previous.request_id, attempts: row.previous_attempts } : undefined;
+}
+
 function checkpointLineage(
-  rows: readonly Stage['row'][], row: Stage['row'], attempt: StudioSavedTrainAttempt,
+  rows: readonly StudioSavedTrainRow[], row: Stage['row'], attempt: StudioSavedTrainAttempt,
   through: number | null = null,
 ) {
-  const byJob = new Map(rows.flatMap((candidate) =>
+  const history = rows.flatMap((candidate) => historicalRequest(candidate) ?? []);
+  const byJob = new Map([...history, ...rows].flatMap((candidate) =>
     candidate.attempts.map((job) => [job.job_id, { row: candidate, attempt: job }] as const),
   ));
   const stages: Stage[] = [{ row, attempt, through }];
@@ -78,13 +84,12 @@ function resultLoss(
   { name, result }: TrainLossResult, row: StudioSavedTrainRow, rows: readonly StudioSavedTrainRow[],
   events: readonly StudioJobEvent[],
 ): LossSeries {
-  const exactRow = result.request_id === row.request_id ? row : {
-    key: row.key, request_id: result.request_id, attempts: row.previous_attempts ?? [],
-  };
-  const attempt = exactRow.attempts.find(({ job_id, successful_receipt }) => job_id === result.job_id &&
+  const exactRow = result.request_id === row.request_id ? row : historicalRequest(row);
+  const attempt = exactRow?.attempts.find(({ job_id, successful_receipt }) => job_id === result.job_id &&
     successful_receipt?.manifest_id === result.receipt.manifest_id &&
     successful_receipt.manifest_sha256 === result.receipt.manifest_sha256);
-  const lineage = attempt && result.progress && checkpointLineage(rows, exactRow, attempt, result.progress.completed_updates);
+  const lineage = exactRow && attempt && result.progress &&
+    checkpointLineage(rows, exactRow, attempt, result.progress.completed_updates);
   return { result: { name, jobId: result.job_id }, stages: (lineage && projectLoss(lineage, events)) || [] };
 }
 
