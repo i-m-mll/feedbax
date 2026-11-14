@@ -523,7 +523,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
     const curve = await read.json() as StudioEvaluationObjectiveSeries;
     expect(curve.lineage).toEqual([train.job_id]);
     expect(curve.gaps.map(({ update }) => update)).toEqual([3]);
-    const group = page.locator('svg g[aria-label="evaluate · effort"]');
+    const group = page.getByRole('group', { name: 'Objective evaluate · effort', exact: true });
     const marks = group.locator('circle');
     await expect(marks).toHaveCount(2);
     await expect(group.locator('polyline')).toHaveCount(0);
