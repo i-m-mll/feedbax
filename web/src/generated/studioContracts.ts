@@ -155,7 +155,7 @@ export interface StudioSavedEvaluationReplayRequest {
 export interface StudioEvaluationObjectiveSeries {
   job_id: string;
   request_id: string;
-  receipt: JobReceipt;
+  receipt: JobReceipt | null;
   lineage: string[];
   condition: string | null;
   trials: string[];
@@ -4227,7 +4227,7 @@ export const StudioEvaluationObjectiveSeriesSchema: z.ZodType<StudioEvaluationOb
     .object({
       "job_id": z.string(),
       "request_id": z.string(),
-      "receipt": JobReceiptSchema,
+      "receipt": JobReceiptSchema.nullable(),
       "lineage": z.array(z.string()),
       "condition": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable(),
       "trials": z.array(z.string()),

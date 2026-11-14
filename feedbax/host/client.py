@@ -159,6 +159,7 @@ class HostClient:
         start_host: bool = True,
         record_keys: Sequence[str] = (),
         checkpoint_progress_root: str | None = None,
+        checkpoint_objective_root: str | None = None,
     ) -> JobsSnapshot:
         return cast(
             JobsSnapshot,
@@ -172,6 +173,10 @@ class HostClient:
                 include_launch=include_launch,
                 **({"record_keys": list(record_keys)} if record_keys else {}),
                 **({"checkpoint_progress_root": checkpoint_progress_root} if checkpoint_progress_root is not None else {}),
+                **(
+                    {"checkpoint_objective_root": checkpoint_objective_root}
+                    if checkpoint_objective_root is not None else {}
+                ),
             ),
         )
 

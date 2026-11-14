@@ -24,7 +24,9 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_sources import pointer as json_pointer
 from feedbax.contracts.request_refs import ProductRef, UpdateSeriesMember
-from feedbax.contracts.rollout import ResolvedRolloutBinding, ResolvedRolloutMember
+from feedbax.contracts.rollout import (
+    ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
+)
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
@@ -193,22 +195,17 @@ def prepare_rollout(
         layout = bind_raw_state(graph, effective_graph)
     except (ModelCheckpointError, StateLayoutError) as error:
         raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
-    model = sha256(canonical_json_v2_bytes({
-        "graph": effective_graph.model_dump(mode="json"),
-        "key_schedule": paired.executable.resolved.key_schedule.model_dump(mode="json"),
-        "source_overrides": variant.source_overrides,
-    })).hexdigest()
-    task = sha256(canonical_json_v2_bytes({
-        "source": paired.task_source.model_dump(mode="json"),
-        "input_bindings": dict(paired.execution.input_bindings),
-    })).hexdigest()
+    model, task = rollout_semantics(
+        effective_graph, paired.executable.resolved.key_schedule, paired.task_source,
+        paired.execution.input_bindings, variant.source_overrides,
+    )
     member = ResolvedRolloutMember(
         coordinate=checkpoint.completed_updates, model_tree=slot.tree.descriptor.sha256,
         model=model, task=task, trials=params.trials,
     )
     documents = source.spec.trial_documents
     assert documents is not None
-    objective = sha256(canonical_json_v2_bytes(documents.objective.model_dump(mode="json"))).hexdigest()
+    objective = rollout_objective_sha256(documents.objective)
     return PreparedRollout(
         paired, variant, graph, layout, resolved.scorer, slot, member, objective, paired is not source_pair,
     )
@@ -255,7 +252,7 @@ def rollout_dataset(
             variable = Variable(np.asarray(samples)[None, None], axes)
         variables[semantic_key("task", "output", (), signal.name)] = variable
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
-    variation = canonical_sha256(params.model_dump(mode="json")["variation"])
+    variation = params.condition_id()
     attrs = {"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"}
     if (position := scene_position_key(effective_graph)) is not None and position in variables:
         attrs["scene_position"] = position

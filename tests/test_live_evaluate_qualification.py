@@ -8,12 +8,14 @@ from statistics import mean
 
 import pytest
 
+from feedbax.contracts.jobs import StudioSavedEvaluationRead
 from feedbax.contracts.project import InlineBase, Project
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.jobs import JobService
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
@@ -96,7 +98,10 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     instrument(jobs, "lifecycle", tmp_path)
     project = "live-lifecycle"
     folders = ProjectFolderService(tmp_path / "projects")
-    _, (producer, evaluation) = admit(jobs, folders, project, series_definition(8))
+    plan, (producer, evaluation) = admit(jobs, folders, project, series_definition(8))
+    service = ProjectPlanService(folders, jobs)
+    (row,) = service.read(project, revision=plan.revision).evaluations.values()
+    read = StudioSavedEvaluationRead(revision=plan.revision, key=row.key, job_id=evaluation)
 
     def stop_signal(job_id, delivery):
         return host.root / "deliveries" / job_id / str(delivery) / "stop"
@@ -115,12 +120,21 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     prefix = events(host, project, evaluation, "evaluation_point")
     assert [point["checkpoint"]["completed_updates"] for point in prefix] == [2]
     assert job_row(host, evaluation, "queued")["edges"][0]["binding"] is None
+    paused_curve = service.evaluation_objective(project, read)
+    assert paused_curve.receipt is None and paused_curve.gaps == []
+    assert paused_curve.lineage == [producer]
+    assert [point.checkpoint.completed_updates for point in paused_curve.points] == [2]
 
     restart(host)
     assert events(host, project, evaluation, "evaluation_point") == prefix
+    assert service.evaluation_objective(project, read) == paused_curve
     resumed = jobs.resume(producer, "resume")
     try:
         wait_until(lambda: (tmp_path / "cancel.reached").exists(), timeout=20)
+        continued_curve = service.evaluation_objective(project, read)
+        assert continued_curve.lineage == [producer, resumed.job_id]
+        assert continued_curve.points == paused_curve.points
+        assert continued_curve.gaps == []
         assert jobs.stop([evaluation], "force")[0].job.status == "stopped"
         wait_until(lambda: stop_signal(evaluation, 0).exists())
         assert not stop_signal(resumed.job_id, 1).exists()

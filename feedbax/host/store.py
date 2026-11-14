@@ -117,7 +117,7 @@ class _CompletionCandidate(NamedTuple):
     error: dict | None
     rejections: list[_CompletionRejection]
     pending: dict | None = None
-    members: tuple[dict, ...] = ()
+    observation: dict | None = None
 
 
 def dump(value, *, sort_keys: bool = False) -> str:
@@ -804,31 +804,37 @@ class Store:
         return {"events": events, "cursor": cursor, "head": self.event_head, "oldest_cursor": 0}
 
     def jobs_snapshot(
-        self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None, **filters,
+        self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
+        checkpoint_objective_root: str | None = None, **filters,
     ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
-        if checkpoint_progress_root is not None and filters.get("include_launch"):
+        if checkpoint_objective_root is not None and not filters.get("job_id"):
+            raise HostError("invalid_request", "A checkpoint objective read needs one Evaluate attempt.")
+        root = checkpoint_objective_root or checkpoint_progress_root
+        if root is not None and filters.get("include_launch"):
             for job in snapshot["jobs"]:
                 if (
                     job["state"] in LIVE_STATES and job["request"].startswith("evaluate:")
-                    and job["data"].get("manifest_root") == checkpoint_progress_root
+                    and job["data"].get("manifest_root") == root
                     and job["data"].get("placement_detail") is not None
                 ):
-                    job["checkpoint_progress"] = self._checkpoint_progress(job)
+                    self._checkpoint_progress(job, include_objective=checkpoint_objective_root is not None)
         if record_keys:
             snapshot["records"] = self.record_get_many(record_keys)
         return snapshot
 
     @inspect_without_recording()
-    def _checkpoint_progress(self, job: dict) -> dict:
+    def _checkpoint_progress(self, job: dict, *, include_objective: bool) -> None:
         """Read the adjudicated Train path and its live point progress at the snapshot cursor."""
         edge = next(edge for edge in job["edges"] if edge.get("authenticated_completion"))
         binding = edge["binding"]
         pending = None
         points: Sequence[dict] = ()
         is_live = job["data"]["placement"] == "live"
+        observed = None
         if binding is not None:
             points = binding.get("live_evaluation_points", ())
+            observed = binding["checkpoint_selection"]
         else:
             launch = job["launch"]
             anchor = edge["job_id"]
@@ -838,22 +844,25 @@ class Store:
                 # Before delegation only the admitted root can receive the live owner.
                 tip = self.get(anchor)
                 if tip["state"] in TERMINAL_STATES:
-                    return {}
+                    return
             tip_id = tip["id"] if tip is not None else None
             candidate = self._completion_candidate(anchor, selection, tip=tip_id, observe=True)
+            if include_objective and is_live and candidate.rejections:
+                job["checkpoint_objective_error"] = True
             pending = candidate.pending
-            if tip is not None:
-                points = live_evaluate.selected_points(self.db, job["id"], candidate.members)
+            if tip is not None and (observed := candidate.observation) is not None:
+                members = observed["members"]
+                points = live_evaluate.selected_points(self.db, job["id"], members)
                 if pending is not None and tip["state"] in LIVE_STATES:
                     reported = {point["publication_cursor"] for point in points}
                     scoring = min((
-                        member["checkpoint"]["completed_updates"] for member in candidate.members
+                        member["checkpoint"]["completed_updates"] for member in members
                         if member["producer_job_id"] == tip["id"] and member["publication_cursor"] not in reported
                     ), default=None)
                     if scoring is not None:
                         pending = pending | {"next_update": scoring}
         subject = job["launch"]["payload"]["canonical_request"]["checkpoint"]
-        return {
+        job["checkpoint_progress"] = {
             "pending": pending,
             "points": [
                 {
@@ -867,6 +876,25 @@ class Store:
                 for point in points
             ],
         }
+        if include_objective and is_live and observed is not None:
+            publications = {member["publication_cursor"]: member for member in observed["members"]}
+            selected = []
+            for point in points:
+                member = publications.get(point["publication_cursor"])
+                if member is None or point["checkpoint"] != member["checkpoint"]:
+                    job["checkpoint_objective_error"] = True
+                    return
+                selected.append({
+                    "point": point,
+                    "producer_job_id": member["producer_job_id"],
+                    "producer_request_id": member["request_id"],
+                    "binding_sha256": member["binding_sha256"],
+                })
+            job["checkpoint_objective"] = {
+                "lineage": observed["lineage"],
+                "gaps": observed.get("gaps", ()),
+                "points": selected,
+            }
 
     def stopped_checkpoint(self, *, job_id: str, project: str, manifest_root: str) -> int | None:
         """Project exact stopped subjects through the same binding check used at delivery."""
@@ -1123,7 +1151,7 @@ class Store:
             attempts = reversed(pinned)
         resume_checkpoints: dict[str, str] = {}
         paths: dict[str, tuple[sqlite3.Row, ...]] = {}
-        pending_paths: dict[str, tuple[dict, tuple[dict, ...]]] = {}
+        pending_paths: dict[str, tuple[dict, dict | None]] = {}
         pending = False
         rejections: list[_CompletionRejection] = []
         missing = None
@@ -1153,7 +1181,7 @@ class Store:
 
             can_publish = True
             absent = ()
-            members = []
+            observation = None
             if selection is not None:
                 prior = paths.get(attempt["continues"], ()) if attempt_id != anchor else ()
                 path = (*prior, attempt)
@@ -1177,12 +1205,14 @@ class Store:
                                 "members": members,
                             },
                         }
+                        if observe:
+                            observation = binding["checkpoint_selection"].copy()
                         if not absent and (not observe or pinned_tip is None or attempt_id == pinned_tip):
-                            observation = _pending_checkpoint(attempt, resume, ()) if (
+                            waiting = _pending_checkpoint(attempt, resume, ()) if (
                                 observe and pinned_tip is not None and attempt["state"] in LIVE_STATES
                             ) else None
                             return _CompletionCandidate(
-                                binding, None, rejections, observation, tuple(members) if observe else (),
+                                binding, None, rejections, waiting, observation if observe else None,
                             )
                         binding["checkpoint_selection"]["gaps"] = [
                             {"update": update, "reason": "checkpoint_unavailable"} for update in absent
@@ -1235,15 +1265,18 @@ class Store:
                     for ancestor in path[:-1]:
                         pending_paths.pop(ancestor["id"], None)
                     pending_paths[attempt_id] = (
-                        _pending_checkpoint(attempt, boundary, absent), tuple(members),
+                        _pending_checkpoint(attempt, boundary, absent), observation,
                     )
 
         if completed_series is not None:
-            return _CompletionCandidate(completed_series, None, rejections)
+            return _CompletionCandidate(
+                completed_series, None, rejections,
+                observation=completed_series["checkpoint_selection"] if observe else None,
+            )
         if pending:
             if len(pending_paths) == 1:
-                observation, members = next(iter(pending_paths.values()))
-                return _CompletionCandidate(None, None, rejections, observation, members)
+                waiting, observation = next(iter(pending_paths.values()))
+                return _CompletionCandidate(None, None, rejections, waiting, observation)
             return _CompletionCandidate(None, None, rejections)
         if rejections:
             return _CompletionCandidate(None, {
@@ -1251,7 +1284,10 @@ class Store:
                 "message": rejections[0].message,
             }, rejections)
         if settled_series is not None:
-            return _CompletionCandidate(settled_series, None, rejections)
+            return _CompletionCandidate(
+                settled_series, None, rejections,
+                observation=settled_series["checkpoint_selection"] if observe else None,
+            )
         return _CompletionCandidate(None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",

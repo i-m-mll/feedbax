@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
-from typing import Annotated, Literal
+from collections.abc import Iterator, Mapping
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, TypeAdapter, field_validator
 
+from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_refs import Sha256
+
+if TYPE_CHECKING:
+    from feedbax.compiler.graph import GraphKeySchedule
+    from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.objective_document import ObjectiveDocument
+    from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 
 STUDIO_DEFAULT_EVALUATION_TYPE = "feedbax.studio.default_eval"
 ROLLOUT_TYPE = "feedbax.rollout"
@@ -123,6 +130,13 @@ class RolloutParameters(RolloutSettings):
             raise ValueError("expected distinct nonempty trial IDs")
         return values
 
+    def condition_id(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json")["variation"])
+
+
+def rollout_objective_sha256(objective: ObjectiveDocument) -> str:
+    return sha256_bytes(canonical_json_v2_bytes(objective.model_dump(mode="json")))
+
 
 class ResolvedRolloutMember(StrictModel):
     coordinate: int
@@ -130,6 +144,23 @@ class ResolvedRolloutMember(StrictModel):
     model: Sha256
     task: Sha256
     trials: tuple[str, ...]
+
+
+def rollout_semantics(
+    graph: GraphSpec, schedule: GraphKeySchedule, task_source: TaskDocument | PythonTaskSelection,
+    input_bindings: Mapping[str, str] | tuple[tuple[str, str], ...], source_overrides: Mapping[str, float],
+) -> tuple[str, str]:
+    """Identify the resolved model and task without using their numerical state."""
+    model = sha256_bytes(canonical_json_v2_bytes({
+        "graph": graph.model_dump(mode="json"),
+        "key_schedule": schedule.model_dump(mode="json"),
+        "source_overrides": source_overrides,
+    }))
+    task = sha256_bytes(canonical_json_v2_bytes({
+        "source": task_source.model_dump(mode="json"),
+        "input_bindings": dict(input_bindings),
+    }))
+    return model, task
 
 
 class ResolvedRolloutBinding(StrictModel):

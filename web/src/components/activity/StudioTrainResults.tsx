@@ -1,8 +1,9 @@
-import { useMemo } from 'react';
-import { useQueries } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef } from 'react';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { fetchSavedEvaluationObjective } from '@/api/jobs';
 import type {
-  StudioJobEvent, StudioProjectWindowMapRow, StudioSavedEvaluationRow, StudioSavedTrainAttempt, StudioSavedTrainKey,
+  StudioEvaluationObjectiveSeries, StudioJobEvent, StudioProjectWindowMapRow,
+  StudioSavedEvaluationRow, StudioSavedTrainAttempt, StudioSavedTrainKey,
   StudioSavedTrainResult, StudioSavedTrainRow,
 } from '@/generated/studioContracts';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory } from '@/hooks/useStudioJobs';
@@ -109,6 +110,7 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   const events = history.data ?? emptyEvents;
   const connection = useStudioJobConnection();
   const actions = useStudioJobActions();
+  const queryClient = useQueryClient();
   const stages = useMemo(() => {
     if (selection.kind !== 'attempt') return undefined;
     const lineage = checkpointLineage(rows, row, selection.attempt);
@@ -116,23 +118,57 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   }, [rows, row, selection, events]);
   const series = selection.kind === 'results' ? selection.results.map((result) => resultLoss(result, row, rows, events))
     : stages ? [{ stages }] : [];
-  const reads = evaluations.flatMap(({ key, checkpoint_series, result }) => {
+  const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }) => {
     const stage = checkpoint_series && stages?.find((candidate) => sameRow(candidate.key, checkpoint_series.subject));
-    return stage && result ? [{ key, result, stage }] : [];
+    if (!stage) return [];
+    const live = checkpoint_attempt?.placement.location === 'live' && checkpoint_attempt.job_id !== result?.job_id
+      ? checkpoint_attempt : null;
+    if (live?.points?.some(({ status }) => status === 'scored')) {
+      return [{ key, stage, jobId: live.job_id, receipt: null, points: live.points }];
+    }
+    return result ? [{ key, stage, jobId: result.job_id, receipt: result.receipt, points: null }] : [];
   });
-  const objectives = useQueries({ queries: reads.map(({ key, result }) => ({
-    queryKey: ['saved-evaluation-objective', project, revision, key, result.job_id, result.receipt],
+  const queries = reads.map(({ key, jobId, receipt }) => ({
+    queryKey: ['saved-evaluation-objective', project, revision, key, jobId] as const,
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      fetchSavedEvaluationObjective(project, { revision, key, job_id: result.job_id }, signal),
-    staleTime: Infinity,
+      fetchSavedEvaluationObjective(project, { revision, key, job_id: jobId }, signal),
+    staleTime: (query: { state: { data?: StudioEvaluationObjectiveSeries } }) =>
+      receipt && query.state.data?.receipt?.manifest_sha256 === receipt.manifest_sha256 ? Infinity : 0,
     retry: false,
-  })) });
-  const tracks = reads.flatMap(({ key, stage }, index) => {
+  }));
+  const objectives = useQueries({ queries });
+  const versions = reads.map(({ receipt, points }, index) => {
+    const queryKey = queries[index].queryKey;
+    const version = JSON.stringify(receipt ?? points?.map(({ publication_cursor, transaction_root_sha256 }) =>
+      [publication_cursor, transaction_root_sha256]));
+    return { id: JSON.stringify(queryKey), queryKey, version };
+  });
+  const lastVersions = useRef(new Map<string, string>());
+  useEffect(() => {
+    const previous = lastVersions.current;
+    lastVersions.current = new Map(versions.map(({ id, version }) => [id, version]));
+    for (const { id, queryKey, version } of versions) {
+      if (previous.has(id) && version !== previous.get(id)) {
+        void queryClient.invalidateQueries({ queryKey, exact: true });
+      }
+    }
+  }, [queryClient, versions]);
+  const tracks = reads.flatMap(({ key, stage, points, receipt }, index) => {
     const result = objectives[index].data;
-    if (!result) return [];
+    if (!result || objectives[index].isError) return [];
+    const selected = points ? new Map(points.map((point) => [point.publication_cursor, point])) : null;
+    const current: StudioEvaluationObjectiveSeries = selected ? {
+      ...result,
+      points: result.points.filter(({ checkpoint }) => {
+        const point = selected.get(checkpoint.publication_cursor);
+        return point?.status === 'scored' && point.job_id === checkpoint.job_id
+          && point.transaction_root_sha256 === checkpoint.transaction_root_sha256;
+      }),
+    } : result;
+    if (receipt && result.receipt && result.receipt.manifest_sha256 !== receipt.manifest_sha256) return [];
     const planRow = mapRows.find((candidate) => sameRow(candidate.key, key));
     const label = planRow && Object.keys(planRow.coordinates).length ? `${key.step} · ${planRow.label}` : key.step;
-    return heldOutTracks(label, result, stage).map((track) => ({
+    return heldOutTracks(label, current, stage).map((track) => ({
       ...track, id: JSON.stringify([key, track.id]),
     }));
   });

@@ -217,22 +217,20 @@ export function LossPlot({ series, objectives = [] }: { series: LossSeries[]; ob
         ))}
         {objectives.map(({ id, label, segments }, index) => (
           <g key={id} role="group" aria-label={studioAccessibleName('objective', label)} style={{ color: objectiveColor(index) }}>
-            {segments.map((segment) => (
-              <g key={segment[0].id}>
-                {segment.length > 1 && <polyline
-                  points={segment.map(({ update, value }) => `${x(update)},${y(value)}`).join(' ')}
-                  fill="none" stroke="currentColor" strokeWidth={1.5} strokeDasharray="4 3"
-                  vectorEffect="non-scaling-stroke"
-                />}
-                {segment.map(({ id, update, value, coverage }) => (
-                  <circle key={id} cx={x(update)} cy={y(value)} r={2.5} fill="currentColor">
-                    <title>{[
-                      label, `${studioName('updates')} ${update}`, String(value),
-                      coverage === undefined ? undefined : `${studioName('coverage')} ${coverage}`,
-                    ].filter(Boolean).join(' · ')}</title>
-                  </circle>
-                ))}
-              </g>
+            {segments.filter((segment) => segment.length > 1).map((segment) => (
+              <polyline key={segment[0].id}
+                points={segment.map(({ update, value }) => `${x(update)},${y(value)}`).join(' ')}
+                fill="none" stroke="currentColor" strokeWidth={1.5} strokeDasharray="4 3"
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+            {segments.flat().map(({ id, update, value, coverage }) => (
+              <circle key={id} cx={x(update)} cy={y(value)} r={2.5} fill="currentColor">
+                <title>{[
+                  label, `${studioName('updates')} ${update}`, String(value),
+                  coverage === undefined ? undefined : `${studioName('coverage')} ${coverage}`,
+                ].filter(Boolean).join(' · ')}</title>
+              </circle>
             ))}
           </g>
         ))}

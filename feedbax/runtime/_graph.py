@@ -11,6 +11,20 @@ from typing import TypeVar
 NodeId = TypeVar("NodeId", str, tuple[str, ...])
 
 
+def instant_execution_order(nodes: Iterable[str], edges: Iterable[tuple[str, str]]) -> tuple[str, ...]:
+    adjacency = {name: set() for name in nodes}
+    for source, target in edges:
+        adjacency[source].add(target)
+    order, back_edges = detect_cycles_and_sort(adjacency)
+    if back_edges:
+        cycle_text = ", ".join(f"{source}->{target}" for source, target in back_edges)
+        raise ValueError(
+            "Instant graph wires contain a same-step cycle. "
+            f"Mark one cycle edge recurrent: {cycle_text}"
+        )
+    return tuple(order)
+
+
 def topological_sort(adjacency: Mapping[NodeId, Iterable[NodeId]]) -> list[NodeId]:
     """Return the topological order with lexical priority among ready node IDs.
 

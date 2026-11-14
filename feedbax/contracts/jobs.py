@@ -194,7 +194,7 @@ class StudioEvaluationObjectivePoint(StrictModel):
 class StudioEvaluationObjectiveSeries(StrictModel):
     job_id: str
     request_id: str
-    receipt: JobReceipt
+    receipt: JobReceipt | None
     lineage: list[str]
     condition: str | None = Field(pattern=_DigestPattern)
     trials: list[str]
