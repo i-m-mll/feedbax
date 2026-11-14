@@ -111,6 +111,9 @@ jobs:
       - name: Run Studio walkthrough against the backend
         run: bun run test:studio
 
+      - name: Type-check the frontend
+        run: bun --bun tsc -b
+
       - name: Trace Studio responsiveness in production preview
         env:
           FEEDBAX_STUDIO_E2E_PREVIEW: "1"
@@ -125,6 +128,3 @@ jobs:
         with:
           name: studio-responsiveness
           path: web/studio-responsiveness/
-
-      - name: Build
-        run: bun run build
