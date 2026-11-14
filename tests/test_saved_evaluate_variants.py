@@ -8,18 +8,18 @@ import pytest
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.rollout import RolloutParameters, authored_variation
+from feedbax.contracts.request_identity import decode_request, encode_request
+from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.host import HostClient
 from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import CannotRun, RAW_STATES_SCHEMA
-from feedbax.studio.schema import validate_graph_connection_schema
+from feedbax.studio.canonical_evaluate import CannotRun, RAW_STATES_SCHEMA, decode_rollout_request
 from feedbax.tasks.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -58,10 +58,18 @@ def _saved_variants():
     perturbed["model_attachments"] = {"wire": [_add_attachment(_attachment_owner("read"), "scale", None, 0.5)]}
     incompatible = deepcopy(task["payload"])
     incompatible["signals"] = [signal for signal in incompatible["signals"] if signal["id"] != "target_pos"]
-    nested = "graph.subgraphs.wrapper.subgraphs.controller.nodes"
+    dtype = step([])
+    dtype["model_attachments"] = {"dtype": [{
+        "op": "set_field",
+        "address": {
+            "document": "reach-model", "composites": ["wrapper", "controller"],
+            "element": {"kind": "field", "parent": {"kind": "component", "id": "readout"}, "path": ["fields", "dtype"]},
+        },
+        "value": "float16",
+    }]}
     definition["steps"] = {
         "train": steps["train"], "baseline": baseline, "replacement": replacement, "perturbed": perturbed,
-        "different-dtype": step([_patch(f"{nested}.readout.params.dtype", "float16")]),
+        "different-dtype": dtype,
         "incompatible": step([_patch("task", incompatible)]),
     }
     return Project.model_validate(definition)
@@ -79,35 +87,16 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     first = next(wire for wire in graph.wires if wire.target_node == "plant")
     second = next(wire for wire in graph.wires if wire.target_node == "wrapper")
     baseline = deepcopy(definition["steps"]["baseline"])
-    baseline["base"]["inline"]["params"]["variation"] = {}
-    axes, ordered = {}, []
+    axes = {}
     for name, wire in (("first", first), ("second", second)):
-        wire_id = wire.authored_id()
-        node = f"scale_{name}"
-        edits = [
-            _patch(f"graph.nodes.{node}", {
-                "type": "feedbax.Scale", "params": {"scale": 0.5, "fixed": True},
-                "input_ports": ["input"], "output_ports": ["output"],
-            }, op="add"),
-            _patch(f"graph.wires.{wire_id}.target_node", node),
-            _patch(f"graph.wires.{wire_id}.target_port", "input"),
-            _patch(f"graph.wires.{name}-out", {
-                "source_node": node, "source_port": "output",
-                "target_node": wire.target_node, "target_port": wire.target_port,
-            }, op="add"),
-        ]
-        ordered.extend(edits)
+        owner = _attachment_owner(wire.authored_id()) | {"composites": []}
+        attachment = _add_attachment(owner, name, None)
         axes[name] = {"values": {"inserted": {"patches": {
-            f"params.variation.{name}-{index}": {"op": "add", "value": edit}
-            for index, edit in enumerate(edits)
+            f"model_attachments.{name}": {"op": "add", "value": [attachment]},
         }}}}
     baseline["sweep"] = {"axes": axes}
-    invalid = deepcopy(definition["steps"]["baseline"])
-    invalid["base"]["inline"]["params"]["variation"] = {
-        "bad-port": _patch(f"graph.wires.{first.authored_id()}.target_port", "unavailable"),
-    }
     project = Project.model_validate(definition | {"steps": {
-        "train": definition["steps"]["train"], "crossed": baseline, "invalid": invalid,
+        "train": definition["steps"]["train"], "crossed": baseline,
     }})
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "crossed", project)
@@ -115,32 +104,86 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     assert not plan.diagnostics
     (run,) = (run for run in plan.runs if run.key.step == "crossed")
     request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
-    named = RolloutParameters.model_validate(request.spec.params).variation
-    listed = RolloutParameters.model_validate(request.spec.params | {"variation": ordered}).variation
-    variant = resolve_evaluation_variant(graph, task, named)
-    assert variant == resolve_evaluation_variant(graph, task, listed)
+    variation = RolloutParameters.model_validate(request.spec.params).variation
+    assert isinstance(variation, tuple) and all(edit.path.startswith("graph.") for edit in variation)
+    variant = resolve_evaluation_variant(graph, task, variation)
     unchanged = [wire for wire in graph.wires if wire not in (first, second)]
     assert all(wire in variant.graph.wires for wire in unchanged)
-    assert len(named) == 8 and all(edit.path != "graph.wires" for _, edit in authored_variation(named))
-    wires = {wire.authored_id(): wire for wire in variant.graph.wires}
-    for name, original in (("first", first), ("second", second)):
-        before, after = wires[original.authored_id()], wires[f"{name}-out"]
-        assert (before.target_node, before.target_port) == (f"scale_{name}", "input")
-        assert (after.source_node, after.source_port) == (f"scale_{name}", "output")
+    inserted = variant.graph.nodes.keys() - graph.nodes.keys()
+    assert len(inserted) == 2
+    for original in (first, second):
+        (before,) = (
+            wire for wire in variant.graph.wires if wire.target_node in inserted
+            and (wire.source_node, wire.source_port) == (original.source_node, original.source_port)
+        )
+        (after,) = (wire for wire in variant.graph.wires if wire.source_node == before.target_node)
+        assert (before.target_port, after.source_port) == ("input", "output")
         assert (after.target_node, after.target_port) == (original.target_node, original.target_port)
+        scale = variant.graph.nodes[before.target_node]
+        assert scale.type == "feedbax.Scale" and scale.params["scale"] == 0.5
     reader = PlanJobReader(HostClient(), enable_evaluation_candidate=True)
     reader.evaluation_parameters(plan, run)
-    (bad,) = (run for run in plan.runs if run.key.step == "invalid")
-    params, _ = reader.evaluation_parameters(plan, bad)
-    bad_variant = resolve_evaluation_variant(graph, task, params.variation)
-    issues = validate_graph_connection_schema(
-        bad_variant.graph, "/graph", component_registry=registries.components,
-    )
-    assert any(
-        issue.type == "unknown_target_port"
-        and bad_variant.edit_location(issue.location["path"]) == "/params/variation/bad-port"
-        for issue in issues
-    )
+
+
+@pytest.mark.parametrize(("scope", "site", "stored_path"), [
+    ("inline", "bad~edit", "/base/inline/params/variation/bad~0edit/path"),
+    ("axis", "0", "/sweep/axes/mass/values/heavy/patches/params.variation/value/0/path"),
+    ("exception", "bad-edit", "/sweep/exceptions/heavy/patches/params.variation.bad-edit/value/path"),
+])
+def test_saved_raw_graph_edit_refuses_at_its_exact_author(tmp_path, scope, site, stored_path):
+    raw = managed_evaluation_definition()
+    raw["steps"] = {name: raw["steps"][name] for name in ("train", "baseline")}
+    step = raw["steps"]["baseline"]
+    edit = _patch("graph.nodes.plant.params.mass", 2.0)
+    if scope == "inline":
+        step["base"]["inline"]["params"]["variation"] = {site: edit}
+    elif scope == "axis":
+        step["sweep"] = {"axes": {"mass": {"values": {"heavy": {
+            "patches": {"params.variation": {"value": [edit]}},
+        }}}}}
+    else:
+        step["base"]["inline"]["params"]["variation"] = {}
+        step["sweep"] = {"exceptions": {"heavy": {
+            "where": {"axes": {}},
+            "patches": {f"params.variation.{site}": {"op": "add", "value": edit}},
+        }}}
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "raw", Project.model_validate(raw))
+    target = folders.root / "raw" / "steps" / "baseline.json"
+    saved = target.read_bytes()
+    settled = folders.read_plan("raw", revision=None)
+    (problem,) = settled.plan.diagnostics
+    published = StudioProjectWindowMapProblem.from_diagnostic(problem, declaration="raw.feedbax")
+    assert published.code == "authored_graph_variation"
+    assert published.path == f"/params/variation/{site.replace('~', '~0')}/path"
+    assert (published.address, published.authored_path) == ("steps/baseline.json", stored_path)
+    assert {run.kind for run in settled.plan.runs} == {"train"}
+    (key,) = (row.key for row in settled.plan.rows if row.kind == "evaluate")
+    selected = folders.read_plan("raw", revision=settled.revision, source_runs=(key,)).plan
+    definition = selected.selected_definitions[key]
+    variation = definition.payload["params"]["variation"]
+    assert (variation[int(site)] if isinstance(variation, list) else variation[site]) == edit
+    assert definition.sources["/payload" + problem.path].path == stored_path
+    assert selected.diagnostics == settled.plan.diagnostics
+    assert target.read_bytes() == saved
+
+
+def test_encoded_rollout_still_decodes_named_graph_variation():
+    from feedbax.contracts.request_refs import InputMember, LastMember, ProductRef
+    from feedbax.contracts.request_specs import EvaluationRequestSpec
+    from feedbax.contracts.rollout import ROLLOUT_TYPE
+
+    edits = {"heavy": _patch("graph.nodes.plant.params.mass", 2.0)}
+    spec = EvaluationRequestSpec(evaluation_type=ROLLOUT_TYPE, params={
+        "seed": 731, "trial_policy": "paired", "trials": ["alpha"], "variation": edits,
+    })
+    checkpoint = ProductRef(request_id="train:" + "a" * 64, role="checkpoint", select=LastMember())
+    inputs = {"subject": (InputMember(key="default", reference=checkpoint),)}
+    stored = encode_request(spec, inputs)
+    decoded, params, subject = decode_rollout_request(stored.id, stored.data)
+    assert subject == checkpoint
+    assert params.variation["heavy"].path == edits["heavy"]["path"]
+    assert encode_request(decoded, inputs) == stored
 
 
 def _selected_task_variants():

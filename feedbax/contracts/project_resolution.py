@@ -78,6 +78,7 @@ class ResolutionCode(StrEnum):
     MISSING_AUTHORITY = "missing_authority"
     BAD_EXTERNAL_CONTENT = "bad_external_content"
     INVALID_PAYLOAD = "invalid_payload"
+    AUTHORED_GRAPH_VARIATION = "authored_graph_variation"
     INVALID_DELTA = "invalid_delta"
     INVALID_SWEEP = "invalid_sweep"
     UNKNOWN_ROW = "unknown_row"
@@ -100,6 +101,8 @@ class ProjectDiagnostic:
     element: str | None = None
     document_path: str | None = None
     model_address: ModelAddress | None = None
+    authored_file: str | None = None
+    authored_path: str | None = None
 
 
 @dataclass(frozen=True)

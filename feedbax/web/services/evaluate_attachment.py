@@ -10,6 +10,7 @@ from feedbax.contracts.model_attachment import (
     MODEL_ATTACHMENTS,
     MODEL_DIFFERENCE_BATCHES,
     AddModelAttachment,
+    AttachmentDifference,
     ChangeModelAttachment,
     RemoveModelAttachment,
     SetField,
@@ -242,9 +243,9 @@ def read_evaluate_attachments(folders, project_id, body, components=None):
                             field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
     return EvaluateAttachmentState(
         revision=body.revision,
-        records=tuple(record for record in _local_records(scope) if not isinstance(record, SetField)),
+        records=tuple(record for record in _local_records(scope) if isinstance(record, AttachmentDifference)),
         effective=tuple(
-            record for batch in effective.values() for record in batch if not isinstance(record, SetField)
+            record for record in differences if isinstance(record, AttachmentDifference)
         ),
         resolved_model=resolved,
         source=source,

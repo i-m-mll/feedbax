@@ -91,6 +91,7 @@ def _save_project(folders, project, authored):
 
 
 def managed_evaluation_definition():
+    from feedbax.contracts.model_address import ModelAddress
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents())
@@ -105,6 +106,12 @@ def managed_evaluation_definition():
             params = step["base"]["inline"]["params"]
             params.pop("trials")
             params["trial_set"] = {"kind": "every_condition"}
+    mass = ModelAddress.model_validate({
+        "document": "reach-model", "composites": [],
+        "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+    }).to_text()
+    for member in raw["steps"]["conditions"]["sweep"]["axes"]["mass"]["values"].values():
+        member["patches"] = {mass: {"value": member["value"]}}
     return raw
 
 
@@ -167,8 +174,9 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         for run in plan.plan.runs if run.key.step == "conditions"
     }
     assert conditions.keys() == {"nominal", "heavy"}
-    keys = (baseline, conditions["nominal"], conditions["heavy"])
-    assert len({by_key[key].request_id for key in keys}) == 3
+    keys = (baseline, conditions["heavy"])
+    assert by_key[baseline].request_id == by_key[conditions["nominal"]].request_id
+    assert by_key[baseline].request_id != by_key[conditions["heavy"]].request_id
     assert all(by_key[key].request_id.startswith("evaluate:") for key in keys)
 
     def launch(service, rows, token):
@@ -197,7 +205,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     wait_until(lambda: job_row(host, gate.id, "running"))
     (source,) = launch(jobs, (train,), "saved-train").items
     submitted = launch(jobs, keys, "evaluate")
-    assert [item.disposition for item in submitted.items] == ["admitted"] * 3
+    assert [item.disposition for item in submitted.items] == ["admitted"] * len(keys)
     assert launch(jobs, keys, "evaluate") == submitted
     (attached,) = launch(jobs, (baseline,), "evaluate-live").items
     assert attached.disposition == "attached" and attached.job_id == submitted.items[0].job_id
@@ -374,17 +382,14 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         for name, values in reference.history.items():
             np.testing.assert_allclose(dataset.data(name)[0, 0], values, atol=1e-7)
         np.testing.assert_allclose(dataset.data("objective/total").item(), reference.objective.loss, rtol=2e-5)
-    nominal_pos, nominal_tgt, nominal_condition = arrays[conditions["nominal"]]
     heavy_pos, heavy_tgt, heavy_condition = arrays[conditions["heavy"]]
-    np.testing.assert_array_equal(nominal_tgt, base_tgt)
     np.testing.assert_array_equal(heavy_tgt, base_tgt)
-    np.testing.assert_allclose(nominal_pos, base_pos, rtol=2e-5, atol=1e-8)
     np.testing.assert_allclose(
         heavy_pos[:, 1:] - heavy_pos[:, :1], (base_pos[:, 1:] - base_pos[:, :1]) * 0.5,
         rtol=3e-5, atol=2 * np.finfo(base_pos.dtype).eps,
     )
     np.testing.assert_array_equal(heavy_pos[:, 0], base_pos[:, 0])
-    assert len({base_condition, nominal_condition, heavy_condition}) == 3
+    assert base_condition != heavy_condition
 
     live = {decision.sha256 for decision in store.collect_garbage().decisions if decision.decision == "live"}
     for result in outcomes.values():

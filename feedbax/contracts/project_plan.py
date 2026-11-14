@@ -422,6 +422,28 @@ def _authored_variation_problem(problem: ProjectDiagnostic, names: tuple[str, ..
     return problem
 
 
+def _raw_graph_target(value: object) -> bool:
+    return isinstance(value, str) and (value == "graph" or value.startswith("graph."))
+
+
+def _authored_graph_variation_problem(key: RunKey, payload: Payload) -> ProjectDiagnostic | None:
+    params = payload.get("params")
+    variation = params.get("variation") if isinstance(params, dict) else None
+    entries = (
+        sorted(variation.items()) if isinstance(variation, dict)
+        else enumerate(variation) if isinstance(variation, list) else ()
+    )
+    for name, edit in entries:
+        if isinstance(edit, dict) and _raw_graph_target(edit.get("path")):
+            return ProjectDiagnostic(
+                ResolutionCode.AUTHORED_GRAPH_VARIATION,
+                pointer(("params", "variation", str(name), "path")),
+                "Use an addressed Model operation for this saved Evaluate edit.",
+                step=key.step, row=key.row, variant=key.variant,
+            )
+    return None
+
+
 def _train_model_path(payload: Payload) -> tuple[str, ...]:
     return ("trial_documents", "model") if "trial_documents" in payload else ("graph",)
 
@@ -1258,6 +1280,16 @@ class _Compiler:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
+            if kind == "evaluate" and payload.get("evaluation_type") == ROLLOUT_TYPE:
+                params = payload.get("params")
+                managed_subject = model_source is not None and (
+                    model_source.evaluation_graph is not None or source_problem is not None
+                )
+                if managed_subject or (isinstance(params, dict) and "trial_set" in params):
+                    if problem := _authored_graph_variation_problem(key, payload):
+                        return _LoweredRow(
+                            None, (problem,), encoding_stamp, document_ids=document_ids, document_uses=document_uses,
+                        )
             if source_problem is not None and payload.get("evaluation_type") == ROLLOUT_TYPE:
                 return _LoweredRow(
                     None, (replace(source_problem, step=key.step, row=key.row, variant=key.variant),),
@@ -1549,6 +1581,7 @@ class _Compiler:
 
         basis = template.row_basis if self.previous is not None else None
         result = []
+        tracked_template = template if wanted else None
         for row in rows:
             run_key = RunKey(variant, name, row.id)
             key = row.input_keys.get(role.name)
@@ -1622,9 +1655,32 @@ class _Compiler:
                     result.append(analyze)
                 continue
             lowered = self.lower_row(template, run_key, row, kind, inputs, basis, definition)
+            if len(lowered.diagnostics) == 1 and lowered.diagnostics[0].code == ResolutionCode.AUTHORED_GRAPH_VARIATION:
+                (problem,) = lowered.diagnostics
+                sources_available = variant not in self.variant_sources or self.variant_sources[variant] is not None
+                if definition is None and sources_available:
+                    if tracked_template is None:
+                        tracked_template = self.compose(variant, name, track=True)
+                    if isinstance(tracked_template, StepComposition):
+                        definition = self.project_definition(tracked_template, run_key, row, inputs)
+                origin = definition.sources.get("/payload" + problem.path) if definition is not None else None
+                if origin is not None:
+                    problem = self.locate_authored_problem(problem, origin)
+                    lowered = replace(lowered, diagnostics=(problem,))
             if (run := self.record_run(run_key, lowered, inputs, omissions, template.requires)) is not None:
                 result.append(run)
         return tuple(result)
+
+    def locate_authored_problem(self, problem: ProjectDiagnostic, origin: ValueSource) -> ProjectDiagnostic:
+        if origin.kind == "document":
+            if origin.name in self.project.documents:
+                return replace(
+                    problem, document=origin.name, document_path=origin.path,
+                    authored_file=f"documents/{origin.name}.json", authored_path="/payload" + origin.path,
+                )
+        elif origin.step is not None and origin.step in self.project.steps:
+            return replace(problem, authored_file=f"steps/{origin.step}.json", authored_path=origin.path)
+        return problem
 
     def select_definition(
         self, template: StepComposition, key: RunKey, row: ExpandedRow,

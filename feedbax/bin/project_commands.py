@@ -96,11 +96,12 @@ class CommandOutput:
             print(projected.model_dump_json(exclude_unset=True), file=sys.stderr)
         else:
             layer = f" ({problem.layer})" if problem.layer else ""
-            authored_path = f":{problem.document_path}" if problem.document_path else ""
-            document = f" [documents/{problem.document}.json{authored_path}]" if problem.document else ""
+            stored_path = f":{projected.authored_path}" if projected.authored_path else ""
+            document_path = f":{problem.document_path}" if problem.document_path else ""
+            document = f" [documents/{problem.document}.json{document_path}]" if problem.document else ""
             address = f" model={problem.model_address.to_text()}" if problem.model_address else ""
             print(
-                f"{projected.address}{layer}{document} {problem.path}{address} "
+                f"{projected.address}{stored_path}{layer}{document} {problem.path}{address} "
                 f"[{problem.code}]: {problem.detail}",
                 file=sys.stderr,
             )
