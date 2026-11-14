@@ -261,6 +261,7 @@ export interface StudioSavedTrainRow {
   result: StudioSavedTrainResult | null;
   previous: StudioSavedTrainResult | null;
   change: StudioSavedTrainChange | null;
+  previous_attempts?: StudioSavedTrainAttempt[];
 }
 
 export interface StudioSavedTrainRunRequest {
@@ -4282,6 +4283,7 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
       "result": StudioSavedTrainResultSchema.nullable(),
       "previous": StudioSavedTrainResultSchema.nullable(),
       "change": StudioSavedTrainChangeSchema.nullable(),
+      "previous_attempts": z.array(StudioSavedTrainAttemptSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRow>;

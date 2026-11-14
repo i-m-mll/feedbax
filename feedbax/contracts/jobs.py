@@ -188,6 +188,7 @@ class StudioSavedTrainRow(StrictModel):
     result: StudioSavedTrainResult | None
     previous: StudioSavedTrainResult | None
     change: StudioSavedTrainChange | None
+    previous_attempts: list[StudioSavedTrainAttempt] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class StudioProjectWindowMapCoordinate(StrictModel):

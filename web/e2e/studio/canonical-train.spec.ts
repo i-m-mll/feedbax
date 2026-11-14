@@ -178,7 +178,8 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
 });
 
 test('Saved Train compares authenticated receipts after a partial run and stopped edit', async ({ page, request }, info) => {
-  test.setTimeout(50_000);
+  test.setTimeout(65_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
   const created = await request.post('/api/projects');
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
@@ -220,6 +221,19 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   }
   async function trainRow() {
     return (await rows()).find(({ key }) => key.step === 'train')!;
+  }
+  const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
+  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  const observed = () => fixture('observe-history', String(info.config.metadata.home), id, snapshot.revision);
+  type LossSample = { update: number; value: number };
+  async function expectLoss(jobId: string, expected: LossSample[]) {
+    const series = loss.locator(`[data-result-attempt="${jobId}"]`);
+    await expect(series.locator('polyline')).toBeAttached();
+    await expect.poll(() => series.locator('line[data-update][data-loss]').evaluateAll((points) =>
+      points.map((point) => ({ update: Number(point.getAttribute('data-update')), value: Number(point.getAttribute('data-loss')) })),
+    )).toEqual(expected);
+    await expect.poll(() => series.locator('polyline').evaluate((line: SVGPolylineElement) => line.points.numberOfItems))
+      .toBe(expected.length);
   }
   async function editNumber(label: string, value: number, before: string) {
     await mapStep(page, 'train').click();
@@ -268,16 +282,39 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await expect.poll(async () => (await trainRow()).status).toBe('stopped');
   expect(await trainRow()).toMatchObject({ result: null, previous: first });
 
+  await openResultsSlot(page);
+  await results.getByText('Previous Result', { exact: true }).click();
+  const stopped = await observed();
+  expect(stopped).toMatchObject({ current: null, previous: first });
+  await expectLoss(firstJob, stopped.loss.previous);
+  await expect(loss.locator(`[data-result-attempt="${stoppedJob}"]`)).toHaveCount(0);
+  await expect(loss.locator('polyline')).toHaveCount(1);
+  await results.getByRole('button', { name: 'Close Slot', exact: true }).click();
+
   await editNumber('N Batches', 2, '10000');
   const changedJob = await runSelected('train');
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
   const changed = await trainRow();
   expect(changed.result!.job_id).toBe(changedJob);
   expect(changed.previous).toEqual(first);
+  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: 0, after: 7 });
+  const evidence = await observed();
+  expect(evidence).toMatchObject({ current: changed.result, previous: first });
+  async function compare() {
+    await openResultsSlot(page);
+    await results.getByText('Compare Results', { exact: true }).click();
+    await expect(results.locator('details[open]')).toContainText(changed.change!.path);
+    await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
+    await expect(loss.locator('polyline')).toHaveCount(2);
+    await expectLoss(changedJob, evidence.loss.current);
+    await expectLoss(firstJob, evidence.loss.previous);
+    await expect(loss.locator(`[data-result-attempt="${changedJob}"] polyline`)).not.toHaveAttribute('stroke-dasharray');
+    await expect(loss.locator(`[data-result-attempt="${firstJob}"] polyline`)).toHaveAttribute('stroke-dasharray', '4 3');
+  }
+  await compare();
   await page.reload();
   await select('train');
-  await openResultsSlot(page);
-  await page.getByText('Compare Results', { exact: true }).click();
+  await compare();
   const current = page.getByRole('region', { name: 'Current Result' });
   const previous = page.getByRole('region', { name: 'Previous Result' });
   await expect(current).not.toContainText(changed.result!.receipt.manifest_sha256);
@@ -287,8 +324,6 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     await section.getByRole('button', { name: 'Copy Details', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => JSON.parse(await navigator.clipboard.readText()))).toEqual(result);
   }
-  const evidence = await fixture('observe-history', String(info.config.metadata.home), id, snapshot.revision);
-  expect(evidence).toMatchObject({ current: changed.result, previous: first });
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
 

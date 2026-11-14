@@ -156,6 +156,10 @@ class ProjectPlanRead:
                     result=self.history[run.key].result,
                     previous=self.history[run.key].previous,
                     change=self.history[run.key].change,
+                    previous_attempts=[
+                        StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
+                        for attempt in self.previous_train_attempts(run)
+                    ],
                 )
                 for run in self.settled.plan.runs
                 if run.kind == "train" and (variants is None or run.key.variant in variants)
@@ -164,6 +168,22 @@ class ProjectPlanRead:
         if include_window_map:
             result.window_map = self.window_map(variants=variants, evaluation_tasks=evaluation_tasks)
         return result
+
+    def previous_train_attempts(self, run: PlannedRun) -> tuple[PlanJobAttempt, ...]:
+        previous = self.history[run.key].previous
+        if previous is None or previous.request_id == run.request_id:
+            return ()
+        attempts = self.jobs.by_request[previous.request_id]
+        by_id = {attempt.job_id: attempt for attempt in attempts}
+        lineage = []
+        job_id: str | None = previous.job_id
+        while job_id is not None:
+            attempt = by_id.pop(job_id, None)
+            if attempt is None:
+                break
+            lineage.append(attempt)
+            job_id = attempt.continues
+        return tuple(reversed(lineage))
 
     def window_map(
         self, *, variants: tuple[str, ...] | None = None,

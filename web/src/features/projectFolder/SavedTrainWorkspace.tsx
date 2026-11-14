@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit } from '@/api/studioAuthoring';
-import { StudioTrainResults } from '@/components/activity/StudioTrainResults';
+import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
@@ -104,27 +104,35 @@ function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResul
   </section>;
 }
 
-function TrainResultsComparison({ row }: { row: SavedRow }) {
-  const results = [
+function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTrainResults>[0], 'selection'> & {
+  attempt: SavedRow['attempts'][number] | undefined;
+}) {
+  const [comparing, setComparing] = useState(false);
+  const results: TrainLossResult[] = [
     ...(row.result ? [{ name: 'currentResult', result: row.result } as const] : []),
     ...(row.previous ? [{ name: 'previousResult', result: row.previous } as const] : []),
   ];
-  if (!results.length) return null;
+  const selection = comparing && results.length ? { kind: 'results', results } as const
+    : attempt ? { kind: 'attempt', attempt } as const : undefined;
   return (
-    <details className="mt-3 rounded border border-shell-divider p-3 text-sm">
-      <summary className="cursor-pointer font-medium">
-        {studioName(results.length === 2 ? 'compareResults' : results[0].name)}
-      </summary>
-      {row.change && (
-        <p className="mt-2 break-all">
-          <code>{row.change.path}</code>{' '}
-          <code>{JSON.stringify(row.change.before)}</code> → <code>{JSON.stringify(row.change.after)}</code>
-        </p>
-      )}
-      <div className="mt-2 grid gap-3 sm:grid-cols-2">
-        {results.map(({ name, result }) => <ResultDetail key={name} name={name} result={result} />)}
-      </div>
-    </details>
+    <>
+      {selection && <StudioTrainResults {...plot} row={row} selection={selection} />}
+      {results.length > 0 && <details className="mt-3 rounded border border-shell-divider p-3 text-sm"
+        onToggle={(event) => setComparing(event.currentTarget.open)}>
+        <summary className="cursor-pointer font-medium">
+          {studioName(results.length === 2 ? 'compareResults' : results[0].name)}
+        </summary>
+        {row.change && (
+          <p className="mt-2 break-all">
+            <code>{row.change.path}</code>{' '}
+            <code>{JSON.stringify(row.change.before)}</code> → <code>{JSON.stringify(row.change.after)}</code>
+          </p>
+        )}
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          {results.map(({ name, result }) => <ResultDetail key={name} name={name} result={result} />)}
+        </div>
+      </details>}
+    </>
   );
 }
 
@@ -1069,10 +1077,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             <button type="button" className={control} {...commandAttributes(stoppedNewStep)}
               disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</button>
           </section>}
-          {attempt && <StudioTrainResults project={saved.project_id} revision={saved.revision}
+          <TrainResults key={savedRunId(row.key)} project={saved.project_id} revision={saved.revision}
             evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
-            rows={data!.rows} row={row} attempt={attempt} />}
-          <TrainResultsComparison key={savedRunId(row.key)} row={row} />
+            rows={data!.rows} row={row} attempt={attempt} />
         </div> };
         return { body: withProblem(noView) };
       }}
