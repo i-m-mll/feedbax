@@ -57,9 +57,9 @@ def test_best_plan_identity_changes_with_candidates_and_refuses_unsupported_rule
     new = {row.key: row.request_id for row in after.runs}
     assert all((old[run.key] == new[run.key]) == (run.kind == "train") for run in before.runs)
     subject = raw["steps"]["baseline"]["inputs"]["subject"]
-    subject["where"]["best"]["per"] = ["rate"]
+    subject["where"]["best"]["per"] = ["missing"]
     refused = compile_project(Project.model_validate(raw))
-    assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.best"]
+    assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.best.per"]
     subject["where"] = {"when": {"metric": "train_loss", "op": "lt", "value": 1}}
     refused = compile_project(Project.model_validate(raw))
     assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.when"]
@@ -157,6 +157,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
     planned_subset = card.inputs[0].subset
     assert (planned_subset.count, planned_subset.total) == (2, 3)
     assert planned_subset.ranks == ["rank-1", "rank-2"]
+    assert "rank_groups" not in planned_subset.model_dump()
     by_key = {item.key.row: item for item in response.window_map.evaluations}
     best_results = [by_key[run.key.row].result for run in rankings]
     assert [item.bound_subject.row for item in best_results] == ranked

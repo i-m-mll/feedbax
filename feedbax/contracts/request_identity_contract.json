@@ -1395,6 +1395,9 @@
     "feedbax.contracts.request_refs.BestRank": {
       "candidates": {},
       "count": {},
+      "group": {
+        "absent": {}
+      },
       "kind": {
         "absent": "best_rank",
         "values": [

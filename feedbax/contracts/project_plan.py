@@ -133,12 +133,22 @@ class ElementKey:
 
 
 @dataclass(frozen=True)
+class PlannedRankGroup:
+    coordinates: Mapping[str, str]
+    ranks: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PlannedSubset:
     terms: SubsetTerms
     candidates: int
     members: tuple[RunKey, ...]
     document: str | None
-    ranks: tuple[str, ...] = ()
+    rank_groups: tuple[PlannedRankGroup, ...] = ()
+
+    @property
+    def ranks(self) -> tuple[str, ...]:
+        return tuple(rank for group in self.rank_groups for rank in group.ranks)
 
 
 @dataclass(frozen=True)
@@ -1081,7 +1091,9 @@ class _Compiler:
             role: tuple(
                 SweepInputMember(
                     item.member.key,
-                    producer.coordinates if item.producer is not None else {},
+                    producer.coordinates if item.producer is not None else {
+                        axis: producer.coordinates[axis] for axis in item.member.reference.group
+                    } if isinstance(item.member.reference, BestRank) else {},
                     producer.label if item.producer is not None else item.member.key,
                     self.checkpoint_horizon(producer.request_id)
                     if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
@@ -1947,46 +1959,86 @@ class _Compiler:
         assert best is not None
         if role.name != "subject":
             reason = "Best currently binds saved Evaluate subjects."
-        elif best.per:
-            reason = "Best per group is unavailable for managed Evaluate."
-        elif best.k > len(members):
-            reason = f"Best requests {best.k} ranks from {len(members)} candidates."
         elif reference.checkpoint not in (None, "last") or (
             template.sweep is not None and any(isinstance(axis, CheckpointRuleAxis) for axis in template.sweep.axes.values())
         ):
             reason = "Best requires the selected Train's last checkpoint."
-        elif best.k > 1 and not (
+        else:
+            return self.rank_groups(name, template, role, members, subset)
+        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
+
+    def rank_groups(
+        self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
+    ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
+        best = subset.terms.best
+        assert best is not None
+        path = f"inputs.{role.name}.where.best"
+
+        def refusal(detail: str, field: str = path) -> ProjectDiagnostic:
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name)
+
+        axes = tuple(sorted(best.per))
+        if len(set(axes)) != len(axes):
+            return refusal("Best group axes must be distinct.", f"{path}.per")
+        if not members:
+            return refusal("Best requires at least one candidate.")
+        groups: dict[tuple[str, ...], list[tuple[PlannedInput, _CompiledRun]]] = {}
+        for item, producer in members:
+            for axis in axes:
+                if axis not in producer.coordinates:
+                    return refusal(
+                        f"Best group axis {axis!r} is missing on {producer.key.variant}/{producer.key.row}.",
+                        f"{path}.per",
+                    )
+            group = tuple(producer.coordinates[axis].value_id for axis in axes)
+            grouped = groups.setdefault(group, [])
+            if grouped and any(
+                not same_typed_value(producer.coordinates[axis].value, grouped[0][1].coordinates[axis].value)
+                for axis in axes
+            ):
+                return refusal(f"Best group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.",
+                               f"{path}.per")
+            grouped.append((item, producer))
+        if best.k * len(groups) > 1 and not (
             template.sweep is not None and any(
                 isinstance(axis, InputAxis) and axis.input == role.name for axis in template.sweep.axes.values()
             )
         ):
-            reason = "Best with more than one rank requires a subject input axis."
-        else:
+            return refusal("Best with more than one rank requires a subject input axis.")
+
+        ranked = []
+        planned_groups = []
+        for group, grouped in groups.items():
+            coordinates = dict(zip(axes, group, strict=True))
+            if best.k > len(grouped):
+                target = f" in group {coordinates!r}" if coordinates else ""
+                return refusal(f"Best requests {best.k} ranks from {len(grouped)} candidates{target}.")
             candidates = []
             keys = []
-            for item, producer in members:
+            for item, producer in grouped:
                 assert isinstance(producer, PlannedRun)
                 if producer.admission_problem is not None:
-                    return ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE, f"{path}.best",
+                    return refusal(
                         f"Best candidate {producer.key.row!r} cannot produce a checkpoint: "
-                        f"{producer.admission_problem.detail}", name,
+                        f"{producer.admission_problem.detail}",
                     )
                 keys.append(producer.key)
                 candidates.append(BestCandidate(
                     key=item.member.key, variant=producer.key.variant, row=producer.key.row,
                     reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
                 ))
-            ranked = []
+            ranks = []
             for position in range(1, best.k + 1):
                 rank = BestRank(
                     metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
+                    group=coordinates,
                 )
+                ranks.append(rank.key)
                 ranked.append((PlannedInput(
                     None, InputMember(key=rank.key, reference=rank), candidates=tuple(keys),
-                ), members[0][1]))
-            return tuple(ranked), {}, replace(subset, ranks=tuple(item.member.key for item, _ in ranked))
-        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
+                ), grouped[0][1]))
+            planned_groups.append(PlannedRankGroup(MappingProxyType(coordinates), tuple(ranks)))
+        return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
     def select_input(
         self,
