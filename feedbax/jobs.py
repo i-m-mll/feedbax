@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections import Counter
@@ -60,6 +61,7 @@ from feedbax.host.protocol import can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
+from feedbax.training_host_worker import BOOTSTRAP_ENV
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     CanonicalTrainRequestBinding,
@@ -284,7 +286,7 @@ class JobService(PlanJobReader):
         self._live_validation_qualifications = {
             (entry.train_request, entry.evaluate_request): entry for entry in live_validation_qualifications
         }
-        self._training_worker = Launch(
+        base_worker = Launch(
             argv=(sys.executable,),
             env={
                 key: os.environ[key]
@@ -292,8 +294,18 @@ class JobService(PlanJobReader):
                 if key in os.environ
             },
             cwd=str(Path.cwd()),
+            preload=("jax", "feedbax.training.managed_studio"),
+        )
+        self._training_worker = replace(
+            base_worker,
+            env=base_worker.env | {BOOTSTRAP_ENV: json.dumps(bootstrap_modules, separators=(",", ":"))},
             warm_entrypoint="feedbax.training_host_worker:main",
-            preload=("jax", "feedbax.training.managed_studio", "feedbax.plugins.composition"),
+            preload=(*base_worker.preload, "feedbax.training.host_prewarm"),
+        )
+        self._evaluation_worker = replace(
+            base_worker,
+            warm_entrypoint="feedbax.training.evaluate_worker:main",
+            preload=(*base_worker.preload, "feedbax.plugins.composition"),
         )
         self._launch_lock = Lock()
         self._accepting = True
@@ -507,11 +519,7 @@ class JobService(PlanJobReader):
                 checkpoint=checkpoint,
             ),
         )
-        launch = replace(
-            self._training_worker,
-            warm_entrypoint="feedbax.training.evaluate_worker:main",
-            payload=payload.model_dump(mode="json", by_alias=True),
-        )
+        launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
         if isinstance(checkpoint.select, UpdateSeriesMember) and not params.variation:
             qualification = self._live_validation_qualifications.get((checkpoint.request_id, request_id))
             if qualification is not None:
@@ -520,7 +528,7 @@ class JobService(PlanJobReader):
             run_key=data["run_key"],
             job=Job(
                 id=uuid4().hex, project=project, request=request_id, launch=launch,
-                data=data | {"manifest_root": str(root), "runtime": sys.executable},
+                data=data | {"manifest_root": str(root), "runtime": launch.argv[0]},
             ),
         )
 
@@ -568,14 +576,15 @@ class JobService(PlanJobReader):
             canonical_request=canonical_request,
             checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
+        launch = replace(self._training_worker, payload=payload)
         return AdmissionItem(
             run_key=data["run_key"],
             job=Job(
                 id=uuid4().hex,
                 project=project,
                 request=request_id,
-                launch=replace(self._training_worker, payload=payload),
-                data=data | {"manifest_root": str(root), "runtime": sys.executable},
+                launch=launch,
+                data=data | {"manifest_root": str(root), "runtime": launch.argv[0]},
             ),
         )
 
@@ -619,8 +628,7 @@ class JobService(PlanJobReader):
             if self._accepting:
                 self.host.warm(
                     self._training_worker,
-                    runtime_owner=os.path.realpath(sys.executable)
-                    if os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT") else None,
+                    runtime_owner=os.path.realpath(self._training_worker.argv[0]),
                 )
 
     def retire_runtime(self, release: str, disposition: str) -> dict:

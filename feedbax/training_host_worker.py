@@ -19,6 +19,34 @@ if TYPE_CHECKING:
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.contracts.worker import ProgressCoordinate
     from feedbax.training.checkpoint_custody import CheckpointWriteResult
+    from feedbax.plugins.application import ApplicationRegistryBundle
+
+
+BOOTSTRAP_ENV = "FEEDBAX_HOST_TRAIN_BOOTSTRAP_MODULES"
+_warm_registries: tuple[tuple[str, ...], ApplicationRegistryBundle] | None = None
+
+
+def _compose_registries(modules: tuple[str, ...]) -> ApplicationRegistryBundle:
+    from feedbax.plugins.composition import compose_application
+
+    return asyncio.run(compose_application(modules=modules)).bundle
+
+
+def prewarm(encoded_modules: str) -> None:
+    """Prepare only the profile's registry, independent of any delivery."""
+    global _warm_registries
+
+    modules = tuple(json.loads(encoded_modules))
+    _warm_registries = modules, _compose_registries(modules)
+
+
+def _training_registries(modules: tuple[str, ...]) -> ApplicationRegistryBundle:
+    if BOOTSTRAP_ENV not in os.environ:
+        # Saved launches from before profile bootstrap carry the modules only in their payload.
+        return _compose_registries(modules)
+    if _warm_registries is None or _warm_registries[0] != modules:
+        raise ValueError("Train launch bootstrap modules differ from the worker profile.")
+    return _warm_registries[1]
 
 
 @dataclass(frozen=True)
@@ -205,12 +233,11 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     )
     from feedbax.training.metrics import normalize_serialized_metrics
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.plugins.composition import compose_application
     from feedbax.runtime._graph_key_schedule import derive_key
     from feedbax.studio.canonical_train import (
         BoundStudioTrainingJobInput,
         PinnedTrainCheckpoint,
-        verify_training_request_binding,
+        resolve_training_request_binding,
     )
     from feedbax.training.checkpoint_custody import (
         CheckpointCustodyError,
@@ -226,7 +253,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     )
     from feedbax.training.preparation import ExecutionPreparationResult
     from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
-    from feedbax.training.managed_studio import prepare_managed_training
+    from feedbax.training.managed_studio import prepare_resolved_training
     from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
     from feedbax.persistence.model_assets import model_artifact_provider
 
@@ -241,7 +268,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     manifest_root = launch.manifest_root.resolve()
     if launch.manifest_root != manifest_root:
         raise ValueError("Canonical Train store must be absolute and canonical")
-    verify_training_request_binding(launch)
+    registries = _training_registries(launch.bootstrap_modules)
+    trial = resolve_training_request_binding(launch, registries=registries).trial
     if launch.checkpoint_input is not None:
         raise ValueError("The Host delivery owns the resolved Train checkpoint input.")
     checkpoint_root = _attempt_root(manifest_root, job_id)
@@ -338,9 +366,8 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         if semantic_model is None:
             raise ModelCheckpointError("/graph", "Managed Train requires a typed model checkpoint owner")
         events.phase("building")
-        registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
         events.phase("compiling")
-        preparation = prepare_managed_training(launch.spec, registries, model_assets=model_assets)
+        preparation = prepare_resolved_training(launch.spec, trial, model_assets=model_assets)
         if not isinstance(preparation, ExecutionPreparationResult):
             raise ValueError("Studio graph training requires scalar execution preparation")
         if source_model is not None and source_model.graph != effective_model_graph(

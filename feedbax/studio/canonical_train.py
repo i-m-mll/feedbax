@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field, field_validator
 
@@ -30,6 +32,10 @@ from feedbax.contracts.training import (
     WorkerExecutionSpec,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+if TYPE_CHECKING:
+    from feedbax.compiler.trial_execution import ResolvedTrialExecution
+    from feedbax.plugins.application import ApplicationRegistryBundle
 
 
 class CanonicalTrainRequestBinding(StrictModel):
@@ -98,6 +104,22 @@ def lower_canonical_train(
     registries=None,
 ) -> TrainingRunSpec:
     """Project one authored request, using registered or already bound worker declarations."""
+    from feedbax.persistence.model_assets import model_artifact_provider
+
+    spec, trial = _project_canonical_train(request, execution, registries=registries)
+    prepared = trial.realize(artifact_provider=model_artifact_provider(trial.graph.graph))
+    if isinstance(prepared, tuple):
+        problem = prepared[0]
+        raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+    return spec
+
+
+def _project_canonical_train(
+    request: DocumentTrainingRequestSpec,
+    execution: TrainingProgramRegistry | WorkerExecutionSpec,
+    *,
+    registries: ApplicationRegistryBundle | None,
+) -> tuple[TrainingRunSpec, ResolvedTrialExecution]:
     if request.method_ref != STUDIO_GRAPH_METHOD:
         raise ValueError(
             "/method_ref: canonical admission currently supports the Studio graph method"
@@ -109,24 +131,19 @@ def lower_canonical_train(
             "/risk_aggregation: Studio graph Train uses its ordinary objective reduction"
         )
     documents = request.trial_documents
-    from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+    from feedbax.compiler.trial_execution import resolve_trial_execution
     from feedbax.plugins.application import new_application_registry_bundle
 
     registries = registries or new_application_registry_bundle()
-    from feedbax.persistence.model_assets import model_artifact_provider
-    from feedbax.compiler.model_document import lower_model_document
-
-    graph_spec = lower_model_document(documents.model_name, documents.model, registries.components).graph
-    paired = compile_trial_execution(
+    paired = resolve_trial_execution(
         documents.model_name, documents.model, documents.task_source,
         registries.components, registries.expression_functions, python_tasks=registries.python_tasks, objective=documents.objective,
         input_overrides=documents.input_overrides,
-        artifact_provider=model_artifact_provider(graph_spec),
     )
-    if not isinstance(paired, PreparedTrialExecution):
+    if isinstance(paired, tuple):
         problem = paired[0]
         raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
-    if problem := model_owner_problem(paired.executable.resolved.graph, "checkpoint"):
+    if problem := model_owner_problem(paired.graph.graph, "checkpoint"):
         address = paired.lowered.source_address(pointer(problem.path))
         path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
         raise ValueError(f"{pointer(path)}: {problem.reason}")
@@ -165,7 +182,7 @@ def lower_canonical_train(
     else:
         contract, phase = execution.method_contract, execution.effective_phase
     return TrainingRunSpec(
-        graph={"inline": paired.executable.resolved.graph.model_dump(mode="json", exclude_none=True)},
+        graph={"inline": paired.graph.graph.model_dump(mode="json", exclude_none=True)},
         trial_documents=documents,
         training_config=config,
         risk_aggregation=request.risk_aggregation,
@@ -178,7 +195,7 @@ def lower_canonical_train(
             "progress_interval": 1,
             **({"continuation": continuation} if continuation is not None else {}),
         },
-    )
+    ), paired
 
 
 def bind_canonical_train(
@@ -210,9 +227,15 @@ def bind_canonical_train(
     )
 
 
-def verify_training_request_binding(
-    launch: BoundStudioTrainingJobInput,
-) -> tuple[tuple[Path, ContentObjectRef], ...]:
+@dataclass(frozen=True)
+class VerifiedTrainBinding:
+    files: tuple[tuple[Path, ContentObjectRef], ...]
+    trial: ResolvedTrialExecution
+
+
+def resolve_training_request_binding(
+    launch: BoundStudioTrainingJobInput, *, registries: ApplicationRegistryBundle,
+) -> VerifiedTrainBinding:
     """Authenticate the request and the exact executable payload pinned by the launch."""
     binding = launch.canonical_request
     store = ImmutableArtifactBlobProvider(launch.manifest_root)
@@ -242,16 +265,23 @@ def verify_training_request_binding(
         raise ValueError("Canonical Train binding does not match its checkpoint input.")
     if used != documents.keys():
         raise ValueError("Canonical Train binding does not name its exact document closure.")
-    if launch.bootstrap_modules:
-        import asyncio
-        from feedbax.plugins.composition import compose_application
-
-        registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
-    else:
-        registries = None
-    expected = lower_canonical_train(request, launch.spec.worker_execution, registries=registries)
+    expected, trial = _project_canonical_train(request, launch.spec.worker_execution, registries=registries)
     if canonical_json_bytes(expected.model_dump(mode="json")) != canonical_json_bytes(
         launch.spec.model_dump(mode="json")
     ):
         raise ValueError("Canonical Train request does not match its bound execution payload.")
-    return tuple((store.object_path(ref), ref) for ref in (binding.request, *binding.documents))
+    return VerifiedTrainBinding(
+        tuple((store.object_path(ref), ref) for ref in (binding.request, *binding.documents)), trial,
+    )
+
+
+def verify_training_request_binding(
+    launch: BoundStudioTrainingJobInput,
+) -> tuple[tuple[Path, ContentObjectRef], ...]:
+    """Authenticate a bound request for completion and receipt readers."""
+    import asyncio
+
+    from feedbax.plugins.composition import compose_application
+
+    registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
+    return resolve_training_request_binding(launch, registries=registries).files

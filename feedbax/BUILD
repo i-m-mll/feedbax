@@ -15,6 +15,7 @@ python_sources(
                 "feedbax/training_host_worker.py:feedbax",
                 "feedbax/training/evaluate_worker.py:../feedbax",
                 "feedbax/training/managed_studio.py:../feedbax",
+                "feedbax/training/host_prewarm.py:../feedbax",
                 "feedbax/plugins/composition.py:../feedbax",
             ],
         },

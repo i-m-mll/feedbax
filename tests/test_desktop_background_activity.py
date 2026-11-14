@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import json
 import os
 from pathlib import Path
 import sys
@@ -196,11 +197,18 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
         assert not HostClient(root).address.exists()
 
 
-def test_open_studio_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch):
+@pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
+def test_open_studio_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, desktop_owned):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
-    app = create_app(projects_dir=tmp_path / "projects")
+    if desktop_owned:
+        monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(Path(sys.executable).resolve().parent.parent))
+    else:
+        monkeypatch.delenv("FEEDBAX_DESKTOP_RELEASE_ROOT", raising=False)
+    projects = tmp_path / "projects"
+    _project(projects / "reach", batches=2)
+    app = create_app(projects_dir=projects)
 
     def profiles():
         return set((host.root / "workers").glob("*/profile.json"))
@@ -217,6 +225,23 @@ def test_open_studio_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch
 
         assert studio.get("/api/jobs").status_code == 200
         assert profiles() - original == replacement
+
+        opened = studio.get("/api/projects/reach/open")
+        assert opened.status_code == 200, opened.text
+        submitted = studio.post("/api/projects/reach/train-runs", json={
+            "revision": opened.json()["snapshot"]["revision"], "token": "restart-train",
+            "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
+        })
+        assert submitted.status_code == 202, submitted.text
+        item, = submitted.json()["items"]
+        assert item["disposition"] == "admitted"
+        job = item["job_id"]
+        done = wait_until(lambda: job_row(host, job, "succeeded"))
+        log = host.root / "deliveries" / job / str(done["delivery"]) / "events.jsonl"
+        with log.open() as stream:
+            acceptance = json.loads(stream.readline())
+        profile, = replacement
+        assert acceptance == {"kind": "accepted", "data": {"token": profile.parent.name}}
 
 
 def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):

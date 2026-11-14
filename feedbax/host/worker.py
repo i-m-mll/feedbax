@@ -21,14 +21,14 @@ def _redirect(paths: dict) -> None:
             os.dup2(stream.fileno(), fd)
 
 
-def _sources(entrypoint: str | None) -> dict[Path, tuple[int, int]]:
+def _sources() -> dict[Path, tuple[int, int]]:
+    """Capture loaded source, including the plugins composed during prewarm."""
     snapshots = {}
-    package = (entrypoint or "").partition(":")[0].partition(".")[0]
-    for name, module in list(sys.modules.items()):
-        if name.partition(".")[0] not in {"feedbax", package}:
-            continue
+    for module in list(sys.modules.values()):
         if source := getattr(module, "__file__", None):
             path = Path(source)
+            if path in snapshots:
+                continue
             try:
                 info = path.stat()
             except FileNotFoundError:
@@ -61,7 +61,7 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
             entrypoint = getattr(importlib.import_module(module_name), function)
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
         import_error = (error, traceback.format_exc())
-    snapshots = _sources(profile["warm_entrypoint"])
+    snapshots = _sources()
     try:
         with control:
             control.sendall(encode({"kind": "ready"}))
