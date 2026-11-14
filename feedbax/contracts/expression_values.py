@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictBool, StrictInt
 
+from feedbax.contracts.model_address import ModelAddress
+
 
 class ValueRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -115,6 +117,7 @@ class Problem(ValueRecord):
     reason: str
     path: tuple[str | int, ...] = ()
     span: TextSpan | None = None
+    model_address: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 type Scalar = StrictBool | StrictInt | FiniteFloat

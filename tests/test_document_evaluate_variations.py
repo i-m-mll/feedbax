@@ -399,6 +399,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     snapshot = folders.read_plan(project, revision=None)
     plan = snapshot.plan
     assert {run.key.step for run in plan.runs} == {"train"}
+    (train,) = plan.runs
     (problem,) = plan.diagnostics
     assert problem.step == "baseline"
     assert problem.model_address == ModelAddress.model_validate({
@@ -407,14 +408,17 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     })
     assert problem.path == "/inputs/subject/graph/subgraphs/wrapper/subgraphs/controller/nodes/passthrough"
     assert "feedbax.Gain" in problem.detail and "no declared Evaluate layout" in problem.detail
+    assert train.admission_problem is not None
+    assert train.admission_problem.model_address == problem.model_address
+    assert "no typed model checkpoint owner" in train.admission_problem.detail
     jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
     key = RunKey("default", "baseline", "default")
     view = read_settled_project_plan(snapshot, jobs)
     row = next(row for row in view.status_rows() if row.key == key)
     assert row.status == "cannot_run"
     assert problem.path in row.reason
-    (refused,) = jobs.admit_plan(folders, snapshot, run_keys=(key,), token="unsupported").items
-    assert refused.disposition == "rejected"
+    refused = jobs.admit_plan(folders, snapshot, run_keys=(train.key, key), token="unsupported").items
+    assert len(refused) == 2 and all(item.disposition == "rejected" for item in refused)
     assert not host.jobs()
 
     _save_project(folders, project, valid)

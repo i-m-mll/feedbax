@@ -947,8 +947,7 @@ def test_root_period_resolves_leaky_cell_tau_and_model_interface(tau, alpha):
     assert executable.graph.nodes["cell"].cell.alpha == pytest.approx(alpha)
 
 
-def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
-    pytest.importorskip("mujoco.mjx")
+def _planar_arm():
     spec = two_link_arm_6muscle_template_graph()
     nodes = {
         key: {"kind": "leaf", "name": key, "type": node.type, "fields": dict(node.params)}
@@ -958,7 +957,7 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
         "kind": "leaf", "name": "Position", "type": "feedbax.SensorOutput",
         "fields": {"quantity": "position"},
     }
-    plant = {
+    return {
         "kind": "composite", "name": "Arm", "substeps": 2,
         "ports": {"inputs": [_port("drive", "Drive", shape=[6])], "outputs": [_port("pos", "Position", shape=[2])]},
         "interior": {
@@ -973,6 +972,71 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
             },
         },
     }
+
+
+@pytest.mark.parametrize("domain", ["planar_multibody", "spatial_multibody"])
+def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain):
+    from tests.test_document_train_pair import authored_documents, document_project
+
+    if domain == "planar_multibody":
+        pytest.importorskip("mujoco.mjx")
+    raw = document_project(authored_documents(), evaluation=True)
+    model = raw["documents"]["reach-model"]["payload"]
+    arm = _planar_arm()
+    arm["interior"]["physical_domain"] = domain
+    model["interior"]["components"].update(arm=arm, readout={
+        "kind": "leaf", "name": "Arm Command", "type": "feedbax.Linear",
+        "fields": {"input_size": 2, "output_size": 6, "initialization": "zeros"},
+    })
+    model["interior"]["wires"].update(
+        command_arm=_wire({"owner": "inputs", "port": model["ports"]["inputs"][0]["id"]},
+                          _end("readout", "input")),
+        drive_arm=_wire(_end("readout", "output"), _end("arm", "drive")),
+    )
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "mechanics"
+    _save_project(folders, project, Project.model_validate(raw))
+    jobs = JobService(host, new_application_registry_bundle(), enable_evaluation_candidate=True)
+    service = ProjectPlanService(folders, jobs)
+    view = service.read(project, revision=None)
+    response = service.response(view, include_window_map=True)
+
+    train = next(problem for problem in response.window_map.problems if problem.step == "train")
+    assert train.document == "reach-model"
+    assert train.model_address == ModelAddress.model_validate({
+        "document": "reach-model",
+        "composites": ["arm"] if domain == "spatial_multibody" else [],
+        "element": {"kind": "graph"} if domain == "spatial_multibody" else {"kind": "component", "id": "arm"},
+    })
+    if domain == "spatial_multibody":
+        assert train.path == "payload.trial_documents.model.interior.components.arm"
+        assert "requires an authored spatial asset" in train.detail
+        evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
+        assert evaluate.path == "inputs.subject" and "unplannable rows" in evaluate.detail
+    else:
+        assert train.path == "/trial_documents/model/interior/components/arm"
+        assert "no typed model checkpoint owner for solver 'euler'" in train.detail
+        evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
+        assert evaluate.model_address == train.model_address
+        assert "no qualified Evaluate realization" in evaluate.detail
+
+    snapshot = view.settled
+    train_key = RunKey("default", "train", "default")
+    evaluate_key = RunKey("default", "baseline", "default")
+    status = {row.key: row.status for row in view.status_rows()}
+    assert status[train_key] == "cannot_run"
+    if domain == "planar_multibody":
+        assert status[evaluate_key] == "cannot_run"
+    refused = jobs.admit_plan(
+        folders, snapshot, run_keys=(train_key, evaluate_key), token="unsupported-mechanics",
+    ).items
+    assert len(refused) == 2 and all(item.disposition == "rejected" for item in refused)
+    assert not host.jobs()
+
+
+def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
+    pytest.importorskip("mujoco.mjx")
+    plant = _planar_arm()
     hold = {
         "kind": "leaf", "name": "Hold", "type": "feedbax.ZeroOrderHold",
         "fields": {"hold_steps": 1, "n_dims": 2},

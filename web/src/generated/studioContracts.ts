@@ -3275,6 +3275,7 @@ export type Problem = {
   "reason": string;
   "path"?: Array<string | number>;
   "span"?: TextSpan | null;
+  "model_address"?: ModelAddress | null;
 };
 
 export type ProblemCode = "parse" | "unknown_name" | "duplicate_name" | "unknown_function" | "plugin_missing" | "arity" | "type_mismatch" | "unit_mismatch" | "level_too_fine" | "out_of_scope" | "cycle" | "unbounded_length" | "length_budget" | "missing_limit" | "list_count" | "structure";
@@ -9710,6 +9711,7 @@ export const ProblemSchema: z.ZodType<Problem> = z.lazy(() =>
     "reason": z.string(),
     "path": z.array(z.union([z.string(), z.number().int().safe()])).optional(),
     "span": z.union([TextSpanSchema, z.null()]).optional(),
+    "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Problem>;
 

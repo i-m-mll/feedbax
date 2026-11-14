@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.model_occurrence import graph_leaf_specs
+
 
 @dataclass(frozen=True)
 class ModelValue:
@@ -137,3 +141,51 @@ MODEL_OWNERS = {
     ),
     SPATIAL_OWNER: ModelOwner(1, ()),
 }
+
+
+@dataclass(frozen=True)
+class ModelOwnerProblem:
+    path: tuple[str, ...]
+    reason: str
+
+
+def model_owner_problem(graph: GraphSpec, use: Literal["checkpoint", "evaluate"]) -> ModelOwnerProblem | None:
+    """Check the declared support of a resolved graph without realizing its owners."""
+    for path, node in graph_leaf_specs(graph):
+        owner = MODEL_OWNERS.get(node.type)
+        declared = owner is not None and node.revision in {None, owner.revision}
+        if declared and owner.fixed_configuration and node.params.get("fixed") is True:
+            continue
+        interior = (graph.subgraphs or {}).get(path[0]) if len(path) == 1 else None
+        checkpointable = declared and owner.checkpointable
+        if use == "evaluate":
+            if node.type == SPATIAL_OWNER:
+                reason = "native or physical owner has no qualified Evaluate realization"
+            elif checkpointable and owner.states is not None:
+                continue
+            else:
+                reason = f"owner {node.type!r} has no declared Evaluate layout for this revision"
+        elif checkpointable and node.type != SPATIAL_OWNER and interior is None:
+            continue
+        elif (
+            checkpointable
+            and node.type == SPATIAL_OWNER
+            and isinstance(interior, AcausalGraphSpec)
+            and interior.mujoco_asset is not None
+            and interior.solver.solver_type == "mujoco"
+            and interior.solver.mjx_backend == "jax"
+            and node.params.get("trainable") is not True
+        ):
+            continue
+        elif isinstance(interior, AcausalGraphSpec):
+            reason = (
+                f"owner {node.type!r} has no typed model checkpoint owner "
+                f"for solver {interior.solver.solver_type!r} and this configuration"
+            )
+        else:
+            reason = f"owner {node.type!r} has no typed model checkpoint owner for this revision"
+        return ModelOwnerProblem(
+            ("graph", *(token for name in path[:-1] for token in ("subgraphs", name)), "nodes", path[-1]),
+            reason,
+        )
+    return None

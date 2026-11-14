@@ -155,11 +155,12 @@ def pair_trial_source(
         )
     except ModelCompilationProblem as error:
         return (Problem(code=ProblemCode.STRUCTURE, reason=str(error),
-                        path=("model", *error.address.stored_path())),)
+                        path=("model", *error.address.stored_path()), model_address=error.address),)
     except ParameterResolutionError as error:
         address = lowered.source_address(error.authored_path)
         path = address.stored_path() if address else json_pointer_parts(error.authored_path)
-        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("model", *path)),)
+        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("model", *path),
+                        model_address=address),)
     if isinstance(task, TaskDocument):
         compiled = compile_task(task, functions, model=replace(interface, inputs=()), sites=task_sites)
     else:
@@ -265,6 +266,7 @@ def compile_trial_execution(
                 code=ProblemCode.STRUCTURE,
                 reason=str(error),
                 path=("model", *error.address.stored_path()),
+                model_address=error.address,
             ),
         )
     except GraphCompilationError as error:
