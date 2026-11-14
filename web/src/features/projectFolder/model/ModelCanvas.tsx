@@ -3,7 +3,10 @@ import {
   getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
 } from '@xyflow/react';
-import { memo, useEffect, useId, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
+import {
+  createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useRef, useState,
+  type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
+} from 'react';
 import { Scan, Lock, Minus, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
@@ -54,11 +57,42 @@ function side(port: Port, flipped: boolean) {
   return (port.direction === 'input') !== flipped ? Position.Left : Position.Right;
 }
 
+const HandleUpdates = createContext<(id: string) => void>(() => {
+  throw new Error('Model cards require a handle update queue');
+});
+
+function ModelHandleUpdates({ children }: { children: ReactNode }) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  const pendingHandles = useRef(new Set<string>());
+  const updateHandles = useCallback((id: string) => {
+    const pending = pendingHandles.current;
+    if (!pending.size) queueMicrotask(() => {
+      if (!pending.size) return;
+      const ids = [...pending];
+      pending.clear();
+      updateNodeInternals(ids);
+    });
+    pending.add(id);
+  }, [updateNodeInternals]);
+  useEffect(() => () => pendingHandles.current.clear(), []);
+  return <HandleUpdates.Provider value={updateHandles}>{children}</HandleUpdates.Provider>;
+}
+
 const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
-  const update = useUpdateNodeInternals();
+  const update = useContext(HandleUpdates);
   const nameId = useId();
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => { update(id); }, [id, update, data.ports, data.flipped, data.collapsed]);
+  const ports = data.ports.map((port) => {
+    const key = portId(port);
+    const reason = data.portReasons?.get(key);
+    const available = data.canPick?.(port);
+    const problem = data.portProblems?.get(key);
+    const verdict = reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined;
+    return { port, key, reason, available, problem, verdict };
+  });
+  const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, ports.map(({ port, key, verdict, problem }) =>
+    [key, port.name, port.mark, verdict === 'allowed', !!problem])]);
+  useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <article className="studio-model-card" data-stacked={data.stacked} data-selected={data.selected}
     data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'graph'}
@@ -82,16 +116,14 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       {data.caption && <span>{data.caption}</span>}
       {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
     </header>
-    {data.ports.map((port) => {
+    {ports.map(({ port, key, reason, available, problem, verdict }) => {
       const location = side(port, Boolean(data.flipped));
       const physical = port.direction === 'physical';
-      const reason = data.portReasons?.get(portId(port));
-      const available = data.canPick?.(port);
       const connectable = !data.locked && !data.canPick;
-      return <div key={portId(port)} className="studio-model-port" data-collapsed={data.collapsed}
+      return <div key={key} className="studio-model-port" data-collapsed={data.collapsed}
         data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
-        data-verdict={reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined}>
-        <Handle id={portId(port)} type={port.direction === 'input' ? 'target' : 'source'}
+        data-verdict={verdict}>
+        <Handle id={key} type={port.direction === 'input' ? 'target' : 'source'}
           position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
           tabIndex={data.collapsed ? -1 : 0}
           aria-disabled={!connectable && !available}
@@ -132,8 +164,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && <span>{port.name}</span>}
         {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
           {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
-        {!data.collapsed && data.portProblems?.get(portId(port)) && <span role="img"
-          aria-description={data.portProblems.get(portId(port))} aria-label={studioName('problems')}>◆</span>}
+        {!data.collapsed && problem && <span role="img" aria-description={problem} aria-label={studioName('problems')}>◆</span>}
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
@@ -260,7 +291,7 @@ type Props = {
 };
 
 export function ModelCanvas(props: Props) {
-  return <ReactFlowProvider><Canvas {...props} /></ReactFlowProvider>;
+  return <ReactFlowProvider><ModelHandleUpdates><Canvas {...props} /></ModelHandleUpdates></ReactFlowProvider>;
 }
 
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, onToggleLock, onToggleCollapse, onCanvasPoint,
