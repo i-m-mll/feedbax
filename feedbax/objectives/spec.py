@@ -412,13 +412,6 @@ def objective_schema_models() -> dict[str, type[BaseModel]]:
     }
 
 
-def canonical_objective_payload(spec: ObjectiveSpec | dict[str, Any]) -> dict[str, Any]:
-    """Validate and return a deterministic JSON-compatible payload."""
-
-    objective = validate_objective_spec(spec)
-    return objective.model_dump(mode="json", exclude_none=True)
-
-
 def migrate_objective_spec(
     spec: ObjectiveSpec | dict[str, Any],
     *,

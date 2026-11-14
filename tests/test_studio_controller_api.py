@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from feedbax.orchestration.controller import OrphanHandlingPolicy, ProviderResourceObservation
 from feedbax.web.api import orchestration as orchestration_api
 from feedbax.web.orchestration import controller as studio_controller_module
-from tests.test_durable_controller import _Adapter, _gcp_plan
+from tests.test_durable_controller import _Adapter, _gcp_plan, _seed_gcp_reservation
 
 
 def test_authentication_rejects_evidence_for_an_unknown_reservation(monkeypatch, tmp_path) -> None:
@@ -37,7 +37,8 @@ def test_retry_endpoint_admits_same_effect_without_dispatch(monkeypatch, tmp_pat
     monkeypatch.setattr(studio_controller_module, "studio_controller", None)
     invocation, plan = _gcp_plan()
     studio = studio_controller_module.get_studio_controller()
-    intent, reservation = studio.reserve_cloud_launch(
+    intent, reservation = _seed_gcp_reservation(
+        studio,
         invocation,
         plan,
         parameters={
@@ -47,8 +48,6 @@ def test_retry_endpoint_admits_same_effect_without_dispatch(monkeypatch, tmp_pat
             "worker_health_timeout_seconds": 120,
             "poll_interval_seconds": 2,
         },
-        ttl_seconds=300,
-        secrets={},
     )
     studio.controller.authenticate_reservation(
         intent.intent_id,
@@ -93,7 +92,8 @@ def test_status_endpoint_exposes_durable_orphan_handling(monkeypatch, tmp_path) 
     monkeypatch.setattr(studio_controller_module, "studio_controller", None)
     invocation, plan = _gcp_plan()
     studio = studio_controller_module.get_studio_controller()
-    intent, reservation = studio.reserve_cloud_launch(
+    intent, reservation = _seed_gcp_reservation(
+        studio,
         invocation,
         plan,
         parameters={
@@ -103,8 +103,6 @@ def test_status_endpoint_exposes_durable_orphan_handling(monkeypatch, tmp_path) 
             "worker_health_timeout_seconds": 120,
             "poll_interval_seconds": 2,
         },
-        ttl_seconds=300,
-        secrets={},
     )
     studio.controller.authenticate_reservation(
         intent.intent_id,

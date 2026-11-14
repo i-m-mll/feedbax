@@ -48,7 +48,6 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     compile_training_run_matrix,
-    emit_training_run_spec_storage,
     register_training_run_matrix_compiler,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
@@ -331,37 +330,6 @@ def test_assembly_dispatch_retains_delta_artifact_and_authored_identity(
         _validate_training_matrix_delta_parent_chain(authored, child, repo_root=tmp_path)
 
 
-def test_public_emitter_and_schema_discovery_preserve_delta_authority(
-    tmp_path: Path, application_registry_bundle
-) -> None:
-    parent_sha = _write(tmp_path, "parent.json", _parent())
-    child = _child(parent_sha)
-    lock = tmp_path / "uv.lock"
-    lock.write_text("locked", encoding="utf-8")
-    authored_path = tmp_path / "authored-delta.json"
-
-    storage = emit_training_run_spec_storage(
-        child,
-        repo_root=tmp_path,
-        authored_path=authored_path,
-        custody_root=tmp_path / "custody",
-        materializer_commit="abc",
-        dependency_lock_path=lock,
-        method_registry=application_registry_bundle.training_programs,
-        allow_inline_base=True,
-        row_validator=lambda _payload, _row_id: None,
-        row_lowerer=application_registry_bundle.row_lowerers.lower,
-    )
-
-    assert json.loads(authored_path.read_text(encoding="utf-8")) == (
-        TrainingRunMatrixDeltaSpec.model_validate(child).model_dump(mode="json", exclude_none=True)
-    )
-    assert storage.intent_hash == training_matrix_delta_envelope_hash(
-        TrainingRunMatrixDeltaSpec.model_validate(child)
-    )
-    assert (
-        storage.capsule.relevant_schema_versions["training_run_matrix_delta"]
-        == TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION
-    )
+def test_public_schema_discovery_preserves_delta_authority() -> None:
     assert public_contracts.TrainingRunMatrixDeltaSpec is TrainingRunMatrixDeltaSpec
     assert "TrainingRunMatrixDeltaSpec" in provider_manifest().schemas

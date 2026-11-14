@@ -36,7 +36,6 @@ class CanonicalJsonErrorCode(StrEnum):
     LONE_SURROGATE = "lone_surrogate"
     NON_FINITE_NUMBER = "non_finite_number"
     NON_STRING_KEY = "non_string_key"
-    UNKNOWN_ALGORITHM = "unknown_algorithm"
     UNSAFE_INTEGER = "unsafe_integer"
     UNSUPPORTED_TYPE = "unsupported_type"
 
@@ -92,21 +91,6 @@ def canonical_json_v2_bytes(value: object) -> bytes:
             detail=str(exc),
             value_type=type(value).__name__,
         ) from exc
-
-
-def canonical_json_bytes_for_algorithm(value: object, algorithm: str) -> bytes:
-    """Encode ``value`` with one explicitly named canonical JSON algorithm."""
-
-    if algorithm == CANONICAL_JSON_V1:
-        return canonical_json_v1_bytes(value)
-    if algorithm == CANONICAL_JSON_V2:
-        return canonical_json_v2_bytes(value)
-    raise CanonicalJsonError(
-        CanonicalJsonErrorCode.UNKNOWN_ALGORITHM,
-        path="",
-        detail=f"unsupported algorithm {algorithm!r}",
-        value_type=type(value).__name__,
-    )
 
 
 def _validate_v2_value(value: object, *, path: str, active_containers: set[int]) -> None:
@@ -217,7 +201,6 @@ __all__ = [
     "CanonicalJsonAlgorithm",
     "CanonicalJsonError",
     "CanonicalJsonErrorCode",
-    "canonical_json_bytes_for_algorithm",
     "canonical_json_v1_bytes",
     "canonical_json_v2_bytes",
     "validate_canonical_json_v2",

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
+from feedbax.execution.records import Invocation
 from feedbax.orchestration.controller import (
     ControllerEvent,
     ControllerEventStore,
@@ -30,6 +33,7 @@ from feedbax.orchestration.drivers.local import local_driver_registration
 from feedbax.orchestration.drivers.runpod import runpod_driver_registration
 from feedbax.orchestration.gcp_backend import GCP_CONTROLLER_CAPABILITIES
 from feedbax.orchestration.realization import (
+    BackendPlan,
     BackendRealizationRequest,
     ExpectedCost,
     MachineShape,
@@ -68,9 +72,6 @@ class _Adapter:
         self.inventory_count = 0
         self.resource_by_key: dict[str, str] = {}
         self.inventory_resources: tuple[ProviderResourceObservation, ...] = ()
-
-    def bind_secret_material(self, _reservation_id, _secrets) -> None:
-        pass
 
     async def dispatch(self, reservation):
         self.dispatch_count += 1
@@ -679,44 +680,32 @@ def test_provider_inventory_detects_and_handles_orphan_replay_safely(tmp_path) -
     assert restarted.project(intent.intent_id) == projection
 
 
-def test_studio_gcp_reservation_is_inert_and_recovers_from_events(tmp_path) -> None:
-    invocation, plan = _gcp_plan()
-    studio = StudioController(event_path=tmp_path / "events.jsonl")
-    intent, reservation = studio.reserve_cloud_launch(
-        invocation,
+def _seed_gcp_reservation(
+    studio: StudioController,
+    invocation: Invocation,
+    plan: BackendPlan,
+    *,
+    parameters: Mapping[str, Any],
+) -> tuple[RunIntent, EffectReservation]:
+    """Write the legacy reservation shape consumed by recovery and control tests."""
+    intent = RunIntent(
+        intent_id=f"studio-{parameters['instance_name']}",
+        invocation_id=invocation.invocation_id,
+        desired_outcome="remote-worker-available",
+        operator_gate_policy="per-effect-authentication",
+        idempotency_boundary=plan.external_effect_key,
+    )
+    studio.controller.admit_intent(intent)
+    studio.controller.select_backend_plan(intent.intent_id, plan)
+    reservation = studio.controller.reserve_effect(
+        intent.intent_id,
         plan,
-        parameters={
-            "project": "inert-project",
-            "zone": "northamerica-northeast1-a",
-            "machine_type": "n1-standard-4",
-            "preemptible": True,
-            "worker_port": 8765,
-            "instance_name": "feedbax-worker-inert",
-            "install_spec": {
-                "schema_version": "feedbax.orchestration.install.v1",
-                "source": "git",
-                "repository": "https://github.com/mlll-io/feedbax.git",
-                "ref": "develop",
-                "extras": [],
-            },
-            "startup_timeout_seconds": 120,
-            "worker_health_timeout_seconds": 120,
-            "poll_interval_seconds": 2,
-        },
-        ttl_seconds=300,
-        secrets={"worker_auth_token": "not-persisted"},
+        effect_class="cloud-machine-acquisition",
+        normalized_parameters=parameters,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=300),
+        external_effect_key=parameters["instance_name"],
     )
-
-    assert studio.status(intent.intent_id).reservations[reservation.reservation_id].status == (
-        "inert"
-    )
-    serialized = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
-    assert "not-persisted" not in serialized
-    restarted = StudioController(event_path=tmp_path / "events.jsonl")
-    recovered = restarted.status(intent.intent_id)
-    assert recovered.intent == intent
-    assert recovered.reservations[reservation.reservation_id].reservation.backend_id == "gcp"
-    assert recovered.attempts == {}
+    return intent, reservation
 
 
 def test_studio_cancellation_is_a_separately_reserved_cleanup_effect(tmp_path) -> None:
@@ -725,7 +714,8 @@ def test_studio_cancellation_is_a_separately_reserved_cleanup_effect(tmp_path) -
     adapter = _Adapter()
     studio.gcp = adapter
     studio.adapters["gcp"] = adapter
-    intent, reservation = studio.reserve_cloud_launch(
+    intent, reservation = _seed_gcp_reservation(
+        studio,
         invocation,
         plan,
         parameters={
@@ -735,8 +725,6 @@ def test_studio_cancellation_is_a_separately_reserved_cleanup_effect(tmp_path) -
             "worker_health_timeout_seconds": 120,
             "poll_interval_seconds": 2,
         },
-        ttl_seconds=300,
-        secrets={},
     )
     studio.controller.authenticate_reservation(
         intent.intent_id,
