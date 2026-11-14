@@ -1,17 +1,16 @@
-"""Author MJX CPU Studio fixtures and qualify their retained source execution."""
+"""Qualify retained biomechanics on source and on an isolated MJX CPU release."""
 
 from __future__ import annotations
 
 import argparse
-import http.client
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
-from contextlib import closing, redirect_stdout
-from http.cookies import SimpleCookie
+from contextlib import chdir, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
@@ -25,14 +24,17 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def host_job(fixture, job_id, *, include_launch=False):
+def host_job(fixture, job_id):
     from feedbax.host import HostClient
 
     snapshot = HostClient(fixture.paths.host).jobs_snapshot(
-        job_id=job_id, include_launch=include_launch, start_host=False,
+        job_id=job_id, start_host=False,
     )
     (job,) = snapshot["jobs"]
-    require(job["id"] == job_id and job["data"]["runtime"] == str(fixture.release.resource("python")),
+    require(job["id"] == job_id
+            and job["request"].startswith("retained-biomechanics:")
+            and job["data"]["runtime"] == str(fixture.release.resource("python"))
+            and job["data"]["release"] == fixture.release.digest,
             "job does not belong to this installed runtime")
     return job, snapshot["cursor"]
 
@@ -137,11 +139,18 @@ def request_for(name, case, *, batches, checkpoint_interval):
 
 class Fixture:
     def __init__(self, contents, fixture_root):
+        import feedbax
         from feedbax.desktop.release import AppPaths, Release
 
         self.release = Release.load(contents)
         require(self.release.fixture_root == fixture_root.resolve(strict=True), "not the requested fixture release")
+        require(Path(sys.executable).resolve(strict=True) == self.release.resource("python")
+                and Path(feedbax.__file__).resolve().is_relative_to(self.release.contents),
+                "qualification must use Feedbax from the exact bundled interpreter")
         self.paths = AppPaths.resolve(instance_root=self.release.fixture_root)
+        self.paths.configure_studio()
+        os.environ["FEEDBAX_DESKTOP_RELEASE_ROOT"] = str(self.release.contents)
+        os.environ.pop("PYTHONPATH", None)
 
 
 class Studio(Fixture):
@@ -162,30 +171,6 @@ class Studio(Fixture):
             "the exact installed MJX CPU service is not ready",
         )
         self.health = health
-        self.origin = health["origin"]
-        ticket = call(self.paths, "ticket", body={})["ticket"]
-        with self.connection() as connection:
-            connection.request("POST", "/_desktop/exchange", headers={
-                "X-Feedbax-Ticket": ticket, "Origin": self.origin,
-            })
-            reply = connection.getresponse()
-            require(reply.status == 204, "could not establish a fixture session")
-            self.cookie = SimpleCookie(reply.getheader("Set-Cookie"))["feedbax_studio"].OutputString(attrs=[])
-
-    def connection(self):
-        return closing(http.client.HTTPConnection("127.0.0.1", int(self.origin.rsplit(":", 1)[-1]), timeout=8))
-
-    def request(self, method, path, body=None):
-        mime = "application/xml" if isinstance(body, bytes) else "application/json"
-        data = body if body is None or isinstance(body, bytes) else json.dumps(body)
-        with self.connection() as connection:
-            connection.request(method, path, data, {
-                "Cookie": self.cookie, "Origin": self.origin, "Content-Type": mime,
-            })
-            reply = connection.getresponse()
-            raw = reply.read()
-            require(reply.status < 400, f"{method} {path} returned {reply.status}: {raw[:1800]!r}")
-            return json.loads(raw)
 
 def prepare(request, name, case, batches, checkpoint_interval):
     if "mjcf" in case:
@@ -243,21 +228,25 @@ function run(args) {
     return json.loads(result.stdout)
 
 
-def snapshot(studio, job_id, status, after, *, gui):
+def snapshot(studio, job_id, status, after, *, after_update=-1, gui=None):
     deadline = time.monotonic() + 42
     wanted = "succeeded" if status == "completed" else status
     while time.monotonic() < deadline:
         record, cursor = host_job(studio, job_id)
-        projected = studio.request("GET", f'/api/jobs?project={record["project"]}')
-        job = next((row for row in projected["jobs"] if row["job_id"] == job_id), None)
-        if job is not None:
-            require(job["status"] not in {"failed", "interrupted", "corrupt"}, f"training failed: {job}")
-            if job["status"] == wanted and cursor > after:
-                break
+        require(record["state"] not in {"failed", "interrupted", "blocked"}, f"training failed: {record}")
+        progress = record["progress"]
+        if record["state"] == wanted and cursor > after and (
+            wanted != "running" or progress and progress["completed_updates"] > max(0, after_update)
+        ):
+            break
         time.sleep(0.2)
     else:
-        raise RuntimeError(f"{job_id} did not reach {status} after event {after}: {job}")
-    result = {"job": job | {"event_sequence": cursor}, "service": studio.health}
+        raise RuntimeError(f"{job_id} did not reach {status} after event {after}: {record}")
+    job = {
+        "job_id": job_id, "project": record["project"], "status": record["state"],
+        "progress": progress, "event_sequence": cursor,
+    }
+    result = {"job": job, "service": studio.health}
     if status == "running":
         pid = record["worker_pid"]
         require(type(pid) is int and pid > 1 and os.getpgid(pid) == pid, "training owner disappeared")
@@ -279,8 +268,10 @@ def same_job(before, quit_sample, reopened):
         require(all(data["service"][key] == before["service"][key] for key in ("pid", "generation", "release")),
                 "service identity changed")
     events = [data["job"]["event_sequence"] for data in states]
-    require(events[0] < events[1] < events[2], f"job did not progress through Quit/reopen: {events}")
-    return {"job_id": before["job"]["job_id"], "events": events, "worker": before["worker"],
+    updates = [data["job"]["progress"]["completed_updates"] for data in states]
+    require(events[0] < events[1] < events[2] and updates[0] < updates[1] < updates[2],
+            f"job did not progress through Quit/reopen: {events}, {updates}")
+    return {"job_id": before["job"]["job_id"], "events": events, "updates": updates, "worker": before["worker"],
             "generation": before["service"]["generation"]}
 
 
@@ -316,54 +307,75 @@ def inspect_model(model, case):
             "controller_weights": weights.tolist()}
 
 
-def checkpoint(fixture, job_id, case, service, *, stopped=False):
-    import asyncio
+def attempt_root(workspace, job_id):
+    require(re.fullmatch(r"[0-9a-f]{32}", job_id) is not None, "invalid qualification job id")
+    root = workspace / "retained-biomechanics" / job_id
+    require(root.resolve() == root, "qualification custody leaves its expected workspace")
+    return root
 
-    from feedbax.compiler import GraphDocument, compile_graph
+
+def read_terminal_checkpoint(root, job_id, *, stopped):
     from feedbax.contracts.base import ParentRef
-    from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
-    from feedbax.plugins.composition import compose_application
-    from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-    from feedbax.training.checkpoint_custody import (
-        authenticate_checkpoint_custody_ref, load_checkpoint_set, open_published_model_slot,
-    )
-    from feedbax.training.studio_executor import studio_training_key
-    from feedbax.compiler.prototypes import prototypes_from_task_bindings
+    from feedbax.contracts.checkpoints import CheckpointLatestPointer
+    from feedbax.contracts.manifest import canonical_manifest_path, load_manifest, training_run_manifest_id
+    from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
 
-    job, _ = host_job(fixture, job_id, include_launch=True)
-    expected = {"stopped"} if stopped else {"stopped", "succeeded"}
-    require(job["state"] in expected, "job has not settled as requested")
-    binding = BoundStudioTrainingJobInput.model_validate(job["launch"]["payload"])
-    require(binding.canonical_request is not None, "fixture did not use saved Plan admission")
-    checkpoint = PublishedTrainingCheckpoint.model_validate(job["checkpoint"])
-    custody = checkpoint.checkpoint_root.resolve(strict=True)
-    require(custody.is_relative_to(fixture.paths.web / "projects" / job["project"] / "results"),
-            "checkpoint directory leaves the fixture project")
-    pointer = checkpoint.pointer
-    transaction = authenticate_checkpoint_custody_ref(ParentRef(
-        kind="TrainingCheckpointTransactionManifest", id=pointer.transaction_id,
-        role="training_checkpoint_custody", uri=pointer.manifest_relative_path,
-        metadata={"manifest_sha256": pointer.manifest_sha256},
-    ), allowed_root=custody)
-    manifest = transaction.manifest
-    checkpoint_set = load_checkpoint_set(custody, transaction.parent_ref.id)
-    slot = open_published_model_slot(custody, pointer)
-    require(slot is not None, "checkpoint has no portable model slot")
-    method = StudioGraphMethodPayload.model_validate(binding.spec.method_payload.payload)
-    registry = asyncio.run(compose_application(modules=binding.bootstrap_modules)).bundle
-    executable = compile_graph(
-        GraphDocument(graph=slot.graph), registry.components,
-        input_prototypes=prototypes_from_task_bindings(binding.spec.task_binding_spec),
-        initialization_key=studio_training_key(method.seed, "model"), artifact_provider=slot.provider,
+    manifest_id = training_run_manifest_id(job_id)
+    run = load_manifest(canonical_manifest_path("TrainingRunManifest", manifest_id, root=root / "runs"))
+    expected = {"cancelled"} if stopped else {"cancelled", "completed"}
+    require(run.id == manifest_id and run.job_id == job_id and run.status in expected,
+            "retained training did not settle as requested")
+    parent = run.terminal_checkpoint
+    require(isinstance(parent, ParentRef), "retained training has no terminal checkpoint")
+    transaction = authenticate_checkpoint_custody_ref(parent, allowed_root=root / "checkpoints")
+    state = transaction.manifest
+    require(state.run_id == job_id and state.completed_training_batches == run.completed_batches
+            and state.barrier == "after_train_batch", "terminal checkpoint differs from the settled update")
+    return CheckpointLatestPointer(
+        run_id=job_id, transaction_id=state.transaction_id, manifest_relative_path=parent.uri,
+        manifest_sha256=transaction.manifest_sha256,
+        transaction_root_sha256=state.content_integrity_digest.transaction_root_sha256,
+        completed_coordinate=state.completed_coordinate,
+        completed_training_batches=state.completed_training_batches,
     )
-    model = inspect_model(slot.restore(executable.graph), case)
-    return {"job_id": job_id, "release": fixture.release.digest, "service": service,
-            "batches": manifest.completed_training_batches, "transaction": transaction.parent_ref.id,
-            "root_sha256": manifest.content_integrity_digest.transaction_root_sha256,
-            "checkpoint_set": checkpoint_set.exact_ref.model_dump(mode="json"),
-            "parent_checkpoint_set": checkpoint_set.parent.model_dump(mode="json") if checkpoint_set.parent else None,
-            "lineage": manifest.segment_lineage.model_dump(mode="json") if manifest.segment_lineage else None,
-            "model": model}
+
+
+def load_attempt_spec(root, name, case):
+    from feedbax.contracts.training import TrainingRunSpec
+
+    data = (root / "spec.json").read_bytes()
+    spec = TrainingRunSpec.model_validate_json(data)
+    expected, _ = retained_spec(
+        name, case, batches=spec.training_config.n_batches,
+        checkpoint_interval=spec.checkpoint_progress.checkpoint_interval,
+    )
+    require(spec == expected, "retained spec does not match the original fixture")
+    return spec, data
+
+
+def checkpoint(fixture, job_id, name, case, service, *, stopped=False):
+    from feedbax.training.checkpoint_custody import load_checkpoint_set
+
+    root = attempt_root(fixture.paths.workspace, job_id)
+    if not stopped:
+        job, _ = host_job(fixture, job_id)
+        require(job["state"] in {"stopped", "succeeded"}, "job has not settled")
+    spec, _ = load_attempt_spec(root, name, case)
+    pointer = read_terminal_checkpoint(root, job_id, stopped=stopped)
+    if not stopped:
+        require(job["checkpoint"] == pointer.model_dump(mode="json"),
+                "retained transaction differs from the Host publication")
+    loaded = reopen_checkpoint(spec, root / "checkpoints", pointer)
+    checkpoint_set = load_checkpoint_set(root / "checkpoints", pointer.transaction_id)
+    return {
+        "job_id": job_id, "release": fixture.release.digest, "service": service,
+        "batches": pointer.completed_training_batches, "transaction": pointer.transaction_id,
+        "root_sha256": pointer.transaction_root_sha256,
+        "checkpoint_set": checkpoint_set.exact_ref.model_dump(mode="json"),
+        "parent_checkpoint_set": checkpoint_set.parent.model_dump(mode="json") if checkpoint_set.parent else None,
+        "lineage": loaded.manifest.segment_lineage.model_dump(mode="json"),
+        "model": inspect_model(loaded.slots["model"], case),
+    }
 
 
 def continuation(before, after):
@@ -379,6 +391,102 @@ def continuation(before, after):
     require(before["model"]["controller_weights"] != after["model"]["controller_weights"],
             "controller weights did not advance after resume")
     return {"source": before, "successor": after}
+
+
+def admit_retained(fixture, spec_data, *, project=None, source=None):
+    from feedbax._atomic import write_bytes_atomic
+    from feedbax.contracts.base import sha256_bytes
+    from feedbax.host import AdmissionItem, HostClient, Job, Launch
+
+    script = Path(__file__).resolve(strict=True)
+    require(not script.is_relative_to(fixture.release.contents), "copy the qualifier outside the app")
+    job_id = uuid4().hex
+    project = project or f"retained-biomechanics-{job_id}"
+    root = attempt_root(fixture.paths.workspace, job_id)
+    write_bytes_atomic(root / "spec.json", spec_data, replace=False)
+    python = str(fixture.release.resource("python"))
+    digest = sha256_bytes(spec_data)
+    source_args = () if source is None else (
+        "--source-job", source.run_id, "--source-pointer", source.model_dump_json(),
+    )
+    launch = Launch(
+        (python, "-I", "-B", str(script), "worker", job_id, digest, *source_args),
+        cwd=str(fixture.paths.workspace),
+    )
+    request = f"retained-biomechanics:{digest}"
+    job = Job(
+        job_id, project, request, launch, continues=source.run_id if source else None,
+        data={"runtime": python, "release": fixture.release.digest},
+    )
+    host = HostClient(fixture.paths.host)
+    with chdir(fixture.paths.workspace):
+        admission = host.admit(job_id, [AdmissionItem(job_id, job)], record={})
+    (item,) = admission["items"]
+    require(item["disposition"] == "admitted" and item["job_id"] == job_id,
+            f"retained fixture did not admit: {item}")
+    return {"project_id": project, "job_id": job_id, "release": fixture.release.digest}
+
+
+def run_host_worker(job_id, spec_sha256, source_job, source_pointer):
+    from feedbax.contracts.base import sha256_bytes
+    from feedbax.contracts.checkpoints import CheckpointLatestPointer
+    from feedbax.contracts.training import TrainingRunSpec
+    from feedbax.host.io import append
+    from feedbax.plugins.retained import new_retained_registry_bundle
+    from feedbax.training.interruption import RunInterruptionController
+    from feedbax.training.invocation import prepare_training_invocation
+    from feedbax.training.retained_executor import execute_training_run_spec
+
+    require(os.environ["FEEDBAX_HOST_JOB_ID"] == job_id, "unexpected Host delivery")
+    root = attempt_root(Path.cwd(), job_id)
+    event_log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
+    stop_file = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+    data = (root / "spec.json").read_bytes()
+    require(sha256_bytes(data) == spec_sha256, "retained spec differs from the submitted bytes")
+    spec = TrainingRunSpec.model_validate_json(data)
+    pointer = None
+    source_root = None
+    if source_job is not None:
+        pointer = CheckpointLatestPointer.model_validate_json(source_pointer)
+        source = attempt_root(Path.cwd(), source_job)
+        require(pointer.run_id == source_job and data == (source / "spec.json").read_bytes(),
+                "successor differs from the authenticated source run")
+        source_root = source / "checkpoints"
+
+    registries = new_retained_registry_bundle()
+    prepared = prepare_training_invocation(spec, registries, run_id=job_id, resume=pointer is not None)
+    total = spec.training_config.n_batches
+    first_update = (pointer.completed_training_batches if pointer else 0) + 1
+
+    def progress(_coordinate, completed, slots):
+        append(event_log, "progress", {
+            "completed_updates": completed, "total_updates": total,
+            "metrics": check_update(slots, require_gradient=completed == first_update),
+        })
+
+    def published(write):
+        pointer = write.latest_pointer
+        append(event_log, "publication", {
+            "key": f"checkpoint:{pointer.completed_training_batches}",
+            "checkpoint": pointer.model_dump(mode="json"),
+        }, sync=True)
+
+    with RunInterruptionController(interactive=False, stop_file=stop_file) as interruption:
+        result = execute_training_run_spec(
+            spec, run_id=job_id, preparation=prepared, registry=registries.training_programs,
+            manifest_root=root / "runs", checkpoint_root=root / "checkpoints",
+            resume=pointer is not None, checkpoint_source_root=source_root, checkpoint_source_pointer=pointer,
+            retain_history=False, cancellation_probe=lambda _coordinate: interruption.poll(),
+            committed_update_callback=progress, checkpoint_published=published,
+        )
+    if result.status == "completed":
+        require(result.end_completed_batches == total, "retained run ended before its requested target")
+        outcome = "succeeded"
+    elif result.status == "cancelled" and result.checkpoint_writes:
+        outcome = "stopped"
+    else:
+        raise RuntimeError(f"retained worker did not publish a resumable result: {result.status}")
+    append(event_log, "result", {"outcome": outcome}, sync=True)
 
 
 def cache_probe(paths):
@@ -408,22 +516,11 @@ def source_smoke(name, case):
         return retained_source_update(name, case, root)
 
 
-def retained_source_update(name, case, root):
+def retained_spec(name, case, *, batches, checkpoint_interval):
     from feedbax.contracts.training import TrainingRunSpec
-    from feedbax.persistence.model_assets import import_mujoco_asset
     from feedbax.plugins.retained import new_retained_registry_bundle
-    from feedbax.training.checkpoint_custody import (
-        authenticate_published_checkpoint_custody,
-        load_latest_checkpoint,
-    )
-    from feedbax.training.invocation import prepare_training_invocation
-    from feedbax.training.retained_executor import execute_training_run_spec
 
-    if "mjcf" in case:
-        imported = import_mujoco_asset(case["mjcf"].encode())
-        require(imported.model_dump(mode="json") == case["interior"]["mujoco_asset"]["asset"],
-                "source import changed the fixture identity")
-    request = request_for(name, case, batches=2, checkpoint_interval=1)
+    request = request_for(name, case, batches=batches, checkpoint_interval=checkpoint_interval)
     registries = new_retained_registry_bundle()
     # A fresh run must declare the key schedule even when its authored seed is zero.
     method = request.method_payload.model_copy(update={
@@ -438,6 +535,49 @@ def retained_source_update(name, case, root):
         worker_execution={"method_contract": resolved.contract, "effective_phase": resolved.effective_phase},
         checkpoint_progress={"checkpoint_interval": request.training_config.snapshot_interval, "progress_interval": 1},
     )
+    return spec, registries
+
+
+def bind_fixture_asset(case):
+    from feedbax.persistence.model_assets import import_mujoco_asset
+
+    if "mjcf" in case:
+        imported = import_mujoco_asset(case["mjcf"].encode())
+        require(imported.model_dump(mode="json") == case["interior"]["mujoco_asset"]["asset"],
+                "import changed the fixture asset identity")
+
+
+def check_update(slots, *, require_gradient=True):
+    loss, grad_norm = (float(slots[slot]) for slot in ("train_loss", "grad_norm"))
+    require(math.isfinite(loss) and math.isfinite(grad_norm), "fixture update has nonfinite metrics")
+    require(not require_gradient or grad_norm > 0, "fixture's first update has no gradient")
+    return {"loss": loss, "grad_norm": grad_norm}
+
+
+def reopen_checkpoint(spec, custody, pointer):
+    from feedbax.plugins.retained import new_retained_registry_bundle
+    from feedbax.training.checkpoint_custody import load_latest_checkpoint
+    from feedbax.training.invocation import prepare_training_invocation
+
+    registries = new_retained_registry_bundle()
+    prepared = prepare_training_invocation(spec, registries, run_id=pointer.run_id, resume=True)
+    resolved = registries.training_programs.resolve_execution(spec.method_ref, spec.method_payload)
+    loaded = load_latest_checkpoint(
+        custody, expected_run_spec=spec, expected_phase_program=resolved.effective_phase.phase_program,
+        expected_slots=prepared.initial_slots, published_pointer=pointer,
+    )
+    require(int(loaded.slots["batch_counter"]) == pointer.completed_training_batches,
+            "checkpoint reopened at a different update")
+    return loaded
+
+
+def retained_source_update(name, case, root):
+    from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
+    from feedbax.training.invocation import prepare_training_invocation
+    from feedbax.training.retained_executor import execute_training_run_spec
+
+    bind_fixture_asset(case)
+    spec, registries = retained_spec(name, case, batches=2, checkpoint_interval=1)
     prepared = prepare_training_invocation(spec, registries, run_id=name, resume=False)
     checkpoints = root / "checkpoints"
     result = execute_training_run_spec(
@@ -446,9 +586,7 @@ def retained_source_update(name, case, root):
     )
     require(result.status == "completed" and result.end_completed_batches == 1,
             f"source fixture did not checkpoint after its first update: {result.status}")
-    loss, grad_norm = (float(result.final_slots[slot]) for slot in ("train_loss", "grad_norm"))
-    require(math.isfinite(loss) and math.isfinite(grad_norm) and grad_norm > 0,
-            "source fixture failed its first numerical update")
+    metrics = check_update(result.final_slots)
     (write,) = result.checkpoint_writes
     pointer = write.latest_pointer
     custody = authenticate_published_checkpoint_custody(checkpoints, require_single_transaction=True)
@@ -456,15 +594,11 @@ def retained_source_update(name, case, root):
             and custody.manifest.transaction_id == pointer.transaction_id
             and custody.manifest.completed_training_batches == 1,
             "checkpoint custody differs from the published update")
-    resumed = load_latest_checkpoint(
-        checkpoints, expected_run_spec=spec, expected_phase_program=resolved.effective_phase.phase_program,
-        expected_slots=prepared.initial_slots, published_pointer=pointer,
-    )
-    require(int(resumed.slots["batch_counter"]) == 1, "checkpoint reopened at a different update")
+    resumed = reopen_checkpoint(spec, checkpoints, pointer)
     model = inspect_model(resumed.slots["model"], case)
     require(model == inspect_model(result.final_slots["model"], case), "restored model differs from the committed update")
     return {
-        "case": name, "loss": loss, "grad_norm": grad_norm, "model": model,
+        "case": name, **metrics, "model": model,
         "checkpoint": {
             "transaction": pointer.transaction_id, "manifest_sha256": pointer.manifest_sha256,
             "batches": pointer.completed_training_batches,
@@ -507,6 +641,8 @@ def evaluate(args):
         return verify(*(json.loads(path.read_bytes()) for path in args.records))
     if args.action == "cache-probe":
         return cache_probe(Fixture(args.contents, args.fixture_root).paths)
+    if args.action == "worker":
+        return run_host_worker(args.job, args.spec_sha256, args.source_job, args.source_pointer)
     case = json.loads(args.fixtures.read_bytes())[args.case] if hasattr(args, "fixtures") else None
     if args.action == "source-smoke":
         return source_smoke(args.case, case)
@@ -515,25 +651,36 @@ def evaluate(args):
     if args.action == "checkpoint" and args.source_snapshot is not None:
         fixture = Fixture(args.contents, args.fixture_root)
         sample = json.loads(args.source_snapshot.read_bytes())
-        require(sample["job"]["job_id"] == args.job and sample["service"]["release"] == fixture.release.digest,
+        require(sample["job"]["job_id"] == args.job and sample["job"]["status"] == "running"
+                and sample["service"]["release"] == fixture.release.digest,
                 "pre-stop snapshot does not belong to this job and release")
-        return checkpoint(fixture, args.job, case, sample["service"], stopped=True)
+        return checkpoint(fixture, args.job, args.case, case, sample["service"], stopped=True)
     studio = Studio(args.contents, args.fixture_root)
     if args.action == "start":
-        plan = prepare(studio.request, args.case, case, args.batches, args.checkpoint_interval)
-        job = studio.request("POST", f'/api/projects/{plan["project_id"]}/train-runs', {
-            "revision": plan["revision"], "token": uuid4().hex,
-            "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
-        })
-        (item,) = job["items"]
-        require(item["disposition"] == "admitted", f"fixture did not admit: {item}")
-        return {**plan, "job_id": item["job_id"], "case": args.case, "release": studio.release.digest}
+        require(args.batches > 0 and args.checkpoint_interval > 0, "use positive batch and checkpoint counts")
+        bind_fixture_asset(case)
+        spec, _ = retained_spec(args.case, case, batches=args.batches, checkpoint_interval=args.checkpoint_interval)
+        return admit_retained(studio, spec.model_dump_json(exclude_none=True).encode()) | {"case": args.case}
     if args.action == "snapshot":
-        return snapshot(studio, args.job, args.status, args.after_sequence, gui=args.gui)
+        return snapshot(
+            studio, args.job, args.status, args.after_sequence, after_update=args.after_update, gui=args.gui,
+        )
     if args.action == "checkpoint":
-        return checkpoint(studio, args.job, case, studio.health)
-    verify_project(studio.request, args.project, case["interior"])
-    return studio.request("POST", f"/api/jobs/{args.job}/resume", {"token": uuid4().hex})
+        return checkpoint(studio, args.job, args.case, case, studio.health)
+    job, _ = host_job(studio, args.job)
+    require(job["state"] == "stopped" and job["project"] == args.project,
+            "resume requires a stopped retained fixture in the same project")
+    root = attempt_root(studio.paths.workspace, args.job)
+    spec, data = load_attempt_spec(root, args.case, case)
+    pointer = read_terminal_checkpoint(root, args.job, stopped=True)
+    from feedbax.contracts.base import sha256_bytes
+
+    require(job["request"] == f"retained-biomechanics:{sha256_bytes(data)}"
+            and job["checkpoint"] == pointer.model_dump(mode="json"),
+            "retained source disagrees with the Host publication")
+    require(pointer.completed_training_batches < spec.training_config.n_batches,
+            "retained source already reached its target")
+    return admit_retained(studio, data, project=args.project, source=pointer)
 
 
 def main():
@@ -556,18 +703,26 @@ def main():
     cmd.add_argument("job")
     cmd.add_argument("--status", choices=("running", "stopped", "completed"), required=True)
     cmd.add_argument("--after-sequence", type=int, default=-2)
+    cmd.add_argument("--after-update", type=int, default=-1)
     cmd.add_argument("--gui", choices=("present", "absent"))
     cmd = sub.add_parser("resume")
     cmd.add_argument("job")
     cmd.add_argument("project")
     cmd.add_argument("fixtures", type=Path)
     cmd.add_argument("case", choices=CASES)
+    worker = sub.add_parser("worker")
+    worker.add_argument("job")
+    worker.add_argument("spec_sha256")
+    worker.add_argument("--source-job")
+    worker.add_argument("--source-pointer")
     for action in ("start", "snapshot", "checkpoint", "resume", "cache-probe"):
         sub.choices[action].add_argument("--contents", type=Path, required=True)
         sub.choices[action].add_argument("--fixture-root", type=Path, required=True)
     for action in ("prove-quit", "prove-resume"):
         sub.add_parser(action).add_argument("records", type=Path, nargs=3 if action == "prove-quit" else 2)
     args = parser.parse_args()
+    if args.action == "worker" and (args.source_job is None) != (args.source_pointer is None):
+        worker.error("pass --source-job and --source-pointer together")
     with redirect_stdout(sys.stderr):
         result = evaluate(args)
     print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
