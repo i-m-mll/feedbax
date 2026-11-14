@@ -29,12 +29,15 @@ test('standalone Activity opens an existing run and hydrates its retained histor
   const { items: [attempt] } = await admission.json() as StudioJobSubmission;
   await page.goto('/?activity=1');
   await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
+  const announcements = page.getByRole('log', { name: 'Status', exact: true });
+  await expect(announcements).toHaveCount(1);
   const row = page.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem')
     .filter({ hasText: snapshot.project_id });
   await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
   await row.getByRole('button', { name: new RegExp(snapshot.project_id) }).click();
   const inspector = page.getByRole('region', { name: 'Run Inspector' });
   await expect(inspector.getByRole('region', { name: 'Log', exact: true })).toBeVisible();
+  await expect(announcements).toHaveCount(1);
   expect((await request.get('/api/jobs').then((response) => response.json()) as StudioJobSnapshot)
     .jobs.some(({ job_id, seen }) => job_id === attempt.job_id && seen)).toBe(true);
 });

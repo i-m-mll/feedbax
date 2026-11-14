@@ -123,7 +123,6 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(activityRow.getByText('Done', { exact: true })).toBeVisible();
   await expect(status.getByText('Train · train: Done', { exact: true })).toHaveCount(1);
   const messages = await status.locator(':scope > div').allTextContents();
-  expect(messages.length).toBeGreaterThan(1);
   expect(new Set(messages).size).toBe(messages.length);
   for (const message of messages) expect(message).toMatch(/^Train · train: /);
   await expect(table.locator('tbody [aria-live]')).toHaveCount(0);

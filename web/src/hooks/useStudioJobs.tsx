@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -42,7 +43,8 @@ function useStudioJobsContext() {
 
 export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ projectId: string | null }>) {
   const cache = useQueryClient();
-  const ownsAnnouncements = !useContext(StudioJobsContext);
+  const parentRefresh = useContext(StudioJobsContext)?.refresh;
+  const ownsSnapshot = parentRefresh === undefined;
   // The window owns replay. Closing its last inspector must not cancel it.
   useQuery<StudioJobEvent[]>({
     queryKey: historyKey(projectId),
@@ -58,6 +60,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
   useEffect(() => {
     let port: MessagePort | null = null;
     let generation = 0;
+    let historyBoundary: AbortController | undefined;
     let buffered: StudioJobEvent[] | null = null;
     let historyReady = false;
     let snapshotReady = false;
@@ -67,7 +70,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     const history = historyKey(projectId);
 
     function announce(jobs: readonly StudioActivityJob[], silent = false) {
-      if (!ownsAnnouncements) return;
+      if (!ownsSnapshot) return;
       const updates = jobs.flatMap((job) => {
         if (projectId !== null && projectId !== job.project_id) return [];
         const previous = statuses.get(job.job_id);
@@ -88,7 +91,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
     function apply(event: StudioJobEvent) {
       const { activity } = event;
-      if (activity) {
+      if (activity && ownsSnapshot) {
         cache.setQueryData<StudioJobSnapshot>(jobsKey, (snapshot) => {
           if (!snapshot || event.cursor <= snapshot.cursor) return snapshot;
           const known = snapshot.jobs.some((job) => job.job_id === activity.job_id);
@@ -112,22 +115,25 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
     async function hydrate() {
       const current = ++generation;
+      historyBoundary?.abort();
+      const boundary = new AbortController();
+      historyBoundary = boundary;
       buffered = [];
       historyReady = false;
       snapshotReady = false;
       await Promise.all([
-        cache.cancelQueries({ queryKey: jobsKey, exact: true }),
+        ownsSnapshot && cache.cancelQueries({ queryKey: jobsKey, exact: true }),
         cache.cancelQueries({ queryKey: history, exact: true }),
       ]);
       if (current !== generation) return;
       let through = 0;
       try {
-        const snapshot = await cache.fetchQuery({
+        const snapshot = ownsSnapshot ? await cache.fetchQuery({
           queryKey: jobsKey,
           queryFn: ({ signal }) => fetchStudioJobs(signal),
           retry: false,
           staleTime: 0,
-        });
+        }) : await fetchStudioJobs(boundary.signal);
         if (current !== generation) return;
         through = snapshot.cursor;
         announcedThrough = through;
@@ -147,6 +153,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         historyReady = true;
       } catch {
         // The failed query carries the error and remains available for retry.
+        if (current === generation && ownsSnapshot) snapshotReady = !initialSnapshot;
       } finally {
         if (current === generation) {
           const arrived = buffered ?? [];
@@ -191,7 +198,8 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
     function close() {
       generation += 1;
-      void cache.cancelQueries({ queryKey: jobsKey, exact: true });
+      historyBoundary?.abort();
+      if (ownsSnapshot) void cache.cancelQueries({ queryKey: jobsKey, exact: true });
       void cache.cancelQueries({ queryKey: history, exact: true });
       if (port) {
         port.onmessage = null;
@@ -210,9 +218,10 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     }
 
     function retryConnection() {
+      parentRefresh?.();
       if (!port) open();
       else {
-        port.postMessage({ type: 'retry' } satisfies StudioJobWorkerCommand);
+        if (ownsSnapshot) port.postMessage({ type: 'retry' } satisfies StudioJobWorkerCommand);
         void hydrate();
       }
     }
@@ -220,7 +229,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     open();
     window.addEventListener('pagehide', close);
     window.addEventListener('pageshow', open);
-    window.addEventListener('studio-native-reconnected', retryConnection);
+    if (ownsSnapshot) window.addEventListener('studio-native-reconnected', retryConnection);
     return () => {
       window.removeEventListener('pagehide', close);
       window.removeEventListener('pageshow', open);
@@ -228,20 +237,21 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       retry.current = null;
       close();
     };
-  }, [cache, ownsAnnouncements, projectId]);
+  }, [cache, ownsSnapshot, parentRefresh, projectId]);
 
+  const refresh = useCallback(() => retry.current?.(), []);
   const context = useMemo(() => ({
     connection,
-    refresh: () => retry.current?.(),
+    refresh,
     acknowledge: async (jobId: string) => {
       const result = await acknowledgeStudioJob(jobId);
       activePort.current?.postMessage({ type: 'seen', jobId: result.job_id } satisfies StudioJobWorkerCommand);
     },
-  }), [connection]);
+  }), [connection, refresh]);
 
   return <StudioJobsContext.Provider value={context}>
     {children}
-    {ownsAnnouncements && <div role="log" aria-label={studioName('status')} aria-live="polite" aria-relevant="additions" className="sr-only">
+    {ownsSnapshot && <div role="log" aria-label={studioName('status')} aria-live="polite" aria-relevant="additions" className="sr-only">
       {announcements.map(({ id, text }) => <div key={id}>{text}</div>)}
     </div>}
   </StudioJobsContext.Provider>;
