@@ -28,6 +28,12 @@ class StorePublicationPending(Exception):
     """The accepted worker terminal event can be retried without recomputing."""
 
 
+_STUDIO_CONTINUATION = """EXISTS (
+    SELECT 1 FROM jobs child
+    WHERE child.continues=jobs.id AND json_type(child.data, '$.run_key') IS NOT NULL
+)"""
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     seq INTEGER PRIMARY KEY,
@@ -456,6 +462,18 @@ class Store:
                         continue
                 projects.add(job["project"])
                 by_id = self.get(job["id"])
+                continues = job["continues"]
+                if (
+                    continues is not None
+                    and "run_key" in job["data"]
+                    and continues == record.get("continues")
+                ):
+                    continued = self.db.execute(
+                        f"SELECT 1 FROM jobs WHERE id=? AND {_STUDIO_CONTINUATION}",
+                        (continues,),
+                    ).fetchone()
+                    if continued:
+                        raise HostError("invalid_resume", "This run already has a continuation.")
                 live = self.db.execute(
                     f"SELECT id, continues, launch FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
                     (job["project"], job["request"]),
@@ -660,6 +678,8 @@ class Store:
                     "invalid_resume", "The earlier job must be settled at the same request."
                 )
             self.db.execute("UPDATE jobs SET continues=? WHERE id=?", (continues, job_id))
+            if "run_key" in job["data"]:
+                self.append(source, "continued", {})
             self.db.execute(
                 """INSERT INTO edges(job, parent, publication, satisfied, authenticated_completion, binding)
                    SELECT ?, parent, publication, satisfied, authenticated_completion, binding
@@ -733,7 +753,8 @@ class Store:
     ) -> list[dict]:
         selection = "AND id IN (" + ",".join("?" * len(job_ids)) + ")" if job_ids else ""
         rows = self.db.execute(
-            f"""SELECT * FROM jobs WHERE (? IS NULL OR project=?) AND (? IS NULL OR request=?)
+            f"""SELECT *, {_STUDIO_CONTINUATION} AS continued FROM jobs
+                WHERE (? IS NULL OR project=?) AND (? IS NULL OR request=?)
                 AND (? IS NULL OR id=?) {selection} ORDER BY seq""",
             (project, project, request, request, job_id, job_id, *(job_ids or ())),
         )
@@ -759,6 +780,7 @@ class Store:
                     for key in JSON_COLUMNS
                 }
             )
+            view["continued"] = bool(row["continued"])
             if include_launch:
                 view["launch"] = json.loads(row["launch"])
             view["edges"] = [

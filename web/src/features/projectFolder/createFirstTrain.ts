@@ -1,4 +1,5 @@
-import type { CreateNamedDocument, Document, StudioProjectSnapshot } from '@/generated/studioContracts';
+import { studioName } from '@/components/activity/studioVocabulary';
+import type { Document, StudioProjectCreateFile, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
 const model: Document = {
@@ -19,42 +20,38 @@ export function canCreateFirstTrain(project: StudioProjectSnapshot['project']) {
   return !project.sweep && Object.keys(project.steps ?? {}).length === 0;
 }
 
-async function ensureDocument(
-  editor: ProjectEditController, saved: StudioProjectSnapshot, name: string, document: Document,
-) {
-  let id = name;
-  for (let number = 2; Object.prototype.hasOwnProperty.call(saved.project.documents, id); number += 1) {
-    if (containsCreatedFile(saved.project, { kind: 'document', id, document })) return { id, saved };
-    id = `${name}-${number}`;
-  }
-  const file: CreateNamedDocument = { kind: 'document', id, document };
-  const result = await editor.createFile(file, saved.revision);
-  return { id, saved: result.snapshot };
-}
-
 export async function createFirstTrain(editor: ProjectEditController, reviewedRevision: string) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== reviewedRevision || !canCreateFirstTrain(saved.project)) {
     throw new ProjectEditConflictError();
   }
 
-  // Publish the step after the documents are durable so creation can be retried.
-  const graph = await ensureDocument(editor, saved, 'model', model);
-  const taskDocument = await ensureDocument(editor, graph.saved, 'task', task);
-  const objectiveDocument = await ensureDocument(editor, taskDocument.saved, 'objective', objective);
+  const files: StudioProjectCreateFile['file'][] = [];
+  function ensureDocument(name: string, document: Document) {
+    let id = name;
+    for (let number = 2; Object.prototype.hasOwnProperty.call(saved.project.documents ?? {}, id); number += 1) {
+      if (containsCreatedFile(saved.project, { kind: 'document', id, document })) return id;
+      id = `${name}-${number}`;
+    }
+    files.push({ kind: 'document', id, document });
+    return id;
+  }
+  const graph = ensureDocument('model', model);
+  const taskDocument = ensureDocument('task', task);
+  const objectiveDocument = ensureDocument('objective', objective);
   const id = 'train';
   const nBatches = 1000;
   const learningRate = 0.001;
-  await editor.createFile({
+  files.push({
     kind: 'step', id,
     step: {
       kind: 'train',
       base: { inline: {
         trial_documents: {
-          model_name: graph.id,
-          model: { document: graph.id },
-          python_task: { document: taskDocument.id },
-          objective: { document: objectiveDocument.id },
+          model_name: graph,
+          model: { document: graph },
+          python_task: { document: taskDocument },
+          objective: { document: objectiveDocument },
         },
         training_config: {
           n_batches: nBatches,
@@ -72,6 +69,7 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
         },
       } },
     },
-  }, objectiveDocument.saved.revision);
+  });
+  await editor.createFiles(studioName('newStep'), files, reviewedRevision);
   return id;
 }

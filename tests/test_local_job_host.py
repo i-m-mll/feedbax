@@ -269,6 +269,65 @@ def main(args):
     assert failed["outcome"]["error"]["code"] == "update_failed"
 
 
+def test_studio_resume_retires_only_the_continued_attempt(host):
+    from feedbax.jobs import JobService
+    from feedbax.plugins.application import new_application_registry_bundle
+
+    worker = """
+import json
+import os
+import time
+from pathlib import Path
+
+stop_file = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+while not stop_file.exists():
+    time.sleep(.01)
+with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a") as log:
+    log.write(json.dumps({"kind": "result", "data": {
+        "outcome": "stopped", "checkpoint": {"step": 4},
+    }}) + "\\n")
+"""
+    job = replace(
+        run_job("first", worker, request="train:example"),
+        data={"run_key": "run", "stage_id": "train", "scenario_id": "base",
+              "label": "Train", "coordinates": {}},
+    )
+    admit(host, "first", job)
+    service = JobService(host, new_application_registry_bundle())
+
+    def stop(job_id):
+        wait_until(lambda: job_row(host, job_id, "running"))
+        service.stop([job_id], "checkpoint")
+        wait_until(lambda: job_row(host, job_id, "stopped"))
+
+    def eligible():
+        return {row.job_id for row in service.jobs().jobs if "resume" in row.allowed_actions}
+
+    stop(job.id)
+    assert eligible() == {job.id}
+    cursor = service.jobs().cursor
+    successor = service.resume(job.id, "resume")
+    assert successor.continues == job.id
+    assert service.resume(job.id, "resume").job_id == successor.job_id
+    assert eligible() == set()
+    _, events = service.events(after=cursor, projects=(), wait=0, machine=True)
+    assert any(
+        event.job_id == job.id and event.activity is not None
+        and not event.activity.can_resume and "resume" not in event.activity.allowed_actions
+        for event in events.events
+    )
+
+    stop(successor.job_id)
+    restart(host)
+    assert eligible() == {successor.job_id}
+    with pytest.raises(HostError) as refusal:
+        service.resume(job.id, "retired")
+    assert refusal.value.code == "invalid_resume"
+
+    newest = service.resume(successor.job_id, "current")
+    assert newest.continues == successor.job_id
+
+
 def test_force_escalates_and_separates_interruption_from_worker_fault(host, tmp_path):
     child_pid = tmp_path / "child-pid"
     ignores_term = run_job(

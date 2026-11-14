@@ -83,11 +83,12 @@ if TYPE_CHECKING:
 
 
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
-_HOST_ONLY_EVENTS = frozenset({"dependency_bound", "dependency_rejected"})
+_HOST_ONLY_EVENTS = frozenset({"dependency_bound", "dependency_rejected", "continued"})
 _CHECKPOINT_ACTIVITY_EVENTS = frozenset({LIVE_EVALUATE_POINT, DELEGATION_EVENT})
 _ACTIVITY_EVENTS = frozenset(
     {
         "queued",
+        "continued",
         "assigned",
         "accepted",
         "phase",
@@ -782,7 +783,7 @@ class JobService(PlanJobReader):
             row = rows[0]
             if row["request"].startswith("evaluate:"):
                 raise JobConflict("/runs: resubmit the saved Evaluate row to run it again.")
-            if not _can_resume(row):
+            if not can_resume_attempt(row["state"], row.get("checkpoint"), row["delivery"]):
                 raise JobConflict("This run has no checkpoint to resume.")
             launch_data = row["launch"]
             payload = launch_data["payload"] | {"resume": row.get("checkpoint")}
@@ -829,7 +830,7 @@ class JobService(PlanJobReader):
         machine: bool,
     ) -> tuple[int, StudioJobEventHistory]:
         page = self.host.events(after=after, projects=() if machine else projects, wait=wait)
-        visible, rows = self._visible_events(page["events"])
+        visible, rows = self._visible_events(page["events"], activity=True)
         activity_events = {
             event["job_id"]: event["cursor"]
             for event in visible
@@ -864,9 +865,10 @@ class JobService(PlanJobReader):
         )
 
     def _visible_events(
-        self, events: list[dict[str, Any]]
+        self, events: list[dict[str, Any]], *, activity: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        visible = [event for event in events if event["kind"] != "dependency_rejected"]
+        hidden = {"dependency_rejected"} if activity else {"dependency_rejected", "continued"}
+        visible = [event for event in events if event["kind"] not in hidden]
         if not visible:
             return [], {}
         ids = tuple(dict.fromkeys(event["job_id"] for event in visible))
@@ -991,8 +993,10 @@ def _rejected(run_key: str, reason: str) -> AdmissionItem:
 
 
 def _can_resume(job: dict[str, Any]) -> bool:
-    return not job["request"].startswith("evaluate:") and can_resume_attempt(
-        job["state"], job.get("checkpoint"), job["delivery"],
+    return (
+        not job["continued"]
+        and not job["request"].startswith("evaluate:")
+        and can_resume_attempt(job["state"], job.get("checkpoint"), job["delivery"])
     )
 
 

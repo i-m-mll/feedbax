@@ -99,13 +99,12 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   const train = chooser.getByRole('button', { name: 'Train', exact: true });
   await expect(chooser.getByRole('button')).toHaveCount(1);
   await expect(train).toBeFocused();
-  const creation = page.waitForResponse((response) =>
-    response.request().method() === 'POST' && new URL(response.url()).pathname === `${projectPath}/files` &&
-    response.request().postDataJSON().file.kind === 'step');
+  const replayPath = `${projectPath}/history/replay`;
+  const creation = post(page, replayPath);
   await train.click();
   const created = await creation;
-  expect(created.status(), await created.text()).toBe(201);
-  const { snapshot: saved } = await created.json() as StudioProjectDocument;
+  expect(created.ok(), await created.text()).toBe(true);
+  const saved = await created.json() as StudioProjectSnapshot;
   expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
   expect(saved.project.steps?.train).toMatchObject({
     kind: 'train', base: { inline: { trial_documents: {
@@ -127,6 +126,21 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
+
+  const undo = post(page, replayPath);
+  await page.keyboard.press('Meta+Z');
+  const undone = await undo;
+  expect(undone.ok(), await undone.text()).toBe(true);
+  expect((await readSaved(request, projectPath)).file_revisions).toEqual(snapshot.file_revisions);
+  await expect(mapStep(page, 'train')).toHaveCount(0);
+  await expect(add).toBeEnabled();
+
+  const redo = post(page, replayPath);
+  await page.keyboard.press('Meta+Shift+Z');
+  const redone = await redo;
+  expect(redone.ok(), await redone.text()).toBe(true);
+  expect((await readSaved(request, projectPath)).file_revisions).toEqual(saved.file_revisions);
+  await mapStep(page, 'train').click();
 
   async function readPlan(revision: string) {
     const response = await request.get(`${projectPath}/train-runs?revision=${revision}&window_map=true`);
