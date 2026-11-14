@@ -60,6 +60,7 @@ interface DetailInputs {
   readonly namedRun?: StudioSavedTrainKey;
   readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
   readonly fieldRows?: readonly string[];
+  readonly fieldAxes?: Record<string, string[]>;
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
   readonly problemReveal?: ProblemReveal;
   readonly modelWindow: ModelSelectionStore;
@@ -259,6 +260,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     selectedSweepValues: input.selectedSweepValues,
     fieldLitSteps: graphScope?.lit,
     fieldRows: input.fieldRows,
+    fieldAxes: input.fieldAxes,
     fieldEditable: !outside && !pending && !saving && Boolean(input.namedRun && (
       input.step?.kind === 'evaluate' ? input.evaluateScope
         : input.step?.kind === 'train' && (saved.project.sweep ? canEdit && graphScope?.localVariant

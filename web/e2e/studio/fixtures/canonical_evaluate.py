@@ -123,6 +123,43 @@ def grouped_subset_files():
     return files
 
 
+def task_pivot_files():
+    files = walkthrough_files()
+    train = files[-1]["step"]
+    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["sweep"] = {"axes": {
+        "learning-rate": {"values": {
+            name: {"label": name, "value": rate, "patches": {
+                "method_payload.payload.optimizer.params.learning_rate": {"value": rate},
+            }} for name, rate in (("Slow", 0.001), ("Medium", 0.002), ("Fast", 0.003))
+        }},
+        "seed": {"values": {
+            name: {"label": name, "value": seed, "patches": {"method_payload.payload.seed": {"value": seed}}}
+            for name, seed in (("one", 1), ("two", 2))
+        }},
+    }}
+    task = next(file["document"] for file in files if file["id"] == "task")
+    documents = []
+    for name, count in (("short-task", 2), ("long-task", 3)):
+        document = deepcopy(task)
+        document["payload"]["id"] = name
+        document["payload"]["validation_trials"] = document["payload"]["validation_trials"][:count]
+        documents.append({"kind": "document", "id": name, "document": document})
+    evaluate = _evaluation_step()
+    evaluate["base"]["inline"]["params"]["variation"] = {"task": {
+        "op": "replace", "path": "task", "value": {"document": "short-task"},
+    }}
+    evaluate["inputs"]["subject"]["where"] = {"axes": {"learning-rate": ["Slow", "Fast"], "seed": ["one"]}}
+    evaluate["sweep"] = {"axes": {
+        "subject": {"input": "subject"},
+        "task": {"values": {
+            name: {"label": label, "patches": {"params.variation.task.value": {"value": {"document": name}}}}
+            for name, label in (("short-task", "Short Task"), ("long-task", "Long Task"))
+        }},
+    }}
+    return [*files, *documents, {"kind": "step", "id": "evaluate", "step": evaluate}]
+
+
 def scoped_series_files():
     evaluation = _evaluation_step()
     evaluation["inputs"]["subject"]["checkpoint"] = {"every": 2}
@@ -249,4 +286,5 @@ if __name__ == "__main__":
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
+        "task-pivot-files": task_pivot_files,
     }[action](*args)))

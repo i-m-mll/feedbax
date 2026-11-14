@@ -18,6 +18,8 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue, Step
 from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.jobs import StudioPlanReviewSource
+from feedbax.contracts.project_inputs import SweepExceptionTerms
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import _paths_overlap, authored_row
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, ModelFieldView
@@ -208,6 +210,7 @@ def model_fields(
         raise ProjectFolderInvalid("The Model document does not exist.")
     model = ModelDocument.model_validate(document.payload)
     step = selected = plan = effective_model = None
+    definitions = ()
     evaluate = None
     variant = None
     if body.evaluate_scope is not None and body.run is not None:
@@ -215,7 +218,10 @@ def model_fields(
         effective_model = read_evaluate_attachments(folders, project_id, evaluate, components).resolved_model
     elif body.run is not None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
-        plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+        scoped = tuple(RunKey(key.variant, key.step, row) for row in body.rows)
+        plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key, *scoped)).plan
+        definitions = tuple(plan.selected_definitions[item] for item in (scoped or (key,))
+                            if item in plan.selected_definitions)
         definition = plan.selected_definitions.get(key)
         if definition is not None and (model_payload := selected_model(definition, body.owner.document)) is not None:
             effective_model = ModelDocument.model_validate(model_payload)
@@ -241,9 +247,13 @@ def model_fields(
         if step is not None:
             target = SweepTarget(numeric.value, partial(_step_field_write, step, field.address), field_key)
             axis = TrainFieldSweeps(step, target, numeric.label, integer=numeric.site.expected.base == ValueBase.INTEGER)
+        relative = pointer(field.address.stored_path())
+        sources = dict.fromkeys(source for definition in definitions
+                                if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
             address=field.address,
+            sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
         ))
         targets[field_key] = field, axis
     if body.edit is None:
@@ -260,14 +270,21 @@ def model_fields(
     def step_file(patches: list[SetProjectValue]) -> StudioProjectFilePatch:
         return StudioProjectFilePatch(address=step_address, patches=patches)
 
-    if body.rows and evaluate is None:
-        available = {row.key.row for row in plan.rows if
+    if (body.rows or body.axes) and evaluate is None:
+        available = {row.key.row: row for row in plan.rows if
                      (row.key.variant, row.key.step) == (body.run.variant, body.run.step)}
-        if not set(body.rows) <= available or len(set(body.rows)) != len(body.rows):
+        if not set(body.rows) <= available.keys() or len(set(body.rows)) != len(body.rows):
             raise ProjectFolderInvalid("The selected rows no longer address this stored field.")
+        if body.axes and set(body.rows) != {
+            row_id for row_id, row in available.items()
+            if all(axis in row.coordinates and row.coordinates[axis].value_id in values
+                   for axis, values in body.axes.items())
+        }:
+            raise ProjectFolderInvalid("The selected sweep values no longer address these rows.")
     result = prepare_numeric_field(
         field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
         rows=tuple(body.rows) if evaluate is None else (),
+        selection=SweepExceptionTerms(axes=body.axes) if evaluate is None and body.axes else None,
         keep_value=axis.target.writes if axis is not None else None,
     )
     if isinstance(result, tuple):

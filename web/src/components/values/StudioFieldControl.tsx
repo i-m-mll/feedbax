@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { FunctionSquare } from 'lucide-react';
-import type { ModelFieldRequest, StudioEvaluateValueSource, StudioFieldView } from '@/generated/studioContracts';
+import type { ModelFieldRequest, StudioEvaluateValueSource, StudioFieldView, StudioPlanReviewSource } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
-import { studioAccessibleName, studioEvaluateValueSource, studioFieldKindLabel, studioFieldLabel, studioFieldValueLabel, studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioEvaluateValueSource, studioFieldKindLabel, studioFieldLabel, studioFieldValueLabel, studioName, studioPlanValueSource } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';
 
 type Edit = NonNullable<ModelFieldRequest['edit']>;
@@ -11,10 +11,11 @@ const inputClass = 'min-w-0 rounded border border-shell-divider bg-shell-chrome 
 const buttonClass = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 type FieldKind = StudioFieldView['site']['kinds'][number];
 
-export function StudioFieldControl({ field, commit, source, selectedValues, rowSelection = false, multipleRows = false, onChooseValue, valueKind = 'value' }: {
+export function StudioFieldControl({ field, commit, source, planSources, selectedValues, rowSelection = false, multipleRows = false, onChooseValue, valueKind = 'value' }: {
   field: StudioFieldView;
   commit?: Commit;
   source?: StudioEvaluateValueSource;
+  planSources?: readonly StudioPlanReviewSource[];
   selectedValues?: ReadonlySet<string>;
   rowSelection?: boolean;
   multipleRows?: boolean;
@@ -47,6 +48,8 @@ export function StudioFieldControl({ field, commit, source, selectedValues, rowS
     : field.text;
   const picked = selectedValues ?? new Set<string>();
   const effective = multipleRows ? undefined : field.effective;
+  const sourceLabel = planSources?.length ? [...new Set(planSources.map(studioPlanValueSource))].join(', ')
+    : source && studioEvaluateValueSource(source);
 
   useEffect(() => {
     if (menu) menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
@@ -88,7 +91,7 @@ export function StudioFieldControl({ field, commit, source, selectedValues, rowS
 
   return <section className="grid min-w-0 gap-1" aria-label={studioFieldLabel('field', label)}>
     <label htmlFor={fieldId}>{label}</label>
-    {source && <span id={sourceId} className="text-xs text-shell-muted">{studioEvaluateValueSource(source)}</span>}
+    {sourceLabel && <span id={sourceId} className="text-xs text-shell-muted">{sourceLabel}</span>}
     <div className="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1">
       <button type="button" className={`${buttonClass} ${sweep ? '' : 'text-shell-muted'}`}
         aria-label={studioFieldKindLabel(label, kind)} aria-haspopup="menu" aria-expanded={menu}
@@ -118,7 +121,7 @@ export function StudioFieldControl({ field, commit, source, selectedValues, rowS
         value={draft ?? (rowSelection && !sweep ? multipleRows ? '' : effective ?? authored : authored)}
         placeholder={multipleRows && !sweep ? studioName('selectedRuns') : undefined}
         readOnly={readOnly} aria-invalid={!!reason || undefined}
-        aria-describedby={[source && sourceId, reason && reasonId].filter(Boolean).join(' ') || undefined}
+        aria-describedby={[sourceLabel && sourceId, reason && reasonId].filter(Boolean).join(' ') || undefined}
         onChange={(event) => { setDraft(event.currentTarget.value); setReason(undefined); }}
         onKeyDown={(event) => {
           if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {

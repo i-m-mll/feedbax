@@ -923,7 +923,8 @@ def _select_exception_rows(
 
 
 def _apply_exceptions(
-    rows: tuple[ExpandedRow, ...], exceptions: Mapping[str, SweepException]
+    rows: tuple[ExpandedRow, ...], exceptions: Mapping[str, SweepException],
+    matches: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[ExpandedRow, ...]:
     if not exceptions:
         return rows
@@ -931,6 +932,8 @@ def _apply_exceptions(
     for name, exception in exceptions.items():
         path = f"sweep.exceptions.{name}"
         selected = _select_exception_rows(name, exception, rows)
+        if matches is not None:
+            matches[name] = tuple(row.id for row in selected)
         writes = _patches(exception)
         for original in selected:
             row = kept.get(original.id)
@@ -1021,13 +1024,14 @@ def _generated_rows(
 def _expand_plan(
     plan: _SweepPlan, inputs: SweepInputs, max_rows: int, max_axis_values: int,
     integer_site: IntegerSite | None = None,
+    exception_matches: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[ExpandedRow, ...]:
     _check_row_budget(plan, max_rows)
     rows = list(_explicit_rows(plan.rows))
     if not plan.axes and not plan.rows:
         rows.append(ExpandedRow(DEFAULT_SWEEP_ROW, None, {}, {}, {}))
     rows.extend(row for _, row in _generated_rows(plan, inputs, max_axis_values, integer_site))
-    return _apply_exceptions(tuple(rows), plan.exceptions)
+    return _apply_exceptions(tuple(rows), plan.exceptions, exception_matches)
 
 
 def expand_sweep(
@@ -1038,6 +1042,7 @@ def expand_sweep(
     max_axis_values: int = DEFAULT_SWEEP_LIMIT,
     integer_site: IntegerSite | None = None,
     checkpoint_subject: bool = False,
+    exception_matches: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[ExpandedRow, ...]:
     """Expand the declared sweep using recorded draws and known input members.
 
@@ -1054,13 +1059,16 @@ def expand_sweep(
                     SweepExpansionCode.INVALID_GENERATION, "sweep.axes", "an Evaluate step has one checkpoint rule",
                 )
             (name, axis), = checkpoints
-            return _expand_checkpoint_axis(resolved, name, axis, known_inputs, max_rows, max_axis_values, integer_site)
-    return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values, integer_site)
+            return _expand_checkpoint_axis(
+                resolved, name, axis, known_inputs, max_rows, max_axis_values, integer_site, exception_matches,
+            )
+    return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values, integer_site, exception_matches)
 
 
 def _expand_checkpoint_axis(
     sweep: Sweep, name: str, axis: CheckpointRuleAxis, inputs: SweepInputs,
     max_rows: int, max_axis_values: int, integer_site: IntegerSite | None,
+    exception_matches: dict[str, tuple[str, ...]] | None,
 ) -> tuple[ExpandedRow, ...]:
     from feedbax.checkpoint_coordinates import finite_coordinates
 
@@ -1128,7 +1136,8 @@ def _expand_checkpoint_axis(
                 patch_origins={**row.patch_origins, axis.path: ("sweep_value", name, key)},
                 patch_authors=authors,
             ))
-    return _apply_exceptions(tuple(result), {key: value for key, value in sweep.exceptions.items() if value is not None})
+    return _apply_exceptions(tuple(result), {key: value for key, value in sweep.exceptions.items() if value is not None},
+                             exception_matches)
 
 
 def authored_row(sweep: Sweep | None, row_id: str) -> ExpandedRow | None:

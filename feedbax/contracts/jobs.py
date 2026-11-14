@@ -13,6 +13,7 @@ from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
+from feedbax.contracts.project_sweep import SweepException
 from feedbax.contracts.validation_placement import ValidationPlacement
 
 
@@ -270,6 +271,12 @@ class StudioProjectWindowMapInput(StrictModel):
     checkpoint_axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
+class StudioProjectWindowMapException(StrictModel):
+    id: str
+    count: int
+    rule: SweepException
+
+
 class StudioProjectWindowMapStep(StrictModel):
     variant: str
     step_id: str
@@ -278,6 +285,7 @@ class StudioProjectWindowMapStep(StrictModel):
     inputs: list[StudioProjectWindowMapInput]
     document_ids: dict[str, str]
     document_uses: list[str] = Field(default_factory=list)
+    exceptions: list[StudioProjectWindowMapException] = Field(default_factory=list, exclude_if=lambda value: not value)
     status_counts: dict[str, int]
 
 

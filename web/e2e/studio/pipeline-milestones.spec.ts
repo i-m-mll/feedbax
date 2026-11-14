@@ -4,7 +4,7 @@ import type {
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import {
-  appendManagedFiles, authorLearningRateSweep, fixture, mapStep, openResultsSlot,
+  appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot,
   runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
 
@@ -530,6 +530,135 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   });
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
   console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
+});
+
+test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async ({ page, request }) => {
+  test.setTimeout(75_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'task-pivot-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const read = () => savedPlan(request, projectPath);
+  const initial = await read();
+  const train = initial.rows.filter(({ key }) => key.step === 'train');
+  const rows = initial.window_map!.rows.filter(({ key }) => key.step === 'evaluate');
+  expect(train).toHaveLength(6);
+  expect(rows).toHaveLength(4);
+  expect(initial.window_map?.problems).toEqual([]);
+  expect(rows.map(({ coordinates }) => [coordinates['learning-rate'].label, coordinates.task.label])).toEqual([
+    ['Slow', 'Short Task'], ['Slow', 'Long Task'], ['Fast', 'Short Task'], ['Fast', 'Long Task'],
+  ]);
+  const evaluation = initial.window_map!.evaluations!;
+  expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
+
+  await page.goto('/?project=' + snapshot.project_id);
+  await select(page, 'evaluate');
+  await primary(page).getByRole('button', { name: 'Pivot', exact: true }).click();
+  const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
+  await primary(page).getByRole('combobox', { name: 'Rows', exact: true }).selectOption('learning-rate');
+  await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
+  const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {
+    name: `Select learning-rate ${model} · task ${task} · ${status}`, exact: true,
+  });
+  await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
+  await expect(pivot.getByRole('rowheader')).toHaveText(['Slow · 0.001', 'Fast · 0.003']);
+  await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(4);
+
+  await select(page, 'train');
+  await launchRows(page, projectPath, train.map(({ key }) => key));
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: 26_000 });
+  const trainDone = (await read()).rows;
+  await select(page, 'evaluate');
+  const sampled = cell('Fast · 0.003', 'Long Task', 'Not run');
+  const target = rows[3].key;
+  await sampled.click();
+  await expect(sampled).toHaveAttribute('aria-pressed', 'true');
+  await launchRows(page, projectPath, [target]);
+  await expect(cell('Fast · 0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
+  await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(3);
+  const lineage = primary(page).getByRole('region', { name: 'Made From', exact: true });
+  const complete = await read();
+  expect(complete.window_map!.evaluations!.map(({ status }) => status)).toEqual([
+    'not_run', 'not_run', 'not_run', 'succeeded',
+  ]);
+  const finished = complete.window_map!.evaluations!.find(({ key }) => key.row === target.row)!;
+  const production = complete.window_map!.edges.find(({ to_key }) => to_key.row === target.row)!;
+  const checkpoint = complete.rows.find(({ key }) => key.row === production.from_key.row)!;
+  await expect(lineage).toContainText('1 of 6');
+  await expect(lineage.getByRole('listitem').last()).toHaveText(checkpoint.label);
+  expect(finished.result?.checkpoint_source).toEqual({
+    job_id: checkpoint.result!.job_id, request_id: checkpoint.request_id, completed_updates: 2,
+  });
+
+  await select(page, 'train');
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
+  await rail.getByRole('tab', { name: 'Model', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
+  const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
+  await expect(mass).toHaveAccessibleDescription('Document · reach-model');
+  const rate = primary(page).getByRole('group', { name: 'learning-rate', exact: true });
+  await rate.getByRole('button', { name: 'Fast · 0.003', exact: true }).click();
+  await expect(mass).toBeEditable();
+  await enter(mass, '2');
+  await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);
+  await expect(mass).toHaveAccessibleDescription('learning-rate · Fast');
+  const group = await read();
+  const groupStale = group.rows.filter(({ status }) => status === 'stale');
+  expect(groupStale.map(({ key }) => key.row)).toEqual(['learning-rate=Fast--seed=one', 'learning-rate=Fast--seed=two']);
+  expect(groupStale.map(({ change }) => [change?.before, change?.after])).toEqual([[1, 2], [1, 2]]);
+
+  const picked = trainDone.filter(({ key }) => key.row.startsWith('learning-rate=Slow'));
+  const rowButton = (label: string) => runs(page).getByRole('button', { name: label, exact: true });
+  await rowButton(picked[0].label).click();
+  await rowButton(picked[1].label).click({ modifiers: ['Shift'] });
+  await expect(mass).toBeEditable();
+  await enter(mass, '3');
+  await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(4);
+  await expect(mass).toHaveAccessibleDescription('Exception · field');
+  const scoped = await read();
+  const sweep = scoped.window_map!.steps.find(({ step_id }) => step_id === 'train')!;
+  expect(sweep.exceptions).toHaveLength(1);
+  expect(sweep.exceptions![0]).toMatchObject({ id: 'field', count: 2, rule: { where: { rows: picked.map(({ key }) => key.row) } } });
+  expect(scoped.rows.filter(({ status }) => status === 'stale').map(({ key }) => key.row))
+    .toEqual([...picked, ...groupStale].map(({ key }) => key.row));
+
+  const current = await request.get(projectPath);
+  const saved = await current.json() as StudioProjectSnapshot;
+  const authorSeed = await request.patch(projectPath, { data: { revision: saved.revision, files: [{
+    address: { kind: 'step', id: 'train' },
+    patches: [{ op: 'add', path: '/sweep/axes/seed/values/three', value: {
+      label: 'three', value: 3, patches: { 'method_payload.payload.seed': { value: 3 } },
+    } }],
+  }] } });
+  expect(authorSeed.ok(), await authorSeed.text()).toBe(true);
+  await page.reload();
+  await select(page, 'train');
+  const widened = await read();
+  expect(widened.rows).toHaveLength(9);
+  const newRows = widened.rows.filter(({ key }) => key.row.endsWith('seed=three'));
+  expect(newRows.map(({ status }) => status)).toEqual(['not_run', 'not_run', 'not_run']);
+  const sourceFor = async (row: StudioSavedTrainKey) => {
+    const result = await request.post(projectPath + '/model/fields', { data: {
+      revision: widened.revision, run: row, owner: { document: 'reach-model', composites: [], element: { kind: 'component', id: 'plant' } },
+    } });
+    expect(result.ok(), await result.text()).toBe(true);
+    return (await result.json()).fields.find(({ label }) => label === 'Mass').sources;
+  };
+  expect(await sourceFor(newRows[2].key)).toMatchObject([{ kind: 'sweep_value', axis: 'learning-rate', value: 'Fast' }]);
+  expect(await sourceFor(newRows[0].key)).toMatchObject([{ kind: 'document', name: 'reach-model' }]);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const exception = drawer.getByRole('region', { name: 'Sweep', exact: true })
+    .getByRole('listitem').filter({ hasText: picked[0].key.row });
+  await expect(exception).toContainText(`${picked[1].key.row} · 2`);
+  await expect(exception).toContainText('Mass');
+  await exception.getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);
+  await expect(exception).toHaveCount(0);
+  const restored = (await read()).rows.filter(({ key }) => key.row.startsWith('learning-rate=Slow')).slice(0, 2);
+  expect(restored).toEqual(picked);
 });
 
 test('renders analysis and a report, then reruns only results affected by an edit', async ({ page }) => {

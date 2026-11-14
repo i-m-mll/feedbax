@@ -13,7 +13,7 @@ from feedbax.contracts.project_plan import PlannedRow
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_LIMIT, ListedAxis, NamedAxis, RangeAxis, RangeValues, SampledAxis, SampleValues,
-    SweepException, sweep_value_identity_bytes,
+    SweepException, SweepExceptionTerms, sweep_value_identity_bytes,
 )
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringSweepChange, StudioNameSweepValue, StudioSetSweepValue, StudioSweepEdit, StudioToSweep,
@@ -186,20 +186,23 @@ def prepare_numeric_field(
     field: NumericField, axis: TrainFieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
     functions: FunctionRegistry, *, period: float | None = None, rows: tuple[str, ...] = (),
     keep_value: Callable[[int | float], list[SetProjectValue]] | None = None,
+    selection: SweepExceptionTerms | None = None,
 ) -> int | float | LiteralValue | list[SetProjectValue] | tuple[Problem, ...]:
     """Return a constant for the owner to write, sweep patches, or field problems."""
     try:
-        return _prepare(field, axis, edit, functions, period=period, rows=rows, keep_value=keep_value)
+        return _prepare(field, axis, edit, functions, period=period,
+                        selection=selection or (SweepExceptionTerms(rows=list(rows)) if rows else None),
+                        keep_value=keep_value)
     except ValueError as error:
         return (Problem(code=ProblemCode.STRUCTURE, reason=str(error)),)
 
 
 def _prepare(
     field: NumericField, axis: TrainFieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
-    functions: FunctionRegistry, *, period: float | None, rows: tuple[str, ...],
+    functions: FunctionRegistry, *, period: float | None, selection: SweepExceptionTerms | None,
     keep_value: Callable[[int | float], list[SetProjectValue]] | None,
 ) -> int | float | LiteralValue | list[SetProjectValue] | tuple[Problem, ...]:
-    if rows and edit.kind not in ("text", "name_value"):
+    if selection is not None and edit.kind not in ("text", "name_value"):
         raise ValueError("Select the Train step to change the field kind.")
     covered = axis.covering if axis else []
     previous = covered[0][1] if len(covered) == 1 else None
@@ -256,7 +259,7 @@ def _prepare(
         )
         return sweep().edit(command, field.validate)
     if isinstance(value, SweepList | SweepRange | SweepSample):
-        if rows:
+        if selection is not None:
             raise ValueError("Select the Train step to change the sweep.")
         owner = sweep()
         if isinstance(value, SweepList):
@@ -278,18 +281,28 @@ def _prepare(
         return owner.write_axis(_sample_axis(value, field, functions, period, seed, path))
     if covered:
         raise ValueError("Choose Value from the kind menu to keep one sweep member.")
-    if field.duration and not rows:
+    if field.duration and selection is None:
         return field.duration_value(value)
     numeric = number(value)
-    if not rows:
+    if selection is None:
         return numeric
     owner = sweep()
     authored = owner.step.sweep
     if authored is None:
         raise ValueError("Select the Train step to edit its single value.")
+    if len(selection.axes) == 1:
+        (axis_id, values), = selection.axes.items()
+        existing = authored.axes.get(axis_id)
+        if len(values) == 1 and isinstance(existing, NamedAxis) and (entry := existing.values.get(values[0])) is not None:
+            updated = entry.model_copy(update={"patches": entry.patches | owner.target.entry(numeric).patches})
+            return [SetProjectValue(
+                op="replace", path=pointer(("sweep", "axes", axis_id, "values", values[0])),
+                value=updated.model_dump(mode="json", exclude_unset=True),
+            )]
     name = owner._fresh_id("field", authored.exceptions)
     exception = SweepException.model_validate({
-        "where": {"rows": rows}, "patches": owner.target.entry(numeric).patches,
+        "where": selection.model_dump(mode="json", exclude_unset=True),
+        "patches": owner.target.entry(numeric).patches,
     })
     payload = exception.model_dump(mode="json", exclude_defaults=True)
     if "exceptions" in authored.model_fields_set:

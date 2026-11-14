@@ -37,6 +37,7 @@ type Props = {
   fieldEditable: boolean;
   fieldLitSteps?: ReadonlySet<string>;
   fieldRows?: readonly string[];
+  fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
@@ -128,7 +129,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
+export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
   const selected = useStore(state, (current) => current.selection);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -193,20 +194,25 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.revision === saved.revision);
   const canEditField = evaluate ? !busy && canEvaluate : fieldEditable;
   const fieldBody = shownModel && fieldOwner && !libraryItem
-    ? { owner: fieldOwner, revision: saved.revision, run: evaluate?.run ?? projectionRun, evaluate_scope: evaluate?.scope } : undefined;
+    ? {
+      owner: fieldOwner, revision: saved.revision, run: evaluate?.run ?? projectionRun, evaluate_scope: evaluate?.scope,
+      rows: evaluate ? undefined : [...fieldRows ?? []],
+      axes: evaluate ? undefined : fieldAxes,
+    } : undefined;
   const fields = useQuery({
     queryKey: ['model-fields', saved.project_id, fieldBody],
     queryFn: ({ signal }) => projectModelFields(saved.project_id, fieldBody!, signal),
     enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
       const previousBody = query?.queryKey[2] as typeof fieldBody;
-      return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner) ? previous : undefined;
+      return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
+        && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
     },
   });
   async function editField(address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
     if (!fieldBody || !canEditField || fields.isPlaceholderData) return studioReason('unavailable', studioName('field'));
     try {
       const result = await projectModelFields(saved.project_id, {
-        ...fieldBody, address, edit, lit_steps: [...fieldLitSteps ?? []], rows: [...fieldRows ?? []],
+        ...fieldBody, address, edit, lit_steps: [...fieldLitSteps ?? []],
       }, editor.signal);
       if (result.problems.length) return result.problems[0].reason;
       if (result.command) {
@@ -234,6 +240,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const fieldControls = projectedFields.map((field) => <StudioFieldControl
     key={JSON.stringify([saved.project_id, projectionRun?.variant, projectionRun?.step, fieldRows, addressKey(field.address)])}
     field={field}
+    planSources={field.sources}
     source={attachments.data?.field_sources?.[addressKey(field.address)] ??
       (fieldOwner && attachments.data?.field_sources?.[addressKey(fieldOwner)]) ??
       attachments.data?.source ?? undefined}
