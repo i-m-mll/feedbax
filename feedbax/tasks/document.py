@@ -326,9 +326,6 @@ def bind_task_inputs(
     """Resolve model input names to task signal names and describe refused bindings."""
     problems = []
 
-    def problem(code, reason, path):
-        problems.append(Problem(code=code, reason=reason, path=path))
-
     bindings = []
     signal_names = {value.name: value for value in signals}
     overrides = input_overrides or {}
@@ -338,23 +335,24 @@ def bind_task_inputs(
         path = ("model", "inputs", port.id)
         if signal is None:
             if port.required or port.name in overrides:
-                problem(
-                    ProblemCode.UNKNOWN_NAME,
-                    f"Model input {port.name!r} needs signal {signal_name!r}.",
-                    path,
-                )
+                problems.append(Problem(
+                    code=ProblemCode.UNKNOWN_NAME,
+                    reason=f"Model input {port.name!r} needs signal {signal_name!r}.",
+                    path=path, model_address=port.address,
+                ))
         elif not port.type.accepts(signal.type):
-            problem(
-                ProblemCode.TYPE_MISMATCH,
-                f"Signal {signal_name!r} has an incompatible sample type.",
-                path,
-            )
+            problems.append(Problem(
+                code=ProblemCode.TYPE_MISMATCH,
+                reason=f"Signal {signal_name!r} has an incompatible sample type.",
+                path=path, model_address=port.address,
+            ))
         else:
             bindings.append((port.name, signal.name))
     for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
-        problem(
-            ProblemCode.UNKNOWN_NAME, f"Unknown model input {port!r}.", ("model", "inputs", port)
-        )
+        problems.append(Problem(
+            code=ProblemCode.UNKNOWN_NAME, reason=f"Unknown model input {port!r}.",
+            path=("model", "inputs", port),
+        ))
 
     return tuple(bindings), tuple(problems)
 

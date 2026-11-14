@@ -17,7 +17,7 @@ from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_g
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
-from feedbax.contracts.graph import StudioTaskBindingSpec
+from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.component_registry import ComponentPack, ComponentRegistry
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
@@ -456,11 +456,16 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     assert graph.nodes["wrapper"].nodes["controller"].period_seconds == graph.period_seconds
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
 
+    documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+    documents.pop("input_overrides")
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
-    problem = next(item for item in refused.diagnostics if item.model_address is not None)
-    assert problem.document == "reach-model"
-    assert problem.model_address.element.end.port == "task-input"
+    (problem,) = [item for item in refused.diagnostics if item.step == "train"]
+    assert problem.document == "reach-model" and "needs signal 'unknown'" in problem.detail
+    assert problem.model_address == ModelAddress.model_validate({
+        "document": "reach-model", "composites": [],
+        "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
+    })
 
 
 def test_stored_model_plan_uses_the_supplied_component_registry():
@@ -476,12 +481,25 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     model["interior"]["wires"]["custom-wire"] = _wire(_end("custom", "output"), _end("wrapper", "target"))
     project = Project.model_validate(raw)
     memo = ProjectPlanMemo()
-    assert compile_project(project, memo=memo).diagnostics
+    first = compile_project(project, memo=memo)
+    assert not first.runs
+    assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in first.diagnostics)
     registry = ComponentRegistry()
     registry.ingest(ComponentPack(namespace="test", components=(CustomRelay,)))
     registry.seal()
-    assert not compile_project(project, memo=memo, components=registry).diagnostics
-    assert compile_project(project, memo=memo).diagnostics
+    registered = compile_project(project, memo=memo, components=registry)
+    (train,) = registered.runs
+    assert train.kind == "train"
+    (problem,) = registered.diagnostics
+    assert problem.step == "baseline" and "has no declared Evaluate layout" in problem.detail
+    assert train.admission_problem is not None
+    assert "has no typed model checkpoint owner" in train.admission_problem.detail
+    address = ModelAddress.model_validate({
+        "document": "reach-model", "composites": [],
+        "element": {"kind": "component", "id": "custom"},
+    })
+    assert problem.model_address == train.admission_problem.model_address == address
+    assert compile_project(project, memo=memo) == first
 
 
 def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
@@ -745,14 +763,14 @@ def test_evaluate_attachment_plan_refusals_are_addressed(invalid, reason):
 
 def test_group_keeps_delay_on_a_crossing_gru_output():
     raw = _model_project()
-    registry = ComponentRegistry()
+    registry = new_application_registry_bundle()
     payload = raw["documents"]["reach-model"]["payload"]
     controller = payload["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
     controller["interior"]["wires"]["decode"]["attachments"] = [
         {"kind": "delay", "id": "feedback", "delay": {"value": 1, "unit": "st"}},
     ]
     state = ModelEditState(document=ModelDocument.model_validate(payload))
-    ports = ModelRegistryPorts(registry)
+    ports = ModelRegistryPorts(registry.components)
     command = ModelEditCommand.model_validate({"operation": {
         "op": "group", "name": "Cell",
         "selection": [{
@@ -768,7 +786,9 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     planned = compile_project(Project.model_validate(raw))
     assert not planned.diagnostics, planned.diagnostics
     train = next(run for run in planned.runs if run.kind == "train")
-    graph = decode_request(planned.requests[train.request_id], planned.documents.__getitem__).spec.graph
+    spec = decode_request(planned.requests[train.request_id], planned.documents.__getitem__).spec
+    executable = lower_canonical_train(spec, registry.training_programs, registries=registry)
+    graph = GraphSpec.model_validate(executable.graph.inline)
     resolved = graph.subgraphs["wrapper"].subgraphs["controller"]
     (delay,) = [wire.recurrent_initializer for wire in resolved.wires if wire.temporality == "recurrent"]
     assert delay["shape"] == [controller["interior"]["components"]["cell"]["fields"]["hidden_size"]]

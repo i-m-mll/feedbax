@@ -754,6 +754,10 @@ class ResolvedModelInterface:
 class ResolvedModelInput(ScopedValue):
     required: bool
 
+    @property
+    def address(self) -> ModelAddress:
+        return ModelAddress.from_text(self.id)
+
 
 @dataclass(frozen=True)
 class ResolvedModelLink:
