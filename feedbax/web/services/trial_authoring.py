@@ -11,9 +11,8 @@ from feedbax.contracts.model_edit import EvaluateAttachmentVariant
 from feedbax.contracts.project import SetProjectValue, apply_document_edits, document_edit_ops, json_pointer_parts
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, TrainingRequestSpec
-from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
+from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -32,6 +31,7 @@ from feedbax.expression_text import ParsedField, print_field
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.document_authoring import _step_difference
+from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.web.services.trial_scope import file_value, scoped_file, selected_runs, variant_file
 
@@ -297,10 +297,9 @@ def _evaluation_task_path(definition):
 
 
 def _evaluate_documents(plan, key, definition, bundle):
-    run = next((row for row in plan.runs if row.key == key), None)
-    subject = run.inputs.get("subject") if run else None
-    reference = subject.member.reference if subject else None
-    raw = plan.requests.get(reference.request_id) if isinstance(reference, ProductRef) else None
+    upstream = evaluate_subject(definition)
+    subject = next((row for row in plan.runs if upstream and row.key == upstream[0]), None)
+    raw = plan.requests.get(subject.request_id) if subject else None
     if raw is None:
         raise ProjectFolderInvalid("The selected Evaluate has no planned Train subject.")
     request = decode_request(raw, plan.documents.__getitem__).spec
@@ -311,10 +310,14 @@ def _evaluate_documents(plan, key, definition, bundle):
     if projection.pair is None or projection.problems:
         return documents, projection, None
     try:
-        request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        if not isinstance(request, EvaluationRequestSpec) or request.evaluation_type != ROLLOUT_TYPE:
+        if definition.payload.get("evaluation_type") != ROLLOUT_TYPE:
             raise ValueError("Task authoring requires a saved rollout Evaluate.")
-        params = RolloutParameters.model_validate(request.params)
+        params = authored_rollout_settings(definition.payload.get("params"))
+        run = next((row for row in plan.runs if row.key == key), None)
+        if run is not None:
+            effective = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+            if isinstance(effective, EvaluationRequestSpec):
+                params = authored_rollout_settings(effective.params)
         variant = resolve_evaluation_variant(
             projection.pair.lowered.graph, documents.task_source, params.variation,
         )
@@ -393,6 +396,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             _chosen_task(project, change.document)
             value = {"document": change.document}
         elif isinstance(change, StudioTrialDocumentEdit) and change.kind == "task":
+            if selected != {key}:
+                raise ProjectFolderInvalid("Evaluate Task field edits require one run.")
             value = _edit_value(documents.task_source.model_dump(mode="json", exclude_unset=True), change)
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
@@ -546,6 +551,11 @@ def trial_authoring(
     task = documents.task_source
     task_path = (f"payload.trial_documents.{_task_field(task)}" if step.kind == "train"
                  else _evaluation_task_path(definition))
+    task_source = None
+    if step.kind == "evaluate" and (upstream := evaluate_subject(definition)):
+        entry = _authored_task_entry(definition.payload.get("params", {}).get("variation"))
+        origin = definition.sources.get(pointer(("payload", "params", "variation", str(entry), "path")))
+        task_source = evaluate_value_source(origin, evaluate_step=key.step) if origin else evaluate_value_source(upstream[1])
     links = dict(paired.task.interface.links) if paired else {}
     expressions = {
         ("objective", "terms", term.id, field): getattr(term, field)
@@ -556,6 +566,7 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=definition.document_ids.get("payload.trial_documents.objective"),
         task=task, objective=documents.objective if step.kind == "train" else None,
+        task_source=task_source,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),

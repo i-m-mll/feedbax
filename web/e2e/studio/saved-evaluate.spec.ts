@@ -3,9 +3,10 @@ import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
-import { captureStudioWindow, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({
+  channel: 'chrome',
   trace: 'off',
   launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
   viewport: { width: 1440, height: 900 },
@@ -235,6 +236,117 @@ test(`saved Evaluate ${enabled ? 'runs in the isolated candidate' : 'is held by 
   test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal application backend');
   test.setTimeout(60_000);
   await runSavedEvaluation(page, request, info);
+});
+
+test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
+  test.skip(!enabled || process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal Evaluate candidate backend');
+  test.setTimeout(55_000);
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const path = `${projectPath}/train-runs`;
+  const saved = async () => {
+    const response = await request.get(projectPath);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  };
+  const plan = async () => {
+    const { revision } = await saved();
+    const response = await request.get(path, { params: { revision, window_map: true } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  };
+  const selectedKey = { variant: 'default', step: 'conditions', row: 'seed=control' };
+  const siblingKey = { ...selectedKey, row: 'seed=comparison' };
+  const row = (view: StudioSavedTrainRuns, key: typeof selectedKey) => view.window_map?.evaluations?.find(
+    (item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row,
+  );
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+  const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+  const target = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+  const stepField = inspector.getByRole('textbox', { name: 'Step', exact: true });
+  const chooseRow = async () => {
+    const definition = (await plan()).window_map?.rows.find(({ key }) =>
+      key.step === selectedKey.step && key.row === selectedKey.row);
+    expect(definition).toBeDefined();
+    await plans(page).getByRole('button', { name: definition!.label, exact: true }).click();
+  };
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await chooseStep(page, 'train');
+  const [train] = await submit(page, path);
+  expect(train.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 16_000 });
+  const before = await plan();
+  const [trained] = before.rows;
+  const sibling = row(before, siblingKey);
+  const original = row(before, selectedKey);
+  expect(original?.can_run).toBe(true);
+  expect(sibling?.can_run).toBe(true);
+  await chooseStep(page, 'conditions');
+  await chooseRow();
+  await tab(page, 'Model').click();
+  await model.locator('[data-id="plant"] header').click();
+  await expect(mass).toHaveAccessibleDescription('Trained by train');
+  await expect(mass).toHaveValue('1.25');
+  await enter(mass, '2');
+  await expect(mass).toHaveAccessibleDescription('Changed by conditions');
+  await expect(mass).toHaveValue('2');
+  await tab(page, 'Task').click();
+  await expect(task.getByText('Trained by train', { exact: true })).toBeVisible();
+  await expect(target).toHaveValue('0.18');
+  await enter(target, '0.24');
+  await expect(task.getByText('Changed by conditions', { exact: true })).toBeVisible();
+  await expect(target).toHaveValue('0.24');
+
+  const changed = await plan();
+  const edited = await saved();
+  expect(changed.rows).toEqual(before.rows);
+  expect(row(changed, siblingKey)).toEqual(sibling);
+  expect(row(changed, selectedKey)?.request_id).not.toBe(original?.request_id);
+  expect(edited.project.documents).toEqual(snapshot.project.documents);
+  expect(edited.project.steps?.train).toEqual(snapshot.project.steps?.train);
+  expect(Object.values(edited.project.steps?.conditions?.sweep?.exceptions ?? {}).map((item) => item?.where))
+    .toEqual([{ rows: [selectedKey.row] }, { rows: [selectedKey.row] }]);
+
+  await page.reload();
+  await chooseStep(page, 'conditions');
+  await chooseRow();
+  await tab(page, 'Task').click();
+  await expect(target).toHaveValue('0.24');
+  await tab(page, 'Model').click();
+  await model.locator('[data-id="plant"] header').click();
+  await expect(mass).toHaveValue('2');
+  await model.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await expect(stepField).toBeEditable();
+  const clock = await stepField.inputValue();
+  await enter(stepField, '0.03 s');
+  await expect(stepField).toBeEditable();
+  await expect(stepField).toHaveValue('0.03 s');
+  await expect.poll(async () => (await plan()).window_map?.problems.find(({ step, row }) =>
+    step === selectedKey.step && row === selectedKey.row)).toMatchObject({
+    path: '/step_seconds', detail: 'This Model field changes the trained graph interface or clock',
+    model_address: { document: 'point-mass', element: { kind: 'field', path: ['step_seconds'] } },
+  });
+  await tab(page, 'Runs').click();
+  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(inspector).toContainText('/step_seconds: This Model field changes the trained graph interface or clock');
+  await tab(page, 'Model').click();
+  await expect(stepField).toBeEditable();
+  await enter(stepField, clock);
+  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(row(changed, selectedKey)?.request_id);
+  await tab(page, 'Runs').click();
+  await chooseRow();
+  const [evaluation] = await submit(page, path);
+  expect(evaluation.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  const complete = await plan();
+  expect(complete.rows).toEqual(before.rows);
+  expect(row(complete, siblingKey)).toEqual(sibling);
+  expect(row(complete, selectedKey)?.result).toMatchObject({
+    job_id: evaluation.job_id, checkpoint_source: { job_id: train.job_id, request_id: trained.request_id, completed_updates: 2 },
+    receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+  });
 });
 
 test('authors checkpoint rules and replays covered updates from Results', async ({ page, request }, info) => {

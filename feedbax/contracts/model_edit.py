@@ -315,11 +315,18 @@ class EvaluateAttachmentRequest(EvaluateAttachmentReadRequest):
     difference: ModelDifference
 
 
+class StudioEvaluateValueSource(StrictModel):
+    kind: Literal["trained", "evaluate"]
+    step: ProjectName
+
+
 class EvaluateAttachmentState(StrictModel):
     revision: Sha256
     records: tuple[ModelAttachmentDifference, ...]
     effective: tuple[ModelAttachmentDifference, ...]
     resolved_model: ModelDocument | None = None
+    source: StudioEvaluateValueSource | None = None
+    field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
 
 
 class EvaluateAttachmentEdit(StrictModel):

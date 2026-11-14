@@ -466,9 +466,11 @@ def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSour
     return replace(definition, payload=payload, sources=MappingProxyType(sources))
 
 
-def _model_difference_problem(key: RunKey, address: ModelAddress | None, detail: str) -> ProjectDiagnostic:
+def _model_difference_problem(
+    key: RunKey, address: ModelAddress | None, detail: str, *, path: str | None = None,
+) -> ProjectDiagnostic:
     return ProjectDiagnostic(
-        ResolutionCode.INVALID_PAYLOAD, f"payload.{MODEL_ATTACHMENTS}", detail, key.step,
+        ResolutionCode.INVALID_PAYLOAD, path or f"payload.{MODEL_ATTACHMENTS}", detail, key.step,
         row=key.row, variant=key.variant, document=address.document if address else None, model_address=address,
     )
 
@@ -1377,6 +1379,7 @@ class _Compiler:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.studio.schema import validate_graph_connection_schema
+        from feedbax.studio.canonical_evaluate import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         address = None
@@ -1432,9 +1435,11 @@ class _Compiler:
         except ModelCompilationProblem as error:
             address = error.address
             detail = str(error)
+        except CannotRun as error:
+            return _model_difference_problem(key, address, error.reason, path=error.path)
         except ValueError as error:
             detail = str(error)
-        return _model_difference_problem(key, address, detail)
+        return _model_difference_problem(key, address, detail, path=pointer(address.stored_path()) if address else None)
 
     def compile_step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]

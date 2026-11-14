@@ -341,9 +341,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const managedTrial = step?.kind === 'evaluate' || Boolean(direct?.trial_documents || step?.documentIds?.['payload.trial_documents.model']);
   const trialVisible = windowState.mode !== 'map' &&
     [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
-  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, Boolean(managedTrial && trialVisible),
-    Boolean(wholeStep && !pending && !outside && !snapshot.saving && !saved.project.sweep && !authored?.sweep &&
-      !authored?.deltas?.length && step?.kind === 'train'));
   const selectedSweepValues = new Map<string, Set<string>>();
   if (state.selection && state.selection.kind !== 'steps') {
     for (const row of selectedDefinitionRows) {
@@ -368,6 +365,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     : axis?.valueIds.length === 1 ? { kind: 'axis_value', axis: axis.sweepId, value: axis.valueIds[0] } as const
       : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
         : undefined);
+  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, Boolean(managedTrial && trialVisible),
+    !pending && !outside && !snapshot.saving && Boolean(evaluateScope ||
+      wholeStep && !saved.project.sweep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train'),
+    evaluateScope || undefined);
   const chosenAxis = evaluateScope && evaluateScope.kind === 'axis_value'
     ? authored?.sweep?.axes?.[evaluateScope.axis] : undefined;
   const checkpointScope = !saved.project.sweep && !subject?.checkpoint_axis && evaluateScope && (
@@ -942,7 +943,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const commit = trial.commit;
           if (view === 'task') return {
             header: <TrialTaskPicker view={value} commit={commit} />,
-            body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+            body: withProblem(<TrialTaskForm view={value}
+              commit={step?.kind !== 'evaluate' || selectedDefinitionRows.length === 1 ? commit : undefined} />),
           };
           const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
           const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };

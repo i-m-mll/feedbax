@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
-import { studioAccessibleName, studioDefinitionStatus, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { StudioFieldControl } from '@/components/values/StudioFieldControl';
 import { humanizeLabel } from '@/components/values/ValueSpecField';
 import type {
@@ -28,7 +28,7 @@ function write(path: string, value: JsonValue, present: boolean): ProjectValueEd
 
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
-  enabled: boolean, editable: boolean,
+  enabled: boolean, editable: boolean, scope?: StudioTrialAuthoringRequest['scope'],
 ) {
   const writing = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -42,7 +42,7 @@ export function useTrialAuthoring(
     writing.current = true;
     setBusy(true);
     try {
-      const result = await readStudioTrialAuthoring(project, { revision, run, change }, editor.signal);
+      const result = await readStudioTrialAuthoring(project, { revision, run, change, scope }, editor.signal);
       if (result.files.length) {
         const documents = [result.model, result.task_document, result.objective_document];
         editor.editFiles(name, result.files, {
@@ -90,7 +90,9 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
   const type = view.task_types.find((item) => item.type === selection?.type);
   const properties = type?.parameter_schema.properties;
   const params = properties && typeof properties === 'object' && !Array.isArray(properties) ? Object.entries(properties) : [];
+  const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
   return <div className="grid max-w-2xl gap-4 p-3 text-sm">
+    {source}
     {type && <section className="grid gap-2" aria-label={studioName('parameters')}>
       <h3 className="font-medium">{type.label}</h3>
       {params.flatMap(([key, property]) => {

@@ -618,6 +618,13 @@ export interface EvaluateAttachmentState {
   records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   resolved_model?: ModelDocument | null;
+  source?: StudioEvaluateValueSource | null;
+  field_sources?: Record<string, StudioEvaluateValueSource>;
+}
+
+export interface StudioEvaluateValueSource {
+  kind: "trained" | "evaluate";
+  step: string;
 }
 
 export interface EvaluateAttachmentStep {
@@ -3957,6 +3964,7 @@ export type StudioTrialAuthoring = {
   "task_document": string | null;
   "objective_document": string | null;
   "task": TaskDocument | PythonTaskSelection;
+  "task_source"?: StudioEvaluateValueSource | null;
   "objective": ObjectiveDocument | null;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
@@ -5314,9 +5322,20 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "source": StudioEvaluateValueSourceSchema.nullable().optional(),
+      "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentState>;
+
+export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSource> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("trained"), z.literal("evaluate")]),
+      "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluateValueSource>;
 
 export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
   z
@@ -10604,6 +10623,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
+    "task_source": z.union([StudioEvaluateValueSourceSchema, z.null()]).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),

@@ -26,9 +26,11 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import model_field_target
 from feedbax.contracts.studio_project import AuthoredFileAddress, SetProjectValue, StudioProjectFilePatch
 from feedbax.web.services.model_projection import selected_model
+from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 
 
 class EvaluateAttachmentRefused(ValueError):
@@ -216,11 +218,13 @@ def read_evaluate_attachments(folders, project_id, body, components=None):
     )
     differences = tuple(record for batch in effective.values() for record in batch)
     resolved = None
-    planned = next((run for run in selected.runs if run.key == key), None)
-    subject = planned.inputs.get("subject") if planned else None
-    if subject is not None:
-        train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(subject.producer,)).plan
-        train = train_plan.selected_definitions.get(subject.producer)
+    source = None
+    field_sources = {}
+    if upstream := evaluate_subject(definition):
+        producer, provenance = upstream
+        source = evaluate_value_source(provenance)
+        train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(producer,)).plan
+        train = train_plan.selected_definitions.get(producer)
         if train is not None:
             document = train.document_ids.get("payload.trial_documents.model") or train.document_ids.get("payload.graph")
             if document and (model := selected_model(train, document)) is not None:
@@ -228,6 +232,14 @@ def read_evaluate_attachments(folders, project_id, body, components=None):
                     document, ModelDocument.model_validate(model), components or folders.components,
                     differences, functions=folders.functions,
                 )
+                for batch, records in effective.items():
+                    for index, record in enumerate(records):
+                        site = ("payload", MODEL_ATTACHMENTS, batch, str(index))
+                        origin = definition.sources.get(pointer((*site, "value"))) or definition.sources.get(
+                            pointer((*site, "op")),
+                        )
+                        if origin is not None:
+                            field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
     return EvaluateAttachmentState(
         revision=body.revision,
         records=tuple(record for record in _local_records(scope) if not isinstance(record, SetField)),
@@ -235,6 +247,8 @@ def read_evaluate_attachments(folders, project_id, body, components=None):
             record for batch in effective.values() for record in batch if not isinstance(record, SetField)
         ),
         resolved_model=resolved,
+        source=source,
+        field_sources=field_sources,
     )
 
 
@@ -271,6 +285,8 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
         data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
         scope, raw = _scope(snapshot.project, data, body)
         difference = body.difference
+        if isinstance(difference, SetField) and any(key.variant != body.run.variant for key in selected):
+            raise ValueError("The Model field scope includes another variant")
         if isinstance(difference, SetField) and scope.patch is not None:
             path = difference.address.to_text()
             if isinstance(body.scope, EvaluateAttachmentVariant):
@@ -286,13 +302,16 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
         )
         previous = {run.key: run.request_id for run in plan.runs}
         current = {run.key: run.request_id for run in candidate.runs}
-        for problem in candidate.diagnostics:
-            key = RunKey(problem.variant, problem.step, problem.row)
-            if key in selected and (key not in current or problem not in plan.diagnostics):
-                address = problem.model_address or address
-                raise ValueError(problem.detail)
-        if not selected <= current.keys():
-            raise ValueError("Attachment differences must resolve for every selected Evaluate row")
+        if not selected <= {row.key for row in candidate.rows}:
+            raise ValueError("The edit must retain every selected Evaluate row")
+        if not isinstance(difference, SetField):
+            for problem in candidate.diagnostics:
+                key = RunKey(problem.variant, problem.step, problem.row)
+                if key in selected and (key not in current or problem not in plan.diagnostics):
+                    address = problem.model_address or address
+                    raise ValueError(problem.detail)
+            if not selected <= current.keys():
+                raise ValueError("Attachment differences must resolve for every selected Evaluate row")
         outside = (previous.keys() | current.keys()) - selected
         if any(current.get(key) != previous.get(key) for key in outside):
             raise ValueError("Attachment differences must preserve every request outside the selected scope")
