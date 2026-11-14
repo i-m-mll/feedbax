@@ -117,11 +117,15 @@ test('authors and reopens an addressed Model through the project history', async
   });
 
   const before = await cell.evaluate((node) => node.style.transform);
+  const wirePath = model.locator(`.react-flow__edge[data-id="${wire.id}"] .react-flow__edge-path`);
+  await expect(wirePath).toHaveAttribute('d', /^M/);
+  const unflippedPath = (await wirePath.getAttribute('d'))!;
   await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
   await cell.locator('header').click({ button: 'right' });
   const flipped = await apply(() => page.getByRole('menuitem', { name: 'Flip', exact: true }).click());
   expect(flipped.snapshot.semantic_root).toBe(redone.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
+  await expect(wirePath).not.toHaveAttribute('d', unflippedPath);
   const collapsed = await apply(() => model.getByRole('button', { name: 'Collapse All', exact: true }).click());
   expect(collapsed.snapshot.semantic_root).toBe(flipped.snapshot.semantic_root);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-collapsed', 'true');
