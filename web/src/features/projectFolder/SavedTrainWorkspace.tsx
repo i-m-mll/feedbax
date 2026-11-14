@@ -5,7 +5,7 @@ import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
-import { studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioCountOf, studioName, studioReason, studioStep } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -37,7 +37,7 @@ import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { openProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { projectWindowPlan, planVariants, savedRunId, stepSourceRows, type SavedTrainRow as SavedRow } from './projectWindowPlan';
+import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
@@ -335,18 +335,15 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
     ?.inputs.find(({ id }) => id === 'subject');
   const subjectSubset = subject?.subset;
-  const rankCount = subjectSubset?.ranks?.length ?? 0;
-  const rankedSubjects = rankCount > 0 ? authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
+  const rankGroups = bestRankGroups(subjectSubset);
+  const rankedSubjects = rankGroups.length ? authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
     key.variant === variant && key.step === step?.id && bound_subject ? [bound_subject] : []) ?? [] : [];
   const subjectsByRank = new Map(rankedSubjects.map((bound) => [bound.key, bound]));
-  const rankedAttempts = subjectSubset?.ranks?.flatMap((key) => {
-    const attempt = subjectsByRank.get(key)?.consumer_job_id;
-    return attempt ? [attempt] : [];
-  }) ?? [];
-  const freezeAttempts = rankCount > 0 && rankedAttempts.length === rankCount &&
-    new Set(rankedSubjects.map(({ selection_sha256 }) => selection_sha256)).size === 1
-    ? rankedAttempts : undefined;
-  const subjectIds = rankCount > 0
+  const freezeAttempts = rankGroups.length && rankGroups.every(({ ranks }) => {
+    const snapshots = ranks.map((key) => subjectsByRank.get(key)?.selection_sha256);
+    return snapshots.every(Boolean) && new Set(snapshots).size === 1;
+  }) ? rankGroups.flatMap(({ ranks }) => ranks.map((key) => subjectsByRank.get(key)!.consumer_job_id)) : undefined;
+  const subjectIds = rankGroups.length
     ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
     : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
   const evaluationEditor = evaluationSource && evaluationAuthoring && authoredMap?.rows.some(({ key, evaluation_conditions }) =>
@@ -1075,10 +1072,13 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
                     <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
                   {subset && <dd className="text-shell-muted">
                     {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
-                    {subset.members && subset.members.length > 0 && <ol aria-label={studioName('members')}
-                      className="list-decimal space-y-0.5 ps-5">
-                      {subset.members.map(({ id, label }) => <li key={id}>{label}</li>)}
-                    </ol>}
+                    {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
+                      {label && <div className="font-medium">{label}</div>}
+                      <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
+                        className="list-decimal space-y-0.5 ps-5">
+                        {members.map(({ id, label }) => <li key={id}>{label}</li>)}
+                      </ol>
+                    </div>)}
                   </dd>}
                 </div>)}</dl>
               </section>}

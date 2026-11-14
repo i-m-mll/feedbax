@@ -218,6 +218,7 @@ export interface StudioSavedEvaluationRow {
   can_run: boolean;
   trials: string[];
   result: StudioSavedEvaluationResult | null;
+  subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_rule?: unknown | null;
   bound_subject?: StudioBoundBestSubject | null;
@@ -3332,6 +3333,11 @@ export type StudioAuthoringSweepChange = {
   "edit": StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue;
 };
 
+export type StudioBestRankGroup = {
+  "coordinates": Record<string, string>;
+  "ranks": Array<string>;
+};
+
 export type StudioBoundBestSubject = {
   "key": string;
   "variant": string;
@@ -3542,6 +3548,7 @@ export type StudioProjectWindowMapSubset = {
   "document": string | null;
   "members"?: Array<StudioSavedTrainKey> | null;
   "ranks"?: Array<string>;
+  "rank_groups"?: Array<StudioBestRankGroup>;
 };
 
 export type StudioReplayFile = {
@@ -4267,6 +4274,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "can_run": z.boolean(),
       "trials": z.array(z.string()),
       "result": StudioSavedEvaluationResultSchema.nullable(),
+      "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_rule": z.unknown().nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
@@ -9392,6 +9400,13 @@ export const StudioAuthoringSweepChangeSchema: z.ZodType<StudioAuthoringSweepCha
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSweepChange>;
 
+export const StudioBestRankGroupSchema: z.ZodType<StudioBestRankGroup> = z.lazy(() =>
+  z.object({
+    "coordinates": z.record(z.string(), z.string()),
+    "ranks": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioBestRankGroup>;
+
 export const StudioBoundBestSubjectSchema: z.ZodType<StudioBoundBestSubject> = z.lazy(() =>
   z.object({
     "key": z.string(),
@@ -9657,6 +9672,7 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
     "document": z.union([z.string(), z.null()]),
     "members": z.union([z.array(StudioSavedTrainKeySchema), z.null()]).optional(),
     "ranks": z.array(z.string()).optional(),
+    "rank_groups": z.array(StudioBestRankGroupSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 

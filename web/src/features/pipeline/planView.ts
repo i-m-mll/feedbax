@@ -42,7 +42,10 @@ export interface PlanInputView {
     readonly terms: readonly string[];
     readonly count: number;
     readonly total: number;
-    readonly members?: readonly { id: string; label: string }[];
+    readonly memberGroups?: readonly {
+      label?: string;
+      members: readonly { id: string; label: string }[];
+    }[];
   };
 }
 
