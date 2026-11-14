@@ -105,7 +105,7 @@ function MarkButton({
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
       aria-description={lineageDescription || undefined}
-      {...appTip(name)}
+      {...appTip(studioAccessibleName('select', name))}
       data-map-focus={lineage}
       data-boxed={selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}

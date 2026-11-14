@@ -137,9 +137,8 @@ function StatusCounts({ id, counts, onProblems }: {
   );
 }
 
-function stepSelectionName(step: PlanStepView, count?: string | number) {
-  const label = [step.label, studioStep(step.kind).name, count].filter((part) => part !== undefined).join(' ');
-  return studioAccessibleName('select', label);
+function stepLabel(step: PlanStepView, count?: string | number) {
+  return [step.label, studioStep(step.kind).name, count].filter((part) => part !== undefined).join(' ');
 }
 
 function StepName({ step }: { step: PlanStepView }) {
@@ -378,7 +377,7 @@ const StepCard = memo(function StepCard({
           type="button"
           data-canvas-focus
           className="studio-map-card__head w-full rounded px-1 py-1 text-left hover:bg-shell-hover"
-          aria-label={stepSelectionName(step, compact ? step.runs.length : undefined)}
+          aria-label={studioAccessibleName('select', stepLabel(step, compact ? step.runs.length : undefined))}
           aria-describedby={[`${id}-summary`, `${id}-status`, related ? `${id}-related` : ''].filter(Boolean).join(' ')}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
@@ -567,6 +566,7 @@ function MapDrawer({
             <ul>{entries.map((step) => {
           const scope = stepSelection(selection, step.id);
           const count = related?.get(step.id)?.size ?? 0;
+          const summary = related && focusedStepId !== step.id ? studioCountOf(count, step.runs.length) : undefined;
           const level = documentLevel(documentScope, step.id);
           return (
             <li key={step.id}>
@@ -574,14 +574,14 @@ function MapDrawer({
                 type="button"
                 className={`w-full space-y-1 rounded border border-transparent p-1.5 text-left text-sm hover:bg-shell-hover aria-[current=step]:bg-shell-divider data-[map-dimmed=true]:border-dashed data-[map-dimmed=true]:border-shell-divider data-[document-scope=faint]:border-shell-divider ${documentLevelStyle} ${!scope ? documentLitStyle : ''}`}
                 aria-current={scope ? 'step' : undefined}
-                aria-label={stepSelectionName(step, related && focusedStepId !== step.id ? studioCountOf(count, step.runs.length) : undefined)}
+                aria-label={studioAccessibleName('select', stepLabel(step, summary))}
                 aria-pressed={documentScope ? level === 'lit' : undefined}
                 data-map-dimmed={Boolean(related && !count && focusedStepId !== step.id) || undefined}
                 data-document-scope={level}
                 {...selectionButton((extend) => chooseStep(step.id, extend))}
               >
                 <StepName step={step} />{' '}
-                {related && focusedStepId !== step.id && <span className="block text-xs tabular-nums">{studioCountOf(count, step.runs.length)}</span>}
+                {summary && <span className="block text-xs tabular-nums">{summary}</span>}
               </button>
               <div className="px-1.5"><StatusCounts counts={step.statusCounts}
                 onProblems={problemSteps?.has(step.id) && onProblems ? (opener) => onProblems(step.id, opener) : undefined} /></div>
@@ -641,7 +641,7 @@ function MapLine({
               type="button"
               className={`studio-map-line-step ${smallButton} border-2 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
               style={{ borderColor: stepSelection(selection, step.id)?.kind === 'steps' ? 'var(--text-primary)' : studioStep(step.kind).tint }}
-              aria-label={stepSelectionName(step)}
+              aria-label={studioAccessibleName('select', stepLabel(step))}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
               aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
               data-map-selection={stepSelection(selection, step.id)?.kind}
