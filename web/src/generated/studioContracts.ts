@@ -655,6 +655,7 @@ export interface EvaluateAttachmentRows {
 
 export interface EvaluateAttachmentState {
   revision: unknown;
+  editable: boolean;
   records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   resolved_model?: ModelDocument | null;
@@ -5106,6 +5107,7 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
   z
     .object({
       "revision": z.unknown(),
+      "editable": z.boolean(),
       "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "resolved_model": ModelDocumentSchema.nullable().optional(),

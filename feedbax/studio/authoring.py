@@ -65,7 +65,7 @@ from feedbax.contracts.training import (
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERATIONS, TRAINING_PROGRAMS
 from feedbax.plugins.bootstrap import BootstrapState
-from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
+from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.training.optimizers import optimizer_types
 
@@ -615,7 +615,7 @@ def project_train_fields(
     for field_id, field in definition.fields.items():
         target = SweepTarget.from_field(field.view.value, field.view.control, field.write)
         if target is not None and not definition.linked:
-            sweep = TrainFieldSweeps(definition.step, target, field.view.label, integer=field.view.control.step == 1)
+            sweep = FieldSweeps(definition.step, target, field.view.label, integer=field.view.control.step == 1)
             sweeps[field_id] = sweep
             field.view.sweep = sweep.view()
             field.view.can_sweep = sweep.can_sweep
@@ -687,7 +687,7 @@ def project_training_numeric_fields(
             continue
         path = json_pointer_parts(field_id)
         target = SweepTarget.from_field(view.value, view.control, field.write) if not definition.linked else None
-        axis = TrainFieldSweeps(definition.step, target, view.label, integer=view.control.step == 1) if target is not None else None
+        axis = FieldSweeps(definition.step, target, view.label, integer=view.control.step == 1) if target is not None else None
         numeric = NumericField(
             path, view.label, view.value,
             Site(expected=ValueType(base=ValueBase.INTEGER if view.control.step == 1 else ValueBase.REAL),

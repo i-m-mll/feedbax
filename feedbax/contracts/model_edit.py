@@ -322,6 +322,7 @@ class StudioEvaluateValueSource(StrictModel):
 
 class EvaluateAttachmentState(StrictModel):
     revision: Sha256
+    editable: bool
     records: tuple[ModelAttachmentDifference, ...]
     effective: tuple[ModelAttachmentDifference, ...]
     resolved_model: ModelDocument | None = None

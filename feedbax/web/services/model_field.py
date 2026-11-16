@@ -1,7 +1,7 @@
 """Prepare Model field writes against one saved project revision."""
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 
 from pydantic import JsonValue
@@ -13,10 +13,12 @@ from feedbax.contracts.model_address import AttachmentElement, ComponentElement,
 from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
 )
-from feedbax.contracts.model_edit import EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, ModelEditCommand, SetField
+from feedbax.contracts.model_edit import (
+    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentStep, ModelEditCommand, SetField,
+)
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project import SetProjectValue, Step
+from feedbax.contracts.project import InlineBase, SetProjectValue, Step
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_inputs import SweepExceptionTerms
@@ -25,7 +27,7 @@ from feedbax.contracts.project_sweep import _paths_overlap, authored_row
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, ModelFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.expression_registry import FunctionRegistry
-from feedbax.studio.authoring_sweeps import SweepTarget, TrainFieldSweeps
+from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.web.services.evaluate_attachment import (
     EvaluateAttachmentRefused, prepare_evaluate_attachment, read_evaluate_attachments,
@@ -215,7 +217,16 @@ def model_fields(
     variant = None
     if body.evaluate_scope is not None and body.run is not None:
         evaluate = EvaluateAttachmentReadRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
-        effective_model = read_evaluate_attachments(folders, project_id, evaluate, components).resolved_model
+        key = RunKey(body.run.variant, body.run.step, body.run.row)
+        plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+        effective_model = read_evaluate_attachments(
+            folders, project_id, evaluate, components, selected=plan,
+        ).resolved_model
+        candidate = project.steps[key.step]
+        if (isinstance(evaluate.scope, EvaluateAttachmentStep) and plan.variants[:1] == (key.variant,)
+                and isinstance(candidate.base, InlineBase) and not candidate.deltas):
+            selected = next(row for row in plan.rows if row.key == key)
+            step = candidate
     elif body.run is not None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         scoped = tuple(RunKey(key.variant, key.step, row) for row in body.rows)
@@ -246,7 +257,10 @@ def model_fields(
         axis = None
         if step is not None:
             target = SweepTarget(numeric.value, partial(_step_field_write, step, field.address), field_key)
-            axis = TrainFieldSweeps(step, target, numeric.label, integer=numeric.site.expected.base == ValueBase.INTEGER)
+            axis = FieldSweeps(step, target, numeric.label, integer=numeric.site.expected.base == ValueBase.INTEGER)
+            if evaluate is not None:
+                # The addressed sweep can set fields inherited from registry defaults.
+                numeric = replace(numeric, stored=True)
         relative = pointer(field.address.stored_path())
         sources = dict.fromkeys(source for definition in definitions
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
@@ -255,7 +269,7 @@ def model_fields(
             address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
         ))
-        targets[field_key] = field, axis
+        targets[field_key] = replace(field, numeric=numeric), axis
     if body.edit is None:
         return ModelFieldResponse(fields=fields)
     if body.address is None or body.address.to_text() not in targets or body.run is None or (

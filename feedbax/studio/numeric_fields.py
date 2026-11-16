@@ -6,7 +6,7 @@ from math import isfinite
 
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    FieldValue, LiteralValue, Problem, ProblemCode, Site, SweepList, SweepRange, SweepSample, ValueBase,
+    FieldValue, LiteralValue, Problem, ProblemCode, Site, SweepList, SweepRange, SweepSample,
 )
 from feedbax.contracts.project import SetProjectValue
 from feedbax.contracts.project_plan import PlannedRow
@@ -22,7 +22,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.expression_text import ParsedField, print_field
-from feedbax.studio.authoring_sweeps import TrainFieldSweeps
+from feedbax.studio.authoring_sweeps import FieldSweeps
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ class NumericField:
         return LiteralValue(value=self.validate(magnitude), unit=unit)
 
 
-def _list_axis(sweep: TrainFieldSweeps, values: list[int | float]) -> NamedAxis:
+def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
     previous = sweep.covering[0][1] if len(sweep.covering) == 1 else None
     if isinstance(previous, ListedAxis | RangeAxis | SampledAxis):
         previous = sweep.to_list(previous)
@@ -146,7 +146,7 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 
 
 def project_numeric_field[View: StudioFieldView](
-    view_type: type[View], field: NumericField, axis: TrainFieldSweeps | None,
+    view_type: type[View], field: NumericField, axis: FieldSweeps | None,
     functions: FunctionRegistry, selected: PlannedRow | None, effective: object, **address,
 ) -> View:
     site = project_site(field.site, functions)
@@ -183,7 +183,7 @@ def project_numeric_field[View: StudioFieldView](
 
 
 def prepare_numeric_field(
-    field: NumericField, axis: TrainFieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
+    field: NumericField, axis: FieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
     functions: FunctionRegistry, *, period: float | None = None, rows: tuple[str, ...] = (),
     keep_value: Callable[[int | float], list[SetProjectValue]] | None = None,
     selection: SweepExceptionTerms | None = None,
@@ -198,7 +198,7 @@ def prepare_numeric_field(
 
 
 def _prepare(
-    field: NumericField, axis: TrainFieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
+    field: NumericField, axis: FieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
     functions: FunctionRegistry, *, period: float | None, selection: SweepExceptionTerms | None,
     keep_value: Callable[[int | float], list[SetProjectValue]] | None,
 ) -> int | float | LiteralValue | list[SetProjectValue] | tuple[Problem, ...]:
@@ -207,7 +207,7 @@ def _prepare(
     covered = axis.covering if axis else []
     previous = covered[0][1] if len(covered) == 1 else None
 
-    def sweep() -> TrainFieldSweeps:
+    def sweep() -> FieldSweeps:
         if axis is None or not field.stored:
             raise ValueError("This field has no writable sweep destination.")
         return axis

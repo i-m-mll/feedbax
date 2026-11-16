@@ -18,6 +18,7 @@ from feedbax.contracts.model_attachment import (
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis,
     EvaluateAttachmentEdit,
+    EvaluateAttachmentReadRequest,
     EvaluateAttachmentRows,
     EvaluateAttachmentState,
     EvaluateAttachmentVariant,
@@ -26,7 +27,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlan, RunKey, compile_project
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import model_field_target
 from feedbax.contracts.studio_project import AuthoredFileAddress, SetProjectValue, StudioProjectFilePatch
@@ -206,14 +207,17 @@ def _apply(records, difference):
     return [*records, difference]
 
 
-def read_evaluate_attachments(folders, project_id, body, components=None):
+def read_evaluate_attachments(
+    folders, project_id, body, components=None, *, selected: ProjectPlan | None = None,
+):
     snapshot = folders.read(project_id, revision=body.revision)
     key = _key(body)
-    selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    if selected is None:
+        selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
     definition = selected.selected_definitions.get(key)
     data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     scope, _ = _scope(snapshot.project, data, body)
-    _selected_rows(selected, body)
+    _, editable = _selected_rows(selected, body)
     effective = MODEL_DIFFERENCE_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
     )
@@ -243,6 +247,7 @@ def read_evaluate_attachments(folders, project_id, body, components=None):
                             field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
     return EvaluateAttachmentState(
         revision=body.revision,
+        editable=editable,
         records=tuple(record for record in _local_records(scope) if isinstance(record, AttachmentDifference)),
         effective=tuple(
             record for record in differences if isinstance(record, AttachmentDifference)
@@ -253,18 +258,18 @@ def read_evaluate_attachments(folders, project_id, body, components=None):
     )
 
 
-def _selected_rows(plan, body):
+def _selected_rows(plan: ProjectPlan, body: EvaluateAttachmentReadRequest) -> tuple[set[RunKey], bool]:
     key, scope = _key(body), body.scope
     rows = {row.key: row for row in plan.rows if row.key.step == key.step}
+    editable = True
     if isinstance(scope, EvaluateAttachmentAxis):
         selected = {
             item for item, row in rows.items()
             if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value
         }
     elif isinstance(scope, EvaluateAttachmentRows):
-        if any(item.variant != key.variant for item in rows):
-            raise ValueError("A row exception must have a single project variant")
-        selected = {item for item in rows if item.row in scope.rows}
+        editable = all(item.variant == key.variant for item in rows)
+        selected = {item for item in rows if item.variant == key.variant and item.row in scope.rows}
         if {item.row for item in selected} != set(scope.rows):
             raise ValueError("The row scope contains an unknown Evaluate row")
     elif isinstance(scope, EvaluateAttachmentVariant):
@@ -273,7 +278,7 @@ def _selected_rows(plan, body):
         selected = set(rows)
     if key not in selected:
         raise ValueError("The selected run is outside the requested edit scope")
-    return selected
+    return selected, editable
 
 
 def prepare_evaluate_attachment(folders, project_id, body, components):
@@ -282,7 +287,9 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
     plan = settled.plan
     address = body.difference.address
     try:
-        selected = _selected_rows(plan, body)
+        selected, editable = _selected_rows(plan, body)
+        if not editable:
+            raise ValueError("A row exception must have a single project variant")
         data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
         scope, raw = _scope(snapshot.project, data, body)
         difference = body.difference
