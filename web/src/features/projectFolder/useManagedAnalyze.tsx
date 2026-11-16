@@ -17,6 +17,7 @@ import { ManagedDocumentCanvas, useElementSelection } from './ManagedDocumentCan
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { problemReason, type ProblemReveal } from './projectWindowProblems';
+import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
 const control = 'rounded-shell-control border border-shell-divider px-2 py-1 disabled:opacity-50';
@@ -101,7 +102,7 @@ export function useManagedAnalyze({
   const diagnostics = (projection?.window_map?.problems ?? []).filter((problem) => id &&
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
-    .map(({ name, status }) => [name, status]));
+    .map((item) => [item.name, item]));
   const issue = error?.scope === scope ? error.message : authoring.error ? apiErrorMessage(authoring.error) : undefined;
 
   function open(mode: 'add' | 'wire', point?: PresentationPosition) {
@@ -198,8 +199,12 @@ export function useManagedAnalyze({
       label: ('input' in source ? source.input : source.product) + ' → ' + role,
     })));
   const selectedProblems = diagnostics.filter((item) => selected && item.element === selected);
+  const selectedPlan = selected ? planned.get(selected) : undefined;
   const inspector = <div className="space-y-2 p-2">
     {selectedProblems.map((problem) => <p key={problem.path + problem.detail} role="status">{problemReason(problem)}</p>)}
+    {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
+      {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
+    </p>}
     {operation && definition && key && <StudioDefinitionForm selection={{ kind: 'steps', stepIds: [key.step] }}
       fields={definition.param_schema.map((schema) => ({
         id: schema.name, label: humanizeLabel(schema.name),
@@ -239,12 +244,13 @@ export function useManagedAnalyze({
   </div>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;
+    const result = planned.get(name);
     return <li key={name}>
       <button type="button" className={control} aria-pressed={selected === name} onClick={() => element.onSelect(name)}>
         {name}
       </button>
       {caption && <span className="px-2">{caption}</span>}
-      {planned.has(name) && <span className="px-2">{studioRunStatus(planned.get(name)!)}</span>}
+      {result && <span className="px-2">{studioRunStatus(result.status)}</span>}
     </li>;
   })}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
@@ -259,7 +265,10 @@ export function useManagedAnalyze({
       </div></div>,
       drawer, inspector,
     },
-    figures: { body: <>{alert}{figureList}</>, drawer, inspector: figure ? inspector : undefined },
+    figures: { body: <>{alert}{figureList}
+      {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
+        history={selectedPlan} name={selected} />}
+    </>, drawer, inspector: figure ? inspector : undefined },
     commands: document && (focusedView === 'analysis' || focusedView === 'figures') ? [addCommand, connect] : [],
     overlay: opened && <Dialog ariaLabel={studioName(opened.mode === 'add' ? 'addOperation' : 'connectPorts')}
       manageFocus panelClassName={dialogClass} onClose={() => setDialog(undefined)}>

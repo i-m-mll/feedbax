@@ -106,7 +106,12 @@ export function studioReason(id: StudioReasonId, value: string) {
   return vocabulary.reason[id].replace('{value}', () => value);
 }
 
-export function studioStep(kind: keyof typeof vocabulary.step) {
-  const { glyph } = vocabulary.step[kind];
-  return { Icon: stepGlyphs[glyph as keyof typeof stepGlyphs], tint: `var(--studio-kind-${kind})`, name: studioName(kind) };
+export function studioStep(kind: keyof typeof vocabulary.step | StudioActivityJob['kind']) {
+  const step = kind === 'render' ? 'analyze' : kind;
+  const { glyph } = vocabulary.step[step];
+  return {
+    Icon: stepGlyphs[glyph as keyof typeof stepGlyphs],
+    tint: `var(--studio-kind-${step})`,
+    name: studioName(kind === 'render' ? 'figures' : kind),
+  };
 }

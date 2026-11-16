@@ -23,5 +23,10 @@ declare module 'plotly.js-dist-min' {
     config?: Config,
   ): Promise<HTMLElement>;
 
+  export function newPlot(
+    root: HTMLElement,
+    figure: { data: Data[]; layout?: Partial<Layout>; frames?: Record<string, unknown>[]; config?: Config },
+  ): Promise<HTMLElement>;
+
   export function purge(root: HTMLElement): void;
 }

@@ -1,15 +1,17 @@
 import { useState, type FormEvent } from 'react';
 import { apiErrorMessage } from '@/api/request';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { Dialog } from '@/components/ui/Dialog';
 import { bindStudioCommand, commandAttributes, type StudioCommand, type StudioCommandId } from '@/features/projectWindow/studioCommands';
 import type { PlanView } from '@/features/pipeline/planView';
 import {
   ProjectValueEditSchema, ReportDocumentSchema, StepReferenceSchema, type ReportDocument, type StudioProjectFilePatch,
-  type StudioSavedTrainRuns,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from './createManagedStep';
 import type { ProjectEditController, ProjectEditSnapshot } from './projectEditController';
+import { savedRunId } from './projectWindowPlan';
+import { SavedReportResult } from './SavedLightProducts';
 
 const control = 'rounded-shell-control border border-shell-divider px-2 py-1 text-sm disabled:opacity-50';
 const button = control + ' hover:bg-shell-hover';
@@ -28,7 +30,7 @@ function figureAddress({ key, name, figure }: ReportFigureSource) {
 }
 
 export function useManagedReport({
-  editor, snapshot, plan, projection, variant, stepId, wholeStep, focused,
+  editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused,
 }: {
   editor: ProjectEditController;
   snapshot: ProjectEditSnapshot;
@@ -36,6 +38,7 @@ export function useManagedReport({
   projection?: StudioSavedTrainRuns;
   variant: string | null;
   stepId?: string;
+  run?: StudioSavedTrainKey;
   wholeStep: boolean;
   focused: boolean;
 }) {
@@ -47,6 +50,9 @@ export function useManagedReport({
   const parsed = authored?.schema === 'feedbax.report_document.v1'
     ? ReportDocumentSchema.safeParse(authored.payload) : undefined;
   const report = parsed?.success ? parsed.data : undefined;
+  const planned = run && projection?.window_map?.rows.find(({ key }) => savedRunId(key) === savedRunId(run));
+  const retained = planned?.light?.result ?? planned?.light?.previous;
+  const previewUrl = retained?.products.report;
   const scope = JSON.stringify([saved.project_id, variant, stepId, document]);
   const [dialog, setDialog] = useState<{ scope: string; revision: string; kind: 'text' | 'figure' }>();
   const [selection, setSelection] = useState<{ scope: string; index: number }>();
@@ -168,6 +174,10 @@ export function useManagedReport({
   const issue = error?.scope === scope ? <p role="alert">{error.message}</p> : null;
   const body = report && <div className="mx-auto grid w-full max-w-3xl gap-4 p-4">
     {!opened && issue}
+    {planned && <p role="status">{studioRunStatus(planned.status)}
+      {planned.reason && <span className="block text-shell-muted">{planned.reason}</span>}
+    </p>}
+    {previewUrl && <SavedReportResult key={retained.job_id} url={previewUrl} />}
     <div className="flex flex-wrap items-end gap-3">
       <label className={label + ' min-w-36 flex-1'}>{studioName('reportTitle')}
         <input className={control} defaultValue={report.title} key={scope + report.title} disabled={!editable}

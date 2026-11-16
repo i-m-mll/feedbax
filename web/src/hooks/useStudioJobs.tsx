@@ -17,7 +17,7 @@ import {
   stopStudioJobs,
 } from '@/api/jobs';
 import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
-import { studioFormat, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName, studioRunStatus, studioStep } from '@/components/activity/studioVocabulary';
 import {
   STUDIO_JOBS_WORKER_NAME,
   type StudioJobConnection,
@@ -78,7 +78,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         if (silent || previous === job.status) return [];
         const run = [
           projectId === null && job.project_id,
-          studioName(job.kind),
+          studioStep(job.kind).name,
           job.stage_id,
           job.label !== job.stage_id && job.label,
           job.scenario_id !== 'default' && job.scenario_id,

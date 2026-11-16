@@ -336,14 +336,19 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const sceneRows = evaluationRows.filter(({ key }) => key.step === step?.id);
   const selectedEvaluation = sceneRows.find(({ key }) => savedRunId(key) === state.focus?.runId)
     ?? (sceneRows.length === 1 ? sceneRows[0] : undefined);
+  const authoredMap = data?.window_map;
+  const lightSteps = new Set(plan.steps.filter(({ kind }) => kind === 'analyze' || kind === 'report').map(({ id }) => id));
+  const lightRows = authoredMap?.rows.filter(({ key, status }) =>
+    lightSteps.has(key.step) && runIds.has(savedRunId(key)) && status !== 'cannot_run') ?? [];
   const runnableTrainRows = runRows.filter(({ status }) => status !== 'cannot_run');
-  const runnableRows = state.selection
-    ? [...runnableTrainRows, ...evaluationRows.filter(({ can_run, status }) => can_run &&
-      (status === 'not_run' || status === 'stale' || status === 'failed' ||
-        status === 'stopped' || status === 'interrupted' || status === 'corrupt'))] : runnableTrainRows;
+  const reuseCompleted = !state.selection;
+  const runnableEvaluationRows = evaluationRows.filter(({ can_run, status }) => can_run &&
+    (status === 'not_run' || status === 'stale' || status === 'failed' ||
+      status === 'stopped' || status === 'interrupted' || status === 'corrupt' ||
+      reuseCompleted && status === 'succeeded'));
+  const runnableRows = [...runnableTrainRows, ...runnableEvaluationRows, ...lightRows];
   const evaluationAuthoring = wholeStep && !saved.project.sweep && authored && ordinaryEvaluation(authored);
   const evaluationSource = evaluationAuthoring && plan.steps.find(({ id }) => id === evaluationAuthoring.subject.step);
-  const authoredMap = data?.window_map;
   const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
     ?.inputs.find(({ id }) => id === 'subject');
   const subjectSubset = subject?.subset;
@@ -465,6 +470,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
+    run: step?.kind === 'report' ? namedRun : undefined,
     wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
   });
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
@@ -498,10 +504,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     void perform(async () => {
       if (await editor.flush() !== data.revision) throw new Error('The project changed before the run was submitted.');
       const project = editor.getSnapshot().saved.project_id;
-      const intent = JSON.stringify([data.revision, keys]);
+      const intent = JSON.stringify([data.revision, keys, reuseCompleted]);
       const token = submission.current?.intent === intent ? submission.current.token : crypto.randomUUID();
       submission.current = { intent, token };
-      const result = await runSavedTrain(project, { revision: data.revision, run_keys: keys, token });
+      const result = await runSavedTrain(project, {
+        revision: data.revision, run_keys: keys, token, ...(reuseCompleted ? { reuse_completed: true } : {}),
+      });
       submission.current = undefined;
       const refusal = result.items.find(({ disposition }) => disposition === 'rejected');
       if (refusal?.reason) setCommandError(refusal.reason);
@@ -1099,7 +1107,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
               removable: Boolean(!saved.project.sweep && authored?.sweep?.exceptions?.[id]),
             })) ?? [];
           return {
-            header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' ? runCommands : undefined}
+            header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
+              ? runCommands : undefined}
               pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
             drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
               {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
