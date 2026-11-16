@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.contracts.effective_success import RequestObject, Success
     from feedbax.persistence.effective_success import SuccessView
+    from feedbax.persistence.store_sync import StoreEndpoint
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
     from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
@@ -942,7 +943,7 @@ class JobService(PlanJobReader):
         ]
 
     def collect_session_attempt(
-        self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *, project: str, store: Path,
+        self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
     ) -> CollectedSessionAttempt:
         """Collect one terminal Jobs snapshot attempt and identify the verified custody for acknowledgement."""
         from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -998,10 +999,9 @@ class JobService(PlanJobReader):
         return CollectedSessionAttempt(activity, ref.sha256)
 
     def _collect_evaluate_attempt(
-        self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *,
+        self, source: StoreEndpoint, attempt: Mapping[str, Any], *,
         project: str, store: Path, ref: ContentObjectRef,
     ) -> StudioActivityJob:
-        from feedbax.persistence.effective_success import SuccessView
         from feedbax.persistence.store_sync import collect_success
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput, EvaluationRequestBinding, decode_rollout_request, evaluation_manifest_id,
@@ -1009,18 +1009,19 @@ class JobService(PlanJobReader):
 
         attempt_id, request_id = attempt["id"], attempt["request"]
         observed = JobReceipt.model_validate(attempt["outcome"]["receipt"])
-        view = SuccessView(source)
-        if view.attempt_ref(attempt_id) != ref:
-            raise JobConflict("Evaluate observation differs from the source Store's accepted attempt.")
-        success = view.read_receipt(ref)
-        manifest = success.evaluation_manifest
-        if (
-            success.attempt != attempt_id or success.request.id != request_id or manifest is None
-            or (observed.manifest_id, observed.manifest_sha256) != (evaluation_manifest_id(attempt_id), manifest.sha256)
-        ):
-            raise JobConflict("Evaluate observation differs from its exact Store receipt.")
+        def verify(success: Success) -> None:
+            manifest = success.evaluation_manifest
+            if (
+                success.attempt != attempt_id or success.request.id != request_id or manifest is None
+                or (observed.manifest_id, observed.manifest_sha256)
+                != (evaluation_manifest_id(attempt_id), manifest.sha256)
+            ):
+                raise JobConflict("Evaluate observation differs from its exact Store receipt.")
+
         destination = ImmutableArtifactBlobProvider(store)
-        collect_success(source, destination, ref, attempt=attempt_id, request_id=request_id)
+        success = collect_success(
+            source, destination, ref, attempt=attempt_id, request_id=request_id, verify=verify,
+        ).receipt
         _, _, subject = decode_rollout_request(request_id, destination.get_object(success.request.object))
         payload = BoundEvaluationJobInput(
             project_id=project, request_id=request_id, manifest_root=Path(destination.root),
@@ -1039,7 +1040,7 @@ class JobService(PlanJobReader):
         return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
 
     def collect_train_attempt(
-        self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *, project: str, store: Path,
+        self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
     ) -> StudioActivityJob:
         """Collect an observed terminal Train and durably mirror its original attempt."""
         from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -1059,7 +1060,10 @@ class JobService(PlanJobReader):
         destination = ImmutableArtifactBlobProvider(store)
         if state == "succeeded":
             receipt = ContentObjectRef.model_validate(outcome["store_success"])
-            result = collect_success(source, destination, receipt, attempt=attempt_id, request_id=request_id)
+            result = collect_success(
+                source, destination, receipt, attempt=attempt_id, request_id=request_id,
+                verify=_require_train_continuation,
+            )
             request = result.receipt.request
         else:
             stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
@@ -1469,6 +1473,11 @@ def _owned_result_damage(view: SuccessView, job: dict[str, Any]) -> str | None:
 
 def _is_collected_train(job: dict[str, Any]) -> bool:
     return job["request"].startswith("train:") and job["data"].get("collected_train") is True
+
+
+def _require_train_continuation(success: Success) -> None:
+    if success.continuation is None:
+        raise JobConflict("Collected Train success lacks its typed continuation.")
 
 
 def _verified_store_result(view: SuccessView, job: dict[str, Any]) -> tuple[JobReceipt, Success] | None:

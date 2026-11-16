@@ -9,7 +9,7 @@ import shutil
 import stat
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from subprocess import CalledProcessError, PIPE, run as subprocess_run
@@ -24,6 +24,7 @@ from feedbax.contracts.execution_schema import (
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1 as REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2 as REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2,
 )
+from feedbax.orchestration.repo_tree import RepoSnapshotError, hash_field, snapshot_tree_identity
 from feedbax._distribution_provenance import (
     PROVENANCE_PATH,
     DistributionProvenanceError,
@@ -35,10 +36,6 @@ from feedbax._distribution_provenance import (
 REPO_SNAPSHOT_CACHE_DIR_ENV = "FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"
 
 _PUBLISH_ATTEMPTS = 8
-
-
-class RepoSnapshotError(RuntimeError):
-    """Raised when governed repository bytes cannot be sealed safely."""
 
 
 class RepoSnapshotSourceFault(RepoSnapshotError):
@@ -176,8 +173,9 @@ def seal_repo_snapshot(
     root: Path | str,
     *,
     snapshot_parent: Path | str,
+    exclude_gitlinks: Sequence[str] = (),
 ) -> SealedRepoSnapshot:
-    """Seal one Git top-level's tracked working-tree bytes without dereferencing links."""
+    """Seal one Git top-level, excluding explicitly out-of-scope submodules."""
     source_root = Path(root).expanduser().resolve()
     if _git(source_root, "rev-parse", "--show-cdup") != b"\n":
         raise RepoSnapshotSourceFault(
@@ -186,11 +184,14 @@ def seal_repo_snapshot(
 
     commit = _head_commit(source_root)
     dirty = _is_dirty(source_root)
-    entries = _tracked_entries(source_root)
-    if any(entry.mode == b"160000" for entry in entries):
+    tracked = _tracked_entries(source_root)
+    gitlinks = {entry.path.as_posix() for entry in tracked if entry.mode == b"160000"}
+    if gitlinks != set(exclude_gitlinks):
         raise RepoSnapshotSourceFault(
-            f"configured repo {name!r} contains a gitlink/submodule; govern it separately"
+            f"configured repo {name!r} has unaccounted gitlink/submodule paths: "
+            f"{sorted(gitlinks.symmetric_difference(exclude_gitlinks))!r}"
         )
+    entries = [entry for entry in tracked if entry.mode != b"160000"]
 
     parent = Path(snapshot_parent).expanduser().resolve()
     parent.mkdir(parents=True, exist_ok=True)
@@ -205,7 +206,7 @@ def seal_repo_snapshot(
         _assert_git_state_unchanged(
             source_root,
             expected_commit=commit,
-            expected_entries=entries,
+            expected_entries=tracked,
             expected_dirty=dirty,
         )
         verified_source_state_sha256 = _observe_source_state(
@@ -220,7 +221,7 @@ def seal_repo_snapshot(
         _assert_git_state_unchanged(
             source_root,
             expected_commit=commit,
-            expected_entries=entries,
+            expected_entries=tracked,
             expected_dirty=dirty,
         )
         distribution_provenance_sha256 = _add_distribution_provenance(
@@ -231,10 +232,10 @@ def seal_repo_snapshot(
         _assert_git_state_unchanged(
             source_root,
             expected_commit=commit,
-            expected_entries=entries,
+            expected_entries=tracked,
             expected_dirty=dirty,
         )
-        content_sha256, file_count = _snapshot_tree_identity(build_root)
+        content_sha256, file_count = snapshot_tree_identity(build_root)
         name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
         staging_root = parent / name_key / content_sha256
         staging_root.parent.mkdir(parents=True, exist_ok=True)
@@ -311,7 +312,7 @@ def verify_repo_snapshot(
     cache fault. Sealed cache entries are checked against the content address holding
     them instead, and report `RepoSnapshotCacheFault`.
     """
-    observed_sha256, observed_count = _snapshot_tree_identity(Path(root))
+    observed_sha256, observed_count = snapshot_tree_identity(Path(root))
     if observed_sha256 != content_sha256 or observed_count != file_count:
         raise RepoSnapshotError(f"sealed repo snapshot digest mismatch: {root}")
 
@@ -493,14 +494,14 @@ def _observe_source_state(
             f"cannot open repo root without following links: {root}: {exc}"
         ) from exc
     digest = hashlib.sha256()
-    _hash_field(digest, b"feedbax.repo-snapshot-source-state.v1")
-    _hash_field(digest, commit.encode("ascii"))
+    hash_field(digest, b"feedbax.repo-snapshot-source-state.v1")
+    hash_field(digest, commit.encode("ascii"))
     try:
         for entry in entries:
             relative = _validated_relative_path(entry.path)
-            _hash_field(digest, entry.path_bytes)
-            _hash_field(digest, entry.mode)
-            _hash_field(digest, entry.object_id)
+            hash_field(digest, entry.path_bytes)
+            hash_field(digest, entry.mode)
+            hash_field(digest, entry.object_id)
             parent_descriptor = _open_parent_descriptor(
                 root_descriptor,
                 relative,
@@ -508,7 +509,7 @@ def _observe_source_state(
                 directory=directory,
             )
             if parent_descriptor is None:
-                _hash_field(digest, b"missing")
+                hash_field(digest, b"missing")
                 continue
             try:
                 _observe_source_entry(
@@ -571,7 +572,7 @@ def _observe_source_entry(
     try:
         before = os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False)
     except FileNotFoundError:
-        _hash_field(digest, b"missing")
+        hash_field(digest, b"missing")
         return
     except OSError as exc:
         raise RepoSnapshotSourceFault(
@@ -619,8 +620,8 @@ def _observe_symlink_source(
         ) from exc
     if not stat.S_ISLNK(after.st_mode) or _stat_identity(before) != _stat_identity(after):
         raise RepoSnapshotSourceFault(f"tracked symlink changed while being read: {relative}")
-    _hash_field(digest, b"120000")
-    _hash_field(digest, os.fsencode(target))
+    hash_field(digest, b"120000")
+    hash_field(digest, os.fsencode(target))
     if destination_root is not None:
         destination = destination_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -650,7 +651,7 @@ def _observe_regular_source(
                 f"tracked file changed before it could be read: {relative}"
             )
         mode = b"100755" if opened.st_mode & 0o111 else b"100644"
-        _hash_field(digest, mode)
+        hash_field(digest, mode)
         destination = destination_root / relative if destination_root is not None else None
         output = None
         if destination is not None:
@@ -709,11 +710,6 @@ def _validated_relative_path(path: Path) -> Path:
     return Path(*pure.parts)
 
 
-def _hash_field(digest: Any, value: bytes) -> None:
-    digest.update(len(value).to_bytes(8, "big"))
-    digest.update(value)
-
-
 def _publish_sealed_snapshot(
     build_root: Path,
     staging_root: Path,
@@ -762,7 +758,7 @@ def _publish_sealed_snapshot(
 def _cache_entry_matches(root: Path, content_sha256: str, file_count: int) -> bool:
     """Report whether a cache entry still holds the bytes its path claims."""
     try:
-        observed_sha256, observed_count = _snapshot_tree_identity(root)
+        observed_sha256, observed_count = snapshot_tree_identity(root)
     except (OSError, RepoSnapshotError):
         return False
     return observed_sha256 == content_sha256 and observed_count == file_count
@@ -815,47 +811,6 @@ def _remove_tree(root: Path) -> None:
             if not path.is_symlink():
                 path.chmod(0o755 if path.is_dir() else 0o644)
     shutil.rmtree(root)
-
-
-def _snapshot_tree_identity(root: Path) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    entries = _snapshot_entries(root)
-    for relative_bytes, path in entries:
-        _hash_field(digest, relative_bytes)
-        if path.is_symlink():
-            _hash_field(digest, b"120000")
-            _hash_field(digest, os.fsencode(os.readlink(path)))
-            continue
-        mode = b"100755" if path.stat().st_mode & 0o111 else b"100644"
-        _hash_field(digest, mode)
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                digest.update(len(chunk).to_bytes(8, "big"))
-                digest.update(chunk)
-        digest.update((0).to_bytes(8, "big"))
-    return digest.hexdigest(), len(entries)
-
-
-def _snapshot_entries(root: Path) -> list[tuple[bytes, Path]]:
-    entries: list[tuple[bytes, Path]] = []
-
-    def visit(directory: Path) -> None:
-        children = sorted(os.scandir(directory), key=lambda entry: os.fsencode(entry.name))
-        for child in children:
-            path = Path(child.path)
-            relative_bytes = os.fsencode(path.relative_to(root).as_posix())
-            if child.is_symlink():
-                entries.append((relative_bytes, path))
-            elif child.is_dir(follow_symlinks=False):
-                visit(path)
-            elif child.is_file(follow_symlinks=False):
-                entries.append((relative_bytes, path))
-            else:
-                raise RepoSnapshotError(f"sealed snapshot contains unsafe file type: {path}")
-
-    visit(root)
-    entries.sort(key=lambda item: item[0])
-    return entries
 
 
 def _main() -> None:

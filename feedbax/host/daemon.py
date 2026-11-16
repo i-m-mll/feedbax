@@ -60,13 +60,20 @@ def failure(code: str, message: str, *, outcome: str = "failed") -> dict:
 
 
 class Host:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, required_expiry_ms: int | None = None):
         self.root = private_directory(root)
         if not local_filesystem(root):
             raise OSError(f"Host state root must be on a local filesystem: {root}")
         self.lock = (root / "host.lock").open("a")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.session = SessionFence.load(root)
+        if required_expiry_ms is not None:
+            if self.session is None or self.session.state.expires_at != required_expiry_ms / 1000:
+                self.lock.close()
+                raise HostError("session_unavailable", "The Host fence does not match the venue cutoff.")
+            if self.session.expired:
+                self.lock.close()
+                raise HostError("session_expired", "A watchdog cannot start an expired venue Host.")
         self.address = socket_path(root)
         self.deliveries = private_directory(root / "deliveries")
         self.worker_root = private_directory(root / "workers")

@@ -1,6 +1,6 @@
 """Transfer and publish exact typed closures between immutable Stores."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,7 +21,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
-from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
+from feedbax.contracts.effective_success import INDEX_REF, Success, decode_success_index
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import (
@@ -341,9 +341,10 @@ def collect_success(
     *,
     attempt: str,
     request_id: RequestId,
+    verify: Callable[[Success], None] | None = None,
 ) -> PublishedSuccess:
     """Transfer and admit an accepted result with its original receipt identity."""
-    return _collect_success(source, destination, receipt, attempt, request_id, promote=True)
+    return _collect_success(source, destination, receipt, attempt, request_id, promote=True, verify=verify)
 
 
 def collect_success_evidence(
@@ -366,10 +367,13 @@ def _collect_success(
     request_id: RequestId,
     *,
     promote: bool,
+    verify: Callable[[Success], None] | None = None,
 ) -> PublishedSuccess:
     selection = _SuccessSource(receipt=receipt, attempt=attempt, request_id=request_id)
     with _transfer_inventory(source, destination, selection) as inventory:
         _bring_objects(source, destination, inventory)
+        if verify is not None:
+            verify(ReceiptClosure(destination).receipt_at(receipt))
         return SuccessView(destination).admit_collected(
             receipt, attempt=attempt, request_id=request_id,
             supersession_times=inventory.supersession_times, promote=promote,

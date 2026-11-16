@@ -10,24 +10,26 @@ from pathlib import Path
 
 from feedbax.host.client import HostClient
 from feedbax.host.io import encode
-from feedbax.host.protocol import MAX_RPC_BYTES, HostError
+from feedbax.host.protocol import MAX_RPC_BYTES, HostError, JsonObject
 from feedbax.host.session import SessionFence, initialize_session
 
 
-async def run(root: Path) -> None:
+async def run(root: Path, *, required_expiry_ms: int | None = None) -> None:
     from feedbax.host.daemon import Host
 
     loop = asyncio.get_running_loop()
     current = asyncio.current_task()
+    assert current is not None
     loop.add_signal_handler(signal.SIGTERM, current.cancel)
     loop.add_signal_handler(signal.SIGINT, current.cancel)
     with suppress(asyncio.CancelledError):
-        await Host(root).run()
+        await Host(root, required_expiry_ms=required_expiry_ms).run()
 
 
 def attach(root: Path, *, start_host: bool) -> None:
     """Relay ordinary Host RPCs. Closing stdin only disconnects the relay."""
     while frame := sys.stdin.buffer.readline(MAX_RPC_BYTES + 1):
+        reply: JsonObject
         try:
             if len(frame) > MAX_RPC_BYTES or not frame.endswith(b"\n"):
                 raise HostError("invalid_request", "Expected a complete Host request within the size limit.")
@@ -49,13 +51,19 @@ def main() -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("operation", choices=("serve", "attach", "init-session"), nargs="?", default="serve")
     parser.add_argument("--no-start", action="store_true")
+    parser.add_argument("--require-session-until-ms", type=int, metavar="TIMESTAMP")
     options = parser.parse_args()
     if options.no_start and options.operation != "attach":
         parser.error("--no-start requires attach")
+    if options.require_session_until_ms is not None and options.operation != "serve":
+        parser.error("--require-session-until-ms requires serve")
     root = options.root.resolve()
     match options.operation:
         case "serve":
-            asyncio.run(run(root))
+            try:
+                asyncio.run(run(root, required_expiry_ms=options.require_session_until_ms))
+            except HostError as error:
+                parser.exit(1, f"{error.code}: {error}\n")
         case "attach":
             attach(root, start_host=not options.no_start)
         case "init-session":

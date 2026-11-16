@@ -122,8 +122,9 @@ class SessionProvider(Protocol):
 
     Acquisition must set the intent on creation and reconcile by that key even when
     the original reply is lost. A used intent cannot create a second venue, even
-    after removal. A bounded provider enforces ends_at_ms for every resource it
-    creates, independently of either process. Realization and close can be
+    after removal. An open venue enforces ends_at_ms independently of the
+    controller and Host. Opening is reconciled by the acquisition intent.
+    Realization and close can be
     retried. Remove must compare the resource identity and intent before acting,
     and treat an already absent resource as success. Adoption reads realization
     evidence from venue custody.
@@ -149,6 +150,10 @@ class SessionProvider(Protocol):
     def client(self, resource: ProviderResource, access: SessionAccess | None) -> HostClient: ...
 
     def remove(self, resource: ProviderResource) -> None: ...
+
+    def claim_opening_close(self, resource: ProviderResource, launch: SessionLaunch) -> bool:
+        """Prevent initialization atomically, or return false if a Host claim is required."""
+        ...
 
 
 class _ControllerRecord(SessionModel):
@@ -263,7 +268,7 @@ class SessionDriver:
         if isinstance(request.lifecycle, CloseWhenIdle) and not self.provider.supports_idle_close:
             raise SessionError("The provider cannot enforce close-when-idle on the venue.")
         if not self.provider.enforces_cutoff:
-            raise SessionError("The provider cannot independently enforce the authorized cutoff.")
+            raise SessionError("The running venue cannot independently enforce the authorized cutoff.")
         with self._exclusive(request.id):
             control = self._read(request.id)
             if control is None:
@@ -306,13 +311,23 @@ class SessionDriver:
             self._write(state, token)
             return state
 
-    def attach(self, session_id: UUID) -> HostClient:
-        record = self._require(session_id)
+    @staticmethod
+    def _access(record: _ControllerRecord) -> SessionAccess:
         state = record.session
         if state.phase != "open" or state.venue is None:
-            raise SessionError(f"Session {session_id} has no open Host.")
-        access = SessionAccess(str(session_id), state.epoch, record.token.get_secret_value())
-        return self.provider.client(state.venue, access)
+            raise SessionError(f"Session {state.launch.request.id} has no open Host.")
+        return SessionAccess(str(state.launch.request.id), state.epoch, record.token.get_secret_value())
+
+    def session_access(self, session_id: UUID) -> SessionAccess:
+        return self._access(self._require(session_id))
+
+    def attach(self, session_id: UUID, *, access: SessionAccess | None = None) -> HostClient:
+        record = self._require(session_id)
+        current = self._access(record)
+        if access is not None and access != current:
+            raise SessionError("The local controller fence changed while attaching to the session.")
+        assert record.session.venue is not None
+        return self.provider.client(record.session.venue, current)
 
     def adopt(
         self, request: SessionRequest, authorization: SessionAuthorization, *, adoption_token: str,
@@ -383,35 +398,35 @@ class SessionDriver:
         if state.phase == "closed":
             assert state.close_evidence is not None
             return state.close_evidence
-        if state.venue is None or state.phase == "opening":
-            raise SessionError("An incomplete opening has no attached Host to authorize closure.")
-
         session_id = state.launch.request.id
         resources = self.inventory()
         owned = tuple(item for item in resources if item.intent == state.launch.intent)
         previous = state.close_evidence.owned if state.close_evidence is not None else ()
-        known = tuple(dict.fromkeys((*previous, state.venue, *owned)))
+        current_venue = self._find_venue(state.launch.intent, owned)
+        recorded = state.venue or current_venue
+        if recorded is None:
+            raise SessionError("Opening has no reconciled venue identity.")
+        known = tuple(dict.fromkeys((*previous, recorded, *owned)))
         known_ids = {(item.kind, item.id) for item in known}
-        if state.phase == "open" and not owned:
-            if any((item.kind, item.id) in known_ids for item in resources):
-                raise SessionError(f"Recorded resources remain with a different intent for session {session_id}.")
-            evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=())
-            self._write(state.model_copy(update={"phase": "closed", "close_evidence": evidence}), token)
-            return evidence
-
-        # Acquire an irreversible
-        # venue claim before publishing a retryable local close intent.
-        if state.phase == "open":
-            claim = self.attach(session_id).claim_session_close()
-            if (
-                claim["session_id"] != str(session_id) or claim["epoch"] != state.epoch
-                or claim["operator"] != state.launch.authorization.operator
-            ):
-                raise SessionError("The venue close claim does not identify this controller.")
+        if state.phase != "closing":
+            if any(
+                (item.kind, item.id) in known_ids and item.intent != state.launch.intent for item in resources
+            ) or (current_venue is not None and current_venue != recorded):
+                raise SessionError(f"Provider custody changed for session {session_id}.")
+            if current_venue is not None:
+                unopened = state.phase == "opening" and self.provider.claim_opening_close(current_venue, state.launch)
+                if not unopened:
+                    access = SessionAccess(str(session_id), state.epoch, token)
+                    claim = self.provider.client(current_venue, access).claim_session_close()
+                    if (
+                        claim["session_id"] != str(session_id) or claim["epoch"] != state.epoch
+                        or claim["operator"] != state.launch.authorization.operator
+                    ):
+                        raise SessionError("The venue close claim does not identify this controller.")
         evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=owned)
-        state = state.model_copy(update={"phase": "closing", "close_evidence": evidence})
+        state = state.model_copy(update={"phase": "closing", "venue": recorded, "close_evidence": evidence})
         self._write(state, token)
-        for item in sorted(owned, key=lambda item: item.kind == "venue"):
+        for item in sorted(owned, key=lambda item: item.kind != "venue"):
             self.provider.remove(item)
         remaining = tuple(
             item for item in self.inventory()

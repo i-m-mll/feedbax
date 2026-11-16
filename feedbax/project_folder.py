@@ -236,10 +236,11 @@ class SettledProjectPlan:
     @classmethod
     def from_text(
         cls, project_id: str, text: TextProject, plan: ProjectPlan, *, readers: BaseReaders = BaseReaders(),
+        store: Path | None = None,
     ) -> SettledProjectPlan:
         return cls(
             project_id, text.revision, project_semantic_root(text.project),
-            text.configuration, text.store_path, plan, readers,
+            text.configuration, text.store_path if store is None else store, plan, readers,
         )
 
 
@@ -627,9 +628,11 @@ class ProjectFolder:
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
+        stores_root: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
+        self._stores_root = stores_root.resolve() if stores_root is not None else None
         self.operations = operations
         self.components = components
         self.functions = functions
@@ -749,11 +752,18 @@ class ProjectFolder:
         declaration: str | None = None,
     ) -> SettledProjectPlan:
         """Compile the acknowledged folder snapshot without opening the result store."""
+        text = self.read_authored_snapshot(project_id, revision=revision, declaration=declaration)
+        return self._compile(project_id, text, source_runs)
+
+    def read_authored_snapshot(
+        self, project_id: str, *, revision: str | None, declaration: str | None = None,
+    ) -> TextProject:
+        """Freeze the exact authored files under the project folder's read lock."""
         with _folder_lock(self._folder(project_id), write=False, declaration=declaration) as folder:
             text = self._load(folder.path, declaration=declaration)
         if revision is not None:
             check_revision("project", revision, text.revision)
-        return self._compile(project_id, text, source_runs)
+        return text
 
     def _compile(
         self, project_id: str, text: TextProject, source_runs: Iterable[RunKey] = ()
@@ -766,7 +776,7 @@ class ProjectFolder:
                 operations=self.operations, components=self.components, functions=self.functions,
                 python_tasks=self.python_tasks, readers=readers,
             ),
-            readers=readers,
+            readers=readers, store=None if self._stores_root is None else self._stores_root / project_id,
         )
 
     def _base_readers(self, project_id: str, text: TextProject) -> BaseReaders:

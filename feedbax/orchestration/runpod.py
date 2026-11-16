@@ -143,6 +143,7 @@ class SubprocessRunPodTransport:
     runpodctl_executable: str = "runpodctl"
     rsync_executable: str = "rsync"
     http_transport: httpx.BaseTransport | None = field(default=None, repr=False)
+    ssh_executable: str = "ssh"
 
     def runpodctl(
         self,
@@ -315,11 +316,17 @@ class SubprocessRunPodTransport:
             raise RunPodDriverError("ssh host and port are required")
         return f"{self.ssh_user}@{self.ssh_host}"
 
+    def pinned_ssh_argv(self) -> tuple[str, ...]:
+        """Forward stdio to a pinned host and bound the time to detect a dead connection."""
+        if not self.strict_ssh_host_key or not self.ssh_boot_public_key:
+            raise RunPodDriverError("Session SSH requires an exact boot host pin")
+        return (*self._ssh_base(), "-T", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2")
+
     def _ssh_base(self, *, detach_stdin: bool = False) -> list[str]:
         key = str(Path(self.ssh_key_path).expanduser())
         if self.ssh_port is None:
             raise RunPodDriverError("ssh port is required")
-        args = ["ssh"]
+        args = [self.ssh_executable]
         if detach_stdin:
             args.append("-n")
         args.extend(["-i", key, "-p", str(self.ssh_port)])
@@ -345,7 +352,7 @@ class SubprocessRunPodTransport:
             or port is None or not 1 <= port <= 65535
             or not public or not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/]+={0,2}", public)
             or self.ssh_known_hosts_path is None
-            or not re.fullmatch(r"/[A-Za-z0-9/_.-]+", self.ssh_known_hosts_path)
+            or not re.fullmatch(r"/[A-Za-z0-9/_. -]+", self.ssh_known_hosts_path)
         ):
             raise RunPodDriverError("missing or invalid boot SSH host pin")
         endpoint = host if port == 22 else f"[{host}]:{port}"

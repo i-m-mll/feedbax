@@ -31,11 +31,22 @@ class SSHStoreConnection:
         ):
             raise ValueError("Expected an SSH destination and client argv")
 
+    def command(self, argv: list[str]) -> list[str]:
+        return [*self.ssh_argv, self.host, shlex.join(argv)]
+
     def run(self, argv: list[str], payload: bytes) -> bytes:
-        return self._run(
-            [*self.ssh_argv, self.host, shlex.join(argv)],
-            input=payload, timeout=self.timeout_seconds,
-        )
+        return self._run(self.command(argv), input=payload, timeout=self.timeout_seconds)
+
+    def copy_tree(self, source: Path, destination: PurePosixPath) -> None:
+        """Stage a sealed tree before the receiver verifies and publishes it."""
+        if not source.is_absolute() or not destination.is_absolute() or ".." in destination.parts:
+            raise ValueError("SSH tree copy requires absolute source and venue paths")
+        target = f"{self.host}:{shlex.quote(destination.as_posix().rstrip('/') + '/')}"
+        self._run([
+            self.rsync_executable, "-a", "--no-owner", "--no-group",
+            f"--timeout={math.ceil(self.timeout_seconds)}",
+            "-e", shlex.join(self.ssh_argv), "--", source.as_posix().rstrip("/") + "/", target,
+        ], timeout=self.timeout_seconds, env={**os.environ, "RSYNC_OLD_ARGS": "1", "RSYNC_PROTECT_ARGS": "0"})
 
     def copy_objects(
         self, source: Path | PurePosixPath, destination: Path | PurePosixPath,
