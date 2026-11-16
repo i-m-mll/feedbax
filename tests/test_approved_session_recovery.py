@@ -282,11 +282,16 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
     )
     resources = runpod_resources()
     fake = FakeRunPod(resources)
+
+    def provider_response(request):
+        assert request.headers["Authorization"] == "Bearer fixture-key"
+        return fake.handle(request)
+
     monkeypatch.setattr(
         installed_remote, "SubprocessRunPodTransport",
-        lambda: SubprocessRunPodTransport(http_transport=httpx.MockTransport(fake.handle)),
+        lambda: SubprocessRunPodTransport(http_transport=httpx.MockTransport(provider_response)),
     )
-    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setenv("RUNPOD_API_KEY", "unselected-fixture-key")
     paths = AppPaths.resolve(instance_root=tmp_path / "installed")
     paths.control.mkdir(mode=0o700, parents=True)
     launcher = tmp_path / "Contents" / "MacOS" / "feedbax-studio"
@@ -336,6 +341,12 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
         assert refused.status_code == 409
         assert all(method == "GET" for method, _ in fake.requests)
         assert not fake.pods and not fake.secrets
+    credentials.unlink()
+    unavailable = installed_remote.load_remote_runs(paths, release)
+    assert unavailable is not None
+    configured = next(choice for choice in unavailable.catalog(("train",)).targets if choice.profile.id == PROFILE)
+    assert configured.availability.state != "ready"
+    assert len(fake.requests) == 2
 
 
 def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_path, monkeypatch, host_fixture):

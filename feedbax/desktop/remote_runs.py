@@ -16,7 +16,7 @@ from feedbax.desktop.control import _read_private_json
 from feedbax.desktop.release import AppPaths, Release
 from feedbax.host.io import private_directory
 from feedbax.orchestration.repo_snapshot import SealedRepoSnapshot, verify_repo_snapshot
-from feedbax.orchestration.runpod import SubprocessRunPodTransport, load_runpod_api_key
+from feedbax.orchestration.runpod import SubprocessRunPodTransport, read_runpod_api_key
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition, RunPodResources
@@ -60,12 +60,11 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
         if profile.driver != RunPodSessionProvider.target:
             raise ValueError("Studio RunPod profiles must use the RunPod session driver.")
         RunPodResources.model_validate(profile.resources)
-    api_key = load_runpod_api_key(config.runpod_config)
-    if not api_key or not config.ssh_identity.is_file():
-        raise ValueError("The configured RunPod API or SSH identity is unavailable.")
-
     root = private_directory(paths.state / "jobs" / "runpod")
     approval = DesktopApproval(root / "studio-approval.json", release.resource("launcher"))
+    api_key = read_runpod_api_key(config.runpod_config)
+    if not api_key or not config.ssh_identity.is_file():
+        return StudioRemoteRuns(config.profiles, (), attest=approval)
     cutoff = NativeRunPodCutoff(environment.workspace, environment.bootstrap_python)
     acquisition = RunPodAcquisition(
         root / "provider", SubprocessRunPodTransport(), api_key=api_key,

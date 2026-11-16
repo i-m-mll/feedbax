@@ -545,8 +545,11 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
 
 def load_runpod_api_key(config_path: Path | str = "~/.runpod/config.toml") -> str | None:
     """Load the RunPod key without exposing it through durable orchestration state."""
-    if key := os.environ.get("RUNPOD_API_KEY"):
-        return key
+    return os.environ.get("RUNPOD_API_KEY") or read_runpod_api_key(config_path)
+
+
+def read_runpod_api_key(config_path: Path | str) -> str | None:
+    """Resolve the configured RunPod TOML credential reference."""
     try:
         payload = tomllib.loads(Path(config_path).expanduser().read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
