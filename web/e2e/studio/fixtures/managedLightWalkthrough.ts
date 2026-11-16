@@ -3,7 +3,8 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, enter, mapStep, openResultsSlot } from './canonicalTrain';
+import { authorLearningRateSweep, mapStep } from './canonicalTrain';
+import { activate, chooseOption, number, openView, palette } from './studioKeyboard';
 
 type Walkthrough = {
   page: Page;
@@ -33,8 +34,21 @@ const train = (page: Page) => page.getByRole('article', { name: 'Train train', e
 const variant = (page: Page) => page.getByRole('combobox', { name: 'Variant', exact: true });
 
 async function openRuns(page: Page, step: string) {
-  await mapStep(page, step).click();
-  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+  await activate(page, mapStep(page, step));
+  await openView(page, 'runs');
+}
+
+export async function selectModelComponent(page: Page, componentId: string) {
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const component = model.locator(`[data-id=${JSON.stringify(componentId)}]`);
+  await expect(component).toHaveAttribute('aria-label', /.+/);
+  const name = (await component.getAttribute('aria-label'))!;
+  if (!await drawer(page).isVisible()) await palette(page, 'showDrawer', 'Show Drawer');
+  const outline = drawer(page).getByRole('button', { name: 'Outline', exact: true });
+  if (await outline.getAttribute('aria-pressed') !== 'true') await activate(page, outline);
+  const entry = drawer(page).getByRole('button', { name, exact: true });
+  await activate(page, entry);
+  await expect(entry).toHaveAttribute('aria-pressed', 'true');
 }
 
 function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '') {
@@ -82,17 +96,15 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
   expect(compare.edges.every(({ from_key }) => from_key.variant === 'compare')).toBe(true);
   const originalAttempts = await attempts();
 
-  await variant(page).selectOption('compare');
-  await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
-  const plant = model.locator(`[data-id=${JSON.stringify(plantId)}]`).getByRole('article');
-  await plant.locator('header').click();
+  await chooseOption(page, variant(page), 'compare');
+  await activate(page, mapStep(page, 'train'));
+  await openView(page, 'model');
+  await selectModelComponent(page, plantId);
   const mass = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('textbox', { name: 'Mass', exact: true });
   await expect(mass).toBeEditable();
   const saved = mutation(context, 'PATCH');
-  await enter(mass, '3');
+  await number(page, mass, '3');
   const response = await saved;
   expect(response.ok(), await response.text()).toBe(true);
   expect(response.request().postDataJSON().address).toEqual({ kind: 'variant', id: 'compare' });
@@ -123,21 +135,22 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const subsetStep = pairedStep === 'evaluate' ? 'evaluate-2' : 'evaluate';
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
-  const inspector = page.getByRole('region', { name: 'Run Inspector', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const sourceRow = (index: number) => table(page).getByRole('row').filter({ hasText: prefix[index].label }).getByRole('button');
 
   async function selectTwo() {
     await openRuns(page, 'train');
-    await sourceRow(0).click();
-    await sourceRow(1).click({ modifiers: ['Shift'] });
+    await activate(page, sourceRow(0));
+    await activate(page, sourceRow(1), 'Shift+Enter');
     await expect(train(page)).toContainText('2 of 3');
   }
 
   async function addSuccessor(kind: 'Train' | 'Evaluate', id: string) {
     const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
-    await train(page).getByRole('button', { name: 'New Step train', exact: true }).click();
-    await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: kind, exact: true }).click();
+    await activate(page, train(page).locator('button[data-command-id="newStep"]'));
+    await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
+      .getByRole('button', { name: kind, exact: true }));
     const response = await saved;
     expect(response.status(), await response.text()).toBe(201);
     await expect(mapStep(page, id)).toHaveAttribute('aria-pressed', 'true');
@@ -146,7 +159,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
 
   async function runSelected(keys: StudioSavedTrainKey[]) {
     const admitted = mutation(context, 'POST', '/train-runs');
-    await pane(page).getByRole('button', { name: 'Run', exact: true }).click();
+    await palette(page, 'run', 'Run');
     const response = await admitted;
     expect(response.status(), await response.text()).toBe(202);
     expect(response.request().postDataJSON().run_keys).toEqual(keys);
@@ -156,13 +169,14 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   }
 
   await openRuns(page, 'train');
-  if (!await outline.isVisible()) await page.getByRole('button', { name: 'Show Steps', exact: true }).click();
-  await sourceRow(2).click();
+  if (!await outline.isVisible()) await palette(page, 'showSteps', 'Show Steps');
+  await activate(page, sourceRow(2));
   await expect(used).toHaveCount(0);
   await expect(page.getByRole('article', { name: 'Report report', exact: true })).not.toHaveAttribute('data-map-related', /.+/);
-  await sourceRow(0).click();
-  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
-  await expect(inspector.getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
+  await activate(page, sourceRow(0));
+  if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
+  await expect(inspector.getByRole('region', { name: 'Run Inspector', exact: true })
+    .getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
   for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used).toContainText(step);
     await expect(outline.getByRole('button', { name: `Select ${step} ${kind} ${count}`, exact: true })).toBeVisible();
@@ -187,9 +201,11 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   const subset = drawer(page).getByRole('group', { name: 'Subject Subset', exact: true });
-  await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
+  const fast = subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true });
+  await activate(page, fast, 'Space');
+  await expect(fast).toBeChecked();
   const edited = mutation(context, 'PATCH');
-  await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
+  await activate(page, subset.getByRole('button', { name: 'Apply Subset', exact: true }));
   expect((await edited).ok()).toBe(true);
   await expect(input).toContainText('3 of 3');
   const widened = evaluationRows(await plan(context), subsetStep);
@@ -205,7 +221,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(continued.project.steps?.[child]?.kind).toBe('train');
   const carryover = drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
-  await carryover.selectOption({ label: 'Carry training state' });
+  await chooseOption(page, carryover, 'Carry training state');
   const carried = await carry;
   expect(carried.ok(), await carried.text()).toBe(true);
   expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
@@ -213,7 +229,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
-  await enter(batchCount, String(additionalUpdates));
+  await number(page, batchCount, String(additionalUpdates));
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
   expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
@@ -245,8 +261,11 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button').click();
-    if (index === 0) await openResultsSlot(page);
+    await activate(page, table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button'));
+    if (index === 0) {
+      await palette(page, 'splitDetails', 'Split Details');
+      await openView(page, 'results');
+    }
     const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
     await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('polyline')).toHaveCount(1);
     await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
