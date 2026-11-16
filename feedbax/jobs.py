@@ -23,7 +23,7 @@ from feedbax._secure_fs import (
     recheck_directory_chain,
 )
 from feedbax.checkpoint_coordinates import finite_coordinates
-from feedbax.contracts.artifact_custody import StoreTransferProgress
+from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
@@ -64,7 +64,8 @@ from feedbax.contracts.project_plan import (
     planned_input_groups,
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.effective_success import TerminalTrainSubject
+from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -280,7 +281,7 @@ class PlanJobReader:
             elif evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
                 receipt, size = (result.receipt, result.size) if result is not None else (None, None)
-                if collected_evaluate and result is not None:
+                if result is not None and result.checkpoint_source is not None:
                     checkpoint_source = result.checkpoint_source
             elif succeeded and (light or collected_train):
                 assert success_view is not None
@@ -510,23 +511,36 @@ class JobService(PlanJobReader):
                     data = _plan_run_data(name, run)
                     try:
                         params, checkpoint = self.evaluation_parameters(current.plan, run)
+                        planned = run.inputs["subject"]
+                        if planned.member.reference != checkpoint:
+                            raise ValueError("The saved Plan disagrees with the encoded Evaluate subject.")
+                        terminal = planned.terminal
+                        reviewed_terminal = old.inputs["subject"].terminal
+                        if reviewed_terminal is not None and reviewed_terminal != terminal:
+                            raise ValueError("/inputs/subject: the reviewed terminal Train receipt changed")
+                        if planned.producer in names_by_key:
+                            terminal = None
+                        if (
+                            terminal is None and isinstance(checkpoint, ProductRef)
+                            and isinstance(checkpoint.select, LastMember)
+                            and planned.producer not in names_by_key
+                        ):
+                            terminal = self._terminal_train_subject(project, store, checkpoint.request_id)
                         item = self._evaluation_item(
                             project, run.request_id, current.plan.requests[run.request_id], data, store,
-                            checkpoint, params,
+                            checkpoint, params, terminal=terminal,
                         )
-                    except (ValueError, KeyError) as error:
+                    except (ValueError, KeyError, OSError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
                         continue
-                    planned = run.inputs.get("subject")
-                    if planned is None or planned.member.reference != checkpoint:
-                        raise ValueError("The saved Plan disagrees with the encoded Evaluate subject.")
-                    if isinstance(checkpoint, BestRank):
-                        checkpoints[name] = tuple(
-                            (key, candidate.reference.request_id)
-                            for key, candidate in zip(planned.candidates, checkpoint.candidates, strict=True)
+                    if terminal is None:
+                        checkpoints[name] = (
+                            tuple(
+                                (key, candidate.reference.request_id)
+                                for key, candidate in zip(planned.candidates, checkpoint.candidates, strict=True)
+                            )
+                            if isinstance(checkpoint, BestRank) else ((planned.producer, checkpoint.request_id),)
                         )
-                    else:
-                        checkpoints[name] = ((planned.producer, checkpoint.request_id),)
                     runs[name] = data | {"request_id": run.request_id}
                     items[name] = item
                     continue
@@ -667,6 +681,21 @@ class JobService(PlanJobReader):
             admitted, project=project, continues=None, command=command, placement=placement,
         )
 
+    def _terminal_train_subject(
+        self, project: str, store: ImmutableArtifactBlobProvider, request: RequestId,
+    ) -> TerminalTrainSubject | None:
+        from feedbax.persistence.effective_success import SuccessView
+
+        view = SuccessView(store)
+        rows = self.host.jobs(project=project, request=request)
+        for row in reversed(rows):
+            if row["state"] == "succeeded" and row["data"].get("manifest_root") == str(store.root):
+                ref_data = (row.get("outcome") or {}).get("store_success")
+                if ref_data is None:
+                    continue
+                return view.recover_native_train_run(request, ContentObjectRef.model_validate(ref_data))
+        return None
+
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         anchors = [
             row["id"]
@@ -733,6 +762,7 @@ class JobService(PlanJobReader):
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
         store: ImmutableArtifactBlobProvider, checkpoint: ProductRef | BestRank, params: RolloutParameters,
+        *, terminal: TerminalTrainSubject | None,
     ) -> AdmissionItem:
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput,
@@ -747,6 +777,8 @@ class JobService(PlanJobReader):
             canonical_request=EvaluationRequestBinding(
                 request=store.store_rooted_object(raw, namespace="studio-evaluate-request"),
                 checkpoint=checkpoint,
+                terminal=terminal,
+                bootstrap_modules=self.bootstrap_modules,
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
@@ -1705,8 +1737,10 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
         ):
             return None
         manifest_object = success.evaluation_manifest
-        if job["data"].get("collected_evaluate") is True:
-            return _verify_collected_evaluation(view.store, success, receipt, manifest_object)
+        (bound,) = success.inputs["subject"]
+        terminal = bound.evaluation_subject and bound.evaluation_subject.terminal_checkpoint is not None
+        if job["data"].get("collected_evaluate") is True or terminal:
+            return _verify_stored_evaluation(view.store, success, receipt, manifest_object)
 
         binding, = _pinned_dependencies(job)
         manifest, subject = verify_evaluation_receipt(
@@ -1730,7 +1764,7 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
         return None
 
 
-def _verify_collected_evaluation(
+def _verify_stored_evaluation(
     store: ImmutableArtifactBlobProvider, success: Success, receipt: JobReceipt, manifest_object: ContentObjectRef,
 ) -> _VerifiedEvaluation:
     from feedbax.contracts.effective_success import EvaluationSubjectValue
@@ -1748,12 +1782,15 @@ def _verify_collected_evaluation(
     assert source is not None
     value = EvaluationSubjectValue.model_validate(bound.descriptor)
     members = value.resolved.members if value.resolved is not None else ()
+    occurrences = (
+        (source.terminal_checkpoint,) if source.terminal_checkpoint is not None
+        else tuple(checkpoint.occurrence for checkpoint in source.checkpoints)
+    )
     checkpoints = tuple(
         StudioTrainCheckpointSource(
-            job_id=checkpoint.occurrence.run_id, request_id=source.producer.id,
-            completed_updates=member.coordinate,
+            job_id=checkpoint.run_id, request_id=source.producer.id, completed_updates=member.coordinate,
         )
-        for checkpoint, member in zip(source.checkpoints, members, strict=True)
+        for checkpoint, member in zip(occurrences, members, strict=True)
     )
     single = evaluation_checkpoint_coordinates(subject) is None
     checkpoint_source = None

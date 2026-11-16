@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import JsonValue, ValidationError
 from pydantic_core import to_json, to_jsonable_python
@@ -66,6 +66,12 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
+
+if TYPE_CHECKING:
+    from feedbax.contracts.effective_success import TerminalTrainSubject
+    from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.request_refs import RequestId
+    from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
 
 class ResolutionCode(StrEnum):
@@ -181,6 +187,14 @@ class _TrialResolution:
 
 
 @dataclass(frozen=True)
+class TerminalTrainSource:
+    request_id: RequestId
+    subject: TerminalTrainSubject
+    train: DocumentTrainingRequestSpec
+    graph: GraphSpec
+
+
+@dataclass(frozen=True)
 class BaseReaders:
     """Read exact historical payloads and external bytes from caller-owned sources.
 
@@ -196,6 +210,7 @@ class BaseReaders:
     external: Callable[[str], bytes | None] | None = None
     row: Callable[[ResolvedStep, str], SelectedRow | None] | None = None
     figure_external: Callable[[str], bytes | None] | None = None
+    terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
 
 
 class _Problem(Exception):

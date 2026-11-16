@@ -219,12 +219,12 @@ def _store_refs(
                     store, value, gaps, include_history=include_history, visitors=visitors,
                 )
                 continue
-            if name == "plan" or name.startswith("runs/"):
-                retention_gaps.append(f"ref {name}: plan or result root contract is unavailable")
             if value.get("schema_version") == STORE_CLOSURE_REF_SCHEMA:
                 closure = ReceiptClosure(store).walk(read_store_closure_ref(value), visitors=visitors)
                 yield RootObservation(f"ref:{name}", tuple(object_target(item) for item in closure))
                 continue
+            if name == "plan" or name.startswith("runs/"):
+                retention_gaps.append(f"ref {name}: plan or result root contract is unavailable")
             if value.keys() == {"content", "descriptor_sha256"}:
                 dataset = DatasetProductRef.model_validate(value)
                 if visitors is not None:

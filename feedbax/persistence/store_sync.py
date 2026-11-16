@@ -295,8 +295,8 @@ def _bring_objects(
 def _ref_before(
     store: ImmutableArtifactBlobProvider, closure: StoreClosureRef, update: _RefUpdate,
 ) -> dict[str, JsonValue] | None:
-    if update.name == INDEX_REF:
-        raise ValueError("Store sync cannot publish to the successful-result index")
+    if update.name == INDEX_REF or update.name.startswith("runs/"):
+        raise ValueError("Store sync cannot publish successful results without admission")
     current = store.read_ref(update.name)
     previous = update.expected.model_dump(mode="json") if update.expected is not None else None
     if current != closure.model_dump(mode="json") and current != previous:
@@ -354,6 +354,29 @@ def sync_store(
             if isinstance(source, RemoteStore):
                 _verify_closure(destination, inventory)
             _publish(destination, inventory, update, current)
+    return StoreSyncResult(inventory.closure, transferred, len(inventory.objects) - transferred)
+
+
+def import_packet(
+    packet: ImmutableArtifactBlobProvider,
+    destination: ImmutableArtifactBlobProvider,
+    *, packet_ref: str, name: str,
+) -> StoreSyncResult:
+    """Transfer and admit one exact receipt selection without a Host job."""
+    selection = _ClosureSource(selection=packet_ref)
+    update = _RefUpdate(name=f"packets/{name}")
+    with _transfer_inventory(packet, destination, selection) as inventory:
+        (root,) = inventory.closure.roots
+        if not isinstance(root, ReceiptRoot):
+            raise ValueError("A receipt packet must name an exact receipt")
+        receipt = ReceiptClosure(packet).receipt_at(root.receipt)
+        current = _ref_before(destination, inventory.closure, update)
+        transferred = _bring_objects(packet, destination, inventory)
+        SuccessView(destination).admit_collected(
+            root.receipt, attempt=receipt.attempt, request_id=receipt.request.id,
+            supersession_times={}, promote=True, selection=inventory.closure,
+        )
+        _publish(destination, inventory, update, current)
     return StoreSyncResult(inventory.closure, transferred, len(inventory.objects) - transferred)
 
 

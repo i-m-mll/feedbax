@@ -170,19 +170,28 @@ class SemanticModelSlot:
 
     @classmethod
     def open(cls, transaction: Path, slot: CheckpointSlotBlobRef) -> SemanticModelSlot:
-        provider = ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE)
         try:
-            tree = _slot_tree(slot)
+            return cls.open_store(
+                ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE), _slot_tree(slot),
+                SemanticModelEncoding.model_validate(slot.metadata["semantic_model"]),
+            )
+        except ModelCheckpointError:
+            raise
+        except (ValueError, KeyError, OSError) as exc:
+            raise ModelCheckpointError("/v1/model", str(exc)) from exc
+
+    @classmethod
+    def open_store(
+        cls, provider: ImmutableArtifactBlobProvider, tree: ContentTreeRef, encoding: SemanticModelEncoding,
+    ) -> SemanticModelSlot:
+        try:
             members = {file.relative_path: file.object for file in provider.get_tree(tree).files}
             graph = GraphSpec.model_validate_json(_read(provider, members[_GRAPH], "/graph"))
             if SemanticModelWriter.for_graph(graph, provider) is None:
                 raise ModelCheckpointError("/graph", "graph has an undeclared semantic model owner")
             for path, asset in model_tree_assets(graph, members):
                 _read(provider, asset, path)
-            return cls(
-                provider, graph, members[_ARRAY],
-                SemanticModelEncoding.model_validate(slot.metadata["semantic_model"]), tree,
-            )
+            return cls(provider, graph, members[_ARRAY], encoding, tree)
         except ModelCheckpointError:
             raise
         except ModelTreeLayoutError as exc:

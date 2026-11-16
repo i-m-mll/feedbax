@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 from dataclasses import dataclass
+from functools import partial
 import os
 from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
+from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord, ContentTreeRef
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.effective_success import TerminalTrainSubject, success_content_ref
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.live_evaluate import BoundLiveEvaluationPoint, ScoredEvaluationPoint
 from feedbax.contracts.manifest import (
@@ -22,16 +24,18 @@ from feedbax.contracts.manifest import (
     SpecPayload,
     normalize_manifest_spec_payloads,
 )
+from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.project_sources import pointer as json_pointer
-from feedbax.contracts.request_refs import ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.rollout import (
     ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
 )
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
+from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
 from feedbax.studio.canonical_evaluate import (
     ROLLOUT_TYPE,
     ROLLOUT_JAX_BACKEND,
@@ -48,12 +52,14 @@ from feedbax.studio.canonical_evaluate import (
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
+from feedbax.job_completion import read_host_completion_binding
 
 
 if TYPE_CHECKING:
     from feedbax.compiler.trial_execution import PreparedTrialExecution
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
     from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.training import TrialDocuments
     from feedbax.dataset import Dataset
     from feedbax.runtime.graph import Graph
     from feedbax.runtime.raw_state import RawStateLayout
@@ -84,23 +90,21 @@ class PreparedRollout:
     varied: bool
 
 
-def _bound_subject(
-    request: BoundEvaluationJobInput,
-) -> tuple[tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...], dict]:
+def _bound_native_subject(
+    request: BoundEvaluationJobInput, binding: dict,
+) -> tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...]:
     from feedbax.job_completion import (
         load_bound_checkpoint_selection,
-        read_host_completion_binding,
         verify_bound_training_completion,
     )
 
-    binding = read_host_completion_binding()
     subject = exact_evaluation_subject(request.canonical_request.checkpoint, binding, verify_metrics=True)
     if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
         return load_bound_checkpoint_selection(
             binding, root=request.manifest_root, producer_request=subject.request_id,
             coordinates=coordinates, project=request.project_id,
             allow_gaps=isinstance(subject.select, UpdateSeriesMember),
-        ), binding
+        )
     completion = binding["completion"]
     if (
         completion["project_id"] != request.project_id
@@ -112,7 +116,7 @@ def _bound_subject(
     if source.canonical_request is None:
         raise CompletionFileError("Pinned subject is missing its canonical Train request.")
     checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
-    return ((checkpoint, source),), binding
+    return ((checkpoint, source),)
 
 
 
@@ -124,30 +128,24 @@ def score_paired_validation(
 
 
 def resolve_rollout(
-    source: BoundStudioTrainingJobInput, source_graph: GraphSpec, params: RolloutParameters,
-    *, model_assets: ArtifactBlobProvider,
+    documents: TrialDocuments, source_graph: GraphSpec, params: RolloutParameters,
+    *, seed: int, bootstrap_modules: tuple[str, ...], model_assets: ArtifactBlobProvider,
 ) -> ResolvedRollout:
     import jax
 
     from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-    from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.objectives.document import ObjectiveUse
     from feedbax.plugins.composition import compose_application
     from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
     from feedbax.training.rollout_scoring import RolloutScorer
     from feedbax.training.studio_executor import studio_training_key
 
-    spec = source.spec
-    documents = spec.trial_documents
-    if documents is None or spec.method_ref != STUDIO_GRAPH_METHOD:
-        raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
     if jax.default_backend() != ROLLOUT_JAX_BACKEND or jax.config.jax_enable_x64 != ROLLOUT_JAX_ENABLE_X64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
     validate_evaluation_source(source_graph)
-    method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
-    registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
+    registry = asyncio.run(compose_application(modules=bootstrap_modules)).bundle
     variant = resolve_evaluation_variant(source_graph, documents.task_source, params.variation)
-    key = studio_training_key(method.seed, "model")
+    key = studio_training_key(seed, "model")
     source_pair = compile_trial_execution(
         documents.model_name, documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
@@ -179,14 +177,31 @@ def resolve_rollout(
 def prepare_rollout(
     source: BoundStudioTrainingJobInput, checkpoint: PublishedTrainingCheckpoint, params: RolloutParameters,
 ) -> PreparedRollout:
-    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
     from feedbax.training.checkpoint_custody import open_published_model_slot
-    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
 
+    documents = source.spec.trial_documents
+    if documents is None or source.spec.method_ref != STUDIO_GRAPH_METHOD:
+        raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
-    resolved = resolve_rollout(source, slot.graph, params, model_assets=slot.provider)
+    method = StudioGraphMethodPayload.model_validate(source.spec.method_payload.payload)
+    return _prepare_model_rollout(
+        documents, params, slot, checkpoint.completed_updates,
+        seed=method.seed, bootstrap_modules=source.bootstrap_modules,
+    )
+
+
+def _prepare_model_rollout(
+    documents: TrialDocuments, params: RolloutParameters, slot: SemanticModelSlot, coordinate: int,
+    *, seed: int, bootstrap_modules: tuple[str, ...],
+) -> PreparedRollout:
+    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
+    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
+
+    resolved = resolve_rollout(
+        documents, slot.graph, params, seed=seed, bootstrap_modules=bootstrap_modules, model_assets=slot.provider,
+    )
     paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
     try:
         target = None if paired is source_pair else ModelRestoreTarget(
@@ -202,11 +217,9 @@ def prepare_rollout(
         paired.execution.input_bindings, variant.source_overrides,
     )
     member = ResolvedRolloutMember(
-        coordinate=checkpoint.completed_updates, model_tree=slot.tree.descriptor.sha256,
+        coordinate=coordinate, model_tree=slot.tree.descriptor.sha256,
         model=model, task=task, trials=params.trials,
     )
-    documents = source.spec.trial_documents
-    assert documents is not None
     objective = rollout_objective_sha256(documents.objective)
     return PreparedRollout(
         paired, variant, graph, layout, resolved.scorer, slot, member, objective, paired is not source_pair,
@@ -290,10 +303,7 @@ def rollout_dataset(
     )
 
 
-def _rollouts(source, checkpoint, params, stop, *, update_axis="checkpoint"):
-    if stop.exists():
-        return None
-    prepared = prepare_rollout(source, checkpoint, params)
+def _rollouts(prepared, params, stop, *, update_axis="checkpoint"):
     if stop.exists():
         return None
     if update_axis == "update":
@@ -374,21 +384,21 @@ def _series_dataset(members, binding, params, stop, *, update_axis, job_id, stor
             points[point.checkpoint.completed_updates] = point.result
 
     datasets, summaries, resolved_members, objectives = [], [], [], set()
-    for checkpoint, source in members:
+    for coordinate, prepare in members:
         if stop.exists():
             return None
-        point = points.get(checkpoint.completed_updates)
+        prepared = prepare()
+        point = points.get(coordinate)
         if isinstance(point, ScoredEvaluationPoint):
-            prepared = prepare_rollout(source, checkpoint, params)
             if point.member != prepared.member or point.objective != prepared.objective:
                 raise ValueError("Live Evaluate point differs from its resolved scientific binding.")
             store.verify_object(point.states.object_ref)
             dataset = opened.enter_context(open_stored_dataset(store, point.states))
             if (
-                point.member.coordinate != checkpoint.completed_updates
+                point.member.coordinate != coordinate
                 or point.member.trials != params.trials
                 or dataset.descriptor.schema_id != params.states_schema
-                or dataset.data("update").tolist() != [checkpoint.completed_updates]
+                or dataset.data("update").tolist() != [coordinate]
                 or dataset.data("trial").tolist() != list(params.trials)
             ):
                 raise ValueError("Live Evaluate dataset differs from its resolved inputs.")
@@ -397,7 +407,7 @@ def _series_dataset(members, binding, params, stop, *, update_axis, job_id, stor
                 raise ValueError("Live Evaluate summary differs from its durable dataset.")
             member, objective = point.member, point.objective
         else:
-            result = _rollouts(source, checkpoint, params, stop, update_axis=update_axis)
+            result = _rollouts(prepared, params, stop, update_axis=update_axis)
             if result is None:
                 return None
             dataset, summary, member, objective = result
@@ -436,7 +446,38 @@ def main(argv: Sequence[str]) -> int:
         if subject != request.canonical_request.checkpoint:
             raise ValueError("Launch subject differs from the canonical Evaluate request.")
         events.phase("restoring")
-        members, binding = _bound_subject(request)
+        launch = request.canonical_request
+        binding = {"terminal": launch.terminal.model_dump(mode="json")} if launch.terminal else read_host_completion_binding()
+        if "terminal" in binding:
+            if not isinstance(subject, ProductRef) or not isinstance(subject.select, LastMember):
+                raise ValueError("Store terminal subject requires an authored last checkpoint")
+            pin = TerminalTrainSubject.model_validate(binding["terminal"])
+            source, authored = read_terminal_train_subject(store, pin, subject.request_id)
+            occurrence = source.continuation
+            assert occurrence is not None
+            model = pin.model
+            tree = success_content_ref(model.content)
+            assert isinstance(tree, ContentTreeRef)
+            from feedbax.training.model_checkpoint import SemanticModelSlot
+
+            slot = SemanticModelSlot.open_store(store, tree, SemanticModelEncoding.model_validate(model.descriptor))
+            method_payload = authored.method_payload.payload
+            if authored.seed is not None:
+                method_payload = method_payload | {"seed": authored.seed}
+            method = StudioGraphMethodPayload.model_validate(method_payload)
+            coordinate = occurrence.clock.completed_batches
+            members = ((coordinate, partial(
+                _prepare_model_rollout, authored.trial_documents, params, slot, coordinate,
+                seed=method.seed, bootstrap_modules=launch.bootstrap_modules,
+            )),)
+            train, provenance = terminal_train_provenance(pin, source)
+        else:
+            checkpoints = _bound_native_subject(request, binding)
+            members = tuple(
+                (point.completed_updates, partial(prepare_rollout, source, point, params))
+                for point, source in checkpoints
+            )
+            train, provenance = evaluation_subject_provenance(binding)
         events.phase("running")
         is_series = isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember)
         with ExitStack() as opened:
@@ -454,7 +495,6 @@ def main(argv: Sequence[str]) -> int:
             if is_series:
                 effective_metadata["placement"] = "live" if "live_evaluation_points" in binding else "ordinary"
             events.phase("finalizing")
-            train, provenance = evaluation_subject_provenance(binding)
             projection = EvaluationRunSpec(
                 evaluation_type=ROLLOUT_TYPE, training_run_ids=[parent.id for parent in train],
                 inputs=provenance.parents, params=spec.params,

@@ -1,6 +1,6 @@
 import { studioName } from '@/components/activity/studioVocabulary';
 import type { Document, StudioProjectCreateFile, StudioProjectSnapshot } from '@/generated/studioContracts';
-import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
+import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
 const model: Document = {
   schema: 'feedbax.spec.model',
@@ -14,6 +14,7 @@ const objective: Document = {
   schema: 'feedbax.spec.objective_document',
   payload: { id: 'objective', terms: [] },
 };
+const taskDocumentSchema = 'feedbax.spec.task_document';
 const methodSchema = 'feedbax.spec.training_method.studio_graph';
 
 export function canCreateFirstTrain(project: StudioProjectSnapshot['project']) {
@@ -27,18 +28,23 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
   }
 
   const files: StudioProjectCreateFile['file'][] = [];
-  function ensureDocument(name: string, document: Document) {
+  const documents = saved.project.documents ?? {};
+  const documentNames = Object.keys(documents).sort();
+  function bindDocument(name: string, document: Document, schemas = [document.schema]) {
+    const existing = documentNames.find((id) => schemas.includes(documents[id].schema));
+    if (existing !== undefined) return existing;
+
     let id = name;
-    for (let number = 2; Object.prototype.hasOwnProperty.call(saved.project.documents ?? {}, id); number += 1) {
-      if (containsCreatedFile(saved.project, { kind: 'document', id, document })) return id;
+    for (let number = 2; Object.prototype.hasOwnProperty.call(documents, id); number += 1) {
       id = `${name}-${number}`;
     }
     files.push({ kind: 'document', id, document });
     return id;
   }
-  const graph = ensureDocument('model', model);
-  const taskDocument = ensureDocument('task', task);
-  const objectiveDocument = ensureDocument('objective', objective);
+  const graph = bindDocument('model', model);
+  const taskDocument = bindDocument('task', task, [task.schema, taskDocumentSchema]);
+  const taskField = documents[taskDocument]?.schema === taskDocumentSchema ? 'task' : 'python_task';
+  const objectiveDocument = bindDocument('objective', objective);
   const id = 'train';
   const nBatches = 1000;
   const learningRate = 0.001;
@@ -50,7 +56,7 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
         trial_documents: {
           model_name: graph,
           model: { document: graph },
-          python_task: { document: taskDocument },
+          [taskField]: { document: taskDocument },
           objective: { document: objectiveDocument },
         },
         training_config: {

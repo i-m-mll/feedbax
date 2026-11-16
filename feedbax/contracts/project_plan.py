@@ -1,4 +1,4 @@
-"""Compile authored project requests without result access."""
+"""Compile authored project requests and resolve explicit Store subjects."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ from feedbax.contracts.project_inputs import (
     InputBinding,
     NamedSubset,
     OmittedReference,
+    RunReference,
     SelectedRow,
     StepReference,
     SubsetSelectionError,
@@ -53,6 +54,7 @@ from feedbax.contracts.project_resolution import (
     ResolvedStep,
     StepComposition,
     StepTemplate,
+    TerminalTrainSource,
     _TrialResolution,
     compose_step,
     _select,
@@ -100,6 +102,7 @@ from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMe
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_specs import TrialDocuments
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.component_registry import ComponentRegistry
@@ -167,6 +170,7 @@ class PlannedInput:
     member: InputMember
     producer_element: str | None = None
     candidates: tuple[RunKey, ...] = ()
+    terminal: TerminalTrainSubject | None = None
 
     @property
     def sources(self) -> tuple[RunKey, ...]:
@@ -445,7 +449,7 @@ _ROLES = {
 }
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
-type _Members = tuple[tuple[PlannedInput, _CompiledRun], ...]
+type _Members = tuple[tuple[PlannedInput, _CompiledRun | None], ...]
 
 
 def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> ProductSelector | None:
@@ -1005,6 +1009,7 @@ class _Compiler:
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
         self.train_evaluation_sources: dict[RequestId, _TrainEvaluationSource] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
+        self.terminal_sources: dict[RequestId, TerminalTrainSource] = {}
         self.checkpoint_horizons: dict[RequestId, int | None] = {}
 
     def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
@@ -1237,10 +1242,10 @@ class _Compiler:
             role: tuple(
                 SweepInputMember(
                     item.member.key,
-                    producer.coordinates if item.producer is not None else {
+                    producer.coordinates if producer is not None and item.producer is not None else {
                         axis: producer.coordinates[axis] for axis in item.member.reference.group
-                    } if isinstance(item.member.reference, BestRank) else {},
-                    producer.label if item.producer is not None else item.member.key,
+                    } if producer is not None and isinstance(item.member.reference, BestRank) else {},
+                    producer.label if producer is not None and item.producer is not None else item.member.key,
                     self.checkpoint_horizon(producer.request_id)
                     if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
                 )
@@ -1445,6 +1450,15 @@ class _Compiler:
         ))
         subject = inputs.get("subject") if kind == "evaluate" else None
         model_source = self.model_sources.get(subject.producer) if subject is not None and subject.producer else None
+        if subject is not None and subject.terminal is not None:
+            reference = subject.member.reference
+            assert isinstance(reference, ProductRef)
+            terminal = self.terminal_sources[reference.request_id]
+            documents = terminal.train.trial_documents
+            model_source = _ModelSource(
+                documents.model_name, documents.model, subject.terminal.receipt.sha256,
+                evaluation_graph=terminal.graph,
+            )
         source_stamp = model_source.stamp if model_source is not None else None
         source_problem = model_source.evaluation_problem if model_source is not None else None
 
@@ -1686,11 +1700,8 @@ class _Compiler:
             or model_source is None or model_source.evaluation_graph is None
         ):
             return payload
-        source = self.requests.get(reference.request_id)
-        if source is None:
-            return payload
-        train = request_identity.decode_request(source, self.documents.__getitem__).spec
-        if not isinstance(train, DocumentTrainingRequestSpec):
+        train = self.evaluation_train(reference)
+        if train is None:
             return payload
         raw = payload.get("params")
         if not isinstance(raw, dict):
@@ -1729,6 +1740,14 @@ class _Compiler:
                 row=key.row, variant=key.variant,
             )
 
+    def evaluation_train(self, reference: ProductRef) -> DocumentTrainingRequestSpec | None:
+        if (terminal := self.terminal_sources.get(reference.request_id)) is not None:
+            return terminal.train
+        if (source := self.requests.get(reference.request_id)) is None:
+            return None
+        train = request_identity.decode_request(source, self.documents.__getitem__).spec
+        return train if isinstance(train, DocumentTrainingRequestSpec) else None
+
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
     ) -> Payload | ProjectDiagnostic:
@@ -1748,10 +1767,8 @@ class _Compiler:
                 raise ValueError("Attachment differences require a rollout Evaluate with an authored Train Model")
             if not isinstance(reference, ProductRef):
                 raise ValueError("Attachment differences require a planned Train subject")
-            train = request_identity.decode_request(
-                self.requests[reference.request_id], self.documents.__getitem__,
-            ).spec
-            if not isinstance(train, DocumentTrainingRequestSpec):
+            train = self.evaluation_train(reference)
+            if train is None:
                 raise ValueError("Attachment differences require a Train request")
             if model_source is None:
                 raise ValueError("Attachment differences need a saved Model document")
@@ -1927,14 +1944,20 @@ class _Compiler:
                 try:
                     write = row.patches.get(CHECKPOINT_RULE_TARGET)
                     selected_subject = checkpoint_rule_write(subject, write) if write is not None else subject
-                    rule = selected_subject.checkpoint if isinstance(selected_subject, StepReference) else None
+                    rule = (
+                        selected_subject.checkpoint if isinstance(selected_subject, StepReference)
+                        else "last" if isinstance(selected_subject, RunReference) else None
+                    )
                     if rule is None and has_checkpoint_axis:
                         raise ValueError("The selected row has no checkpoint rule")
                     horizon = None
                     if isinstance(rule, UpdateCadence):
                         horizon = self.checkpoint_horizon(reference.request_id)
                     selector = _checkpoint(rule, horizon=horizon)
-                except ValueError as error:
+                    if isinstance(selector, LastMember) and chosen.terminal is None:
+                        if (terminal := self.read_terminal_train(reference.request_id)) is not None:
+                            chosen = replace(chosen, terminal=terminal.subject)
+                except (OSError, ValueError) as error:
                     self.diagnostics.append(ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
                         name, row=row.id, variant=variant,
@@ -2164,6 +2187,7 @@ class _Compiler:
             return refusal("Best requires at least one candidate.")
         groups: dict[tuple[str, ...], list[tuple[PlannedInput, _CompiledRun]]] = {}
         for item, producer in members:
+            assert producer is not None
             for axis in axes:
                 if axis not in producer.coordinates:
                     return refusal(
@@ -2240,6 +2264,14 @@ class _Compiler:
                 return ValueSource("variant", variant, pointer(parts), variant=variant)
         return source
 
+    def read_terminal_train(self, run: str) -> TerminalTrainSource | None:
+        if (terminal := self.terminal_sources.get(run)) is not None:
+            return terminal
+        reader = self.readers.terminal_train
+        if reader is None or (terminal := reader(run)) is None:
+            return None
+        return self.terminal_sources.setdefault(terminal.request_id, terminal)
+
     def select_input(
         self,
         variant: str,
@@ -2259,6 +2291,26 @@ class _Compiler:
                     ResolutionCode.BAD_REFERENCE, path, "required input is missing", name
                 )
             return (), {role.name: reference.not_applicable} if reference else {}, None
+        if isinstance(reference, RunReference) and role.name == "subject":
+            if template.sweep is not None and any(
+                isinstance(axis, CheckpointRuleAxis) for axis in template.sweep.axes.values()
+            ):
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
+                    "An existing Train run supplies only its terminal model; checkpoint sweeps need a Train step.",
+                    name,
+                )
+            try:
+                terminal = self.read_terminal_train(reference.run)
+                if terminal is None:
+                    raise ValueError(f"No successful Train result for run {reference.run!r} in this project Store.")
+                member = InputMember(
+                    key=DEFAULT_SWEEP_ROW,
+                    reference=ProductRef(request_id=terminal.request_id, role=role.product_role, select=LastMember()),
+                )
+            except (OSError, ValueError) as error:
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
+            return ((PlannedInput(None, member, terminal=terminal.subject), None),), {}, None
         if not isinstance(reference, StepReference):
             return ProjectDiagnostic(
                 ResolutionCode.UNSUPPORTED_PLAN,
@@ -2494,6 +2546,7 @@ def compile_project(
         readers,
         external=cache(readers.external) if readers.external is not None else None,
         figure_external=cache(readers.figure_external) if readers.figure_external is not None else None,
+        terminal_train=cache(readers.terminal_train) if readers.terminal_train is not None else None,
     )
     if capture_sources or memo is None or any(
         reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)

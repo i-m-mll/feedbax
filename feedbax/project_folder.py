@@ -5,7 +5,7 @@ from __future__ import annotations
 from base64 import b64decode, b64encode
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import fcntl
 from functools import lru_cache
 import os
@@ -56,6 +56,7 @@ from feedbax.contracts.project_io import (
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import BaseReaders
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
+from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
@@ -751,7 +752,7 @@ class ProjectFolder:
         self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = (),
         declaration: str | None = None,
     ) -> SettledProjectPlan:
-        """Compile the acknowledged folder snapshot without opening the result store."""
+        """Compile the acknowledged folder snapshot and resolve its Store subjects."""
         text = self.read_authored_snapshot(project_id, revision=revision, declaration=declaration)
         return self._compile(project_id, text, source_runs)
 
@@ -768,7 +769,8 @@ class ProjectFolder:
     def _compile(
         self, project_id: str, text: TextProject, source_runs: Iterable[RunKey] = ()
     ) -> SettledProjectPlan:
-        readers = self._base_readers(project_id, text)
+        store = text.store_path if self._stores_root is None else self._stores_root / project_id
+        readers = replace(self._base_readers(project_id, text), terminal_train=terminal_train_reader(store))
         return SettledProjectPlan.from_text(
             project_id, text,
             compile_project(
@@ -776,7 +778,7 @@ class ProjectFolder:
                 operations=self.operations, components=self.components, functions=self.functions,
                 python_tasks=self.python_tasks, readers=readers,
             ),
-            readers=readers, store=None if self._stores_root is None else self._stores_root / project_id,
+            readers=readers, store=store,
         )
 
     def _base_readers(self, project_id: str, text: TextProject) -> BaseReaders:

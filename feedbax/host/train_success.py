@@ -91,6 +91,7 @@ def publish_train_success(
                         and bound.selection.occurrence != _occurrence(completion["checkpoint"]["pointer"]))
                 ):
                     raise ValueError("Published Train inputs differ from the delivered checkpoint")
+            view.ensure_published_run_ref(existing, committed)
             return existing.model_dump(mode="json")
         bindings = collected.inputs if collected is not None else bind_train_inputs(view, request, predecessor)
         source = ImmutableArtifactBlobProvider(model_root)

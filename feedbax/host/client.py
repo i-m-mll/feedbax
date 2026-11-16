@@ -197,12 +197,13 @@ class HostClient:
         self._call("warm", launch=asdict(launch), **owner)
 
     def admit(self, token: str, items: Sequence[AdmissionItem], *, record: JsonObject) -> Admission:
-        requires_authentication = any(
-            edge.authenticated_completion
-            for item in items
-            if item.job is not None
-            for edge in item.job.edges
-        )
+        def authenticated(job: Job) -> bool:
+            if any(edge.authenticated_completion for edge in job.edges):
+                return True
+            request = job.launch.payload.get("canonical_request")
+            return isinstance(request, dict) and request.get("terminal") is not None
+
+        requires_authentication = any(authenticated(item.job) for item in items if item.job is not None)
         return cast(
             Admission,
             self._call(

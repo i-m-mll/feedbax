@@ -7,7 +7,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef
 from feedbax.contracts.effective_success import (
     EVALUATION_SUBJECT_MEDIA_TYPE, BestCandidateEvidence, BoundMember, EvaluationCheckpointSource, EvaluationClosure,
-    EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, success_content_ref,
+    EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, TerminalTrainSubject, success_content_ref,
 )
 from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
@@ -19,7 +19,9 @@ from feedbax.host.checkpoint_selection import verify_dependency_files
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.persistence.evaluation_subject import checkpoint_transaction, model_product, subject_tree
+from feedbax.persistence.evaluation_subject import (
+    checkpoint_transaction, model_product, read_terminal_train_subject, subject_tree,
+)
 from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.studio.canonical_evaluate import (
     BoundEvaluationJobInput, RolloutParameters, evaluation_checkpoint_coordinates,
@@ -88,13 +90,30 @@ def publish_evaluate_success(
                 or saved.products != {"states": (product,)}
             ):
                 raise ValueError("Published Evaluate attempt differs from its accepted result")
+            view.ensure_published_run_ref(existing.ref, existing.receipt)
             return existing.ref
 
-        verify_dependency_files(binding)
-        exact_evaluation_subject(subject, binding, verify_metrics=True)
         closure = None
         terminal_receipt = None
-        if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
+        terminal_checkpoint = None
+        selected = {}
+        publications = ()
+        checkpoints, trees = [], []
+        producer = None
+        if "terminal" in binding:
+            if not isinstance(subject, ProductRef):
+                raise ValueError("A ranked Evaluate cannot publish a terminal Store subject")
+            pin = TerminalTrainSubject.model_validate(binding["terminal"])
+            if launch.canonical_request.terminal not in (None, pin):
+                raise ValueError("Evaluate Store subject differs from its exact admitted pin")
+            train, _ = read_terminal_train_subject(store, pin, subject.request_id)
+            assert train.continuation is not None
+            producer = train.request
+            terminal_receipt = pin.receipt
+            terminal_checkpoint = train.continuation.provenance
+            coordinates = (train.continuation.clock.completed_batches,)
+            trees.append(success_content_ref(pin.model.content))
+        elif (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
             selected = binding["checkpoint_selection"]
             publications = selected["members"]
             if settled := selected.get("closure"):
@@ -111,6 +130,9 @@ def publish_evaluate_success(
             coordinates = (checkpoint.completed_updates,)
             publications = (completion,)
             selected = {}
+        if terminal_checkpoint is None:
+            verify_dependency_files(binding)
+            exact_evaluation_subject(subject, binding, verify_metrics=True)
         resolved = manifest.metadata.get("effective_binding")
         value = EvaluationSubjectValue(
             axis="update" if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) else "checkpoint",
@@ -135,8 +157,6 @@ def publish_evaluate_success(
             ):
                 raise ValueError("Evaluate states differ from accepted checkpoint coverage or trials")
 
-        checkpoints, trees = [], []
-        producer = None
         for publication in publications:
             checkpoint = PublishedTrainingCheckpoint.model_validate(publication["checkpoint"])
             pinned = _retain_checkpoint(store, checkpoint, publication)
@@ -192,7 +212,7 @@ def publish_evaluate_success(
             descriptor=value.model_dump(mode="json"),
             evaluation_subject=EvaluationSubjectSource(
                 producer=producer, checkpoints=tuple(checkpoints), closure=closure,
-                terminal_receipt=terminal_receipt,
+                terminal_receipt=terminal_receipt, terminal_checkpoint=terminal_checkpoint,
                 ranked_candidates=tuple(ranked_candidates),
             ),
         )
