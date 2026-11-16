@@ -75,6 +75,7 @@ from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
+from feedbax.studio.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
 from feedbax.training_host_worker import BOOTSTRAP_ENV
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
@@ -385,6 +386,10 @@ class JobService(PlanJobReader):
         )
         self._evaluation_worker = replace(
             base_worker,
+            env=base_worker.env | {
+                "JAX_PLATFORMS": ROLLOUT_JAX_BACKEND,
+                "JAX_ENABLE_X64": str(int(ROLLOUT_JAX_ENABLE_X64)),
+            },
             warm_entrypoint="feedbax.training.evaluate_worker:main",
             preload=(*base_worker.preload, "feedbax.plugins.composition"),
         )
