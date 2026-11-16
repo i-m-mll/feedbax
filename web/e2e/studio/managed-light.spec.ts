@@ -1,9 +1,11 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
   ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
-  StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainRuns,
+  StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
+import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 
 test.use({
@@ -14,15 +16,28 @@ test.use({
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-async function savedLightGate({ page, request }: { page: Page; request: APIRequestContext }, info: TestInfo, paired: boolean) {
-  test.setTimeout(paired ? 175_000 : 130_000);
+type WalkthroughContext = { page: Page; request: APIRequestContext };
+
+async function savedLightGate(context: WalkthroughContext, info: TestInfo, paired: boolean) {
+  test.setTimeout(paired ? 190_000 : 130_000);
+  const first = paired ? await test.step('Author, Stop, Resume and recover the first Train', () =>
+    authorAndRecoverTrain(context.page, context.request, info)) : undefined;
+  try {
+    await exerciseSavedResults(context, info, first);
+  } finally {
+    await first?.closeBackend();
+  }
+}
+
+async function exerciseSavedResults({ page, request }: WalkthroughContext, info: TestInfo,
+  first?: Awaited<ReturnType<typeof authorAndRecoverTrain>>,
+) {
+  const paired = first !== undefined;
   const home = String(info.config.metadata.home);
   const fixture = 'web.e2e.studio.fixtures.managed_light';
-  const project = JSON.parse(await runProjectFixture(
-    fixture, paired ? 'seed-variants' : 'seed', home, paired ? 'managed-m3-walkthrough' : 'managed-light',
-  ));
+  const project: string = first?.project ?? JSON.parse(await runProjectFixture(fixture, 'seed', home, 'managed-light'));
   const scope = paired ? 'base' : 'default';
-  const path = '/api/projects/' + project;
+  const path = first?.projectPath ?? '/api/projects/' + project;
   const runPath = path + '/train-runs';
   const reviewPath = path + '/authoring/analyze';
   const mounted = '/?project=' + encodeURIComponent(project);
@@ -78,63 +93,86 @@ async function savedLightGate({ page, request }: { page: Page; request: APIReque
     }
     return items.filter(({ disposition }) => disposition === 'admitted').map(({ job_id }) => job_id!);
   }
-  async function runFixtureStep(step: string, doneCount = 1) {
+  async function runStep(step: string, doneCount = 1, expected?: readonly StudioSavedTrainKey[], selected: readonly string[] = []) {
     await mapStep(page, step).click();
     await tab(page, 'Runs').click();
+    const table = page.getByRole('table', { name: 'Runs', exact: true });
+    for (const [index, label] of selected.entries()) {
+      await table.getByRole('button', { name: label, exact: true }).click({ modifiers: index > 0 ? ['Shift'] : [] });
+    }
     const admitted = mutation('POST', runPath);
     await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
     const response = await admitted;
     expect(response.status(), await response.text()).toBe(202);
+    if (expected) expect(response.request().postDataJSON().run_keys).toEqual(expected);
     const { items } = await response.json() as StudioJobSubmission;
     expect(items.map(({ disposition, reason }) => [disposition, reason ?? null])).toEqual(
-      Array.from({ length: doneCount }, () => ['admitted', null]),
+      Array.from({ length: expected?.length ?? doneCount }, () => ['admitted', null]),
     );
     const watched = new Set(items.map(({ job_id }) => job_id));
     await expect.poll(async () => {
       const jobs = await request.get('/api/jobs', { params: { project } });
       const history = await jobs.json() as StudioJobSnapshot;
       return history.jobs.filter(({ job_id }) => watched.has(job_id)).map(({ status }) => status);
-    }, { timeout: 13_000 + 8_000 * doneCount }).toEqual(Array(doneCount).fill('succeeded'));
-    await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toHaveCount(doneCount);
+    }, { timeout: 13_000 + 8_000 * doneCount }).toEqual(Array(items.length).fill('succeeded'));
+    await expect(table.getByText('Done', { exact: true })).toHaveCount(doneCount);
   }
 
-  await page.goto(mounted);
   const walkthrough = { page, request, projectPath: path, attempts };
-  const swept = paired ? await authorWalkthroughSweep(walkthrough) : undefined;
-  await runFixtureStep('train', swept?.length ?? 1);
-  await runFixtureStep('conditions', 2);
+  const pairedInput = first ? await test.step('Author two Evaluate conditions from the resumed checkpoint', async () => {
+    const [producer, ...otherRows] = await authorWalkthroughSweep(walkthrough);
+    expect(producer.result).toEqual(first.trained);
+    await runStep('train', 3, otherRows.map(({ key }) => key), otherRows.map(({ label }) => label));
+    await page.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: producer.label, exact: true }).click();
+    const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+    return authorEvaluateConditions({
+      page, request, projectPath: path, train: producer.key, field: 'Mass',
+      conditions: [{ label: 'Nominal', value: 1 }, { label: 'Heavy', value: 2 }],
+      selectComponent: () => model.locator(`[data-id=${JSON.stringify(first.plantId)}]`).getByRole('article').locator('header').click(),
+    });
+  }) : undefined;
+  if (!first) {
+    await page.goto(mounted);
+    await runStep('train');
+  }
+  const evaluateStep = pairedInput?.stepId ?? 'conditions';
+  await runStep(evaluateStep, 2, pairedInput?.rows.map(({ key }) => key));
   const initial = await snapshot();
   const initialPlan = await plan(initial.revision);
-  const settledEvaluate = initialPlan.evaluations!.filter(({ key }) => key.variant === scope && key.step === 'conditions');
-  expect(settledEvaluate.map(({ key }) => key.row).sort()).toEqual(['mass=heavy', 'mass=nominal']);
+  const settledEvaluate = initialPlan.evaluations!.filter(({ key }) => key.variant === scope && key.step === evaluateStep);
+  if (pairedInput) expect(settledEvaluate.map(({ key }) => key)).toEqual(pairedInput.rows.map(({ key }) => key));
+  else expect(settledEvaluate.map(({ key }) => key.row).sort()).toEqual(['mass=heavy', 'mass=nominal']);
   expect(new Set(settledEvaluate.map(({ request_id }) => request_id)).size).toBe(2);
   expect(new Set(settledEvaluate.map(({ result }) => result?.job_id)).size).toBe(2);
   expect(settledEvaluate.map(({ status }) => status)).toEqual(['succeeded', 'succeeded']);
   const [firstCondition, secondCondition] = settledEvaluate;
   expect(firstCondition.trials.length).toBeGreaterThan(0);
   expect(firstCondition.trials).toEqual(secondCondition.trials);
-  const producer = (await request.get(runPath, { params: { revision: initial.revision } }));
+  const producer = await request.get(runPath, { params: { revision: initial.revision } });
   expect(producer.ok(), await producer.text()).toBe(true);
-  const trainId = (await producer.json() as StudioSavedTrainRuns).rows.find(({ key }) =>
-    key.variant === scope && key.step === 'train' && key.row === (swept?.[0].key.row ?? 'default'))!.result!.job_id;
+  const training = (await producer.json() as StudioSavedTrainRuns).rows.find(({ key, result }) =>
+    key.variant === scope && key.step === 'train' && (first ? result?.job_id === first.trained.job_id : key.row === 'default'))!;
   for (const condition of settledEvaluate) {
     expect(condition.result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(condition.result?.checkpoint_source?.job_id).toBe(trainId);
+    expect(condition.result?.checkpoint_source).toMatchObject({
+      job_id: training.result!.job_id, request_id: training.request_id,
+      completed_updates: training.result!.progress!.completed_updates,
+    });
   }
-  const upstream = settledEvaluate.find(({ key }) => key.row === 'mass=heavy')!;
-  const sources = paired ? settledEvaluate : [upstream];
+  const sources = paired ? settledEvaluate : [settledEvaluate.find(({ key }) => key.row === 'mass=heavy')!];
   const admittedJobs = await attempts();
-  expect(admittedJobs).toHaveLength((swept?.length ?? 1) + settledEvaluate.length);
+  expect(admittedJobs).toHaveLength((first ? 4 : 1) + settledEvaluate.length);
   const table = page.getByRole('table', { name: 'Runs', exact: true });
-  await table.getByRole('button', { name: sources[0].key.row, exact: true }).click();
-  if (paired) await table.getByRole('button', { name: sources[1].key.row, exact: true }).click({ modifiers: ['Shift'] });
+  const sourceLabels = pairedInput?.rows.map(({ label }) => label) ?? [sources[0].key.row];
+  await table.getByRole('button', { name: sourceLabels[0], exact: true }).click();
+  if (paired) await table.getByRole('button', { name: sourceLabels[1], exact: true }).click({ modifiers: ['Shift'] });
   await chooseCommand('Analyze');
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
     kind: 'analyze', base: { document: 'analyze' }, inputs: { states: {
-      step: upstream.key.step,
-      ...(paired ? { where: { axes: { mass: sources.map(({ key }) => key.row.split('=')[1]) } } } : { row: upstream.key.row }),
+      step: evaluateStep,
+      ...(paired ? { where: { axes: expect.any(Object) } } : { row: sources[0].key.row }),
     } },
   });
   function expectAnalyzeSources(projection: StudioProjectWindowMap) {
@@ -147,7 +185,7 @@ async function savedLightGate({ page, request }: { page: Page; request: APIReque
   await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
-    ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
+    ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', paired ? /reach_target$/ : /target_pos$/],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: 'Edit ' + field, exact: true });
     const option = select.getByRole('option', { name: label });
@@ -324,7 +362,7 @@ async function savedLightGate({ page, request }: { page: Page; request: APIReque
   const beforeEdit = [...admittedJobs, ...createdJobs].sort();
   await mapStep(page, 'train').click();
   await mapStep(page, 'train').click({ modifiers: ['Meta'] });
-  expect(await runSaved(beforeEdit)).toEqual([]);
+  expect(await runSaved(beforeEdit.filter((job) => job !== first?.stopped))).toEqual([]);
   expect(await attempts()).toEqual(beforeEdit);
 
   await mapStep(page, 'analyze').click();
@@ -372,9 +410,9 @@ async function savedLightGate({ page, request }: { page: Page; request: APIReque
   await drawnFigure('Current Result');
   await figures.getByRole('button', { name: 'Previous Result', exact: true }).click();
   await drawnFigure('Previous Result');
-  if (paired) {
-    await test.step('Share the full chain and isolate a compare Model edit', () => verifyWalkthroughVariant(walkthrough));
-    await test.step('Widen the Evaluate subset and continue the exact Train rows', () => verifyWalkthroughSuccessors(walkthrough));
+  if (first) {
+    await test.step('Share the full chain and isolate a compare Model edit', () => verifyWalkthroughVariant(walkthrough, first.plantId));
+    await test.step('Widen the Evaluate subset and continue the exact Train rows', () => verifyWalkthroughSuccessors(walkthrough, evaluateStep));
   }
 }
 

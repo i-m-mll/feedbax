@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 import type {
-  StudioJobSubmission, StudioProjectDocument, StudioProjectPatch, StudioProjectSnapshot,
+  StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { authorLearningRateSweep, enter, mapStep, openResultsSlot } from './canonicalTrain';
@@ -43,7 +43,7 @@ function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '
 }
 
 export async function authorWalkthroughSweep(context: Walkthrough) {
-  const { page, request, projectPath } = context;
+  const { page } = context;
   await expect(variant(page)).toHaveValue('base');
   await openRuns(page, 'train');
   await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
@@ -51,23 +51,10 @@ export async function authorWalkthroughSweep(context: Walkthrough) {
     value.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
   await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.label))
     .toEqual(['Slow', 'Medium', 'Fast']);
-  const swept = await plan(context);
-  const rows = sweepRows(swept);
-  const patch: StudioProjectPatch = {
-    revision: swept.revision,
-    address: { kind: 'step', id: 'conditions' },
-    patches: [{ op: 'add', path: '/inputs/subject/where', value: {
-      axes: { 'learning-rate': [rows[0].coordinates['learning-rate'].value_id] },
-    } }],
-  };
-  const bound = await request.patch(projectPath, { data: patch });
-  expect(bound.ok(), await bound.text()).toBe(true);
-  await page.reload();
-  await expect(variant(page)).toHaveValue('base');
-  return rows;
+  return (await plan(context)).rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
 }
 
-export async function verifyWalkthroughVariant(context: Walkthrough) {
+export async function verifyWalkthroughVariant(context: Walkthrough, plantId: string) {
   const { page, attempts } = context;
   const scoped = (value: StudioSavedTrainRuns, name: string) => {
     const window = value.window_map!;
@@ -99,7 +86,8 @@ export async function verifyWalkthroughVariant(context: Walkthrough) {
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
-  await model.getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
+  const plant = model.locator(`[data-id=${JSON.stringify(plantId)}]`).getByRole('article');
+  await plant.locator('header').click();
   const mass = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('textbox', { name: 'Mass', exact: true });
   await expect(mass).toBeEditable();
@@ -121,13 +109,18 @@ export async function verifyWalkthroughVariant(context: Walkthrough) {
   expect(scoped(await plan(context), 'compare')).toEqual(delta);
 }
 
-export async function verifyWalkthroughSuccessors(context: Walkthrough) {
+export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedStep: string) {
   const { page, attempts } = context;
   const stepRows = (value: StudioSavedTrainRuns, step: string) =>
     value.rows.filter(({ key }) => key.variant === 'base' && key.step === step);
   const evaluationRows = (value: StudioSavedTrainRuns, step: string) =>
     value.window_map!.evaluations!.filter(({ key }) => key.variant === 'base' && key.step === step);
   const prefix = stepRows(await plan(context), 'train');
+  const sourceUpdates = prefix[0].result!.progress!.completed_updates;
+  expect(prefix.slice(0, 2).map(({ result }) => result?.progress?.completed_updates)).toEqual([sourceUpdates, sourceUpdates]);
+  const additionalUpdates = 4;
+  const childUpdates = sourceUpdates + additionalUpdates;
+  const subsetStep = pairedStep === 'evaluate' ? 'evaluate-2' : 'evaluate';
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
   const inspector = page.getByRole('region', { name: 'Run Inspector', exact: true });
@@ -170,21 +163,21 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   await sourceRow(0).click();
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   await expect(inspector.getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
-  for (const [step, kind, count] of [['conditions', 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
+  for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used).toContainText(step);
     await expect(outline.getByRole('button', { name: `Select ${step} ${kind} ${count}`, exact: true })).toBeVisible();
     await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 
   await selectTwo();
-  await addSuccessor('Evaluate', 'evaluate');
+  await addSuccessor('Evaluate', subsetStep);
   const input = drawer(page).getByRole('region', { name: 'Inputs', exact: true });
   await expect(input).toContainText('2 of 3');
-  const partial = evaluationRows(await plan(context), 'evaluate');
+  const partial = evaluationRows(await plan(context), subsetStep);
   expect(partial).toHaveLength(2);
   await runSelected(partial.map(({ key }) => key));
   await expect(table(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 24_000 });
-  const settled = evaluationRows(await plan(context), 'evaluate');
+  const settled = evaluationRows(await plan(context), subsetStep);
   const beforeWidening = await attempts();
   const subset = drawer(page).getByRole('group', { name: 'Subject Subset', exact: true });
   await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
@@ -192,7 +185,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
   expect((await edited).ok()).toBe(true);
   await expect(input).toContainText('3 of 3');
-  const widened = evaluationRows(await plan(context), 'evaluate');
+  const widened = evaluationRows(await plan(context), subsetStep);
   expect(widened.slice(0, 2)).toEqual(settled);
   expect(widened).toHaveLength(3);
   const extra = await runSelected([widened[2].key]);
@@ -213,15 +206,15 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
-  await enter(batchCount, '4');
+  await enter(batchCount, String(additionalUpdates));
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
   expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
   const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps[child];
   expect(editedChild.deltas?.at(-1)?.patches).toEqual([
-    { op: 'replace', path: 'training_config.n_batches', value: 4 },
-    { op: 'replace', path: 'method_payload.payload.target_total', value: 6 },
-    { op: 'replace', path: 'method_payload.payload.checkpoint_initialization.progress.additional_batches', value: 4 },
+    { op: 'replace', path: 'training_config.n_batches', value: additionalUpdates },
+    { op: 'replace', path: 'method_payload.payload.target_total', value: childUpdates },
+    { op: 'replace', path: 'method_payload.payload.checkpoint_initialization.progress.additional_batches', value: additionalUpdates },
   ]);
   const beforeChildren = await attempts();
   const planned = stepRows(await plan(context), child);
@@ -233,7 +226,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   await openRuns(page, child);
   const after = await plan(context);
   expect(stepRows(after, 'train')).toEqual(prefix);
-  expect(evaluationRows(after, 'evaluate').slice(0, 2)).toEqual(settled);
+  expect(evaluationRows(after, subsetStep).slice(0, 2)).toEqual(settled);
   const children = stepRows(after, child);
   for (const [index, row] of children.entries()) {
     const producer = prefix[index];
@@ -241,16 +234,16 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
     expect(row.attempts).toEqual([expect.objectContaining({
       job_id: successors[index],
       checkpoint_source: {
-        job_id: producer.result?.job_id, request_id: producer.request_id, completed_updates: 2,
+        job_id: producer.result?.job_id, request_id: producer.request_id, completed_updates: sourceUpdates,
       },
-      progress: { completed_updates: 6, total_updates: 6 },
+      progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
     await table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button').click();
     if (index === 0) await openResultsSlot(page);
     const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
     await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('polyline')).toHaveCount(1);
     await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
-      'train 1–2', `${child} 3–6`,
+      `train 1–${sourceUpdates}`, `${child} ${sourceUpdates + 1}–${childUpdates}`,
     ]);
   }
 }
