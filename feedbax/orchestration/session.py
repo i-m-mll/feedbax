@@ -35,6 +35,10 @@ class SessionOpeningFailed(SessionError):
     """An opening stopped and requires reconciling its owned resources."""
 
 
+class SessionOpeningRejected(SessionError):
+    """The driver rejected the request before it could acquire a venue."""
+
+
 class SessionModel(StrictModel):
     model_config = ConfigDict(frozen=True)
 
@@ -226,8 +230,9 @@ class SessionDriver:
             yield db
 
     @contextmanager
-    def _exclusive(self, session_id: UUID) -> Iterator[None]:
-        with (self.root / f"{session_id}.lock").open("ab") as lock:
+    def _exclusive(self, session_id: UUID, *, approval: bool = False) -> Iterator[None]:
+        name = f"{session_id}.approval.lock" if approval else f"{session_id}.lock"
+        with (self.root / name).open("ab") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
@@ -249,6 +254,10 @@ class SessionDriver:
 
     def record(self, session_id: UUID) -> SessionRecord:
         return self._require(session_id).session
+
+    def find_record(self, session_id: UUID) -> SessionRecord | None:
+        control = self._read(session_id)
+        return control.session if control is not None else None
 
     def records(self) -> tuple[SessionRecord, ...]:
         with self.connection() as db:
@@ -312,12 +321,12 @@ class SessionDriver:
             control = self._read(request.id)
             if control is None:
                 if authorization.expires_at_ms <= self._clock_ms():
-                    raise SessionError("Session authorization has expired.")
+                    raise SessionOpeningRejected("Session authorization has expired.")
                 if self._find_venue(f"feedbax-session-{request.digest}", self.inventory()) is not None:
                     raise SessionError("This session already has a venue. Adopt it explicitly.")
                 hourly_microusd = self.provider.hourly_microusd(request)
                 if expected_hourly_microusd is not None and hourly_microusd != expected_hourly_microusd:
-                    raise SessionError("The machine rate changed. Review a new quote.")
+                    raise SessionOpeningRejected("The machine rate changed. Review a new quote.")
                 launch = SessionLaunch(
                     request=request, authorization=authorization, acquired_at_ms=self._clock_ms(),
                     adoption_sha256=_capability_digest(adoption_token),

@@ -454,16 +454,13 @@ class JobService(PlanJobReader):
         kinds = {before[key].kind for key in selected.values() if key in before}
         evaluate = "evaluate" in kinds
         train = "train" in kinds
-        command = {
-            "kind": "canonical_train" if train or not evaluate else "canonical_evaluate",
-            "reviewed_revision": reviewed.revision,
-            "semantic_root": reviewed.semantic_root,
-            "store": str(reviewed.store_path),
-            "requests": {
+        command = _saved_plan_command(
+            "canonical_train" if train or not evaluate else "canonical_evaluate",
+            reviewed.revision, reviewed.semantic_root, str(reviewed.store_path), {
                 name: before[key].request_id if key in before else None
                 for name, key in selected.items() if key not in light_rows and key not in light
             } | {plan_attempt_key(key): node.request_id for key, node in light.items()},
-        }
+        )
         if reuse_completed:
             command["reuse_completed"] = True
         if light:
@@ -934,6 +931,25 @@ class JobService(PlanJobReader):
         if not records or not _is_studio_submission(records[0]):
             raise JobNotFound(submission_id)
         return _project_submission(records[0])
+
+    @staticmethod
+    def recover_saved_submission(
+        host: HostClient, *, token: str, project: str, revision: str, semantic_root: str,
+        store: str, run_keys: Sequence[RunKey], request_ids: Sequence[str], placement: AttemptTarget,
+    ) -> StudioJobSubmission | None:
+        """Read the receipt for this exact saved Train/Evaluate admission token."""
+        rows = host.submissions(token=token)
+        if not rows:
+            return None
+        (record,) = rows
+        command = _saved_plan_command(
+            "canonical_train" if any(item.startswith("train:") for item in request_ids) else "canonical_evaluate",
+            revision, semantic_root, store,
+            {plan_attempt_key(key): request for key, request in zip(run_keys, request_ids, strict=True)},
+        )
+        return JobService._submission_for_action(
+            dict(record), project=project, continues=None, command=command, placement=placement,
+        )
 
     def jobs(self, *, project: str | None = None) -> StudioJobSnapshot:
         snapshot = self.host.jobs_snapshot(project=project)
@@ -1428,6 +1444,13 @@ def plan_attempt_key(key: RunKey | ElementKey) -> str:
     run = key.run if isinstance(key, ElementKey) else key
     address = plan_run_key(run.variant, run.step, run.row)
     return f"{address}/elements/{key.name}" if isinstance(key, ElementKey) else address
+
+
+def _saved_plan_command(
+    kind: str, revision: str, semantic_root: str, store: str, requests: Mapping[str, str | None],
+) -> dict[str, Any]:
+    return {"kind": kind, "reviewed_revision": revision, "semantic_root": semantic_root,
+            "store": store, "requests": dict(requests)}
 
 
 def _is_light_request(request: str) -> bool:
